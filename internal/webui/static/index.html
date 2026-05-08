@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pi-go Web UI</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <h1>pi-go</h1>
+      <button onclick="newSession()" class="btn btn-primary">+ New</button>
+    </div>
+    <div class="session-list" id="sessionList"></div>
+    <div class="sidebar-footer">
+      <button onclick="toggleSettings()" class="btn btn-ghost">Settings</button>
+    </div>
+  </aside>
+  <main class="chat">
+    <div class="chat-messages" id="chatMessages">
+      <div class="welcome">pi-go Web UI — Start a conversation</div>
+    </div>
+    <div class="chat-input">
+      <textarea id="messageInput" rows="2" placeholder="Type a message..." onkeydown="handleKey(event)"></textarea>
+      <button onclick="sendMessage()" class="btn btn-primary" id="sendBtn">Send</button>
+    </div>
+  </main>
+</div>
+
+<div id="settingsModal" class="modal hidden">
+  <div class="modal-content">
+    <h2>Settings</h2>
+    <label>Model <input id="setModel" placeholder="gpt-4o"></label>
+    <label>Base URL <input id="setBaseURL" placeholder="https://api.openai.com"></label>
+    <label>API Key <input id="setAPIKey" type="password" placeholder="sk-..."></label>
+    <div class="modal-actions">
+      <button onclick="saveSettings()" class="btn btn-primary">Save</button>
+      <button onclick="toggleSettings()" class="btn btn-ghost">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
