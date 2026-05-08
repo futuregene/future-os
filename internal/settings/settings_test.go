@@ -415,18 +415,15 @@ func TestMergeSettings_EmptyStringNotOverride(t *testing.T) {
 func TestGetDefaultPaths_ReturnsPaths(t *testing.T) {
 	global, project := GetDefaultPaths()
 
-	if !strings.Contains(global, ".pi") {
-		t.Errorf("global path should contain .pi: %s", global)
-	}
-	if !strings.Contains(global, "agent") {
-		t.Errorf("global path should contain agent: %s", global)
+	if !strings.Contains(global, ".cobalt") {
+		t.Errorf("global path should contain .cobalt: %s", global)
 	}
 	if !strings.HasSuffix(global, "settings.json") {
 		t.Errorf("global path should end with settings.json: %s", global)
 	}
 
-	if !strings.Contains(project, ".pi") {
-		t.Errorf("project path should contain .pi: %s", project)
+	if !strings.Contains(project, ".cobalt") {
+		t.Errorf("project path should contain .cobalt: %s", project)
 	}
 	if !strings.HasSuffix(project, "settings.json") {
 		t.Errorf("project path should end with settings.json: %s", project)
@@ -443,7 +440,7 @@ func TestGetDefaultPaths_ReturnsPaths(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLoadAll_NoFiles(t *testing.T) {
-	// LoadAll uses real paths (~/.pi/agent/settings.json and .pi/settings.json).
+	// LoadAll uses real paths (~/.cobalt/settings.json and .cobalt/settings.json).
 	// These likely don't exist in test, so we expect an empty Settings.
 	s, err := LoadAll()
 	if err != nil {

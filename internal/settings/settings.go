@@ -434,21 +434,21 @@ func MergeSettings(base, override *Settings) *Settings {
 }
 
 // GetDefaultPaths returns the standard paths for global and project-level
-// settings files. The global path is ~/.pi/agent/settings.json.
-// The project path is .pi/settings.json relative to the current working
+// settings files. The global path is ~/.cobalt/settings.json.
+// The project path is .cobalt/settings.json relative to the current working
 // directory (or the provided working directory if non-empty).
 func GetDefaultPaths() (global, project string) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = os.TempDir()
 	}
-	global = filepath.Join(home, ".pi", "agent", "settings.json")
+	global = filepath.Join(home, ".cobalt", "settings.json")
 
 	cwd, err := os.Getwd()
 	if err != nil {
 		cwd = "."
 	}
-	project = filepath.Join(cwd, ".pi", "settings.json")
+	project = filepath.Join(cwd, ".cobalt", "settings.json")
 
 	return global, project
 }
