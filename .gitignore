@@ -1,0 +1,17 @@
+# Binaries
+/cobalt
+/cobalt-web
+/pi
+/pi-web
+*.exe
+*.test
+
+# Go
+*.out
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
