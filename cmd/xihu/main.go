@@ -191,6 +191,11 @@ func main() {
 	allSkills, _ := skills.DiscoverSkills(searchDirs, "user")
 	resolvedSkills := skills.ResolveCollisions(allSkills)
 
+	var skillNames []string
+	for _, s := range resolvedSkills {
+		skillNames = append(skillNames, s.Name)
+	}
+
 	var promptSkills []prompt.Skill
 	for _, s := range resolvedSkills {
 		promptSkills = append(promptSkills, prompt.Skill{
@@ -271,7 +276,7 @@ func main() {
 
 	// ── Interactive REPL (no prompt + TTY) ─────────────────────────────────
 	if userPrompt == "" && isTerminal() {
-		err := tui.Run(eng.Loop, sessMgr, sess, "", cmdCtx.Model, cmdCtx.BaseURL)
+		err := tui.Run(eng.Loop, sessMgr, sess, "", cmdCtx.Model, cmdCtx.BaseURL, skillNames, nil, thinking)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 			os.Exit(1)

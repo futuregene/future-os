@@ -24,6 +24,14 @@ type AnthropicClient struct {
 	StealthMode  bool
 	ThinkingOpts *ThinkingOptions
 	CacheEnabled bool
+
+	// ActiveCtx, if set, is used as the context for streaming HTTP requests.
+	ActiveCtx context.Context
+}
+
+// SetActiveCtx sets the context used for streaming HTTP requests.
+func (c *AnthropicClient) SetActiveCtx(ctx context.Context) {
+	c.ActiveCtx = ctx
 }
 
 type ThinkingOptions struct {
@@ -101,6 +109,9 @@ func (c *AnthropicClient) StreamChatWithOptions(model string, messages []types.M
 	}
 
 	ctx := context.Background()
+	if c.ActiveCtx != nil {
+		ctx = c.ActiveCtx
+	}
 	stream := c.client.Messages.NewStreaming(ctx, params)
 
 	events := make(chan types.StreamEvent, 16)

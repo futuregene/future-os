@@ -194,11 +194,10 @@ func TestRunStreamingWithMessages_AbortSignal(t *testing.T) {
 	}
 	_, _, err := l.RunStreamingWithMessages(ctx, messages, nil)
 
-	if err == nil {
-		t.Fatal("expected error from cancelled context, got nil")
-	}
-	if !strings.Contains(err.Error(), "context cancelled") {
-		t.Errorf("error should mention context cancelled, got: %v", err)
+	// After the interrupt refactor, a cancelled context with no steering
+	// messages returns nil error (clean interrupt exit), not an error.
+	if err != nil {
+		t.Fatalf("expected nil from clean interrupt, got: %v", err)
 	}
 }
 

@@ -34,9 +34,11 @@ type ToolCallFn struct {
 
 // Usage tracks token consumption from the API response
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens      int `json:"prompt_tokens"`
+	CompletionTokens  int `json:"completion_tokens"`
+	TotalTokens       int `json:"total_tokens"`
+	CacheReadTokens   int `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens  int `json:"cache_write_tokens,omitempty"`
 }
 
 // StreamEvent is emitted during streaming.

@@ -23,11 +23,14 @@ func Run(
 	sess *session.Session,
 	initialPrompt string,
 	modelStr, baseURL string,
+	skills []string,
+	extensions []string,
+	thinkingLevel string,
 ) error {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return runCLI(agt, sess, initialPrompt)
 	}
-	return runBubbleTea(agt, sessMgr, sess, initialPrompt, modelStr, baseURL)
+	return runBubbleTea(agt, sessMgr, sess, initialPrompt, modelStr, baseURL, skills, extensions, thinkingLevel)
 }
 
 // runBubbleTea launches the Bubble Tea interactive TUI.
@@ -37,12 +40,12 @@ func runBubbleTea(
 	sess *session.Session,
 	initialPrompt string,
 	modelStr, baseURL string,
+	skills []string,
+	extensions []string,
+	thinkingLevel string,
 ) error {
 	theme := DefaultTheme()
-	app := NewAppModel(agt, sessMgr, sess, theme)
-
-	// Set session info on footer
-	app.footer.SetSession(sess.CWD, "", "", modelStr, "")
+	app := NewAppModel(agt, sessMgr, sess, theme, modelStr, skills, extensions, thinkingLevel)
 
 	p := tea.NewProgram(
 		&app,

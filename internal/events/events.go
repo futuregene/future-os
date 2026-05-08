@@ -121,10 +121,11 @@ func AgentEnd(reason string, usage *types.Usage) AgentEvent {
 	data := map[string]interface{}{"reason": reason}
 	if usage != nil {
 		data["usage"] = map[string]int{
-			"input_tokens":    usage.PromptTokens,
-			"output_tokens":   usage.CompletionTokens,
-			"cache_tokens":    0,
-			"total_tokens":    usage.TotalTokens,
+			"input_tokens":       usage.PromptTokens,
+			"output_tokens":      usage.CompletionTokens,
+			"cache_read_tokens":  usage.CacheReadTokens,
+			"cache_write_tokens": usage.CacheWriteTokens,
+			"total_tokens":       usage.TotalTokens,
 		}
 	}
 	return AgentEvent{Type: "agent_end", Data: data}
@@ -251,13 +252,14 @@ func ToolEnd(name, result, toolErr string, durationMs int64) AgentEvent {
 }
 
 // UsageEvent creates a usage event.
-func UsageEvent(inputTokens, outputTokens, cacheTokens int) AgentEvent {
+func UsageEvent(inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens int) AgentEvent {
 	return AgentEvent{
 		Type: "usage",
 		Data: map[string]interface{}{
-			"input_tokens":  inputTokens,
-			"output_tokens": outputTokens,
-			"cache_tokens":  cacheTokens,
+			"input_tokens":        inputTokens,
+			"output_tokens":       outputTokens,
+			"cache_read_tokens":   cacheReadTokens,
+			"cache_write_tokens":  cacheWriteTokens,
 		},
 	}
 }
@@ -314,7 +316,8 @@ func EmitStreamingEvents(stream <-chan types.StreamEvent, bus *EventBus) {
 				bus.Emit(UsageEvent(
 					evt.Usage.PromptTokens,
 					evt.Usage.CompletionTokens,
-					0, // cache tokens not tracked in StreamEvent
+					evt.Usage.CacheReadTokens,
+					evt.Usage.CacheWriteTokens,
 				))
 			}
 		case "error":

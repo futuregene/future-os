@@ -28,6 +28,15 @@ type Client struct {
 	OnResponse         func(statusCode int, headers map[string][]string)
 	IsCloudflare       bool
 	IsCopilot          bool
+
+	// ActiveCtx, if set, is used as the context for streaming HTTP requests.
+	// When cancelled, the HTTP request is aborted. Set by agent loop for interrupt support.
+	ActiveCtx context.Context
+}
+
+// SetActiveCtx sets the context used for streaming HTTP requests.
+func (c *Client) SetActiveCtx(ctx context.Context) {
+	c.ActiveCtx = ctx
 }
 
 func NewClient(baseURL, apiKey string) *Client {
@@ -63,6 +72,24 @@ func (c *Client) StreamChat(model string, messages []types.Message, tools []type
 		Tools:    convertToOpenAITools(tools),
 	}
 
+	// Thinking / reasoning control (DeepSeek, o-series models, etc.)
+	if c.ThinkingBudget > 0 {
+		// Enable thinking with budget (some providers use "thinking", others "reasoning_effort")
+		params.SetExtraFields(map[string]any{
+			"thinking": map[string]any{
+				"type":          "enabled",
+				"budget_tokens": c.ThinkingBudget,
+			},
+		})
+	} else if c.ThinkingBudget == 0 && c.ReasoningEffort == "" {
+		// Explicitly disable thinking. Some APIs (DeepSeek) check for "enabled" vs missing key.
+		params.SetExtraFields(map[string]any{
+			"thinking": map[string]any{
+				"type": "disabled",
+			},
+		})
+	}
+
 	// ToolChoice
 	if c.ToolChoice != nil {
 		switch v := c.ToolChoice.(type) {
@@ -82,6 +109,9 @@ func (c *Client) StreamChat(model string, messages []types.Message, tools []type
 	}
 
 	ctx := context.Background()
+	if c.ActiveCtx != nil {
+		ctx = c.ActiveCtx
+	}
 	stream := c.client.Chat.Completions.NewStreaming(ctx, params)
 
 	events := make(chan types.StreamEvent, 16)
@@ -103,13 +133,25 @@ func (c *Client) streamFromSDK(stream *ssestream.Stream[openai.ChatCompletionChu
 
 		// Usage
 		if chunk.Usage.TotalTokens > 0 {
+			usage := &types.Usage{
+				PromptTokens:     int(chunk.Usage.PromptTokens),
+				CompletionTokens: int(chunk.Usage.CompletionTokens),
+				TotalTokens:      int(chunk.Usage.TotalTokens),
+			}
+			// Try to extract cache tokens from ExtraFields (DeepSeek / Anthropic)
+			if cr, ok := chunk.Usage.JSON.ExtraFields["cache_read_input_tokens"]; ok {
+				if v, err := strconv.Atoi(fmt.Sprint(cr.Raw())); err == nil {
+					usage.CacheReadTokens = v
+				}
+			}
+			if cw, ok := chunk.Usage.JSON.ExtraFields["cache_creation_input_tokens"]; ok {
+				if v, err := strconv.Atoi(fmt.Sprint(cw.Raw())); err == nil {
+					usage.CacheWriteTokens = v
+				}
+			}
 			events <- types.StreamEvent{
-				Type: "usage",
-				Usage: &types.Usage{
-					PromptTokens:     int(chunk.Usage.PromptTokens),
-					CompletionTokens: int(chunk.Usage.CompletionTokens),
-					TotalTokens:      int(chunk.Usage.TotalTokens),
-				},
+				Type:  "usage",
+				Usage: usage,
 			}
 		}
 

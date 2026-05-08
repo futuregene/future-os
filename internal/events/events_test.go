@@ -367,7 +367,7 @@ func TestToolEndWithError(t *testing.T) {
 }
 
 func TestUsageEvent(t *testing.T) {
-	evt := UsageEvent(100, 50, 10)
+	evt := UsageEvent(100, 50, 10, 5)
 	if evt.Type != "usage" {
 		t.Errorf("type = %s", evt.Type)
 	}
@@ -377,8 +377,11 @@ func TestUsageEvent(t *testing.T) {
 	if evt.Data["output_tokens"] != 50 {
 		t.Errorf("output_tokens = %v", evt.Data["output_tokens"])
 	}
-	if evt.Data["cache_tokens"] != 10 {
-		t.Errorf("cache_tokens = %v", evt.Data["cache_tokens"])
+	if evt.Data["cache_read_tokens"] != 10 {
+		t.Errorf("cache_read_tokens = %v", evt.Data["cache_read_tokens"])
+	}
+	if evt.Data["cache_write_tokens"] != 5 {
+		t.Errorf("cache_write_tokens = %v", evt.Data["cache_write_tokens"])
 	}
 }
 

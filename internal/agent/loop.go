@@ -61,6 +61,10 @@ type Loop struct {
 
 	// ParallelTools enables concurrent execution of multiple tool calls.
 	ParallelTools bool
+
+	// interruptFn is set during streaming to allow external interruption.
+	interruptFn context.CancelFunc
+	mu          sync.Mutex
 }
 
 // NewLoop creates a new agent loop with defaults
@@ -86,6 +90,22 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 		return "", messages, fmt.Errorf("agent: last message must not be from assistant (the model responds next)")
 	}
 
+	// Save parent context for restarts on interrupt
+	baseCtx := ctx
+
+	// Create cancellable context for interrupt support
+	ctx, cancel := context.WithCancel(baseCtx)
+	defer cancel()
+
+	l.mu.Lock()
+	l.interruptFn = cancel
+	l.mu.Unlock()
+	defer func() {
+		l.mu.Lock()
+		l.interruptFn = nil
+		l.mu.Unlock()
+	}()
+
 	// Emit agent_start event
 	if l.EventBus != nil {
 		l.EventBus.Emit(events.AgentStart(l.SessionID, l.Model, ""))
@@ -103,21 +123,29 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 
 	var lastError error
 	for turn := 0; turn < maxTurns; turn++ {
-		// Check cancellation / abort signal before each turn
+		// Drain steering queue FIRST (before checking context cancellation).
+		// This ensures interrupt messages are not lost when context is cancelled.
+		steeringBefore := len(l.SteeringQueue)
+		messages = l.drainSteering(messages)
+
+		// Check cancellation: only exit if no steering was just drained.
+		// If steering was drained, continue the turn to process the interrupt message.
 		if err := ctx.Err(); err != nil {
-			if l.EventBus != nil {
-				l.EventBus.Emit(events.AgentEnd("cancelled", nil))
+			if steeringBefore == 0 {
+				// Pure interrupt (no message) → exit cleanly
+				if l.EventBus != nil {
+					l.EventBus.Emit(events.AgentEnd("interrupted", nil))
+				}
+				return "", messages, nil
 			}
-			return "", messages, fmt.Errorf("agent: context cancelled at turn %d: %w", turn, err)
+			// Steering message was queued → create fresh context and continue
+			ctx = l.setupTurnContext(baseCtx)
 		}
 
 		// Emit turn_start
 		if l.EventBus != nil {
 			l.EventBus.Emit(events.TurnStart(turn))
 		}
-
-		// Drain steering queue and inject as user messages
-		messages = l.drainSteering(messages)
 
 		// Apply context transform if configured
 		workMessages := messages
@@ -128,6 +156,11 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 		// Emit message_start for assistant
 		if l.EventBus != nil {
 			l.EventBus.Emit(events.MessageStart("assistant"))
+		}
+
+		// Wire interrupt context to LLM client for HTTP request cancellation
+		if cl, ok := l.Provider.(interface{ SetActiveCtx(context.Context) }); ok {
+			cl.SetActiveCtx(ctx)
 		}
 
 		eventsCh, err := l.Provider.StreamChat(l.Model, workMessages, toolDefs, l.SystemPrompt)
@@ -160,14 +193,23 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 			if l.Verbose {
 				fmt.Fprintf(os.Stderr, "\n%s[thinking]%s ", cMagenta, cReset)
 			}
+			if l.EventBus != nil {
+				l.EventBus.Emit(events.ThinkingStart())
+			}
 		case "thinking_delta":
 			reasoningText += event.Text
 			if l.Verbose {
 				fmt.Fprint(os.Stderr, event.Text)
 			}
+			if l.EventBus != nil {
+				l.EventBus.Emit(events.ThinkingDelta(event.Text))
+			}
 		case "thinking_end":
 			if l.Verbose {
 				fmt.Fprintln(os.Stderr)
+			}
+			if l.EventBus != nil {
+				l.EventBus.Emit(events.ThinkingEnd())
 			}
 		case "text", "text_delta":
 			fullText += event.Text
@@ -199,7 +241,8 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 						l.EventBus.Emit(events.UsageEvent(
 							event.Usage.PromptTokens,
 							event.Usage.CompletionTokens,
-							0,
+							event.Usage.CacheReadTokens,
+							event.Usage.CacheWriteTokens,
 						))
 					}
 				}
@@ -215,6 +258,14 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 
 		// Check for stream errors before processing results
 		if lastError != nil {
+			// If steering messages are pending, the user interrupted during
+			// streaming. Drain steering and restart with a fresh context.
+			if len(l.SteeringQueue) > 0 {
+				messages = l.drainSteering(messages)
+				lastError = nil
+				ctx = l.setupTurnContext(baseCtx)
+				continue
+			}
 			if l.EventBus != nil {
 				l.EventBus.Emit(events.AgentEnd("error", nil))
 			}
@@ -488,6 +539,63 @@ func toolLog(name string, args json.RawMessage, err error, d time.Duration) {
 	} else {
 		fmt.Fprintf(os.Stderr, "\n%s%s%s %s %-12s %6s\n", color, tag, cReset, "✓", name, d.Round(time.Millisecond))
 	}
+}
+
+// Interrupt cancels the current streaming run and queues a steering message.
+// This implements the TS pi interrupt pattern: push to SteeringQueue, then abort
+// the current LLM stream. The agent loop will pick up the steering message
+// at the start of the next turn after the current tool calls complete.
+//
+// DEPRECATED: Use Steer(text) for "inject without abort" or Abort() for "abort without message".
+// Interrupt is kept for backward compatibility (steer + abort).
+func (l *Loop) Interrupt(message string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// Queue the steering message
+	select {
+	case l.SteeringQueue <- message:
+	default:
+		// Queue full, drop
+	}
+
+	// Cancel the current context if streaming
+	if l.interruptFn != nil {
+		l.interruptFn()
+		l.interruptFn = nil
+	}
+}
+
+// Steer injects a steering message into the agent loop without aborting
+// the current LLM stream. The message will be picked up at the start
+// of the next turn. TS pi-mono equivalent: Enter during streaming.
+func (l *Loop) Steer(message string) {
+	select {
+	case l.SteeringQueue <- message:
+	default:
+	}
+}
+
+// Abort cancels the current LLM stream without queuing a message.
+// Useful for Escape key during streaming (pure abort, no new message).
+func (l *Loop) Abort() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.interruptFn != nil {
+		l.interruptFn()
+		l.interruptFn = nil
+	}
+}
+
+// setupTurnContext creates a fresh cancellable context from baseCtx
+// and registers its cancel function as the interrupt target.
+func (l *Loop) setupTurnContext(baseCtx context.Context) context.Context {
+	ctx, cancel := context.WithCancel(baseCtx)
+	l.mu.Lock()
+	l.interruptFn = cancel
+	l.mu.Unlock()
+	return ctx
 }
 
 func runeTruncate(s string, n int) string {
