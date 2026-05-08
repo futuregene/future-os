@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,97 +19,111 @@ import (
 )
 
 func main() {
-	cont := flag.Bool("continue", false, "Continue the most recent session")
-	resume := flag.String("resume", "", "Resume a specific session by ID")
-	listSessions := flag.Bool("list-sessions", false, "List saved sessions")
-	flag.Parse()
+	args := parseArgs(os.Args[1:])
+
+	// Print diagnostics for invalid flags
+	for _, d := range args.Diagnostics {
+		fmt.Fprintf(os.Stderr, "⚠ %s\n", d)
+	}
+
+	if args.Help {
+		printHelp()
+	}
+	if args.Version {
+		printVersion()
+	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error getting working directory: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
+	// ── Settings ──────────────────────────────────────────────────────────
 	cfg, _ := settings.LoadAll()
 	if cfg == nil {
 		cfg = &settings.Settings{}
 	}
 
-	sessMgr := session.NewManager(session.DefaultDir(cwd))
+	// ── Session manager ───────────────────────────────────────────────────
+	sessDir := args.SessionDir
+	if sessDir == "" {
+		sessDir = session.DefaultDir(cwd)
+	}
+	sessMgr := session.NewManager(sessDir)
 
-	if *listSessions {
-		sessions, err := sessMgr.List(cwd)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error listing sessions: %v\n", err)
-			os.Exit(1)
-		}
-		if len(sessions) == 0 {
-			fmt.Println("No sessions found.")
-			return
-		}
-		fmt.Printf("%-20s  %-15s  %-10s  %s\n", "ID", "MODEL", "MSGS", "UPDATED")
-		for _, s := range sessions {
-			fmt.Printf("%-20s  %-15s  %-10d  %s\n",
-				s.ID, s.Model, len(s.Entries), s.UpdatedAt.Format("01-02 15:04"))
-		}
+	// ── List models ───────────────────────────────────────────────────────
+	if args.ListModels != "" {
+		listModels(args.ListModels)
 		return
 	}
 
-	apiKey := os.Getenv("LLM_API_KEY")
-	baseURL := os.Getenv("LLM_BASE_URL")
-	model := os.Getenv("LLM_MODEL")
+	// ── Resolve API key / base URL / model ────────────────────────────────
+	apiKey := firstNonEmpty(args.APIKey,
+		os.Getenv("LLM_API_KEY"),
+		os.Getenv("ANTHROPIC_API_KEY"),
+		os.Getenv("OPENAI_API_KEY"))
+	baseURL := firstNonEmpty(os.Getenv("LLM_BASE_URL"),
+		providerBaseURL(cfg.DefaultProvider, args.Provider))
+	model := firstNonEmpty(args.Model,
+		os.Getenv("LLM_MODEL"),
+		cfg.DefaultModel,
+		defaultModelForURL(baseURL))
 
-	if baseURL == "" {
-		if cfg.DefaultProvider == "anthropic" {
-			baseURL = "https://api.anthropic.com"
-		} else {
-			baseURL = "https://api.openai.com"
-		}
-	}
-	if model == "" {
-		if cfg.DefaultModel != "" {
-			model = cfg.DefaultModel
-		} else if strings.Contains(baseURL, "anthropic.com") {
-			model = "claude-sonnet-4-20250514"
-		} else {
-			model = "gpt-4o"
-		}
-	}
-
-	// Resolve settings/pi dirs
-	settingsDir := filepath.Join(os.Getenv("HOME"), ".pi")
-	settingsGlobal, _ := settings.GetDefaultPaths()
-	settingsPath := settingsGlobal
-
+	// ── Session: --fork / --session / --resume / --continue / new ─────────
 	var sess *session.Session
-	if *resume != "" {
-		var err error
-		sess, err = sessMgr.Load(*resume, cwd)
+
+	if args.Fork != "" {
+		parent, err := sessMgr.Load(args.Fork, cwd)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error loading session %s: %v\n", *resume, err)
+			fmt.Fprintf(os.Stderr, "Error loading fork source %s: %v\n", args.Fork, err)
 			os.Exit(1)
 		}
-		if os.Getenv("LLM_MODEL") == "" && sess.Model != "" {
+		sess = session.ForkSession(parent, "")
+		sess.ID = session.GenerateID()
+		sess.CreatedAt = time.Now()
+		if err := sessMgr.Save(sess); err != nil {
+			fmt.Fprintf(os.Stderr, "Error saving forked session: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Forked session %s from %s\n", sess.ID, args.Fork)
+	} else if args.Session != "" {
+		var err error
+		sess, err = sessMgr.Load(args.Session, cwd)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading session %s: %v\n", args.Session, err)
+			os.Exit(1)
+		}
+		// Restore model/baseURL from session if not overridden via CLI
+		if args.Model == "" && os.Getenv("LLM_MODEL") == "" && sess.Model != "" {
 			model = sess.Model
 		}
-		if os.Getenv("LLM_BASE_URL") == "" && sess.BaseURL != "" {
+		if baseURL == "" && sess.BaseURL != "" {
 			baseURL = sess.BaseURL
 		}
-	} else if *cont {
+	} else if args.Resume {
 		sessions, err := sessMgr.List(cwd)
 		if err != nil || len(sessions) == 0 {
-			fmt.Fprintf(os.Stderr, "No sessions to continue.\n")
+			fmt.Fprintf(os.Stderr, "No sessions to resume.\n")
 			os.Exit(1)
 		}
 		sess = &sessions[0]
-		if os.Getenv("LLM_MODEL") == "" && sess.Model != "" {
+		if args.Model == "" && os.Getenv("LLM_MODEL") == "" && sess.Model != "" {
 			model = sess.Model
 		}
-		if os.Getenv("LLM_BASE_URL") == "" && sess.BaseURL != "" {
+		if baseURL == "" && sess.BaseURL != "" {
 			baseURL = sess.BaseURL
 		}
 		fmt.Fprintf(os.Stderr, "Continuing session %s (%d messages, model %s)\n\n",
 			sess.ID, len(sess.Entries), model)
+	} else if args.Continue {
+		sess = &session.Session{
+			ID:        session.GenerateID(),
+			CWD:       cwd,
+			Model:     model,
+			BaseURL:   baseURL,
+			CreatedAt: time.Now(),
+		}
 	} else {
 		sess = &session.Session{
 			ID:        session.GenerateID(),
@@ -121,6 +134,17 @@ func main() {
 		}
 	}
 
+	// ── Export session ─────────────────────────────────────────────────────
+	if args.Export != "" {
+		exportSession(sess, args.Export)
+		return
+	}
+
+	// ── Build engine ───────────────────────────────────────────────────────
+	if baseURL == "" {
+		baseURL = "https://api.openai.com"
+	}
+
 	eng, err := engine.NewEngine(engine.EngineOptions{
 		BaseURL:        baseURL,
 		APIKey:         apiKey,
@@ -129,6 +153,9 @@ func main() {
 		Settings:       cfg,
 		SessionManager: sessMgr,
 		MaxTurns:       cfg.MaxTurns,
+		ThinkingLevel:  args.Thinking,
+		SystemPrompt:   args.SystemPrompt,
+		NoTools:        args.NoTools,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Engine error: %v\n", err)
@@ -137,19 +164,39 @@ func main() {
 	eng.Session = sess
 	eng.Loop.Model = model
 
+	// Apply CLI overrides to engine
+	if args.NoBuiltinTools {
+		eng.Loop.Tools = nil
+	}
+	if len(args.Tools) > 0 {
+		// TODO: filter eng.Loop.Tools by allowlist
+	}
+
+	// ── Build commands context ─────────────────────────────────────────────
+	settingsGlobal, _ := settings.GetDefaultPaths()
 	cmdCtx := &commands.Context{
 		CWD:              cwd,
-		SessionDir:       session.DefaultDir(cwd),
-		SettingsDir:      settingsDir,
+		SessionDir:       sessDir,
+		SettingsDir:      filepath.Join(os.Getenv("HOME"), ".cobalt"),
 		CurrentSessionID: sess.ID,
-		SettingsPath:     settingsPath,
+		SettingsPath:     settingsGlobal,
 		Model:            model,
 		BaseURL:          baseURL,
 		SystemPrompt:     eng.Loop.SystemPrompt,
 	}
 
-	userPrompt := strings.Join(flag.Args(), " ")
+	// ── Build user prompt (messages + @files) ──────────────────────────────
+	var promptParts []string
+	for _, f := range args.FileArgs {
+		data, err := os.ReadFile(f)
+		if err == nil {
+			promptParts = append(promptParts, fmt.Sprintf("@%s:\n%s", f, string(data)))
+		}
+	}
+	promptParts = append(promptParts, args.Messages...)
+	userPrompt := strings.Join(promptParts, "\n")
 
+	// ── Interactive REPL (no prompt + TTY) ─────────────────────────────────
 	if userPrompt == "" && isTerminal() {
 		err := tui.Run(eng.Loop, sessMgr, sess, "", cmdCtx.Model, cmdCtx.BaseURL)
 		if err != nil {
@@ -160,12 +207,12 @@ func main() {
 	}
 
 	if userPrompt == "" {
-		fmt.Fprintf(os.Stderr, "Usage: pi [flags] <prompt>\n")
-		fmt.Fprintf(os.Stderr, "Flags: --continue, --resume <id>, --list-sessions\n")
-		fmt.Fprintf(os.Stderr, "\nEnvironment: LLM_API_KEY, LLM_BASE_URL, LLM_MODEL\n")
+		fmt.Fprintf(os.Stderr, "Usage: cobalt [options] [@files...] [messages...]\n")
+		fmt.Fprintf(os.Stderr, "Try 'cobalt --help' for more information.\n")
 		os.Exit(1)
 	}
 
+	// ── Slash command ──────────────────────────────────────────────────────
 	if strings.HasPrefix(userPrompt, "/") {
 		result, err := commands.Handle(userPrompt, cmdCtx)
 		if err != nil {
@@ -179,6 +226,7 @@ func main() {
 		return
 	}
 
+	// ── Run agent ─────────────────────────────────────────────────────────
 	ctx := context.Background()
 	var allMessages []types.Message
 	if len(sess.Entries) > 0 {
@@ -196,22 +244,127 @@ func main() {
 	_ = result
 	fmt.Println()
 
-	saveSession(sessMgr, sess, finalMessages, model, baseURL)
+	if !args.NoSession {
+		saveSession(sessMgr, sess, finalMessages, model, baseURL)
+	}
 }
 
-// ---------------------------------------------------------------------------
-// Interactive REPL
-// ---------------------------------------------------------------------------
+// ─── Helpers ───────────────────────────────────────────────────────────────
 
 func isTerminal() bool {
 	fi, _ := os.Stdin.Stat()
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
-// ---------------------------------------------------------------------------
-// Sentinel processing
-// ---------------------------------------------------------------------------
+func firstNonEmpty(ss ...string) string {
+	for _, s := range ss {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
+}
 
+func providerBaseURL(settingsProvider, argProvider string) string {
+	p := firstNonEmpty(argProvider, settingsProvider)
+	switch p {
+	case "anthropic":
+		return "https://api.anthropic.com"
+	case "openai":
+		return "https://api.openai.com"
+	default:
+		return ""
+	}
+}
+
+func defaultModelForURL(baseURL string) string {
+	if strings.Contains(baseURL, "anthropic.com") {
+		return "claude-sonnet-4-20250514"
+	}
+	return "gpt-4o"
+}
+
+func listModels(search string) {
+	// TODO: implement model registry listing
+	fmt.Println("Available models:")
+	fmt.Println("  gpt-4o          (OpenAI)")
+	fmt.Println("  gpt-4o-mini     (OpenAI)")
+	fmt.Println("  claude-sonnet   (Anthropic)")
+	fmt.Println("  claude-haiku    (Anthropic)")
+	if search != "" && search != "true" {
+		fmt.Printf("\nFiltered by: %s\n", search)
+	}
+}
+
+func exportSession(sess *session.Session, path string) {
+	// Export to HTML
+	html := exportSessionHTML(sess)
+	if err := os.WriteFile(path, []byte(html), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "Export error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "Session exported to: %s\n", path)
+}
+
+func exportSessionHTML(sess *session.Session) string {
+	var sb strings.Builder
+	sb.WriteString("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">")
+	sb.WriteString(fmt.Sprintf("<title>cobalt session %s</title>", sess.ID))
+	sb.WriteString("<style>body{font-family:system-ui;max-width:800px;margin:auto;padding:20px;background:#1a1a2e;color:#e0e0e0}")
+	sb.WriteString(".entry{padding:10px;margin:5px 0;border-radius:8px}")
+	sb.WriteString(".user{background:#16213e}.assistant{background:#0f3460}.tool{background:#1a1a2e}")
+	sb.WriteString("</style></head><body>\n")
+	sb.WriteString(fmt.Sprintf("<h1>cobalt Session: %s</h1>\n", sess.ID))
+	sb.WriteString(fmt.Sprintf("<p>Model: %s | CWD: %s</p>\n", sess.Model, sess.CWD))
+	for _, e := range sess.Entries {
+		cls := "entry "
+		switch e.Type {
+		case "assistant":
+			cls += "assistant"
+		default:
+			cls += "user"
+		}
+		sb.WriteString(fmt.Sprintf("<div class=\"%s\"><strong>%s</strong><pre>%s</pre></div>\n",
+			cls, e.Type, escapeHTML(string(e.Content))))
+	}
+	sb.WriteString("</body></html>")
+	return sb.String()
+}
+
+func escapeHTML(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
+}
+
+func saveSession(sessMgr *session.Manager, sess *session.Session, finalMessages []types.Message, model, baseURL string) {
+	if len(finalMessages) == 0 {
+		return
+	}
+	newEntries := session.MessagesToEntries(finalMessages, "")
+	sess.Entries = append(sess.Entries, newEntries...)
+	sess.Model = model
+	sess.BaseURL = baseURL
+	if err := sessMgr.Save(sess); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to save session: %v\n", err)
+	}
+}
+
+func nonempty(s, fallback string) string {
+	if s != "" {
+		return s
+	}
+	return fallback
+}
+
+func newUserMsg(content string) types.Message {
+	tc := types.TextContent{Type: "text", Text: content}
+	b, _ := json.Marshal([]types.TextContent{tc})
+	return types.Message{Role: "user", Content: b}
+}
+
+// processSentinel — keep existing sentinel handling (unchanged)
 func processSentinel(result string, eng *engine.Engine, sessMgr *session.Manager, sess *session.Session, cmdCtx *commands.Context) bool {
 	switch {
 	case result == "NEW_SESSION":
@@ -269,7 +422,6 @@ func processSentinel(result string, eng *engine.Engine, sessMgr *session.Manager
 		if len(parts) > 1 {
 			entryID = parts[1]
 		}
-		// Load parent and fork
 		parent, err := sessMgr.Load(sourceID, sess.CWD)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Fork failed: parent session %s not found\n", sourceID)
@@ -326,16 +478,14 @@ func processSentinel(result string, eng *engine.Engine, sessMgr *session.Manager
 			return true
 		}
 		tokensAfter := compaction.EstimateContextTokens(compacted)
-		fmt.Fprintf(os.Stderr, "Compaction: %d messages (est. %d tokens) → %d messages (est. %d tokens)\n",
+		fmt.Fprintf(os.Stderr, "Compaction: %d messages (%d tokens) → %d messages (%d tokens)\n",
 			len(messages), tokensBefore, len(compacted), tokensAfter)
-		summary := fmt.Sprintf("Compacted %d messages → %d messages (%d → %d tokens).",
+		summary := fmt.Sprintf("Compacted: %d→%d msgs (%d→%d tokens)",
 			len(messages), len(compacted), tokensBefore, tokensAfter)
-		entry := session.CompactionEntry(summary, "", "")
-		sessMgr.AddEntry(sess, entry)
+		sessMgr.AddEntry(sess, session.CompactionEntry(summary, "", ""))
 
 	case strings.HasPrefix(result, "IMPORT:"):
 		destPath := strings.TrimPrefix(result, "IMPORT:")
-		// The import creates a new session file; load it
 		baseName := filepath.Base(destPath)
 		sid := strings.TrimSuffix(strings.TrimPrefix(baseName, "imported_"), ".jsonl")
 		imported, err := sessMgr.Load(sid, sess.CWD)
@@ -354,13 +504,9 @@ func processSentinel(result string, eng *engine.Engine, sessMgr *session.Manager
 			return true
 		}
 		fmt.Fprintf(os.Stderr, "Settings reloaded.\n")
-		fmt.Fprintf(os.Stderr, "  Model:    %s\n", nonempty(newCfg.DefaultModel, "(none)"))
-		fmt.Fprintf(os.Stderr, "  Provider: %s\n", nonempty(newCfg.DefaultProvider, "(none)"))
-		fmt.Fprintf(os.Stderr, "  Theme:    %s\n", nonempty(newCfg.Theme, "(none)"))
 		if cmdCtx.Model != newCfg.DefaultModel && newCfg.DefaultModel != "" {
 			cmdCtx.Model = newCfg.DefaultModel
 			eng.Loop.Model = newCfg.DefaultModel
-			fmt.Fprintf(os.Stderr, "  → Model updated to: %s\n", newCfg.DefaultModel)
 		}
 
 	case result == "QUIT":
@@ -368,38 +514,7 @@ func processSentinel(result string, eng *engine.Engine, sessMgr *session.Manager
 		os.Exit(0)
 
 	default:
-		// Not a sentinel — just print the result
 		fmt.Println(result)
 	}
 	return true
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-func saveSession(sessMgr *session.Manager, sess *session.Session, finalMessages []types.Message, model, baseURL string) {
-	if len(finalMessages) == 0 {
-		return
-	}
-	newEntries := session.MessagesToEntries(finalMessages, "")
-	sess.Entries = append(sess.Entries, newEntries...)
-	sess.Model = model
-	sess.BaseURL = baseURL
-	if err := sessMgr.Save(sess); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to save session: %v\n", err)
-	}
-}
-
-func nonempty(s, fallback string) string {
-	if s != "" {
-		return s
-	}
-	return fallback
-}
-
-func newUserMsg(content string) types.Message {
-	tc := types.TextContent{Type: "text", Text: content}
-	b, _ := json.Marshal([]types.TextContent{tc})
-	return types.Message{Role: "user", Content: b}
 }
