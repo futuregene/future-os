@@ -49,7 +49,7 @@ func DefaultKeyMap() *KeyMap {
 			{Key: "/settings", Description: "Interactive settings", Category: "global"},
 			{Key: "/theme", Description: "Change theme", Category: "global"},
 			{Key: "/hotkeys", Description: "Show this help", Category: "global"},
-			{Key: "/quit", Description: "Exit cobalt", Category: "global"},
+			{Key: "/quit", Description: "Exit xihu", Category: "global"},
 		},
 	}
 }

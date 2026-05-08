@@ -262,12 +262,17 @@ func splitAndTrim(s, sep string) []string {
 	return result
 }
 
+// NoThinkOverride returns true if --thinking was explicitly set to override defaults.
+func (a *Args) NoThinkOverride() bool {
+	return a.Thinking == "off"
+}
+
 // printHelp prints the full help text.
 func printHelp() {
-	fmt.Print(`cobalt — AI coding assistant with read, bash, edit, write tools
+	fmt.Print(`xihu — AI coding assistant with read, bash, edit, write tools
 
 Usage:
-  cobalt [options] [@files...] [messages...]
+  xihu [options] [@files...] [messages...]
 
 Options:
   --provider <name>              Provider name (e.g. openai, anthropic)
@@ -310,28 +315,28 @@ Options:
 
 Examples:
   # Interactive mode
-  cobalt
+  xihu
 
   # Interactive mode with initial prompt
-  cobalt "List all .go files in src/"
+  xihu "List all .go files in src/"
 
   # Include files in initial message
-  cobalt @prompt.md "Read this and explain"
+  xihu @prompt.md "Read this and explain"
 
   # Non-interactive mode (process and exit)
-  cobalt -p "List all .go files in src/"
+  xihu -p "List all .go files in src/"
 
   # Continue previous session
-  cobalt --continue "What did we discuss?"
+  xihu --continue "What did we discuss?"
 
   # Use different model
-  cobalt --provider openai --model gpt-4o-mini "Help me refactor"
+  xihu --provider openai --model gpt-4o-mini "Help me refactor"
 
   # Read-only mode (no file modifications)
-  cobalt --tools read,grep,find,ls -p "Review the code"
+  xihu --tools read,grep,find,ls -p "Review the code"
 
   # Export a session to HTML
-  cobalt --export session.jsonl output.html
+  xihu --export session.jsonl output.html
 
 Environment:
   LLM_API_KEY                     API key for LLM provider
@@ -356,6 +361,6 @@ Built-in Tools:
 
 // printVersion prints version info.
 func printVersion() {
-	fmt.Println("cobalt v0.3.0")
+	fmt.Println("xihu v0.3.0")
 	os.Exit(0)
 }

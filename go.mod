@@ -1,4 +1,4 @@
-module github.com/huichen/cobalt
+module github.com/huichen/xihu
 
 go 1.26.1
 

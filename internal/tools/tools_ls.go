@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/huichen/cobalt/pkg/types"
+	"github.com/huichen/xihu/pkg/types"
 )
 
 // LsTool lists directory contents: dirs first (with / suffix), alphabetical,

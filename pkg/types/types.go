@@ -9,6 +9,9 @@ type Message struct {
 	ToolCalls []ToolCall    `json:"tool_calls,omitempty"`
 	ToolCallID string       `json:"tool_call_id,omitempty"`
 	Name       string       `json:"name,omitempty"`
+	// ReasoningContent preserves thinking/reasoning tokens that must be
+	// echoed back on subsequent API requests (required by DeepSeek, o-series, etc.)
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 // TextContent is a text content block

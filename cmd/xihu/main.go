@@ -9,13 +9,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huichen/cobalt/internal/commands"
-	"github.com/huichen/cobalt/internal/compaction"
-	"github.com/huichen/cobalt/internal/engine"
-	"github.com/huichen/cobalt/internal/session"
-	"github.com/huichen/cobalt/internal/settings"
-	"github.com/huichen/cobalt/internal/tui"
-	"github.com/huichen/cobalt/pkg/types"
+	"github.com/huichen/xihu/internal/auth"
+	"github.com/huichen/xihu/internal/commands"
+	"github.com/huichen/xihu/internal/compaction"
+	"github.com/huichen/xihu/internal/engine"
+	"github.com/huichen/xihu/internal/prompt"
+	"github.com/huichen/xihu/internal/session"
+	"github.com/huichen/xihu/internal/settings"
+	"github.com/huichen/xihu/internal/skills"
+	"github.com/huichen/xihu/internal/tui"
+	"github.com/huichen/xihu/pkg/types"
 )
 
 func main() {
@@ -45,6 +48,9 @@ func main() {
 		cfg = &settings.Settings{}
 	}
 
+	// ── Auth ──────────────────────────────────────────────────────────────
+	authStore, _ := auth.LoadAuth()
+
 	// ── Session manager ───────────────────────────────────────────────────
 	sessDir := args.SessionDir
 	if sessDir == "" {
@@ -58,17 +64,57 @@ func main() {
 		return
 	}
 
-	// ── Resolve API key / base URL / model ────────────────────────────────
+	// ── Parse --model for provider/model:thinking format ──────────────────
+	resolvedModel, resolvedProvider, resolvedThinking := parseModelString(
+		args.Model,
+		cfg.DefaultModel,
+		cfg.DefaultProvider,
+		cfg.DefaultThinkingLevel,
+	)
+
+	// ── Resolve provider (CLI flag > model prefix > settings default) ─────
+	provider := firstNonEmpty(args.Provider, resolvedProvider, cfg.DefaultProvider)
+
+	// ── Resolve base URL ─────────────────────────────────────────────────
+	baseURL := firstNonEmpty(os.Getenv("LLM_BASE_URL"),
+		providerBaseURL(provider, args.Provider))
+
+	// ── Resolve API key (CLI > env vars > auth.json by provider) ──────────
 	apiKey := firstNonEmpty(args.APIKey,
 		os.Getenv("LLM_API_KEY"),
 		os.Getenv("ANTHROPIC_API_KEY"),
 		os.Getenv("OPENAI_API_KEY"))
-	baseURL := firstNonEmpty(os.Getenv("LLM_BASE_URL"),
-		providerBaseURL(cfg.DefaultProvider, args.Provider))
-	model := firstNonEmpty(args.Model,
+	if apiKey == "" && authStore != nil {
+		apiKey = authStore.Get(provider)
+	}
+	if apiKey == "" && authStore != nil {
+		apiKey = authStore.DefaultKey()
+	}
+
+	// ── Resolve model ────────────────────────────────────────────────────
+	model := firstNonEmpty(resolvedModel,
 		os.Getenv("LLM_MODEL"),
 		cfg.DefaultModel,
 		defaultModelForURL(baseURL))
+
+	// ── Resolve thinking (CLI > model suffix > settings) ─────────────────
+	thinking := firstNonEmpty(args.Thinking, resolvedThinking)
+	if thinking == "" && !args.NoThinkOverride() {
+		thinking = cfg.DefaultThinkingLevel
+	}
+
+	// ── Startup banner ───────────────────────────────────────────────────
+	if args.Verbose {
+		bannerModel := model
+		if provider != "" {
+			bannerModel = provider + "/" + model
+		}
+		fmt.Fprintf(os.Stderr, "\033[33m[model]\033[0m %s", bannerModel)
+		if thinking != "" && thinking != "off" {
+			fmt.Fprintf(os.Stderr, "  thinking: %s", thinking)
+		}
+		fmt.Fprintln(os.Stderr)
+	}
 
 	// ── Session: --fork / --session / --resume / --continue / new ─────────
 	var sess *session.Session
@@ -140,6 +186,32 @@ func main() {
 		return
 	}
 
+	// ── Discover skills ────────────────────────────────────────────────────
+	searchDirs := []string{skills.UserSkillsDir, skills.ProjectSkillsDir, skills.AgentsSkillsDir, skills.PiSkillsDir}
+	allSkills, _ := skills.DiscoverSkills(searchDirs, "user")
+	resolvedSkills := skills.ResolveCollisions(allSkills)
+
+	var promptSkills []prompt.Skill
+	for _, s := range resolvedSkills {
+		promptSkills = append(promptSkills, prompt.Skill{
+			Name:        s.Name,
+			Description: s.Description,
+			Location:    s.Path,
+		})
+	}
+
+	// ── Build system prompt ────────────────────────────────────────────────
+	customPrompt := firstNonEmpty(args.SystemPrompt, cfg.SystemPrompt)
+	appendText := strings.Join(args.AppendSystemPrompt, "\n")
+	builtPrompt := prompt.BuildPrompt(prompt.PromptOptions{
+		CustomPrompt:     customPrompt,
+		WorkingDirectory: cwd,
+		Date:             time.Now().Format("2006-01-02"),
+		Tools:            engine.CodingTools(),
+		Skills:           promptSkills,
+		AppendPrompt:     appendText,
+	})
+
 	// ── Build engine ───────────────────────────────────────────────────────
 	if baseURL == "" {
 		baseURL = "https://api.openai.com"
@@ -153,9 +225,10 @@ func main() {
 		Settings:       cfg,
 		SessionManager: sessMgr,
 		MaxTurns:       cfg.MaxTurns,
-		ThinkingLevel:  args.Thinking,
-		SystemPrompt:   args.SystemPrompt,
+		ThinkingLevel:  thinking,
+		SystemPrompt:   builtPrompt,
 		NoTools:        args.NoTools,
+		Verbose:        args.Verbose,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Engine error: %v\n", err)
@@ -177,7 +250,7 @@ func main() {
 	cmdCtx := &commands.Context{
 		CWD:              cwd,
 		SessionDir:       sessDir,
-		SettingsDir:      filepath.Join(os.Getenv("HOME"), ".cobalt"),
+		SettingsDir:      filepath.Join(os.Getenv("HOME"), ".xihu"),
 		CurrentSessionID: sess.ID,
 		SettingsPath:     settingsGlobal,
 		Model:            model,
@@ -207,8 +280,8 @@ func main() {
 	}
 
 	if userPrompt == "" {
-		fmt.Fprintf(os.Stderr, "Usage: cobalt [options] [@files...] [messages...]\n")
-		fmt.Fprintf(os.Stderr, "Try 'cobalt --help' for more information.\n")
+		fmt.Fprintf(os.Stderr, "Usage: xihu [options] [@files...] [messages...]\n")
+		fmt.Fprintf(os.Stderr, "Try 'xihu --help' for more information.\n")
 		os.Exit(1)
 	}
 
@@ -265,13 +338,41 @@ func firstNonEmpty(ss ...string) string {
 	return ""
 }
 
-func providerBaseURL(settingsProvider, argProvider string) string {
-	p := firstNonEmpty(argProvider, settingsProvider)
+func providerBaseURL(provider, fallbackProvider string) string {
+	p := firstNonEmpty(provider, fallbackProvider)
 	switch p {
 	case "anthropic":
 		return "https://api.anthropic.com"
 	case "openai":
 		return "https://api.openai.com"
+	case "deepseek":
+		return "https://api.deepseek.com"
+	case "dashscope", "dashscope-coding":
+		return "https://dashscope.aliyuncs.com/compatible-mode/v1"
+	case "google", "gemini":
+		return "https://generativelanguage.googleapis.com/v1beta/openai"
+	case "groq":
+		return "https://api.groq.com/openai/v1"
+	case "xai":
+		return "https://api.x.ai/v1"
+	case "openrouter":
+		return "https://openrouter.ai/api/v1"
+	case "together":
+		return "https://api.together.xyz/v1"
+	case "cerebras":
+		return "https://api.cerebras.ai/v1"
+	case "mistral":
+		return "https://api.mistral.ai/v1"
+	case "perplexity":
+		return "https://api.perplexity.ai"
+	case "fireworks":
+		return "https://api.fireworks.ai/inference/v1"
+	case "github-copilot":
+		return "https://api.githubcopilot.com"
+	case "azure-openai":
+		return "" // requires full endpoint; user must set LLM_BASE_URL
+	case "azure-openai-responses":
+		return "" // requires full endpoint; user must set LLM_BASE_URL
 	default:
 		return ""
 	}
@@ -284,8 +385,59 @@ func defaultModelForURL(baseURL string) string {
 	return "gpt-4o"
 }
 
+// parseModelString parses a --model flag into model, provider, and thinking parts.
+// Supports formats:
+//
+//	model                    → model only
+//	provider/model            → provider + model
+//	model:thinking            → model + thinking level
+//	provider/model:thinking   → all three
+func parseModelString(raw, defaultModel, defaultProvider, defaultThinking string) (model, provider, thinking string) {
+	if raw == "" {
+		return defaultModel, defaultProvider, defaultThinking
+	}
+
+	// Check for :thinking suffix
+	if idx := strings.LastIndex(raw, ":"); idx > 0 {
+		candidate := raw[idx+1:]
+		if validThinkingLevels[candidate] {
+			thinking = candidate
+			raw = raw[:idx]
+		}
+	}
+
+	// Check for provider/model prefix
+	if idx := strings.Index(raw, "/"); idx > 0 {
+		provider = raw[:idx]
+		model = raw[idx+1:]
+	} else {
+		model = raw
+	}
+
+	return model, provider, thinking
+}
+
 func listModels(search string) {
-	// TODO: implement model registry listing
+	cfg, _ := settings.LoadAll()
+	_ = search // TODO: filter by search pattern
+
+	if cfg != nil && len(cfg.EnabledModels) > 0 {
+		fmt.Fprintf(os.Stderr, "%-24s %s\n", "provider", "model")
+		fmt.Fprintf(os.Stderr, "%s\n", strings.Repeat("-", 60))
+		for _, m := range cfg.EnabledModels {
+			parts := strings.SplitN(m, "/", 2)
+			if len(parts) == 2 {
+				fmt.Fprintf(os.Stderr, "%-24s %s\n", parts[0], parts[1])
+			} else {
+				fmt.Fprintf(os.Stderr, "%-24s %s\n", "unknown", m)
+			}
+		}
+		if search != "" && search != "true" {
+			fmt.Fprintf(os.Stderr, "\nFiltered by: %s\n", search)
+		}
+		return
+	}
+
 	fmt.Println("Available models:")
 	fmt.Println("  gpt-4o          (OpenAI)")
 	fmt.Println("  gpt-4o-mini     (OpenAI)")
@@ -309,12 +461,12 @@ func exportSession(sess *session.Session, path string) {
 func exportSessionHTML(sess *session.Session) string {
 	var sb strings.Builder
 	sb.WriteString("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">")
-	sb.WriteString(fmt.Sprintf("<title>cobalt session %s</title>", sess.ID))
+	sb.WriteString(fmt.Sprintf("<title>xihu session %s</title>", sess.ID))
 	sb.WriteString("<style>body{font-family:system-ui;max-width:800px;margin:auto;padding:20px;background:#1a1a2e;color:#e0e0e0}")
 	sb.WriteString(".entry{padding:10px;margin:5px 0;border-radius:8px}")
 	sb.WriteString(".user{background:#16213e}.assistant{background:#0f3460}.tool{background:#1a1a2e}")
 	sb.WriteString("</style></head><body>\n")
-	sb.WriteString(fmt.Sprintf("<h1>cobalt Session: %s</h1>\n", sess.ID))
+	sb.WriteString(fmt.Sprintf("<h1>xihu Session: %s</h1>\n", sess.ID))
 	sb.WriteString(fmt.Sprintf("<p>Model: %s | CWD: %s</p>\n", sess.Model, sess.CWD))
 	for _, e := range sess.Entries {
 		cls := "entry "

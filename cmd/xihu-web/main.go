@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/huichen/cobalt/internal/webui"
+	"github.com/huichen/xihu/internal/webui"
 )
 
 func main() {

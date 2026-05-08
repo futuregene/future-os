@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huichen/cobalt/pkg/types"
+	"github.com/huichen/xihu/pkg/types"
 )
 
 func tempDir(t *testing.T) string {
 	t.Helper()
-	d, err := os.MkdirTemp("", "cobalt-session-test")
+	d, err := os.MkdirTemp("", "xihu-session-test")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}
@@ -253,8 +253,8 @@ func TestDefaultDir(t *testing.T) {
 	if dir == "" {
 		t.Error("DefaultDir returned empty string")
 	}
-	if !strings.Contains(dir, ".cobalt") {
-		t.Error("DefaultDir should contain .cobalt")
+	if !strings.Contains(dir, ".xihu") {
+		t.Error("DefaultDir should contain .xihu")
 	}
 	if !strings.Contains(dir, "sessions") {
 		t.Error("DefaultDir should contain sessions")

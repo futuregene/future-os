@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/huichen/cobalt/pkg/types"
+	"github.com/huichen/xihu/pkg/types"
 )
 
 func makeReadTool() types.AgentTool {

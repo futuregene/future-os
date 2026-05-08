@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
-	"github.com/huichen/cobalt/pkg/types"
+	"github.com/huichen/xihu/pkg/types"
 	openai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/packages/param"
@@ -21,6 +22,7 @@ type Client struct {
 	ReasoningEffort    string
 	ToolChoice         interface{}
 	EnableCacheControl bool
+	ThinkingBudget     int // 0 = off/disabled, >0 = token budget
 	StreamOpts         *StreamOptions
 	OnPayload          func(payload []byte)
 	OnResponse         func(statusCode int, headers map[string][]string)
@@ -47,6 +49,12 @@ func NewClient(baseURL, apiKey string) *Client {
 
 // StreamChat sends a streaming chat completion and returns events via channel.
 func (c *Client) StreamChat(model string, messages []types.Message, tools []types.ToolDef, systemPrompt string) (<-chan types.StreamEvent, error) {
+	// Prepend system prompt to messages
+	if systemPrompt != "" {
+		sysContent, _ := json.Marshal([]types.TextContent{{Type: "text", Text: systemPrompt}})
+		sysMsg := types.Message{Role: "system", Content: sysContent}
+		messages = append([]types.Message{sysMsg}, messages...)
+	}
 	msgs := convertToOpenAIMessages(messages)
 
 	params := openai.ChatCompletionNewParams{
@@ -87,6 +95,8 @@ func (c *Client) streamFromSDK(stream *ssestream.Stream[openai.ChatCompletionChu
 	textStarted := false
 	var toolCallAccum map[int]*types.ToolCall
 	toolCallStarted := make(map[int]bool)
+	thinkingStarted := false
+	var reasoningContent string
 
 	for stream.Next() {
 		chunk := stream.Current()
@@ -106,8 +116,37 @@ func (c *Client) streamFromSDK(stream *ssestream.Stream[openai.ChatCompletionChu
 		for _, choice := range chunk.Choices {
 			delta := choice.Delta
 
+			// Reasoning content (from ExtraFields for non-OpenAI providers like DeepSeek)
+			if reasoningField, ok := delta.JSON.ExtraFields["reasoning_content"]; ok {
+				// Raw() returns JSON-encoded value; skip JSON null
+				raw := reasoningField.Raw()
+				if raw == "null" {
+					// skip — field present but value is JSON null
+				} else {
+					// Try JSON unquote (handles \n, \", \\, etc.)
+					if unquoted, err := strconv.Unquote(raw); err == nil {
+						raw = unquoted
+					} else if len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' {
+						raw = raw[1 : len(raw)-1]
+					}
+					reasoningContent += raw
+					if !thinkingStarted {
+						thinkingStarted = true
+						events <- types.StreamEvent{Type: "thinking_start"}
+					}
+					events <- types.StreamEvent{
+						Type: "thinking_delta",
+						Text: raw,
+					}
+				}
+			}
+
 			// Text content
 			if delta.Content != "" {
+				if thinkingStarted {
+					thinkingStarted = false
+					events <- types.StreamEvent{Type: "thinking_end"}
+				}
 				if !textStarted {
 					textStarted = true
 					events <- types.StreamEvent{Type: "text_start"}
@@ -119,6 +158,10 @@ func (c *Client) streamFromSDK(stream *ssestream.Stream[openai.ChatCompletionChu
 			}
 
 			// Tool calls
+			if len(delta.ToolCalls) > 0 && thinkingStarted {
+				thinkingStarted = false
+				events <- types.StreamEvent{Type: "thinking_end"}
+			}
 			for _, tc := range delta.ToolCalls {
 				idx := int(tc.Index)
 				if tc.ID != "" {
@@ -169,6 +212,7 @@ func (c *Client) streamFromSDK(stream *ssestream.Stream[openai.ChatCompletionChu
 								Type:     "toolcall_end",
 								ToolCall: tc,
 							}
+							toolCallStarted[idx] = false // prevent double-emit at end-of-stream
 						}
 					}
 				}
@@ -176,7 +220,17 @@ func (c *Client) streamFromSDK(stream *ssestream.Stream[openai.ChatCompletionChu
 		}
 	}
 
+	// End any open thinking stream
+	if thinkingStarted {
+		events <- types.StreamEvent{
+			Type: "thinking_end",
+			Text: reasoningContent,
+		}
+	}
 	// End any open streams
+	if thinkingStarted {
+		events <- types.StreamEvent{Type: "thinking_end"}
+	}
 	if textStarted {
 		events <- types.StreamEvent{Type: "text_end"}
 	}
@@ -186,6 +240,13 @@ func (c *Client) streamFromSDK(stream *ssestream.Stream[openai.ChatCompletionChu
 				Type:     "toolcall_end",
 				ToolCall: tc,
 			}
+		}
+	}
+	// Surface stream errors
+	if err := stream.Err(); err != nil {
+		events <- types.StreamEvent{
+			Type:  "error",
+			Text:  err.Error(),
 		}
 	}
 	events <- types.StreamEvent{Type: "stop"}
@@ -213,17 +274,24 @@ func convertToOpenAIMessages(messages []types.Message) []openai.ChatCompletionMe
 						},
 					}
 				}
-				var emptyContent openai.ChatCompletionAssistantMessageParamContentUnion
-				if content != "" {
-					emptyContent.OfString = param.NewOpt(content)
-				}
-				msg := openai.ChatCompletionAssistantMessageParam{
-					Content:   emptyContent,
+				ap := openai.ChatCompletionAssistantMessageParam{
+					Content:   openai.ChatCompletionAssistantMessageParamContentUnion{OfString: param.NewOpt(content)},
 					ToolCalls: tcs,
 				}
-				result = append(result, openai.ChatCompletionMessageParamUnion{OfAssistant: &msg})
+				// Inject reasoning_content for providers that require it echoed back
+				if msg.ReasoningContent != "" {
+					ap.SetExtraFields(map[string]any{"reasoning_content": msg.ReasoningContent})
+				}
+				result = append(result, openai.ChatCompletionMessageParamUnion{OfAssistant: &ap})
 			} else {
 				result = append(result, openai.AssistantMessage(content))
+			}
+			// Inject reasoning_content into the last assistant message if present
+			if msg.ReasoningContent != "" && len(result) > 0 {
+				last := result[len(result)-1]
+				if last.OfAssistant != nil {
+					last.OfAssistant.SetExtraFields(map[string]any{"reasoning_content": msg.ReasoningContent})
+				}
 			}
 		case "tool":
 			result = append(result, openai.ToolMessage(content, msg.ToolCallID))

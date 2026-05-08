@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huichen/cobalt/pkg/types"
+	"github.com/huichen/xihu/pkg/types"
 )
 
 func TestNewEventBus(t *testing.T) {

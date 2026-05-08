@@ -6,7 +6,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/huichen/cobalt/pkg/types"
+	"github.com/huichen/xihu/pkg/types"
 )
 
 // DefaultCompactionSettings are the same defaults as TypeScript pi.

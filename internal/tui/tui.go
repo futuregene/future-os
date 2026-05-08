@@ -10,10 +10,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/term"
 
-	"github.com/huichen/cobalt/internal/agent"
-	"github.com/huichen/cobalt/internal/session"
-	"github.com/huichen/cobalt/internal/tui/components"
-	"github.com/huichen/cobalt/pkg/types"
+	"github.com/huichen/xihu/internal/agent"
+	"github.com/huichen/xihu/internal/session"
+	"github.com/huichen/xihu/internal/tui/components"
+	"github.com/huichen/xihu/pkg/types"
 )
 
 // Run launches the TUI if stdin is a terminal; otherwise falls back to CLI mode.
@@ -45,10 +45,13 @@ func runBubbleTea(
 	app.footer.SetSession(sess.CWD, "", "", modelStr, "")
 
 	p := tea.NewProgram(
-		app,
+		&app,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
+
+	// Set program reference so goroutines can send messages
+	app.program = p
 
 	// If we have an initial prompt, send it as a message
 	if initialPrompt != "" {

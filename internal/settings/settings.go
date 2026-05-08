@@ -1,5 +1,5 @@
 // Package settings provides configuration loading, saving, and merging
-// for cobalt agent settings. Settings can be stored in a global user-level
+// for xihu agent settings. Settings can be stored in a global user-level
 // file (~/.pi/agent/settings.json) and per-project (.pi/settings.json),
 // with project settings overriding global ones.
 package settings
@@ -83,7 +83,7 @@ type WarningSettings struct {
 // Settings
 // ---------------------------------------------------------------------------
 
-// Settings holds all configurable options for the cobalt agent.
+// Settings holds all configurable options for the xihu agent.
 // All fields are optional — zero/nil values mean "use default".
 // Pointer types are used for bool fields so that "false" explicitly
 // set in a JSON file can override a "true" from a parent config.
@@ -434,21 +434,21 @@ func MergeSettings(base, override *Settings) *Settings {
 }
 
 // GetDefaultPaths returns the standard paths for global and project-level
-// settings files. The global path is ~/.cobalt/settings.json.
-// The project path is .cobalt/settings.json relative to the current working
+// settings files. The global path is ~/.xihu/settings.json.
+// The project path is .xihu/settings.json relative to the current working
 // directory (or the provided working directory if non-empty).
 func GetDefaultPaths() (global, project string) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = os.TempDir()
 	}
-	global = filepath.Join(home, ".cobalt", "settings.json")
+	global = filepath.Join(home, ".xihu", "settings.json")
 
 	cwd, err := os.Getwd()
 	if err != nil {
 		cwd = "."
 	}
-	project = filepath.Join(cwd, ".cobalt", "settings.json")
+	project = filepath.Join(cwd, ".xihu", "settings.json")
 
 	return global, project
 }

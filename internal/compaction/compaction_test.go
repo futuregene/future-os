@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/huichen/cobalt/pkg/types"
+	"github.com/huichen/xihu/pkg/types"
 )
 
 type typesMessage = types.Message

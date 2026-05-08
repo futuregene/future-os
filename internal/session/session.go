@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huichen/cobalt/pkg/types"
+	"github.com/huichen/xihu/pkg/types"
 )
 
 // CURRENT_SESSION_VERSION is the current session format version.
@@ -83,7 +83,7 @@ func (s *Session) SetBaseURL(u string) { s.BaseURL = u }
 
 // Manager handles session persistence in CWD-based directories.
 type Manager struct {
-	Dir string // root sessions dir, e.g. ~/.cobalt/sessions
+	Dir string // root sessions dir, e.g. ~/.xihu/sessions
 }
 
 // NewManager creates a session manager.
@@ -95,9 +95,9 @@ func NewManager(dir string) *Manager {
 func DefaultDir(cwd string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".cobalt", "sessions", encodeCWD(cwd))
+		return filepath.Join(os.TempDir(), ".xihu", "sessions", encodeCWD(cwd))
 	}
-	return filepath.Join(home, ".cobalt", "sessions", encodeCWD(cwd))
+	return filepath.Join(home, ".xihu", "sessions", encodeCWD(cwd))
 }
 
 // GenerateID creates a session ID from the current timestamp.

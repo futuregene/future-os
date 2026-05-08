@@ -98,6 +98,8 @@ func Handle(input string, ctx *Context) (string, error) {
 		return handleChangelog(ctx)
 	case "/hotkeys":
 		return handleHotkeys()
+	case "/help":
+		return handleHelp()
 	case "/fork":
 		return handleFork(args, ctx)
 	case "/clone":
@@ -209,12 +211,12 @@ func handleExport(args []string, ctx *Context) (string, error) {
 func exportSessionToHTML(sid string, ctx *Context) string {
 	var sb strings.Builder
 	sb.WriteString("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">")
-	sb.WriteString(fmt.Sprintf("<title>cobalt session %s</title>", sid))
+	sb.WriteString(fmt.Sprintf("<title>xihu session %s</title>", sid))
 	sb.WriteString("<style>body{font-family:system-ui;max-width:800px;margin:auto;padding:20px;background:#1a1a2e;color:#e0e0e0}")
 	sb.WriteString(".user{background:#16213e;padding:10px;margin:5px 0;border-radius:8px}")
 	sb.WriteString(".assistant{background:#0f3460;padding:10px;margin:5px 0;border-radius:8px}")
 	sb.WriteString("</style></head><body>\n")
-	sb.WriteString(fmt.Sprintf("<h1>cobalt Session: %s</h1>\n", sid))
+	sb.WriteString(fmt.Sprintf("<h1>xihu Session: %s</h1>\n", sid))
 	sb.WriteString(fmt.Sprintf("<p>Model: %s | CWD: %s</p>\n", ctx.Model, ctx.CWD))
 	for _, msg := range ctx.Messages {
 		cls := "user"
@@ -416,7 +418,7 @@ func handleChangelog(ctx *Context) (string, error) {
 		return string(data), nil
 	}
 	// Fallback
-	return `cobalt v0.2.0 — Changelog
+	return `xihu v0.2.0 — Changelog
 - Official OpenAI Go SDK integration
 - Official Anthropic Go SDK integration
 - Full compaction with smart cut points
@@ -435,6 +437,22 @@ func handleChangelog(ctx *Context) (string, error) {
 }
 
 // handleHotkeys shows keyboard shortcuts.
+func handleHelp() (string, error) {
+	return `xihu — AI coding assistant with read, bash, edit, write tools
+
+Usage:
+  xihu [options] [@files...] [messages...]
+
+Quick start:
+  xihu                           Start interactive session
+  xihu -p "your question"         One-shot query
+  xihu --continue                 Resume last session
+  xihu --model gpt-4o "..."      Use specific model
+
+Type /hotkeys for all keybindings and slash commands.
+Run 'xihu --help' for full CLI options.`, nil
+}
+
 func handleHotkeys() (string, error) {
 	return `Keybindings:
   Ctrl+C       Cancel / interrupt
@@ -452,7 +470,8 @@ func handleHotkeys() (string, error) {
   Enter        Send message
   Shift+Enter  New line
 
-Slash commands (21 total):
+Slash commands (22 total):
+  /help                 Show help about xihu
   /model [name]         Set or show model
   /baseurl [url]        Set or show base URL
   /memory               Show memory info
@@ -476,7 +495,7 @@ Slash commands (21 total):
   /compact              Manual context compaction
   /resume <id>          Resume different session
   /reload               Reload configuration
-  /quit                 Exit cobalt`, nil
+  /quit                 Exit xihu`, nil
 }
 
 func handleLogin() (string, error) {

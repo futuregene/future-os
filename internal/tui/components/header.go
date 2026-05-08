@@ -75,7 +75,7 @@ func (h Header) View() string {
 	if h.version != "" {
 		sb.WriteString(lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#61afef")).Bold(true).
-			Render("cobalt " + h.version))
+			Render("xihu " + h.version))
 		if h.newVersion != "" {
 			sb.WriteString("  " + lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#e5c07b")).

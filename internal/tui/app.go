@@ -1,4 +1,4 @@
-// Package tui provides the interactive terminal UI for cobalt using Bubble Tea.
+// Package tui provides the interactive terminal UI for xihu using Bubble Tea.
 package tui
 
 import (
@@ -10,10 +10,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/huichen/cobalt/internal/agent"
-	"github.com/huichen/cobalt/internal/session"
-	"github.com/huichen/cobalt/internal/tui/components"
-	"github.com/huichen/cobalt/pkg/types"
+	"github.com/huichen/xihu/internal/agent"
+	"github.com/huichen/xihu/internal/session"
+	"github.com/huichen/xihu/internal/tui/components"
+	"github.com/huichen/xihu/pkg/types"
 )
 
 // ─── Message Types ─────────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ type ResizeMsg struct {
 
 // ─── App Model ─────────────────────────────────────────────────────────────
 
-// AppModel is the root Bubble Tea model for the cobalt TUI.
+// AppModel is the root Bubble Tea model for the xihu TUI.
 type AppModel struct {
 	width  int
 	height int
@@ -152,7 +152,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			text := string(msg)
 			if strings.HasPrefix(text, "/") {
 				m.chat.AppendSystem("Cmd: " + text)
+				result := m.handleSlashCmd(text)
+				m.chat.AppendSystem(result)
 			} else {
+				m.chat.AppendSystem("You: " + text)
 				go m.runAgent(text)
 			}
 		}
@@ -244,7 +247,6 @@ func (m AppModel) View() string {
 // runAgent sends user input to the agent loop in a goroutine.
 func (m *AppModel) runAgent(text string) {
 	m.streaming = true
-	m.chat.AppendSystem("You: " + text)
 
 	var messages []types.Message
 	if m.session != nil && len(m.session.Entries) > 0 {
@@ -275,6 +277,32 @@ func (m *AppModel) runAgent(text string) {
 func jsonMarshalContent(text string) json.RawMessage {
 	b, _ := json.Marshal([]types.TextContent{{Type: "text", Text: text}})
 	return json.RawMessage(b)
+}
+
+// handleSlashCmd processes a slash command and returns the result string.
+func (m *AppModel) handleSlashCmd(text string) string {
+	parts := strings.Fields(text)
+	if len(parts) == 0 {
+		return ""
+	}
+	cmd := strings.ToLower(parts[0])
+	switch cmd {
+	case "/help":
+		return "xihu — AI coding assistant. Type /hotkeys for shortcuts, /model to switch models."
+	case "/hotkeys":
+		return "Ctrl+C=cancel, Ctrl+D=quit, Enter=send, Shift+Enter=newline"
+	case "/model":
+		if len(parts) > 1 {
+			m.agent.Model = parts[1]
+			return "Model set to: " + parts[1]
+		}
+		return "Current model: " + m.agent.Model
+	case "/quit":
+		m.quitting = true
+		return "Goodbye."
+	default:
+		return "Unknown command: " + cmd + " (try /help)"
+	}
 }
 
 // Ensure imports are used.

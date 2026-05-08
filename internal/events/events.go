@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/huichen/cobalt/pkg/types"
+	"github.com/huichen/xihu/pkg/types"
 )
 
 // AgentEvent is a fine-grained event emitted during agent execution.

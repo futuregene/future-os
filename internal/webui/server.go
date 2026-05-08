@@ -13,11 +13,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/huichen/cobalt/internal/commands"
-	"github.com/huichen/cobalt/internal/engine"
-	"github.com/huichen/cobalt/internal/session"
-	"github.com/huichen/cobalt/internal/tools"
-	"github.com/huichen/cobalt/pkg/types"
+	"github.com/huichen/xihu/internal/commands"
+	"github.com/huichen/xihu/internal/engine"
+	"github.com/huichen/xihu/internal/session"
+	"github.com/huichen/xihu/internal/tools"
+	"github.com/huichen/xihu/pkg/types"
 )
 
 //go:embed static/*

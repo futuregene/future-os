@@ -18,9 +18,12 @@ type Skill struct {
 }
 
 // Predefined skill directories.
+// TODO: make configurable via settings.json
 const (
-	UserSkillsDir    = "~/.pi/agent/skills/"
-	ProjectSkillsDir = ".pi/skills/"
+	UserSkillsDir     = "~/.xihu/skills/"
+	ProjectSkillsDir  = ".xihu/skills/"
+	AgentsSkillsDir   = "~/.agents/skills/"
+	PiSkillsDir       = "~/.pi/agent/skills/" // transitional: compat with pi skill dirs
 )
 
 // nameRegex validates skill names: lowercase letters, digits, single hyphens between segments.

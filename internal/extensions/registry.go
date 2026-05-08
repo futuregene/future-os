@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/huichen/cobalt/pkg/types"
+	"github.com/huichen/xihu/pkg/types"
 )
 
 // ---------------------------------------------------------------------------

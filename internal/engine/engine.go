@@ -9,13 +9,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huichen/cobalt/internal/agent"
-	"github.com/huichen/cobalt/internal/compaction"
-	"github.com/huichen/cobalt/internal/llm"
-	"github.com/huichen/cobalt/internal/session"
-	"github.com/huichen/cobalt/internal/settings"
-	"github.com/huichen/cobalt/internal/tools"
-	"github.com/huichen/cobalt/pkg/types"
+	"github.com/huichen/xihu/internal/agent"
+	"github.com/huichen/xihu/internal/compaction"
+	"github.com/huichen/xihu/internal/llm"
+	"github.com/huichen/xihu/internal/session"
+	"github.com/huichen/xihu/internal/settings"
+	"github.com/huichen/xihu/internal/tools"
+	"github.com/huichen/xihu/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -115,6 +115,9 @@ type EngineOptions struct {
 
 	// NoTools disables all tools if true.
 	NoTools bool
+
+	// Verbose enables verbose tool-call logging to stderr.
+	Verbose bool
 }
 
 // applyDefaults fills in zero values with sensible defaults.
@@ -156,6 +159,12 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 
 	// 1. Auto-detect provider from BaseURL
 	provider := detectProvider(opts.BaseURL, opts.APIKey)
+
+	// Resolve thinking budget for the provider
+	thinkingBudget := thinkingLevelToBudget(opts.ThinkingLevel)
+	if cl, ok := provider.(*llm.Client); ok {
+		cl.ThinkingBudget = thinkingBudget
+	}
 
 	// 2. Load/merge settings
 	s := opts.Settings
@@ -243,6 +252,7 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 		Tools:         toolList,
 		Config:        loopConfig,
 		SteeringQueue: make(chan string, 64),
+		Verbose:       opts.Verbose,
 	}
 
 	return &Engine{

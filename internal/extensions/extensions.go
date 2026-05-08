@@ -1,4 +1,4 @@
-// Package extensions provides a plugin architecture for cobalt.
+// Package extensions provides a plugin architecture for xihu.
 // Extensions can register tools, slash commands, and prompt templates,
 // and are loaded dynamically from Go plugins (.so) or JSON configs.
 package extensions
@@ -6,8 +6,8 @@ package extensions
 import (
 	"encoding/json"
 
-	"github.com/huichen/cobalt/internal/session"
-	"github.com/huichen/cobalt/internal/settings"
+	"github.com/huichen/xihu/internal/session"
+	"github.com/huichen/xihu/internal/settings"
 )
 
 // ---------------------------------------------------------------------------
@@ -115,7 +115,7 @@ type ExtensionFactory func() Extension
 // ExtensionContext — the environment passed to extensions at Init time
 // ---------------------------------------------------------------------------
 
-// ExtensionContext provides extensions with access to cobalt internals and
+// ExtensionContext provides extensions with access to xihu internals and
 // registration methods for tools, slash commands, and prompts.
 type ExtensionContext struct {
 	// SessionManager provides access to session persistence.

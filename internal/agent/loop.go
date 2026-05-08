@@ -5,11 +5,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
-	"github.com/huichen/cobalt/internal/events"
-	"github.com/huichen/cobalt/pkg/types"
+	"github.com/huichen/xihu/internal/events"
+	"github.com/huichen/xihu/pkg/types"
+)
+
+// ANSI terminal colors for verbose output.
+const (
+	cReset   = "\033[0m"
+	cBold    = "\033[1m"
+	cRed     = "\033[31m"
+	cGreen   = "\033[32m"
+	cYellow  = "\033[33m"
+	cBlue    = "\033[34m"
+	cMagenta = "\033[35m"
 )
 
 // DefaultMaxTurns is the default limit of agent turns per run
@@ -22,6 +36,9 @@ type Loop struct {
 	SystemPrompt string
 	Tools        []types.AgentTool
 	Config       types.AgentConfig
+
+	// Verbose enables tool execution logging to stderr.
+	Verbose bool
 
 	// EventBus is an optional event bus for fine-grained streaming events.
 	// If nil, no events are emitted.
@@ -131,14 +148,33 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 		}
 
 		var fullText string
+		var reasoningText string
 		var toolCalls []types.ToolCall
 		var totalUsage types.Usage
+		var outputStarted bool
 
 		// Bridge LLM stream events to EventBus
 		for event := range eventsCh {
 			switch event.Type {
-			case "text", "text_delta":
-				fullText += event.Text
+		case "thinking_start":
+			if l.Verbose {
+				fmt.Fprintf(os.Stderr, "\n%s[thinking]%s ", cMagenta, cReset)
+			}
+		case "thinking_delta":
+			reasoningText += event.Text
+			if l.Verbose {
+				fmt.Fprint(os.Stderr, event.Text)
+			}
+		case "thinking_end":
+			if l.Verbose {
+				fmt.Fprintln(os.Stderr)
+			}
+		case "text", "text_delta":
+			fullText += event.Text
+			if l.Verbose && !outputStarted {
+				outputStarted = true
+				fmt.Fprintln(os.Stderr)
+			}
 				if onText != nil {
 					onText(event.Text)
 				}
@@ -169,11 +205,20 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 				}
 			case "stop":
 				// done
-			case "error":
-				if l.EventBus != nil {
-					l.EventBus.Emit(events.ErrorEvent(event.Text))
-				}
+		case "error":
+			lastError = fmt.Errorf("stream error: %s", event.Text)
+			if l.EventBus != nil {
+				l.EventBus.Emit(events.ErrorEvent(event.Text))
 			}
+			}
+		}
+
+		// Check for stream errors before processing results
+		if lastError != nil {
+			if l.EventBus != nil {
+				l.EventBus.Emit(events.AgentEnd("error", nil))
+			}
+			return "", messages, lastError
 		}
 
 		// Emit message_end
@@ -183,9 +228,10 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 
 		content, _ := json.Marshal([]types.TextContent{{Type: "text", Text: fullText}})
 		assistantMsg := types.Message{
-			Role:      "assistant",
-			Content:   content,
-			ToolCalls: toolCalls,
+			Role:             "assistant",
+			Content:          content,
+			ToolCalls:        toolCalls,
+			ReasoningContent: reasoningText,
 		}
 		messages = append(messages, assistantMsg)
 
@@ -275,7 +321,9 @@ func (l *Loop) executeTools(ctx context.Context, turn int, toolCalls []types.Too
 		wg.Wait()
 
 		for i, tc := range toolCalls {
-			log.Printf("[tool] %s → %s (err=%v)", tc.Function.Name, truncate(toolResults[i].result, 100), toolResults[i].err)
+			if l.Verbose {
+				toolLog(tc.Function.Name, tc.Function.Arguments, toolResults[i].err, toolResults[i].duration)
+			}
 			emitToolEnd(l.EventBus, toolResults[i].toolName, toolResults[i].result, toolResults[i].err, toolResults[i].duration)
 			toolMsg := newToolResult(tc.ID, toolResults[i].result, toolResults[i].err)
 			*messages = append(*messages, toolMsg)
@@ -283,7 +331,9 @@ func (l *Loop) executeTools(ctx context.Context, turn int, toolCalls []types.Too
 	} else {
 		for _, tc := range toolCalls {
 			if err := ctx.Err(); err != nil {
-				log.Printf("[tool] %s: context cancelled at turn %d", tc.Function.Name, turn)
+				if l.Verbose {
+				fmt.Fprintf(os.Stderr, "\n[tool] %s: context cancelled\n", tc.Function.Name)
+			}
 				break
 			}
 
@@ -291,7 +341,9 @@ func (l *Loop) executeTools(ctx context.Context, turn int, toolCalls []types.Too
 			result, err := l.executeTool(tc)
 			duration := time.Since(start)
 
-			log.Printf("[tool] %s → %s (err=%v)", tc.Function.Name, truncate(result, 100), err)
+			if l.Verbose {
+				toolLog(tc.Function.Name, tc.Function.Arguments, err, duration)
+			}
 			emitToolEnd(l.EventBus, tc.Function.Name, result, err, duration)
 			toolMsg := newToolResult(tc.ID, result, err)
 			*messages = append(*messages, toolMsg)
@@ -417,9 +469,50 @@ func newToolResult(callID, result string, err error) types.Message {
 	}
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
+func toolLog(name string, args json.RawMessage, err error, d time.Duration) {
+	tag := "[tool]"
+	color := cGreen
+	if err != nil {
+		color = cRed
+	}
+	// Detect skill reads
+	if name == "read" && args != nil {
+		var p struct{ FilePath string `json:"file_path"` }
+		if json.Unmarshal(args, &p) == nil && strings.Contains(p.FilePath, "SKILL.md") {
+			tag = "[skill]"
+			color = cBlue
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\n%s%s%s %s %-12s %6s  %s\n", color, tag, cReset, "✗", name, d.Round(time.Millisecond), err)
+	} else {
+		fmt.Fprintf(os.Stderr, "\n%s%s%s %s %-12s %6s\n", color, tag, cReset, "✓", name, d.Round(time.Millisecond))
+	}
+}
+
+func runeTruncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	return string(r[:n]) + "..."
+}
+
+func runeTruncateBytes(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	// Walk runes and stop when we exceed maxBytes
+	pos := 0
+	for pos < len(s) {
+		_, size := utf8.DecodeRuneInString(s[pos:])
+		if pos+size > maxBytes {
+			break
+		}
+		pos += size
+	}
+	if pos == 0 {
+		return "..."
+	}
+	return s[:pos] + "..."
 }

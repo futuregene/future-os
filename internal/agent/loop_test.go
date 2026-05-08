@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huichen/cobalt/pkg/types"
+	"github.com/huichen/xihu/pkg/types"
 )
 
 // mockProvider implements types.LLMProvider for testing.
@@ -545,7 +545,7 @@ func TestTruncate(t *testing.T) {
 		{"abcd", 3, "abc..."},
 	}
 	for _, tt := range tests {
-		got := truncate(tt.input, tt.n)
+		got := runeTruncate(tt.input, tt.n)
 		if got != tt.expected {
 			t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.n, got, tt.expected)
 		}
