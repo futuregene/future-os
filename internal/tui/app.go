@@ -625,6 +625,14 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Bracketed paste detection (TS pi-mono: handlePaste with CSI 200~ / 201~)
+		// Bubble Tea v1.3.10+ already decodes paste events and sets Key.Paste = true.
+		// Route paste content through the editor's Paste method for large-paste markers.
+		if k := tea.Key(msg); k.Paste && len(k.Runes) > 0 {
+			m.input.Paste(string(k.Runes))
+			return m, nil
+		}
+
 		// Dispatch to extension terminal input handlers first
 		if m.inputRegistry != nil {
 			consumed, _ := m.inputRegistry.dispatch(msg.String())
@@ -1670,6 +1678,18 @@ func (m *AppModel) widgetsView(widgets map[string]string) string {
 
 // ─── Startup Banner ────────────────────────────────────────────────────────
 
+// formatKeyStr returns the first key for a binding, or empty string.
+func formatKeyStr(kb *KeybindingsManager, binding KeybindingID) string {
+	if kb == nil {
+		return ""
+	}
+	keys := kb.GetKeys(binding)
+	if len(keys) > 0 {
+		return keys[0]
+	}
+	return ""
+}
+
 func (m *AppModel) showWelcome(msg WelcomeMsg) {
 	m.setTerminalTitle()
 	if m.quietStartup {
@@ -1690,13 +1710,30 @@ func (m *AppModel) showWelcome(msg WelcomeMsg) {
 	go m.checkNewVersion()
 
 	if !m.welcomeExpanded {
-		// Collapsed: brief status
-		m.chat.AppendSystem(dimStyle.Render("  Ctrl+H expand header for all shortcuts"))
+		// Collapsed: brief status (uses actual keybinding for toggle header)
+		toggleKey := formatKeyStr(m.keybindings, GlobalToggleHeader)
+		if toggleKey == "" {
+			toggleKey = "Ctrl+H"
+		}
+		m.chat.AppendSystem(dimStyle.Render("  " + toggleKey + " expand header for all shortcuts"))
 		return
 	}
 
-	// Expanded: brief summary — full keybinding reference in header (Ctrl+H)
-	m.chat.AppendSystem("  Enter=submit · Esc=interrupt · / commands · ! bash · Ctrl+H=toggle header")
+	// Expanded: brief summary — uses actual keybinding values
+	submitKey := formatKeyStr(m.keybindings, InputSubmit)
+	if submitKey == "" {
+		submitKey = "Enter"
+	}
+	interruptKey := formatKeyStr(m.keybindings, GlobalInterrupt)
+	if interruptKey == "" {
+		interruptKey = "Esc"
+	}
+	toggleKey := formatKeyStr(m.keybindings, GlobalToggleHeader)
+	if toggleKey == "" {
+		toggleKey = "Ctrl+H"
+	}
+	m.chat.AppendSystem(fmt.Sprintf("  %s=submit · %s=interrupt · / commands · ! bash · %s=toggle header",
+		submitKey, interruptKey, toggleKey))
 
 	// Show loaded skills (TS pi-mono: showLoadedResources Skills section)
 	if len(msg.Skills) > 0 {
@@ -3202,8 +3239,8 @@ func (m *AppModel) showSettingsSelector() {
 	}, nil, 64, h)
 }
 
-// updateHeaderHints sets the header's compact key hints from actual keybinding values
-// so they reflect user-customized keybindings (TS pi-mono: keyHint/keyText helpers).
+// updateHeaderHints sets the header's compact and expanded key hints from actual
+// keybinding values so they reflect user-customized keybindings (TS pi-mono: keyHint/keyText helpers).
 func (m *AppModel) updateHeaderHints() {
 	kb := m.keybindings
 	if kb == nil {
@@ -3216,6 +3253,8 @@ func (m *AppModel) updateHeaderHints() {
 		}
 		return ""
 	}
+
+	// Compact mode
 	hints := fmt.Sprintf("%s interrupt  %s clear  / commands  ! bash  %s help  %s tools",
 		formatKey(GlobalInterrupt),
 		formatKey(GlobalClear),
@@ -3223,6 +3262,36 @@ func (m *AppModel) updateHeaderHints() {
 		formatKey(GlobalToggleTools),
 	)
 	m.header.SetHints(hints)
+
+	// Expanded mode — each section uses actual keybinding values
+	nav := fmt.Sprintf("%s/%s/%s/%s cursor  %s/%s scroll  %s/%s line start/end  gg top  G bottom",
+		formatKey(EditorCursorUp), formatKey(EditorCursorDown),
+		formatKey(EditorCursorLeft), formatKey(EditorCursorRight),
+		formatKey(EditorPageUp), formatKey(EditorPageDown),
+		formatKey(EditorCursorLineStart), formatKey(EditorCursorLineEnd),
+	)
+	edit := fmt.Sprintf("%s submit  %s newline  %s complete  %s yank  %s yank-pop  %s undo",
+		formatKey(InputSubmit),
+		formatKey(InputNewLine),
+		formatKey(InputTab),
+		formatKey(EditorYank),
+		formatKey(EditorYankPop),
+		formatKey(EditorUndo),
+	)
+	acts := fmt.Sprintf("%s interrupt  %s clear  %s exit  %s model  %s edit  %s tools  %s thinking",
+		formatKey(GlobalInterrupt),
+		formatKey(GlobalClear),
+		formatKey(GlobalExit),
+		formatKey(GlobalModelSelector),
+		formatKey(GlobalExternalEditor),
+		formatKey(GlobalToggleTools),
+		formatKey(GlobalToggleThinking),
+	)
+	msgs := fmt.Sprintf("alt+enter queue follow-up  alt+up dequeue")
+	more := fmt.Sprintf("/fork  /tree  /settings  /theme  /session info  %s collapse",
+		formatKey(GlobalToggleHeader),
+	)
+	m.header.SetExpandedHints(nav, edit, acts, msgs, more)
 }
 
 // reload reloads settings, keybindings, and re-applies theme from disk.

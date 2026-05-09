@@ -785,9 +785,9 @@ func (c *ChatViewport) renderBashEntry(e ChatEntry) string {
 	}
 
 	for _, line := range outputLines {
-		// Truncate line to fit within box
-		displayLine := line
-		if lipgloss.Width(line) > boxWidth-2 {
+			// Strip ANSI escape sequences (TS pi-mono: stripAnsi)
+			displayLine := stripANSI(line)
+		if lipgloss.Width(displayLine) > boxWidth-2 {
 			displayLine = line[:boxWidth-5] + "..."
 		}
 		sb.WriteString(prefix)

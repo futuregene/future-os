@@ -12,6 +12,13 @@ type Header struct {
 	expanded bool
 	accent   string
 	hints    string
+
+	// Dynamic expanded-mode key hints (set by app from keybindings)
+	expNav   string
+	expEdit  string
+	expActs  string
+	expMsgs  string
+	expMore  string
 }
 
 // NewHeader creates a new Header component.
@@ -39,6 +46,16 @@ func (h Header) Expanded() bool {
 // "Esc interrupt  Ctrl+C clear  / commands  ! bash  Ctrl+H help  Ctrl+O tools"
 func (h *Header) SetHints(hints string) {
 	h.hints = hints
+}
+
+// SetExpandedHints sets the keybinding-aware hint lines for the expanded header.
+// Each parameter is a pre-formatted string with actual keybinding values.
+func (h *Header) SetExpandedHints(nav, edit, acts, msgs, more string) {
+	h.expNav = nav
+	h.expEdit = edit
+	h.expActs = acts
+	h.expMsgs = msgs
+	h.expMore = more
 }
 
 // View renders the header.
@@ -75,18 +92,39 @@ func (h Header) renderCompact(accent, dim lipgloss.Style, divider string) string
 }
 
 func (h Header) renderExpanded(accent, dim lipgloss.Style, divider string) string {
+	nav := h.expNav
+	if nav == "" {
+		nav = "arrows cursor  PgUp/PgDn scroll  Home/End  gg top  G bottom"
+	}
+	edit := h.expEdit
+	if edit == "" {
+		edit = "Enter submit  Shift+Enter newline  Tab complete  Ctrl+Y yank  Alt+Y yank-pop  Ctrl+_ undo"
+	}
+	acts := h.expActs
+	if acts == "" {
+		acts = "Esc interrupt  Ctrl+C clear  Ctrl+D exit  Ctrl+Z suspend  Ctrl+L model  Ctrl+G edit  Ctrl+O tools  Ctrl+T thinking"
+	}
+	msgs := h.expMsgs
+	if msgs == "" {
+		msgs = "Alt+Enter queue follow-up  Alt+Up dequeue"
+	}
+	more := h.expMore
+	if more == "" {
+		more = "/fork  /tree  /settings  /theme  /session info  Ctrl+H collapse"
+	}
+
 	var sb strings.Builder
 	sb.WriteString(accent.Render("xihu") + dim.Render(" — AI coding assistant"))
 	sb.WriteByte('\n')
-	sb.WriteString(dim.Render("Nav:   ") + "arrows cursor  PgUp/PgDn scroll  Home/End  gg top  G bottom")
+	sb.WriteString(dim.Render("Nav:   ") + nav)
 	sb.WriteByte('\n')
-	sb.WriteString(dim.Render("Edit:  ") + "Enter submit  Shift+Enter newline  Tab complete  Ctrl+Y yank  Alt+Y yank-pop  Ctrl+_ undo")
+	sb.WriteString(dim.Render("Edit:  ") + edit)
 	sb.WriteByte('\n')
-	sb.WriteString(dim.Render("Acts:  ") + "Esc interrupt  Ctrl+C clear  Ctrl+D exit  Ctrl+Z suspend  Ctrl+L model  Ctrl+G edit  Ctrl+O tools  Ctrl+T thinking")
+	sb.WriteString(dim.Render("Acts:  ") + acts)
 	sb.WriteByte('\n')
-	sb.WriteString(dim.Render("Msgs:  ") + "Alt+Enter queue follow-up  Alt+Up dequeue")
+	sb.WriteString(dim.Render("Msgs:  ") + msgs)
 	sb.WriteByte('\n')
-	sb.WriteString(dim.Render("More:  ") + "/fork  /tree  /settings  /theme  /session info  Ctrl+H collapse")
+	sb.WriteString(dim.Render("More:  ") + more)
 	sb.WriteByte('\n')
 	sb.WriteString(divider)
 	return sb.String()
