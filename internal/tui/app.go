@@ -3850,10 +3850,7 @@ func (m *AppModel) showSessionTree() {
 		case "no-tools":
 			return !isSettings && e.Role != "tool"
 		case "labeled-only":
-			// Entries with labels (check session data for label field)
-			return false // placeholder: labels not yet stored on entries
-		case "all":
-			return true
+			return e.Label != "" || e.Type == "label"
 		default: // "default"
 			return !isSettings
 		}
