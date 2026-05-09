@@ -3202,6 +3202,29 @@ func (m *AppModel) showSettingsSelector() {
 	}, nil, 64, h)
 }
 
+// updateHeaderHints sets the header's compact key hints from actual keybinding values
+// so they reflect user-customized keybindings (TS pi-mono: keyHint/keyText helpers).
+func (m *AppModel) updateHeaderHints() {
+	kb := m.keybindings
+	if kb == nil {
+		return
+	}
+	formatKey := func(id KeybindingID) string {
+		keys := kb.GetKeys(id)
+		if len(keys) > 0 {
+			return keys[0]
+		}
+		return ""
+	}
+	hints := fmt.Sprintf("%s interrupt  %s clear  / commands  ! bash  %s help  %s tools",
+		formatKey(GlobalInterrupt),
+		formatKey(GlobalClear),
+		formatKey(GlobalToggleHeader),
+		formatKey(GlobalToggleTools),
+	)
+	m.header.SetHints(hints)
+}
+
 // reload reloads settings, keybindings, and re-applies theme from disk.
 // Mirrors pi-mono's handleReloadCommand + session.reload() + keybindings.reload().
 func (m *AppModel) reload() {
@@ -3217,6 +3240,7 @@ func (m *AppModel) reload() {
 		userKB, _ := LoadUserBindings()
 		m.keybindings.Reload(userKB)
 	}
+	m.updateHeaderHints()
 
 	// Re-apply settings (same pattern as constructor)
 	if newSettings != nil {

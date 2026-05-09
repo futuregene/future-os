@@ -11,6 +11,7 @@ type Header struct {
 	width    int
 	expanded bool
 	accent   string
+	hints    string
 }
 
 // NewHeader creates a new Header component.
@@ -31,6 +32,13 @@ func (h *Header) Toggle() {
 // Expanded returns whether the header is in expanded mode.
 func (h Header) Expanded() bool {
 	return h.expanded
+}
+
+// SetHints sets the compact-mode key hint string displayed below the logo.
+// The string should be formatted externally using actual keybinding values, e.g.:
+// "Esc interrupt  Ctrl+C clear  / commands  ! bash  Ctrl+H help  Ctrl+O tools"
+func (h *Header) SetHints(hints string) {
+	h.hints = hints
 }
 
 // View renders the header.
@@ -58,7 +66,11 @@ func (h Header) View() string {
 
 func (h Header) renderCompact(accent, dim lipgloss.Style, divider string) string {
 	logo := accent.Render("xihu")
-	hints := dim.Render("Esc interrupt  Ctrl+C clear  / commands  ! bash  Ctrl+H help  Ctrl+O tools")
+	hintText := h.hints
+	if hintText == "" {
+		hintText = "Esc interrupt  Ctrl+C clear  / commands  ! bash  Ctrl+H help  Ctrl+O tools"
+	}
+	hints := dim.Render(hintText)
 	return lipgloss.JoinVertical(lipgloss.Top, logo+"  "+hints, divider)
 }
 

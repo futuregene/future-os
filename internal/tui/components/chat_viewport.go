@@ -2,6 +2,7 @@ package components
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -87,6 +88,10 @@ type ChatViewport struct {
 	bashOutput      lipgloss.Style
 	bashStatus      lipgloss.Style
 	bashErrorStatus lipgloss.Style
+	diffAdd         lipgloss.Style
+	diffDel         lipgloss.Style
+	diffCtx         lipgloss.Style
+	diffHeader      lipgloss.Style
 	// Custom message styling (TS pi-mono: CustomMessageComponent)
 	customMessageBg    lipgloss.Style
 	customMessageLabel lipgloss.Style
@@ -198,6 +203,10 @@ func (c *ChatViewport) SetTheme(accent, muted, dim, warning, success, errColor, 
 	c.bashOutput = lipgloss.NewStyle().Foreground(lipgloss.Color(dim))
 	c.bashStatus = lipgloss.NewStyle().Foreground(lipgloss.Color(success))
 	c.bashErrorStatus = lipgloss.NewStyle().Foreground(lipgloss.Color(errColor))
+	c.diffAdd = lipgloss.NewStyle().Foreground(lipgloss.Color(success))
+	c.diffDel = lipgloss.NewStyle().Foreground(lipgloss.Color(errColor))
+	c.diffCtx = lipgloss.NewStyle().Foreground(lipgloss.Color(dim))
+	c.diffHeader = lipgloss.NewStyle().Foreground(lipgloss.Color(accent)).Bold(true)
 }
 
 
@@ -622,7 +631,13 @@ func (c *ChatViewport) View() string {
 			if e.Expanded && e.Content != "" {
 				sb.WriteByte('\n')
 				if isDiffContent(e.Content) {
-					diffStyle := DefaultDiffStyle()
+					diffStyle := DiffStyle{
+						Add:     c.diffAdd,
+						Del:     c.diffDel,
+						Context: c.diffCtx,
+						Header:  c.diffHeader,
+						Inverse: lipgloss.NewStyle().Reverse(true),
+					}
 					rendered := RenderDiff(e.Content, diffStyle)
 					for _, line := range strings.Split(rendered, "\n") {
 						sb.WriteString(bgStyle.Render("  " + line))
@@ -716,6 +731,14 @@ func wordWrap(s string, width int) string {
 
 // renderBashEntry renders a bash execution entry with bordered display
 // matching TS pi-mono BashExecutionComponent style.
+
+// stripANSI removes ANSI escape sequences from a string.
+// Used to clean bash output before rendering in the terminal.
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+func stripANSI(s string) string {
+	return ansiRe.ReplaceAllString(s, "")
+}
 func (c *ChatViewport) renderBashEntry(e ChatEntry) string {
 	boxWidth := c.width - 6
 	if boxWidth < 20 {
