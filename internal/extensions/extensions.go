@@ -5,10 +5,160 @@ package extensions
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/huichen/xihu/internal/session"
 	"github.com/huichen/xihu/internal/settings"
 )
+
+// ---------------------------------------------------------------------------
+// ExtensionUI — UI methods available to extensions at runtime
+// ---------------------------------------------------------------------------
+
+// TerminalInputResult is returned by TerminalInputHandler.
+type TerminalInputResult struct {
+	Consume bool   // if true, the input is consumed and not processed further
+	Data    string // if non-empty, replaces the original input string
+}
+
+// TerminalInputHandler processes raw terminal input before normal key handling.
+// Return nil to pass the input through normally.
+type TerminalInputHandler func(data string) *TerminalInputResult
+
+// ExtensionUIDialogOptions configures an extension UI dialog.
+type ExtensionUIDialogOptions struct {
+	Timeout time.Duration
+	Signal  chan struct{} // close to programmatically dismiss
+}
+
+// ExtensionUI provides UI interaction methods for extensions.
+// Each method blocks until the user responds or the dialog is dismissed.
+type ExtensionUI interface {
+	// Select shows a list selector and returns the user's choice.
+	Select(title string, options []string, opts *ExtensionUIDialogOptions) (string, error)
+
+	// Confirm shows a confirmation dialog. Returns true if confirmed.
+	Confirm(title, message string, opts *ExtensionUIDialogOptions) (bool, error)
+
+	// Input shows a text input dialog and returns the user's input.
+	Input(title, placeholder string, opts *ExtensionUIDialogOptions) (string, error)
+
+	// Editor shows a multi-line editor and returns the user's text.
+	Editor(title, prefill string) (string, error)
+
+	// Notify shows a notification (info, warning, error).
+	Notify(message string, notifyType string)
+
+	// SetStatus sets a status line in the footer. Pass empty text to clear.
+	SetStatus(key, text string)
+
+	// SetTitle sets the terminal window/tab title.
+	SetTitle(title string)
+
+	// SetHiddenThinkingLabel sets the label for hidden thinking blocks.
+	// Pass empty string to restore the default ("Thinking…").
+	SetHiddenThinkingLabel(label string)
+
+	// SetWorkingMessage sets the working message shown during streaming.
+	// Pass empty string to restore the default ("Generating…").
+	SetWorkingMessage(message string)
+
+	// SetWorkingVisible shows or hides the working loader during streaming.
+	SetWorkingVisible(visible bool)
+
+	// SetWorkingIndicator sets the spinner frames for the streaming loader.
+	// Pass nil or empty slice to restore default spinner.
+	SetWorkingIndicator(frames []string, intervalMs int)
+
+	// OnTerminalInput registers a raw terminal input handler.
+	// The handler is called for every keypress before normal processing.
+	// Return &TerminalInputResult{Consume: true} to stop further processing.
+	// Returns an unsubscribe function. Call it to remove the handler.
+	OnTerminalInput(handler TerminalInputHandler) (unsubscribe func())
+
+	// PasteToEditor pastes text into the main editor with paste handling.
+	PasteToEditor(text string)
+
+	// SetEditorText sets the text content of the main editor.
+	SetEditorText(text string)
+
+	// GetEditorText returns the current text in the main editor.
+	GetEditorText() string
+
+	// SetWidget sets or removes a widget rendered above or below the editor.
+	// key uniquely identifies the widget. content is the rendered widget text
+	// (multiple lines joined by \n). Pass empty content to remove the widget.
+	// placement is "aboveEditor" or "belowEditor".
+	SetWidget(key, content, placement string)
+
+	// Custom shows a custom dialog with title, content text, and action buttons.
+	// Returns the value of the selected button, or an error if cancelled.
+	Custom(title, content string, buttons []CustomButton, opts *ExtensionUIDialogOptions) (string, error)
+
+	// GetAllThemes returns all available themes with their names and file paths.
+	// Built-in themes have empty paths.
+	GetAllThemes() []ThemeInfo
+
+	// SetTheme applies a theme by name. Returns an error if the theme is not found.
+	SetTheme(name string) error
+
+	// GetCurrentThemeName returns the name of the currently active theme.
+	GetCurrentThemeName() string
+
+	// GetToolsExpanded returns whether tool outputs are currently expanded.
+	GetToolsExpanded() bool
+
+	// SetToolsExpanded sets the tool output expansion state.
+	SetToolsExpanded(expanded bool)
+
+	// AddAutocompleteProvider registers an autocomplete provider function.
+	// The provider is called with the current query prefix and returns candidate strings.
+	AddAutocompleteProvider(provider AutocompleteProvider)
+}
+
+// ThemeInfo describes an available theme for GetAllThemes.
+type ThemeInfo struct {
+	Name string
+	Path string // empty for built-in themes
+}
+
+// CustomButton represents an action button in a custom dialog.
+type CustomButton struct {
+	Label string // display text
+	Value string // value returned when selected
+}
+
+// noopUI is a no-op ExtensionUI used when no TUI is available.
+type noopUI struct{}
+
+func (n *noopUI) Select(string, []string, *ExtensionUIDialogOptions) (string, error) { return "", nil }
+func (n *noopUI) Confirm(string, string, *ExtensionUIDialogOptions) (bool, error)   { return false, nil }
+	func (n *noopUI) GetAllThemes() []ThemeInfo { return nil }
+	func (n *noopUI) SetTheme(string) error     { return nil }
+	func (n *noopUI) GetCurrentThemeName() string { return "" }
+	func (n *noopUI) GetToolsExpanded() bool    { return false }
+	func (n *noopUI) SetToolsExpanded(bool)     {}
+	func (n *noopUI) AddAutocompleteProvider(AutocompleteProvider) {}
+func (n *noopUI) Input(string, string, *ExtensionUIDialogOptions) (string, error)    { return "", nil }
+func (n *noopUI) Editor(string, string) (string, error)                              { return "", nil }
+func (n *noopUI) Notify(string, string)                                              {}
+func (n *noopUI) SetStatus(string, string)                                           {}
+func (n *noopUI) SetTitle(string)                                                    {}
+func (n *noopUI) SetHiddenThinkingLabel(string)                                       {}
+func (n *noopUI) SetWorkingMessage(string)                                             {}
+func (n *noopUI) SetWorkingVisible(bool)                                               {}
+func (n *noopUI) SetWorkingIndicator([]string, int)                                     {}
+func (n *noopUI) OnTerminalInput(TerminalInputHandler) func()                            { return func() {} }
+func (n *noopUI) PasteToEditor(string)                                                  {}
+func (n *noopUI) SetEditorText(string)                                                  {}
+func (n *noopUI) GetEditorText() string                                                 { return "" }
+func (n *noopUI) SetWidget(string, string, string)                                      {}
+func (n *noopUI) Custom(string, string, []CustomButton, *ExtensionUIDialogOptions) (string, error) {
+	return "", nil
+}
+
+// NoopUI is a no-op ExtensionUI that returns empty/zero values.
+var NoopUI ExtensionUI = &noopUI{}
 
 // ---------------------------------------------------------------------------
 // Logger — simple leveled logger interface for extensions
@@ -112,6 +262,50 @@ type Extension interface {
 type ExtensionFactory func() Extension
 
 // ---------------------------------------------------------------------------
+// Shortcut — extension keyboard shortcut
+// ---------------------------------------------------------------------------
+
+// ShortcutHandler is called when the registered shortcut key is pressed.
+type ShortcutHandler func()
+
+// ShortcutDef defines an extension keyboard shortcut.
+type ShortcutDef struct {
+	Key         string
+	Description string
+	Handler     ShortcutHandler
+}
+
+// ---------------------------------------------------------------------------
+// Flag — extension CLI flag
+// ---------------------------------------------------------------------------
+
+// FlagType is the type of an extension flag.
+type FlagType string
+
+const (
+	FlagString  FlagType = "string"
+	FlagBool    FlagType = "boolean"
+	FlagInt     FlagType = "number"
+)
+
+// FlagDef defines an extension CLI flag.
+type FlagDef struct {
+	Name        string
+	Description string
+	Type        FlagType
+	Default     interface{}
+}
+
+// ---------------------------------------------------------------------------
+// Autocomplete provider
+// ---------------------------------------------------------------------------
+
+// AutocompleteProvider returns candidate strings for a given query prefix.
+// Extensions register providers to extend autocomplete beyond built-in
+// slash commands, file paths, and models.
+type AutocompleteProvider func(query string) []string
+
+// ---------------------------------------------------------------------------
 // ExtensionContext — the environment passed to extensions at Init time
 // ---------------------------------------------------------------------------
 
@@ -133,19 +327,28 @@ type ExtensionContext struct {
 	// CWD is the current working directory.
 	CWD string
 
+	// UI provides interactive UI methods (select, input, editor, etc.).
+	// Only available in TUI mode; nil in print/CLI mode.
+	UI ExtensionUI
+
 	// registry is the shared extension registry (set internally).
 	registry *Registry
 }
 
 // NewExtensionContext creates a new ExtensionContext with the given components.
 // The registry is created internally and shared across all extensions.
-func NewExtensionContext(sm *session.Manager, s *settings.Settings, bus *EventBus, logger Logger, cwd string) ExtensionContext {
+// ui is optional; pass NoopUI or nil if no interactive UI is available.
+func NewExtensionContext(sm *session.Manager, s *settings.Settings, bus *EventBus, logger Logger, cwd string, ui ExtensionUI) ExtensionContext {
+	if ui == nil {
+		ui = NoopUI
+	}
 	return ExtensionContext{
 		SessionManager: sm,
 		Settings:       s,
 		EventBus:        bus,
 		Logger:          logger,
 		CWD:             cwd,
+		UI:              ui,
 		registry:        globalRegistry,
 	}
 }
@@ -165,4 +368,41 @@ func (ctx ExtensionContext) RegisterSlashCommand(cmd string, handler SlashComman
 // into the system prompt at runtime.
 func (ctx ExtensionContext) RegisterPrompt(name string, template string) error {
 	return ctx.registry.RegisterPrompt(name, template)
+}
+
+// RegisterShortcut registers a keyboard shortcut. When the specified key
+// combination is pressed, handler is called. In TUI mode, the key is intercepted
+// via the terminal input handler so it won't interfere with normal input.
+func (ctx ExtensionContext) RegisterShortcut(key string, handler ShortcutHandler, description string) error {
+	if err := ctx.registry.RegisterShortcut(key, handler, description); err != nil {
+		return err
+	}
+	// Auto-register terminal input handler to intercept the key
+	ctx.UI.OnTerminalInput(func(data string) *TerminalInputResult {
+		if data == key {
+			handler()
+			return &TerminalInputResult{Consume: true}
+		}
+		return nil
+	})
+	return nil
+}
+
+// RegisterFlag registers a CLI flag for the extension. Other code (e.g. CLI
+// argument parsing) can set flag values via SetFlagValue, and extensions read
+// them with GetFlag.
+func (ctx ExtensionContext) RegisterFlag(name string, description string, flagType FlagType, defaultVal interface{}) error {
+	return ctx.registry.RegisterFlag(name, description, flagType, defaultVal)
+}
+
+// GetFlag returns the current value of a flag registered by this or another
+// extension, or nil if the flag is not found.
+func (ctx ExtensionContext) GetFlag(name string) interface{} {
+	return ctx.registry.GetFlag(name)
+}
+
+// AddAutocompleteProvider registers an autocomplete provider that supplies
+// additional completion candidates when the user triggers autocomplete.
+func (ctx ExtensionContext) AddAutocompleteProvider(provider AutocompleteProvider) {
+	ctx.registry.AddAutocompleteProvider(provider)
 }

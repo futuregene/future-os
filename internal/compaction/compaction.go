@@ -147,7 +147,7 @@ func FindCutPoint(messages []types.Message, startIndex, endIndex int, keepRecent
 }
 
 // Compact performs message compaction. Returns compacted messages and metadata.
-func Compact(messages []types.Message, opts CompactOptions) ([]types.Message, int, error) {
+func Compact(messages []types.Message, opts CompactOptions) ([]types.Message, *CompactionResult, error) {
 	tokensBefore := EstimateContextTokens(messages)
 	if opts.ReserveTokens == 0 {
 		opts.ReserveTokens = DefaultCompactionSettings.ReserveTokens
@@ -159,12 +159,12 @@ func Compact(messages []types.Message, opts CompactOptions) ([]types.Message, in
 	// Use token budget from end
 	budget := opts.KeepRecentTokens
 	if budget > tokensBefore {
-		return messages, tokensBefore, nil
+		return messages, nil, nil
 	}
 
 	cut := FindCutPoint(messages, 0, len(messages), budget)
 	if cut.FirstKeptEntryIndex <= 0 {
-		return messages, tokensBefore, nil
+		return messages, nil, nil
 	}
 
 	oldMessages := messages[:cut.FirstKeptEntryIndex]
@@ -195,7 +195,12 @@ func Compact(messages []types.Message, opts CompactOptions) ([]types.Message, in
 	result = append(result, compactionMsg)
 	result = append(result, recentMessages...)
 
-	return result, tokensBefore, nil
+	return result, &CompactionResult{
+		Summary:      summary,
+		TokensBefore: tokensBefore,
+		ReadFiles:    reads,
+		ModifiedFiles: writes,
+	}, nil
 }
 
 // ExtractFileOperations scans messages for file operations from tool calls.

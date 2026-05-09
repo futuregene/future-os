@@ -11,6 +11,7 @@ import (
 
 	"github.com/huichen/xihu/internal/agent"
 	"github.com/huichen/xihu/internal/compaction"
+	"github.com/huichen/xihu/internal/extensions"
 	"github.com/huichen/xihu/internal/llm"
 	"github.com/huichen/xihu/internal/session"
 	"github.com/huichen/xihu/internal/settings"
@@ -113,6 +114,12 @@ type EngineOptions struct {
 	// manager is created using session.DefaultDir(CWD).
 	SessionManager *session.Manager
 
+	// ExtensionPaths is a list of extension paths (dirs, .json, .so files) to load.
+	ExtensionPaths []string
+
+	// NoExtensions disables extension loading entirely.
+	NoExtensions bool
+
 	// NoTools disables all tools if true.
 	NoTools bool
 
@@ -145,6 +152,8 @@ type Engine struct {
 	SessionManager *session.Manager
 	Settings       *settings.Settings
 	Loop           *agent.Loop
+	// ExtensionRunner manages loaded extensions (nil if no extensions loaded).
+	ExtensionRunner *extensions.ExtensionRunner
 }
 
 // NewEngine creates a new Engine with the given options. It:
@@ -226,44 +235,59 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 		CreatedAt: time.Now(),
 	}
 
-	// 6. Build agent loop config
-	loopConfig := types.AgentConfig{
-		SystemPrompt:   cfg.SystemPrompt,
-		MaxTurns:       cfg.MaxTurns,
-		ThinkingBudget: thinkingLevelToBudget(cfg.ThinkingLevel),
-	}
-
-	// Wire up auto-compaction if configured
-	if cfg.CompactionReserveTokens > 0 {
-		loopConfig.TransformContext = func(messages []types.Message, _ string) []types.Message {
-			compacted, _, _ := compaction.Compact(messages, compaction.CompactOptions{
-				ReserveTokens:    cfg.CompactionReserveTokens,
-				KeepRecentTokens: cfg.CompactionKeepRecentTokens,
-			})
-			return compacted
-		}
-	}
-
-	// 7. Build the agent loop
+	// 6. Build the agent loop
 	loop := &agent.Loop{
 		Provider:      provider,
 		Model:         opts.Model,
 		SystemPrompt:  cfg.SystemPrompt,
 		Tools:         toolList,
-		Config:        loopConfig,
+		Config: types.AgentConfig{
+			SystemPrompt:   cfg.SystemPrompt,
+			MaxTurns:       cfg.MaxTurns,
+			ThinkingBudget: thinkingLevelToBudget(cfg.ThinkingLevel),
+		},
 		SteeringQueue: make(chan string, 64),
 		Verbose:       opts.Verbose,
 	}
 
+	// Wire up auto-compaction if configured
+	if cfg.CompactionReserveTokens > 0 {
+		loop.Config.TransformContext = func(messages []types.Message, _ string) []types.Message {
+			compacted, result, _ := compaction.Compact(messages, compaction.CompactOptions{
+				ReserveTokens:    cfg.CompactionReserveTokens,
+				KeepRecentTokens: cfg.CompactionKeepRecentTokens,
+			})
+			loop.LastCompactionResult = result
+			return compacted
+		}
+	}
+
+	// 8. Load extensions if configured
+	var extRunner *extensions.ExtensionRunner
+	if !opts.NoExtensions && len(opts.ExtensionPaths) > 0 {
+		extCtx := extensions.NewExtensionContext(sessMgr, s, extensions.NewEventBus(), nil, opts.CWD, nil)
+		runner, err := extensions.Run(opts.ExtensionPaths, extCtx)
+		if err != nil {
+			// Log but don't fail — extensions are optional
+			if opts.Verbose {
+				fmt.Fprintf(os.Stderr, "extension load warning: %v\n", err)
+			}
+		}
+		if runner != nil {
+			extRunner = runner
+		}
+	}
+
 	return &Engine{
-		Provider:       provider,
-		Model:          opts.Model,
-		Config:         cfg,
-		Tools:          toolList,
-		Session:        sess,
-		SessionManager: sessMgr,
-		Settings:       s,
-		Loop:           loop,
+		Provider:        provider,
+		Model:           opts.Model,
+		Config:          cfg,
+		Tools:           toolList,
+		Session:         sess,
+		SessionManager:  sessMgr,
+		Settings:        s,
+		Loop:            loop,
+		ExtensionRunner: extRunner,
 	}, nil
 }
 

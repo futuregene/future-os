@@ -1,6 +1,7 @@
 package components
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -19,6 +20,8 @@ type Autocomplete struct {
 	selected     int
 	prefix       string
 	descriptions map[string]string // candidate name → description
+	maxVisible   int               // max items to show (0 = unlimited)
+	scrollOffset int               // scroll offset when items exceed maxVisible
 	style        lipgloss.Style
 	selectStyle  lipgloss.Style
 }
@@ -44,6 +47,11 @@ func (a *Autocomplete) Show(candidates []string, descriptions map[string]string,
 	a.descriptions = descriptions
 	a.selected = 0
 	a.prefix = prefix
+}
+
+// SetMaxVisible sets the maximum number of visible items in the dropdown.
+func (a *Autocomplete) SetMaxVisible(n int) {
+	a.maxVisible = n
 }
 
 // Hide deactivates autocomplete.
@@ -102,12 +110,44 @@ func (a *Autocomplete) Filter() {
 // View renders the autocomplete popover with descriptions when available.
 // Selected line: "▶ /name  • Description"
 // Normal line:  "  /name  • Description"
-func (a Autocomplete) View() string {
+func (a *Autocomplete) View() string {
 	if !a.active || len(a.candidates) == 0 {
 		return ""
 	}
+
+	// Calculate visible range for scroll window
+	total := len(a.candidates)
+	maxV := a.maxVisible
+	if maxV <= 0 || maxV > total {
+		maxV = total
+	}
+
+	// Ensure selected is visible
+	if a.selected < a.scrollOffset {
+		a.scrollOffset = a.selected
+	}
+	if a.selected >= a.scrollOffset+maxV {
+		a.scrollOffset = a.selected - maxV + 1
+	}
+	if a.scrollOffset < 0 {
+		a.scrollOffset = 0
+	}
+	if a.scrollOffset+maxV > total {
+		a.scrollOffset = total - maxV
+		if a.scrollOffset < 0 {
+			a.scrollOffset = 0
+		}
+	}
+
+	start := a.scrollOffset
+	end := start + maxV
+	if end > total {
+		end = total
+	}
+
 	var sb strings.Builder
-	for i, c := range a.candidates {
+	for i := start; i < end; i++ {
+		c := a.candidates[i]
 		line := "  " + c
 		if desc, ok := a.descriptions[c]; ok && desc != "" {
 			line += "  • " + desc
@@ -119,6 +159,17 @@ func (a Autocomplete) View() string {
 		}
 		sb.WriteByte('\n')
 	}
+
+	// Scroll indicator
+	if total > maxV {
+		indicatorStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#5c6370")).
+			PaddingLeft(4)
+		sb.WriteString(indicatorStyle.Render(
+			strings.Repeat(" ", 8) + fmt.Sprintf("(%d/%d)", a.selected+1, total)))
+		sb.WriteByte('\n')
+	}
+
 	return sb.String()
 }
 
@@ -132,7 +183,7 @@ func SlashCommands() []string {
 		"/name", "/session", "/changelog", "/hotkeys",
 		"/fork", "/clone", "/tree", "/login", "/logout",
 		"/new", "/compact", "/resume", "/reload", "/quit",
-		"/theme", "/thinking",
+		"/theme", "/thinking", "/sessions", "/debug",
 	}
 }
 
@@ -152,6 +203,7 @@ func SlashCommandsWithDesc() []SlashCommand {
 		{Name: "/name", Description: "Name current session"},
 		{Name: "/session", Description: "Session info"},
 		{Name: "/changelog", Description: "What's new"},
+		{Name: "/debug", Description: "Write debug log"},
 		{Name: "/hotkeys", Description: "Keyboard shortcuts"},
 		{Name: "/fork", Description: "Fork conversation"},
 		{Name: "/clone", Description: "Clone conversation"},
@@ -165,6 +217,7 @@ func SlashCommandsWithDesc() []SlashCommand {
 		{Name: "/quit", Description: "Exit"},
 		{Name: "/theme", Description: "Switch theme"},
 		{Name: "/thinking", Description: "Set thinking level"},
+		{Name: "/sessions", Description: "Browse saved sessions"},
 		{Name: "/help", Description: "Show help"},
 	}
 }

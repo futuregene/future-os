@@ -334,7 +334,7 @@ func TestToolCallEnd(t *testing.T) {
 }
 
 func TestToolStart(t *testing.T) {
-	evt := ToolStart("bash")
+	evt := ToolStart("tool-1", "bash")
 	if evt.Type != "tool_start" {
 		t.Errorf("type = %s", evt.Type)
 	}

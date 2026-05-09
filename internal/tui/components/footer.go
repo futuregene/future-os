@@ -44,14 +44,30 @@ type Footer struct {
 	compactEnabled     bool
 	streaming          bool
 	usingSubscription  bool
+	hasReasoning       bool // only show thinking when model supports reasoning
 
 	// Context usage display
 	contextPercent float64 // 0.0 ~ 100.0
 	contextMaxTokens int
 	autoCompact bool
 
+	// Spinner animation
+	spinnerFrame int
+
+	// Working indicator customization
+	workingMessage string
+	workingVisible bool
+	customFrames    []string
+	customIntervalMs int
+
 	// Extensions
 	extensionStatuses map[string]string
+
+	// Provider count (TS pi-mono: only show provider when >1)
+	availableProviderCount int
+
+	// Session stats
+	entryCount int
 
 	// Home directory for ~ abbreviation
 	homeDir string
@@ -87,6 +103,19 @@ func NewFooter(baseStyle lipgloss.Style, ctxGreen, ctxYellow, ctxRed string) Foo
 	}
 }
 
+// SetStyle updates the footer's base style and context bar colors (for live theme reload).
+func (f *Footer) SetStyle(baseStyle lipgloss.Style, ctxGreen, ctxYellow, ctxRed string) {
+	if baseStyle.GetWidth() == 0 {
+		f.baseStyle = f.baseStyle.Copy().UnsetWidth()
+	} else {
+		f.baseStyle = baseStyle
+	}
+	f.dimStyle = f.baseStyle.Copy().Faint(true)
+	f.ctxGreen = lipgloss.NewStyle().Foreground(lipgloss.Color(ctxGreen))
+	f.ctxYellow = lipgloss.NewStyle().Foreground(lipgloss.Color(ctxYellow))
+	f.ctxRed = lipgloss.NewStyle().Foreground(lipgloss.Color(ctxRed))
+}
+
 // SetSession updates session info.
 func (f *Footer) SetSession(cwd, gitBranch, sessionName, model, thinking, provider string) {
 	f.cwd = cwd
@@ -96,6 +125,17 @@ func (f *Footer) SetSession(cwd, gitBranch, sessionName, model, thinking, provid
 	f.thinking = thinking
 	f.provider = provider
 }
+
+// SetGitBranch updates only the git branch (for live branch watching).
+func (f *Footer) SetGitBranch(branch string) {
+	f.gitBranch = branch
+}
+
+// Model returns the current model string.
+func (f Footer) Model() string { return f.model }
+
+// Provider returns the current provider string.
+func (f Footer) Provider() string { return f.provider }
 
 // Update updates footer stats from a StatusMsg equivalent.
 func (f *Footer) Update(tokensIn, tokensOut, cacheR, cacheW int, cost, ctxUsed float64, streaming bool) {
@@ -115,6 +155,31 @@ func (f *Footer) SetContextUsage(percent float64, maxTokens int, auto bool) {
 	f.autoCompact = auto
 }
 
+// spinner frames for animated streaming indicator
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// SetSpinnerFrame sets the current spinner animation frame.
+func (f *Footer) SetSpinnerFrame(n int) {
+	f.spinnerFrame = n
+}
+
+// SetWorkingMessage sets the working message shown during streaming.
+func (f *Footer) SetWorkingMessage(msg string) {
+	f.workingMessage = msg
+}
+
+// SetWorkingVisible sets whether the working loader is shown during streaming.
+func (f *Footer) SetWorkingVisible(visible bool) {
+	f.workingVisible = visible
+}
+
+// SetWorkingIndicator sets custom spinner frames and interval for the streaming loader.
+// Pass nil/empty frames to restore the default spinner.
+func (f *Footer) SetWorkingIndicator(frames []string, intervalMs int) {
+	f.customFrames = frames
+	f.customIntervalMs = intervalMs
+}
+
 // SetWidth updates the footer width for dynamic resizing.
 func (f *Footer) SetWidth(w int) {
 	// Subtract padding: baseStyle has Padding(0,1) so we reserve 2 chars
@@ -128,6 +193,22 @@ func (f *Footer) SetWidth(w int) {
 // SetUsingSubscription sets whether the current model uses an OAuth subscription.
 func (f *Footer) SetUsingSubscription(v bool) {
 	f.usingSubscription = v
+}
+
+// SetHasReasoning sets whether the current model supports reasoning/thinking.
+func (f *Footer) SetHasReasoning(v bool) {
+	f.hasReasoning = v
+}
+
+// SetEntryCount sets the number of entries in the current session.
+func (f *Footer) SetEntryCount(n int) {
+	f.entryCount = n
+}
+
+// SetAvailableProviders sets the number of configured providers.
+// When >1, the provider label is shown in the footer (TS pi-mono style).
+func (f *Footer) SetAvailableProviders(count int) {
+	f.availableProviderCount = count
 }
 
 // SetExtensionStatuses sets extension status strings (keyed by extension name).
@@ -182,6 +263,10 @@ func (f *Footer) buildLine1(width int) string {
 	if f.sessionName != "" {
 		pwd = pwd + " • " + f.sessionName
 	}
+	// Add entry count
+	if f.entryCount > 0 {
+		pwd = pwd + fmt.Sprintf(" (%d)", f.entryCount)
+	}
 
 	// Truncate if too wide (accounting for dim ANSI codes)
 	rendered := f.dimStyle.Render(pwd)
@@ -207,6 +292,20 @@ func (f *Footer) buildLine1(width int) string {
 func (f *Footer) buildLine2(width int) string {
 	// ── Left stats ───────────────────────────────────────────────────────
 	var statsParts []string
+
+	// Streaming indicator (TS pi-mono: animated spinner during streaming)
+	if f.streaming && f.workingVisible {
+		frames := spinnerFrames
+		if len(f.customFrames) > 0 {
+			frames = f.customFrames
+		}
+		frame := frames[f.spinnerFrame%len(frames)]
+		msg := f.workingMessage
+		if msg == "" {
+			msg = "Generating…"
+		}
+		statsParts = append(statsParts, frame+" "+msg+" (Esc to interrupt)")
+	}
 
 	if f.tokensIn > 0 {
 		statsParts = append(statsParts, "↑"+formatTokens(f.tokensIn))
@@ -246,17 +345,21 @@ func (f *Footer) buildLine2(width int) string {
 
 	rightSide := modelPart
 
-	// Prepend provider only when provider differs from model
-	if f.provider != "" && !strings.Contains(strings.ToLower(f.model), strings.ToLower(f.provider)) {
+	// Prepend provider only when multiple providers configured (TS pi-mono style)
+	// Also skip if model name already contains provider name.
+	if f.provider != "" && f.availableProviderCount > 1 &&
+		!strings.Contains(strings.ToLower(f.model), strings.ToLower(f.provider)) {
 		rightSide = "(" + f.provider + ") " + modelPart
 	}
 
-	// Always show thinking level
-	thinkingDisplay := f.thinking
-	if thinkingDisplay == "" {
-		thinkingDisplay = "off"
+	// Only show thinking when model supports reasoning (TS pi-mono)
+	if f.hasReasoning {
+		thinkingDisplay := f.thinking
+		if thinkingDisplay == "" {
+			thinkingDisplay = "off"
+		}
+		rightSide = rightSide + " · thinking " + thinkingDisplay
 	}
-	rightSide = rightSide + " · " + thinkingDisplay
 
 	// ── Layout: both sides rendered in dim gray ─────────────────────────
 	// TS wraps statsLeft and rightSide in separate dim calls to prevent
@@ -281,14 +384,36 @@ func (f *Footer) buildLine2(width int) string {
 		return dimStatsLeft + padding + dimRight
 	}
 
-	// Not enough space: truncate right side
+	// Not enough space: try dropping provider first, then truncate (TS pi-mono)
 	availableForRight := width - statsLeftWidth - minPadding
-		if availableForRight > 0 {
+	if availableForRight > 0 {
+		// Try full right side first
+		if lipgloss.Width(renderDim.Render(rightSide)) <= availableForRight {
+			// fits
+		} else if f.provider != "" && f.availableProviderCount > 1 {
+			// Try dropping provider prefix
+			tryRight := modelPart
+			if f.hasReasoning {
+				thinkingDisplay := f.thinking
+				if thinkingDisplay == "" {
+					thinkingDisplay = "off"
+				}
+				tryRight = tryRight + " · thinking " + thinkingDisplay
+			}
+			if lipgloss.Width(renderDim.Render(tryRight)) <= availableForRight {
+				rightSide = tryRight
+			} else {
+				for lipgloss.Width(rightSide) > availableForRight && len(rightSide) > 0 {
+					rightSide = rightSide[:len(rightSide)-1]
+				}
+			}
+		} else {
 			for lipgloss.Width(rightSide) > availableForRight && len(rightSide) > 0 {
 				rightSide = rightSide[:len(rightSide)-1]
 			}
-			dimRight = renderDim.Render(rightSide)
-			rightSideWidth = lipgloss.Width(dimRight)
+		}
+		dimRight = renderDim.Render(rightSide)
+		rightSideWidth = lipgloss.Width(dimRight)
 		space := width - statsLeftWidth - rightSideWidth
 		if space < 0 {
 			space = 0
@@ -342,8 +467,13 @@ func (f *Footer) formatContextBar() string {
 		return ""
 	}
 
+	var text string
 	pct := f.contextPercent
-	text := fmt.Sprintf("%.1f%%", pct)
+	if pct <= 0 {
+		text = "?" // TS pi-mono: show "?" after compaction when context unknown
+	} else {
+		text = fmt.Sprintf("%.1f%%", pct)
+	}
 
 	// Add max tokens
 	if f.contextMaxTokens > 0 {

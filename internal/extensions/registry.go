@@ -21,22 +21,29 @@ type SlashCommandHandler func(args []string, ctx ExtensionContext) (string, erro
 // Registry — thread-safe storage for extension registrations
 // ---------------------------------------------------------------------------
 
-// Registry holds all tools, slash commands, and prompts registered by extensions.
-// It is thread-safe and designed to be shared across all extensions via the
-// ExtensionContext.
+// Registry holds all tools, slash commands, prompts, shortcuts, and flags
+// registered by extensions. It is thread-safe and designed to be shared across
+// all extensions via the ExtensionContext.
 type Registry struct {
 	mu sync.RWMutex
 
 	tools         map[string]types.AgentTool
 	slashCommands map[string]SlashCommandHandler
 	prompts       map[string]string // name → template
+	shortcuts     map[string]ShortcutDef
+	flags         map[string]FlagDef
+	flagValues    map[string]interface{}
+	acProviders   []AutocompleteProvider
 }
 
 // globalRegistry is the package-level registry shared by all extensions.
 var globalRegistry = &Registry{
-	tools:         make(map[string]types.AgentTool),
+	tools:       make(map[string]types.AgentTool),
 	slashCommands: make(map[string]SlashCommandHandler),
-	prompts:       make(map[string]string),
+	prompts:     make(map[string]string),
+	shortcuts:   make(map[string]ShortcutDef),
+	flags:       make(map[string]FlagDef),
+	flagValues:  make(map[string]interface{}),
 }
 
 // ---------------------------------------------------------------------------
@@ -183,7 +190,113 @@ func (r *Registry) GetPrompt(name string) string {
 	return r.prompts[name]
 }
 
+	// ---------------------------------------------------------------------------
+	// Autocomplete provider registration
+	// ---------------------------------------------------------------------------
+
+	// AddAutocompleteProvider registers an autocomplete provider function.
+	func (r *Registry) AddAutocompleteProvider(provider AutocompleteProvider) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.acProviders = append(r.acProviders, provider)
+	}
+
+	// GetAllAutocompleteProviders returns all registered autocomplete providers.
+	func (r *Registry) GetAllAutocompleteProviders() []AutocompleteProvider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := make([]AutocompleteProvider, len(r.acProviders))
+	copy(result, r.acProviders)
+	return result
+	}
+
+
 // ---------------------------------------------------------------------------
+
+	// ---------------------------------------------------------------------------
+	// Shortcut registration
+	// ---------------------------------------------------------------------------
+
+	// RegisterShortcut registers a keyboard shortcut.
+	func (r *Registry) RegisterShortcut(key string, handler ShortcutHandler, description string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.shortcuts[key]; exists {
+	return fmt.Errorf("shortcut %q is already registered", key)
+	}
+
+	r.shortcuts[key] = ShortcutDef{
+	Key:         key,
+	Description: description,
+	Handler:     handler,
+	}
+	return nil
+	}
+
+	// GetAllShortcuts returns a copy of all registered shortcuts.
+	func (r *Registry) GetAllShortcuts() map[string]ShortcutDef {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	result := make(map[string]ShortcutDef, len(r.shortcuts))
+	for k, v := range r.shortcuts {
+	result[k] = v
+	}
+	return result
+	}
+
+	// ---------------------------------------------------------------------------
+	// Flag registration
+	// ---------------------------------------------------------------------------
+
+	// RegisterFlag registers a CLI flag for the extension.
+	func (r *Registry) RegisterFlag(name string, description string, flagType FlagType, defaultVal interface{}) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.flags[name]; exists {
+	return fmt.Errorf("flag %q is already registered", name)
+	}
+
+	r.flags[name] = FlagDef{
+	Name:        name,
+	Description: description,
+	Type:        flagType,
+	Default:     defaultVal,
+	}
+	if defaultVal != nil {
+	r.flagValues[name] = defaultVal
+	}
+	return nil
+	}
+
+	// GetFlag returns the current value of a registered flag.
+	func (r *Registry) GetFlag(name string) interface{} {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.flagValues[name]
+	}
+
+	// SetFlagValue sets a flag value (called externally, e.g. from CLI parsing).
+	func (r *Registry) SetFlagValue(name string, value interface{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.flagValues[name] = value
+	}
+
+	// GetAllFlags returns a copy of all registered flags.
+	func (r *Registry) GetAllFlags() map[string]FlagDef {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	result := make(map[string]FlagDef, len(r.flags))
+	for k, v := range r.flags {
+	result[k] = v
+	}
+	return result
+	}
+
 // Convenience package-level functions that operate on the global registry
 // ---------------------------------------------------------------------------
 
@@ -207,6 +320,11 @@ func GetAllTools() []types.AgentTool {
 	return globalRegistry.GetAllTools()
 }
 
+// GetSlashCommand returns a registered slash command handler by name, or nil.
+func GetSlashCommand(cmd string) SlashCommandHandler {
+	return globalRegistry.GetSlashCommand(cmd)
+}
+
 // GetAllSlashCommands returns all slash commands from the global registry.
 func GetAllSlashCommands() map[string]SlashCommandHandler {
 	return globalRegistry.GetAllSlashCommands()
@@ -215,4 +333,44 @@ func GetAllSlashCommands() map[string]SlashCommandHandler {
 // GetAllPrompts returns all prompt templates from the global registry.
 func GetAllPrompts() map[string]string {
 	return globalRegistry.GetAllPrompts()
+}
+
+// RegisterShortcut registers a keyboard shortcut in the global registry.
+func RegisterShortcut(key string, handler ShortcutHandler, description string) error {
+	return globalRegistry.RegisterShortcut(key, handler, description)
+}
+
+// GetAllShortcuts returns all shortcuts from the global registry.
+func GetAllShortcuts() map[string]ShortcutDef {
+	return globalRegistry.GetAllShortcuts()
+}
+
+// RegisterFlag registers a CLI flag in the global registry.
+func RegisterFlag(name string, description string, flagType FlagType, defaultVal interface{}) error {
+	return globalRegistry.RegisterFlag(name, description, flagType, defaultVal)
+}
+
+// GetFlag returns a flag value from the global registry.
+func GetFlag(name string) interface{} {
+	return globalRegistry.GetFlag(name)
+}
+
+// SetFlagValue sets a flag value in the global registry.
+func SetFlagValue(name string, value interface{}) {
+	globalRegistry.SetFlagValue(name, value)
+}
+
+// GetAllFlags returns all flags from the global registry.
+func GetAllFlags() map[string]FlagDef {
+	return globalRegistry.GetAllFlags()
+}
+
+// AddAutocompleteProvider registers an autocomplete provider in the global registry.
+func AddAutocompleteProvider(provider AutocompleteProvider) {
+	globalRegistry.AddAutocompleteProvider(provider)
+}
+
+// GetAllAutocompleteProviders returns all autocomplete providers from the global registry.
+func GetAllAutocompleteProviders() []AutocompleteProvider {
+	return globalRegistry.GetAllAutocompleteProviders()
 }

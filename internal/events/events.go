@@ -231,10 +231,10 @@ func ToolCallEnd(name, id, args string) AgentEvent {
 }
 
 // ToolStart creates a tool_start event.
-func ToolStart(name string) AgentEvent {
+func ToolStart(id, name string) AgentEvent {
 	return AgentEvent{
 		Type: "tool_start",
-		Data: map[string]interface{}{"tool_name": name},
+		Data: map[string]interface{}{"tool_call_id": id, "tool_name": name},
 	}
 }
 
@@ -270,6 +270,38 @@ func ErrorEvent(message string) AgentEvent {
 		Type: "error",
 		Data: map[string]interface{}{"message": message},
 	}
+}
+
+// CompactionStart creates a compaction_start event.
+func CompactionStart() AgentEvent {
+	return AgentEvent{Type: "compaction_start", Data: map[string]interface{}{}}
+}
+
+// CompactionEnd creates a compaction_end event with optional summary data.
+func CompactionEnd(tokensBefore int, summary string) AgentEvent {
+	return AgentEvent{
+		Type: "compaction_end",
+		Data: map[string]interface{}{
+			"tokens_before": tokensBefore,
+			"summary":       summary,
+		},
+	}
+}
+
+// AutoRetryStart creates an auto_retry_start event with attempt info.
+func AutoRetryStart(attempt, maxAttempts int) AgentEvent {
+	return AgentEvent{
+		Type: "auto_retry_start",
+		Data: map[string]interface{}{
+			"attempt":      attempt,
+			"max_attempts": maxAttempts,
+		},
+	}
+}
+
+// AutoRetryEnd creates an auto_retry_end event.
+func AutoRetryEnd() AgentEvent {
+	return AgentEvent{Type: "auto_retry_end", Data: map[string]interface{}{}}
 }
 
 // EmitStreamingEvents bridges LLM StreamEvent channel output into AgentEvent

@@ -2,6 +2,8 @@ package prompt
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/huichen/xihu/pkg/types"
@@ -218,4 +220,56 @@ func escapeXML(s string) string {
 	s = strings.ReplaceAll(s, "<", "&lt;")
 	s = strings.ReplaceAll(s, ">", "&gt;")
 	return s
+}
+
+// ContextFile represents a discovered context file (AGENTS.md, CLAUDE.md, etc.).
+type ContextFile struct {
+	Path    string // absolute path
+	Content string // file content
+}
+
+// contextFileNames lists files scanned for implicit context rules.
+var contextFileNames = []string{"AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"}
+
+// DiscoverContextFiles scans the agent directory and project root for context files.
+// Returns discovered files in order: global config first, then project root and ancestors.
+func DiscoverContextFiles(agentDir, cwd string) []ContextFile {
+	var files []ContextFile
+	seen := make(map[string]bool)
+
+	tryDir := func(dir string) {
+		for _, name := range contextFileNames {
+			fp := filepath.Join(dir, name)
+			if seen[fp] {
+				continue
+			}
+			seen[fp] = true
+			data, err := os.ReadFile(fp)
+			if err == nil {
+				files = append(files, ContextFile{Path: fp, Content: string(data)})
+			}
+		}
+	}
+
+	// 1. Global agent directory (~/.xihu/)
+	if agentDir != "" {
+		tryDir(agentDir)
+	}
+
+	// 2. Traverse from cwd up to root
+	if cwd != "" {
+		abs, err := filepath.Abs(cwd)
+		if err == nil {
+			for {
+				tryDir(abs)
+				parent := filepath.Dir(abs)
+				if parent == abs {
+					break
+				}
+				abs = parent
+			}
+		}
+	}
+
+	return files
 }

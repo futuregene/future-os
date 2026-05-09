@@ -191,11 +191,6 @@ func main() {
 	allSkills, _ := skills.DiscoverSkills(searchDirs, "user")
 	resolvedSkills := skills.ResolveCollisions(allSkills)
 
-	var skillNames []string
-	for _, s := range resolvedSkills {
-		skillNames = append(skillNames, s.Name)
-	}
-
 	var promptSkills []prompt.Skill
 	for _, s := range resolvedSkills {
 		promptSkills = append(promptSkills, prompt.Skill{
@@ -203,6 +198,22 @@ func main() {
 			Description: s.Description,
 			Location:    s.Path,
 		})
+	}
+
+	// ── Discover context files (AGENTS.md, CLAUDE.md) ────────────────────
+	agentDir := filepath.Join(os.Getenv("HOME"), ".xihu")
+	var cfPaths []string
+	agentsContent := ""
+	if !args.NoContextFiles {
+		contextFiles := prompt.DiscoverContextFiles(agentDir, cwd)
+		cfPaths = make([]string, len(contextFiles))
+		for i, cf := range contextFiles {
+			cfPaths[i] = cf.Path
+			if agentsContent != "" {
+				agentsContent += "\n\n"
+			}
+			agentsContent += cf.Content
+		}
 	}
 
 	// ── Build system prompt ────────────────────────────────────────────────
@@ -214,6 +225,7 @@ func main() {
 		Date:             time.Now().Format("2006-01-02"),
 		Tools:            engine.CodingTools(),
 		Skills:           promptSkills,
+		AGENTSContent:    agentsContent,
 		AppendPrompt:     appendText,
 	})
 
@@ -234,6 +246,8 @@ func main() {
 		SystemPrompt:   builtPrompt,
 		NoTools:        args.NoTools,
 		Verbose:        args.Verbose,
+		ExtensionPaths: args.Extensions,
+		NoExtensions:   args.NoExtensions,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Engine error: %v\n", err)
@@ -276,7 +290,24 @@ func main() {
 
 	// ── Interactive REPL (no prompt + TTY) ─────────────────────────────────
 	if userPrompt == "" && isTerminal() {
-		err := tui.Run(eng.Loop, sessMgr, sess, "", cmdCtx.Model, cmdCtx.BaseURL, skillNames, nil, thinking)
+		availableModels := []string(nil)
+		if eng.Settings != nil {
+			availableModels = eng.Settings.EnabledModels
+		}
+		// Context file paths already discovered above; reuse cfPaths
+		// Parse prompt templates from standard directories
+		var promptTemplates []prompt.PromptTemplate
+		templateDirs := []string{
+			filepath.Join(agentDir, "prompts"),
+			filepath.Join(cwd, ".xihu", "prompts"),
+		}
+		for _, dir := range templateDirs {
+			templates, err := prompt.ParseTemplates(dir)
+			if err == nil {
+				promptTemplates = append(promptTemplates, templates...)
+			}
+		}
+		err := tui.Run(eng.Loop, sessMgr, sess, "", cmdCtx.Model, cmdCtx.BaseURL, resolvedSkills, nil, thinking, availableModels, cfg, eng.ExtensionRunner, promptTemplates, cfPaths)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 			os.Exit(1)

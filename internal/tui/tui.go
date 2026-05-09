@@ -11,7 +11,11 @@ import (
 	"golang.org/x/term"
 
 	"github.com/huichen/xihu/internal/agent"
+	"github.com/huichen/xihu/internal/extensions"
+	"github.com/huichen/xihu/internal/prompt"
 	"github.com/huichen/xihu/internal/session"
+	"github.com/huichen/xihu/internal/settings"
+	"github.com/huichen/xihu/internal/skills"
 	"github.com/huichen/xihu/internal/tui/components"
 	"github.com/huichen/xihu/pkg/types"
 )
@@ -23,14 +27,19 @@ func Run(
 	sess *session.Session,
 	initialPrompt string,
 	modelStr, baseURL string,
-	skills []string,
+	skillList []skills.Skill,
 	extensions []string,
 	thinkingLevel string,
+	availableModels []string,
+	cfg *settings.Settings,
+	extRunner *extensions.ExtensionRunner,
+	promptTemplates []prompt.PromptTemplate,
+	contextFiles []string,
 ) error {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return runCLI(agt, sess, initialPrompt)
 	}
-	return runBubbleTea(agt, sessMgr, sess, initialPrompt, modelStr, baseURL, skills, extensions, thinkingLevel)
+	return runBubbleTea(agt, sessMgr, sess, initialPrompt, modelStr, baseURL, skillList, extensions, thinkingLevel, availableModels, cfg, extRunner, promptTemplates, contextFiles)
 }
 
 // runBubbleTea launches the Bubble Tea interactive TUI.
@@ -40,12 +49,17 @@ func runBubbleTea(
 	sess *session.Session,
 	initialPrompt string,
 	modelStr, baseURL string,
-	skills []string,
+	skillList []skills.Skill,
 	extensions []string,
 	thinkingLevel string,
+	availableModels []string,
+	cfg *settings.Settings,
+	extRunner *extensions.ExtensionRunner,
+	promptTemplates []prompt.PromptTemplate,
+	contextFiles []string,
 ) error {
 	theme := DefaultTheme()
-	app := NewAppModel(agt, sessMgr, sess, theme, modelStr, skills, extensions, thinkingLevel)
+	app := NewAppModel(agt, sessMgr, sess, theme, modelStr, skillList, extensions, thinkingLevel, availableModels, cfg, promptTemplates, contextFiles)
 
 	p := tea.NewProgram(
 		&app,
@@ -55,6 +69,13 @@ func runBubbleTea(
 
 	// Set program reference so goroutines can send messages
 	app.program = p
+
+	// Set up extension UI bridge for runtime extension dialogs
+	app.extensionBridge = &tuiExtensionBridge{program: p, inputRegistry: app.inputRegistry}
+	app.extensionStatuses = make(map[string]string)
+
+	// Store extension runner for command dispatch
+	app.extRunner = extRunner
 
 	// If we have an initial prompt, send it as a message
 	if initialPrompt != "" {

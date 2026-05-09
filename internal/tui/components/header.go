@@ -6,142 +6,76 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Header displays startup information: changelog, version, resource status.
+// Header shows a compact status bar above the chat.
 type Header struct {
-	visible     bool
-	changelog   string   // latest changelog entries
-	version     string   // current version
-	newVersion  string   // new version available
-	resources   []ResourceStatus
-	diagnostics []string
-	expanded    bool
+	width    int
+	expanded bool
+	accent   string
 }
 
-// ResourceStatus tracks a loaded resource.
-type ResourceStatus struct {
-	Type   string // "skill", "prompt", "extension", "theme"
-	Name   string
-	Count  int
-	Error  string
+// NewHeader creates a new Header component.
+func NewHeader(accentColor string) Header {
+	return Header{accent: accentColor}
 }
 
-// NewHeader creates a new header component.
-func NewHeader() Header {
-	return Header{
-		visible:  true,
-		expanded: false,
-	}
+// SetWidth updates the header width.
+func (h *Header) SetWidth(w int) {
+	h.width = w
 }
 
-// SetChangelog sets the changelog content.
-func (h *Header) SetChangelog(text string) {
-	h.changelog = text
-}
-
-// SetVersion sets version info.
-func (h *Header) SetVersion(current, available string) {
-	h.version = current
-	h.newVersion = available
-}
-
-// AddResource adds a loaded resource.
-func (h *Header) AddResource(typ, name string, count int, err string) {
-	h.resources = append(h.resources, ResourceStatus{Type: typ, Name: name, Count: count, Error: err})
-}
-
-// AddDiagnostic adds a diagnostic message.
-func (h *Header) AddDiagnostic(msg string) {
-	h.diagnostics = append(h.diagnostics, msg)
-}
-
-// Toggle expands/collapses the header.
+// Toggle toggles expanded mode.
 func (h *Header) Toggle() {
 	h.expanded = !h.expanded
 }
 
+// Expanded returns whether the header is in expanded mode.
+func (h Header) Expanded() bool {
+	return h.expanded
+}
+
 // View renders the header.
 func (h Header) View() string {
-	if !h.visible {
+	if h.width <= 0 {
 		return ""
 	}
 
-	style := lipgloss.NewStyle().
-		Background(lipgloss.Color("#21252b")).
-		Padding(1, 2)
+	accentStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(h.accent)).
+		Bold(true)
+	dimStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#5c6370")).
+		Faint(true)
+	dividerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#3e4452"))
 
+	divider := dividerStyle.Render(strings.Repeat("─", h.width))
+
+	if h.expanded {
+		return h.renderExpanded(accentStyle, dimStyle, divider)
+	}
+	return h.renderCompact(accentStyle, dimStyle, divider)
+}
+
+func (h Header) renderCompact(accent, dim lipgloss.Style, divider string) string {
+	logo := accent.Render("xihu")
+	hints := dim.Render("Esc interrupt  Ctrl+C clear  / commands  ! bash  Ctrl+H help  Ctrl+O tools")
+	return lipgloss.JoinVertical(lipgloss.Top, logo+"  "+hints, divider)
+}
+
+func (h Header) renderExpanded(accent, dim lipgloss.Style, divider string) string {
 	var sb strings.Builder
-
-	// Version line
-	if h.version != "" {
-		sb.WriteString(lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#61afef")).Bold(true).
-			Render("xihu " + h.version))
-		if h.newVersion != "" {
-			sb.WriteString("  " + lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#e5c07b")).
-				Render("(update available: "+h.newVersion+")"))
-		}
-		sb.WriteByte('\n')
-	}
-
-	if !h.expanded {
-		sb.WriteString(lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#6c7086")).
-			Render("Press Enter to expand…"))
-		return style.Render(sb.String())
-	}
-
-	// Changelog
-	if h.changelog != "" {
-		sb.WriteString(lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#abb2bf")).
-			Render("Changelog:"))
-		sb.WriteByte('\n')
-		for _, line := range strings.Split(h.changelog, "\n") {
-			if line == "" {
-				continue
-			}
-			sb.WriteString("  " + lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#98c379")).
-				Render("• "+strings.TrimSpace(line)))
-			sb.WriteByte('\n')
-		}
-	}
-
-	// Resources
-	if len(h.resources) > 0 {
-		sb.WriteString(lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#abb2bf")).
-			Render("Loaded:"))
-		sb.WriteByte('\n')
-		for _, r := range h.resources {
-			icon := "✓"
-			color := lipgloss.Color("#98c379")
-			if r.Error != "" {
-				icon = "✗"
-				color = lipgloss.Color("#e06c75")
-			}
-			sb.WriteString("  " + lipgloss.NewStyle().Foreground(color).Render(
-				icon+" "+r.Type+": "+r.Name))
-			if r.Count > 1 {
-				sb.WriteString(" (x" + itoa(r.Count) + ")")
-			}
-			if r.Error != "" {
-				sb.WriteString(" — " + r.Error)
-			}
-			sb.WriteByte('\n')
-		}
-	}
-
-	// Diagnostics
-	if len(h.diagnostics) > 0 {
-		for _, d := range h.diagnostics {
-			sb.WriteString(lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#e5c07b")).
-				Render("⚠ " + d))
-			sb.WriteByte('\n')
-		}
-	}
-
-	return style.Render(sb.String())
+	sb.WriteString(accent.Render("xihu") + dim.Render(" — AI coding assistant"))
+	sb.WriteByte('\n')
+	sb.WriteString(dim.Render("Nav:   ") + "arrows cursor  PgUp/PgDn scroll  Home/End  gg top  G bottom")
+	sb.WriteByte('\n')
+	sb.WriteString(dim.Render("Edit:  ") + "Enter submit  Shift+Enter newline  Tab complete  Ctrl+Y yank  Alt+Y yank-pop  Ctrl+_ undo")
+	sb.WriteByte('\n')
+	sb.WriteString(dim.Render("Acts:  ") + "Esc interrupt  Ctrl+C clear  Ctrl+D exit  Ctrl+Z suspend  Ctrl+L model  Ctrl+G edit  Ctrl+O tools  Ctrl+T thinking")
+	sb.WriteByte('\n')
+	sb.WriteString(dim.Render("Msgs:  ") + "Alt+Enter queue follow-up  Alt+Up dequeue")
+	sb.WriteByte('\n')
+	sb.WriteString(dim.Render("More:  ") + "/fork  /tree  /settings  /theme  /session info  Ctrl+H collapse")
+	sb.WriteByte('\n')
+	sb.WriteString(divider)
+	return sb.String()
 }

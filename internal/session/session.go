@@ -65,15 +65,23 @@ type SessionEntry struct {
 
 // Session stores a conversation session with tree-structured entries.
 type Session struct {
-	ID        string         `json:"id"`
-	Version   int            `json:"version"`
-	CWD       string         `json:"cwd"`
-	Model     string         `json:"model"`
-	BaseURL   string         `json:"base_url"`
-	Entries   []SessionEntry `json:"entries"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
+	ID                string         `json:"id"`
+	Version           int            `json:"version"`
+	CWD               string         `json:"cwd"`
+	Model             string         `json:"model"`
+	BaseURL           string         `json:"base_url"`
+	Name              string         `json:"name,omitempty"`
+	ParentSessionID string `json:"parent_session_id,omitempty"` // session ID this was forked from
+	Entries           []SessionEntry `json:"entries"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
 }
+
+// GetSessionName returns the session name, or empty string if not set.
+func (s *Session) GetSessionName() string { return s.Name }
+
+// SetSessionName sets the session name.
+func (s *Session) SetSessionName(name string) { s.Name = name }
 
 // BaseURL returns the session's base URL.
 func (s *Session) GetBaseURL() string { return s.BaseURL }
@@ -212,15 +220,31 @@ func CompactionEntry(summary string, firstKeptEntryID string, parentID string) S
 
 // sessionInfoEntry creates a session_info metadata entry (first line in JSONL).
 func sessionInfoEntry(s *Session) SessionEntry {
+	content := fmt.Sprintf(
+		`{"cwd":%q,"base_url":%q,"created_at":%q,"updated_at":%q`,
+		s.CWD, s.BaseURL, s.CreatedAt.Format(time.RFC3339), s.UpdatedAt.Format(time.RFC3339),
+	)
+	if s.Name != "" {
+		content += fmt.Sprintf(`,"name":%q`, s.Name)
+	}
+	content += "}"
 	return SessionEntry{
 		ID:        s.ID,
 		Type:      EntryTypeSessionInfo,
 		Model:     s.Model,
 		Timestamp: s.CreatedAt,
-		Content: json.RawMessage(fmt.Sprintf(
-			`{"cwd":%q,"base_url":%q,"created_at":%q,"updated_at":%q}`,
-			s.CWD, s.BaseURL, s.CreatedAt.Format(time.RFC3339), s.UpdatedAt.Format(time.RFC3339),
-		)),
+		Content:   json.RawMessage(content),
+	}
+}
+
+// sessionInfoEntryByName creates a session_info entry that only sets the name field.
+func sessionInfoEntryByName(name, parentID string) SessionEntry {
+	return SessionEntry{
+		ID:        GenerateEntryID(),
+		ParentID:  parentID,
+		Type:      EntryTypeSessionInfo,
+		Timestamp: time.Now(),
+		Content:   json.RawMessage(fmt.Sprintf(`{"name":%q}`, name)),
 	}
 }
 
@@ -233,10 +257,12 @@ func parseSessionInfo(entry SessionEntry, s *Session) {
 		BaseURL   string `json:"base_url"`
 		CreatedAt string `json:"created_at"`
 		UpdatedAt string `json:"updated_at"`
+		Name      string `json:"name"`
 	}
 	if err := json.Unmarshal(entry.Content, &meta); err == nil {
 		s.CWD = meta.CWD
 		s.BaseURL = meta.BaseURL
+		s.Name = meta.Name
 		if t, err := time.Parse(time.RFC3339, meta.CreatedAt); err == nil {
 			s.CreatedAt = t
 		}
@@ -324,6 +350,15 @@ func (m *Manager) loadFromPath(path string) (*Session, error) {
 			continue
 		}
 		firstLine = false
+		// Extract name from mid-session session_info entries
+		if entry.Type == EntryTypeSessionInfo {
+			var meta struct {
+				Name string `json:"name"`
+			}
+			if json.Unmarshal(entry.Content, &meta) == nil && meta.Name != "" {
+				s.Name = meta.Name
+			}
+		}
 		s.Entries = append(s.Entries, entry)
 	}
 
@@ -646,14 +681,15 @@ func ForkSession(parent *Session, fromEntryID string) *Session {
 
 	now := time.Now()
 	return &Session{
-		ID:        GenerateID(),
-		CWD:       parent.CWD,
-		Model:     parent.Model,
-		BaseURL:   parent.BaseURL,
-		Entries:   entries,
-		CreatedAt: now,
-		UpdatedAt: now,
-		Version:   CURRENT_SESSION_VERSION,
+		ID:              GenerateID(),
+		CWD:             parent.CWD,
+		Model:           parent.Model,
+		BaseURL:         parent.BaseURL,
+		ParentSessionID: parent.ID,
+		Entries:         entries,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Version:         CURRENT_SESSION_VERSION,
 	}
 }
 

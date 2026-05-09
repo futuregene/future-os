@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/huichen/xihu/internal/utils"
 )
 
 // Args holds all parsed CLI arguments.
@@ -361,6 +363,6 @@ Built-in Tools:
 
 // printVersion prints version info.
 func printVersion() {
-	fmt.Println("xihu v0.3.0")
+	fmt.Println("xihu v" + utils.Version)
 	os.Exit(0)
 }

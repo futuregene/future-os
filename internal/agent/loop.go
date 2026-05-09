@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/huichen/xihu/internal/compaction"
 	"github.com/huichen/xihu/internal/events"
 	"github.com/huichen/xihu/pkg/types"
 )
@@ -58,6 +59,9 @@ type Loop struct {
 
 	// FollowUpMode controls follow-up behavior: "all" (default) or "one-at-a-time".
 	FollowUpMode string
+
+	// LastCompactionResult holds the result of the most recent compaction (set by TransformContext).
+	LastCompactionResult *compaction.CompactionResult
 
 	// ParallelTools enables concurrent execution of multiple tool calls.
 	ParallelTools bool
@@ -122,6 +126,7 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 	}
 
 	var lastError error
+	retryAttempt := 0
 	for turn := 0; turn < maxTurns; turn++ {
 		// Drain steering queue FIRST (before checking context cancellation).
 		// This ensures interrupt messages are not lost when context is cancelled.
@@ -147,10 +152,26 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 			l.EventBus.Emit(events.TurnStart(turn))
 		}
 
-		// Apply context transform if configured
+		// Apply context transform if configured (e.g., compaction)
 		workMessages := messages
 		if l.Config.TransformContext != nil {
+			beforeLen := len(workMessages)
+			if l.EventBus != nil {
+				l.EventBus.Emit(events.CompactionStart())
+			}
 			workMessages = l.Config.TransformContext(messages, "")
+			if l.EventBus != nil {
+				if len(workMessages) < beforeLen {
+					tokensBefore := 0
+					summary := ""
+					if l.LastCompactionResult != nil {
+						tokensBefore = l.LastCompactionResult.TokensBefore
+						summary = l.LastCompactionResult.Summary
+						l.LastCompactionResult = nil // reset after use
+					}
+					l.EventBus.Emit(events.CompactionEnd(tokensBefore, summary))
+				}
+			}
 		}
 
 		// Emit message_start for assistant
@@ -170,7 +191,11 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 			}
 			lastError = err
 			// Check if retryable
-			if l.Config.MaxRetries > 0 {
+			if l.Config.MaxRetries > 0 && retryAttempt < l.Config.MaxRetries {
+				retryAttempt++
+				if l.EventBus != nil {
+					l.EventBus.Emit(events.AutoRetryStart(retryAttempt, l.Config.MaxRetries))
+				}
 				continue // retry on next turn
 			}
 			// Emit agent_end
@@ -178,6 +203,11 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 				l.EventBus.Emit(events.AgentEnd("error", nil))
 			}
 			return "", messages, fmt.Errorf("turn %d: %w", turn, err)
+		}
+		// Successful stream call after retry -> emit retry end
+		if retryAttempt > 0 && l.EventBus != nil {
+			l.EventBus.Emit(events.AutoRetryEnd())
+			retryAttempt = 0
 		}
 
 		var fullText string
@@ -222,6 +252,14 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 				}
 				if l.EventBus != nil {
 					l.EventBus.Emit(events.TextDelta(event.Text))
+				}
+			case "toolcall_start":
+				if l.EventBus != nil {
+					l.EventBus.Emit(events.ToolCallStart(event.ToolName, event.ToolID))
+				}
+			case "toolcall_delta":
+				if l.EventBus != nil {
+					l.EventBus.Emit(events.ToolCallDelta(event.Text))
 				}
 			case "tool_call", "toolcall_end":
 				if event.ToolCall != nil {
@@ -361,6 +399,9 @@ func (l *Loop) executeTools(ctx context.Context, turn int, toolCalls []types.Too
 					return
 				}
 
+				if l.EventBus != nil {
+					l.EventBus.Emit(events.ToolStart(call.ID, call.Function.Name))
+				}
 				start := time.Now()
 				r, err := l.executeTool(call)
 				toolResults[idx].result = r
@@ -388,6 +429,9 @@ func (l *Loop) executeTools(ctx context.Context, turn int, toolCalls []types.Too
 				break
 			}
 
+			if l.EventBus != nil {
+				l.EventBus.Emit(events.ToolStart(tc.ID, tc.Function.Name))
+			}
 			start := time.Now()
 			result, err := l.executeTool(tc)
 			duration := time.Since(start)
@@ -480,9 +524,36 @@ doneSteering:
 	}
 }
 
+// QueuedCounts returns separate steering and follow-up queue lengths.
+func (l *Loop) QueuedCounts() (steering, followUp int) {
+	return len(l.SteeringQueue), len(l.FollowUpQueue)
+}
+
 // PendingMessageCount returns the total pending messages in both queues.
 func (l *Loop) PendingMessageCount() int {
 	return len(l.SteeringQueue) + len(l.FollowUpQueue)
+}
+
+// DrainQueues drains all pending messages from both queues and returns them.
+func (l *Loop) DrainQueues() []string {
+	var msgs []string
+	for {
+		select {
+		case msg := <-l.SteeringQueue:
+			msgs = append(msgs, msg)
+		default:
+			goto doneSteering
+		}
+	}
+doneSteering:
+	for {
+		select {
+		case msg := <-l.FollowUpQueue:
+			msgs = append(msgs, msg)
+		default:
+			return msgs
+		}
+	}
 }
 
 func (l *Loop) executeTool(tc types.ToolCall) (string, error) {
