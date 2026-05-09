@@ -3587,74 +3587,119 @@ func (m *AppModel) showModelSelector() {
 		modelInfoMap[info.ID] = info
 	}
 
-	items := make([]components.SelectorItem, 0, len(m.availableModels))
-	for _, model := range m.availableModels {
-		name, provider := parseModelString(model)
-		isCurrent := model == m.agent.Model || name == m.agent.Model
-		label := name
-		if isCurrent {
-			label = "→ " + name + " ✓"
+	// Helper to build SelectorItems from a model list
+	buildItems := func(modelList []string) []components.SelectorItem {
+		items := make([]components.SelectorItem, 0, len(modelList))
+		for _, model := range modelList {
+			name, provider := parseModelString(model)
+			isCurrent := model == m.agent.Model || name == m.agent.Model
+			label := name
+			if isCurrent {
+				label = "→ " + name + " ✓"
+			}
+			desc := "[" + provider + "]"
+			caps := ""
+			if info, ok := modelInfoMap[name]; ok {
+				if info.MaxTokens > 0 {
+					desc += fmt.Sprintf("  %dK ctx", info.MaxTokens/1000)
+				}
+				if info.SupportsThinking {
+					caps += "T"
+				}
+				if info.SupportsTools {
+					caps += "🔧"
+				}
+				if info.SupportsVision {
+					caps += "👁"
+				}
+				if info.Pricing.Prompt > 0 {
+					desc += fmt.Sprintf("  $%.1f/$%.1f", info.Pricing.Prompt*10, info.Pricing.Completion*10)
+				}
+			} else if info, ok := modelInfoMap[model]; ok {
+				if info.MaxTokens > 0 {
+					desc += fmt.Sprintf("  %dK ctx", info.MaxTokens/1000)
+				}
+				if info.SupportsThinking {
+					caps += "T"
+				}
+				if info.SupportsTools {
+					caps += "🔧"
+				}
+				if info.SupportsVision {
+					caps += "👁"
+				}
+				if info.Pricing.Prompt > 0 {
+					desc += fmt.Sprintf("  $%.1f/$%.1f", info.Pricing.Prompt*10, info.Pricing.Completion*10)
+				}
+			}
+			if caps != "" {
+				desc += "  " + caps
+			}
+			if isCurrent {
+				desc += " current"
+			}
+			items = append(items, components.SelectorItem{
+				Label:       label,
+				Description: desc,
+				Value:       model,
+			})
 		}
-		desc := "[" + provider + "]"
-		// Add capability indicators
-		caps := ""
-		// Try name match first, then full model string match
-		if info, ok := modelInfoMap[name]; ok {
-			if info.MaxTokens > 0 {
-				desc += fmt.Sprintf("  %dK ctx", info.MaxTokens/1000)
-			}
-			if info.SupportsThinking {
-				caps += "T" // thinking
-			}
-			if info.SupportsTools {
-				caps += "🔧" // tools
-			}
-			if info.SupportsVision {
-				caps += "👁" // vision
-			}
-			if info.Pricing.Prompt > 0 {
-				desc += fmt.Sprintf("  $%.1f/$%.1f", info.Pricing.Prompt*10, info.Pricing.Completion*10)
-			}
-		} else if info, ok := modelInfoMap[model]; ok {
-			if info.MaxTokens > 0 {
-				desc += fmt.Sprintf("  %dK ctx", info.MaxTokens/1000)
-			}
-			if info.SupportsThinking {
-				caps += "T" // thinking
-			}
-			if info.SupportsTools {
-				caps += "🔧" // tools
-			}
-			if info.SupportsVision {
-				caps += "👁" // vision
-			}
-			if info.Pricing.Prompt > 0 {
-				desc += fmt.Sprintf("  $%.1f/$%.1f", info.Pricing.Prompt*10, info.Pricing.Completion*10)
-			}
-		}
-		if caps != "" {
-			desc += "  " + caps
-		}
-		if isCurrent {
-			desc += " current"
-		}
-		items = append(items, components.SelectorItem{
-			Label:       label,
-			Description: desc,
-			Value:       model,
-		})
+		return items
 	}
 
-	// Show overlay with height = min(len(items)+5, 20), width = 60
-	h := len(items) + 5
-	if h > 20 {
-		h = 20
-	}
-	m.overlay.ShowSelector("Select Model (type to filter, T=thinking, 🔧=tools, 👁=vision)", items, func(value string) {
-		if value != "" && m.program != nil {
-			m.program.Send(components.SelectorChosenMsg{Value: value})
+	// Determine if scoped models exist (TS pi-mono: Tab toggles all/scoped)
+	hasScoped := len(m.scopedModels) > 0
+	scopeAll := !hasScoped // start scoped if scoped models exist
+
+	// Build the scoped model list (only models in scopedModels set)
+	scopedList := make([]string, 0, len(m.scopedModels))
+	for _, model := range m.availableModels {
+		if m.scopedModels[model] {
+			scopedList = append(scopedList, model)
 		}
-	}, 60, h)
+	}
+
+	allItems := buildItems(m.availableModels)
+	scopedItems := buildItems(scopedList)
+
+	var showOverlay func()
+	showOverlay = func() {
+		var items []components.SelectorItem
+		var title string
+		if scopeAll {
+			items = allItems
+			title = "Select Model (all"
+		} else {
+			items = scopedItems
+			title = "Select Model (scoped"
+		}
+		if hasScoped {
+			title += " — Tab to toggle scope"
+		}
+		title += " | T=thinking, 🔧=tools, 👁=vision)"
+
+		h := len(items) + 5
+		if h > 20 {
+			h = 20
+		}
+		if h < 5 {
+			h = 5
+		}
+
+		m.overlay.ShowSelectorStayOnSelect(title, items, func(value string) {
+			if value != "" && m.program != nil {
+				m.program.Send(components.SelectorChosenMsg{Value: value})
+			}
+		}, func(key string) bool {
+			if key == "tab" && hasScoped {
+				scopeAll = !scopeAll
+				showOverlay()
+				return true
+			}
+			return false
+		}, 60, h)
+	}
+	showOverlay()
 }
 
 // cycleModelForward cycles to the next available model.

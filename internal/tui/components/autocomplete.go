@@ -94,17 +94,39 @@ func (a *Autocomplete) Filter() {
 	if a.prefix == "" {
 		return
 	}
-	filtered := make([]string, 0)
 	lower := strings.ToLower(a.prefix)
+
+	// First pass: prefix matches (e.g., "/mod" matches "/model")
+	prefixMatches := make([]string, 0)
+	fuzzyMatches := make([]string, 0)
 	for _, c := range a.candidates {
-		if strings.HasPrefix(strings.ToLower(c), lower) {
-			filtered = append(filtered, c)
+		cl := strings.ToLower(c)
+		if strings.HasPrefix(cl, lower) {
+			prefixMatches = append(prefixMatches, c)
+		} else if subsequenceMatch(cl, lower) {
+			fuzzyMatches = append(fuzzyMatches, c)
 		}
 	}
-	a.candidates = filtered
+
+	// Prefix matches first, then fuzzy matches
+	a.candidates = append(prefixMatches, fuzzyMatches...)
 	if a.selected >= len(a.candidates) {
 		a.selected = 0
 	}
+}
+
+// subsequenceMatch checks if all characters in query appear in s in order (fuzzy match).
+func subsequenceMatch(s, query string) bool {
+	if len(query) == 0 {
+		return true
+	}
+	j := 0
+	for i := 0; i < len(s) && j < len(query); i++ {
+		if s[i] == query[j] {
+			j++
+		}
+	}
+	return j == len(query)
 }
 
 // View renders the autocomplete popover with descriptions when available.
