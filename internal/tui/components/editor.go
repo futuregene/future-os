@@ -75,6 +75,26 @@ type Editor struct {
 	slashBorderColor   string // default, set by app
 	fileBorderColor    string // yellow/amber for @ file mode
 	symbolBorderColor  string // magenta/purple for # symbol mode
+	matchKey          KeyMatcher
+}
+
+// SetKeyMatcher sets the keybinding matcher for user-configurable keybindings.
+// When nil, the editor falls back to hardcoded defaults.
+func (e *Editor) SetKeyMatcher(m KeyMatcher) {
+	e.matchKey = m
+}
+
+// matches checks if a key string matches a binding, falling back to hardcoded keys.
+func (e *Editor) matches(ks, binding string, hardcoded ...string) bool {
+	if e.matchKey != nil {
+		return e.matchKey(ks, binding)
+	}
+	for _, h := range hardcoded {
+		if ks == h {
+			return true
+		}
+	}
+	return false
 }
 
 // NewEditor creates a new editor component.
@@ -359,7 +379,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 		ks = keyMsg.String()
 
 		// Tab: slash command autocomplete — cycles through candidates
-		if ks == "tab" && e.slashMode {
+		if e.matches(ks, BindTab, "tab") && e.slashMode {
 			if len(e.slashCandidates) > 0 {
 				e.pushUndo("delete")
 				e.slashMatchIndex = (e.slashMatchIndex + 1) % len(e.slashCandidates)
@@ -370,7 +390,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 		}
 
 		// Tab: file path autocomplete (not in slash/bash mode)
-		if ks == "tab" && !e.slashMode && !e.bashMode {
+		if e.matches(ks, BindTab, "tab") && !e.slashMode && !e.bashMode {
 			e.pushUndo("delete")
 			e.tryFilePathComplete()
 			e.updateSlashMode()
@@ -378,7 +398,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 		}
 
 		// Kill ring: yank (Ctrl+Y)
-		if ks == "ctrl+y" {
+		if e.matches(ks, BindYank, "ctrl+y") {
 			e.pushUndo("delete")
 			e.yank()
 			e.updateSlashMode()
@@ -386,7 +406,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 		}
 
 		// Kill ring: yank-pop (Alt+Y) — cycle through older kills
-		if ks == "alt+y" && e.lastAction == "yank" {
+		if e.matches(ks, BindYankPop, "alt+y") && e.lastAction == "yank" {
 			e.pushUndo("delete")
 			e.yankPop()
 			e.updateSlashMode()
@@ -394,14 +414,16 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 		}
 
 		// Kill ring: capture killed text for accumulation
-		isKillKey := ks == "ctrl+k" || ks == "ctrl+u" || ks == "ctrl+w" ||
-			ks == "alt+backspace" || ks == "alt+d"
+		isKillKey := e.matches(ks, BindDeleteToLineEnd, "ctrl+k") ||
+			e.matches(ks, BindDeleteToLineStart, "ctrl+u") ||
+			e.matches(ks, BindDeleteWordBackward, "ctrl+w", "alt+backspace") ||
+			e.matches(ks, BindDeleteWordForward, "alt+d", "alt+delete")
 		if isKillKey {
 			e.lastValue = e.area.Value()
 		}
 
 		// Undo (Ctrl+_ / Ctrl+/): restore previous editor state from undo stack
-		if ks == "ctrl+_" || ks == "ctrl+/" {
+		if e.matches(ks, BindUndo, "ctrl+_", "ctrl+/") {
 			e.undo()
 			e.updateSlashMode()
 			return e, nil
@@ -416,12 +438,12 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 		}
 
 		// Clear sticky column on any non-vertical key (TS pi-mono: setCursorCol)
-		if ks != "up" && ks != "down" && ks != "pgup" && ks != "pgdown" {
+		if !IsVerticalKey(ks, e.matchKey) {
 			e.preferredVisualCol = nil
 		}
 
 		// Save undo state before text-modifying operations
-		if isModifyingKey(ks) {
+		if e.isModifyingKey(ks) {
 			typ := "delete"
 			if len(ks) == 1 && ks[0] >= 32 && ks[0] < 127 {
 				r := rune(ks[0])
@@ -436,13 +458,13 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 
 		// Jump-to-character mode (TS pi-mono: Ctrl+] to jump forward, Ctrl+Alt+] to jump backward)
 		// After pressing, the next character key triggers the jump.
-		if ks == "ctrl+]" {
+		if e.matches(ks, BindJumpForward, "ctrl+]") {
 			e.jumpMode = true
 			e.jumpForward = true
 			e.area.Placeholder = "Jump to character…"
 			return e, nil
 		}
-		if ks == "ctrl+alt+]" {
+		if e.matches(ks, BindJumpBackward, "ctrl+alt+]") {
 			e.jumpMode = true
 			e.jumpForward = false
 			e.area.Placeholder = "Jump backward to character…"
@@ -465,31 +487,31 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 		}
 
 		// Word jump (TS pi-mono: Alt+Left/Right, Ctrl+Left/Right)
-		if ks == "alt+left" || ks == "ctrl+left" {
+		if e.matches(ks, BindCursorWordLeft, "alt+left", "ctrl+left", "alt+b") {
 			e.moveWordBackward()
 			e.updateSlashMode()
 			return e, nil
 		}
-		if ks == "alt+right" || ks == "ctrl+right" {
+		if e.matches(ks, BindCursorWordRight, "alt+right", "ctrl+right", "alt+f") {
 			e.moveWordForward()
 			e.updateSlashMode()
 			return e, nil
 		}
 
 		// Page Up/Down: scroll by one editor viewport height (TS pi-mono)
-		if ks == "pgup" {
+		if e.matches(ks, BindPageUp, "pgup") {
 			e.pageScroll(-1)
 			e.updateSlashMode()
 			return e, nil
 		}
-		if ks == "pgdown" {
+		if e.matches(ks, BindPageDown, "pgdown") {
 			e.pageScroll(1)
 			e.updateSlashMode()
 			return e, nil
 		}
 
 		// Cursor up with preferred visual column tracking (TS pi-mono: sticky column)
-		if ks == "up" {
+		if e.matches(ks, BindCursorUp, "up") {
 			if e.Empty() && len(e.history) > 0 {
 				if e.historyIndex == 0 {
 					e.historyDraft = e.area.Value()
@@ -520,7 +542,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 			return e, nil
 		}
 		// Cursor down with preferred visual column tracking
-		if ks == "down" {
+		if e.matches(ks, BindCursorDown, "down") {
 			if e.historyIndex > 0 {
 				e.historyIndex--
 				if e.historyIndex == 0 {
@@ -557,7 +579,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 		}
 
 		// Enter: submit (with backslash workaround for newline)
-		if ks == "enter" {
+		if e.matches(ks, BindSubmit, "enter") {
 			if !e.Empty() {
 				// Backslash+Enter workaround: if text ends with '\', strip it and insert newline
 				val := e.area.Value()
@@ -1217,16 +1239,19 @@ func (e *Editor) ExpandPastes(text string) string {
 
 // isModifyingKey returns true for keys that modify the editor text content.
 // Used for undo state tracking (TS pi-mono: UndoStack snapshot before mutation).
-func isModifyingKey(ks string) bool {
-	switch ks {
-	case "backspace", "delete",
-		"ctrl+d", "ctrl+k", "ctrl+u", "ctrl+w",
-		"alt+backspace", "alt+d",
-		"enter", "alt+enter",
-		"space", "tab":
+func (e *Editor) isModifyingKey(ks string) bool {
+	if e.matches(ks, BindDeleteCharBackward, "backspace") ||
+		e.matches(ks, BindDeleteCharForward, "delete", "ctrl+d") ||
+		e.matches(ks, BindDeleteToLineEnd, "ctrl+k") ||
+		e.matches(ks, BindDeleteToLineStart, "ctrl+u") ||
+		e.matches(ks, BindDeleteWordBackward, "ctrl+w", "alt+backspace") ||
+		e.matches(ks, BindDeleteWordForward, "alt+d") ||
+		e.matches(ks, BindSubmit, "enter") ||
+		e.matches(ks, BindNewLine, "alt+enter") ||
+		e.matches(ks, BindTab, "tab") ||
+		ks == " " || ks == "space" {
 		return true
 	}
-	// Single-character keys (printable characters, including punctuation)
 	if len(ks) == 1 {
 		return true
 	}

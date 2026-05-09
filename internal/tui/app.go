@@ -340,6 +340,12 @@ func NewAppModel(agt *agent.Loop, sessMgr *session.Manager, sess *session.Sessio
 	overlay := components.NewOverlay()
 	ac := components.NewAutocomplete()
 
+	// Wire keybinding manager to editor for user-configurable keybindings (pi-mono aligned)
+	input.SetKeyMatcher(func(ks, bindingID string) bool {
+		kb := GetKeybindings()
+		return kb != nil && kb.Matches(ks, KeybindingID(bindingID))
+	})
+
 	// Find current model index in available models
 	modelIndex := -1
 	for i, m := range availableModels {
@@ -627,15 +633,14 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 			}
 		}
 
-		// Keybindings action dispatch (user-configurable key mappings)
+		// Keybindings global action dispatch (pi-mono aligned)
 		if m.keybindings != nil {
-			action := m.keybindings.Action(msg.String())
-			switch action {
-			case "interrupt":
+			ks := msg.String()
+			switch {
+			case m.keybindings.Matches(ks, GlobalInterrupt):
 				m.quitting = true
 				return m, tea.Quit
-			case "clear":
-				// Double-press Clear within 500ms to exit
+			case m.keybindings.Matches(ks, GlobalClear):
 				if !m.input.Empty() {
 					m.input.Reset()
 					m.chat.AppendSystem("Cleared")
@@ -652,7 +657,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 					m.chat.AppendSystem("Press Ctrl+C again to exit")
 					return m, nil
 				}
-			case "exit":
+			case m.keybindings.Matches(ks, GlobalExit):
 				if !m.streaming && !m.compacting && m.input.Empty() {
 					m.quitting = true
 					return m, tea.Quit
@@ -661,7 +666,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 					_, cmd := m.input.Update(msg)
 					return m, cmd
 				}
-			case "toggle_header":
+			case m.keybindings.Matches(ks, GlobalToggleHeader):
 				m.header.Toggle()
 				headerHeight := 2
 				if m.header.Expanded() {
@@ -671,7 +676,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 				footerHeight := 3
 				m.chat.SetSize(m.width, m.height-editorHeight-footerHeight-headerHeight)
 				return m, nil
-			case "toggle_tools":
+			case m.keybindings.Matches(ks, GlobalToggleTools):
 				m.chat.ToggleAllTools()
 				status := "expanded"
 				if !m.chat.AllToolsExpanded {
@@ -679,7 +684,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 				}
 				m.chat.AppendSystem("Tool outputs: " + status)
 				return m, nil
-			case "toggle_thinking":
+			case m.keybindings.Matches(ks, GlobalToggleThinking):
 				m.chat.HideAllThinking = !m.chat.HideAllThinking
 				status := "visible"
 				if m.chat.HideAllThinking {
@@ -687,31 +692,28 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 				}
 				m.chat.AppendSystem("Thinking blocks: " + status)
 				return m, nil
-			case "model_selector":
+			case m.keybindings.Matches(ks, GlobalModelSelector):
 				m.showModelSelector()
 				return m, nil
-			case "cycle_model_forward":
+			case m.keybindings.Matches(ks, GlobalCycleModelFwd):
 				m.cycleModelForward()
 				return m, nil
-			case "cycle_model_backward":
+			case m.keybindings.Matches(ks, GlobalCycleModelBack):
 				m.cycleModelBackward()
 				return m, nil
-			case "cycle_thinking":
+			case m.keybindings.Matches(ks, GlobalCycleThinking):
 				m.cycleThinking()
 				return m, nil
-			case "external_editor":
+			case m.keybindings.Matches(ks, GlobalExternalEditor):
 				m.openExternalEditor()
 				return m, nil
-			case "yank":
-				// Forward to editor for yank
+			case m.keybindings.Matches(ks, EditorYank):
 				_, cmd := m.input.Update(msg)
 				return m, cmd
-			case "yank_pop":
-				// Forward to editor for yank pop
+			case m.keybindings.Matches(ks, EditorYankPop):
 				_, cmd := m.input.Update(msg)
 				return m, cmd
-			case "undo":
-				// Forward to editor for undo
+			case m.keybindings.Matches(ks, EditorUndo):
 				_, cmd := m.input.Update(msg)
 				return m, cmd
 			}
@@ -3212,7 +3214,7 @@ func (m *AppModel) reload() {
 
 	// Reload keybindings from ~/.xihu/keybindings.json
 	if m.keybindings != nil {
-		userKB, _ := LoadKeybindings()
+		userKB, _ := LoadUserBindings()
 		m.keybindings.Reload(userKB)
 	}
 
