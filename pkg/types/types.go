@@ -20,6 +20,22 @@ type TextContent struct {
 	Text string `json:"text"`
 }
 
+// ImageContent is an image content block for multimodal models.
+// Matches pi-mono's ImageContent type for @file image attachments.
+type ImageContent struct {
+	Type     string     `json:"type"`
+	MimeType string     `json:"mime_type,omitempty"`
+	Data     string     `json:"data,omitempty"`
+	Source   *ImageSource `json:"source,omitempty"`
+}
+
+// ImageSource is used in Anthropic-format image content blocks.
+type ImageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
 // ToolCall represents a tool call from the assistant
 type ToolCall struct {
 	ID       string          `json:"id"`

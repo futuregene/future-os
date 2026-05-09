@@ -18,6 +18,7 @@ import (
 	"github.com/huichen/xihu/internal/settings"
 	"github.com/huichen/xihu/internal/skills"
 	"github.com/huichen/xihu/internal/tui"
+	"github.com/huichen/xihu/internal/utils"
 	"github.com/huichen/xihu/pkg/types"
 )
 
@@ -280,9 +281,21 @@ func main() {
 	// ── Build user prompt (messages + @files) ──────────────────────────────
 	var promptParts []string
 	for _, f := range args.FileArgs {
+		if mime := utils.DetectImageMimeTypeFromExtension(f); mime != "" {
+			if confirmed, _ := utils.DetectImageMimeType(f); confirmed != "" || mime == "image/svg+xml" {
+				data, err := os.ReadFile(f)
+				if err == nil {
+					imageTag := fmt.Sprintf("<file name=\"%s\" type=\"%s\">[Image: %s]</file>",
+						f, mime, filepath.Base(f))
+					promptParts = append(promptParts, imageTag)
+					_ = data
+					continue
+				}
+			}
+		}
 		data, err := os.ReadFile(f)
 		if err == nil {
-			promptParts = append(promptParts, fmt.Sprintf("@%s:\n%s", f, string(data)))
+			promptParts = append(promptParts, fmt.Sprintf("<file name=\"%s\">\n%s\n</file>", f, string(data)))
 		}
 	}
 	promptParts = append(promptParts, args.Messages...)
