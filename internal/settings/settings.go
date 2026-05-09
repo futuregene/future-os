@@ -888,7 +888,7 @@ func MigrateSettings(s *Settings) {
 	if !validEscape[s.DoubleEscapeAction] {
 		s.DoubleEscapeAction = ""
 	}
-	validTreeFilter := map[string]bool{"all": true, "user": true, "assistant": true, "": true}
+	validTreeFilter := map[string]bool{"all": true, "default": true, "user-only": true, "no-tools": true, "labeled-only": true, "": true}
 	if !validTreeFilter[s.TreeFilterMode] {
 		s.TreeFilterMode = ""
 	}

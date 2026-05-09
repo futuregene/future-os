@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -67,20 +69,54 @@ func ParseTemplates(dir string) ([]PromptTemplate, error) {
 }
 
 // ExpandTemplate performs variable substitution on a template's Content.
-// Supported placeholders:
+// Supported placeholders (pi-mono aligned):
 //   - $1, $2, ... $N — positional arguments
 //   - $@ — all arguments joined with spaces
+//   - $ARGUMENTS — alias for $@
+//   - ${@:N} — slice from Nth argument (1-indexed)
+//   - ${@:N:L} — slice N arguments starting from position N
 func ExpandTemplate(tmpl PromptTemplate, args ...string) string {
 	result := tmpl.Content
 
-	// Replace positional arguments $1, $2, ...
+	// Replace positional arguments $1, $2, ... $N
 	for i, arg := range args {
 		placeholder := fmt.Sprintf("$%d", i+1)
 		result = strings.ReplaceAll(result, placeholder, arg)
 	}
 
-	// Replace $@ with all args joined
-	result = strings.ReplaceAll(result, "$@", strings.Join(args, " "))
+	allArgs := strings.Join(args, " ")
+
+	// Replace $@ and $ARGUMENTS with all args joined
+	result = strings.ReplaceAll(result, "$@", allArgs)
+	result = strings.ReplaceAll(result, "$ARGUMENTS", allArgs)
+
+	// Replace ${@:N} and ${@:N:L} slice patterns
+	sliceRe := regexp.MustCompile(`\$\{@:(\d+)(?::(\d+))?\}`)
+	result = sliceRe.ReplaceAllStringFunc(result, func(match string) string {
+		parts := sliceRe.FindStringSubmatch(match)
+		if len(parts) < 2 {
+			return match
+		}
+		start, err := strconv.Atoi(parts[1])
+		if err != nil || start < 1 || start > len(args) {
+			return ""
+		}
+		start-- // convert to 0-indexed
+
+		if len(parts) >= 3 && parts[2] != "" {
+			count, err := strconv.Atoi(parts[2])
+			if err != nil || count < 1 {
+				return ""
+			}
+			end := start + count
+			if end > len(args) {
+				end = len(args)
+			}
+			return strings.Join(args[start:end], " ")
+		}
+
+		return strings.Join(args[start:], " ")
+	})
 
 	return result
 }
