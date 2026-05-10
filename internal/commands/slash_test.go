@@ -117,7 +117,7 @@ func TestHandleImport(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error for missing file")
 		}
-		if !strings.Contains(err.Error(), "usage") {
+		if !strings.Contains(strings.ToLower(err.Error()), "usage") {
 			t.Errorf("error = %v", err)
 		}
 	})
@@ -300,7 +300,7 @@ func TestHandleName(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !strings.Contains(result, "named: My Session") {
+		if !strings.Contains(result, "Session name set: My Session") {
 			t.Errorf("unexpected: %s", result)
 		}
 	})

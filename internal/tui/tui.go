@@ -5,12 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/term"
 
-	"github.com/huichen/xihu/internal/agent"
+	agentsession "github.com/huichen/xihu/internal/agentsession"
 	"github.com/huichen/xihu/internal/extensions"
 	"github.com/huichen/xihu/internal/prompt"
 	"github.com/huichen/xihu/internal/session"
@@ -21,9 +20,9 @@ import (
 )
 
 // Run launches the TUI if stdin is a terminal; otherwise falls back to CLI mode.
+// settingsLoadErr carries any startup error from settings/model loading for display in the TUI.
 func Run(
-	agt *agent.Loop,
-	sessMgr *session.Manager,
+	as *agentsession.AgentSession,
 	sess *session.Session,
 	initialPrompt string,
 	modelStr, baseURL string,
@@ -35,16 +34,18 @@ func Run(
 	extRunner *extensions.ExtensionRunner,
 	promptTemplates []prompt.PromptTemplate,
 	contextFiles []string,
+	skillCollisions []skills.SkillCollision,
+	settingsLoadErr string,
 ) error {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return runCLI(agt, sess, initialPrompt)
+		return runCLI(as, sess, initialPrompt)
 	}
-	return runBubbleTea(agt, sessMgr, sess, initialPrompt, modelStr, baseURL, skillList, extensions, thinkingLevel, availableModels, cfg, extRunner, promptTemplates, contextFiles)
+	return runBubbleTea(as, as.SessionManager(), sess, initialPrompt, modelStr, baseURL, skillList, extensions, thinkingLevel, availableModels, cfg, extRunner, promptTemplates, contextFiles, skillCollisions, settingsLoadErr)
 }
 
 // runBubbleTea launches the Bubble Tea interactive TUI.
 func runBubbleTea(
-	agt *agent.Loop,
+	as *agentsession.AgentSession,
 	sessMgr *session.Manager,
 	sess *session.Session,
 	initialPrompt string,
@@ -57,9 +58,12 @@ func runBubbleTea(
 	extRunner *extensions.ExtensionRunner,
 	promptTemplates []prompt.PromptTemplate,
 	contextFiles []string,
+	skillCollisions []skills.SkillCollision,
+	settingsLoadErr string,
 ) error {
 	theme := DefaultTheme()
-	app := NewAppModel(agt, sessMgr, sess, theme, modelStr, skillList, extensions, thinkingLevel, availableModels, cfg, promptTemplates, contextFiles)
+	app := NewAppModel(as, sessMgr, sess, theme, modelStr, skillList, extensions, thinkingLevel, availableModels, cfg, promptTemplates, contextFiles, skillCollisions)
+	app.settingsLoadErr = settingsLoadErr
 
 	p := tea.NewProgram(
 		&app,
@@ -89,7 +93,7 @@ func runBubbleTea(
 }
 
 // runCLI runs in non-interactive CLI mode (stdin is not a TTY).
-func runCLI(agt *agent.Loop, sess *session.Session, initialPrompt string) error {
+func runCLI(as *agentsession.AgentSession, sess *session.Session, initialPrompt string) error {
 	if initialPrompt == "" {
 		return fmt.Errorf("no prompt provided in CLI mode")
 	}
@@ -101,7 +105,7 @@ func runCLI(agt *agent.Loop, sess *session.Session, initialPrompt string) error 
 	messages = append(messages, newUserMsg(initialPrompt))
 
 	ctx := context.Background()
-	result, _, err := agt.RunStreamingWithMessages(ctx, messages, func(text string) {
+	result, _, err := as.Loop().RunStreamingWithMessages(ctx, messages, func(text string) {
 		fmt.Print(text)
 	})
 	if err != nil {
@@ -111,8 +115,6 @@ func runCLI(agt *agent.Loop, sess *session.Session, initialPrompt string) error 
 	fmt.Println()
 	return nil
 }
-
-var _ = strings.Repeat
 
 func newUserMsg(content string) types.Message {
 	tc := types.TextContent{Type: "text", Text: content}

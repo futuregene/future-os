@@ -26,12 +26,14 @@ type LoaderState struct {
 	Remaining int    // seconds remaining
 }
 
-// Loader renders loading indicators.
+// Loader renders loading indicators with optional cancellation (TS pi-mono: CancellableLoader).
 type Loader struct {
 	state    LoaderState
 	frame    int
 	spinner  []string
 	style    lipgloss.Style
+	OnCancel func() // called when user presses Escape during loading
+	Aborted  bool   // true after OnCancel is called
 }
 
 // NewLoader creates a new loader.
@@ -70,6 +72,18 @@ func (l *Loader) Stop() {
 	l.state.Active = false
 }
 
+// Abort cancels the loader and calls OnCancel if set (TS pi-mono: CancellableLoader).
+func (l *Loader) Abort() {
+	if l.Aborted || !l.state.Active {
+		return
+	}
+	l.Aborted = true
+	l.state.Active = false
+	if l.OnCancel != nil {
+		l.OnCancel()
+	}
+}
+
 // Tick advances the animation frame.
 func (l *Loader) Tick() {
 	l.frame = (l.frame + 1) % len(l.spinner)
@@ -91,10 +105,22 @@ func (l *Loader) View() string {
 	case LoaderCountdown:
 		msg := l.spinner[l.frame] + " Retrying (" +
 			itoa(l.state.Progress) + "/" + itoa(l.state.MaxRetry) +
-			") in " + itoa(l.state.Remaining) + "s…"
+			") in " + itoa(l.state.Remaining) + "s..."
+		if l.OnCancel != nil {
+			cancelHint := lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#5c6370")).
+				Render(" (Esc to cancel)")
+			msg += cancelHint
+		}
 		return l.style.Render(msg)
 	case LoaderBordered:
 		content := l.spinner[l.frame] + " " + l.state.Message
+		if l.OnCancel != nil {
+			cancelHint := lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#5c6370")).
+				Render("Esc to cancel")
+			content += "\n" + cancelHint
+		}
 		return lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#89b4fa")).

@@ -3,11 +3,19 @@ package extensions
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // ---------------------------------------------------------------------------
 // ExtensionRunner — manages the lifecycle of loaded extensions
 // ---------------------------------------------------------------------------
+
+// ExtensionDiagnostic describes an issue found during extension loading/init.
+type ExtensionDiagnostic struct {
+	Type    string // "error" or "warning"
+	Message string
+	Path    string
+}
 
 // ExtensionRunner manages the lifecycle of extensions: loading, initializing,
 // and deinitializing.
@@ -18,6 +26,12 @@ type ExtensionRunner struct {
 
 	// ordered tracks the initialization order for reverse-order shutdown.
 	initialized []Extension
+
+	// initErrors tracks init failures for diagnostic reporting.
+	initErrors []ExtensionDiagnostic
+
+	// loadErrors tracks load failures for diagnostic reporting.
+	loadErrors []ExtensionDiagnostic
 }
 
 // NewExtensionRunner creates a new ExtensionRunner with the given context and
@@ -38,6 +52,9 @@ func NewExtensionRunner(ctx ExtensionContext) *ExtensionRunner {
 func (r *ExtensionRunner) Load(paths []string) error {
 	exts, err := LoadExtensions(paths, r.Logger)
 	if err != nil {
+		r.loadErrors = append(r.loadErrors, ExtensionDiagnostic{
+			Type: "error", Message: err.Error(), Path: strings.Join(paths, ", "),
+		})
 		return fmt.Errorf("load extensions: %w", err)
 	}
 	r.Extensions = append(r.Extensions, exts...)
@@ -73,12 +90,30 @@ func (r *ExtensionRunner) initOne(ext Extension) error {
 
 	if err := ext.Init(r.Context); err != nil {
 		r.Logger.Error("extension %q failed to initialize: %v", ext.Name(), err)
+		r.initErrors = append(r.initErrors, ExtensionDiagnostic{
+			Type: "error", Message: err.Error(), Path: ext.Name(),
+		})
 		return fmt.Errorf("extension %q: init: %w", ext.Name(), err)
 	}
 
 	r.initialized = append(r.initialized, ext)
 	r.Logger.Info("extension %q initialized successfully", ext.Name())
 	return nil
+}
+
+// GetExtensionDiagnostics returns all extension diagnostics (load + init errors).
+func (r *ExtensionRunner) GetExtensionDiagnostics() []ExtensionDiagnostic {
+	all := make([]ExtensionDiagnostic, 0, len(r.loadErrors)+len(r.initErrors))
+	all = append(all, r.loadErrors...)
+	all = append(all, r.initErrors...)
+	return all
+}
+
+// AddLoadError records a load-time diagnostic.
+func (r *ExtensionRunner) AddLoadError(msg, path string) {
+	r.loadErrors = append(r.loadErrors, ExtensionDiagnostic{
+		Type: "error", Message: msg, Path: path,
+	})
 }
 
 // DeinitAll deinitializes all successfully initialized extensions in reverse

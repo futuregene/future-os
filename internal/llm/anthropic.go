@@ -211,6 +211,7 @@ func (c *AnthropicClient) streamAnthropicSDK(stream *ssestream.Stream[anthropic.
 				Usage: &types.Usage{
 					CompletionTokens: int(evt.Usage.OutputTokens),
 				},
+				StopReason: mapAnthropicStopReason(string(evt.Delta.StopReason)),
 			}
 
 		case "message_stop":
@@ -303,6 +304,23 @@ func convertAnthropicTools(tools []types.ToolDef, stealthMode bool) []anthropic.
 var stealthToolName = map[string]string{
 	"bash": "Bash", "read": "Read", "write": "Edit",
 	"edit": "Edit", "grep": "Grep", "ls": "LS", "find": "Find",
+}
+
+// mapAnthropicStopReason maps Anthropic stop_reason values to our StopReason values.
+// TS pi-mono: mapStopReason in custom-provider-anthropic/index.ts
+func mapAnthropicStopReason(reason string) string {
+	switch reason {
+	case "end_turn", "pause_turn", "stop_sequence":
+		return "stop"
+	case "max_tokens":
+		return "length"
+	case "tool_use":
+		return "toolUse"
+	case "refusal":
+		return "error"
+	default:
+		return ""
+	}
 }
 
 var _ = param.Opt[string]{}

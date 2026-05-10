@@ -165,8 +165,8 @@ func TestExecuteBashDefaults(t *testing.T) {
 	if opts.MaxOutputBytes != 50000 {
 		t.Errorf("max output = %d, want 50000", opts.MaxOutputBytes)
 	}
-	if !opts.StripANSI {
-		t.Error("StripANSI should default to true")
+	if opts.StripANSI {
+		t.Error("StripANSI should default to false (TS pi-mono: preserve ANSI)")
 	}
 	if !opts.SanitizeBinary {
 		t.Error("SanitizeBinary should default to true")

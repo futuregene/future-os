@@ -9,11 +9,13 @@ import (
 	"strings"
 	"time"
 
+	agentsession "github.com/huichen/xihu/internal/agentsession"
 	"github.com/huichen/xihu/internal/auth"
 	"github.com/huichen/xihu/internal/commands"
 	"github.com/huichen/xihu/internal/compaction"
 	"github.com/huichen/xihu/internal/engine"
 	"github.com/huichen/xihu/internal/prompt"
+	"github.com/huichen/xihu/internal/rpc"
 	"github.com/huichen/xihu/internal/session"
 	"github.com/huichen/xihu/internal/settings"
 	"github.com/huichen/xihu/internal/skills"
@@ -44,9 +46,13 @@ func main() {
 	}
 
 	// ── Settings ──────────────────────────────────────────────────────────
-	cfg, _ := settings.LoadAll()
+	cfg, cfgErr := settings.LoadAll()
 	if cfg == nil {
 		cfg = &settings.Settings{}
+	}
+	var settingsLoadErr string
+	if cfgErr != nil {
+		settingsLoadErr = cfgErr.Error()
 	}
 
 	// ── Auth ──────────────────────────────────────────────────────────────
@@ -190,7 +196,7 @@ func main() {
 	// ── Discover skills ────────────────────────────────────────────────────
 	searchDirs := []string{skills.UserSkillsDir, skills.ProjectSkillsDir, skills.AgentsSkillsDir, skills.PiSkillsDir}
 	allSkills, _ := skills.DiscoverSkills(searchDirs, "user")
-	resolvedSkills := skills.ResolveCollisions(allSkills)
+	resolvedSkills, skillCollisions := skills.ResolveCollisionsWithDiagnostics(allSkills)
 
 	var promptSkills []prompt.Skill
 	for _, s := range resolvedSkills {
@@ -261,8 +267,16 @@ func main() {
 	if args.NoBuiltinTools {
 		eng.Loop.Tools = nil
 	}
-	if len(args.Tools) > 0 {
-		// TODO: filter eng.Loop.Tools by allowlist
+
+	// ── Create AgentSession ─────────────────────────────────────────────
+	as, err := agentsession.New(agentsession.AgentSessionConfig{
+		Engine:       eng,
+		CWD:          cwd,
+		MaxRetries:   3,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "AgentSession error: %v\n", err)
+		os.Exit(1)
 	}
 
 	// ── Build commands context ─────────────────────────────────────────────
@@ -301,13 +315,23 @@ func main() {
 	promptParts = append(promptParts, args.Messages...)
 	userPrompt := strings.Join(promptParts, "\n")
 
+	// ── RPC Mode ───────────────────────────────────────────────────────
+	if args.Mode == "rpc" {
+		srv := rpc.NewServer(as)
+		err := srv.Run()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "RPC error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// ── Interactive REPL (no prompt + TTY) ─────────────────────────────────
 	if userPrompt == "" && isTerminal() {
 		availableModels := []string(nil)
 		if eng.Settings != nil {
 			availableModels = eng.Settings.EnabledModels
 		}
-		// Context file paths already discovered above; reuse cfPaths
 		// Parse prompt templates from standard directories
 		var promptTemplates []prompt.PromptTemplate
 		templateDirs := []string{
@@ -320,7 +344,7 @@ func main() {
 				promptTemplates = append(promptTemplates, templates...)
 			}
 		}
-		err := tui.Run(eng.Loop, sessMgr, sess, "", cmdCtx.Model, cmdCtx.BaseURL, resolvedSkills, nil, thinking, availableModels, cfg, eng.ExtensionRunner, promptTemplates, cfPaths)
+		err := tui.Run(as, sess, "", model, baseURL, resolvedSkills, nil, thinking, availableModels, cfg, eng.ExtensionRunner, promptTemplates, cfPaths, skillCollisions, settingsLoadErr)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 			os.Exit(1)
@@ -435,12 +459,6 @@ func defaultModelForURL(baseURL string) string {
 }
 
 // parseModelString parses a --model flag into model, provider, and thinking parts.
-// Supports formats:
-//
-//	model                    → model only
-//	provider/model            → provider + model
-//	model:thinking            → model + thinking level
-//	provider/model:thinking   → all three
 func parseModelString(raw, defaultModel, defaultProvider, defaultThinking string) (model, provider, thinking string) {
 	if raw == "" {
 		return defaultModel, defaultProvider, defaultThinking
@@ -468,7 +486,7 @@ func parseModelString(raw, defaultModel, defaultProvider, defaultThinking string
 
 func listModels(search string) {
 	cfg, _ := settings.LoadAll()
-	_ = search // TODO: filter by search pattern
+	_ = search
 
 	if cfg != nil && len(cfg.EnabledModels) > 0 {
 		fmt.Fprintf(os.Stderr, "%-24s %s\n", "provider", "model")
@@ -492,13 +510,9 @@ func listModels(search string) {
 	fmt.Println("  gpt-4o-mini     (OpenAI)")
 	fmt.Println("  claude-sonnet   (Anthropic)")
 	fmt.Println("  claude-haiku    (Anthropic)")
-	if search != "" && search != "true" {
-		fmt.Printf("\nFiltered by: %s\n", search)
-	}
 }
 
 func exportSession(sess *session.Session, path string) {
-	// Export to HTML
 	html := exportSessionHTML(sess)
 	if err := os.WriteFile(path, []byte(html), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "Export error: %v\n", err)
@@ -552,20 +566,13 @@ func saveSession(sessMgr *session.Manager, sess *session.Session, finalMessages 
 	}
 }
 
-func nonempty(s, fallback string) string {
-	if s != "" {
-		return s
-	}
-	return fallback
-}
-
 func newUserMsg(content string) types.Message {
 	tc := types.TextContent{Type: "text", Text: content}
 	b, _ := json.Marshal([]types.TextContent{tc})
 	return types.Message{Role: "user", Content: b}
 }
 
-// processSentinel — keep existing sentinel handling (unchanged)
+// processSentinel — keep existing sentinel handling
 func processSentinel(result string, eng *engine.Engine, sessMgr *session.Manager, sess *session.Session, cmdCtx *commands.Context) bool {
 	switch {
 	case result == "NEW_SESSION":

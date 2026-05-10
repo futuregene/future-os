@@ -17,7 +17,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/huichen/xihu/internal/agent"
+	agentsession "github.com/huichen/xihu/internal/agentsession"
 	"github.com/huichen/xihu/internal/auth"
 	"github.com/huichen/xihu/internal/commands"
 	"github.com/huichen/xihu/internal/events"
@@ -78,6 +78,11 @@ type ToolResultMsg struct {
 // AgentDoneMsg signals the agent has finished processing.
 type AgentDoneMsg struct {
 	FinalText string
+}
+
+// StopReasonMsg carries the model's stop reason for display (TS pi-mono: stopReason).
+type StopReasonMsg struct {
+	Reason string
 }
 
 // AgentErrorMsg signals an error from the agent.
@@ -171,6 +176,9 @@ type TickMsg time.Time
 // BranchTickMsg triggers a git branch re-check (every 3s).
 type BranchTickMsg time.Time
 
+// RetryTickMsg advances the retry countdown (every 1s, sent by tea.Tick).
+type RetryTickMsg time.Time
+
 // ResizeMsg indicates terminal size change.
 type ResizeMsg struct {
 	Width  int
@@ -179,12 +187,30 @@ type ResizeMsg struct {
 
 // WelcomeMsg signals the app to display the startup banner.
 type WelcomeMsg struct {
-	ThemeAccent     string
-	CWD             string
-	Skills          []skills.Skill
-	Extensions      []string
-	PromptTemplates []prompt.PromptTemplate
-	ContextFiles    []string // file paths of discovered context files
+	ThemeAccent          string
+	CWD                  string
+	Skills               []skills.Skill
+	Extensions           []string
+	PromptTemplates      []prompt.PromptTemplate
+	ContextFiles         []string // file paths of discovered context files
+	SkillCollisions      []skills.SkillCollision
+	ExtensionDiagnostics []extensions.ExtensionDiagnostic
+	KeybindingConflicts  []KeybindingConflict
+	SettingsError        string // error from settings/model loading at startup
+}
+
+// PromptCollision describes a naming conflict between two prompt templates.
+type PromptCollision struct {
+	Name        string
+	WinnerPath  string
+	LoserPath   string
+}
+
+// ThemeCollision describes a naming conflict between two themes.
+type ThemeCollision struct {
+	Name       string
+	WinnerPath string
+	LoserPath  string
 }
 
 
@@ -204,7 +230,7 @@ type AppModel struct {
 	autocomplete *components.Autocomplete
 
 	// Agent state
-	agent   *agent.Loop
+	agent   *agentsession.AgentSession
 	session *session.Session
 	sessMgr *session.Manager
 
@@ -231,14 +257,16 @@ type AppModel struct {
 	widgetsBelow map[string]string
 
 	// Working indicator customization
-	workingMessage    string   // default "Generating…"
+	workingMessage    string   // default "Working..."
 	workingVisible    bool
 	workingFrames     []string // custom spinner frames
 	workingIntervalMs int      // custom spinner interval
 
 	// Loaded resources
-	Skills        []skills.Skill
-	Extensions    []string
+	Skills          []skills.Skill
+	SkillCollisions []skills.SkillCollision // diagnostics for dropped skills
+	Extensions      []string
+	settingsLoadErr string // error from settings/model loading at startup
 	thinkingLevel                string
 	currentModelSupportsThinking bool
 
@@ -264,6 +292,10 @@ type AppModel struct {
 	streaming  bool
 	compacting        bool
 	compactionQueue   []string // messages queued during compaction, flushed on end
+	retryTicking      bool     // true while retry countdown is active
+	retryDelaySec     int      // remaining seconds in retry countdown
+	retryAttempt      int      // current retry attempt number
+	retryMaxAttempts  int      // max retry attempts
 	quitting          bool
 
 	// Accumulated stats across agent runs
@@ -324,18 +356,19 @@ type AppModel struct {
 	bashCancelCh chan struct{}
 
 	// Recent pending message texts for display (TS pi-mono: pendingMessagesContainer)
-	pendingMsgs []string
+		pendingSteeringMsgs  []string
+		pendingFollowUpMsgs []string
 
 	// Live git branch tracking
 	gitBranch string
 }
 
 // NewAppModel creates a new AppModel.
-func NewAppModel(agt *agent.Loop, sessMgr *session.Manager, sess *session.Session, theme *Theme, modelStr string, skillList []skills.Skill, extensions []string, thinkingLevel string, availableModels []string, cfg *settings.Settings, promptTemplates []prompt.PromptTemplate, contextFiles []string) AppModel {
+func NewAppModel(as *agentsession.AgentSession, sessMgr *session.Manager, sess *session.Session, theme *Theme, modelStr string, skillList []skills.Skill, extensions []string, thinkingLevel string, availableModels []string, cfg *settings.Settings, promptTemplates []prompt.PromptTemplate, contextFiles []string, skillCollisions []skills.SkillCollision) AppModel {
 	chat := components.NewChatViewport()
-	chat.SetTheme(theme.Accent, theme.Muted, theme.Dim, theme.Warning, theme.Success, theme.ErrorColor, theme.ThinkingColor, theme.ThinkingText)
+	chat.SetTheme(theme.Accent, theme.Muted, theme.Dim, theme.Warning, theme.Success, theme.ErrorColor, theme.ThinkingColor, theme.ThinkingText, theme.ToolPendingBg, theme.ToolSuccessBg, theme.ToolErrorBg)
 	footer := components.NewFooter(theme.FooterStyle(), theme.ContextGreen, theme.ContextYellow, theme.ContextRed)
-	header := components.NewHeader(theme.Accent)
+	header := components.NewHeader(theme.Accent, utils.Version)
 	input := components.NewEditor(theme.InputStyle())
 	overlay := components.NewOverlay()
 	ac := components.NewAutocomplete()
@@ -364,10 +397,11 @@ func NewAppModel(agt *agent.Loop, sessMgr *session.Manager, sess *session.Sessio
 			input:              &input,
 			overlay:            &overlay,
 			autocomplete:       &ac,
-			agent:              agt,
+			agent:              as,
 			session:            sess,
 			sessMgr:            sessMgr,
 			inputRegistry:      inputRegistry,
+			keybindings:        GetKeybindings(),
 			theme:              theme,
 			thinkingLevel:      thinkingLevel,
 			availableModels:    availableModels,
@@ -388,7 +422,7 @@ func NewAppModel(agt *agent.Loop, sessMgr *session.Manager, sess *session.Sessio
 			imageWidthCells:    80,
 			autoResizeImages:   true,
 			blockImages:        false,
-			workingMessage:     "Generating…",
+			workingMessage:     "Working...",
 			workingVisible:     true,
 			workingFrames:      nil,
 			workingIntervalMs:  0,
@@ -452,6 +486,13 @@ func NewAppModel(agt *agent.Loop, sessMgr *session.Manager, sess *session.Sessio
 				app.blockImages = *cfg.Images.BlockImages
 			}
 		}
+		// Propagate image settings to chat viewport
+		chat.SetShowImages(app.showImages)
+		chat.SetImageWidth(app.imageWidthCells)
+		// Propagate actual keybinding for tool toggle hint
+		if tk := formatKeyStr(app.keybindings, GlobalToggleTools); tk != "" {
+			chat.SetToolToggleKey(tk)
+		}
 		if cfg.EnableSkillCommands != nil {
 			app.skillCommands = *cfg.EnableSkillCommands
 		}
@@ -482,7 +523,7 @@ func NewAppModel(agt *agent.Loop, sessMgr *session.Manager, sess *session.Sessio
 	}
 
 	// Propagate steering mode to agent loop
-	agt.SteeringMode = app.steeringMode
+	as.Loop().SteeringMode = app.steeringMode
 
 	// Wire autocomplete max visible
 	app.autocomplete.SetMaxVisible(app.autocompleteMax)
@@ -494,6 +535,7 @@ func NewAppModel(agt *agent.Loop, sessMgr *session.Manager, sess *session.Sessio
 	if len(skillList) > 0 {
 		app.Skills = skillList
 	}
+	app.SkillCollisions = skillCollisions
 	if len(extensions) > 0 {
 		app.Extensions = extensions
 	}
@@ -532,7 +574,7 @@ func NewAppModel(agt *agent.Loop, sessMgr *session.Manager, sess *session.Sessio
 
 	// Create EventBus and attach to agent for fine-grained events
 	app.eventBus = events.NewEventBus()
-	agt.EventBus = app.eventBus
+	as.Loop().EventBus = app.eventBus
 
 	// TUI write log for debugging (XIHU_TUI_WRITE_LOG env var)
 	if logPath := os.Getenv("XIHU_TUI_WRITE_LOG"); logPath != "" {
@@ -552,12 +594,16 @@ func (m AppModel) Init() tea.Cmd {
 		m.input.Focus(),
 		func() tea.Msg {
 			return WelcomeMsg{
-				ThemeAccent:     m.theme.Accent,
-				CWD:             m.session.CWD,
-				Skills:          m.Skills,
-				Extensions:      m.Extensions,
-				PromptTemplates: m.promptTemplates,
-				ContextFiles:    m.contextFiles,
+				ThemeAccent:          m.theme.Accent,
+				CWD:                  m.session.CWD,
+				Skills:               m.Skills,
+				Extensions:           m.Extensions,
+				PromptTemplates:      m.promptTemplates,
+				ContextFiles:         m.contextFiles,
+				SkillCollisions:      m.SkillCollisions,
+				ExtensionDiagnostics: m.getExtDiagnostics(),
+				KeybindingConflicts:  m.getKBConflicts(),
+				SettingsError:        m.settingsLoadErr,
 			}
 		},
 	}
@@ -651,7 +697,6 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 			case m.keybindings.Matches(ks, GlobalClear):
 				if !m.input.Empty() {
 					m.input.Reset()
-					m.chat.AppendSystem("Cleared")
 					return m, nil
 				}
 				if !m.streaming && !m.compacting {
@@ -662,7 +707,6 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 						return m, tea.Quit
 					}
 					m.lastCtrlCTime = now
-					m.chat.AppendSystem("Press Ctrl+C again to exit")
 					return m, nil
 				}
 			case m.keybindings.Matches(ks, GlobalExit):
@@ -686,19 +730,14 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 				return m, nil
 			case m.keybindings.Matches(ks, GlobalToggleTools):
 				m.chat.ToggleAllTools()
-				status := "expanded"
-				if !m.chat.AllToolsExpanded {
-					status = "collapsed"
-				}
-				m.chat.AppendSystem("Tool outputs: " + status)
 				return m, nil
 			case m.keybindings.Matches(ks, GlobalToggleThinking):
 				m.chat.HideAllThinking = !m.chat.HideAllThinking
-				status := "visible"
-				if m.chat.HideAllThinking {
-					status = "hidden"
+				visible := "hidden"
+				if !m.chat.HideAllThinking {
+					visible = "visible"
 				}
-				m.chat.AppendSystem("Thinking blocks: " + status)
+				m.chat.AppendSystem("Thinking blocks: " + visible)
 				return m, nil
 			case m.keybindings.Matches(ks, GlobalModelSelector):
 				m.showModelSelector()
@@ -729,24 +768,19 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 
 		switch msg.String() {
 		case "ctrl+c":
-			// TS pi-mono: double-press guard — second Ctrl+C within 500ms exits
+			// TS pi-mono: double-press guard — second Ctrl+C within 500ms exits.
+			// Every Ctrl+C clears the editor and records the timestamp.
+			now := time.Now()
+			if now.Sub(m.lastCtrlCTime) < 500*time.Millisecond {
+				m.lastCtrlCTime = time.Time{}
+				m.quitting = true
+				return m, tea.Quit
+			}
+			m.lastCtrlCTime = now
 			if !m.input.Empty() {
 				m.input.Reset()
-				m.chat.AppendSystem("Cleared")
-				return m, nil
 			}
-			// Editor empty, not streaming: double-press to exit
-			if !m.streaming && !m.compacting {
-				now := time.Now()
-				if now.Sub(m.lastCtrlCTime) < 500*time.Millisecond {
-					m.lastCtrlCTime = time.Time{}
-					m.quitting = true
-					return m, tea.Quit
-				}
-				m.lastCtrlCTime = now
-				m.chat.AppendSystem("Press Ctrl+C again to exit")
-				return m, nil
-			}
+			return m, nil
 		case "ctrl+z":
 			// TS pi-mono: Suspend to background
 			return m, tea.Suspend
@@ -774,11 +808,6 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 		case "ctrl+o":
 			// TS pi-mono: Toggle ALL tool outputs expand/collapse globally
 			m.chat.ToggleAllTools()
-			status := "expanded"
-			if !m.chat.AllToolsExpanded {
-				status = "collapsed"
-			}
-			m.chat.AppendSystem("Tool outputs: " + status)
 			return m, nil
 		case "ctrl+l":
 			// TS pi-mono: Open model selector; close any existing overlay first
@@ -797,13 +826,19 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 			if m.bashCancelCh != nil {
 				close(m.bashCancelCh)
 				m.bashCancelCh = nil
-				m.chat.AppendSystem("Cancelled bash command")
+				return m, nil
+			}
+			if m.compacting {
+				// Signal compaction cancellation via event bus
+				if m.agent != nil && m.agent.Loop().EventBus != nil {
+					m.agent.Loop().EventBus.Emit(events.CompactionEnd(0, "", true, "manual"))
+				}
 				return m, nil
 			}
 			if m.streaming {
 				m.agent.Abort()
 				// Restore queued messages to editor (TS pi-mono: prepend to existing content)
-				msgs := m.agent.DrainQueues()
+				msgs := m.agent.Loop().DrainQueues()
 				if len(msgs) > 0 {
 					queued := strings.Join(msgs, "\n\n")
 					current := m.input.Value()
@@ -812,9 +847,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 					} else {
 						m.input.SetValue(queued)
 					}
-					m.chat.AppendSystem(fmt.Sprintf("⏹ Aborted — %d queued message(s) restored to editor", len(msgs)))
-				} else {
-					m.chat.AppendSystem("⏹ Aborted")
+					// Silent abort — agent response indicates cancellation via stopReason
 				}
 				return m, nil
 			}
@@ -839,11 +872,11 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 		case "ctrl+t":
 			// Toggle thinking visibility (TS pi-mono: hideThinkingBlock)
 			m.chat.HideAllThinking = !m.chat.HideAllThinking
-			if m.chat.HideAllThinking {
-				m.chat.AppendSystem("Thinking: hidden")
-			} else {
-				m.chat.AppendSystem("Thinking: visible")
+			visible := "hidden"
+			if !m.chat.HideAllThinking {
+				visible = "visible"
 			}
+			m.chat.AppendSystem("Thinking blocks: " + visible)
 			return m, nil
 		case "ctrl+p":
 			// TS pi-mono: Cycle model forward
@@ -859,7 +892,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 			return m, nil
 		case "alt+up":
 			// TS pi-mono: Dequeue — prepend queued messages to existing editor content
-			msgs := m.agent.DrainQueues()
+			msgs := m.agent.Loop().DrainQueues()
 			if len(msgs) > 0 {
 				queued := strings.Join(msgs, "\n\n")
 				current := m.input.Value()
@@ -868,10 +901,16 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 				} else {
 					m.input.SetValue(queued)
 				}
-				m.chat.AppendSystem(fmt.Sprintf("Restored %d queued message(s) to editor", len(msgs)))
+				noun := "message"
+				if len(msgs) > 1 {
+					noun = "messages"
+				}
+				m.chat.AppendSystem(fmt.Sprintf("Restored %d queued %s to editor", len(msgs), noun))
 			} else {
 				m.chat.AppendSystem("No queued messages to restore")
 			}
+			m.pendingSteeringMsgs = nil
+			m.pendingFollowUpMsgs = nil
 			return m, nil
 		}
 
@@ -950,7 +989,6 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 			if text, err := pasteFromClipboard(); err == nil && text != "" {
 				if marker := m.input.StorePaste(text); marker != "" {
 					m.input.SetValue(m.input.Value() + marker)
-					m.chat.AppendSystem("Paste stored as " + marker)
 				} else {
 					m.input.SetValue(m.input.Value() + text)
 				}
@@ -964,23 +1002,27 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 		text := m.input.ExpandPastes(string(msg))
 		if m.streaming {
 			// TS-style steer: inject message without aborting current stream
-			m.chat.AppendSystem("⏎ " + text)
 			m.input.RecordSubmission(text)
-			m.pendingMsgs = append(m.pendingMsgs, text)
-			if len(m.pendingMsgs) > 5 {
-				m.pendingMsgs = m.pendingMsgs[1:]
-			}
+			m.pendingSteeringMsgs = append(m.pendingSteeringMsgs, text)
 			m.agent.Steer(text)
 			return m, nil
 		}
 		if m.compacting {
 			m.input.RecordSubmission(text)
 			m.compactionQueue = append(m.compactionQueue, text)
-			m.chat.AppendSystem("⏳ " + text + " (queued for after compaction)")
+			m.chat.AppendSystem("Queued message for after compaction")
 			return m, nil
 		}
 		{
 			atomic.AddInt32(&m.streamID, 1)
+			if strings.HasPrefix(text, "!") {
+				// TS pi-mono: bash already-running guard
+				if m.bashCancelCh != nil {
+					m.chat.AppendWarning("A bash command is already running. Press Esc to cancel it first.")
+					m.input.SetValue(text)
+					return m, nil
+				}
+			}
 			if strings.HasPrefix(text, "!!") {
 				cmd := strings.TrimPrefix(text, "!!")
 				cmd = strings.TrimSpace(cmd)
@@ -1020,12 +1062,17 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 				if tmpl := m.findTemplate(cmdName); tmpl != nil {
 					atomic.AddInt32(&m.streamID, 1)
 					expanded := prompt.ExpandTemplate(*tmpl, cmdArgs...)
-					m.chat.AppendCustomMessage("prompt", fmt.Sprintf("Invoking prompt: %s\n%s", tmpl.Name, tmpl.Description))
 					go m.runAgent(expanded, m.streamID)
 				} else {
-					m.chat.AppendSystem("Cmd: " + text)
-					result := m.handleSlashCmd(text)
-					m.chat.AppendSystem(result)
+					result, handled := m.handleSlashCmd(text)
+					if !handled {
+						// TS pi-mono: unknown slash commands fall through to LLM as normal prompts
+						m.chat.AppendUserMessage(text)
+						m.input.RecordSubmission(text)
+						go m.runAgent(text, m.streamID)
+					} else if result != "" {
+						m.chat.AppendSystem(result)
+					}
 				}
 			} else {
 				m.chat.AppendUserMessage(text)
@@ -1038,22 +1085,18 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 	case components.FollowUpMsg:
 		// TS pi-mono: Alt+Enter queues message for after agent finishes
 		text := m.input.ExpandPastes(string(msg))
-		m.chat.AppendSystem("⏩ " + text + " (queued)")
-		m.pendingMsgs = append(m.pendingMsgs, text)
-			if len(m.pendingMsgs) > 5 {
-				m.pendingMsgs = m.pendingMsgs[1:]
-			}
-			m.agent.Steer(text) // Uses SteeringQueue → processed on next turn
+		m.pendingFollowUpMsgs = append(m.pendingFollowUpMsgs, text)
+		m.agent.FollowUp(text) // Uses FollowUpQueue → processed after agent finishes
 		return m, nil
 
 	case StreamTextMsg:
 		m.chat.AppendText(string(msg))
-		m.footer.SetWorkingMessage("Thinking…")
+		m.footer.SetWorkingMessage("Thinking...")
 		return m, nil
 
 	case ThinkingMsg:
 		m.chat.AppendThinking(string(msg))
-		m.footer.SetWorkingMessage("Thinking…")
+		m.footer.SetWorkingMessage("Thinking...")
 		return m, nil
 
 	case ToolCallMsg:
@@ -1079,7 +1122,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 
 	case ToolRunningMsg:
 		m.chat.MarkToolRunning(msg.ID)
-		m.footer.SetWorkingMessage("Running " + msg.Name + "…")
+		m.footer.SetWorkingMessage("Running " + msg.Name + "...")
 		return m, nil
 
 	case ToolResultMsg:
@@ -1099,6 +1142,10 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 			}
 			m.chat.SetToolDuration(msg.ID, durStr)
 		}
+		return m, nil
+
+	case StopReasonMsg:
+		m.chat.MarkLastStopReason(msg.Reason)
 		return m, nil
 
 	case AgentDoneMsg:
@@ -1131,9 +1178,13 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 
 	case ShareResultMsg:
 		if msg.Error != "" {
-			m.chat.AppendError("Share failed: " + msg.Error)
+			m.chat.AppendError(msg.Error)
 		} else if msg.GistURL != "" {
-			m.chat.AppendSystem("Shared: " + msg.GistURL)
+			if msg.PreviewURL != "" {
+				m.chat.AppendSystem("Share URL: " + msg.PreviewURL + "\nGist: " + msg.GistURL)
+			} else {
+				m.chat.AppendSystem("Share URL: " + msg.GistURL + "\nGist: " + msg.GistURL)
+			}
 		}
 		return m, nil
 
@@ -1173,8 +1224,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 		}
 		if strings.HasPrefix(msg.Value, "session:") {
 			sid := strings.TrimPrefix(msg.Value, "session:")
-			m.chat.AppendSystem("Session: " + sid)
-			m.chat.AppendSystem("Use --resume " + sid + " on restart to resume this session.")
+			m.switchToSession(sid)
 		} else if msg.Value != "" {
 			m.switchToModel(msg.Value)
 		}
@@ -1262,7 +1312,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 
 	case extensionHiddenThinkingLabelMsg:
 		if msg.label == "" {
-			m.chat.HiddenThinkingLabel = "Thinking…"
+			m.chat.HiddenThinkingLabel = "Thinking..."
 		} else {
 			m.chat.HiddenThinkingLabel = msg.label
 		}
@@ -1270,7 +1320,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 
 	case extensionWorkingMessageMsg:
 		if msg.message == "" {
-			m.workingMessage = "Generating…"
+			m.workingMessage = "Working..."
 		} else {
 			m.workingMessage = msg.message
 		}
@@ -1391,6 +1441,14 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 		m.chat.AppendSystem(string(msg))
 		return m, nil
 
+	case appendErrorMsg:
+		m.chat.AppendError(string(msg))
+		return m, nil
+
+	case appendWarningMsg:
+		m.chat.AppendWarning(string(msg))
+		return m, nil
+
 	case StatusMsg:
 		m.lastStatus = msg
 		m.footer.Update(
@@ -1417,6 +1475,19 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 		return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
 			return BranchTickMsg(t)
 		})
+
+	case RetryTickMsg:
+		if m.retryTicking && m.retryDelaySec > 0 {
+			m.retryDelaySec--
+			if m.retryDelaySec > 0 {
+				msg := fmt.Sprintf("Retrying (%d/%d) in %ds... (Esc to cancel)", m.retryAttempt, m.retryMaxAttempts, m.retryDelaySec)
+				m.chat.ReplaceLastSystem(msg)
+				return m, tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
+					return RetryTickMsg(t)
+				})
+			}
+		}
+		return m, nil
 
 	case ResizeMsg:
 		m.width = msg.Width
@@ -1632,31 +1703,58 @@ func (m AppModel) View() string {
 
 // ─── Pending Messages ──────────────────────────────────────────────────────
 
-// pendingView renders a dim indicator when messages are queued (TS pi-mono style).
+
+// truncateToVisualWidth truncates a string to maxWidth visual columns,
+// adding "..." if truncated. Uses rune-level truncation.
+func truncateToVisualWidth(s string, maxWidth int) string {
+	runes := []rune(s)
+	width := 0
+	for i, r := range runes {
+		w := 1
+		// East Asian wide chars and emoji
+		if r >= 0x1100 && (r <= 0x115f || r == 0x2329 || r == 0x232a ||
+			(r >= 0x2e80 && r <= 0xa4cf) || (r >= 0xac00 && r <= 0xd7a3) ||
+			(r >= 0xf900 && r <= 0xfaff) || (r >= 0xfe10 && r <= 0xfe19) ||
+			(r >= 0xfe30 && r <= 0xfe6f) || (r >= 0xff01 && r <= 0xff60) ||
+			(r >= 0xffe0 && r <= 0xffe6) || (r >= 0x1f300 && r <= 0x1f9ff)) {
+			w = 2
+		}
+		if width+w > maxWidth {
+			return string(runes[:i]) + "..."
+		}
+		width += w
+	}
+	return s
+}
+// pendingView renders individual queued messages (TS pi-mono updatePendingMessagesDisplay).
+// Shows Steering:/Follow-up: prefixes, width-aware truncation, and dequeue hint.
 func (m *AppModel) pendingView() string {
-	steering, followUp := m.agent.QueuedCounts()
-	if steering == 0 && followUp == 0 {
-		m.pendingMsgs = nil
+	steeringMsgs := m.pendingSteeringMsgs
+	followUpMsgs := m.pendingFollowUpMsgs
+
+	// Include compaction queued messages as steering (pi-mono style)
+	allSteering := make([]string, 0, len(steeringMsgs)+len(m.compactionQueue))
+	allSteering = append(allSteering, steeringMsgs...)
+	allSteering = append(allSteering, m.compactionQueue...)
+
+	if len(allSteering) == 0 && len(followUpMsgs) == 0 {
 		return ""
 	}
-	dimStyle := lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("#e5c07b"))
+
+	dimStyle := lipgloss.NewStyle().Faint(true)
+
 	var sb strings.Builder
-	if steering > 0 {
-		sb.WriteString(dimStyle.Render(fmt.Sprintf("  ⏎ %d steering", steering)))
+	for _, msg := range allSteering {
+		sb.WriteString(dimStyle.Render("Steering: " + truncateToVisualWidth(msg, 80)))
+		sb.WriteString("\n")
 	}
-	if followUp > 0 {
-		if steering > 0 {
-			sb.WriteString("  ")
-		}
-		sb.WriteString(dimStyle.Render(fmt.Sprintf("  ⏩ %d queued", followUp)))
+	for _, msg := range followUpMsgs {
+		sb.WriteString(dimStyle.Render("Follow-up: " + truncateToVisualWidth(msg, 80)))
+		sb.WriteString("\n")
 	}
-	if len(m.pendingMsgs) > 0 {
-		last := m.pendingMsgs[len(m.pendingMsgs)-1]
-		if len(last) > 60 {
-			last = last[:60] + "..."
-		}
-		sb.WriteString(dimStyle.Render(": " + last))
-	}
+	// Dequeue hint: ↳ Alt+Up to edit all queued messages
+	sb.WriteString(dimStyle.Render("↳ Alt+Up to edit all queued messages"))
+
 	return sb.String()
 }
 
@@ -1700,6 +1798,8 @@ func (m *AppModel) showWelcome(msg WelcomeMsg) {
 		Bold(true)
 	dimStyle := lipgloss.NewStyle().
 		Faint(true)
+	warningStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(m.theme.Warning))
 
 	m.chat.AppendSystem(accentStyle.Render("xihu v" + utils.Version))
 
@@ -1708,6 +1808,14 @@ func (m *AppModel) showWelcome(msg WelcomeMsg) {
 
 	// Asynchronously check for newer version
 	go m.checkNewVersion()
+
+	// Asynchronously check tmux keyboard setup (TS pi-mono: checkTmuxKeyboardSetup)
+	go m.checkTmuxKeyboard()
+
+	// Show settings/model loading errors (TS pi-mono: models.json / settings errors at startup)
+	if msg.SettingsError != "" {
+		m.chat.AppendError("settings error: " + msg.SettingsError)
+	}
 
 	if !m.welcomeExpanded {
 		// Collapsed: brief status (uses actual keybinding for toggle header)
@@ -1755,7 +1863,8 @@ func (m *AppModel) showWelcome(msg WelcomeMsg) {
 				otherSkills = append(otherSkills, s.Name)
 			}
 		}
-		m.chat.AppendSystem(fmt.Sprintf("[Skills] %d loaded: %s", len(msg.Skills), strings.Join(skillNames, ", ")))
+		m.chat.AppendSystem("[Skills]")
+		m.chat.AppendSystem(dimStyle.Render("  " + strings.Join(skillNames, ", ")))
 		if len(projectSkills) > 0 {
 			m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("  project: %s", strings.Join(projectSkills, ", "))))
 		}
@@ -1775,7 +1884,8 @@ func (m *AppModel) showWelcome(msg WelcomeMsg) {
 			for i, e := range loaded {
 				names[i] = e.Name()
 			}
-			m.chat.AppendSystem(fmt.Sprintf("[Extensions] %d loaded: %s", len(loaded), strings.Join(names, ", ")))
+			m.chat.AppendSystem("[Extensions]")
+			m.chat.AppendSystem(dimStyle.Render("  " + strings.Join(names, ", ")))
 		}
 	} else if len(msg.Extensions) > 0 {
 		m.chat.AppendSystem("[Extensions] " + strings.Join(msg.Extensions, ", "))
@@ -1787,7 +1897,8 @@ func (m *AppModel) showWelcome(msg WelcomeMsg) {
 		for i, fp := range msg.ContextFiles {
 			contextCompact[i] = formatContextPath(fp)
 		}
-		m.chat.AppendSystem(fmt.Sprintf("[Context] %d loaded: %s", len(msg.ContextFiles), strings.Join(contextCompact, ", ")))
+		m.chat.AppendSystem("[Context]")
+		m.chat.AppendSystem(dimStyle.Render("  " + strings.Join(contextCompact, ", ")))
 	}
 
 	// Show prompt templates (TS pi-mono: showLoadedResources Prompts section)
@@ -1796,8 +1907,168 @@ func (m *AppModel) showWelcome(msg WelcomeMsg) {
 		for i, t := range msg.PromptTemplates {
 			templateNames[i] = "/" + t.Name
 		}
-		m.chat.AppendSystem(fmt.Sprintf("[Prompts] %d loaded: %s", len(msg.PromptTemplates), strings.Join(templateNames, ", ")))
+		m.chat.AppendSystem("[Prompts]")
+		m.chat.AppendSystem(dimStyle.Render("  " + strings.Join(templateNames, ", ")))
 	}
+
+	// Show loaded themes (TS pi-mono: showLoadedResources Themes section)
+	customThemePaths, _ := DiscoverThemes("")
+	if len(customThemePaths) > 0 {
+		themeNames := make([]string, 0, len(customThemePaths))
+		for _, p := range customThemePaths {
+			t, err := LoadTheme(p)
+			if err == nil && t.Name != "" {
+				themeNames = append(themeNames, t.Name)
+			} else {
+				themeNames = append(themeNames, filepath.Base(p))
+			}
+		}
+		m.chat.AppendSystem("[Themes]")
+		m.chat.AppendSystem(dimStyle.Render("  " + strings.Join(themeNames, ", ")))
+	}
+
+	// Detect and show prompt template collisions (TS pi-mono: [Prompt conflicts])
+	if len(msg.PromptTemplates) > 0 {
+		promptCollisions := m.detectPromptCollisions(msg.PromptTemplates)
+		if len(promptCollisions) > 0 {
+			m.chat.AppendSystem(warningStyle.Render("[Prompt conflicts]"))
+			for _, c := range promptCollisions {
+				m.chat.AppendSystem(warningStyle.Render(fmt.Sprintf("  %q collision:", c.Name)))
+				m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("    \xe2\x9c\x93 %s", c.WinnerPath)))
+				m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("    \xe2\x9c\x97 %s (skipped)", c.LoserPath)))
+			}
+		}
+	}
+
+	// Detect and show theme collisions (TS pi-mono: [Theme conflicts])
+	themeCollisions := m.detectThemeCollisions()
+	if len(themeCollisions) > 0 {
+		m.chat.AppendSystem(warningStyle.Render("[Theme conflicts]"))
+		for _, c := range themeCollisions {
+			m.chat.AppendSystem(warningStyle.Render(fmt.Sprintf("  %q collision:", c.Name)))
+			m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("    \xe2\x9c\x93 %s", c.WinnerPath)))
+			m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("    \xe2\x9c\x97 %s (skipped)", c.LoserPath)))
+		}
+	}
+
+	// Show diagnostics (TS pi-mono: showLoadedResources diagnostics section)
+	if len(msg.SkillCollisions) > 0 || len(msg.ExtensionDiagnostics) > 0 || len(msg.KeybindingConflicts) > 0 {
+		m.showLoadedDiagnostics(msg.SkillCollisions, msg.ExtensionDiagnostics, msg.KeybindingConflicts)
+	}
+}
+
+// getExtDiagnostics returns extension init/load diagnostics from the extension runner.
+func (m *AppModel) getExtDiagnostics() []extensions.ExtensionDiagnostic {
+	if m.extRunner == nil {
+		return nil
+	}
+	return m.extRunner.GetExtensionDiagnostics()
+}
+
+// getKBConflicts returns keybinding conflicts from the global keybindings manager.
+func (m *AppModel) getKBConflicts() []KeybindingConflict {
+	kb := GetKeybindings()
+	if kb == nil {
+		return nil
+	}
+	return kb.GetConflicts()
+}
+
+// showPostReloadDiagnostics shows diagnostics after /reload (TS pi-mono: showLoadedResources after reload).
+func (m *AppModel) showPostReloadDiagnostics() {
+	extDiags := m.getExtDiagnostics()
+	kbConflicts := m.getKBConflicts()
+
+	if len(extDiags) == 0 && len(kbConflicts) == 0 {
+		return
+	}
+	m.showLoadedDiagnostics(nil, extDiags, kbConflicts)
+}
+
+// showLoadedDiagnostics renders skill collisions, extension diagnostics, and keybinding conflicts.
+func (m *AppModel) showLoadedDiagnostics(skillCollisions []skills.SkillCollision, extDiags []extensions.ExtensionDiagnostic, kbConflicts []KeybindingConflict) {
+	dimStyle := lipgloss.NewStyle().Faint(true)
+	warningStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Warning))
+
+	if len(skillCollisions) > 0 {
+		m.chat.AppendSystem(warningStyle.Render("[Skill conflicts]"))
+		for _, c := range skillCollisions {
+			m.chat.AppendSystem(warningStyle.Render(fmt.Sprintf("  %q collision:", c.Name)))
+			m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("    ✓ %s (%s)", c.WinnerPath, c.WinnerSource)))
+			m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("    ✗ %s (%s) (skipped)", c.LoserPath, c.LoserSource)))
+		}
+	}
+	if len(extDiags) > 0 {
+		m.chat.AppendSystem(warningStyle.Render("[Extension issues]"))
+		for _, d := range extDiags {
+			prefix := "Error"
+			if d.Type == "warning" {
+				prefix = "Warning"
+			}
+			m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("  %s: %s (%s)", prefix, d.Message, d.Path)))
+		}
+	}
+	if len(kbConflicts) > 0 {
+		m.chat.AppendSystem(warningStyle.Render("[Keybinding conflicts]"))
+		for _, c := range kbConflicts {
+			bindingNames := make([]string, len(c.Bindings))
+			for i, b := range c.Bindings {
+				bindingNames[i] = string(b)
+			}
+			m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("  %s bound to: %s", c.Key, strings.Join(bindingNames, ", "))))
+		}
+	}
+}
+
+// detectPromptCollisions finds naming conflicts in prompt templates.
+// Since user templates are loaded first then project templates (loaded later),
+// the last template with a given name wins (project overrides user).
+func (m *AppModel) detectPromptCollisions(templates []prompt.PromptTemplate) []PromptCollision {
+	seen := make(map[string]int) // name -> index of first occurrence
+	var collisions []PromptCollision
+	for i, t := range templates {
+		if firstIdx, exists := seen[t.Name]; exists {
+			// Project (loaded later, i) overrides earlier template
+			collisions = append(collisions, PromptCollision{
+				Name:       t.Name,
+				WinnerPath: t.Source,
+				LoserPath:  templates[firstIdx].Source,
+			})
+			seen[t.Name] = i // update to new winner
+		} else {
+			seen[t.Name] = i
+		}
+	}
+	return collisions
+}
+
+// detectThemeCollisions finds naming conflicts among discovered themes.
+// Themes are discovered from ~/.xihu/themes/; the last theme with a given name wins.
+func (m *AppModel) detectThemeCollisions() []ThemeCollision {
+	paths, err := DiscoverThemes("")
+	if err != nil || len(paths) == 0 {
+		return nil
+	}
+	// Map theme name -> path
+	seen := make(map[string]string)
+	var collisions []ThemeCollision
+	for _, p := range paths {
+		t, err := LoadTheme(p)
+		if err != nil || t.Name == "" {
+			continue
+		}
+		if firstPath, exists := seen[t.Name]; exists {
+			collisions = append(collisions, ThemeCollision{
+				Name:       t.Name,
+				WinnerPath: p,
+				LoserPath:  firstPath,
+			})
+			seen[t.Name] = p // update to new winner
+		} else {
+			seen[t.Name] = p
+		}
+	}
+	return collisions
 }
 
 // ─── Changelog ───────────────────────────────────────────────────────────────
@@ -1837,18 +2108,18 @@ func (m *AppModel) checkChangelog() {
 func (m *AppModel) showFullChangelog() {
 	path := utils.ChangelogPath()
 	if path == "" {
-		m.chat.AppendSystem("No CHANGELOG.md found")
+		m.chat.AppendSystem("No changelog entries found.")
 		return
 	}
 	entries, err := utils.ParseChangelog(path)
 	if err != nil || len(entries) == 0 {
-		m.chat.AppendSystem("No changelog entries found")
+		m.chat.AppendSystem("No changelog entries found.")
 		return
 	}
 
 	var sb strings.Builder
 	accentStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Accent)).Bold(true)
-	sb.WriteString(accentStyle.Render("Changelog"))
+	sb.WriteString(accentStyle.Render("What's New"))
 	sb.WriteString("\n\n")
 
 	// Show entries in reverse (newest first)
@@ -1933,12 +2204,59 @@ func (m *AppModel) checkNewVersion() {
 	if m.program == nil {
 		return
 	}
-	// Show as a system message since the startup banner has already rendered
-	banner := fmt.Sprintf("Update available: %s → %s (%s)", result.Current, result.Latest, result.URL)
+	// TS pi-mono: showNewVersionNotification — bordered warning block
+	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Warning))
+	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Muted))
+	accentStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Accent))
+	boldWarn := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Warning)).Bold(true)
+	// Full-width borders matching pi-mono DynamicBorder
+	borderLine := warnStyle.Render(strings.Repeat("─", 72))
 	m.program.Send(StreamTextMsg(""))
-	m.chat.AppendSystem(lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#e5c07b")).
-		Render("⬆ " + banner))
+	m.chat.AppendSystem(borderLine)
+	m.chat.AppendSystem(boldWarn.Render("Update Available") + "\n" +
+		mutedStyle.Render(fmt.Sprintf("New version %s is available. Run ", result.Latest))+
+			accentStyle.Render("xihu update") + "\n" +
+		mutedStyle.Render("Changelog: ")+
+			accentStyle.Render("https://github.com/huichen/xihu/releases/latest"))
+	m.chat.AppendSystem(borderLine)
+}
+
+// checkTmuxKeyboard checks tmux extended-keys settings and warns if suboptimal.
+// Mirrors pi-mono's checkTmuxKeyboardSetup — runs asynchronously at startup.
+func (m *AppModel) checkTmuxKeyboard() {
+	if os.Getenv("TMUX") == "" {
+		return
+	}
+
+	runTmuxShow := func(option string) (string, bool) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "tmux", "show", "-gv", option)
+		cmd.Stdin = nil
+		out, err := cmd.Output()
+		if err != nil {
+			return "", false
+		}
+		return strings.TrimSpace(string(out)), true
+	}
+
+	extendedKeys, ok := runTmuxShow("extended-keys")
+	if !ok {
+		return // tmux not available or timed out
+	}
+
+	if extendedKeys != "on" && extendedKeys != "always" {
+		if m.program != nil {
+			m.program.Send(appendWarningMsg("tmux extended-keys is off. Modified Enter keys may not work. Add `set -g extended-keys on` to ~/.tmux.conf and restart tmux."))
+		}
+	}
+
+	extendedKeysFormat, ok := runTmuxShow("extended-keys-format")
+	if ok && extendedKeysFormat == "xterm" {
+		if m.program != nil {
+			m.program.Send(appendWarningMsg("tmux extended-keys-format is xterm. xihu works best with csi-u. Add `set -g extended-keys-format csi-u` to ~/.tmux.conf and restart tmux."))
+		}
+	}
 }
 
 // ─── Help Overlay ──────────────────────────────────────────────────────────
@@ -1967,19 +2285,26 @@ func (m *AppModel) buildHelpOverlay() string {
 	titleStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(m.theme.Accent)).
 		Bold(true)
-	sb.WriteString(titleStyle.Render("xihu v" + utils.Version + " — Help"))
+	sb.WriteString(titleStyle.Render("Keyboard Shortcuts"))
 	sb.WriteString("\n\n")
 
-	// Keybindings by category
-	km := DefaultKeyMap()
-	groups := km.ByCategory()
-
-	categoryOrder := []string{"global", "editor", "chat", "tools"}
+	// Keybindings by category — resolved from KeybindingsManager (user-customizable)
+	categoryOrder := []string{"global", "editor", "tools"}
 	categoryTitles := map[string]string{
 		"global": "Global",
 		"editor": "Editor",
-		"chat":   "Chat",
 		"tools":  "Tools",
+	}
+
+	// Group resolved bindings by category
+	groups := make(map[string][]ResolvedBinding)
+	if m.keybindings != nil {
+		for _, b := range m.keybindings.GetResolvedBindings() {
+			if b.Category == "" {
+				continue
+			}
+			groups[b.Category] = append(groups[b.Category], b)
+		}
 	}
 
 	keyStyle := lipgloss.NewStyle().
@@ -1996,8 +2321,9 @@ func (m *AppModel) buildHelpOverlay() string {
 		sb.WriteString(titleStyle.Render("▸ " + categoryTitles[cat]))
 		sb.WriteByte('\n')
 		for _, b := range bindings {
+			keyStr := strings.Join(b.Keys, " / ")
 			sb.WriteString("  ")
-			sb.WriteString(keyStyle.Render(b.Key))
+			sb.WriteString(keyStyle.Render(keyStr))
 			sb.WriteString(descStyle.Render(b.Description))
 			sb.WriteByte('\n')
 		}
@@ -2014,7 +2340,9 @@ func (m *AppModel) buildHelpOverlay() string {
 		for i, s := range m.Skills {
 			skillNames[i] = s.Name
 		}
-		sb.WriteString(fmt.Sprintf("  [Skills] %d loaded: %s", len(m.Skills), strings.Join(skillNames, ", ")))
+		sb.WriteString("  [Skills]")
+		sb.WriteByte('\n')
+		sb.WriteString("    " + strings.Join(skillNames, ", "))
 	} else {
 		sb.WriteString("  [Skills] none")
 	}
@@ -2028,9 +2356,11 @@ func (m *AppModel) buildHelpOverlay() string {
 			for i, e := range loaded {
 				names[i] = e.Name()
 			}
-			sb.WriteString(fmt.Sprintf("  [Extensions] %d loaded: %s", len(loaded), strings.Join(names, ", ")))
+			sb.WriteString("  [Extensions]")
+			sb.WriteByte('\n')
+			sb.WriteString("    " + strings.Join(names, ", "))
 		} else {
-			sb.WriteString("  [Extensions] 0 loaded")
+			sb.WriteString("  [Extensions] none")
 		}
 	} else if len(m.Extensions) > 0 {
 		sb.WriteString("  [Extensions] " + strings.Join(m.Extensions, ", "))
@@ -2047,7 +2377,9 @@ func (m *AppModel) buildHelpOverlay() string {
 			for name := range extCmds {
 				cmdNames = append(cmdNames, name)
 			}
-			sb.WriteString(fmt.Sprintf("  [Extension Cmds] %d: %s", len(cmdNames), strings.Join(cmdNames, ", ")))
+			sb.WriteString("  [Extension Cmds]")
+			sb.WriteByte('\n')
+			sb.WriteString("    " + strings.Join(cmdNames, ", "))
 		} else {
 			sb.WriteString("  [Extension Cmds] none")
 		}
@@ -2060,7 +2392,9 @@ func (m *AppModel) buildHelpOverlay() string {
 		for i, pt := range m.promptTemplates {
 			ptNames[i] = "/" + pt.Name
 		}
-		sb.WriteString(fmt.Sprintf("  [Prompts] %d loaded: %s", len(m.promptTemplates), strings.Join(ptNames, ", ")))
+		sb.WriteString("  [Prompts]")
+		sb.WriteByte('\n')
+		sb.WriteString("    " + strings.Join(ptNames, ", "))
 	} else {
 		sb.WriteString("  [Prompts] none (place .md files in ~/.xihu/prompts/ or .xihu/prompts/)")
 	}
@@ -2373,13 +2707,14 @@ func (m *AppModel) updateAutocomplete(candidates []components.SlashCommand, pref
 // myID is the stream identifier snapshot — events are dropped if streamID no longer matches.
 func (m *AppModel) runAgent(text string, myID int32) {
 	m.streaming = true
-	m.pendingMsgs = nil // clear pending messages when agent starts running
+	m.pendingSteeringMsgs = nil
+		m.pendingFollowUpMsgs = nil // clear pending messages when agent starts running
 	m.startProgress()
 
 	// Show connecting status (TS pi-mono: createWorkingLoader)
-	modelName, provider := parseModelString(m.agent.Model)
+	modelName, provider := parseModelString(m.agent.Loop().Model)
 	_ = provider
-	m.footer.SetWorkingMessage("Connecting to " + modelName + "…")
+	m.footer.SetWorkingMessage("Connecting to " + modelName + "...")
 
 	// Show streaming indicator immediately via footer
 	if m.program != nil {
@@ -2392,13 +2727,24 @@ func (m *AppModel) runAgent(text string, myID int32) {
 
 	var messages []types.Message
 	if m.session != nil && len(m.session.Entries) > 0 {
-		messages = session.BuildContext(m.session.Entries)
+		leafID := session.EffectiveLeafID(m.session)
+		messages = session.BuildContextFromLeaf(m.session.Entries, leafID)
 	}
 	userMsg := types.Message{
 		Role:    "user",
 		Content: jsonMarshalContent(text),
 	}
 	messages = append(messages, userMsg)
+
+	// Save user message as session entry (TS pi-mono: appendMessage in _processAgentEvent)
+	initialMsgCount := len(messages)
+	if m.session != nil && m.sessMgr != nil {
+		parentID := session.EffectiveLeafID(m.session)
+		userEntry := session.MessageToEntry(userMsg, parentID)
+		if err := m.sessMgr.AddEntry(m.session, userEntry); err == nil {
+			m.footer.SetEntryCount(len(m.session.Entries))
+		}
+	}
 
 	// Subscribe to EventBus
 	subID := fmt.Sprintf("tui-%d", time.Now().UnixNano())
@@ -2471,33 +2817,62 @@ func (m *AppModel) runAgent(text string, myID int32) {
 			case "auto_retry_start":
 				attempt, _ := evt.Data["attempt"].(int)
 				maxAttempts, _ := evt.Data["max_attempts"].(int)
-				retryStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#e5c07b"))
-				m.chat.AppendSystem(retryStyle.Render(fmt.Sprintf("⏳ Retrying (%d/%d)…", attempt, maxAttempts)))
+				delayMs, _ := evt.Data["delay_ms"].(int)
+				delaySec := (delayMs + 999) / 1000
+				// Store countdown state for live ticking (TS pi-mono: CountdownTimer)
+				m.retryTicking = true
+				m.retryDelaySec = delaySec
+				m.retryAttempt = attempt
+				m.retryMaxAttempts = maxAttempts
+				m.chat.AppendSystem(fmt.Sprintf("Retrying (%d/%d) in %ds... (Esc to cancel)", attempt, maxAttempts, delaySec))
+				if m.program != nil && delaySec > 0 {
+					go func() {
+						time.Sleep(1 * time.Second)
+						if m.program != nil && m.retryTicking {
+							m.program.Send(RetryTickMsg(time.Now()))
+						}
+					}()
+				}
 			case "auto_retry_end":
-				m.chat.AppendSystem("✓ Retry succeeded")
+				m.retryTicking = false
+				if success, ok := evt.Data["success"].(bool); ok && !success {
+					attempt, _ := evt.Data["attempt"].(int)
+					finalError, _ := evt.Data["final_error"].(string)
+					if finalError == "" {
+						finalError = "Unknown error"
+					}
+					m.chat.AppendError(fmt.Sprintf("Retry failed after %d attempts: %s", attempt, finalError))
+				}
 			case "compaction_start":
 				m.compacting = true
 				m.compactionQueue = nil // reset queue on new compaction
-				entryCount := len(m.session.Entries)
-				m.chat.AppendSystem(fmt.Sprintf("⏳ Compacting context… (%d entries)", entryCount))
+				reason, _ := evt.Data["reason"].(string)
+				if reason == "manual" {
+					m.chat.AppendSystem("Compacting context... (Esc to cancel)")
+				} else {
+					m.chat.AppendSystem("Context overflow detected, Auto-compacting... (Esc to cancel)")
+				}
+				m.footer.SetWorkingMessage("Compacting...")
 			case "compaction_end":
 				m.compacting = false
-				entryCount := len(m.session.Entries)
-				// Show compaction summary as expandable custom_message (TS pi-mono: CompactionSummaryMessageComponent)
-				tokensBefore, _ := evt.Data["tokens_before"].(int)
-				summary, _ := evt.Data["summary"].(string)
-				if tokensBefore > 0 {
-					tokenStr := fmt.Sprintf("%d", tokensBefore)
-					if tokensBefore >= 1000 {
-						tokenStr = fmt.Sprintf("%dK", tokensBefore/1000)
+				m.footer.SetWorkingMessage("Working...")
+				aborted, _ := evt.Data["aborted"].(bool)
+				reason, _ := evt.Data["reason"].(string)
+				if aborted {
+					if reason == "manual" {
+						m.chat.AppendError("Compaction cancelled")
+					} else {
+						m.chat.AppendSystem("Auto-compaction cancelled")
 					}
-					displayText := fmt.Sprintf("Compacted from %s tokens (%d entries)", tokenStr, entryCount)
-					if summary != "" {
-						displayText += "\n" + summary
-					}
-					m.chat.AppendCustomMessage("compaction", displayText)
 				} else {
-					m.chat.AppendSystem(fmt.Sprintf("✓ Context compacted (%d entries)", entryCount))
+					// Show compaction summary as expandable custom_message (TS pi-mono: CompactionSummaryMessageComponent)
+					tokensBefore, _ := evt.Data["tokens_before"].(int)
+					summary, _ := evt.Data["summary"].(string)
+					if tokensBefore > 0 {
+						m.chat.AppendCompactionSummary(summary, tokensBefore)
+					} else {
+						m.chat.AppendSystem("Context compacted")
+					}
 				}
 				// Flush queued messages (TS pi-mono: flushCompactionQueue)
 				if len(m.compactionQueue) > 0 {
@@ -2506,8 +2881,7 @@ func (m *AppModel) runAgent(text string, myID int32) {
 					for _, qm := range queued {
 						m.program.Send(components.SubmitMsg(qm))
 					}
-					m.chat.AppendSystem(fmt.Sprintf("Flushed %d queued message(s)", len(queued)))
-				}
+									}
 			case "agent_end":
 				// agent_end may carry a nested "usage" map
 				if usageRaw, ok := evt.Data["usage"]; ok {
@@ -2526,6 +2900,16 @@ func (m *AppModel) runAgent(text string, myID int32) {
 						}
 					}
 				}
+				// Propagate stop_reason for display (TS pi-mono: stopReason on last assistant message)
+				if sr, ok := evt.Data["stop_reason"].(string); ok && sr != "" && sr != "stop" && sr != "toolUse" {
+					reason := sr
+					if sr == "length" {
+						reason = "length"
+					}
+					if m.program != nil {
+						m.program.Send(StopReasonMsg{Reason: reason})
+					}
+				}
 				// Send final status
 				if m.program != nil {
 					m.program.Send(StatusMsg{
@@ -2541,11 +2925,24 @@ func (m *AppModel) runAgent(text string, myID int32) {
 	}()
 
 	ctx := context.Background()
-	_, _, err := m.agent.RunStreamingWithMessages(ctx, messages, func(chunk string) {
+	_, finalMessages, err := m.agent.Loop().RunStreamingWithMessages(ctx, messages, func(chunk string) {
 		if m.program != nil && atomic.LoadInt32(&m.streamID) == myID {
 			m.program.Send(StreamTextMsg(chunk))
 		}
 	})
+
+	// Save assistant and tool messages as session entries (TS pi-mono: appendMessage for each event.message)
+	if m.session != nil && m.sessMgr != nil && len(finalMessages) > initialMsgCount {
+		newMessages := finalMessages[initialMsgCount:] // assistant messages + tool results
+		for _, msg := range newMessages {
+			parentID := session.EffectiveLeafID(m.session)
+			entry := session.MessageToEntry(msg, parentID)
+			if err := m.sessMgr.AddEntry(m.session, entry); err == nil {
+				// LeafID is auto-updated by AddEntry
+			}
+		}
+		m.footer.SetEntryCount(len(m.session.Entries))
+	}
 
 	if err != nil && m.program != nil {
 		m.program.Send(AgentErrorMsg{Error: err})
@@ -2602,6 +2999,7 @@ func (m *AppModel) runBashDirect(command string, excludeFromCtx bool) {
 		})
 		m.sessMgr.AddEntry(m.session, session.SessionEntry{
 			ID:         session.GenerateID(),
+			ParentID:   session.EffectiveLeafID(m.session),
 			Type:       "custom",
 			CustomType: "bash",
 			Content:    bashData,
@@ -2630,30 +3028,40 @@ func (m *AppModel) runBashDirect(command string, excludeFromCtx bool) {
 // handleSlashCmd processes a slash command and returns the result string.
 // Local commands (model, thinking, quit, hotkeys) are handled here;
 // everything else is forwarded to the commands.Handle() subsystem.
-func (m *AppModel) handleSlashCmd(text string) string {
+func (m *AppModel) handleSlashCmd(text string) (string, bool) {
 	parts := strings.Fields(text)
 	if len(parts) == 0 {
-		return ""
+		return "", true
 	}
 	cmd := strings.ToLower(parts[0])
 
 	// Local TUI-only commands
 	switch cmd {
 	case "/help":
-		return "xihu — AI coding assistant. Type /hotkeys for shortcuts, /model to switch models."
+		return "xihu — AI coding assistant.\n\n" +
+			"Quick start:\n" +
+			"  /model       select model\n" +
+			"  /settings    configure app settings\n" +
+			"  /login       set up API key\n" +
+			"\n" +
+			"Reference:\n" +
+			"  /hotkeys     all keyboard shortcuts\n" +
+			"  /commands    list all slash commands\n" +
+			"  /session     session stats (tokens, cost, etc.)\n" +
+			"  /help        this help", true
 	case "/hotkeys":
 		m.showHelpOverlay()
-		return ""
+		return "", true
 	case "/changelog":
 		m.showFullChangelog()
-		return ""
+		return "", true
 	case "/model":
 		if len(parts) > 1 {
 			m.switchToModel(parts[1])
-			return "Model set to: " + parts[1]
+			return "", true
 		}
 		m.showModelSelector()
-		return ""
+		return "", true
 	case "/name":
 		if len(parts) > 1 {
 			name := strings.Join(parts[1:], " ")
@@ -2661,19 +3069,49 @@ func (m *AppModel) handleSlashCmd(text string) string {
 				m.session.SetSessionName(name)
 				if err := m.sessMgr.Save(m.session); err == nil {
 					m.footer.SetSession(m.session.CWD, getGitBranch(m.session.CWD), name, "", "", "")
-					return "Session name set to: " + name
+					return "Session name set: " + name, true
 				}
-				return "Error saving session name"
+				return "Error saving session name", true
 			}
-			return "No active session"
+			return "No active session", true
 		}
 		if m.session != nil && m.session.GetSessionName() != "" {
-			return "Session name: " + m.session.GetSessionName()
+			return "Session name: " + m.session.GetSessionName(), true
 		}
-		return "Session name not set. Use /name <name> to set one."
+		m.chat.AppendWarning("Usage: /name <name>")
+			return "", true
 	case "/new":
 		if m.session != nil && m.sessMgr != nil {
-			oldID := m.session.ID
+					m.session.ID = session.GenerateID()
+			m.session.Entries = nil
+			m.session.LeafID = ""
+			m.session.Name = ""
+			m.session.CreatedAt = time.Now()
+			m.session.UpdatedAt = time.Now()
+			if err := m.sessMgr.Save(m.session); err == nil {
+				m.footer.SetSession(m.session.CWD, getGitBranch(m.session.CWD), "", "", "", "")
+				return "✓ New session started", true
+			}
+			return "Error creating new session", true
+		}
+		return "No active session", true
+	case "/clone":
+		if m.session != nil && m.sessMgr != nil {
+			if len(m.session.Entries) == 0 {
+				return "Nothing to clone yet", true
+			}
+			m.cloneSession()
+			return "", true
+		}
+		return "No active session", true
+	case "/sessions":
+		m.showSessionSelector()
+		return "", true
+	case "/quit":
+		m.quitting = true
+		return "", true
+	case "/clear":
+		if m.session != nil && m.sessMgr != nil {
 			m.session.ID = session.GenerateID()
 			m.session.Entries = nil
 			m.session.Name = ""
@@ -2681,23 +3119,11 @@ func (m *AppModel) handleSlashCmd(text string) string {
 			m.session.UpdatedAt = time.Now()
 			if err := m.sessMgr.Save(m.session); err == nil {
 				m.footer.SetSession(m.session.CWD, getGitBranch(m.session.CWD), "", "", "", "")
-				return "New session " + m.session.ID + " (was " + oldID + ")"
+				return "✓ New session started", true
 			}
-			return "Error creating new session"
+			return "Error creating new session", true
 		}
-		return "No active session"
-	case "/clone":
-		if m.session != nil && m.sessMgr != nil {
-			m.cloneSession()
-			return ""
-		}
-		return "No active session"
-	case "/sessions":
-		m.showSessionSelector()
-		return ""
-	case "/quit":
-		m.quitting = true
-		return "Goodbye."
+		return "No active session", true
 	case "/scoped-models":
 		if len(parts) > 1 {
 			sub := strings.ToLower(parts[1])
@@ -2706,117 +3132,144 @@ func (m *AppModel) handleSlashCmd(text string) string {
 				if len(parts) > 2 {
 					model := strings.Join(parts[2:], " ")
 					m.scopedModels[model] = true
-					return "Enabled model: " + model
+					return "", true
 				}
-				return "Usage: /scoped-models enable <model>"
+				return "", true
 			case "disable":
 				if len(parts) > 2 {
 					model := strings.Join(parts[2:], " ")
 					delete(m.scopedModels, model)
-					return "Disabled model: " + model
+					return "", true
 				}
-				return "Usage: /scoped-models disable <model>"
+				return "", true
 			case "clear":
 				m.scopedModels = make(map[string]bool)
-				return "Cleared all scoped models. All models available for cycling."
+				return "", true
 			case "list":
 				if len(m.scopedModels) == 0 {
-					return "No scoped models set. All " + fmt.Sprintf("%d", len(m.availableModels)) + " models available."
+					return "", true
 				}
 				var names []string
 				for name := range m.scopedModels {
 					names = append(names, name)
 				}
-				return "Scoped models (" + fmt.Sprintf("%d", len(names)) + "): " + strings.Join(names, ", ")
+				return "", true
 			default:
-				return "Unknown sub-command: " + sub + ". Use: enable, disable, clear, list"
+				return "", true
 			}
 		}
 		// No args: show scoped models selector
 		m.showScopedModelSelector()
-		return ""
+		return "", true
 	case "/tree":
 		m.showSessionTree()
-		return ""
+		return "", true
 	case "/fork":
 		if len(parts) > 1 && parts[1] != "" {
 			m.forkFromEntry(parts[1])
-			return "Forking from entry: " + parts[1]
+			return "", true
 		}
 		m.showForkSelector()
-		return ""
+		return "", true
 	case "/thinking":
 		m.cycleThinking()
-		return "Thinking: " + m.thinkingLevel
+		return "Thinking level: " + m.thinkingLevel, true
 	case "/settings":
 		m.showSettingsSelector()
-		return ""
+		return "", true
 	case "/theme":
 		if len(parts) > 1 {
 			name := strings.ToLower(parts[1])
 			switch name {
 			case "dark":
 				m.ApplyTheme(DefaultTheme())
-				return "Theme applied: dark"
+				return "", true
 			case "light":
 				m.ApplyTheme(LightTheme())
-				return "Theme applied: light"
+				return "", true
 			default:
-				return "Unknown theme: " + name + ". Available: dark, light"
+				return "Unknown theme: " + name + ". Available: dark, light", true
 			}
 		}
 		m.showThemeSelector()
-		return ""
+		return "", true
 		case "/session":
 			if m.session != nil {
 				var sb strings.Builder
+
+				// Header
 				sb.WriteString("Session Info\n\n")
+
+				// Name (if set)
 				if name := m.session.GetSessionName(); name != "" {
-					sb.WriteString(fmt.Sprintf("Name: %s\n", name))
+					sb.WriteString("Name: " + name + "\n")
 				}
-				sb.WriteString(fmt.Sprintf("ID: %s\n", m.session.ID))
-				sb.WriteString(fmt.Sprintf("CWD: %s\n", m.session.CWD))
-				sb.WriteString(fmt.Sprintf("Model: %s\n", m.agent.Model))
-				sb.WriteString(fmt.Sprintf("Created: %s\n", m.session.CreatedAt.Format("2006-01-02 15:04:05")))
-				sb.WriteString(fmt.Sprintf("Updated: %s\n\n", m.session.UpdatedAt.Format("2006-01-02 15:04:05")))
+
+				// File
+				filePath := "In-memory"
+				if m.sessMgr != nil {
+					if fp := m.sessMgr.SessionFilePath(m.session.CWD, m.session.ID); fp != "" {
+						filePath = fp
+					}
+				}
+				sb.WriteString("File: " + filePath + "\n")
+
+				// ID
+				sb.WriteString("ID: " + m.session.ID + "\n\n")
+
 				// Message counts
-				userCount, assistantCount, toolCount := 0, 0, 0
+				userCount, assistantCount, toolCallCount, toolResultCount := 0, 0, 0, 0
 				for _, e := range m.session.Entries {
 					switch e.Role {
 					case "user": userCount++
-					case "assistant": assistantCount++
-					case "tool": toolCount++
+					case "assistant":
+						assistantCount++
+						if len(e.ToolCalls) > 0 {
+							toolCallCount += len(e.ToolCalls)
+						}
+					case "tool": toolResultCount++
 					}
 				}
 				sb.WriteString("Messages\n")
-				sb.WriteString(fmt.Sprintf("  User: %d\n", userCount))
-				sb.WriteString(fmt.Sprintf("  Assistant: %d\n", assistantCount))
-				sb.WriteString(fmt.Sprintf("  Tool Results: %d\n", toolCount))
-				sb.WriteString(fmt.Sprintf("  Total: %d\n\n", len(m.session.Entries)))
+				sb.WriteString("User: " + commaInt(userCount) + "\n")
+				sb.WriteString("Assistant: " + commaInt(assistantCount) + "\n")
+				sb.WriteString("Tool Calls: " + commaInt(toolCallCount) + "\n")
+				sb.WriteString("Tool Results: " + commaInt(toolResultCount) + "\n")
+				sb.WriteString("Total: " + commaInt(len(m.session.Entries)) + "\n\n")
+
 				// Token usage
 				if m.lastStatus.TokensIn+m.lastStatus.TokensOut > 0 {
 					sb.WriteString("Tokens\n")
-					sb.WriteString(fmt.Sprintf("  Input: %d\n", m.lastStatus.TokensIn))
-					sb.WriteString(fmt.Sprintf("  Output: %d\n", m.lastStatus.TokensOut))
+					sb.WriteString("Input: " + commaInt(m.lastStatus.TokensIn) + "\n")
+					sb.WriteString("Output: " + commaInt(m.lastStatus.TokensOut) + "\n")
 					if m.lastStatus.TokensCacheR > 0 {
-						sb.WriteString(fmt.Sprintf("  Cache Read: %d\n", m.lastStatus.TokensCacheR))
+						sb.WriteString("Cache Read: " + commaInt(m.lastStatus.TokensCacheR) + "\n")
 					}
 					if m.lastStatus.TokensCacheW > 0 {
-						sb.WriteString(fmt.Sprintf("  Cache Write: %d\n", m.lastStatus.TokensCacheW))
+						sb.WriteString("Cache Write: " + commaInt(m.lastStatus.TokensCacheW) + "\n")
 					}
-					sb.WriteString(fmt.Sprintf("  Total: %d\n\n", m.lastStatus.TokensIn+m.lastStatus.TokensOut))
+					sb.WriteString("Total: " + commaInt(m.lastStatus.TokensIn+m.lastStatus.TokensOut+m.lastStatus.TokensCacheR+m.lastStatus.TokensCacheW) + "\n")
 				}
-				// Cost
-				if m.lastStatus.TotalCost > 0 {
-					sb.WriteString(fmt.Sprintf("Total Cost: $%.4f", m.lastStatus.TotalCost))
-				}
-				return sb.String()
+
+				// Context usage
+			if m.lastStatus.ContextUsed > 0 {
+				sb.WriteString("\nContext\n")
+				sb.WriteString(fmt.Sprintf("Used: %.1f%%\n", m.lastStatus.ContextUsed*100))
 			}
-			return "No active session"
+
+			// Cost
+			if m.lastStatus.TotalCost > 0 {
+				sb.WriteString("\nCost\n")
+				sb.WriteString(fmt.Sprintf("Total: $%.4f", m.lastStatus.TotalCost))
+			}
+			return sb.String(), true
+			}
+			return "No active session", true
+
 	case "/copy":
 		// Copy last assistant message to system clipboard
 		if m.session == nil || len(m.session.Entries) == 0 {
-			return "No messages to copy"
+			return "No agent messages to copy yet.", true
 		}
 		// Find last assistant message
 		var lastText string
@@ -2837,23 +3290,23 @@ func (m *AppModel) handleSlashCmd(text string) string {
 			}
 		}
 		if lastText == "" {
-			return "No assistant message found to copy"
+			return "No agent messages to copy yet.", true
 		}
 		if err := copyToClipboard(lastText); err != nil {
-			return "Failed to copy: " + err.Error()
+			return "Failed to copy: " + err.Error(), true
 		}
-		return "Copied last assistant message to clipboard"
+		return "Copied last agent message to clipboard", true
 		case "/debug":
-			return m.handleDebugCommand()
+			return m.handleDebugCommand(), true
 		case "/share":
 			go m.handleShare()
-			return "Sharing session..."
+			return "Sharing session...", true
 		case "/login":
 			m.showLoginDialog()
-			return ""
+			return "", true
 		case "/logout":
 			m.showLogoutDialog()
-			return ""
+			return "", true
 		}
 
 	// Check extension-registered commands first
@@ -2866,9 +3319,9 @@ func (m *AppModel) handleSlashCmd(text string) string {
 			)
 			result, err := handler(parts, extCtx)
 			if err != nil {
-				return "Extension error: " + err.Error()
+				return "Extension error: " + err.Error(), true
 			}
-			return result
+			return result, true
 		}
 	}
 
@@ -2878,8 +3331,8 @@ func (m *AppModel) handleSlashCmd(text string) string {
 		SessionDir:       m.sessMgr.Dir,
 		SettingsDir:      m.sessMgr.Dir, // approximate
 		CurrentSessionID: m.session.ID,
-		Model:            m.agent.Model,
-		SystemPrompt:     m.agent.SystemPrompt,
+		Model:            m.agent.Loop().Model,
+		SystemPrompt:     m.agent.Loop().SystemPrompt,
 		SessionName:      m.session.GetSessionName(),
 		TotalCost:        m.lastStatus.TotalCost,
 	}
@@ -2894,20 +3347,18 @@ func (m *AppModel) handleSlashCmd(text string) string {
 	}
 	result, err := commands.Handle(text, ctx)
 	if err != nil {
-		return "Error: " + err.Error()
+		return "", false
 	}
 
 	// Handle sentinel return values from commands
 	switch {
 	case strings.HasPrefix(result, "COMPACT:"):
-		m.chat.AppendSystem("Compaction requested. The agent will compact when ready.")
-		return ""
+		m.triggerManualCompaction()
+		return "", true
 	case strings.HasPrefix(result, "FORK:"):
-		m.chat.AppendSystem("Fork requested: " + result)
-		return ""
+		return "", true
 	case strings.HasPrefix(result, "CLONE:"):
-		m.chat.AppendSystem("Clone requested: " + result)
-		return ""
+		return "", true
 	case strings.HasPrefix(result, "RESUME:"):
 		// Extract session ID from "RESUME: <id>" sentinel
 		sid := strings.TrimPrefix(result, "RESUME:")
@@ -2915,24 +3366,33 @@ func (m *AppModel) handleSlashCmd(text string) string {
 		if sid != "" {
 			m.switchToSession(sid)
 		}
-		return ""
+		return "", true
 	case result == "RESUME_SELECTOR":
 		m.showSessionSelector()
-		return ""
+		return "", true
 	case strings.HasPrefix(result, "IMPORT:"):
-		m.chat.AppendSystem("Imported: " + result)
-		return ""
+		return "", true
 	case result == "NEW_SESSION":
-		return "Start a new session with /new"
+		return "Start a new session with /new", true
 	case result == "RELOAD":
+		// TS pi-mono: guard checks before reload
+		if m.streaming {
+			m.chat.AppendWarning("Wait for the current response to finish before reloading.")
+			return "", true
+		}
+		if m.compacting {
+			m.chat.AppendWarning("Wait for compaction to finish before reloading.")
+			return "", true
+		}
 		m.reload()
-		m.chat.AppendSystem("Configuration reloaded (settings, keybindings, theme).")
-		return ""
+		m.chat.AppendSystem("Reloaded keybindings, extensions, skills, prompts, themes")
+		m.showPostReloadDiagnostics()
+		return "", true
 	case result == "QUIT":
 		m.quitting = true
-		return "Goodbye."
+		return "", true
 	}
-	return result
+	return result, true
 }
 
 // ─── Thinking Level Cycling ─────────────────────────────────────────────────
@@ -2995,19 +3455,16 @@ func (m *AppModel) showThemeSelector() {
 		switch {
 		case value == "dark":
 			m.ApplyTheme(DefaultTheme())
-			m.chat.AppendSystem("Theme applied: dark")
 		case value == "light":
 			m.ApplyTheme(LightTheme())
-			m.chat.AppendSystem("Theme applied: light")
 		case strings.HasPrefix(value, "custom:"):
 			path := strings.TrimPrefix(value, "custom:")
 			t, err := LoadTheme(path)
 			if err != nil {
-				m.chat.AppendSystem("Failed to load theme: " + err.Error())
+				m.chat.AppendError(fmt.Sprintf("Failed to load theme \"%s\": %s", path, err.Error()))
 				return
 			}
 			m.ApplyTheme(t)
-			m.chat.AppendSystem("Theme applied: " + t.Name)
 		}
 	}, 56, h)
 }
@@ -3042,31 +3499,31 @@ func (m *AppModel) showSettingsSelector() {
 	// Image settings (only shown when terminal supports images)
 	if hasImages {
 		items = append(items,
-			components.SelectorItem{Label: "Show Images: " + boolToStr(m.showImages), Description: "Render images inline in the terminal", Value: "show_images"},
-			components.SelectorItem{Label: "Image Width: " + fmt.Sprintf("%d cells", m.imageWidthCells), Description: "Width of inline images in terminal cells", Value: "image_width"},
+			components.SelectorItem{Label: "Show images: " + boolToStr(m.showImages), Description: "Render images inline in the terminal", Value: "show_images"},
+			components.SelectorItem{Label: "Image width: " + fmt.Sprintf("%d cells", m.imageWidthCells), Description: "Width of inline images in terminal cells", Value: "image_width"},
 		)
 	}
 
 	items = append(items,
-		components.SelectorItem{Label: "Auto-resize Images: " + boolToStr(m.autoResizeImages), Description: "Automatically resize images on terminal resize", Value: "auto_resize_images"},
-		components.SelectorItem{Label: "Block Images: " + boolToStr(m.blockImages), Description: "Block image rendering (security)", Value: "block_images"},
-		components.SelectorItem{Label: "Skill Commands: " + boolToStr(m.skillCommands), Description: "Enable slash-command skill invocation", Value: "skill_commands"},
-		components.SelectorItem{Label: "Hardware Cursor: " + boolToStr(m.showHardwareCursor), Description: "Show terminal block cursor for IME support", Value: "hwcursor"},
-		components.SelectorItem{Label: "Editor Padding: " + fmt.Sprintf("%d", m.editorPadding), Description: "Horizontal padding for the input editor (0-3)", Value: "editor_padding"},
-		components.SelectorItem{Label: "Autocomplete Max: " + fmt.Sprintf("%d items", m.autocompleteMax), Description: "Maximum visible items in autocomplete dropdown", Value: "autocomplete_max"},
-		components.SelectorItem{Label: "Clear on Shrink: " + boolToStr(m.clearOnShrink), Description: "Clear editor content when terminal shrinks", Value: "clear_on_shrink"},
-		components.SelectorItem{Label: "Terminal Progress: " + boolToStr(m.terminalProgress), Description: "Show terminal progress messages during operations", Value: "terminal_progress"},
-		components.SelectorItem{Label: "Steering Mode: " + m.steeringMode, Description: "How follow-up messages are queued: one-at-a-time or all", Value: "steering"},
-		components.SelectorItem{Label: "Follow-up Mode: " + m.followUpMode, Description: "How follow-up responses are delivered: one-at-a-time or all", Value: "follow_up"},
+		components.SelectorItem{Label: "Auto-resize images: " + boolToStr(m.autoResizeImages), Description: "Automatically resize images on terminal resize", Value: "auto_resize_images"},
+		components.SelectorItem{Label: "Block images: " + boolToStr(m.blockImages), Description: "Block image rendering (security)", Value: "block_images"},
+		components.SelectorItem{Label: "Skill commands: " + boolToStr(m.skillCommands), Description: "Enable slash-command skill invocation", Value: "skill_commands"},
+		components.SelectorItem{Label: "Show hardware cursor: " + boolToStr(m.showHardwareCursor), Description: "Show terminal block cursor for IME support", Value: "hwcursor"},
+		components.SelectorItem{Label: "Editor padding: " + fmt.Sprintf("%d", m.editorPadding), Description: "Horizontal padding for the input editor (0-3)", Value: "editor_padding"},
+		components.SelectorItem{Label: "Autocomplete max items: " + fmt.Sprintf("%d items", m.autocompleteMax), Description: "Maximum visible items in autocomplete dropdown", Value: "autocomplete_max"},
+		components.SelectorItem{Label: "Clear on shrink: " + boolToStr(m.clearOnShrink), Description: "Clear editor content when terminal shrinks", Value: "clear_on_shrink"},
+		components.SelectorItem{Label: "Terminal progress: " + boolToStr(m.terminalProgress), Description: "Show terminal progress messages during operations", Value: "terminal_progress"},
+		components.SelectorItem{Label: "Steering mode: " + m.steeringMode, Description: "How follow-up messages are queued: one-at-a-time or all", Value: "steering"},
+		components.SelectorItem{Label: "Follow-up mode: " + m.followUpMode, Description: "How follow-up responses are delivered: one-at-a-time or all", Value: "follow_up"},
 		components.SelectorItem{Label: "Transport: " + m.transport, Description: "API transport mechanism: sse, websocket, websocket-cached, or auto", Value: "transport"},
-		components.SelectorItem{Label: "Hide Thinking: " + boolToStr(m.chat.HideAllThinking), Description: "Hide thinking blocks in assistant responses", Value: "hide_thinking"},
-		components.SelectorItem{Label: "Collapse Changelog: " + boolToStr(m.collapseChangelog), Description: "Show condensed changelog after updates", Value: "collapse_changelog"},
-		components.SelectorItem{Label: "Quiet Startup: " + boolToStr(m.quietStartup), Description: "Suppress welcome message on startup", Value: "quiet_startup"},
-		components.SelectorItem{Label: "Install Telemetry: " + boolToStr(m.installTelemetry), Description: "Opt-in to anonymous installation telemetry", Value: "install_telemetry"},
-		components.SelectorItem{Label: "Double-Escape: " + m.doubleEscapeAction, Description: "Action on Esc\u00d72 with empty editor: tree, fork, or none", Value: "esc2x"},
-		components.SelectorItem{Label: "Tree Filter: " + m.defaultTreeFilter, Description: "Default filter when opening /tree", Value: "treefilter"},
+		components.SelectorItem{Label: "Hide thinking: " + boolToStr(m.chat.HideAllThinking), Description: "Hide thinking blocks in assistant responses", Value: "hide_thinking"},
+		components.SelectorItem{Label: "Collapse changelog: " + boolToStr(m.collapseChangelog), Description: "Show condensed changelog after updates", Value: "collapse_changelog"},
+		components.SelectorItem{Label: "Quiet startup: " + boolToStr(m.quietStartup), Description: "Suppress welcome message on startup", Value: "quiet_startup"},
+		components.SelectorItem{Label: "Install telemetry: " + boolToStr(m.installTelemetry), Description: "Opt-in to anonymous installation telemetry", Value: "install_telemetry"},
+		components.SelectorItem{Label: "Double-escape action: " + m.doubleEscapeAction, Description: "Action on Esc\u00d72 with empty editor: tree, fork, or none", Value: "esc2x"},
+		components.SelectorItem{Label: "Tree filter mode: " + m.defaultTreeFilter, Description: "Default filter when opening /tree", Value: "treefilter"},
 		components.SelectorItem{Label: "Warnings\u2026", Description: "Configure warning display settings", Value: "warnings"},
-		components.SelectorItem{Label: "Thinking Level: " + m.thinkingLevel, Description: "Select reasoning depth for the model", Value: "thinking"},
+		components.SelectorItem{Label: "Thinking level: " + m.thinkingLevel, Description: "Select reasoning depth for the model", Value: "thinking"},
 		components.SelectorItem{Label: "Theme: " + m.theme.Name, Description: "Select the UI color theme", Value: "theme"},
 	)
 
@@ -3077,7 +3534,7 @@ func (m *AppModel) showSettingsSelector() {
 	}
 	items = append(items,
 		components.SelectorItem{Label: "Session: " + m.session.ID, Description: cwd, Value: "session"},
-		components.SelectorItem{Label: "Session Name: " + m.session.GetSessionName(), Description: "Use /name <name> to set", Value: "name"},
+		components.SelectorItem{Label: "Session name: " + m.session.GetSessionName(), Description: "Use /name <name> to set", Value: "name"},
 	)
 
 	h := len(items) + 4
@@ -3088,7 +3545,7 @@ func (m *AppModel) showSettingsSelector() {
 		h = 10
 	}
 
-	m.overlay.ShowSelectorStayOnSelect("Settings (Enter to change, Esc to close)", items, func(value string) {
+	m.overlay.ShowSelectorStayOnSelect("Settings \xe2\x80\x94 Enter/Space to change \xc2\xb7 Esc to cancel", items, func(value string) {
 		switch value {
 		case "autocompact":
 			m.autoCompact = !m.autoCompact
@@ -3096,6 +3553,7 @@ func (m *AppModel) showSettingsSelector() {
 			go func() { time.Sleep(50 * time.Millisecond); if m.program != nil { m.program.Send(refreshSettingsMsg{}) } }()
 		case "show_images":
 			m.showImages = !m.showImages
+			m.chat.SetShowImages(m.showImages)
 			m.saveSettings()
 			go func() { time.Sleep(50 * time.Millisecond); if m.program != nil { m.program.Send(refreshSettingsMsg{}) } }()
 		case "image_width":
@@ -3103,6 +3561,7 @@ func (m *AppModel) showSettingsSelector() {
 			for i, w := range widths {
 				if w == m.imageWidthCells {
 					m.imageWidthCells = widths[(i+1)%len(widths)]
+					m.chat.SetImageWidth(m.imageWidthCells)
 					break
 				}
 			}
@@ -3160,7 +3619,7 @@ func (m *AppModel) showSettingsSelector() {
 			} else {
 				m.steeringMode = "one-at-a-time"
 			}
-			m.agent.SteeringMode = m.steeringMode
+			m.agent.Loop().SteeringMode = m.steeringMode
 			m.saveSettings()
 			go func() { time.Sleep(50 * time.Millisecond); if m.program != nil { m.program.Send(refreshSettingsMsg{}) } }()
 		case "follow_up":
@@ -3300,7 +3759,7 @@ func (m *AppModel) reload() {
 	// Reload settings from global + project config files
 	newSettings, err := settings.LoadAll()
 	if err != nil {
-		m.chat.AppendError("Failed to reload settings: " + err.Error())
+		m.chat.AppendError("Reload failed: " + err.Error())
 		return
 	}
 
@@ -3308,6 +3767,10 @@ func (m *AppModel) reload() {
 	if m.keybindings != nil {
 		userKB, _ := LoadUserBindings()
 		m.keybindings.Reload(userKB)
+		// Update tool toggle key hint with potentially changed keybinding
+		if tk := formatKeyStr(m.keybindings, GlobalToggleTools); tk != "" {
+			m.chat.SetToolToggleKey(tk)
+		}
 	}
 	m.updateHeaderHints()
 
@@ -3332,7 +3795,7 @@ func (m *AppModel) reload() {
 		if newSettings.SteeringMode != "" {
 			m.steeringMode = newSettings.SteeringMode
 			if m.agent != nil {
-				m.agent.SteeringMode = newSettings.SteeringMode
+				m.agent.Loop().SteeringMode = newSettings.SteeringMode
 			}
 		}
 		if newSettings.FollowUpMode != "" {
@@ -3353,9 +3816,11 @@ func (m *AppModel) reload() {
 			}
 			if newSettings.Terminal.ShowImages != nil {
 				m.showImages = *newSettings.Terminal.ShowImages
+				m.chat.SetShowImages(m.showImages)
 			}
 			if newSettings.Terminal.ImageWidthCells > 0 {
 				m.imageWidthCells = newSettings.Terminal.ImageWidthCells
+				m.chat.SetImageWidth(m.imageWidthCells)
 			}
 		}
 		if newSettings.Images != nil {
@@ -3423,6 +3888,90 @@ func (m *AppModel) reload() {
 		if m.theme != nil {
 			m.chat.SetThinkingBorderColor(m.theme.ThinkingBorderColor(m.thinkingLevel))
 			m.input.SetBorderColor(m.theme.ThinkingBorderColor(m.thinkingLevel))
+		}
+	}
+}
+
+// triggerManualCompaction runs manual compaction via the configured TransformContext.
+// Emits CompactionStart("manual") / CompactionEnd events so the UI shows correct messages.
+func (m *AppModel) triggerManualCompaction() {
+	if m.compacting {
+		m.chat.AppendError("Compaction already in progress")
+		return
+	}
+	if m.agent == nil || m.agent.Loop().Config.TransformContext == nil {
+		m.chat.AppendError("Compaction is not configured. Set compaction_reserve_tokens in settings.")
+		return
+	}
+	if m.session == nil {
+		m.chat.AppendError("No active session to compact")
+		return
+	}
+
+	// TS pi-mono: check if there are enough messages for compaction
+	messageCount := 0
+	for _, e := range m.session.Entries {
+		if e.Type == session.EntryTypeUser || e.Type == session.EntryTypeAssistant {
+			messageCount++
+		}
+	}
+	if messageCount < 2 {
+		m.chat.AppendWarning("Nothing to compact (no messages yet)")
+		return
+	}
+
+	m.compacting = true
+	m.compactionQueue = nil
+
+	// Emit manual compaction start event
+	if m.eventBus != nil {
+		m.eventBus.Emit(events.CompactionStart("manual"))
+	}
+
+	// Build messages from session entries and run compaction
+	leafID := session.EffectiveLeafID(m.session)
+	messages := session.BuildContextFromLeaf(m.session.Entries, leafID)
+	compactedMessages := m.agent.Loop().Config.TransformContext(messages, "manual")
+
+	if len(compactedMessages) < len(messages) {
+		// Compaction happened — get result from agent
+		tokensBefore := 0
+		summary := ""
+		if m.agent.Loop().LastCompactionResult != nil {
+			tokensBefore = m.agent.Loop().LastCompactionResult.TokensBefore
+			summary = m.agent.Loop().LastCompactionResult.Summary
+			m.agent.Loop().LastCompactionResult = nil
+		}
+		if m.eventBus != nil {
+			m.eventBus.Emit(events.CompactionEnd(tokensBefore, summary, false, "manual"))
+		}
+
+		// Record compaction as a session entry
+		if m.session != nil && m.sessMgr != nil {
+			parentID := session.EffectiveLeafID(m.session)
+			firstKeptID := ""
+			if m.agent.Loop().LastCompactionResult != nil {
+				firstKeptID = m.agent.Loop().LastCompactionResult.FirstKeptEntryID
+			}
+			entry := session.CompactionEntry(summary, firstKeptID, parentID)
+			if err := m.sessMgr.AddEntry(m.session, entry); err != nil {
+				m.chat.AppendSystem("Warning: failed to save compaction entry: " + err.Error())
+			}
+		}
+	} else {
+		if m.eventBus != nil {
+			m.eventBus.Emit(events.CompactionEnd(0, "", false, "manual"))
+		}
+	}
+
+	m.compacting = false
+
+	// Flush queued messages
+	if len(m.compactionQueue) > 0 {
+		queued := m.compactionQueue
+		m.compactionQueue = nil
+		for _, qm := range queued {
+			m.program.Send(components.SubmitMsg(qm))
 		}
 	}
 }
@@ -3537,9 +4086,12 @@ func (m *AppModel) ApplyTheme(t *Theme) {
 		m.chat.SetGlamourStyle("dark")
 	}
 
+	// Propagate theme colors to chat viewport (TS pi-mono: theme-driven colors)
+	m.chat.SetTheme(t.Accent, t.Muted, t.Dim, t.Warning, t.Success, t.ErrorColor, t.ThinkingColor, t.ThinkingText, t.ToolPendingBg, t.ToolSuccessBg, t.ToolErrorBg)
+
 	// Update session info to refresh display
-	_, provider := parseModelString(m.agent.Model)
-	modelName := m.agent.Model
+	_, provider := parseModelString(m.agent.Loop().Model)
+	modelName := m.agent.Loop().Model
 	if idx := strings.Index(modelName, "/"); idx >= 0 {
 		modelName = modelName[idx+1:]
 	}
@@ -3646,15 +4198,15 @@ func (m *AppModel) showThinkingSelector() {
 			m.thinkingLevel = value
 			m.saveSettings()
 			// Update footer
-			_, provider := parseModelString(m.agent.Model)
-			modelName := m.agent.Model
+			_, provider := parseModelString(m.agent.Loop().Model)
+			modelName := m.agent.Loop().Model
 			if idx := strings.Index(modelName, "/"); idx >= 0 {
 				modelName = modelName[idx+1:]
 			}
 			m.footer.SetSession(m.session.CWD, getGitBranch(m.session.CWD), m.session.GetSessionName(), modelName, value, provider)
 			m.footer.SetHasReasoning(supportsThinking(modelName))
 			m.input.SetBorderColor(m.theme.ThinkingBorderColor(value))
-			m.chat.AppendSystem("Thinking: " + value)
+			m.chat.AppendSystem("Thinking level: " + value)
 		}
 		// Re-show settings after closing thinking selector
 		go func() {
@@ -3670,7 +4222,7 @@ func (m *AppModel) showThinkingSelector() {
 // Shows model name, provider, context window size, and pricing.
 func (m *AppModel) showModelSelector() {
 	if len(m.availableModels) == 0 {
-		m.chat.AppendSystem("No models available")
+		m.chat.AppendSystem("Only showing models from configured providers. Use /login to add providers.")
 		return
 	}
 
@@ -3685,7 +4237,7 @@ func (m *AppModel) showModelSelector() {
 		items := make([]components.SelectorItem, 0, len(modelList))
 		for _, model := range modelList {
 			name, provider := parseModelString(model)
-			isCurrent := model == m.agent.Model || name == m.agent.Model
+			isCurrent := model == m.agent.Loop().Model || name == m.agent.Loop().Model
 			label := name
 			if isCurrent {
 				label = "→ " + name + " ✓"
@@ -3761,15 +4313,14 @@ func (m *AppModel) showModelSelector() {
 		var title string
 		if scopeAll {
 			items = allItems
-			title = "Select Model (all"
+			title = "Models — Scope: all"
 		} else {
 			items = scopedItems
-			title = "Select Model (scoped"
+			title = "Models — Scope: scoped"
 		}
 		if hasScoped {
-			title += " — Tab to toggle scope"
+			title += "  Tab=toggle scope"
 		}
-		title += " | T=thinking, 🔧=tools, 👁=vision)"
 
 		h := len(items) + 5
 		if h > 20 {
@@ -3791,6 +4342,19 @@ func (m *AppModel) showModelSelector() {
 			}
 			return false
 		}, 60, h)
+		m.overlay.SetNoMatchText("No matching models")
+		// Set selection info to show model name at bottom (TS pi-mono: "Model Name: GPT-4o")
+		m.overlay.SetSelectionInfoFunc(func(idx int, item components.SelectorItem) string {
+			modelID := item.Value
+			name, _ := parseModelString(modelID)
+			if info, ok := modelInfoMap[name]; ok && info.Name != "" {
+				return "Model Name: " + info.Name
+			}
+			if info, ok := modelInfoMap[modelID]; ok && info.Name != "" {
+				return "Model Name: " + info.Name
+			}
+			return "Model Name: " + name
+		})
 	}
 	showOverlay()
 }
@@ -3802,14 +4366,23 @@ func (m *AppModel) cycleModelForward() {
 	if len(models) == 0 {
 		return
 	}
+	if len(models) == 1 {
+		msg := "Only one model in scope"
+		if len(m.scopedModels) == 0 {
+			msg = "Only one model available"
+		}
+		m.chat.AppendSystem(msg)
+		return
+	}
 	m.modelIndex = (m.modelIndex + 1) % len(models)
 	newModel := models[m.modelIndex]
-	m.agent.Model = newModel
+	m.agent.Loop().Model = newModel
 	modelName, provider := parseModelString(newModel)
 	m.footer.SetSession(m.session.CWD, getGitBranch(m.session.CWD), m.session.GetSessionName(), modelName, m.thinkingLevel, provider)
 	m.footer.SetHasReasoning(supportsThinking(modelName))
 	m.footer.SetEntryCount(len(m.session.Entries))
-	msg := "Model: " + newModel
+	m.input.SetBorderColor(m.theme.ThinkingBorderColor(m.thinkingLevel))
+	msg := "Switched to " + newModel
 	if m.thinkingLevel != "" && m.thinkingLevel != "off" {
 		msg += " (thinking: " + m.thinkingLevel + ")"
 	}
@@ -3824,17 +4397,26 @@ func (m *AppModel) cycleModelBackward() {
 	if len(models) == 0 {
 		return
 	}
+	if len(models) == 1 {
+		msg := "Only one model in scope"
+		if len(m.scopedModels) == 0 {
+			msg = "Only one model available"
+		}
+		m.chat.AppendSystem(msg)
+		return
+	}
 	m.modelIndex--
 	if m.modelIndex < 0 {
 		m.modelIndex = len(models) - 1
 	}
 	newModel := models[m.modelIndex]
-	m.agent.Model = newModel
+	m.agent.Loop().Model = newModel
 	modelName, provider := parseModelString(newModel)
 	m.footer.SetSession(m.session.CWD, getGitBranch(m.session.CWD), m.session.GetSessionName(), modelName, m.thinkingLevel, provider)
 	m.footer.SetHasReasoning(supportsThinking(modelName))
 	m.footer.SetEntryCount(len(m.session.Entries))
-	msg := "Model: " + newModel
+	m.input.SetBorderColor(m.theme.ThinkingBorderColor(m.thinkingLevel))
+	msg := "Switched to " + newModel
 	if m.thinkingLevel != "" && m.thinkingLevel != "off" {
 		msg += " (thinking: " + m.thinkingLevel + ")"
 	}
@@ -3875,7 +4457,7 @@ func (m *AppModel) getCyclableModels() []string {
 // switchToModel switches the agent to the specified model (from model selector).
 func (m *AppModel) switchToModel(model string) {
 	defer m.setTerminalTitle()
-	m.agent.Model = model
+	m.agent.Loop().Model = model
 	// Update model index
 	for i, m2 := range m.availableModels {
 		if m2 == model {
@@ -3887,7 +4469,8 @@ func (m *AppModel) switchToModel(model string) {
 	m.footer.SetSession(m.session.CWD, getGitBranch(m.session.CWD), m.session.GetSessionName(), modelName, m.thinkingLevel, provider)
 	m.footer.SetHasReasoning(supportsThinking(modelName))
 	m.footer.SetEntryCount(len(m.session.Entries))
-	msg := "Model: " + model
+	m.input.SetBorderColor(m.theme.ThinkingBorderColor(m.thinkingLevel))
+	msg := "Switched to " + modelName
 	if m.thinkingLevel != "" && m.thinkingLevel != "off" {
 		msg += " (thinking: " + m.thinkingLevel + ")"
 	}
@@ -3994,11 +4577,12 @@ func (m *AppModel) showSessionTree() {
 		}
 	}
 
-	// Build active path set (from root to current leaf, which is the last entry)
+	// Build active path set (from root to current leaf)
+	// TS pi-mono: walks from currentLeafId to root, marks all ancestors + leaf with bullet
+	currentLeafID := session.EffectiveLeafID(m.session)
 	activePath := make(map[string]bool)
-	{
-		lastID := m.session.Entries[len(m.session.Entries)-1].ID
-		for id := lastID; id != ""; {
+	if currentLeafID != "" {
+		for id := currentLeafID; id != ""; {
 			activePath[id] = true
 			if e, ok := entryByID[id]; ok {
 				id = e.ParentID
@@ -4144,19 +4728,8 @@ func (m *AppModel) showSessionTree() {
 	}
 
 	// Build title with filter mode indicator
-	buildTitle := func(count int) string {
-		modeLabel := ""
-		switch m.treeFilterMode {
-		case "no-tools":
-			modeLabel = " [no-tools]"
-		case "user-only":
-			modeLabel = " [user]"
-		case "labeled-only":
-			modeLabel = " [labeled]"
-		case "all":
-			modeLabel = " [all]"
-		}
-		return fmt.Sprintf("Session Tree (%d entries)%s", count, modeLabel)
+	buildTitle := func() string {
+		return "Session Tree"
 	}
 
 	// Custom key handler for tree-specific keys
@@ -4326,7 +4899,7 @@ func (m *AppModel) showSessionTree() {
 		if needRebuild {
 			items := buildTreeItems()
 			m.treeItemIndents = treeItemIndents
-			m.overlay.ReplaceItems(buildTitle(len(items)), items)
+			m.overlay.ReplaceItems(buildTitle(), items)
 			// Sync search query with selector filter display
 			if m.treeSearchQuery != "" {
 				m.overlay.SetFilter(m.treeSearchQuery)
@@ -4338,7 +4911,7 @@ func (m *AppModel) showSessionTree() {
 	// Build initial items
 	items := buildTreeItems()
 	m.treeItemIndents = treeItemIndents
-	title := buildTitle(len(items))
+	title := buildTitle()
 	h := len(items) + 5
 	if h < 10 {
 		h = 10
@@ -4350,7 +4923,22 @@ func (m *AppModel) showSessionTree() {
 
 	m.overlay.ShowSelectorWithKeyHandler(title, items, func(value string) {
 		if value != "" {
-			m.chat.AppendSystem("Selected entry: " + value)
+			// TS pi-mono: selecting the current leaf is a no-op
+			if value == currentLeafID {
+				m.chat.AppendSystem("Already at this point")
+			} else {
+				// Navigate to selected entry
+				m.sessMgr.Branch(m.session, value)
+				// Re-render chat from the new leaf path (TS pi-mono: chatContainer.clear + renderInitialMessages)
+				m.chat.Clear()
+				for _, entry := range m.session.Entries {
+					ce := sessionEntryToChatEntry(entry)
+					if ce != nil {
+						m.chat.AppendChatEntry(*ce)
+					}
+				}
+				m.chat.AppendSystem("Navigated to selected point")
+			}
 		}
 		// Reset tree state on close
 		m.treeFoldedNodes = nil
@@ -4410,7 +4998,6 @@ func (m *AppModel) forkFromEntry(entryID string) {
 
 	// Create forked session
 	newID := session.GenerateID()
-	oldID := m.session.ID
 	oldEntries := m.session.Entries[:cutIdx]
 
 	m.session.ID = newID
@@ -4424,7 +5011,7 @@ func (m *AppModel) forkFromEntry(entryID string) {
 		return
 	}
 	m.footer.SetSession(m.session.CWD, getGitBranch(m.session.CWD), "", "", "", "")
-	m.chat.AppendSystem(fmt.Sprintf("Forked from %s → %s (%d entries)", oldID[:8], newID[:8], cutIdx))
+	m.chat.AppendSystem("Forked to new session")
 }
 
 // cloneSession creates a full copy of the current session with a new ID.
@@ -4436,7 +5023,7 @@ func (m *AppModel) switchToSession(sid string) {
 		return
 	}
 	if sid == m.session.ID {
-		m.chat.AppendSystem("Already in session: " + sid)
+		m.chat.AppendWarning("Already in session: " + sid)
 		return
 	}
 
@@ -4453,7 +5040,6 @@ func (m *AppModel) switchToSession(sid string) {
 		return
 	}
 
-	oldID := m.session.ID
 	oldCWD := m.session.CWD
 	m.session = newSess
 	if m.session.CWD == "" {
@@ -4474,11 +5060,25 @@ func (m *AppModel) switchToSession(sid string) {
 	}
 
 	// Update footer
-	modelName, provider := parseModelString(m.agent.Model)
+	modelName, provider := parseModelString(m.agent.Loop().Model)
 	m.footer.SetSession(m.session.CWD, getGitBranch(m.session.CWD), m.session.GetSessionName(), modelName, m.thinkingLevel, provider)
 	m.footer.SetEntryCount(len(m.session.Entries))
 
-	m.chat.AppendSystem("Switched from " + oldID + " to " + sid)
+	// TS pi-mono: show compaction info if session was compacted
+	compactionCount := 0
+	for _, e := range m.session.Entries {
+		if e.Type == session.EntryTypeCompaction {
+			compactionCount++
+		}
+	}
+	if compactionCount > 0 {
+		times := fmt.Sprintf("%d times", compactionCount)
+		if compactionCount == 1 {
+			times = "1 time"
+		}
+		m.chat.AppendSystem("Session compacted " + times)
+	}
+	m.chat.AppendSystem("Resumed session")
 	m.setTerminalTitle()
 }
 
@@ -4540,7 +5140,6 @@ func sessionEntryToChatEntry(entry session.SessionEntry) *components.ChatEntry {
 }
 
 func (m *AppModel) cloneSession() string {
-	oldID := m.session.ID
 	oldEntries := make([]session.SessionEntry, len(m.session.Entries))
 	copy(oldEntries, m.session.Entries)
 
@@ -4553,7 +5152,7 @@ func (m *AppModel) cloneSession() string {
 		m.chat.AppendSystem("Error saving cloned session: " + err.Error())
 		return ""
 	}
-	m.chat.AppendSystem("Session cloned: " + oldID + " → " + m.session.ID)
+	m.chat.AppendSystem("Cloned to new session")
 	if name := m.session.GetSessionName(); name != "" {
 		m.session.SetSessionName(name + " (clone)")
 		m.sessMgr.Save(m.session)
@@ -4622,7 +5221,7 @@ func (m *AppModel) showForkSelector() {
 	if h > 20 {
 		h = 20
 	}
-	m.overlay.ShowSelector("Fork from message (select)", items, func(value string) {
+	m.overlay.ShowForkSelector("Fork from Message", "Select a user message to copy the active path up to that point into a new session", items, func(value string) {
 		if value != "" {
 			m.forkFromEntry(value)
 			// Fill editor with selected message text (TS pi-mono)
@@ -4630,7 +5229,7 @@ func (m *AppModel) showForkSelector() {
 				m.input.SetValue(fullText)
 			}
 		}
-	}, 70, h)
+	}, nil, 70, h)
 }
 
 // showSessionSelector opens a session list overlay (TS pi-mono: /resume, /sessions).
@@ -4896,7 +5495,7 @@ func (m *AppModel) showSessionSelector() {
 	}
 
 	buildTitle := func() string {
-		title := fmt.Sprintf("Sessions (%s)", cwd)
+		title := fmt.Sprintf("Resume Session (%s)", cwd)
 		if namedOnly {
 			title += " [named]"
 		}
@@ -4912,8 +5511,36 @@ func (m *AppModel) showSessionSelector() {
 		return title
 	}
 
+	confirmingDeletePath := "" // TS pi-mono: two-step delete confirmation
+
 	onKey := func(key string) bool {
 		needRebuild := false
+
+		// Handle delete confirmation state first (TS pi-mono)
+		if confirmingDeletePath != "" {
+			switch key {
+			case "enter":
+				pathToDelete := confirmingDeletePath
+				confirmingDeletePath = ""
+				err := m.sessMgr.Delete(pathToDelete, m.session.CWD)
+				if err != nil {
+					m.chat.AppendSystem("Failed to delete session: " + err.Error())
+				} else {
+					m.chat.AppendSystem("Session moved to trash")
+				}
+				m.overlay.SetHelpText("")
+				needRebuild = true
+				return true
+			case "esc":
+				confirmingDeletePath = ""
+				m.overlay.SetHelpText("")
+				needRebuild = true
+				return true
+			default:
+				return true // ignore all other keys while confirming
+			}
+		}
+
 		switch key {
 		case "ctrl+s":
 			sortByDate = !sortByDate
@@ -4946,16 +5573,15 @@ func (m *AppModel) showSessionSelector() {
 				}
 			}
 		case "ctrl+backspace", "ctrl+d":
-			// Delete selected session
+			// Initiate delete confirmation (TS pi-mono: two-step)
 			val := m.overlay.SelectedValue()
-			if val != "" && val != m.session.ID {
-				err := m.sessMgr.Delete(val, m.session.CWD)
-				if err != nil {
-					m.chat.AppendSystem("Error deleting session: " + err.Error())
+			if val != "" {
+				if val == m.session.ID {
+					m.chat.AppendSystem("Cannot delete the currently active session")
 				} else {
-					m.chat.AppendSystem("Deleted session: " + val)
+					confirmingDeletePath = val
+					m.overlay.SetHelpText("Delete session? Enter confirm \xc2\xb7 Esc cancel")
 				}
-				needRebuild = true
 			}
 		case "ctrl+r":
 			// Rename session: close selector and set editor to /name for inline editing
@@ -5011,7 +5637,7 @@ func (m *AppModel) showSessionSelector() {
 // Shows all available models with their scoped status (enabled/disabled).
 func (m *AppModel) showScopedModelSelector() {
 	if len(m.availableModels) == 0 {
-		m.chat.AppendSystem("No models available")
+		m.chat.AppendSystem("Only showing models from configured providers. Use /login to add providers.")
 		return
 	}
 
@@ -5043,9 +5669,9 @@ func (m *AppModel) showScopedModelSelector() {
 			}
 			desc := "[" + provider + "]"
 			if enabled {
-				desc = desc + " enabled"
+				desc = desc + " ✓"
 			} else {
-				desc = desc + " disabled"
+				desc = desc + " ✗"
 			}
 			items = append(items, components.SelectorItem{
 				Label:       label,
@@ -5059,9 +5685,9 @@ func (m *AppModel) showScopedModelSelector() {
 	buildTitle := func() string {
 		enabledCount := len(m.scopedModels)
 		if enabledCount > 0 {
-			return fmt.Sprintf("Scoped Models (%d of %d enabled)  Enter=toggle  Ctrl+A/X=all/clear  Ctrl+S=save  Ctrl+P=provider  Alt+↑↓=reorder  Esc=close", enabledCount, len(m.availableModels))
+			return fmt.Sprintf("Model Configuration (%d of %d enabled)  Enter=toggle  Ctrl+A/X=all/clear  Ctrl+S=save  Ctrl+P=provider  Alt+↑↓=reorder  Esc=close", enabledCount, len(m.availableModels))
 		}
-		return fmt.Sprintf("Scoped Models (all %d)  Enter=toggle  Ctrl+A/X=all/clear  Ctrl+S=save  Ctrl+P=provider  Alt+↑↓=reorder  Esc=close", len(m.availableModels))
+		return fmt.Sprintf("Model Configuration (all %d)  Enter=toggle  Ctrl+A/X=all/clear  Ctrl+S=save  Ctrl+P=provider  Alt+↑↓=reorder  Esc=close", len(m.availableModels))
 	}
 
 	refresh := func() {
@@ -5103,12 +5729,11 @@ func (m *AppModel) showScopedModelSelector() {
 		case "ctrl+x":
 			// Clear all scoped models
 			m.scopedModels = make(map[string]bool)
-			m.chat.AppendSystem("Cleared all scoped models")
 			refresh()
 			return true
 		case "ctrl+s":
 			// Save model selection (TS pi-mono: persist to settings)
-			m.chat.AppendSystem("Model selection saved (" + fmt.Sprintf("%d", len(m.scopedModels)) + " of " + fmt.Sprintf("%d", len(m.availableModels)) + " models)")
+			m.chat.AppendSystem("Model selection saved to settings")
 			return true
 		case "alt+up":
 			// Move model up in order
@@ -5273,20 +5898,24 @@ func (b *tuiExtensionBridge) Editor(title, prefill string) (string, error) {
 }
 
 func (b *tuiExtensionBridge) Notify(message string, notifyType string) {
-	prefix := ""
 	switch notifyType {
 	case "error":
-		prefix = "✖ "
+		b.program.Send(appendErrorMsg(message))
 	case "warning":
-		prefix = "▲ "
+		b.program.Send(appendWarningMsg(message))
 	default:
-		prefix = "ℹ "
+		b.program.Send(appendSystemMsg(message))
 	}
-	b.program.Send(appendSystemMsg(prefix + message))
 }
 
 // appendSystemMsg appends a system message to the chat from any goroutine.
 type appendSystemMsg string
+
+// appendErrorMsg appends an error message to the chat from any goroutine.
+type appendErrorMsg string
+
+// appendWarningMsg appends a warning message to the chat from any goroutine.
+type appendWarningMsg string
 
 func (b *tuiExtensionBridge) SetStatus(key, text string) {
 	b.program.Send(extensionStatusMsg{key: key, text: text})
@@ -5469,8 +6098,17 @@ func (b *tuiExtensionBridge) SetToolsExpanded(expanded bool) {
 	b.program.Send(extensionSetToolsExpandedMsg{expanded: expanded})
 }
 
-// cycleThinking cycles through thinking levels: off → low → medium → high → xhigh → off.
+// cycleThinking cycles through thinking levels: off → minimal → low → medium → high → xhigh → off.
 func (m *AppModel) cycleThinking() {
+	modelName := m.agent.Loop().Model
+	if idx := strings.Index(modelName, "/"); idx >= 0 {
+		modelName = modelName[idx+1:]
+	}
+	if !supportsThinking(modelName) {
+		m.chat.AppendSystem("Current model does not support thinking")
+		return
+	}
+
 	current := m.thinkingLevel
 	if current == "" {
 		current = "off"
@@ -5488,24 +6126,20 @@ func (m *AppModel) cycleThinking() {
 	m.thinkingLevel = next
 
 	// Update footer display
-	_, provider := parseModelString(m.agent.Model)
-	modelName := m.agent.Model
-	if idx := strings.Index(modelName, "/"); idx >= 0 {
-		modelName = modelName[idx+1:]
-	}
+	_, provider := parseModelString(m.agent.Loop().Model)
 	m.footer.SetSession(m.session.CWD, getGitBranch(m.session.CWD), m.session.GetSessionName(), modelName, next, provider)
 	m.footer.SetHasReasoning(supportsThinking(modelName))
 	m.footer.SetEntryCount(len(m.session.Entries))
 	m.input.SetBorderColor(m.theme.ThinkingBorderColor(next))
 
 	// Also update the agent's thinking budget
-	if m.agent.Provider != nil {
+	if m.agent.Loop().Provider != nil {
 		// The thinking level is passed to the LLM client via the engine
 		// For now, we just show it in the footer - the actual model thinking
 		// is controlled by the LLM client's ThinkingBudget field
 	}
 
-	m.chat.AppendSystem("Thinking: " + next)
+	m.chat.AppendSystem("Thinking level: " + next)
 }
 
 // ─── Git Branch Detection ──────────────────────────────────────────────────
@@ -5562,12 +6196,13 @@ func formatContextPath(fp string) string {
 
 // openExternalEditor opens $EDITOR (or nano/vi) on a temp file and returns the content.
 func (m *AppModel) openExternalEditor() string {
-	editor := os.Getenv("EDITOR")
+	editor := os.Getenv("VISUAL")
 	if editor == "" {
-		editor = os.Getenv("VISUAL")
+		editor = os.Getenv("EDITOR")
 	}
 	if editor == "" {
-		editor = "nano"
+		m.chat.AppendWarning("No editor configured. Set $VISUAL or $EDITOR environment variable.")
+		return ""
 	}
 
 	tmpDir := os.TempDir()
@@ -5591,7 +6226,7 @@ func (m *AppModel) openExternalEditor() string {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		m.chat.AppendSystem("Editor exited: " + err.Error())
+		// pi-mono: non-zero exit keeps original text silently
 		return ""
 	}
 
@@ -5600,8 +6235,10 @@ func (m *AppModel) openExternalEditor() string {
 		m.chat.AppendSystem("Error reading file: " + err.Error())
 		return ""
 	}
-	text := strings.TrimSpace(string(content))
-	if text == "" {
+	text := string(content)
+	// Strip only trailing newline (pi-mono: editors add trailing \n)
+	text = strings.TrimSuffix(text, "\n")
+	if strings.TrimSpace(text) == "" {
 		return ""
 	}
 	return text
@@ -5817,21 +6454,12 @@ func (m *AppModel) showLoginDialog() {
 		m.showAPIKeyInput(value)
 	}
 
-	m.overlay.ShowSelectorStayOnSelect("Login \u2014 Select Provider (\u2191\u2193 to choose, Enter to select, Esc to cancel)", items, onSelect, nil, 60, 10)
+	m.overlay.ShowSelectorStayOnSelect("Select provider to configure:", items, onSelect, nil, 60, 10)
 }
 
 // showAPIKeyInput shows a text input overlay for entering an API key.
 func (m *AppModel) showAPIKeyInput(provider string) {
-	labels := map[string]string{
-		"anthropic": "Anthropic API Key (browser opened)",
-		"openai":    "OpenAI API Key (browser opened)",
-		"google":    "Google API Key (browser opened)",
-		"custom":    "Custom API Key",
-	}
-	label := labels[provider]
-	if label == "" {
-		label = provider + " API Key"
-	}
+	label := "Enter API key:"
 
 	onSubmit := func(value string) {
 		value = strings.TrimSpace(value)
@@ -5840,15 +6468,12 @@ func (m *AppModel) showAPIKeyInput(provider string) {
 			return
 		}
 		if err := m.saveAPIKey(provider, value); err != nil {
-			m.chat.AppendError("Failed to save API key: " + err.Error())
+			m.chat.AppendError("Failed to save API key for " + provider + ": " + err.Error())
 			return
 		}
-		// Mask key in confirmation: show last 4 chars
-		display := strings.Repeat("*", len(value)-4) + value[len(value)-4:]
-		if len(value) <= 4 {
-			display = strings.Repeat("*", len(value))
-		}
-		m.chat.AppendSystem("API key saved for " + provider + " (" + display + ")")
+		home, _ := os.UserHomeDir()
+		authPath := filepath.Join(home, ".xihu", "auth.json")
+		m.chat.AppendSystem("Saved API key for " + provider + ". Credentials saved to " + authPath)
 	}
 
 	m.overlay.ShowInput(label, onSubmit, nil, 50, 6)
@@ -5889,7 +6514,7 @@ func (m *AppModel) saveAPIKey(provider, key string) error {
 func (m *AppModel) showLogoutDialog() {
 	authStore, err := auth.LoadAuth()
 	if err != nil || authStore == nil || len(authStore.Entries) == 0 {
-		m.chat.AppendSystem("No stored credentials. Use environment variables (unset LLM_API_KEY, ANTHROPIC_API_KEY, etc.)")
+		m.chat.AppendSystem("No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.")
 		return
 	}
 
@@ -5917,17 +6542,17 @@ func (m *AppModel) showLogoutDialog() {
 				m.chat.AppendError("Failed to clear credentials: " + err.Error())
 				return
 			}
-			m.chat.AppendSystem("All stored credentials removed.")
+			m.chat.AppendSystem("All stored API keys removed. Environment variables and models.json config are unchanged.")
 			return
 		}
 		if err := m.removeAPIKey(value); err != nil {
 			m.chat.AppendError("Failed to remove " + value + " key: " + err.Error())
 			return
 		}
-		m.chat.AppendSystem("Removed " + value + " credentials.")
+		m.chat.AppendSystem("Removed stored API key for " + value + ". Environment variables and models.json config are unchanged.")
 	}
 
-	m.overlay.ShowSelectorStayOnSelect("Logout \u2014 Remove Credentials (\u2191\u2193 to choose, Enter to remove, Esc to cancel)", items, onSelect, nil, 56, len(items)+5)
+	m.overlay.ShowSelectorStayOnSelect("Select provider to logout:", items, onSelect, nil, 56, len(items)+5)
 }
 
 // removeAPIKey removes a single provider's credentials.
@@ -5971,7 +6596,15 @@ func (m *AppModel) handleShare() {
 	// Check if gh CLI is available
 	if _, err := exec.LookPath("gh"); err != nil {
 		if m.program != nil {
-			m.program.Send(ShareResultMsg{Error: "GitHub CLI (gh) not found. Install from https://cli.github.com"})
+			m.program.Send(ShareResultMsg{Error: "GitHub CLI (gh) is not installed. Install it from https://cli.github.com/"})
+		}
+		return
+	}
+
+	// Check if gh CLI is logged in (TS pi-mono)
+	if err := exec.Command("gh", "auth", "status").Run(); err != nil {
+		if m.program != nil {
+			m.program.Send(ShareResultMsg{Error: "GitHub CLI is not logged in. Run 'gh auth login' first."})
 		}
 		return
 	}
@@ -5989,7 +6622,7 @@ func (m *AppModel) handleShare() {
 	tmpFile, err := os.CreateTemp("", "xihu-session-*.html")
 	if err != nil {
 		if m.program != nil {
-			m.program.Send(ShareResultMsg{Error: "Failed to create temp file: " + err.Error()})
+			m.program.Send(ShareResultMsg{Error: "Failed to export session: " + err.Error()})
 		}
 		return
 	}
@@ -5998,7 +6631,7 @@ func (m *AppModel) handleShare() {
 		tmpFile.Close()
 		os.Remove(tmpPath)
 		if m.program != nil {
-			m.program.Send(ShareResultMsg{Error: "Failed to write temp file: " + err.Error()})
+			m.program.Send(ShareResultMsg{Error: "Failed to export session: " + err.Error()})
 		}
 		return
 	}
@@ -6009,11 +6642,11 @@ func (m *AppModel) handleShare() {
 	cmd := exec.Command("gh", "gist", "create", "--public=false", tmpPath)
 	output, err := cmd.Output()
 	if err != nil {
-		errMsg := "Failed to create gist"
+		var errMsg string
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			errMsg += ": " + string(exitErr.Stderr)
+			errMsg = "Failed to create gist: " + string(exitErr.Stderr)
 		} else {
-			errMsg += ": " + err.Error()
+			errMsg = "Failed to create gist: " + err.Error()
 		}
 		if m.program != nil {
 			m.program.Send(ShareResultMsg{Error: errMsg})
@@ -6021,17 +6654,24 @@ func (m *AppModel) handleShare() {
 		return
 	}
 
-	// Parse gist URL from output
+	// Parse gist URL from output (TS pi-mono: extract gist ID for preview URL)
 	gistURL := strings.TrimSpace(string(output))
 	if gistURL == "" {
 		if m.program != nil {
-			m.program.Send(ShareResultMsg{Error: "Failed to get gist URL from gh output"})
+			m.program.Send(ShareResultMsg{Error: "Failed to parse gist ID from gh output"})
 		}
 		return
 	}
 
+	// Extract gist ID and build preview URL (TS pi-mono: getShareViewerUrl)
+	previewURL := ""
+	if idx := strings.LastIndex(gistURL, "/"); idx >= 0 {
+		gistID := gistURL[idx+1:]
+		previewURL = "https://pi.dev/session/#" + gistID
+	}
+
 	if m.program != nil {
-		m.program.Send(ShareResultMsg{GistURL: gistURL})
+		m.program.Send(ShareResultMsg{GistURL: gistURL, PreviewURL: previewURL})
 	}
 }
 
@@ -6121,8 +6761,9 @@ code { background: #45475a; padding: 2px 5px; border-radius: 3px; font-size: 0.9
 
 // ShareResultMsg carries the result of the /share command back to the TUI.
 type ShareResultMsg struct {
-	GistURL string
-	Error   string
+	GistURL    string
+	PreviewURL string
+	Error      string
 }
 
 // handleDebugCommand dumps debug information to a log file (TS pi-mono: /debug).
@@ -6135,9 +6776,9 @@ func (m *AppModel) handleDebugCommand() string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Debug output at %s\n", time.Now().Format(time.RFC3339)))
 	sb.WriteString(fmt.Sprintf("Terminal: %dx%d\n", m.width, m.height))
-	sb.WriteString(fmt.Sprintf("Model: %s\n", m.agent.Model))
+	sb.WriteString(fmt.Sprintf("Model: %s\n", m.agent.Loop().Model))
 	sb.WriteString(fmt.Sprintf("Session: %s\n", m.session.ID))
-	sb.WriteString(fmt.Sprintf("Thinking: %s\n", m.thinkingLevel))
+	sb.WriteString(fmt.Sprintf("Thinking level: %s\n", m.thinkingLevel))
 	sb.WriteString(fmt.Sprintf("Streaming: %v  Compacting: %v\n", m.streaming, m.compacting))
 	sb.WriteString(fmt.Sprintf("Entries: %d  Tokens in: %d  out: %d\n",
 		len(m.session.Entries), m.lastStatus.TokensIn, m.lastStatus.TokensOut))
@@ -6153,7 +6794,7 @@ func (m *AppModel) handleDebugCommand() string {
 	if err := os.WriteFile(debugPath, []byte(sb.String()), 0644); err != nil {
 		return "Debug: failed to write " + debugPath + ": " + err.Error()
 	}
-	return "Debug log written to " + debugPath
+	return "Debug log written\n" + debugPath
 }
 
 // findTemplate looks up a prompt template by name (with or without leading /).
@@ -6180,3 +6821,16 @@ func splitSlashCommand(text string) (name string, args []string) {
 	}
 	return parts[0], args
 }
+// commaInt formats an integer with comma separators (matching TS pi-mono toLocaleString).
+func commaInt(n int) string {
+	s := fmt.Sprintf("%d", n)
+	var result []byte
+	for i := len(s) - 1; i >= 0; i-- {
+		result = append([]byte{s[i]}, result...)
+		if (len(s)-i)%3 == 0 && i > 0 {
+			result = append([]byte{','}, result...)
+		}
+	}
+	return string(result)
+}
+

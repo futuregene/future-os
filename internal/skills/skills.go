@@ -227,14 +227,29 @@ func FormatSkillsXML(skills []Skill) string {
 	return sb.String()
 }
 
+// SkillCollision describes a naming conflict between two skills where one was dropped.
+type SkillCollision struct {
+	Name        string // skill name that collided
+	WinnerPath  string // path of the skill that was kept
+	LoserPath   string // path of the skill that was skipped
+	WinnerSource string // source of the winning skill
+	LoserSource  string // source of the losing skill
+}
+
 // ResolveCollisions resolves naming conflicts between skills.
 // Rules:
 //   - Project skills (source="project") take precedence over user skills (source="user")
 //   - Within the same source, first-come-first-served (earlier in slice wins)
 //   - Other sources are treated as equal priority, first-wins
 func ResolveCollisions(skills []Skill) []Skill {
+	result, _ := ResolveCollisionsWithDiagnostics(skills)
+	return result
+}
+
+// ResolveCollisionsWithDiagnostics resolves naming conflicts and returns collisions for reporting.
+func ResolveCollisionsWithDiagnostics(skills []Skill) ([]Skill, []SkillCollision) {
 	if len(skills) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	// Group skills by name, tracking the best candidate for each
@@ -245,6 +260,7 @@ func ResolveCollisions(skills []Skill) []Skill {
 	}
 
 	best := make(map[string]candidate)
+	var collisions []SkillCollision
 
 	for i, s := range skills {
 		rank := sourceRank(s.Source)
@@ -257,7 +273,22 @@ func ResolveCollisions(skills []Skill) []Skill {
 
 		// Lower rank wins; tie goes to earlier index
 		if rank < existing.rank {
+			collisions = append(collisions, SkillCollision{
+				Name:         s.Name,
+				WinnerPath:   s.Path,
+				LoserPath:    existing.skill.Path,
+				WinnerSource: s.Source,
+				LoserSource:  existing.skill.Source,
+			})
 			best[s.Name] = candidate{skill: s, idx: i, rank: rank}
+		} else {
+			collisions = append(collisions, SkillCollision{
+				Name:         s.Name,
+				WinnerPath:   existing.skill.Path,
+				LoserPath:    s.Path,
+				WinnerSource: existing.skill.Source,
+				LoserSource:  s.Source,
+			})
 		}
 		// If same rank, earlier index (existing) wins — no change needed
 	}
@@ -275,7 +306,7 @@ func ResolveCollisions(skills []Skill) []Skill {
 		seen[s.Name] = true
 	}
 
-	return result
+	return result, collisions
 }
 
 // sourceRank returns a numeric rank for a source (lower = higher priority).

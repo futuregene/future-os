@@ -263,10 +263,6 @@ func (f *Footer) buildLine1(width int) string {
 	if f.sessionName != "" {
 		pwd = pwd + " • " + f.sessionName
 	}
-	// Add entry count
-	if f.entryCount > 0 {
-		pwd = pwd + fmt.Sprintf(" (%d)", f.entryCount)
-	}
 
 	// Truncate if too wide (accounting for dim ANSI codes)
 	rendered := f.dimStyle.Render(pwd)
@@ -277,7 +273,7 @@ func (f *Footer) buildLine1(width int) string {
 		}
 		// Safety: ensure we don't produce zero-length
 		if len(pwd) <= 3 {
-			pwd = "…"
+			pwd = "..."
 		} else {
 			pwd = pwd + "..."
 		}
@@ -302,7 +298,7 @@ func (f *Footer) buildLine2(width int) string {
 		frame := frames[f.spinnerFrame%len(frames)]
 		msg := f.workingMessage
 		if msg == "" {
-			msg = "Generating…"
+			msg = "Working..."
 		}
 		statsParts = append(statsParts, frame+" "+msg+" (Esc to interrupt)")
 	}
@@ -353,12 +349,17 @@ func (f *Footer) buildLine2(width int) string {
 	}
 
 	// Only show thinking when model supports reasoning (TS pi-mono)
+	// Format: "model • thinking off" or "model • low" (TS pi-mono format)
 	if f.hasReasoning {
 		thinkingDisplay := f.thinking
 		if thinkingDisplay == "" {
 			thinkingDisplay = "off"
 		}
-		rightSide = rightSide + " · thinking " + thinkingDisplay
+		if thinkingDisplay == "off" {
+			rightSide = rightSide + " • thinking off"
+		} else {
+			rightSide = rightSide + " • " + thinkingDisplay
+		}
 	}
 
 	// ── Layout: both sides rendered in dim gray ─────────────────────────
@@ -398,7 +399,11 @@ func (f *Footer) buildLine2(width int) string {
 				if thinkingDisplay == "" {
 					thinkingDisplay = "off"
 				}
-				tryRight = tryRight + " · thinking " + thinkingDisplay
+				if thinkingDisplay == "off" {
+					tryRight = tryRight + " • thinking off"
+				} else {
+					tryRight = tryRight + " • " + thinkingDisplay
+				}
 			}
 			if lipgloss.Width(renderDim.Render(tryRight)) <= availableForRight {
 				rightSide = tryRight
@@ -448,13 +453,15 @@ func (f *Footer) buildExtensionLine(width int) string {
 	line := strings.Join(parts, " ")
 	rendered := f.dimStyle.Render(line)
 
-	// Truncate if too wide
+	// Width-aware truncation with dim ellipsis (matching TS pi-mono truncateToWidth)
 	if lipgloss.Width(rendered) > width {
-		for lipgloss.Width(f.dimStyle.Render(line)) > width && len(line) > 3 {
-			line = line[:len(line)-1]
+		ellipsis := f.dimStyle.Render("...")
+		ellipsisWidth := lipgloss.Width(ellipsis)
+		runes := []rune(line)
+		for len(runes) > 0 && lipgloss.Width(f.dimStyle.Render(string(runes)))+ellipsisWidth > width {
+			runes = runes[:len(runes)-1]
 		}
-		line = line + "..."
-		rendered = f.dimStyle.Render(line)
+		return f.dimStyle.Render(string(runes)) + ellipsis
 	}
 
 	return rendered

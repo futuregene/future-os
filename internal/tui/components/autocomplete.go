@@ -24,6 +24,7 @@ type Autocomplete struct {
 	scrollOffset int               // scroll offset when items exceed maxVisible
 	style        lipgloss.Style
 	selectStyle  lipgloss.Style
+	descStyle    lipgloss.Style
 }
 
 // NewAutocomplete creates a new autocomplete component.
@@ -31,11 +32,12 @@ func NewAutocomplete() Autocomplete {
 	return Autocomplete{
 		style: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#abb2bf")).
-			PaddingLeft(4),
+			PaddingLeft(2),
 		selectStyle: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#1e1e2e")).
-			Background(lipgloss.Color("#89b4fa")).
-			PaddingLeft(4),
+			Foreground(lipgloss.Color("#89b4fa")).
+			PaddingLeft(2),
+		descStyle: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#5c6370")),
 	}
 }
 
@@ -89,44 +91,133 @@ func (a *Autocomplete) Selected() string {
 	return a.candidates[a.selected]
 }
 
-// Filter filters candidates by prefix.
+// scoredCandidate holds a candidate with its fuzzy match score.
+type scoredCandidate struct {
+	name  string
+	score float64
+}
+
+// Filter filters candidates by prefix, then scores fuzzy matches (TS pi-mono: fuzzyFilter).
 func (a *Autocomplete) Filter() {
 	if a.prefix == "" {
 		return
 	}
 	lower := strings.ToLower(a.prefix)
 
-	// First pass: prefix matches (e.g., "/mod" matches "/model")
-	prefixMatches := make([]string, 0)
-	fuzzyMatches := make([]string, 0)
+	// Split into space-separated tokens
+	tokens := strings.Fields(lower)
+	if len(tokens) == 0 {
+		return
+	}
+
+	var prefixMatches []scoredCandidate
+	var fuzzyMatches []scoredCandidate
+
 	for _, c := range a.candidates {
 		cl := strings.ToLower(c)
 		if strings.HasPrefix(cl, lower) {
-			prefixMatches = append(prefixMatches, c)
-		} else if subsequenceMatch(cl, lower) {
-			fuzzyMatches = append(fuzzyMatches, c)
+			// Prefix match: score 0 (best), break ties by length
+			prefixMatches = append(prefixMatches, scoredCandidate{c, float64(len(c))})
+		} else {
+			// Try multi-token fuzzy match
+			totalScore := 0.0
+			allMatch := true
+			for _, token := range tokens {
+				if ok, score := fuzzyScoreToken(token, cl); ok {
+					totalScore += score
+				} else {
+					allMatch = false
+					break
+				}
+			}
+			if allMatch {
+				fuzzyMatches = append(fuzzyMatches, scoredCandidate{c, totalScore})
+			}
 		}
 	}
 
-	// Prefix matches first, then fuzzy matches
-	a.candidates = append(prefixMatches, fuzzyMatches...)
+	// Sort by score (lower = better)
+	sortCandidates(prefixMatches)
+	sortCandidates(fuzzyMatches)
+
+	a.candidates = make([]string, 0, len(prefixMatches)+len(fuzzyMatches))
+	for _, sc := range prefixMatches {
+		a.candidates = append(a.candidates, sc.name)
+	}
+	for _, sc := range fuzzyMatches {
+		a.candidates = append(a.candidates, sc.name)
+	}
 	if a.selected >= len(a.candidates) {
 		a.selected = 0
 	}
 }
 
-// subsequenceMatch checks if all characters in query appear in s in order (fuzzy match).
-func subsequenceMatch(s, query string) bool {
+// fuzzyScoreToken checks if all runes of query appear in s in order.
+// Returns (match bool, score float64). Lower score = better match.
+// Rewards word-boundary matches and consecutive chars; penalizes gaps.
+func fuzzyScoreToken(query, s string) (bool, float64) {
 	if len(query) == 0 {
-		return true
+		return true, 0
 	}
-	j := 0
-	for i := 0; i < len(s) && j < len(query); i++ {
-		if s[i] == query[j] {
-			j++
+
+	qRunes := []rune(query)
+	sRunes := []rune(s)
+	if len(qRunes) > len(sRunes) {
+		return false, 0
+	}
+
+	score := 0.0
+	queryIdx := 0
+	lastMatchIdx := -1
+	consecutive := 0
+
+	for i := 0; i < len(sRunes) && queryIdx < len(qRunes); i++ {
+		if sRunes[i] == qRunes[queryIdx] {
+			// Word boundary bonus
+			isWordBoundary := i == 0 || sRunes[i-1] == ' ' || sRunes[i-1] == '-' || sRunes[i-1] == '_' || sRunes[i-1] == '.' || sRunes[i-1] == '/' || sRunes[i-1] == ':'
+			if isWordBoundary {
+				score -= 10
+			}
+
+			// Consecutive match bonus
+			if lastMatchIdx == i-1 {
+				consecutive++
+				score -= float64(consecutive) * 5
+			} else {
+				consecutive = 0
+				if lastMatchIdx >= 0 {
+					score += float64(i-lastMatchIdx-1) * 2
+				}
+			}
+
+			// Slight penalty for later matches
+			score += float64(i) * 0.1
+
+			lastMatchIdx = i
+			queryIdx++
 		}
 	}
-	return j == len(query)
+
+	if queryIdx < len(qRunes) {
+		return false, 0
+	}
+
+	// Exact match bonus
+	if query == s {
+		score -= 100
+	}
+
+	return true, score
+}
+
+func sortCandidates(items []scoredCandidate) {
+	for i := 0; i < len(items); i++ {
+		for j := i + 1; j < len(items); j++ {
+			if items[i].score > items[j].score {
+				items[i], items[j] = items[j], items[i]
+			}
+		}
+	}
 }
 
 // View renders the autocomplete popover with descriptions when available.
@@ -170,14 +261,21 @@ func (a *Autocomplete) View() string {
 	var sb strings.Builder
 	for i := start; i < end; i++ {
 		c := a.candidates[i]
-		line := "  " + c
-		if desc, ok := a.descriptions[c]; ok && desc != "" {
-			line += "  • " + desc
-		}
+		desc, hasDesc := a.descriptions[c]
 		if i == a.selected {
-			sb.WriteString(a.selectStyle.Render("▶" + line[1:]))
+			prefix := "→ "
+			if hasDesc && desc != "" {
+				sb.WriteString(a.selectStyle.Render(prefix + c) + a.descStyle.Render("  " + desc))
+			} else {
+				sb.WriteString(a.selectStyle.Render(prefix + c))
+			}
 		} else {
-			sb.WriteString(a.style.Render(line))
+			prefix := "  "
+			if hasDesc && desc != "" {
+				sb.WriteString(a.style.Render(prefix + c) + a.descStyle.Render("  " + desc))
+			} else {
+				sb.WriteString(a.style.Render(prefix + c))
+			}
 		}
 		sb.WriteByte('\n')
 	}
@@ -188,7 +286,7 @@ func (a *Autocomplete) View() string {
 			Foreground(lipgloss.Color("#5c6370")).
 			PaddingLeft(4)
 		sb.WriteString(indicatorStyle.Render(
-			strings.Repeat(" ", 8) + fmt.Sprintf("(%d/%d)", a.selected+1, total)))
+			strings.Repeat(" ", 2) + fmt.Sprintf("(%d/%d)", a.selected+1, total)))
 		sb.WriteByte('\n')
 	}
 

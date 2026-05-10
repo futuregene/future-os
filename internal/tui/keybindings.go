@@ -47,8 +47,10 @@ const (
 	// Selection actions
 	SelectUp     KeybindingID = "tui.select.up"
 	SelectDown   KeybindingID = "tui.select.down"
-	SelectPageUp KeybindingID = "tui.select.pageUp"
-	SelectPageDn KeybindingID = "tui.select.pageDown"
+	SelectPageUp   KeybindingID = "tui.select.pageUp"
+	SelectPageDn   KeybindingID = "tui.select.pageDown"
+	SelectConfirm  KeybindingID = "tui.select.confirm"
+	SelectCancel   KeybindingID = "tui.select.cancel"
 
 	// Global TUI actions (used by app.go dispatch)
 	GlobalInterrupt         KeybindingID = "tui.global.interrupt"
@@ -62,12 +64,22 @@ const (
 	GlobalCycleModelBack    KeybindingID = "tui.global.cycleModelBackward"
 	GlobalCycleThinking     KeybindingID = "tui.global.cycleThinking"
 	GlobalExternalEditor    KeybindingID = "tui.global.externalEditor"
+	GlobalDebug             KeybindingID = "tui.global.debug"
 )
 
 // KeybindingDef defines a keybinding with its default keys and description.
 type KeybindingDef struct {
 	DefaultKeys []string
 	Description string
+	Category    string // "global", "editor", "chat", "tools"
+}
+
+// ResolvedBinding combines a binding definition with its user-resolved keys.
+type ResolvedBinding struct {
+	ID          KeybindingID
+	Keys        []string
+	Description string
+	Category    string
 }
 
 // DefaultKeybindingDefs returns all built-in keybinding definitions,
@@ -75,54 +87,57 @@ type KeybindingDef struct {
 func DefaultKeybindingDefs() map[KeybindingID]KeybindingDef {
 	return map[KeybindingID]KeybindingDef{
 		// Editor navigation
-		EditorCursorUp:        {DefaultKeys: []string{"up"}, Description: "Move cursor up"},
-		EditorCursorDown:      {DefaultKeys: []string{"down"}, Description: "Move cursor down"},
-		EditorCursorLeft:      {DefaultKeys: []string{"left", "ctrl+b"}, Description: "Move cursor left"},
-		EditorCursorRight:     {DefaultKeys: []string{"right", "ctrl+f"}, Description: "Move cursor right"},
-		EditorCursorWordLeft:  {DefaultKeys: []string{"alt+left", "ctrl+left", "alt+b"}, Description: "Move cursor word left"},
-		EditorCursorWordRight: {DefaultKeys: []string{"alt+right", "ctrl+right", "alt+f"}, Description: "Move cursor word right"},
-		EditorCursorLineStart: {DefaultKeys: []string{"home", "ctrl+a"}, Description: "Move to line start"},
-		EditorCursorLineEnd:   {DefaultKeys: []string{"end", "ctrl+e"}, Description: "Move to line end"},
-		EditorJumpForward:     {DefaultKeys: []string{"ctrl+]"}, Description: "Jump forward to character"},
-		EditorJumpBackward:    {DefaultKeys: []string{"ctrl+alt+]"}, Description: "Jump backward to character"},
-		EditorPageUp:          {DefaultKeys: []string{"pgup"}, Description: "Page up"},
-		EditorPageDown:        {DefaultKeys: []string{"pgdown"}, Description: "Page down"},
+		EditorCursorUp:        {DefaultKeys: []string{"up"}, Description: "Move cursor up", Category: "editor"},
+		EditorCursorDown:      {DefaultKeys: []string{"down"}, Description: "Move cursor down", Category: "editor"},
+		EditorCursorLeft:      {DefaultKeys: []string{"left", "ctrl+b"}, Description: "Move cursor left", Category: "editor"},
+		EditorCursorRight:     {DefaultKeys: []string{"right", "ctrl+f"}, Description: "Move cursor right", Category: "editor"},
+		EditorCursorWordLeft:  {DefaultKeys: []string{"alt+left", "ctrl+left", "alt+b"}, Description: "Move cursor word left", Category: "editor"},
+		EditorCursorWordRight: {DefaultKeys: []string{"alt+right", "ctrl+right", "alt+f"}, Description: "Move cursor word right", Category: "editor"},
+		EditorCursorLineStart: {DefaultKeys: []string{"home", "ctrl+a"}, Description: "Move to line start", Category: "editor"},
+		EditorCursorLineEnd:   {DefaultKeys: []string{"end", "ctrl+e"}, Description: "Move to line end", Category: "editor"},
+		EditorJumpForward:     {DefaultKeys: []string{"ctrl+]"}, Description: "Jump forward to character", Category: "editor"},
+		EditorJumpBackward:    {DefaultKeys: []string{"ctrl+alt+]"}, Description: "Jump backward to character", Category: "editor"},
+		EditorPageUp:          {DefaultKeys: []string{"pgup"}, Description: "Page up", Category: "editor"},
+		EditorPageDown:        {DefaultKeys: []string{"pgdown"}, Description: "Page down", Category: "editor"},
 
 		// Editor editing
-		EditorDeleteCharBackward: {DefaultKeys: []string{"backspace"}, Description: "Delete character backward"},
-		EditorDeleteCharForward:  {DefaultKeys: []string{"delete", "ctrl+d"}, Description: "Delete character forward"},
-		EditorDeleteWordBackward: {DefaultKeys: []string{"ctrl+w", "alt+backspace"}, Description: "Delete word backward"},
-		EditorDeleteWordForward:  {DefaultKeys: []string{"alt+d", "alt+delete"}, Description: "Delete word forward"},
-		EditorDeleteToLineStart:  {DefaultKeys: []string{"ctrl+u"}, Description: "Delete to line start"},
-		EditorDeleteToLineEnd:    {DefaultKeys: []string{"ctrl+k"}, Description: "Delete to line end"},
-		EditorYank:               {DefaultKeys: []string{"ctrl+y"}, Description: "Yank (paste deleted text)"},
-		EditorYankPop:            {DefaultKeys: []string{"alt+y"}, Description: "Yank pop (cycle kill ring)"},
-		EditorUndo:               {DefaultKeys: []string{"ctrl+-", "ctrl+_", "ctrl+/"}, Description: "Undo"},
+		EditorDeleteCharBackward: {DefaultKeys: []string{"backspace"}, Description: "Delete character backward", Category: "editor"},
+		EditorDeleteCharForward:  {DefaultKeys: []string{"delete", "ctrl+d"}, Description: "Delete character forward", Category: "editor"},
+		EditorDeleteWordBackward: {DefaultKeys: []string{"ctrl+w", "alt+backspace"}, Description: "Delete word backward", Category: "editor"},
+		EditorDeleteWordForward:  {DefaultKeys: []string{"alt+d", "alt+delete"}, Description: "Delete word forward", Category: "editor"},
+		EditorDeleteToLineStart:  {DefaultKeys: []string{"ctrl+u"}, Description: "Delete to line start", Category: "editor"},
+		EditorDeleteToLineEnd:    {DefaultKeys: []string{"ctrl+k"}, Description: "Delete to line end", Category: "editor"},
+		EditorYank:               {DefaultKeys: []string{"ctrl+y"}, Description: "Yank (paste deleted text)", Category: "editor"},
+		EditorYankPop:            {DefaultKeys: []string{"alt+y"}, Description: "Yank pop (cycle kill ring)", Category: "editor"},
+		EditorUndo:               {DefaultKeys: []string{"ctrl+-", "ctrl+_", "ctrl+/"}, Description: "Undo", Category: "editor"},
 
 		// Input
-		InputNewLine: {DefaultKeys: []string{"shift+enter", "ctrl+j"}, Description: "Insert newline"},
-		InputSubmit:  {DefaultKeys: []string{"enter"}, Description: "Submit input"},
-		InputTab:     {DefaultKeys: []string{"tab"}, Description: "Tab / autocomplete"},
-		InputCopy:    {DefaultKeys: []string{"ctrl+c"}, Description: "Copy selection"},
+		InputNewLine: {DefaultKeys: []string{"shift+enter", "ctrl+j"}, Description: "Insert newline", Category: "editor"},
+		InputSubmit:  {DefaultKeys: []string{"enter"}, Description: "Submit input", Category: "editor"},
+		InputTab:     {DefaultKeys: []string{"tab"}, Description: "Tab / autocomplete", Category: "editor"},
+		InputCopy:    {DefaultKeys: []string{"ctrl+c"}, Description: "Copy selection", Category: "editor"},
 
 		// Selection
-		SelectUp:     {DefaultKeys: []string{"up"}, Description: "Move selection up"},
-		SelectDown:   {DefaultKeys: []string{"down"}, Description: "Move selection down"},
-		SelectPageUp: {DefaultKeys: []string{"pgup"}, Description: "Selection page up"},
-		SelectPageDn: {DefaultKeys: []string{"pgdown"}, Description: "Selection page down"},
+		SelectUp:     {DefaultKeys: []string{"up"}, Description: "Move selection up", Category: "editor"},
+		SelectDown:   {DefaultKeys: []string{"down"}, Description: "Move selection down", Category: "editor"},
+		SelectPageUp:   {DefaultKeys: []string{"pgup"}, Description: "Selection page up", Category: "editor"},
+		SelectPageDn:   {DefaultKeys: []string{"pgdown"}, Description: "Selection page down", Category: "editor"},
+		SelectConfirm:  {DefaultKeys: []string{"enter"}, Description: "Confirm selection", Category: "editor"},
+		SelectCancel:   {DefaultKeys: []string{"esc", "ctrl+c"}, Description: "Cancel selection", Category: "editor"},
 
 		// Global TUI
-		GlobalInterrupt:      {DefaultKeys: []string{"esc"}, Description: "Interrupt / cancel"},
-		GlobalClear:          {DefaultKeys: []string{"ctrl+c"}, Description: "Clear input (double: exit)"},
-		GlobalExit:           {DefaultKeys: []string{"ctrl+d"}, Description: "Exit (on empty line)"},
-		GlobalToggleHeader:   {DefaultKeys: []string{"ctrl+h"}, Description: "Toggle header"},
-		GlobalToggleTools:    {DefaultKeys: []string{"ctrl+o"}, Description: "Toggle tool outputs"},
-		GlobalToggleThinking: {DefaultKeys: []string{"ctrl+t"}, Description: "Toggle thinking blocks"},
-		GlobalModelSelector:  {DefaultKeys: []string{"ctrl+l"}, Description: "Open model selector"},
-		GlobalCycleModelFwd:  {DefaultKeys: []string{"ctrl+p"}, Description: "Cycle model forward"},
-		GlobalCycleModelBack: {DefaultKeys: []string{"ctrl+shift+p"}, Description: "Cycle model backward"},
-		GlobalCycleThinking:  {DefaultKeys: []string{"shift+tab"}, Description: "Cycle thinking level"},
-		GlobalExternalEditor: {DefaultKeys: []string{"ctrl+g"}, Description: "Open external editor"},
+		GlobalInterrupt:      {DefaultKeys: []string{"esc"}, Description: "Interrupt / cancel", Category: "global"},
+		GlobalClear:          {DefaultKeys: []string{"ctrl+c"}, Description: "Clear input (double: exit)", Category: "global"},
+		GlobalExit:           {DefaultKeys: []string{"ctrl+d"}, Description: "Exit (on empty line)", Category: "global"},
+		GlobalToggleHeader:   {DefaultKeys: []string{"ctrl+h"}, Description: "Toggle header", Category: "tools"},
+		GlobalToggleTools:    {DefaultKeys: []string{"ctrl+o"}, Description: "Toggle tool outputs", Category: "tools"},
+		GlobalToggleThinking: {DefaultKeys: []string{"ctrl+t"}, Description: "Toggle thinking blocks", Category: "tools"},
+		GlobalModelSelector:  {DefaultKeys: []string{"ctrl+l"}, Description: "Open model selector", Category: "tools"},
+		GlobalCycleModelFwd:  {DefaultKeys: []string{"ctrl+p"}, Description: "Cycle model forward", Category: "tools"},
+		GlobalCycleModelBack: {DefaultKeys: []string{"ctrl+shift+p"}, Description: "Cycle model backward", Category: "tools"},
+		GlobalCycleThinking:  {DefaultKeys: []string{"shift+tab"}, Description: "Cycle thinking level", Category: "tools"},
+		GlobalExternalEditor: {DefaultKeys: []string{"ctrl+g"}, Description: "Open external editor", Category: "tools"},
+		GlobalDebug:          {DefaultKeys: []string{"shift+ctrl+d"}, Description: "Write debug log", Category: "tools"},
 	}
 }
 
@@ -308,6 +323,26 @@ func (km *KeybindingsManager) GetDefinition(binding KeybindingID) (KeybindingDef
 	defer km.mu.RUnlock()
 	def, ok := km.defs[binding]
 	return def, ok
+}
+
+// GetResolvedBindings returns all bindings with their user-resolved keys and descriptions.
+func (km *KeybindingsManager) GetResolvedBindings() []ResolvedBinding {
+	km.mu.RLock()
+	defer km.mu.RUnlock()
+	var result []ResolvedBinding
+	for id, def := range km.defs {
+		keys := km.keysByID[id]
+		if len(keys) == 0 {
+			keys = def.DefaultKeys
+		}
+		result = append(result, ResolvedBinding{
+			ID:          id,
+			Keys:        keys,
+			Description: def.Description,
+			Category:    def.Category,
+		})
+	}
+	return result
 }
 
 // GetUserBindings returns a copy of the current user bindings.

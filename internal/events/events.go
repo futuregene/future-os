@@ -117,7 +117,7 @@ func AgentStart(sessionID, model, cwd string) AgentEvent {
 }
 
 // AgentEnd creates an agent_end event.
-func AgentEnd(reason string, usage *types.Usage) AgentEvent {
+func AgentEnd(reason string, usage *types.Usage, stopReason ...string) AgentEvent {
 	data := map[string]interface{}{"reason": reason}
 	if usage != nil {
 		data["usage"] = map[string]int{
@@ -127,6 +127,9 @@ func AgentEnd(reason string, usage *types.Usage) AgentEvent {
 			"cache_write_tokens": usage.CacheWriteTokens,
 			"total_tokens":       usage.TotalTokens,
 		}
+	}
+	if len(stopReason) > 0 && stopReason[0] != "" {
+		data["stop_reason"] = stopReason[0]
 	}
 	return AgentEvent{Type: "agent_end", Data: data}
 }
@@ -273,35 +276,62 @@ func ErrorEvent(message string) AgentEvent {
 }
 
 // CompactionStart creates a compaction_start event.
-func CompactionStart() AgentEvent {
-	return AgentEvent{Type: "compaction_start", Data: map[string]interface{}{}}
+// reason is "auto" (token threshold) or "manual" (/compact command).
+func CompactionStart(reason string) AgentEvent {
+	return AgentEvent{
+		Type: "compaction_start",
+		Data: map[string]interface{}{
+			"reason": reason,
+		},
+	}
 }
 
 // CompactionEnd creates a compaction_end event with optional summary data.
-func CompactionEnd(tokensBefore int, summary string) AgentEvent {
+// Set aborted=true if compaction was cancelled.
+func CompactionEnd(tokensBefore int, summary string, aborted bool, reason string) AgentEvent {
 	return AgentEvent{
 		Type: "compaction_end",
 		Data: map[string]interface{}{
 			"tokens_before": tokensBefore,
 			"summary":       summary,
+			"aborted":       aborted,
+			"reason":        reason,
 		},
 	}
 }
 
 // AutoRetryStart creates an auto_retry_start event with attempt info.
-func AutoRetryStart(attempt, maxAttempts int) AgentEvent {
+func AutoRetryStart(attempt, maxAttempts, delayMs int) AgentEvent {
 	return AgentEvent{
 		Type: "auto_retry_start",
 		Data: map[string]interface{}{
 			"attempt":      attempt,
 			"max_attempts": maxAttempts,
+			"delay_ms":     delayMs,
 		},
 	}
 }
 
 // AutoRetryEnd creates an auto_retry_end event.
-func AutoRetryEnd() AgentEvent {
-	return AgentEvent{Type: "auto_retry_end", Data: map[string]interface{}{}}
+// Pass optional (success bool, attempt int, finalError string) for retry failure info (TS pi-mono).
+func AutoRetryEnd(failureInfo ...interface{}) AgentEvent {
+	e := AgentEvent{Type: "auto_retry_end", Data: map[string]interface{}{}}
+	if len(failureInfo) >= 1 {
+		if success, ok := failureInfo[0].(bool); ok {
+			e.Data["success"] = success
+		}
+	}
+	if len(failureInfo) >= 2 {
+		if attempt, ok := failureInfo[1].(int); ok {
+			e.Data["attempt"] = attempt
+		}
+	}
+	if len(failureInfo) >= 3 {
+		if finalError, ok := failureInfo[2].(string); ok {
+			e.Data["final_error"] = finalError
+		}
+	}
+	return e
 }
 
 // EmitStreamingEvents bridges LLM StreamEvent channel output into AgentEvent

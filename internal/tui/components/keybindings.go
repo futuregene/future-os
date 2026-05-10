@@ -34,6 +34,14 @@ const (
 	BindSubmit  = "tui.input.submit"
 	BindTab     = "tui.input.tab"
 	BindCopy    = "tui.input.copy"
+
+	// Selection
+	BindSelectUp      = "tui.select.up"
+	BindSelectDown    = "tui.select.down"
+	BindSelectPageUp  = "tui.select.pageUp"
+	BindSelectPageDn  = "tui.select.pageDown"
+	BindSelectConfirm = "tui.select.confirm"
+	BindSelectCancel  = "tui.select.cancel"
 )
 
 // KeyMatcher is a function that checks if a key string matches a binding ID.

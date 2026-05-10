@@ -93,6 +93,25 @@ func GetLeafID(entries []SessionEntry) string {
 	return ""
 }
 
+// EffectiveLeafID returns the explicit LeafID if set, otherwise auto-detects the latest leaf.
+func EffectiveLeafID(s *Session) string {
+	if s.LeafID != "" {
+		return s.LeafID
+	}
+	return GetLeafID(s.Entries)
+}
+
+// Branch sets the explicit leaf pointer for tree navigation (TS pi-mono: branch()).
+// Next entry append will use this as parent, creating a fork/branch.
+func (m *Manager) Branch(s *Session, entryID string) {
+	s.LeafID = entryID
+}
+
+// ResetLeaf clears the explicit leaf pointer, reverting to auto-detection (TS pi-mono: resetLeaf()).
+func (m *Manager) ResetLeaf(s *Session) {
+	s.LeafID = ""
+}
+
 // --- CWD Validation ---
 
 // ValidateCWD checks that the session's CWD exists and is a directory.

@@ -103,7 +103,7 @@ func (o *BashExecutorOptions) applyDefaults() {
 		o.Env = GetShellEnv()
 	}
 	if !o.ExplicitDefaults {
-		o.StripANSI = true
+		o.StripANSI = false // TS pi-mono: preserve ANSI colors in bash output
 		o.SanitizeBinary = true
 	}
 }

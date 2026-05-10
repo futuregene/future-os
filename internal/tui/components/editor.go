@@ -6,10 +6,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
+	"github.com/rivo/uniseg"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/lipgloss"
@@ -69,6 +72,10 @@ type Editor struct {
 	slashMatchIndex   int
 	slashMatchCurrent []string // snapshot of current candidates for change detection
 
+	// DisableSubmit prevents Enter from submitting (TS pi-mono: disableSubmit).
+	// Useful when an extension or overlay is handling input.
+	DisableSubmit bool
+
 	// Border colors for different modes (TS pi-mono: mode-based border coloring)
 	defaultBorderColor string // thinking-based, set by app
 	bashBorderColor    string // green, set by app
@@ -100,7 +107,7 @@ func (e *Editor) matches(ks, binding string, hardcoded ...string) bool {
 // NewEditor creates a new editor component.
 func NewEditor(style lipgloss.Style) Editor {
 	ta := textarea.New()
-	ta.Placeholder = "Type a message… (Enter=submit, Shift+Enter=newline)"
+	ta.Placeholder = "Type a message... (Enter=submit, Shift+Enter=newline)"
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0 // unlimited
 	ta.SetHeight(3)
@@ -198,7 +205,7 @@ func (e *Editor) Reset() {
 	e.area.Reset()
 	e.slashMode = false
 	e.bashMode = false
-	e.area.Placeholder = "Type a message… (Enter=submit, Shift+Enter=newline)"
+	e.area.Placeholder = "Type a message... (Enter=submit, Shift+Enter=newline)"
 }
 
 // SetValue replaces the editor content.
@@ -209,6 +216,12 @@ func (e *Editor) SetValue(s string) {
 }
 
 // normalizeText normalizes line endings and expands tabs to spaces (TS pi-mono).
+// csiUDecodeRe matches CSI-u encoded control characters (e.g. \x1b[106;5u → j).
+// Tmux popups with extended-keys-format=csi-u re-encode control bytes inside
+// bracketed paste as these sequences. We decode them back so the per-char filter
+// can preserve newlines instead of leaking the printable tail into the editor.
+var csiUDecodeRe = regexp.MustCompile(`\x1b\[(\d+);5u`)
+
 func normalizeText(text string) string {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
@@ -216,10 +229,66 @@ func normalizeText(text string) string {
 	return text
 }
 
+// cleanPasteText prepares pasted text: CSI-u decode, normalize, strip non-printables.
+// TS pi-mono: handlePaste decoding & filtering pipeline.
+func cleanPasteText(text string) string {
+	// Decode CSI-u control characters (TS pi-mono: tmux csi-u workaround)
+	text = csiUDecodeRe.ReplaceAllStringFunc(text, func(m string) string {
+		matches := csiUDecodeRe.FindStringSubmatch(m)
+		if len(matches) < 2 {
+			return m
+		}
+		cp := 0
+		for _, c := range matches[1] {
+			cp = cp*10 + int(c-'0')
+		}
+		if cp >= 97 && cp <= 122 {
+			return string(rune(cp - 96))
+		}
+		if cp >= 65 && cp <= 90 {
+			return string(rune(cp - 64))
+		}
+		return m
+	})
+
+	text = normalizeText(text)
+
+	// Filter non-printable characters except newlines (TS pi-mono)
+	var b strings.Builder
+	for _, r := range text {
+		if r == '\n' || r >= 32 {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // Paste inserts text at the current cursor position with large-paste collapsing.
 // Large text is stored and replaced with a [paste #N] marker that expands on submit.
 func (e *Editor) Paste(text string) {
-	text = normalizeText(text)
+	// Exit history browsing, push undo, reset state (TS pi-mono: handlePaste)
+	e.exitHistoryBrowse()
+	e.pushUndo("paste")
+	e.lastAction = ""
+
+	text = cleanPasteText(text)
+
+	// Auto-prepend space when pasting a file path after a word char (TS pi-mono)
+	if len(text) > 0 && (text[0] == '/' || text[0] == '~' || text[0] == '.') {
+		val := e.area.Value()
+		lines := strings.Split(val, "\n")
+		curLine := e.area.Line()
+		if curLine < len(lines) {
+			col := e.area.LineInfo().CharOffset
+			if col > 0 && col <= len(lines[curLine]) {
+				charBefore := rune(lines[curLine][col-1])
+				if unicode.IsLetter(charBefore) || unicode.IsDigit(charBefore) || charBefore == '_' {
+					text = " " + text
+				}
+			}
+		}
+	}
+
 	marker := e.StorePaste(text)
 	if marker != "" {
 		e.area.InsertString(marker)
@@ -312,7 +381,7 @@ func (e *Editor) ExitSlashMode() {
 	e.bashMode = false
 	e.fileMode = false
 	e.symbolMode = false
-	e.area.Placeholder = "Type a message… (Enter=submit, Shift+Enter=newline)"
+	e.area.Placeholder = "Type a message... (Enter=submit, Shift+Enter=newline)"
 }
 
 // SetSlashCandidates sets the autocomplete candidates for slash commands.
@@ -336,27 +405,27 @@ func (e *Editor) updateSlashMode() {
 	e.symbolMode = strings.HasPrefix(val, "#") && !e.slashMode && !e.bashMode && !e.fileMode
 
 	if e.bashMode {
-		e.area.Placeholder = "Run bash command… (Enter=execute, Esc=cancel)"
+		e.area.Placeholder = "Run bash command... (Enter=execute, Esc=cancel)"
 		if e.bashBorderColor != "" {
 			e.style = e.style.Copy().BorderForeground(lipgloss.Color(e.bashBorderColor))
 		}
 	} else if e.slashMode {
-		e.area.Placeholder = "Type a command… (Enter=run, Tab=complete)"
+		e.area.Placeholder = "Type a command... (Enter=run, Tab=complete)"
 		if e.slashBorderColor != "" {
 			e.style = e.style.Copy().BorderForeground(lipgloss.Color(e.slashBorderColor))
 		}
 	} else if e.fileMode {
-		e.area.Placeholder = "Attach a file… (Tab=complete, Esc=cancel)"
+		e.area.Placeholder = "Attach a file... (Tab=complete, Esc=cancel)"
 		if e.fileBorderColor != "" {
 			e.style = e.style.Copy().BorderForeground(lipgloss.Color(e.fileBorderColor))
 		}
 	} else if e.symbolMode {
-		e.area.Placeholder = "Search symbols… (Tab=complete, Esc=cancel)"
+		e.area.Placeholder = "Search symbols... (Tab=complete, Esc=cancel)"
 		if e.symbolBorderColor != "" {
 			e.style = e.style.Copy().BorderForeground(lipgloss.Color(e.symbolBorderColor))
 		}
 	} else {
-		e.area.Placeholder = "Type a message… (Enter=submit, Shift+Enter=newline)"
+		e.area.Placeholder = "Type a message... (Enter=submit, Shift+Enter=newline)"
 		if e.defaultBorderColor != "" {
 			e.style = e.style.Copy().BorderForeground(lipgloss.Color(e.defaultBorderColor))
 		}
@@ -381,6 +450,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 		// Tab: slash command autocomplete — cycles through candidates
 		if e.matches(ks, BindTab, "tab") && e.slashMode {
 			if len(e.slashCandidates) > 0 {
+				e.exitHistoryBrowse()
 				e.pushUndo("delete")
 				e.slashMatchIndex = (e.slashMatchIndex + 1) % len(e.slashCandidates)
 				e.area.SetValue(e.slashCandidates[e.slashMatchIndex])
@@ -391,6 +461,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 
 		// Tab: file path autocomplete (not in slash/bash mode)
 		if e.matches(ks, BindTab, "tab") && !e.slashMode && !e.bashMode {
+			e.exitHistoryBrowse()
 			e.pushUndo("delete")
 			e.tryFilePathComplete()
 			e.updateSlashMode()
@@ -399,6 +470,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 
 		// Kill ring: yank (Ctrl+Y)
 		if e.matches(ks, BindYank, "ctrl+y") {
+			e.exitHistoryBrowse()
 			e.pushUndo("delete")
 			e.yank()
 			e.updateSlashMode()
@@ -407,6 +479,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 
 		// Kill ring: yank-pop (Alt+Y) — cycle through older kills
 		if e.matches(ks, BindYankPop, "alt+y") && e.lastAction == "yank" {
+			e.exitHistoryBrowse()
 			e.pushUndo("delete")
 			e.yankPop()
 			e.updateSlashMode()
@@ -423,7 +496,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 		}
 
 		// Undo (Ctrl+_ / Ctrl+/): restore previous editor state from undo stack
-		if e.matches(ks, BindUndo, "ctrl+_", "ctrl+/") {
+		if e.matches(ks, BindUndo, "ctrl+_", "ctrl+/", "ctrl+-") {
 			e.undo()
 			e.updateSlashMode()
 			return e, nil
@@ -431,6 +504,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 
 		// Delete char forward (Ctrl+D) — TS pi-mono: deleteCharForward
 		if ks == "ctrl+d" {
+			e.exitHistoryBrowse()
 			e.pushUndo("delete")
 			e.deleteCharForward()
 			e.updateSlashMode()
@@ -442,11 +516,14 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 			e.preferredVisualCol = nil
 		}
 
+		// Exit history browsing on any content modification (TS pi-mono)
+		if e.historyIndex > 0 && e.isModifyingKey(ks) {
+			e.exitHistoryBrowse()
+		}
 		// Save undo state before text-modifying operations
 		if e.isModifyingKey(ks) {
 			typ := "delete"
-			if len(ks) == 1 && ks[0] >= 32 && ks[0] < 127 {
-				r := rune(ks[0])
+			if r, size := utf8.DecodeRuneInString(ks); size > 0 && r >= 32 && r != 127 && r != utf8.RuneError {
 				if r == ' ' || r == '\t' || r == '\n' {
 					typ = "space" // word boundary, always new snapshot
 				} else {
@@ -461,20 +538,21 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 		if e.matches(ks, BindJumpForward, "ctrl+]") {
 			e.jumpMode = true
 			e.jumpForward = true
-			e.area.Placeholder = "Jump to character…"
+			e.area.Placeholder = "Jump to character..."
 			return e, nil
 		}
 		if e.matches(ks, BindJumpBackward, "ctrl+alt+]") {
 			e.jumpMode = true
 			e.jumpForward = false
-			e.area.Placeholder = "Jump backward to character…"
+			e.area.Placeholder = "Jump backward to character..."
 			return e, nil
 		}
 
 		// In jump mode, the next single character triggers the jump
-		if e.jumpMode && len(ks) == 1 && ks[0] >= 32 && ks[0] < 127 {
+		if e.jumpMode && IsPrintableKeyString(ks) && utf8.RuneCountInString(ks) == 1 {
 			e.pushUndo("delete")
-			e.charJump(ks[0], e.jumpForward)
+			r, _ := utf8.DecodeRuneInString(ks)
+			e.charJump(byte(r), e.jumpForward)
 			e.jumpMode = false
 			e.updateSlashMode()
 			return e, nil
@@ -484,6 +562,27 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 			e.jumpMode = false
 			e.updateSlashMode()
 			// Don't consume — let the key pass through normally
+		}
+
+		// Shift+Backspace: delete char backward (TS pi-mono alias)
+		if ks == "shift+backspace" {
+			e.exitHistoryBrowse()
+			e.lastAction = ""
+			e.pushUndo("delete")
+			// Simulate backspace for textarea
+			e.area, cmd = e.area.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+			e.updateSlashMode()
+			return e, cmd
+		}
+
+		// Shift+Delete: delete char forward (TS pi-mono alias)
+		if ks == "shift+delete" {
+			e.exitHistoryBrowse()
+			e.lastAction = ""
+			e.pushUndo("delete")
+			e.deleteCharForward()
+			e.updateSlashMode()
+			return e, nil
 		}
 
 		// Word jump (TS pi-mono: Alt+Left/Right, Ctrl+Left/Right)
@@ -510,20 +609,30 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 			return e, nil
 		}
 
-		// Cursor up with preferred visual column tracking (TS pi-mono: sticky column)
+		// Cursor up with preferred visual column tracking + history navigation (TS pi-mono)
 		if e.matches(ks, BindCursorUp, "up") {
-			if e.Empty() && len(e.history) > 0 {
-				if e.historyIndex == 0 {
-					e.historyDraft = e.area.Value()
+			if len(e.history) > 0 {
+				// Enter/continue history browsing (TS pi-mono: isOnFirstVisualLine gate)
+				if e.Empty() || (e.historyIndex > 0 && e.isOnFirstVisualLine()) {
+					if e.historyIndex == 0 {
+						e.historyDraft = e.area.Value()
+					}
+					if e.historyIndex < len(e.history) {
+						e.historyIndex++
+						idx := len(e.history) - e.historyIndex
+						e.area.SetValue(e.history[idx])
+						e.updateSlashMode()
+						return e, nil
+					}
+					return e, nil
 				}
-				if e.historyIndex < len(e.history) {
-					e.historyIndex++
-					idx := len(e.history) - e.historyIndex
-					e.area.SetValue(e.history[idx])
+				// At first visual line but not browsing — jump to line start (TS pi-mono)
+				if e.isOnFirstVisualLine() {
+					e.area.SetCursor(0)
+					e.preferredVisualCol = nil
 					e.updateSlashMode()
 					return e, nil
 				}
-				return e, nil
 			}
 			// Track preferred visual column for sticky cursor
 			if e.preferredVisualCol == nil {
@@ -541,19 +650,30 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 			e.updateSlashMode()
 			return e, nil
 		}
-		// Cursor down with preferred visual column tracking
+		// Cursor down with preferred visual column tracking + history navigation (TS pi-mono)
 		if e.matches(ks, BindCursorDown, "down") {
-			if e.historyIndex > 0 {
-				e.historyIndex--
-				if e.historyIndex == 0 {
-					e.area.SetValue(e.historyDraft)
-					e.historyDraft = ""
-				} else {
-					idx := len(e.history) - e.historyIndex
-					e.area.SetValue(e.history[idx])
+			if len(e.history) > 0 {
+				// Continue history browsing forward (TS pi-mono: isOnLastVisualLine gate)
+				if e.historyIndex > 0 && e.isOnLastVisualLine() {
+					e.historyIndex--
+					if e.historyIndex == 0 {
+						e.area.SetValue(e.historyDraft)
+						e.historyDraft = ""
+					} else {
+						idx := len(e.history) - e.historyIndex
+						e.area.SetValue(e.history[idx])
+					}
+					e.updateSlashMode()
+					return e, nil
 				}
-				e.updateSlashMode()
-				return e, nil
+				// At last visual line but not browsing — jump to line end (TS pi-mono)
+				if e.isOnLastVisualLine() {
+					lineLen := len(e.currentLine())
+					e.area.SetCursor(lineLen)
+					e.preferredVisualCol = nil
+					e.updateSlashMode()
+					return e, nil
+				}
 			}
 			if e.preferredVisualCol == nil {
 				col := e.area.LineInfo().CharOffset
@@ -580,6 +700,9 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 
 		// Enter: submit (with backslash workaround for newline)
 		if e.matches(ks, BindSubmit, "enter") {
+			if e.DisableSubmit {
+				return e, nil
+			}
 			if !e.Empty() {
 				// Backslash+Enter workaround: if text ends with '\', strip it and insert newline
 				val := e.area.Value()
@@ -590,6 +713,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 					return e, nil
 				}
 				text := strings.TrimSpace(e.area.Value())
+				text = e.ExpandPastes(text)
 				e.Reset()
 				return e, func() tea.Msg { return SubmitMsg(text) }
 			}
@@ -600,6 +724,7 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 		if ks == "alt+enter" {
 			if !e.Empty() {
 				text := strings.TrimSpace(e.area.Value())
+				text = e.ExpandPastes(text)
 				e.Reset()
 				return e, func() tea.Msg { return FollowUpMsg(text) }
 			}
@@ -608,6 +733,16 @@ func (e Editor) Update(msg tea.Msg) (Editor, tea.Cmd) {
 
 		// Ctrl+J: textarea inserts newline natively (via keymap config)
 		// Falls through to textarea.Update below
+	}
+
+	// Grapheme-aware backspace: delete the last grapheme cluster before cursor
+	if ks == "backspace" {
+		e.exitHistoryBrowse()
+		e.lastAction = ""
+		e.pushUndo("delete")
+		e.graphemeBackspace()
+		e.updateSlashMode()
+		return e, nil
 	}
 
 	e.area, cmd = e.area.Update(msg)
@@ -1083,7 +1218,8 @@ func (e *Editor) pageScroll(direction int) {
 }
 
 // moveWordBackward moves the cursor to the start of the current/previous word.
-// Word boundaries are defined by whitespace characters.
+// Punctuation is treated as a separate category (TS pi-mono: three-category word movement).
+// Uses grapheme clusters for correct cursor movement across emoji/combining sequences.
 func (e *Editor) moveWordBackward() {
 	val := e.area.Value()
 	if val == "" {
@@ -1092,21 +1228,50 @@ func (e *Editor) moveWordBackward() {
 	curLine := e.area.Line()
 	curCol := e.area.LineInfo().CharOffset
 
-	// Compute byte offset from line/col
 	offset := bytePos(val, curLine, curCol)
 
-	// Skip whitespace backward
-	for offset > 0 && isWhitespace(val[offset-1]) {
-		offset--
+	// Skip trailing whitespace
+	for offset > 0 {
+		cluster, clusterPos, _ := lastGraphemeCluster(val[:offset])
+		r, _ := utf8.DecodeRuneInString(cluster)
+		if !isWhitespaceRune(r) {
+			break
+		}
+		offset = clusterPos
 	}
-	// Skip word characters backward
-	for offset > 0 && !isWhitespace(val[offset-1]) {
-		offset--
+	if offset == 0 {
+		e.moveCursorToByte(0)
+		return
+	}
+	// Check if we're at punctuation — if so, skip the entire punctuation run
+	cluster, _, _ := lastGraphemeCluster(val[:offset])
+	r, _ := utf8.DecodeRuneInString(cluster)
+	if isPunct(r) {
+		for offset > 0 {
+			cluster, clusterPos, _ := lastGraphemeCluster(val[:offset])
+			r, _ := utf8.DecodeRuneInString(cluster)
+			if !isPunct(r) {
+				break
+			}
+			offset = clusterPos
+		}
+	} else {
+		// Skip word characters (non-whitespace, non-punctuation)
+		for offset > 0 {
+			cluster, clusterPos, _ := lastGraphemeCluster(val[:offset])
+			r, _ := utf8.DecodeRuneInString(cluster)
+			if isWhitespaceRune(r) || isPunct(r) {
+				break
+			}
+			offset = clusterPos
+		}
 	}
 	e.moveCursorToByte(offset)
 }
 
 // moveWordForward moves the cursor to the start of the next word.
+// Punctuation is treated as a separate category (TS pi-mono: three-category word movement).
+// Uses grapheme clusters for correct cursor movement across emoji/combining sequences.
 func (e *Editor) moveWordForward() {
 	val := e.area.Value()
 	if val == "" {
@@ -1117,21 +1282,80 @@ func (e *Editor) moveWordForward() {
 
 	offset := bytePos(val, curLine, curCol)
 
-	// Skip current word forward
-	for offset < len(val) && !isWhitespace(val[offset]) {
-		offset++
+	// Skip leading whitespace
+	for offset < len(val) {
+		cluster, size := firstGraphemeCluster(val[offset:])
+		if size == 0 {
+			break
+		}
+		r, _ := utf8.DecodeRuneInString(cluster)
+		if !isWhitespaceRune(r) {
+			break
+		}
+		offset += size
 	}
-	// Skip whitespace forward
-	for offset < len(val) && isWhitespace(val[offset]) {
-		offset++
+	if offset >= len(val) {
+		e.moveCursorToByte(len(val))
+		return
 	}
-	if offset > len(val) {
-		offset = len(val)
+	// Check if next char is punctuation — if so, skip the entire run
+	cluster, size := firstGraphemeCluster(val[offset:])
+	if size == 0 {
+		return
+	}
+	r, _ := utf8.DecodeRuneInString(cluster)
+	if isPunct(r) {
+		for offset < len(val) {
+			cluster, size := firstGraphemeCluster(val[offset:])
+			if size == 0 {
+				break
+			}
+			r, _ := utf8.DecodeRuneInString(cluster)
+			if !isPunct(r) {
+				break
+			}
+			offset += size
+		}
+	} else {
+		// Skip word characters (non-whitespace, non-punctuation)
+		for offset < len(val) {
+			cluster, size := firstGraphemeCluster(val[offset:])
+			if size == 0 {
+				break
+			}
+			r, _ := utf8.DecodeRuneInString(cluster)
+			if isWhitespaceRune(r) || isPunct(r) {
+				break
+			}
+			offset += size
+		}
 	}
 	e.moveCursorToByte(offset)
 }
 
+// graphemeBackspace deletes the grapheme cluster immediately before the cursor (TS pi-mono).
+// Unlike the textarea default, this correctly handles multi-codepoint emoji sequences.
+func (e *Editor) graphemeBackspace() {
+	val := e.area.Value()
+	if val == "" {
+		return
+	}
+	curLine := e.area.Line()
+	curCol := e.area.LineInfo().CharOffset
+	offset := bytePos(val, curLine, curCol)
+	if offset == 0 {
+		return
+	}
+	cluster, clusterPos, _ := lastGraphemeCluster(val[:offset])
+	if cluster == "" {
+		return
+	}
+	e.area.SetValue(val[:clusterPos] + val[offset:])
+	e.moveCursorToByte(clusterPos)
+}
+
 // deleteCharForward deletes the character at the cursor position (Ctrl+D).
+// At end of line, merges with the next line (TS pi-mono: deleteCharForward).
 func (e *Editor) deleteCharForward() {
 	val := e.area.Value()
 	if val == "" {
@@ -1141,9 +1365,17 @@ func (e *Editor) deleteCharForward() {
 	if offset >= len(val) {
 		return
 	}
-	_, size := utf8.DecodeRuneInString(val[offset:])
-	e.area.SetValue(val[:offset] + val[offset+size:])
-	e.moveCursorToByte(offset)
+	_, size := firstGraphemeCluster(val[offset:])
+	if size == 0 {
+		return
+	}
+	if val[offset] == '\n' {
+		e.area.SetValue(val[:offset] + val[offset+1:])
+		e.moveCursorToByte(offset)
+	} else {
+		e.area.SetValue(val[:offset] + val[offset+size:])
+		e.moveCursorToByte(offset)
+	}
 }
 
 // pushUndo saves a snapshot of the current editor state before a modification.
@@ -1154,9 +1386,9 @@ func (e *Editor) pushUndo(typ string) {
 		value:  e.area.Value(),
 		offset: bytePos(e.area.Value(), e.area.Line(), e.area.LineInfo().CharOffset),
 	}
-	// Coalesce consecutive word-character insertions (fish-style undo)
+	// Coalesce consecutive word-character insertions (fish-style undo).
+	// Keep the first snapshot at the start of the word chain.
 	if typ == "word" && len(e.undoStack) > 0 && e.lastUndoType == "word" {
-		e.undoStack[len(e.undoStack)-1] = snap
 		return
 	}
 	e.undoStack = append(e.undoStack, snap)
@@ -1204,6 +1436,61 @@ func isWhitespace(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
 }
 
+// isWhitespaceRune returns true if r is a Unicode whitespace character.
+func isWhitespaceRune(r rune) bool {
+	return unicode.IsSpace(r)
+}
+
+// firstGraphemeCluster returns the first grapheme cluster and its byte length in s.
+func firstGraphemeCluster(s string) (string, int) {
+	gr := uniseg.NewGraphemes(s)
+	if gr.Next() {
+		c := gr.Str()
+		return c, len(c)
+	}
+	return "", 0
+}
+
+// lastGraphemeCluster returns the last grapheme cluster in s, its byte position, and byte length.
+func lastGraphemeCluster(s string) (string, int, int) {
+	var last string
+	var lastFrom, lastTo int
+	gr := uniseg.NewGraphemes(s)
+	for gr.Next() {
+		last = gr.Str()
+		lastFrom, lastTo = gr.Positions()
+	}
+	return last, lastFrom, lastTo - lastFrom
+}
+
+// isOnFirstVisualLine returns true when the cursor is at the first character position (TS pi-mono).
+func (e *Editor) isOnFirstVisualLine() bool {
+	return e.area.Line() == 0 && e.area.LineInfo().CharOffset == 0
+}
+
+// isOnLastVisualLine returns true when the cursor is at the last character position (TS pi-mono).
+func (e *Editor) isOnLastVisualLine() bool {
+	val := e.area.Value()
+	lines := strings.Split(val, "\n")
+	curLine := e.area.Line()
+	if curLine >= len(lines)-1 {
+		lastLine := lines[len(lines)-1]
+		return e.area.LineInfo().CharOffset >= len(lastLine)
+	}
+	return false
+}
+
+// currentLine returns the text of the current logical line.
+func (e *Editor) currentLine() string {
+	val := e.area.Value()
+	lines := strings.Split(val, "\n")
+	cur := e.area.Line()
+	if cur < len(lines) {
+		return lines[cur]
+	}
+	return ""
+}
+
 // StorePaste stores pasted text and returns a marker like "[paste #1 +123 lines]".
 // Returns empty string if the text isn't large enough to warrant a marker.
 // TS pi-mono: markers created for pastes >10 lines or >1000 chars.
@@ -1240,8 +1527,8 @@ func (e *Editor) ExpandPastes(text string) string {
 // isModifyingKey returns true for keys that modify the editor text content.
 // Used for undo state tracking (TS pi-mono: UndoStack snapshot before mutation).
 func (e *Editor) isModifyingKey(ks string) bool {
-	if e.matches(ks, BindDeleteCharBackward, "backspace") ||
-		e.matches(ks, BindDeleteCharForward, "delete", "ctrl+d") ||
+	if e.matches(ks, BindDeleteCharBackward, "backspace", "shift+backspace") ||
+		e.matches(ks, BindDeleteCharForward, "delete", "ctrl+d", "shift+delete") ||
 		e.matches(ks, BindDeleteToLineEnd, "ctrl+k") ||
 		e.matches(ks, BindDeleteToLineStart, "ctrl+u") ||
 		e.matches(ks, BindDeleteWordBackward, "ctrl+w", "alt+backspace") ||
@@ -1252,10 +1539,18 @@ func (e *Editor) isModifyingKey(ks string) bool {
 		ks == " " || ks == "space" {
 		return true
 	}
-	if len(ks) == 1 {
+	if IsPrintableKeyString(ks) {
 		return true
 	}
 	return false
+}
+
+// exitHistoryBrowse resets the history browsing state (TS pi-mono).
+func (e *Editor) exitHistoryBrowse() {
+	if e.historyIndex > 0 {
+		e.historyIndex = 0
+		e.historyDraft = ""
+	}
 }
 
 // RecordSubmission saves text to prompt history (TS pi-mono: Up/Down navigation).

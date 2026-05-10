@@ -63,12 +63,14 @@ type Usage struct {
 // toolcall_start, toolcall_delta, toolcall_end,
 // tool_call (legacy), stop, error, usage.
 type StreamEvent struct {
-	Type     string    // event type (see above)
-	Text     string    // delta text content
-	ToolCall *ToolCall // complete tool call (tool_call / toolcall_end)
-	ToolName string    // tool name (toolcall_start)
-	ToolID   string    // tool call ID (toolcall_start)
-	Usage    *Usage    // set when Type is "usage" (final usage stats)
+	Type       string    // event type (see above)
+	Text       string    // delta text content
+	ToolCall   *ToolCall // complete tool call (tool_call / toolcall_end)
+	ToolName   string    // tool name (toolcall_start)
+	ToolID     string    // tool call ID (toolcall_start)
+	Usage      *Usage    // set when Type is "usage" (final usage stats)
+	StopReason string    // Anthropic stop_reason, mapped: "stop"|"length"|"toolUse"|"error"|"aborted" (TS pi-mono)
+	ErrorText  string    // error message when StopReason is "error" (TS pi-mono: refusal)
 }
 
 // Tool definition for the LLM

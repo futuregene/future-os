@@ -27,6 +27,9 @@ type Theme struct {
 	ThinkingColor  string `json:"thinking_color"`
 	ThinkingText   string `json:"thinking_text"`
 	ToolColor      string `json:"tool_color"`
+	ToolPendingBg  string `json:"tool_pending_bg"`
+	ToolSuccessBg  string `json:"tool_success_bg"`
+	ToolErrorBg    string `json:"tool_error_bg"`
 	ErrorColor     string `json:"error_color"`
 	SystemColor    string `json:"system_color"`
 	DiffAddColor   string `json:"diff_add_color"`
@@ -76,6 +79,9 @@ func DefaultTheme() *Theme {
 		ThinkingColor:    "#6c7086",
 		ThinkingText:     "#a6adc8",
 		ToolColor:        "#f9e2af",
+		ToolPendingBg:    "#282832",
+		ToolSuccessBg:    "#283228",
+		ToolErrorBg:      "#3c2828",
 		ErrorColor:       "#f38ba8",
 		SystemColor:      "#a6e3a1",
 		DiffAddColor:     "#a6e3a1",
@@ -116,6 +122,9 @@ func LightTheme() *Theme {
 		ThinkingColor:    "#9ca0b0",
 		ThinkingText:     "#6c6f85",
 		ToolColor:        "#df8e1d",
+		ToolPendingBg:    "#e6e9ef",
+		ToolSuccessBg:    "#dcedd6",
+		ToolErrorBg:      "#f0d6dc",
 		ErrorColor:       "#d20f39",
 		SystemColor:      "#40a02b",
 		DiffAddColor:     "#40a02b",
@@ -176,6 +185,15 @@ func LoadTheme(path string) (*Theme, error) {
 	}
 	if t.ToolColor == "" {
 		t.ToolColor = d.ToolColor
+	}
+	if t.ToolPendingBg == "" {
+		t.ToolPendingBg = d.ToolPendingBg
+	}
+	if t.ToolSuccessBg == "" {
+		t.ToolSuccessBg = d.ToolSuccessBg
+	}
+	if t.ToolErrorBg == "" {
+		t.ToolErrorBg = d.ToolErrorBg
 	}
 	if t.ErrorColor == "" {
 		t.ErrorColor = d.ErrorColor

@@ -184,7 +184,7 @@ func handleExport(args []string, ctx *Context) (string, error) {
 	}
 	sid := ctx.CurrentSessionID
 	if sid == "" {
-		return "", fmt.Errorf("no session to export")
+		return "", fmt.Errorf("No session to export")
 	}
 	if outputPath == "" {
 		outputPath = ctx.SessionDir + "/" + sid + ".html"
@@ -193,19 +193,19 @@ func handleExport(args []string, ctx *Context) (string, error) {
 		srcPath := ctx.SessionDir + "/" + sid + ".jsonl"
 		data, err := os.ReadFile(srcPath)
 		if err != nil {
-			return "", fmt.Errorf("cannot read session: %w", err)
+			return "", fmt.Errorf("Failed to export session: %w", err)
 		}
 		if err := os.WriteFile(outputPath, data, 0644); err != nil {
-			return "", fmt.Errorf("cannot write export: %w", err)
+			return "", fmt.Errorf("Failed to export session: %w", err)
 		}
-		return fmt.Sprintf("Session exported (JSONL) to: %s", outputPath), nil
+		return fmt.Sprintf("Session exported to: %s", outputPath), nil
 	}
 	// HTML export
 	html := exportSessionToHTML(sid, ctx)
 	if err := os.WriteFile(outputPath, []byte(html), 0644); err != nil {
-		return "", fmt.Errorf("cannot write export: %w", err)
+		return "", fmt.Errorf("Failed to export session: %w", err)
 	}
-	return fmt.Sprintf("Session exported (HTML) to: %s", outputPath), nil
+	return fmt.Sprintf("Session exported to: %s", outputPath), nil
 }
 
 func exportSessionToHTML(sid string, ctx *Context) string {
@@ -241,7 +241,7 @@ func escapeHTML(s string) string {
 // Returns IMPORT:<path> sentinel so the caller can switch sessions.
 func handleImport(args []string, ctx *Context) (string, error) {
 	if len(args) < 1 {
-		return "", fmt.Errorf("usage: /import <file>")
+		return "", fmt.Errorf("Usage: /import <path.jsonl>")
 	}
 	path := args[0]
 	data, err := os.ReadFile(path)
@@ -275,13 +275,13 @@ func handleImport(args []string, ctx *Context) (string, error) {
 func handleShare(ctx *Context) (string, error) {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return "", fmt.Errorf(
-			"GitHub CLI (gh) is not installed, or use /export and share manually via https://gist.github.com",
+			"GitHub CLI (gh) is not installed. Install it from https://cli.github.com/",
 		)
 	}
 	auth := exec.Command("gh", "auth", "status")
 	if err := auth.Run(); err != nil {
 		return "",
-			fmt.Errorf("GitHub CLI not logged in. Run 'gh auth login' first, or use /export to share manually")
+			fmt.Errorf("GitHub CLI is not logged in. Run 'gh auth login' first.")
 	}
 	tmpFile := ctx.SessionDir + "/" + ctx.CurrentSessionID + "_share.html"
 	html := exportSessionToHTML(ctx.CurrentSessionID, ctx)
@@ -294,13 +294,19 @@ func handleShare(ctx *Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to create gist: %w", err)
 	}
-	return fmt.Sprintf("Shared as secret gist: %s", strings.TrimSpace(string(out))), nil
+			gistURL := strings.TrimSpace(string(out))
+		gistID := gistURL
+		if idx := strings.LastIndex(gistURL, "/"); idx >= 0 {
+			gistID = gistURL[idx+1:]
+		}
+		previewURL := "https://xihu.share/" + gistID
+		return fmt.Sprintf("Share URL: %s\nGist: %s", previewURL, gistURL), nil
 }
 
 // handleCopy copies the last assistant message to the system clipboard.
 func handleCopy(ctx *Context) (string, error) {
 	if len(ctx.Messages) == 0 {
-		return "", fmt.Errorf("no messages to copy yet")
+		return "", fmt.Errorf("No agent messages to copy yet.")
 	}
 	var lastText string
 	for i := len(ctx.Messages) - 1; i >= 0; i-- {
@@ -310,7 +316,7 @@ func handleCopy(ctx *Context) (string, error) {
 		}
 	}
 	if lastText == "" {
-		return "", fmt.Errorf("no assistant message to copy yet")
+		return "", fmt.Errorf("No agent messages to copy yet.")
 	}
 	cmd := findClipCmd()
 	if cmd != nil {
@@ -343,7 +349,7 @@ func handleName(args []string, ctx *Context) (string, error) {
 		if ctx.SessionName != "" {
 			return fmt.Sprintf("Session name: %s", ctx.SessionName), nil
 		}
-		return "", fmt.Errorf("usage: /name <display_name>")
+		return "", fmt.Errorf("Usage: /name <name>")
 	}
 	name := strings.Join(args, " ")
 	ctx.SessionName = name
@@ -351,7 +357,7 @@ func handleName(args []string, ctx *Context) (string, error) {
 	if err := os.WriteFile(nameFile, []byte(name), 0644); err != nil {
 		return "", fmt.Errorf("failed to save session name: %w", err)
 	}
-	return fmt.Sprintf("Session %s named: %s", ctx.CurrentSessionID, name), nil
+	return fmt.Sprintf("Session name set: %s", name), nil
 }
 
 // handleSession shows detailed session statistics.
@@ -528,7 +534,7 @@ func handleNew(ctx *Context) (string, error) {
 
 func handleCompact(ctx *Context) (string, error) {
 	if len(ctx.Messages) < 2 {
-		return "", fmt.Errorf("nothing to compact (need at least 2 messages)")
+		return "", fmt.Errorf("Nothing to compact (no messages yet)")
 	}
 	if ctx.IsCompacting {
 		return "", fmt.Errorf("compaction already in progress")
@@ -545,10 +551,10 @@ func handleResume(args []string, ctx *Context) (string, error) {
 
 func handleReload(ctx *Context) (string, error) {
 	if ctx.IsStreaming {
-		return "", fmt.Errorf("wait for current response to finish before reloading")
+		return "", fmt.Errorf("Wait for the current response to finish before reloading.")
 	}
 	if ctx.IsCompacting {
-		return "", fmt.Errorf("wait for compaction to finish before reloading")
+		return "", fmt.Errorf("Wait for compaction to finish before reloading.")
 	}
 	return "RELOAD", nil
 }

@@ -126,6 +126,7 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 	}
 
 	var lastError error
+	var lastStopReason string // Anthropic stop_reason preserved across turns
 	retryAttempt := 0
 	for turn := 0; turn < maxTurns; turn++ {
 		// Drain steering queue FIRST (before checking context cancellation).
@@ -157,7 +158,7 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 		if l.Config.TransformContext != nil {
 			beforeLen := len(workMessages)
 			if l.EventBus != nil {
-				l.EventBus.Emit(events.CompactionStart())
+				l.EventBus.Emit(events.CompactionStart("auto"))
 			}
 			workMessages = l.Config.TransformContext(messages, "")
 			if l.EventBus != nil {
@@ -169,7 +170,7 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 						summary = l.LastCompactionResult.Summary
 						l.LastCompactionResult = nil // reset after use
 					}
-					l.EventBus.Emit(events.CompactionEnd(tokensBefore, summary))
+					l.EventBus.Emit(events.CompactionEnd(tokensBefore, summary, false, "auto"))
 				}
 			}
 		}
@@ -193,10 +194,26 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 			// Check if retryable
 			if l.Config.MaxRetries > 0 && retryAttempt < l.Config.MaxRetries {
 				retryAttempt++
+				delayMs := 2000 * (1 << (retryAttempt - 1)) // exponential backoff: 2s, 4s, 8s...
 				if l.EventBus != nil {
-					l.EventBus.Emit(events.AutoRetryStart(retryAttempt, l.Config.MaxRetries))
+					l.EventBus.Emit(events.AutoRetryStart(retryAttempt, l.Config.MaxRetries, delayMs))
+				}
+				// TS pi-mono: actual countdown delay with cancellation support
+				select {
+				case <-time.After(time.Duration(delayMs) * time.Millisecond):
+					// delay elapsed, proceed with retry
+				case <-ctx.Done():
+					// user aborted during retry countdown (TS pi-mono: abortRetry)
+					if l.EventBus != nil {
+						l.EventBus.Emit(events.AutoRetryEnd(false, retryAttempt, "Retry cancelled"))
+					}
+					return "", messages, nil
 				}
 				continue // retry on next turn
+			}
+			// Emit retry end failure if retries were attempted but exhausted (TS pi-mono)
+			if retryAttempt > 0 && l.EventBus != nil {
+				l.EventBus.Emit(events.AutoRetryEnd(false, retryAttempt, err.Error()))
 			}
 			// Emit agent_end
 			if l.EventBus != nil {
@@ -215,6 +232,7 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 		var toolCalls []types.ToolCall
 		var totalUsage types.Usage
 		var outputStarted bool
+		lastStopReason = "" // reset per turn
 
 		// Bridge LLM stream events to EventBus
 		for event := range eventsCh {
@@ -284,6 +302,9 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 						))
 					}
 				}
+				if event.StopReason != "" {
+					lastStopReason = event.StopReason
+				}
 			case "stop":
 				// done
 		case "error":
@@ -327,7 +348,7 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 		// Check stop condition after this turn
 		if l.Config.StopCondition != nil && l.Config.StopCondition(messages, fullText) {
 			if l.EventBus != nil {
-				l.EventBus.Emit(events.AgentEnd("stop_condition", &totalUsage))
+				l.EventBus.Emit(events.AgentEnd("stop_condition", &totalUsage, lastStopReason))
 			}
 			return fullText, messages, nil
 		}
@@ -342,7 +363,7 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 				continue // follow-up messages waiting; continue the loop
 			}
 			if l.EventBus != nil {
-				l.EventBus.Emit(events.AgentEnd("complete", &totalUsage))
+				l.EventBus.Emit(events.AgentEnd("complete", &totalUsage, lastStopReason))
 			}
 			return fullText, messages, nil
 		}
@@ -359,7 +380,7 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 	}
 
 	if l.EventBus != nil {
-		l.EventBus.Emit(events.AgentEnd("max_turns", nil))
+		l.EventBus.Emit(events.AgentEnd("max_turns", nil, lastStopReason))
 	}
 
 	if lastError != nil {
@@ -643,6 +664,15 @@ func (l *Loop) Interrupt(message string) {
 func (l *Loop) Steer(message string) {
 	select {
 	case l.SteeringQueue <- message:
+	default:
+	}
+}
+
+// FollowUp injects a follow-up message for after the agent finishes the current
+// turn. TS pi-mono equivalent: Alt+Enter queues message for later delivery.
+func (l *Loop) FollowUp(message string) {
+	select {
+	case l.FollowUpQueue <- message:
 	default:
 	}
 }

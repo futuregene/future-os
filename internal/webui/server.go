@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -13,10 +14,10 @@ import (
 	"sync"
 	"time"
 
+	agentsession "github.com/huichen/xihu/internal/agentsession"
 	"github.com/huichen/xihu/internal/commands"
 	"github.com/huichen/xihu/internal/engine"
 	"github.com/huichen/xihu/internal/session"
-	"github.com/huichen/xihu/internal/tools"
 	"github.com/huichen/xihu/pkg/types"
 )
 
@@ -30,10 +31,10 @@ type ServerOptions struct {
 }
 
 type Server struct {
-	mu       sync.RWMutex
-	mux      *http.ServeMux
-	sessMgr  *session.Manager
-	opts     ServerOptions
+	mu          sync.RWMutex
+	mux         *http.ServeMux
+	sessMgr     *session.Manager
+	opts        ServerOptions
 	settingsDir string
 }
 
@@ -94,6 +95,56 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// createAgentSession creates an AgentSession from the server options.
+func (s *Server) createAgentSession(sessionID string) (*agentsession.AgentSession, *session.Session, error) {
+	// Create or load session
+	var sess *session.Session
+	if sessionID != "" {
+		var err error
+		sess, err = s.sessMgr.Load(sessionID, ".")
+		if err != nil {
+			sess = &session.Session{
+				ID:      sessionID,
+				CWD:     ".",
+				Model:   s.opts.Model,
+				BaseURL: s.opts.BaseURL,
+			}
+		}
+	} else {
+		sess = &session.Session{
+			ID:        session.GenerateID(),
+			CWD:       ".",
+			Model:     s.opts.Model,
+			BaseURL:   s.opts.BaseURL,
+			CreatedAt: time.Now(),
+		}
+	}
+
+	// Create engine
+	eng, err := engine.NewEngine(engine.EngineOptions{
+		BaseURL:        s.opts.BaseURL,
+		APIKey:         s.opts.APIKey,
+		Model:          s.opts.Model,
+		CWD:            ".",
+		SessionManager: s.sessMgr,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("engine error: %w", err)
+	}
+	eng.Session = sess
+
+	// Create AgentSession
+	as, err := agentsession.New(agentsession.AgentSessionConfig{
+		Engine: eng,
+		CWD:    ".",
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("agentsession error: %w", err)
+	}
+
+	return as, sess, nil
+}
+
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", 405)
@@ -109,27 +160,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create or load session
-	var sess *session.Session
-	if req.SessionID != "" {
-		var err error
-		sess, err = s.sessMgr.Load(req.SessionID, ".")
-		if err != nil {
-			sess = &session.Session{
-				ID:      req.SessionID,
-				CWD:     ".",
-				Model:   s.opts.Model,
-				BaseURL: s.opts.BaseURL,
-			}
-		}
-	} else {
-		sess = &session.Session{
-			ID:        session.GenerateID(),
-			CWD:       ".",
-			Model:     s.opts.Model,
-			BaseURL:   s.opts.BaseURL,
-			CreatedAt: time.Now(),
-		}
+	as, sess, err := s.createAgentSession(req.SessionID)
+	if err != nil {
+		s.writeJSON(w, map[string]string{"type": "error", "content": err.Error()})
+		return
 	}
 
 	// Check for slash command
@@ -155,25 +189,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create provider via engine for consistency
-	eng, err := engine.NewEngine(engine.EngineOptions{
-		BaseURL:        s.opts.BaseURL,
-		APIKey:         s.opts.APIKey,
-		Model:          s.opts.Model,
-		CWD:            ".",
-		SessionManager: s.sessMgr,
-	})
-	if err != nil {
-		s.writeJSON(w, map[string]string{"type": "error", "content": fmt.Sprintf("engine error: %v", err)})
-		return
-	}
-	eng.Session = sess
-
-	loop := eng.Loop
+	loop := as.Loop()
 	loop.SystemPrompt = "You are pi, a coding agent. Be concise and direct."
-	if len(loop.Tools) == 0 {
-		loop.Tools = tools.AllTools()
-	}
 
 	// Build messages
 	var messages []types.Message
@@ -200,7 +217,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "data: {\"type\":\"session\",\"id\":%q}\n\n", sess.ID)
 	flusher.Flush()
 
-	finalText, finalMessages, err := loop.RunStreamingWithMessages(r.Context(), messages, func(text string) {
+	ctx := r.Context()
+	finalText, finalMessages, err := loop.RunStreamingWithMessages(ctx, messages, func(text string) {
 		data, _ := json.Marshal(map[string]string{"type": "text", "content": text})
 		fmt.Fprintf(w, "data: %s\n\n", data)
 		flusher.Flush()
@@ -313,3 +331,4 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 var _ = io.Discard
 var _ = log.Default
+var _ = context.Background

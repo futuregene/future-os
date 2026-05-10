@@ -11,6 +11,7 @@ type Header struct {
 	width    int
 	expanded bool
 	accent   string
+	version  string
 	hints    string
 
 	// Dynamic expanded-mode key hints (set by app from keybindings)
@@ -22,8 +23,8 @@ type Header struct {
 }
 
 // NewHeader creates a new Header component.
-func NewHeader(accentColor string) Header {
-	return Header{accent: accentColor}
+func NewHeader(accentColor, version string) Header {
+	return Header{accent: accentColor, version: version}
 }
 
 // SetWidth updates the header width.
@@ -82,10 +83,10 @@ func (h Header) View() string {
 }
 
 func (h Header) renderCompact(accent, dim lipgloss.Style, divider string) string {
-	logo := accent.Render("xihu")
+	logo := accent.Render("xihu") + dim.Render(" v"+h.version)
 	hintText := h.hints
 	if hintText == "" {
-		hintText = "Esc interrupt  Ctrl+C clear  / commands  ! bash  Ctrl+H help  Ctrl+O tools"
+		hintText = "Esc interrupt · Ctrl+C clear · / commands · ! bash · Ctrl+H help · Ctrl+O tools"
 	}
 	hints := dim.Render(hintText)
 	return lipgloss.JoinVertical(lipgloss.Top, logo+"  "+hints, divider)
@@ -114,7 +115,7 @@ func (h Header) renderExpanded(accent, dim lipgloss.Style, divider string) strin
 	}
 
 	var sb strings.Builder
-	sb.WriteString(accent.Render("xihu") + dim.Render(" — AI coding assistant"))
+	sb.WriteString(accent.Render("xihu") + dim.Render(" v"+h.version+" — AI coding assistant"))
 	sb.WriteByte('\n')
 	sb.WriteString(dim.Render("Nav:   ") + nav)
 	sb.WriteByte('\n')

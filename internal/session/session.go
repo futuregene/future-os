@@ -72,6 +72,7 @@ type Session struct {
 	BaseURL           string         `json:"base_url"`
 	Name              string         `json:"name,omitempty"`
 	ParentSessionID string `json:"parent_session_id,omitempty"` // session ID this was forked from
+	LeafID            string         `json:"leaf_id,omitempty"` // explicit leaf pointer (tree navigation)
 	Entries           []SessionEntry `json:"entries"`
 	CreatedAt         time.Time      `json:"created_at"`
 	UpdatedAt         time.Time      `json:"updated_at"`
@@ -145,6 +146,11 @@ func (m *Manager) sessionDir(cwd string) string {
 // sessionPath returns the full path for a session's JSONL file.
 func (m *Manager) sessionPath(cwd, id string) string {
 	return filepath.Join(m.sessionDir(cwd), id+".jsonl")
+}
+
+// SessionFilePath returns the full path for a session's JSONL file (exported).
+func (m *Manager) SessionFilePath(cwd, id string) string {
+	return m.sessionPath(cwd, id)
 }
 
 // ModelChangeEntry creates a model_change entry.
@@ -313,6 +319,53 @@ func (m *Manager) List(cwd string) ([]Session, error) {
 	return sessions, nil
 }
 
+// ListAll lists all sessions across all CWD directories (TS pi-mono: SessionManager.listAll).
+func (m *Manager) ListAll() ([]Session, error) {
+	if err := os.MkdirAll(m.Dir, 0755); err != nil {
+		return nil, err
+	}
+
+	cwdDirs, err := os.ReadDir(m.Dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var sessions []Session
+	for _, cwdEntry := range cwdDirs {
+		if !cwdEntry.IsDir() {
+			continue
+		}
+		cwdPath := filepath.Join(m.Dir, cwdEntry.Name())
+		entries, err := os.ReadDir(cwdPath)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			if filepath.Ext(entry.Name()) != ".jsonl" {
+				continue
+			}
+			s, err := m.loadFromPath(filepath.Join(cwdPath, entry.Name()))
+			if err != nil || s == nil {
+				continue
+			}
+			sessions = append(sessions, *s)
+		}
+	}
+
+	// Sort by UpdatedAt descending
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[j].UpdatedAt.Before(sessions[i].UpdatedAt)
+	})
+
+	return sessions, nil
+}
+
 // Load loads a session by ID and CWD.
 func (m *Manager) Load(id, cwd string) (*Session, error) {
 	path := m.sessionPath(cwd, id)
@@ -455,6 +508,7 @@ func (m *Manager) AddEntry(s *Session, entry SessionEntry) error {
 
 	// Update in-memory state
 	s.Entries = append(s.Entries, entry)
+	s.LeafID = entry.ID // TS pi-mono: leafId tracks last appended entry
 	s.UpdatedAt = time.Now()
 
 	return nil
@@ -570,6 +624,71 @@ func BuildContext(entries []SessionEntry) []types.Message {
 
 		default:
 			// Convert to types.Message (user, assistant, tool)
+			msg := entryToMessage(entry)
+			messages = append(messages, msg)
+		}
+	}
+
+	return messages
+}
+
+// BuildContextFromLeaf is like BuildContext but starts from an explicit leaf ID
+// instead of auto-detecting the latest leaf. Used for tree navigation.
+func BuildContextFromLeaf(entries []SessionEntry, leafID string) []types.Message {
+	if len(entries) == 0 || leafID == "" {
+		return BuildContext(entries)
+	}
+
+	byID := make(map[string]*SessionEntry, len(entries))
+	for i := range entries {
+		byID[entries[i].ID] = &entries[i]
+	}
+
+	leafEntry, ok := byID[leafID]
+	if !ok {
+		return BuildContext(entries)
+	}
+
+	// Walk from explicit leaf to root
+	chain := ForEachEntry(entries, leafEntry.ID)
+
+	// Build messages from root to leaf, handling compaction
+	var messages []types.Message
+	skipUntil := ""
+
+	for i := len(chain) - 1; i >= 0; i-- {
+		entry := chain[i]
+
+		if skipUntil != "" {
+			if entry.ID == skipUntil {
+				skipUntil = ""
+			} else {
+				continue
+			}
+		}
+
+		switch entry.Type {
+		case EntryTypeCompaction:
+			sysContent, _ := json.Marshal([]types.TextContent{
+				{Type: "text", Text: entry.Summary},
+			})
+			messages = append(messages, types.Message{
+				Role:    "system",
+				Content: sysContent,
+			})
+
+			var meta struct {
+				FirstKeptEntryID string `json:"first_kept_entry_id"`
+			}
+			if err := json.Unmarshal(entry.Content, &meta); err == nil && meta.FirstKeptEntryID != "" {
+				skipUntil = meta.FirstKeptEntryID
+			}
+
+		case EntryTypeModelChange, EntryTypeLabel,
+			EntryTypeSessionInfo, EntryTypeSystem:
+			// Skip metadata entries
+
+		default:
 			msg := entryToMessage(entry)
 			messages = append(messages, msg)
 		}
