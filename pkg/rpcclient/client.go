@@ -1,4 +1,4 @@
-package sdk
+package rpcclient
 
 import (
 	"bufio"
@@ -26,7 +26,7 @@ import (
 // The client spawns `xihu --mode rpc` as a subprocess, sends JSONL commands
 // on stdin, and receives JSONL responses/events on stdout.
 type Client struct {
-	opts   ClientOptions
+	opts   Options
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
@@ -46,9 +46,9 @@ type Client struct {
 	mu     sync.Mutex
 }
 
-// NewClient creates a new RPC client with the given options.
+// New creates a new RPC client with the given options.
 // Mirrors: new RpcClient(options)
-func NewClient(opts ClientOptions) *Client {
+func New(opts Options) *Client {
 	return &Client{
 		opts:   opts,
 		reader: newJSONLReader(),

@@ -1,10 +1,10 @@
-// Package sdk provides the Go RPC client for interacting with xihu in RPC mode.
+// Package rpcclient provides the Go RPC client for interacting with xihu in RPC mode.
 // It mirrors the pi-mono TypeScript RpcClient class (rpc-client.ts) with all
 // 29 commands and helper methods (waitForIdle, collectEvents, promptAndWait).
 //
 // Usage:
 //
-//	client := sdk.NewClient(sdk.ClientOptions{
+//	client := rpcclient.New(rpcclient.Options{
 //		Provider: "openai",
 //		Model:    "gpt-4o",
 //	})
@@ -22,7 +22,7 @@
 //
 //	// Query state
 //	state, _ := client.GetState()
-package sdk
+package rpcclient
 
 import (
 	"encoding/json"
@@ -32,8 +32,8 @@ import (
 // Client Options — mirrors pi-mono RpcClientOptions
 // =============================================================================
 
-// ClientOptions configures the RPC client.
-type ClientOptions struct {
+// Options configures the RPC client.
+type Options struct {
 	// CLI path to the xihu binary. If empty, uses "xihu" from PATH.
 	CliPath string
 

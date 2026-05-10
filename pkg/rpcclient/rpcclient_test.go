@@ -1,4 +1,4 @@
-package sdk
+package rpcclient
 
 import (
 	"encoding/json"
@@ -555,7 +555,7 @@ func TestJSONLReaderIgnoresNonJSON(t *testing.T) {
 // =============================================================================
 
 func TestNewClient(t *testing.T) {
-	client := NewClient(ClientOptions{
+	client := New(Options{
 		Provider: "openai",
 		Model:    "gpt-4o",
 	})
