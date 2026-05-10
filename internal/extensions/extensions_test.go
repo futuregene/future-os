@@ -106,7 +106,7 @@ func TestExtensionRunnerAllEvents(t *testing.T) {
 	runner.EmitInput("user input")
 	runner.EmitContext(42)
 	runner.EmitSessionStart()
-	runner.EmitSessionShutdown()
+	runner.EmitSessionShutdown("test")
 
 	close(ch)
 
@@ -214,7 +214,7 @@ func TestAllEventsEmitted(t *testing.T) {
 	runner.EmitBeforeProviderRequest(map[string]string{"model": "gpt-4o"})
 	runner.EmitAfterProviderResponse(200)
 	runner.EmitSessionStart()
-	runner.EmitSessionShutdown()
+	runner.EmitSessionShutdown("test")
 	runner.EmitSessionBeforeSwitch("/tmp/new.jsonl")
 	runner.EmitSessionBeforeFork("entry-123")
 	runner.EmitSessionBeforeCompact("be concise")
@@ -324,3 +324,175 @@ func TestExtensionRunnerManagement(t *testing.T) {
 func assertErr(msg string) error { return &testError{msg} }
 type testError struct{ msg string }
 func (e *testError) Error() string { return e.msg }
+
+// TestHandlerRegistryToolCall tests typed handler with return value.
+func TestHandlerRegistryToolCall(t *testing.T) {
+	h := NewHandlerRegistry()
+
+	blocked := false
+	h.AddToolCallHandler(func(event ToolCallEvent) *ToolCallResult {
+		blocked = true
+		return &ToolCallResult{Block: true, Reason: "not allowed"}
+	})
+
+	result := h.InvokeToolCall(ToolCallEvent{ToolName: "bash", Args: "rm -rf"})
+	if result == nil {
+		t.Fatal("expected result")
+	}
+	if !result.Block {
+		t.Error("expected block")
+	}
+	if !blocked {
+		t.Error("handler should have been called")
+	}
+}
+
+// TestHandlerRegistryToolResult tests chained tool_result handlers.
+func TestHandlerRegistryToolResult(t *testing.T) {
+	h := NewHandlerRegistry()
+
+	h.AddToolResultHandler(func(event ToolResultEvent) *ToolResultResult {
+		return &ToolResultResult{Content: event.Content + " [MODIFIED]", IsError: event.IsError}
+	})
+
+	result := h.InvokeToolResult(ToolResultEvent{ToolName: "bash", Content: "ok", IsError: false})
+	if result == nil {
+		t.Fatal("expected result")
+	}
+	if result.Content != "ok [MODIFIED]" {
+		t.Errorf("expected modified content, got %q", result.Content)
+	}
+	if result.IsError {
+		t.Error("expected no error")
+	}
+}
+
+// TestHandlerRegistryInput tests input transformation.
+func TestHandlerRegistryInput(t *testing.T) {
+	h := NewHandlerRegistry()
+
+	h.AddInputHandler(func(event InputEvent) *InputResult {
+		return &InputResult{Action: InputTransform, Text: "[" + event.Text + "]"}
+	})
+
+	result := h.InvokeInput(InputEvent{Text: "hello", Source: "interactive"})
+	if result == nil {
+		t.Fatal("expected result")
+	}
+	if result.Action != InputTransform {
+		t.Errorf("expected transform, got %s", result.Action)
+	}
+	if result.Text != "[hello]" {
+		t.Errorf("expected [hello], got %s", result.Text)
+	}
+}
+
+// TestHandlerRegistryInputHandled tests input short-circuit.
+func TestHandlerRegistryInputHandled(t *testing.T) {
+	h := NewHandlerRegistry()
+
+	h.AddInputHandler(func(event InputEvent) *InputResult {
+		return &InputResult{Action: InputHandled, Text: ""}
+	})
+
+	result := h.InvokeInput(InputEvent{Text: "hello", Source: "interactive"})
+	if result == nil {
+		t.Fatal("expected result")
+	}
+	if result.Action != InputHandled {
+		t.Errorf("expected handled, got %s", result.Action)
+	}
+}
+
+// TestHandlerRegistryBeforeAgentStart tests system prompt modification.
+func TestHandlerRegistryBeforeAgentStart(t *testing.T) {
+	h := NewHandlerRegistry()
+
+	h.AddBeforeAgentStartHandler(func(event BeforeAgentStartEvent) *BeforeAgentStartResult {
+		return &BeforeAgentStartResult{
+			SystemPrompt: event.SystemPrompt + "\n\nBe concise.",
+			Message:      event.UserMessage,
+		}
+	})
+
+	result := h.InvokeBeforeAgentStart(BeforeAgentStartEvent{
+		SystemPrompt: "You are a helpful assistant.",
+		UserMessage:  "Hello",
+	})
+	if result == nil {
+		t.Fatal("expected result")
+	}
+	if result.SystemPrompt != "You are a helpful assistant.\n\nBe concise." {
+		t.Errorf("unexpected system prompt: %q", result.SystemPrompt)
+	}
+}
+
+// TestHandlerRegistrySessionBeforeSwitch tests cancellation.
+func TestHandlerRegistrySessionBeforeSwitch(t *testing.T) {
+	h := NewHandlerRegistry()
+
+	h.AddSessionBeforeSwitchHandler(func(event SessionBeforeSwitchEvent) *SessionBeforeSwitchResult {
+		if event.TargetSessionFile == "/etc/passwd" {
+			return &SessionBeforeSwitchResult{Cancel: true}
+		}
+		return nil
+	})
+
+	result := h.InvokeSessionBeforeSwitch(SessionBeforeSwitchEvent{TargetSessionFile: "/etc/passwd"})
+	if result == nil {
+		t.Fatal("expected result")
+	}
+	if !result.Cancel {
+		t.Error("expected cancel")
+	}
+
+	result2 := h.InvokeSessionBeforeSwitch(SessionBeforeSwitchEvent{TargetSessionFile: "/tmp/ok.jsonl"})
+	if result2 != nil {
+		t.Error("expected nil result for allowed path")
+	}
+}
+
+// TestExtensionContextOn tests the On() method.
+func TestExtensionContextOn(t *testing.T) {
+	h := NewHandlerRegistry()
+	ctx := ExtensionContext{handlers: h, Logger: &noopLogger{}}
+
+	called := false
+	ctx.On("tool_call", ToolCallHandler(func(event ToolCallEvent) *ToolCallResult {
+		called = true
+		return nil // allow
+	}))
+
+	h.InvokeToolCall(ToolCallEvent{ToolName: "test"})
+	if !called {
+		t.Error("handler should have been called via On()")
+	}
+}
+
+// TestProviderRegistration tests provider registration.
+func TestProviderRegistration(t *testing.T) {
+	bus := NewEventBus()
+	ctx := NewExtensionContext(nil, nil, bus, nil, ".", nil)
+
+	err := ctx.RegisterProvider("test-provider", ProviderConfig{
+		Name:    "test",
+		BaseURL: "https://api.test.com",
+	})
+	if err != nil {
+		t.Fatalf("RegisterProvider: %v", err)
+	}
+
+	cfg, ok := GetProvider("test-provider")
+	if !ok {
+		t.Fatal("provider not found")
+	}
+	if cfg.BaseURL != "https://api.test.com" {
+		t.Errorf("unexpected base URL: %s", cfg.BaseURL)
+	}
+
+	ctx.UnregisterProvider("test-provider")
+	_, ok = GetProvider("test-provider")
+	if ok {
+		t.Error("provider should be removed")
+	}
+}

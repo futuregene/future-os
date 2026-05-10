@@ -32,6 +32,10 @@ type ExtensionRunner struct {
 
 	// loadErrors tracks load failures for diagnostic reporting.
 	loadErrors []ExtensionDiagnostic
+
+	// handlers is the typed event handler registry.
+	// ExtensionContext.On() delegates to this.
+	handlers *HandlerRegistry
 }
 
 // NewExtensionRunner creates a new ExtensionRunner with the given context and
@@ -41,9 +45,12 @@ func NewExtensionRunner(ctx ExtensionContext) *ExtensionRunner {
 	if logger == nil {
 		logger = &noopLogger{}
 	}
+	h := NewHandlerRegistry()
+	ctx.handlers = h
 	return &ExtensionRunner{
-		Context: ctx,
-		Logger:  logger,
+		Context:  ctx,
+		Logger:   logger,
+		handlers: h,
 	}
 }
 
@@ -173,14 +180,22 @@ func (r *ExtensionRunner) EmitResourcesDiscover(cwd string, reason string) {
 	}})
 }
 
-// EmitBeforeAgentStart emits the before_agent_start event.
-func (r *ExtensionRunner) EmitBeforeAgentStart(systemPrompt string, userMessage string) (modifiedPrompt string, customMessages []string) {
-	modifiedPrompt = systemPrompt
+// EmitBeforeAgentStart emits the before_agent_start event and collects handler results.
+func (r *ExtensionRunner) EmitBeforeAgentStart(systemPrompt string, userMessage string) (string, string, []string) {
 	r.Context.EventBus.Publish(Event{Name: "before_agent_start", Data: map[string]interface{}{
 		"systemPrompt": systemPrompt,
 		"userMessage":  userMessage,
 	}})
-	return modifiedPrompt, nil
+	if r.handlers != nil {
+		result := r.handlers.InvokeBeforeAgentStart(BeforeAgentStartEvent{
+			SystemPrompt: systemPrompt,
+			UserMessage:  userMessage,
+		})
+		if result != nil {
+			return result.SystemPrompt, result.Message, nil
+		}
+	}
+	return systemPrompt, userMessage, nil
 }
 
 // EmitAgentStart emits the agent_start event.
@@ -221,20 +236,159 @@ func (r *ExtensionRunner) EmitMessageEnd(role string) {
 	}})
 }
 
-// EmitToolCall emits the tool_call event before a tool executes.
-func (r *ExtensionRunner) EmitToolCall(toolName string, args interface{}) {
+// EmitToolCall emits the tool_call event and checks for blocks.
+func (r *ExtensionRunner) EmitToolCall(toolName string, args interface{}) *ToolCallResult {
 	r.Context.EventBus.Publish(Event{Name: "tool_call", Data: map[string]interface{}{
 		"tool": toolName,
 		"args": args,
 	}})
+	if r.handlers != nil {
+		return r.handlers.InvokeToolCall(ToolCallEvent{ToolName: toolName, Args: args})
+	}
+	return nil
 }
 
-// EmitToolResult emits the tool_result event after a tool executes.
-func (r *ExtensionRunner) EmitToolResult(toolName string, result string, isError bool) {
+// EmitToolResult emits the tool_result event and collects handler modifications.
+func (r *ExtensionRunner) EmitToolResult(toolName string, result string, isError bool) (string, bool) {
 	r.Context.EventBus.Publish(Event{Name: "tool_result", Data: map[string]interface{}{
 		"tool":    toolName,
 		"result":  result,
 		"isError": isError,
+	}})
+	if r.handlers != nil {
+		hr := r.handlers.InvokeToolResult(ToolResultEvent{ToolName: toolName, Content: result, IsError: isError})
+		if hr != nil {
+			return hr.Content, hr.IsError
+		}
+	}
+	return result, isError
+}
+
+// EmitInput emits the input event and collects handler transforms.
+func (r *ExtensionRunner) EmitInput(text string) (string, InputResultAction) {
+	r.Context.EventBus.Publish(Event{Name: "input", Data: map[string]interface{}{
+		"text": text,
+	}})
+	if r.handlers != nil {
+		hr := r.handlers.InvokeInput(InputEvent{Text: text, Source: "interactive"})
+		if hr != nil {
+			return hr.Text, hr.Action
+		}
+	}
+	return text, InputContinue
+}
+
+// EmitUserBash emits the user_bash event and collects handler results.
+func (r *ExtensionRunner) EmitUserBash(command string, cwd string) *UserBashResult {
+	r.Context.EventBus.Publish(Event{Name: "user_bash", Data: map[string]interface{}{
+		"command": command,
+		"cwd":     cwd,
+	}})
+	if r.handlers != nil {
+		return r.handlers.InvokeUserBash(UserBashEvent{Command: command, CWD: cwd})
+	}
+	return nil
+}
+
+// EmitModelSelect emits the model_select event via both EventBus and handlers.
+func (r *ExtensionRunner) EmitModelSelect(model string, previousModel string, source string) {
+	r.Context.EventBus.Publish(Event{Name: "model_select", Data: map[string]interface{}{
+		"model":         model,
+		"previousModel": previousModel,
+		"source":        source,
+	}})
+	if r.handlers != nil {
+		r.handlers.InvokeModelSelect(ModelSelectEvent{Model: model, PreviousModel: previousModel, Source: source})
+	}
+}
+
+// EmitThinkingLevelSelect emits the thinking_level_select event.
+func (r *ExtensionRunner) EmitThinkingLevelSelect(level string, previousLevel string) {
+	r.Context.EventBus.Publish(Event{Name: "thinking_level_select", Data: map[string]interface{}{
+		"level":         level,
+		"previousLevel": previousLevel,
+	}})
+	if r.handlers != nil {
+		r.handlers.InvokeThinkingLevelSelect(ThinkingLevelSelectEvent{Level: level, PreviousLevel: previousLevel})
+	}
+}
+
+// EmitSessionBeforeSwitch emits and checks for cancellation.
+func (r *ExtensionRunner) EmitSessionBeforeSwitch(targetSessionFile string) *SessionBeforeSwitchResult {
+	r.Context.EventBus.Publish(Event{Name: "session_before_switch", Data: map[string]interface{}{
+		"targetSessionFile": targetSessionFile,
+	}})
+	if r.handlers != nil {
+		return r.handlers.InvokeSessionBeforeSwitch(SessionBeforeSwitchEvent{TargetSessionFile: targetSessionFile})
+	}
+	return nil
+}
+
+// EmitSessionBeforeFork emits and checks for cancellation.
+func (r *ExtensionRunner) EmitSessionBeforeFork(entryID string) *SessionBeforeForkResult {
+	r.Context.EventBus.Publish(Event{Name: "session_before_fork", Data: map[string]interface{}{
+		"entryId": entryID,
+	}})
+	if r.handlers != nil {
+		return r.handlers.InvokeSessionBeforeFork(SessionBeforeForkEvent{EntryID: entryID})
+	}
+	return nil
+}
+
+// EmitSessionBeforeCompact emits and checks for cancellation.
+func (r *ExtensionRunner) EmitSessionBeforeCompact(customInstructions string) *SessionBeforeCompactResult {
+	r.Context.EventBus.Publish(Event{Name: "session_before_compact", Data: map[string]interface{}{
+		"customInstructions": customInstructions,
+	}})
+	if r.handlers != nil {
+		return r.handlers.InvokeSessionBeforeCompact(SessionBeforeCompactEvent{CustomInstructions: customInstructions})
+	}
+	return nil
+}
+
+// EmitSessionShutdown emits the session_shutdown event.
+func (r *ExtensionRunner) EmitSessionShutdown(reason string) {
+	r.Context.EventBus.Publish(Event{Name: "session_shutdown", Data: map[string]interface{}{
+		"reason": reason,
+	}})
+	if r.handlers != nil {
+		r.handlers.InvokeSessionShutdown(SessionShutdownEvent{Reason: reason})
+	}
+}
+
+// EmitSessionStart emits the session_start event.
+func (r *ExtensionRunner) EmitSessionStart() {
+	r.Context.EventBus.Publish(Event{Name: "session_start", Data: nil})
+}
+
+// EmitContext emits the context event before each LLM call.
+func (r *ExtensionRunner) EmitContext(messageCount int) {
+	r.Context.EventBus.Publish(Event{Name: "context", Data: map[string]interface{}{
+		"messageCount": messageCount,
+	}})
+	if r.handlers != nil {
+		r.handlers.InvokeContext(ContextEvent{MessageCount: messageCount})
+	}
+}
+
+// EmitBeforeProviderRequest emits the before_provider_request event.
+func (r *ExtensionRunner) EmitBeforeProviderRequest(payload interface{}) interface{} {
+	r.Context.EventBus.Publish(Event{Name: "before_provider_request", Data: map[string]interface{}{
+		"payload": payload,
+	}})
+	if r.handlers != nil {
+		result := r.handlers.InvokeBeforeProviderRequest(BeforeProviderRequestEvent{Payload: payload})
+		if result != nil {
+			return result.Payload
+		}
+	}
+	return payload
+}
+
+// EmitAfterProviderResponse emits the after_provider_response event.
+func (r *ExtensionRunner) EmitAfterProviderResponse(status int) {
+	r.Context.EventBus.Publish(Event{Name: "after_provider_response", Data: map[string]interface{}{
+		"status": status,
 	}})
 }
 
@@ -257,95 +411,17 @@ func (r *ExtensionRunner) EmitToolExecutionEnd(toolCallID string, toolName strin
 	}})
 }
 
-// EmitModelSelect emits the model_select event.
-func (r *ExtensionRunner) EmitModelSelect(model string, previousModel string, source string) {
-	r.Context.EventBus.Publish(Event{Name: "model_select", Data: map[string]interface{}{
-		"model":         model,
-		"previousModel": previousModel,
-		"source":        source,
-	}})
-}
-
-// EmitThinkingLevelSelect emits the thinking_level_select event.
-func (r *ExtensionRunner) EmitThinkingLevelSelect(level string, previousLevel string) {
-	r.Context.EventBus.Publish(Event{Name: "thinking_level_select", Data: map[string]interface{}{
-		"level":         level,
-		"previousLevel": previousLevel,
-	}})
-}
-
-// EmitUserBash emits the user_bash event.
-func (r *ExtensionRunner) EmitUserBash(command string, cwd string) {
-	r.Context.EventBus.Publish(Event{Name: "user_bash", Data: map[string]interface{}{
-		"command": command,
-		"cwd":     cwd,
-	}})
-}
-
-// EmitInput emits the input event when user submits a message.
-func (r *ExtensionRunner) EmitInput(text string) string {
-	r.Context.EventBus.Publish(Event{Name: "input", Data: map[string]interface{}{
-		"text": text,
-	}})
-	return text
-}
-
-// EmitContext emits the context event before each LLM call.
-func (r *ExtensionRunner) EmitContext(messageCount int) {
-	r.Context.EventBus.Publish(Event{Name: "context", Data: map[string]interface{}{
-		"messageCount": messageCount,
-	}})
-}
-
-// EmitBeforeProviderRequest emits the before_provider_request event.
-func (r *ExtensionRunner) EmitBeforeProviderRequest(payload interface{}) {
-	r.Context.EventBus.Publish(Event{Name: "before_provider_request", Data: map[string]interface{}{
-		"payload": payload,
-	}})
-}
-
-// EmitAfterProviderResponse emits the after_provider_response event.
-func (r *ExtensionRunner) EmitAfterProviderResponse(status int) {
-	r.Context.EventBus.Publish(Event{Name: "after_provider_response", Data: map[string]interface{}{
-		"status": status,
-	}})
-}
-
-// EmitSessionStart emits the session_start event.
-func (r *ExtensionRunner) EmitSessionStart() {
-	r.Context.EventBus.Publish(Event{Name: "session_start", Data: nil})
-}
-
-// EmitSessionShutdown emits the session_shutdown event.
-func (r *ExtensionRunner) EmitSessionShutdown() {
-	r.Context.EventBus.Publish(Event{Name: "session_shutdown", Data: nil})
-}
-
-// EmitSessionBeforeSwitch emits the session_before_switch event.
-func (r *ExtensionRunner) EmitSessionBeforeSwitch(targetSessionFile string) {
-	r.Context.EventBus.Publish(Event{Name: "session_before_switch", Data: map[string]interface{}{
-		"targetSessionFile": targetSessionFile,
-	}})
-}
-
-// EmitSessionBeforeFork emits the session_before_fork event.
-func (r *ExtensionRunner) EmitSessionBeforeFork(entryID string) {
-	r.Context.EventBus.Publish(Event{Name: "session_before_fork", Data: map[string]interface{}{
-		"entryId": entryID,
-	}})
-}
-
-// EmitSessionBeforeCompact emits the session_before_compact event.
-func (r *ExtensionRunner) EmitSessionBeforeCompact(customInstructions string) {
-	r.Context.EventBus.Publish(Event{Name: "session_before_compact", Data: map[string]interface{}{
-		"customInstructions": customInstructions,
-	}})
-}
-
 // EmitSessionCompact emits the session_compact event.
 func (r *ExtensionRunner) EmitSessionCompact(summary string) {
 	r.Context.EventBus.Publish(Event{Name: "session_compact", Data: map[string]interface{}{
 		"summary": summary,
+	}})
+}
+
+// EmitMessageUpdate emits the message_update event (token-by-token streaming).
+func (r *ExtensionRunner) EmitMessageUpdate(role string) {
+	r.Context.EventBus.Publish(Event{Name: "message_update", Data: map[string]interface{}{
+		"role": role,
 	}})
 }
 
@@ -383,7 +459,7 @@ func (r *ExtensionRunner) Invalidate(message string) {
 
 // Shutdown requests graceful shutdown of extensions.
 func (r *ExtensionRunner) Shutdown() {
-	r.EmitSessionShutdown()
+	r.EmitSessionShutdown("quit")
 }
 
 // OnError registers an extension error listener. Returns unsubscribe function.

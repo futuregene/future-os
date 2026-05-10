@@ -1651,6 +1651,9 @@ func (m AppModel) View() string {
 	// Show pending messages indicator (TS pi-mono: pending messages section)
 	pendingView := m.pendingView()
 
+	// Transient status container (TS pi-mono: statusContainer)
+	statusView := m.statusLine()
+
 	// Build widget views (above/below editor)
 	widgetAboveView := m.widgetsView(m.widgetsAbove)
 	widgetBelowView := m.widgetsView(m.widgetsBelow)
@@ -1660,6 +1663,7 @@ func (m AppModel) View() string {
 		headerView,
 		chatView,
 		pendingView,
+		statusView,
 		widgetAboveView,
 		inputView,
 		widgetBelowView,
@@ -1671,7 +1675,7 @@ func (m AppModel) View() string {
 	// Show autocomplete popover above the input
 	if m.autocomplete.Active() {
 		acView := m.autocomplete.View()
-		result = lipgloss.JoinVertical(lipgloss.Top, headerView, chatView, pendingView, acView, inputView, footerView)
+		result = lipgloss.JoinVertical(lipgloss.Top, headerView, chatView, pendingView, statusView, acView, inputView, footerView)
 	} else if m.overlay.Active() {
 		// Show overlay (modal or non-capturing)
 		overlayView := m.overlay.View()
@@ -1756,6 +1760,35 @@ func (m *AppModel) pendingView() string {
 	sb.WriteString(dimStyle.Render("↳ Alt+Up to edit all queued messages"))
 
 	return sb.String()
+}
+
+// statusLine renders the transient status container between chat and editor
+// (TS pi-mono: statusContainer — shows Working.../compaction/retry progress).
+func (m *AppModel) statusLine() string {
+	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Muted))
+
+	if m.compacting {
+		return mutedStyle.Render("  Compacting context... (Esc to cancel)")
+	}
+	if m.retryTicking {
+		msg := fmt.Sprintf("  Retrying (%d/%d) in %ds... (Esc to cancel)",
+			m.retryAttempt, m.retryMaxAttempts, m.retryDelaySec)
+		return mutedStyle.Render(msg)
+	}
+	if m.streaming && m.workingVisible {
+		msg := m.workingMessage
+		if msg == "" {
+			msg = "Working..."
+		}
+		// Use pi-mono spinner frame
+		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+		if len(m.workingFrames) > 0 {
+			frames = m.workingFrames
+		}
+		frame := frames[m.spinnerFrame%len(frames)]
+		return mutedStyle.Render("  " + frame + " " + msg + " (Esc to interrupt)")
+	}
+	return ""
 }
 
 // widgetsView renders extension widgets as text lines.
@@ -2865,10 +2898,14 @@ func (m *AppModel) runAgent(text string, myID int32) {
 						m.chat.AppendSystem("Auto-compaction cancelled")
 					}
 				} else {
-					// Show compaction summary as expandable custom_message (TS pi-mono: CompactionSummaryMessageComponent)
 					tokensBefore, _ := evt.Data["tokens_before"].(int)
 					summary, _ := evt.Data["summary"].(string)
 					if tokensBefore > 0 {
+						// TS pi-mono: clear chat and rebuild from session after compaction.
+						// rebuildChatFromSession walks the tree from the current leaf,
+						// skipping entries that were compacted away, then we append a
+						// fresh expandable compaction summary card at the end.
+						m.rebuildChatFromSession()
 						m.chat.AppendCompactionSummary(summary, tokensBefore)
 					} else {
 						m.chat.AppendSystem("Context compacted")
@@ -3937,26 +3974,27 @@ func (m *AppModel) triggerManualCompaction() {
 		// Compaction happened — get result from agent
 		tokensBefore := 0
 		summary := ""
+		firstKeptID := ""
 		if m.agent.Loop().LastCompactionResult != nil {
 			tokensBefore = m.agent.Loop().LastCompactionResult.TokensBefore
 			summary = m.agent.Loop().LastCompactionResult.Summary
+			firstKeptID = m.agent.Loop().LastCompactionResult.FirstKeptEntryID
 			m.agent.Loop().LastCompactionResult = nil
 		}
-		if m.eventBus != nil {
-			m.eventBus.Emit(events.CompactionEnd(tokensBefore, summary, false, "manual"))
-		}
 
-		// Record compaction as a session entry
+		// Record compaction as a session entry BEFORE emitting event
+		// (TS pi-mono: session entry must exist before rebuildChatFromMessages)
 		if m.session != nil && m.sessMgr != nil {
 			parentID := session.EffectiveLeafID(m.session)
-			firstKeptID := ""
-			if m.agent.Loop().LastCompactionResult != nil {
-				firstKeptID = m.agent.Loop().LastCompactionResult.FirstKeptEntryID
-			}
 			entry := session.CompactionEntry(summary, firstKeptID, parentID)
 			if err := m.sessMgr.AddEntry(m.session, entry); err != nil {
 				m.chat.AppendSystem("Warning: failed to save compaction entry: " + err.Error())
 			}
+		}
+
+		// Emit event (handler will rebuild chat from session, TS pi-mono alignment)
+		if m.eventBus != nil {
+			m.eventBus.Emit(events.CompactionEnd(tokensBefore, summary, false, "manual"))
 		}
 	} else {
 		if m.eventBus != nil {
@@ -5050,14 +5088,8 @@ func (m *AppModel) switchToSession(sid string) {
 		m.session.CWD = cwd
 	}
 
-	// Rebuild chat viewport with loaded entries
-	m.chat.Clear()
-	for _, entry := range m.session.Entries {
-		ce := sessionEntryToChatEntry(entry)
-		if ce != nil {
-			m.chat.AppendChatEntry(*ce)
-		}
-	}
+	// Rebuild chat viewport from session tree (TS pi-mono: rebuildChatFromMessages)
+	m.rebuildChatFromSession()
 
 	// Update footer
 	modelName, provider := parseModelString(m.agent.Loop().Model)
@@ -5080,6 +5112,57 @@ func (m *AppModel) switchToSession(sid string) {
 	}
 	m.chat.AppendSystem("Resumed session")
 	m.setTerminalTitle()
+}
+
+// rebuildChatFromSession clears the chat viewport and rebuilds it from session
+// entries, walking the tree from the current leaf and respecting compaction
+// boundaries (TS pi-mono: rebuildChatFromMessages / renderSessionContext).
+func (m *AppModel) rebuildChatFromSession() {
+	if m.session == nil {
+		return
+	}
+	m.chat.Clear()
+
+	// Walk the tree from the current leaf to root
+	leafID := session.EffectiveLeafID(m.session)
+	chain := session.ForEachEntry(m.session.Entries, leafID)
+	if len(chain) == 0 {
+		return
+	}
+
+	// Process root-to-leaf, respecting compaction boundaries.
+	// When a CompactionEntry is found, parse its first_kept_entry_id and
+	// skip earlier entries (they were compacted away). The compaction
+	// summary itself is rendered as a fresh card at the end, not here.
+	skipUntil := ""
+	for i := len(chain) - 1; i >= 0; i-- {
+		entry := chain[i]
+
+		if skipUntil != "" {
+			if entry.ID == skipUntil {
+				skipUntil = ""
+			} else {
+				continue
+			}
+		}
+
+		if entry.Type == session.EntryTypeCompaction {
+			if entry.Content != nil {
+				var meta struct {
+					FirstKeptEntryID string `json:"first_kept_entry_id"`
+				}
+				if err := json.Unmarshal(entry.Content, &meta); err == nil && meta.FirstKeptEntryID != "" {
+					skipUntil = meta.FirstKeptEntryID
+				}
+			}
+			continue
+		}
+
+		ce := sessionEntryToChatEntry(entry)
+		if ce != nil {
+			m.chat.AppendChatEntry(*ce)
+		}
+	}
 }
 
 // sessionEntryToChatEntry converts a session.SessionEntry to a ChatEntry for display.
@@ -6096,6 +6179,28 @@ func (b *tuiExtensionBridge) AddAutocompleteProvider(provider extensions.Autocom
 
 func (b *tuiExtensionBridge) SetToolsExpanded(expanded bool) {
 	b.program.Send(extensionSetToolsExpandedMsg{expanded: expanded})
+}
+
+func (b *tuiExtensionBridge) SetFooter(factory interface{}) {
+	// Component factory passed via program message
+}
+
+func (b *tuiExtensionBridge) SetHeader(factory interface{}) {
+	// Component factory passed via program message
+}
+
+func (b *tuiExtensionBridge) GetTheme(name string) interface{} {
+	// Theme loading via program message
+	return nil
+}
+
+func (b *tuiExtensionBridge) SetEditorComponent(factory interface{}) {
+	// Editor component replacement via program message
+}
+
+func (b *tuiExtensionBridge) GetEditorComponent() interface{} {
+	// Return current editor component factory
+	return nil
 }
 
 // cycleThinking cycles through thinking levels: off → minimal → low → medium → high → xhigh → off.

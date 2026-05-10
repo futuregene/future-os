@@ -114,6 +114,24 @@ type ExtensionUI interface {
 	// AddAutocompleteProvider registers an autocomplete provider function.
 	// The provider is called with the current query prefix and returns candidate strings.
 	AddAutocompleteProvider(provider AutocompleteProvider)
+
+	// SetFooter replaces the footer with a custom component factory.
+	// Pass nil to restore the default footer.
+	SetFooter(factory interface{})
+
+	// SetHeader replaces the header with a custom component factory.
+	// Pass nil to restore the default header.
+	SetHeader(factory interface{})
+
+	// GetTheme loads a theme by name. Returns nil if not found.
+	GetTheme(name string) interface{}
+
+	// SetEditorComponent replaces the entire editor component.
+	// Pass nil to restore the default editor.
+	SetEditorComponent(factory interface{})
+
+	// GetEditorComponent returns the current custom editor factory, or nil.
+	GetEditorComponent() interface{}
 }
 
 // ThemeInfo describes an available theme for GetAllThemes.
@@ -139,6 +157,11 @@ func (n *noopUI) Confirm(string, string, *ExtensionUIDialogOptions) (bool, error
 	func (n *noopUI) GetToolsExpanded() bool    { return false }
 	func (n *noopUI) SetToolsExpanded(bool)     {}
 	func (n *noopUI) AddAutocompleteProvider(AutocompleteProvider) {}
+func (n *noopUI) SetFooter(interface{})                        {}
+func (n *noopUI) SetHeader(interface{})                        {}
+func (n *noopUI) GetTheme(string) interface{}                                   { return nil }
+func (n *noopUI) SetEditorComponent(interface{})                                {}
+func (n *noopUI) GetEditorComponent() interface{}                               { return nil }
 func (n *noopUI) Input(string, string, *ExtensionUIDialogOptions) (string, error)    { return "", nil }
 func (n *noopUI) Editor(string, string) (string, error)                              { return "", nil }
 func (n *noopUI) Notify(string, string)                                              {}
@@ -379,6 +402,26 @@ type SourceInfo struct {
 	BaseDir string `json:"baseDir,omitempty"`
 }
 
+// ProviderConfig mirrors pi-mono's ProviderConfig for LLM provider registration.
+type ProviderConfig struct {
+	Name        string            `json:"name,omitempty"`
+	BaseURL     string            `json:"baseUrl,omitempty"`
+	APIKey      string            `json:"apiKey,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	Models      []ProviderModel   `json:"models,omitempty"`
+}
+
+// ProviderModel mirrors pi-mono's ProviderModelConfig.
+type ProviderModel struct {
+	ID            string `json:"id"`
+	Name          string `json:"name,omitempty"`
+	ContextWindow int    `json:"contextWindow"`
+	Reasoning     bool   `json:"reasoning"`
+}
+
+// Package-level provider registration
+var providerRegistry = map[string]ProviderConfig{}
+
 // ExtensionContext provides extensions with access to xihu internals and
 // registration methods for tools, slash commands, and prompts.
 type ExtensionContext struct {
@@ -405,8 +448,99 @@ type ExtensionContext struct {
 	// Set by the engine after construction; nil-safe to call (no-ops if nil).
 	Actions *ExtensionActions
 
+	// handlers is the shared HandlerRegistry for typed event handlers with return values.
+	// Set by ExtensionRunner on Init.
+	handlers *HandlerRegistry
+
 	// registry is the shared extension registry (set internally).
 	registry *Registry
+}
+
+// On registers a typed event handler that can modify/cancel events.
+// Mirrors pi-mono's pi.on("event", handler) pattern.
+//
+// Supported events: tool_call, tool_result, input, context, before_provider_request,
+// before_agent_start, message_end, user_bash, model_select, thinking_level_select,
+// session_before_switch, session_before_fork, session_before_compact, session_shutdown.
+//
+// Returns an unsubscribe function.
+func (ctx ExtensionContext) On(event string, handler interface{}) func() {
+	if ctx.handlers == nil {
+		return func() {} // no-op if no registry
+	}
+	switch event {
+	case "tool_call":
+		if h, ok := handler.(ToolCallHandler); ok {
+			ctx.handlers.AddToolCallHandler(h)
+			return func() {} // TODO: support unregister
+		}
+	case "tool_result":
+		if h, ok := handler.(ToolResultHandler); ok {
+			ctx.handlers.AddToolResultHandler(h)
+			return func() {}
+		}
+	case "input":
+		if h, ok := handler.(InputHandler); ok {
+			ctx.handlers.AddInputHandler(h)
+			return func() {}
+		}
+	case "context":
+		if h, ok := handler.(ContextHandler); ok {
+			ctx.handlers.AddContextHandler(h)
+			return func() {}
+		}
+	case "before_provider_request":
+		if h, ok := handler.(BeforeProviderRequestHandler); ok {
+			ctx.handlers.AddBeforeProviderRequestHandler(h)
+			return func() {}
+		}
+	case "before_agent_start":
+		if h, ok := handler.(BeforeAgentStartHandler); ok {
+			ctx.handlers.AddBeforeAgentStartHandler(h)
+			return func() {}
+		}
+	case "message_end":
+		if h, ok := handler.(MessageEndHandler); ok {
+			ctx.handlers.AddMessageEndHandler(h)
+			return func() {}
+		}
+	case "user_bash":
+		if h, ok := handler.(UserBashHandler); ok {
+			ctx.handlers.AddUserBashHandler(h)
+			return func() {}
+		}
+	case "model_select":
+		if h, ok := handler.(ModelSelectHandler); ok {
+			ctx.handlers.AddModelSelectHandler(h)
+			return func() {}
+		}
+	case "thinking_level_select":
+		if h, ok := handler.(ThinkingLevelSelectHandler); ok {
+			ctx.handlers.AddThinkingLevelSelectHandler(h)
+			return func() {}
+		}
+	case "session_before_switch":
+		if h, ok := handler.(SessionBeforeSwitchHandler); ok {
+			ctx.handlers.AddSessionBeforeSwitchHandler(h)
+			return func() {}
+		}
+	case "session_before_fork":
+		if h, ok := handler.(SessionBeforeForkHandler); ok {
+			ctx.handlers.AddSessionBeforeForkHandler(h)
+			return func() {}
+		}
+	case "session_before_compact":
+		if h, ok := handler.(SessionBeforeCompactHandler); ok {
+			ctx.handlers.AddSessionBeforeCompactHandler(h)
+			return func() {}
+		}
+	case "session_shutdown":
+		if h, ok := handler.(SessionShutdownHandler); ok {
+			ctx.handlers.AddSessionShutdownHandler(h)
+			return func() {}
+		}
+	}
+	return func() {}
 }
 
 // NewExtensionContext creates a new ExtensionContext with the given components.
@@ -474,6 +608,18 @@ func (ctx ExtensionContext) RegisterFlag(name string, description string, flagTy
 // extension, or nil if the flag is not found.
 func (ctx ExtensionContext) GetFlag(name string) interface{} {
 	return ctx.registry.GetFlag(name)
+}
+
+// RegisterProvider registers an LLM provider configuration.
+// Mirrors pi-mono's registerProvider(name, config).
+func (ctx ExtensionContext) RegisterProvider(name string, config ProviderConfig) error {
+	return ctx.registry.RegisterProvider(name, config)
+}
+
+// UnregisterProvider removes a registered provider.
+// Mirrors pi-mono's unregisterProvider(name).
+func (ctx ExtensionContext) UnregisterProvider(name string) {
+	ctx.registry.UnregisterProvider(name)
 }
 
 // AddAutocompleteProvider registers an autocomplete provider that supplies

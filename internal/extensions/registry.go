@@ -374,3 +374,37 @@ func AddAutocompleteProvider(provider AutocompleteProvider) {
 func GetAllAutocompleteProviders() []AutocompleteProvider {
 	return globalRegistry.GetAllAutocompleteProviders()
 }
+
+// ---------------------------------------------------------------------------
+// Provider registration
+// ---------------------------------------------------------------------------
+
+// RegisterProvider registers an LLM provider configuration.
+func (r *Registry) RegisterProvider(name string, config ProviderConfig) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	providerRegistry[name] = config
+	return nil
+}
+
+// UnregisterProvider removes a registered provider.
+func (r *Registry) UnregisterProvider(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(providerRegistry, name)
+}
+
+// GetProvider returns a registered provider by name.
+func GetProvider(name string) (ProviderConfig, bool) {
+	cfg, ok := providerRegistry[name]
+	return cfg, ok
+}
+
+// GetAllProviders returns all registered providers.
+func GetAllProviders() map[string]ProviderConfig {
+	result := make(map[string]ProviderConfig)
+	for k, v := range providerRegistry {
+		result[k] = v
+	}
+	return result
+}
