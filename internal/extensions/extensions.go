@@ -116,18 +116,30 @@ type ExtensionUI interface {
 	AddAutocompleteProvider(provider AutocompleteProvider)
 
 	// SetFooter replaces the footer with a custom component factory.
-	// Pass nil to restore the default footer.
+	// factory is a func() FooterComponent. Pass nil to restore the default footer.
+	// FooterComponent must implement: View(width int) string.
 	SetFooter(factory interface{})
 
 	// SetHeader replaces the header with a custom component factory.
-	// Pass nil to restore the default header.
+	// factory is a func() HeaderComponent. Pass nil to restore the default header.
+	// HeaderComponent must implement: View(width int) string.
 	SetHeader(factory interface{})
 
 	// GetTheme loads a theme by name. Returns nil if not found.
 	GetTheme(name string) interface{}
 
 	// SetEditorComponent replaces the entire editor component.
-	// Pass nil to restore the default editor.
+	// factory is a func() EditorComponent. Pass nil to restore the default editor.
+	// EditorComponent must implement:
+	//   Init() tea.Cmd
+	//   Update(msg tea.Msg) (tea.Model, tea.Cmd)
+	//   View() string
+	//   Value() string
+	//   SetValue(string)
+	//   Reset()
+	//   Focus() tea.Cmd
+	//   Blur()
+	//   SetWidth(int), SetHeight(int), Height() int, Empty() bool
 	SetEditorComponent(factory interface{})
 
 	// GetEditorComponent returns the current custom editor factory, or nil.

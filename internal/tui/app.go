@@ -229,6 +229,12 @@ type AppModel struct {
 	overlay      *components.Overlay
 	autocomplete *components.Autocomplete
 
+	// Custom components provided by extensions (nil = use built-in)
+	customFooter       FooterComponent
+	customHeader       HeaderComponent
+	customEditor       EditorComponent
+	customEditorNeedsInit bool // true when factory set but instance not yet created
+
 	// Agent state
 	agent   *agentsession.AgentSession
 	session *session.Session
@@ -635,22 +641,37 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 	case tea.WindowSizeMsg:
 		// Clear on shrink: if terminal shrank, clear editor
 		if m.clearOnShrink && (msg.Width < m.width || msg.Height < m.height) {
-			if !m.input.Empty() {
+			if m.customEditor != nil {
+				if !m.customEditor.Empty() {
+					m.customEditor.Reset()
+				}
+			} else if !m.editorEmpty() {
 				m.input.Reset()
 			}
 		}
 		m.width = msg.Width
 		m.height = msg.Height
 		m.header.SetWidth(msg.Width)
-		m.input.SetHeight(msg.Height)
-		editorHeight := m.input.Height()
-		footerHeight := 3
+		if m.customHeader != nil {
+			m.customHeader.SetWidth(msg.Width)
+		}
+		if m.customEditor != nil {
+			m.customEditor.SetWidth(msg.Width - 4)
+			m.customEditor.SetHeight(msg.Height)
+		} else {
+			m.input.SetHeight(msg.Height)
+			m.input.SetWidth(msg.Width - 4)
+		}
+		editorHeight := m.editorHeight()
+		if m.customFooter != nil {
+			m.customFooter.SetWidth(msg.Width)
+		}
+		footerHeight := m.footerHeight()
 		headerHeight := 2
-		if m.header.Expanded() {
+		if m.customHeader == nil && m.header.Expanded() {
 			headerHeight = 7
 		}
 		m.chat.SetSize(msg.Width, msg.Height-editorHeight-footerHeight-headerHeight)
-		m.input.SetWidth(msg.Width - 4)
 		m.footer.SetWidth(msg.Width)
 		m.overlay.SetTermSize(msg.Width, msg.Height)
 		return m, nil
@@ -675,7 +696,11 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 		// Bubble Tea v1.3.10+ already decodes paste events and sets Key.Paste = true.
 		// Route paste content through the editor's Paste method for large-paste markers.
 		if k := tea.Key(msg); k.Paste && len(k.Runes) > 0 {
-			m.input.Paste(string(k.Runes))
+			if m.customEditor != nil {
+				m.customEditor.SetValue(string(k.Runes))
+			} else {
+				m.input.Paste(string(k.Runes))
+			}
 			return m, nil
 		}
 
@@ -695,7 +720,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 				m.quitting = true
 				return m, tea.Quit
 			case m.keybindings.Matches(ks, GlobalClear):
-				if !m.input.Empty() {
+				if !m.editorEmpty() {
 					m.input.Reset()
 					return m, nil
 				}
@@ -710,11 +735,11 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 					return m, nil
 				}
 			case m.keybindings.Matches(ks, GlobalExit):
-				if !m.streaming && !m.compacting && m.input.Empty() {
+				if !m.streaming && !m.compacting && m.editorEmpty() {
 					m.quitting = true
 					return m, tea.Quit
 				}
-				if !m.input.Empty() {
+				if !m.editorEmpty() {
 					_, cmd := m.input.Update(msg)
 					return m, cmd
 				}
@@ -724,13 +749,13 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 				if m.header.Expanded() {
 					headerHeight = 7
 				}
-				editorHeight := m.input.Height()
-				footerHeight := 3
-				m.chat.SetSize(m.width, m.height-editorHeight-footerHeight-headerHeight)
-				return m, nil
-			case m.keybindings.Matches(ks, GlobalToggleTools):
-				m.chat.ToggleAllTools()
-				return m, nil
+			editorHeight := m.editorHeight()
+			footerHeight := m.footerHeight()
+			m.chat.SetSize(m.width, m.height-editorHeight-footerHeight-headerHeight)
+			return m, nil
+		case m.keybindings.Matches(ks, GlobalToggleTools):
+			m.chat.ToggleAllTools()
+			return m, nil
 			case m.keybindings.Matches(ks, GlobalToggleThinking):
 				m.chat.HideAllThinking = !m.chat.HideAllThinking
 				visible := "hidden"
@@ -777,7 +802,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 				return m, tea.Quit
 			}
 			m.lastCtrlCTime = now
-			if !m.input.Empty() {
+			if !m.editorEmpty() {
 				m.input.Reset()
 			}
 			return m, nil
@@ -785,24 +810,28 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 			// TS pi-mono: Suspend to background
 			return m, tea.Suspend
 		case "ctrl+d":
-			if !m.streaming && !m.compacting && m.input.Empty() {
+			if !m.streaming && !m.compacting && m.editorEmpty() {
 				m.quitting = true
 				return m, tea.Quit
 			}
 			// Forward to editor for delete-char-forward when editor has content
-			if !m.input.Empty() {
+			if !m.editorEmpty() {
 				_, cmd := m.input.Update(msg)
 				return m, cmd
 			}
 		case "ctrl+h":
 			// Toggle header expanded/collapsed (TS pi-mono: ExpandableText header)
-			m.header.Toggle()
+			if m.customHeader != nil {
+				// Custom header — just re-layout
+			} else {
+				m.header.Toggle()
+			}
 			headerHeight := 2
-			if m.header.Expanded() {
+			if m.customHeader == nil && m.header.Expanded() {
 				headerHeight = 7
 			}
-			editorHeight := m.input.Height()
-			footerHeight := 3
+			editorHeight := m.editorHeight()
+			footerHeight := m.footerHeight()
 			m.chat.SetSize(m.width, m.height-editorHeight-footerHeight-headerHeight)
 			return m, nil
 		case "ctrl+o":
@@ -852,7 +881,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 				return m, nil
 			}
 			// Double-escape with empty editor: trigger tree or fork (TS pi-mono)
-			if m.input.Empty() && m.doubleEscapeAction != "none" {
+			if m.editorEmpty() && m.doubleEscapeAction != "none" {
 				now := time.Now()
 				if now.Sub(m.lastEscapeTime) < 500*time.Millisecond {
 					m.lastEscapeTime = time.Time{}
@@ -973,7 +1002,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 		case "g":
 			// gg: jump to top on double-g within 500ms
 			// Only intercept when editor is empty (otherwise user is typing "g" as text)
-			if m.input.Empty() {
+			if m.editorEmpty() {
 				now := time.Now()
 				if now.Sub(m.lastGTime) < 500*time.Millisecond {
 					m.lastGTime = time.Time{}
@@ -1340,14 +1369,27 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 
 	case extensionEditorTextMsg:
 		if msg.isSet {
-			m.input.SetValue(msg.text)
+			if m.customEditor != nil {
+				m.customEditor.SetValue(msg.text)
+			} else {
+				m.input.SetValue(msg.text)
+			}
 		} else {
-			msg.respCh <- m.input.Value()
+			if m.customEditor != nil {
+				msg.respCh <- m.customEditor.Value()
+			} else {
+				msg.respCh <- m.input.Value()
+			}
 		}
 		return m, nil
 
 	case extensionPasteMsg:
-		m.input.Paste(msg.text)
+		if m.customEditor != nil {
+			// Custom editors don't have Paste, fall back to SetValue
+			m.customEditor.SetValue(msg.text)
+		} else {
+			m.input.Paste(msg.text)
+		}
 		return m, nil
 
 	case extensionWidgetMsg:
@@ -1437,6 +1479,42 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 		}
 		return m, nil
 
+	// ── Extension Component Replacement ────────────────────────────────────
+
+	case extSetFooterMsg:
+		if msg.factory != nil {
+			m.customFooter = msg.factory()
+		} else {
+			m.customFooter = nil
+		}
+		return m, nil
+
+	case extSetHeaderMsg:
+		if msg.factory != nil {
+			m.customHeader = msg.factory()
+		} else {
+			m.customHeader = nil
+		}
+		return m, nil
+
+	case extSetEditorMsg:
+		if msg.factory != nil {
+			m.customEditor = msg.factory()
+			m.customEditorNeedsInit = true
+		} else {
+			if m.customEditor != nil {
+				m.customEditor.Blur()
+			}
+			m.customEditor = nil
+			m.customEditorNeedsInit = false
+		}
+		return m, nil
+
+	case extGetEditorMsg:
+		// Return nil — extensions store their own factory reference.
+		msg.respCh <- nil
+		return m, nil
+
 	case appendSystemMsg:
 		m.chat.AppendSystem(string(msg))
 		return m, nil
@@ -1495,9 +1573,22 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 		return m, nil
 	}
 
-	// Route to input editor
+	// Route to input editor (custom or built-in)
 	var cmd tea.Cmd
-	*m.input, cmd = m.input.Update(msg)
+	if m.customEditor != nil {
+		// Init custom editor on first Update after instantiation
+		if m.customEditorNeedsInit {
+			m.customEditorNeedsInit = false
+			cmd = m.customEditor.Init()
+		}
+		var next tea.Model
+		next, cmd = m.customEditor.Update(msg)
+		if ec, ok := next.(EditorComponent); ok {
+			m.customEditor = ec
+		}
+	} else {
+		*m.input, cmd = m.input.Update(msg)
+	}
 
 	// After editor update, check for slash mode and update autocomplete
 	if m.input.IsSlashMode() {
@@ -1644,9 +1735,9 @@ func (m AppModel) View() string {
 	}
 
 	chatView := m.chat.View()
-	headerView := m.header.View()
-	inputView := m.input.View()
-	footerView := m.footer.View()
+	headerView := m.renderHeader()
+	inputView := m.renderEditor()
+	footerView := m.renderFooter()
 
 	// Show pending messages indicator (TS pi-mono: pending messages section)
 	pendingView := m.pendingView()
@@ -1703,6 +1794,70 @@ func (m AppModel) View() string {
 	}
 
 	return result
+}
+
+// renderHeader returns the rendered header, using custom component if set.
+func (m *AppModel) renderHeader() string {
+	if m.customHeader != nil {
+		return m.customHeader.View()
+	}
+	return m.header.View()
+}
+
+// renderFooter returns the rendered footer, using custom component if set.
+func (m *AppModel) renderFooter() string {
+	if m.customFooter != nil {
+		return m.customFooter.View()
+	}
+	return m.footer.View()
+}
+
+// renderEditor returns the rendered editor, using custom component if set.
+func (m *AppModel) renderEditor() string {
+	if m.customEditor != nil {
+		return m.customEditor.View()
+	}
+	return m.input.View()
+}
+
+// editorHeight returns the current editor height in rows.
+func (m *AppModel) editorHeight() int {
+	if m.customEditor != nil {
+		return m.customEditor.Height()
+	}
+	return m.input.Height()
+}
+
+// editorEmpty returns true when the editor has no content.
+func (m *AppModel) editorEmpty() bool {
+	if m.customEditor != nil {
+		return m.customEditor.Empty()
+	}
+	return m.editorEmpty()
+}
+
+// footerHeight returns the current footer height in rows.
+// Default footer is 3 lines (2 info lines + optional extension line).
+// Custom footer components report their own height.
+func (m *AppModel) footerHeight() int {
+	if m.customFooter != nil {
+		// Custom footer View() height — we count newlines + 1
+		view := m.customFooter.View()
+		lines := 0
+		for _, r := range view {
+			if r == '\n' {
+				lines++
+			}
+		}
+		if view != "" {
+			lines++
+		}
+		return lines
+	}
+	if len(m.extensionStatuses) > 0 {
+		return 3
+	}
+	return 2
 }
 
 // ─── Pending Messages ──────────────────────────────────────────────────────
@@ -6182,11 +6337,19 @@ func (b *tuiExtensionBridge) SetToolsExpanded(expanded bool) {
 }
 
 func (b *tuiExtensionBridge) SetFooter(factory interface{}) {
-	// Component factory passed via program message
+	b.program.Send(extSetFooterMsg{factory: nil})
+	// Cast factory to FooterFactory if possible
+	if f, ok := factory.(func() FooterComponent); ok {
+		b.program.Send(extSetFooterMsg{factory: FooterFactory(f)})
+	}
 }
 
 func (b *tuiExtensionBridge) SetHeader(factory interface{}) {
-	// Component factory passed via program message
+	if f, ok := factory.(func() HeaderComponent); ok {
+		b.program.Send(extSetHeaderMsg{factory: HeaderFactory(f)})
+	} else {
+		b.program.Send(extSetHeaderMsg{factory: nil})
+	}
 }
 
 func (b *tuiExtensionBridge) GetTheme(name string) interface{} {
@@ -6195,12 +6358,17 @@ func (b *tuiExtensionBridge) GetTheme(name string) interface{} {
 }
 
 func (b *tuiExtensionBridge) SetEditorComponent(factory interface{}) {
-	// Editor component replacement via program message
+	if f, ok := factory.(func() EditorComponent); ok {
+		b.program.Send(extSetEditorMsg{factory: EditorFactory(f)})
+	} else {
+		b.program.Send(extSetEditorMsg{factory: nil})
+	}
 }
 
 func (b *tuiExtensionBridge) GetEditorComponent() interface{} {
-	// Return current editor component factory
-	return nil
+	respCh := make(chan EditorFactory, 1)
+	b.program.Send(extGetEditorMsg{respCh: respCh})
+	return <-respCh
 }
 
 // cycleThinking cycles through thinking levels: off → minimal → low → medium → high → xhigh → off.
