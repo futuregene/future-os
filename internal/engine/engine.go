@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/huichen/xihu/internal/agent"
+	"github.com/huichen/xihu/internal/apiregistry"
 	"github.com/huichen/xihu/internal/compaction"
 	"github.com/huichen/xihu/internal/extensions"
 	"github.com/huichen/xihu/internal/llm"
+	"github.com/huichen/xihu/internal/modelregistry"
 	"github.com/huichen/xihu/internal/session"
 	"github.com/huichen/xihu/internal/settings"
 	"github.com/huichen/xihu/internal/tools"
@@ -149,18 +151,20 @@ func (o *EngineOptions) applyDefaults() {
 type Engine struct {
 	Provider       types.LLMProvider
 	Model          string
+	ModelInfo      types.Model        // full model metadata from registry
 	Config         AgentConfig
 	Tools          []types.AgentTool
 	Session        *session.Session
 	SessionManager *session.Manager
 	Settings       *settings.Settings
 	Loop           *agent.Loop
+	ModelRegistry  *modelregistry.Registry
 	// ExtensionRunner manages loaded extensions (nil if no extensions loaded).
 	ExtensionRunner *extensions.ExtensionRunner
 }
 
 // NewEngine creates a new Engine with the given options. It:
-//  1. Auto-detects the provider (Anthropic vs OpenAI) from BaseURL.
+//  1. Resolves the model via ModelRegistry.
 //  2. Loads and merges settings (global + project).
 //  3. Creates or resumes a session.
 //  4. Sets up the agent loop with all configuration.
@@ -169,16 +173,62 @@ type Engine struct {
 func NewEngine(opts EngineOptions) (*Engine, error) {
 	opts.applyDefaults()
 
-	// 1. Auto-detect provider from BaseURL
-	provider := detectProvider(opts.BaseURL, opts.APIKey)
+	// 0. Initialize model registry with embedded catalog
+	mreg := modelregistry.New()
 
-	// Resolve thinking budget for the provider
+	// 1. Resolve model — try explicit provider/model, then fall back to base URL detection
+	var modelInfo types.Model
+	var resolved bool
+
+	if opts.Model != "" {
+		modelInfo, resolved = mreg.Resolve(opts.Model)
+	}
+
+	if !resolved && opts.BaseURL != "" {
+		// Fall back: try to find a model matching the base URL's provider
+		api := apiregistry.LookupAPI(opts.BaseURL)
+		for _, m := range mreg.GetAll() {
+			if m.API == string(api) {
+				modelInfo = m
+				resolved = true
+				break
+			}
+		}
+	}
+
+	if !resolved {
+		// Last resort: construct a minimal model from base URL
+		modelInfo = types.Model{
+			ID:       opts.Model,
+			Provider: providerFromURL(opts.BaseURL),
+			API:      string(apiregistry.LookupAPI(opts.BaseURL)),
+			BaseURL:  opts.BaseURL,
+		}
+		if modelInfo.ID == "" {
+			modelInfo.ID = modelregistry.DefaultModel(modelInfo.Provider)
+		}
+	}
+
+	// Apply provider overrides to base URL if registered
+	if ov, ok := mreg.GetProviderOverride(modelInfo.Provider); ok && ov.BaseURL != "" {
+		modelInfo.BaseURL = ov.BaseURL
+	}
+
+	// 2. Create LLM provider via API registry
+	api := apiregistry.API(modelInfo.API)
+	factory, err := apiregistry.Get(api)
+	if err != nil {
+		return nil, fmt.Errorf("resolve provider for API %q (model %s): %w", api, modelInfo.ID, err)
+	}
+	provider := factory(modelInfo.BaseURL, opts.APIKey, nil)
+
+	// Resolve thinking budget for OpenAI-compatible clients
 	thinkingBudget := thinkingLevelToBudget(opts.ThinkingLevel)
 	if cl, ok := provider.(*llm.Client); ok {
 		cl.ThinkingBudget = thinkingBudget
 	}
 
-	// 2. Load/merge settings
+	// 3. Load/merge settings
 	s := opts.Settings
 	if s == nil {
 		var err error
@@ -202,7 +252,7 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 		opts.Model = s.DefaultModel
 	}
 
-	// 3. Build AgentConfig
+	// 4. Build AgentConfig
 	cfg := AgentConfig{
 		CWD:                        opts.CWD,
 		SystemPrompt:               opts.SystemPrompt,
@@ -214,7 +264,7 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 	}
 	cfg = cfg.Default()
 
-	// 4. Resolve tools
+	// 5. Resolve tools
 	toolList := opts.Tools
 	noTools := opts.NoTools == "all"
 	if noTools {
@@ -223,7 +273,7 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 		toolList = CodingTools()
 	}
 
-	// 5. Set up session manager and session
+	// 6. Set up session manager and session
 	sessMgr := opts.SessionManager
 	if sessMgr == nil {
 		sessMgr = session.NewManager(session.DefaultDir(opts.CWD))
@@ -233,11 +283,11 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 		ID:        session.GenerateID(),
 		CWD:       opts.CWD,
 		Model:     opts.Model,
-		BaseURL:   opts.BaseURL,
+		BaseURL:   modelInfo.BaseURL,
 		CreatedAt: time.Now(),
 	}
 
-	// 6. Build the agent loop
+	// 7. Build the agent loop
 	loop := &agent.Loop{
 		Provider:      provider,
 		Model:         opts.Model,
@@ -264,16 +314,17 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 		}
 	}
 
-	// 7. Load extensions
+	// 8. Load extensions (with provider registration wiring)
 	var extRunner *extensions.ExtensionRunner
 	if !opts.NoExtensions {
-		// Auto-discover extension paths if none explicitly provided
 		extPaths := opts.ExtensionPaths
 		if len(extPaths) == 0 {
 			extPaths = extensions.DiscoverExtensionPaths(opts.CWD)
 		}
 		if len(extPaths) > 0 {
 			extCtx := extensions.NewExtensionContext(sessMgr, s, extensions.NewEventBus(), nil, opts.CWD, nil)
+			// Wire provider registry into extension context
+			extCtx.ModelRegistry = mreg
 			runner, err := extensions.Run(extPaths, extCtx)
 			if err != nil {
 				if opts.Verbose {
@@ -308,12 +359,14 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 	return &Engine{
 		Provider:        provider,
 		Model:           opts.Model,
+		ModelInfo:       modelInfo,
 		Config:          cfg,
 		Tools:           toolList,
 		Session:         sess,
 		SessionManager:  sessMgr,
 		Settings:        s,
 		Loop:            loop,
+		ModelRegistry:   mreg,
 		ExtensionRunner: extRunner,
 	}, nil
 }
@@ -322,13 +375,36 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 // Provider auto-detection
 // ---------------------------------------------------------------------------
 
-// detectProvider returns the appropriate LLMProvider for the given base URL.
-// Anthropic if the URL contains "anthropic.com", otherwise OpenAI-compatible.
-func detectProvider(baseURL, apiKey string) types.LLMProvider {
+// providerFromURL heuristically extracts a provider name from a base URL.
+func providerFromURL(baseURL string) string {
 	if strings.Contains(baseURL, "anthropic.com") {
-		return llm.NewAnthropicClient(baseURL, apiKey)
+		return "anthropic"
 	}
-	return llm.NewClient(baseURL, apiKey)
+	if strings.Contains(baseURL, "openai.com") {
+		return "openai"
+	}
+	if strings.Contains(baseURL, "deepseek.com") {
+		return "deepseek"
+	}
+	if strings.Contains(baseURL, "googleapis.com") || strings.Contains(baseURL, "generativelanguage") {
+		return "google"
+	}
+	if strings.Contains(baseURL, "aliyuncs.com") {
+		return "alibaba"
+	}
+	if strings.Contains(baseURL, "x.ai") {
+		return "xai"
+	}
+	if strings.Contains(baseURL, "moonshot.cn") {
+		return "moonshot"
+	}
+	if strings.Contains(baseURL, "bigmodel.cn") {
+		return "zhipu"
+	}
+	if strings.Contains(baseURL, "minimax.chat") || strings.Contains(baseURL, "minimaxi.com") {
+		return "minimax"
+	}
+	return "openai"
 }
 
 // ---------------------------------------------------------------------------

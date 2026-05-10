@@ -109,12 +109,31 @@ type AgentConfig struct {
 	StopCondition func(messages []Message, lastResponse string) bool
 }
 
-// Model identifies a model
+// Model identifies a model with full metadata, mirroring TS pi-mono's Model<Api>.
 type Model struct {
-	ID       string
-	Provider string
-	API      string // "openai-completions", "anthropic-messages"
-	BaseURL  string
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+	API      string `json:"api"` // "openai-completions", "anthropic-messages", etc.
+	BaseURL  string `json:"baseUrl"`
+	ContextWindow int  `json:"contextWindow"`
+	MaxTokens     int  `json:"maxTokens"`
+	Reasoning     bool `json:"reasoning"`
+	// InputTypes lists supported input modalities: "text", "image"
+	InputTypes []string `json:"input,omitempty"`
+	// Cost per 1M tokens (0 = unknown)
+	Cost struct {
+		Input     float64 `json:"input"`
+		Output    float64 `json:"output"`
+		CacheRead float64 `json:"cacheRead"`
+		CacheWrite float64 `json:"cacheWrite"`
+	} `json:"cost,omitempty"`
+	// ThinkingLevelMap maps thinking level names to provider-specific values
+	ThinkingLevelMap map[string]interface{} `json:"thinkingLevelMap,omitempty"`
+	// Headers are custom HTTP headers added to requests for this model
+	Headers map[string]string `json:"headers,omitempty"`
+	// Compat holds provider-specific compatibility flags
+	Compat interface{} `json:"compat,omitempty"`
 }
 
 // LLMProvider abstracts streaming chat across providers

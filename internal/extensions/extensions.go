@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/huichen/xihu/internal/modelregistry"
 	"github.com/huichen/xihu/internal/session"
 	"github.com/huichen/xihu/internal/settings"
+	"github.com/huichen/xihu/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -466,6 +468,13 @@ type ExtensionContext struct {
 
 	// registry is the shared extension registry (set internally).
 	registry *Registry
+
+	// ModelRegistry is the engine-level model registry (nil if not available).
+	// Extension-registered providers are automatically synced here.
+	ModelRegistry interface {
+		RegisterProvider(name string, override modelregistry.ProviderOverride)
+		UnregisterProvider(name string)
+	}
 }
 
 // On registers a typed event handler that can modify/cancel events.
@@ -624,13 +633,36 @@ func (ctx ExtensionContext) GetFlag(name string) interface{} {
 
 // RegisterProvider registers an LLM provider configuration.
 // Mirrors pi-mono's registerProvider(name, config).
+// Also syncs to the engine-level ModelRegistry if available.
 func (ctx ExtensionContext) RegisterProvider(name string, config ProviderConfig) error {
+	if ctx.ModelRegistry != nil {
+		// Convert extension ProviderModel to modelregistry types
+		override := modelregistry.ProviderOverride{
+			Name:    config.Name,
+			BaseURL: config.BaseURL,
+			APIKey:  config.APIKey,
+			Headers: config.Headers,
+		}
+		for _, m := range config.Models {
+			override.Models = append(override.Models, types.Model{
+				ID:            m.ID,
+				Name:          m.Name,
+				Provider:      name,
+				ContextWindow: m.ContextWindow,
+				Reasoning:     m.Reasoning,
+			})
+		}
+		ctx.ModelRegistry.RegisterProvider(name, override)
+	}
 	return ctx.registry.RegisterProvider(name, config)
 }
 
 // UnregisterProvider removes a registered provider.
 // Mirrors pi-mono's unregisterProvider(name).
 func (ctx ExtensionContext) UnregisterProvider(name string) {
+	if ctx.ModelRegistry != nil {
+		ctx.ModelRegistry.UnregisterProvider(name)
+	}
 	ctx.registry.UnregisterProvider(name)
 }
 

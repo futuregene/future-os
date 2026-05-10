@@ -329,7 +329,14 @@ func main() {
 	// ── Interactive REPL (no prompt + TTY) ─────────────────────────────────
 	if userPrompt == "" && isTerminal() {
 		availableModels := []string(nil)
-		if eng.Settings != nil {
+		// Use model registry for available models, falling back to settings.EnabledModels
+		if eng.ModelRegistry != nil {
+			all := eng.ModelRegistry.GetAll()
+			for _, m := range all {
+				availableModels = append(availableModels, m.Provider+"/"+m.ID)
+			}
+		}
+		if len(availableModels) == 0 && eng.Settings != nil {
 			availableModels = eng.Settings.EnabledModels
 		}
 		// Parse prompt templates from standard directories
