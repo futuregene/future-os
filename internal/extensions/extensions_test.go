@@ -1,9 +1,11 @@
 package extensions
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestDiscoverExtensionPaths verifies auto-discovery of extension paths.
@@ -145,4 +147,180 @@ func TestExtensionActionsSafeDefaults(t *testing.T) {
 	if ctx.Actions.SetThinkingLevel != nil {
 		ctx.Actions.SetThinkingLevel("high")
 	}
+	if ctx.Actions.GetActiveTools != nil {
+		ctx.Actions.GetActiveTools()
+	}
+	if ctx.Actions.GetAllTools != nil {
+		ctx.Actions.GetAllTools()
+	}
+	if ctx.Actions.SetActiveTools != nil {
+		ctx.Actions.SetActiveTools([]string{"bash", "read"})
+	}
+	if ctx.Actions.SetSessionName != nil {
+		ctx.Actions.SetSessionName("test-session")
+	}
+	if ctx.Actions.GetSessionName != nil {
+		ctx.Actions.GetSessionName()
+	}
+	if ctx.Actions.SendMessage != nil {
+		ctx.Actions.SendMessage("custom", map[string]string{"key": "val"}, "steer")
+	}
+	if ctx.Actions.AppendEntry != nil {
+		ctx.Actions.AppendEntry("custom", map[string]string{"key": "val"})
+	}
 }
+
+// TestAllEventsEmitted verifies all 24 event types can be emitted.
+func TestAllEventsEmitted(t *testing.T) {
+	bus := NewEventBus()
+	counts := make(map[string]int)
+	ch := make(chan Event, 100)
+
+	allEvents := []string{
+		"resources_discover", "before_agent_start", "agent_start", "agent_end",
+		"turn_start", "turn_end", "message_start", "message_end",
+		"tool_call", "tool_result", "tool_execution_start", "tool_execution_end",
+		"model_select", "thinking_level_select", "user_bash",
+		"input", "context", "before_provider_request", "after_provider_response",
+		"session_start", "session_shutdown",
+		"session_before_switch", "session_before_fork",
+		"session_before_compact", "session_compact",
+	}
+	for _, name := range allEvents {
+		bus.Subscribe(name, ch)
+	}
+
+	ctx := ExtensionContext{EventBus: bus, Logger: &noopLogger{}}
+	runner := NewExtensionRunner(ctx)
+
+	// Emit all events
+	runner.EmitResourcesDiscover("/tmp", "startup")
+	runner.EmitBeforeAgentStart("system", "hello")
+	runner.EmitAgentStart()
+	runner.EmitAgentEnd()
+	runner.EmitTurnStart(1)
+	runner.EmitTurnEnd(1)
+	runner.EmitMessageStart("user")
+	runner.EmitMessageEnd("assistant")
+	runner.EmitToolCall("bash", map[string]string{"cmd": "ls"})
+	runner.EmitToolResult("bash", "file.txt", false)
+	runner.EmitToolExecutionStart("tc1", "bash", "{}")
+	runner.EmitToolExecutionEnd("tc1", "bash", "ok", false)
+	runner.EmitModelSelect("gpt-4o", "gpt-3.5", "set")
+	runner.EmitThinkingLevelSelect("high", "medium")
+	runner.EmitUserBash("echo hello", "/tmp")
+	runner.EmitInput("hello world")
+	runner.EmitContext(42)
+	runner.EmitBeforeProviderRequest(map[string]string{"model": "gpt-4o"})
+	runner.EmitAfterProviderResponse(200)
+	runner.EmitSessionStart()
+	runner.EmitSessionShutdown()
+	runner.EmitSessionBeforeSwitch("/tmp/new.jsonl")
+	runner.EmitSessionBeforeFork("entry-123")
+	runner.EmitSessionBeforeCompact("be concise")
+	runner.EmitSessionCompact("summary text")
+
+	close(ch)
+	for range ch {
+		counts["total"]++
+	}
+
+	if counts["total"] != len(allEvents) {
+		t.Errorf("expected %d events, got %d", len(allEvents), counts["total"])
+	}
+}
+
+// TestGetAllRegisteredTools verifies tool enumeration.
+func TestGetAllRegisteredTools(t *testing.T) {
+	bus := NewEventBus()
+	ctx := ExtensionContext{EventBus: bus, Logger: &noopLogger{}}
+	runner := NewExtensionRunner(ctx)
+
+	// Register a tool via the package-level function
+	RegisterTool("test_tool", func(args json.RawMessage) (string, error) { return "ok", nil }, "A test tool", json.RawMessage(`{"type":"object"}`))
+
+	tools := runner.GetAllRegisteredTools()
+	found := false
+	for _, t := range tools {
+		if t.Name == "test_tool" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected test_tool in registered tools")
+	}
+}
+
+// TestLoadExtensionFromFactory verifies inline extension loading.
+func TestLoadExtensionFromFactory(t *testing.T) {
+	ext := LoadExtensionFromFactory(func() Extension {
+		return &ConfigExtension{
+			Manifest: ExtensionManifest{Name: "test-inline"},
+		}
+	}, "test-inline")
+
+	if ext.Name() != "test-inline" {
+		t.Errorf("expected name test-inline, got %s", ext.Name())
+	}
+
+	bus := NewEventBus()
+	ctx := ExtensionContext{EventBus: bus, Logger: &noopLogger{}}
+	if err := ext.Init(ctx); err != nil {
+		t.Errorf("Init failed: %v", err)
+	}
+	if err := ext.Deinit(); err != nil {
+		t.Errorf("Deinit failed: %v", err)
+	}
+}
+
+// TestExtensionRunnerManagement verifies management methods.
+func TestExtensionRunnerManagement(t *testing.T) {
+	bus := NewEventBus()
+	ch := make(chan Event, 10)
+	bus.Subscribe("runtime_invalidated", ch)
+
+	ctx := ExtensionContext{EventBus: bus, Logger: &noopLogger{}}
+	runner := NewExtensionRunner(ctx)
+
+	// Invalidate
+	runner.Invalidate("session switched")
+	select {
+	case ev := <-ch:
+		if ev.Name != "runtime_invalidated" {
+			t.Errorf("expected runtime_invalidated, got %s", ev.Name)
+		}
+	default:
+		t.Error("expected runtime_invalidated event")
+	}
+
+	// OnError
+	errorReceived := false
+	unsub := runner.OnError(func(diag ExtensionDiagnostic) {
+		errorReceived = true
+	})
+	runner.EmitExtensionError("test-ext", assertErr("test error"))
+	time.Sleep(10 * time.Millisecond)
+
+	if !errorReceived {
+		t.Error("expected error to be received")
+	}
+	unsub()
+
+	// Shutdown
+	ch2 := make(chan Event, 10)
+	bus.Subscribe("session_shutdown", ch2)
+	runner.Shutdown()
+	select {
+	case ev := <-ch2:
+		if ev.Name != "session_shutdown" {
+			t.Errorf("expected session_shutdown, got %s", ev.Name)
+		}
+	default:
+		t.Error("expected session_shutdown event")
+	}
+}
+
+func assertErr(msg string) error { return &testError{msg} }
+type testError struct{ msg string }
+func (e *testError) Error() string { return e.msg }

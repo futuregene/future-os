@@ -321,6 +321,12 @@ type ExtensionActions struct {
 	// SendUserMessage injects a user message (steer: interrupts; followUp: queues).
 	SendUserMessage func(content string, deliverAs string) // deliverAs: "steer" | "followUp"
 
+	// SendMessage injects a custom-typed message (mirrors TS sendMessage).
+	SendMessage func(customType string, content interface{}, deliverAs string)
+
+	// AppendEntry appends a custom session entry (mirrors TS appendEntry).
+	AppendEntry func(customType string, data interface{})
+
 	// SetModel switches the active model.
 	SetModel func(provider, modelID string) error
 
@@ -329,6 +335,48 @@ type ExtensionActions struct {
 
 	// SetThinkingLevel sets the thinking level.
 	SetThinkingLevel func(level string)
+
+	// GetActiveTools returns the names of currently active tools.
+	GetActiveTools func() []string
+
+	// GetAllTools returns all registered tools with metadata.
+	GetAllTools func() []ToolInfo
+
+	// SetActiveTools sets the active tool names.
+	SetActiveTools func(toolNames []string)
+
+	// SetSessionName sets the session display name.
+	SetSessionName func(name string)
+
+	// GetSessionName returns the session display name.
+	GetSessionName func() string
+
+	// Exec executes a command (mirrors TS exec).
+	Exec func(command string, args []string, timeoutMs int) (ExecResult, error)
+}
+
+// ToolInfo mirrors pi-mono's ToolInfo: name, description, sourceInfo.
+type ToolInfo struct {
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	SourceInfo  SourceInfo `json:"sourceInfo"`
+}
+
+// ExecResult mirrors pi-mono's ExecResult.
+type ExecResult struct {
+	Stdout string `json:"stdout"`
+	Stderr string `json:"stderr"`
+	Code   int    `json:"code"`
+}
+
+// SourceInfo carries source metadata for extension resources.
+// Mirrors pi-mono's SourceInfo type.
+type SourceInfo struct {
+	Path    string `json:"path"`
+	Source  string `json:"source"`
+	Scope   string `json:"scope"`  // "user" | "project" | "temporary"
+	Origin  string `json:"origin"` // "package" | "top-level"
+	BaseDir string `json:"baseDir,omitempty"`
 }
 
 // ExtensionContext provides extensions with access to xihu internals and

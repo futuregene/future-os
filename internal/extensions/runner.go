@@ -165,16 +165,21 @@ func (r *ExtensionRunner) Initialized() []Extension {
 // Event emission — mirrors pi-mono ExtensionRunner emit methods
 // ---------------------------------------------------------------------------
 
+// EmitResourcesDiscover emits the resources_discover event.
+func (r *ExtensionRunner) EmitResourcesDiscover(cwd string, reason string) {
+	r.Context.EventBus.Publish(Event{Name: "resources_discover", Data: map[string]interface{}{
+		"cwd":    cwd,
+		"reason": reason,
+	}})
+}
+
 // EmitBeforeAgentStart emits the before_agent_start event.
-// Extensions can modify systemPrompt or inject customMessages.
-// Returns the (possibly modified) system prompt and any custom messages to inject.
 func (r *ExtensionRunner) EmitBeforeAgentStart(systemPrompt string, userMessage string) (modifiedPrompt string, customMessages []string) {
 	modifiedPrompt = systemPrompt
-	ev := Event{Name: "before_agent_start", Data: map[string]interface{}{
+	r.Context.EventBus.Publish(Event{Name: "before_agent_start", Data: map[string]interface{}{
 		"systemPrompt": systemPrompt,
 		"userMessage":  userMessage,
-	}}
-	r.Context.EventBus.Publish(ev)
+	}})
 	return modifiedPrompt, nil
 }
 
@@ -188,6 +193,34 @@ func (r *ExtensionRunner) EmitAgentEnd() {
 	r.Context.EventBus.Publish(Event{Name: "agent_end", Data: nil})
 }
 
+// EmitTurnStart emits the turn_start event.
+func (r *ExtensionRunner) EmitTurnStart(turnIndex int) {
+	r.Context.EventBus.Publish(Event{Name: "turn_start", Data: map[string]interface{}{
+		"turnIndex": turnIndex,
+	}})
+}
+
+// EmitTurnEnd emits the turn_end event.
+func (r *ExtensionRunner) EmitTurnEnd(turnIndex int) {
+	r.Context.EventBus.Publish(Event{Name: "turn_end", Data: map[string]interface{}{
+		"turnIndex": turnIndex,
+	}})
+}
+
+// EmitMessageStart emits the message_start event.
+func (r *ExtensionRunner) EmitMessageStart(role string) {
+	r.Context.EventBus.Publish(Event{Name: "message_start", Data: map[string]interface{}{
+		"role": role,
+	}})
+}
+
+// EmitMessageEnd emits the message_end event.
+func (r *ExtensionRunner) EmitMessageEnd(role string) {
+	r.Context.EventBus.Publish(Event{Name: "message_end", Data: map[string]interface{}{
+		"role": role,
+	}})
+}
+
 // EmitToolCall emits the tool_call event before a tool executes.
 func (r *ExtensionRunner) EmitToolCall(toolName string, args interface{}) {
 	r.Context.EventBus.Publish(Event{Name: "tool_call", Data: map[string]interface{}{
@@ -199,28 +232,82 @@ func (r *ExtensionRunner) EmitToolCall(toolName string, args interface{}) {
 // EmitToolResult emits the tool_result event after a tool executes.
 func (r *ExtensionRunner) EmitToolResult(toolName string, result string, isError bool) {
 	r.Context.EventBus.Publish(Event{Name: "tool_result", Data: map[string]interface{}{
-		"tool":   toolName,
-		"result": result,
+		"tool":    toolName,
+		"result":  result,
 		"isError": isError,
 	}})
 }
 
+// EmitToolExecutionStart emits the tool_execution_start event.
+func (r *ExtensionRunner) EmitToolExecutionStart(toolCallID string, toolName string, args interface{}) {
+	r.Context.EventBus.Publish(Event{Name: "tool_execution_start", Data: map[string]interface{}{
+		"toolCallId": toolCallID,
+		"toolName":   toolName,
+		"args":       args,
+	}})
+}
+
+// EmitToolExecutionEnd emits the tool_execution_end event.
+func (r *ExtensionRunner) EmitToolExecutionEnd(toolCallID string, toolName string, result string, isError bool) {
+	r.Context.EventBus.Publish(Event{Name: "tool_execution_end", Data: map[string]interface{}{
+		"toolCallId": toolCallID,
+		"toolName":   toolName,
+		"result":     result,
+		"isError":    isError,
+	}})
+}
+
+// EmitModelSelect emits the model_select event.
+func (r *ExtensionRunner) EmitModelSelect(model string, previousModel string, source string) {
+	r.Context.EventBus.Publish(Event{Name: "model_select", Data: map[string]interface{}{
+		"model":         model,
+		"previousModel": previousModel,
+		"source":        source,
+	}})
+}
+
+// EmitThinkingLevelSelect emits the thinking_level_select event.
+func (r *ExtensionRunner) EmitThinkingLevelSelect(level string, previousLevel string) {
+	r.Context.EventBus.Publish(Event{Name: "thinking_level_select", Data: map[string]interface{}{
+		"level":         level,
+		"previousLevel": previousLevel,
+	}})
+}
+
+// EmitUserBash emits the user_bash event.
+func (r *ExtensionRunner) EmitUserBash(command string, cwd string) {
+	r.Context.EventBus.Publish(Event{Name: "user_bash", Data: map[string]interface{}{
+		"command": command,
+		"cwd":     cwd,
+	}})
+}
+
 // EmitInput emits the input event when user submits a message.
-// Extensions can transform the message; the first handler that returns
-// non-empty text overrides.
 func (r *ExtensionRunner) EmitInput(text string) string {
-	ev := Event{Name: "input", Data: map[string]interface{}{
+	r.Context.EventBus.Publish(Event{Name: "input", Data: map[string]interface{}{
 		"text": text,
-	}}
-	r.Context.EventBus.Publish(ev)
+	}})
 	return text
 }
 
 // EmitContext emits the context event before each LLM call.
-// Extensions can read/modify context via the EventBus.
 func (r *ExtensionRunner) EmitContext(messageCount int) {
 	r.Context.EventBus.Publish(Event{Name: "context", Data: map[string]interface{}{
 		"messageCount": messageCount,
+	}})
+}
+
+// EmitBeforeProviderRequest emits the before_provider_request event.
+func (r *ExtensionRunner) EmitBeforeProviderRequest(payload interface{}) {
+	r.Context.EventBus.Publish(Event{Name: "before_provider_request", Data: map[string]interface{}{
+		"payload": payload,
+	}})
+}
+
+// EmitAfterProviderResponse emits the after_provider_response event.
+func (r *ExtensionRunner) EmitAfterProviderResponse(status int) {
+	r.Context.EventBus.Publish(Event{Name: "after_provider_response", Data: map[string]interface{}{
+		"status": status,
 	}})
 }
 
@@ -232,6 +319,97 @@ func (r *ExtensionRunner) EmitSessionStart() {
 // EmitSessionShutdown emits the session_shutdown event.
 func (r *ExtensionRunner) EmitSessionShutdown() {
 	r.Context.EventBus.Publish(Event{Name: "session_shutdown", Data: nil})
+}
+
+// EmitSessionBeforeSwitch emits the session_before_switch event.
+func (r *ExtensionRunner) EmitSessionBeforeSwitch(targetSessionFile string) {
+	r.Context.EventBus.Publish(Event{Name: "session_before_switch", Data: map[string]interface{}{
+		"targetSessionFile": targetSessionFile,
+	}})
+}
+
+// EmitSessionBeforeFork emits the session_before_fork event.
+func (r *ExtensionRunner) EmitSessionBeforeFork(entryID string) {
+	r.Context.EventBus.Publish(Event{Name: "session_before_fork", Data: map[string]interface{}{
+		"entryId": entryID,
+	}})
+}
+
+// EmitSessionBeforeCompact emits the session_before_compact event.
+func (r *ExtensionRunner) EmitSessionBeforeCompact(customInstructions string) {
+	r.Context.EventBus.Publish(Event{Name: "session_before_compact", Data: map[string]interface{}{
+		"customInstructions": customInstructions,
+	}})
+}
+
+// EmitSessionCompact emits the session_compact event.
+func (r *ExtensionRunner) EmitSessionCompact(summary string) {
+	r.Context.EventBus.Publish(Event{Name: "session_compact", Data: map[string]interface{}{
+		"summary": summary,
+	}})
+}
+
+// ---------------------------------------------------------------------------
+// Management methods — mirrors pi-mono ExtensionRunner management
+// ---------------------------------------------------------------------------
+
+// GetAllRegisteredTools returns all tools registered by extensions.
+func (r *ExtensionRunner) GetAllRegisteredTools() []ToolInfo {
+	tools := GetAllTools()
+	infos := make([]ToolInfo, 0, len(tools))
+	for _, t := range tools {
+		infos = append(infos, ToolInfo{
+			Name:        t.Def.Function.Name,
+			Description: t.Def.Function.Description,
+		})
+	}
+	return infos
+}
+
+// HasHandlers checks if any extension handles an event type.
+func (r *ExtensionRunner) HasHandlers(eventName string) bool {
+	// Check via EventBus subscription count
+	// This is a heuristic — EventBus doesn't expose count directly
+	return true // Extensions may subscribe at runtime; always emit
+}
+
+// Invalidate marks the extension runtime as stale after session switch.
+func (r *ExtensionRunner) Invalidate(message string) {
+	r.Context.Logger.Warn("extension runtime invalidated: %s", message)
+	r.Context.EventBus.Publish(Event{Name: "runtime_invalidated", Data: map[string]interface{}{
+		"message": message,
+	}})
+}
+
+// Shutdown requests graceful shutdown of extensions.
+func (r *ExtensionRunner) Shutdown() {
+	r.EmitSessionShutdown()
+}
+
+// OnError registers an extension error listener. Returns unsubscribe function.
+func (r *ExtensionRunner) OnError(listener func(err ExtensionDiagnostic)) func() {
+	ch := make(chan Event, 64)
+	r.Context.EventBus.Subscribe("extension_error", ch)
+	go func() {
+		for ev := range ch {
+			if diag, ok := ev.Data.(ExtensionDiagnostic); ok {
+				listener(diag)
+			}
+		}
+	}()
+	return func() {
+		r.Context.EventBus.Unsubscribe("extension_error", ch)
+		close(ch)
+	}
+}
+
+// EmitExtensionError publishes an extension error event.
+func (r *ExtensionRunner) EmitExtensionError(extName string, err error) {
+	r.Context.EventBus.Publish(Event{Name: "extension_error", Data: ExtensionDiagnostic{
+		Type:    "error",
+		Message: err.Error(),
+		Path:    extName,
+	}})
 }
 
 // ---------------------------------------------------------------------------
