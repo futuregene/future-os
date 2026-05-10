@@ -1459,15 +1459,14 @@ func (c *ChatViewport) renderBashEntry(e ChatEntry) string {
 		width = 20
 	}
 
-	// TS pi-mono: border + header dim for !! (excluded), bashMode for normal.
-	// pi-mono constructor dims both initially; updateDisplay re-creates header
-	// in bashMode regardless. We match the steady-state: only border dims for !!.
+	// TS pi-mono: border dim for !! (excluded); header in bashMode per updateDisplay.
+	// pi-mono constructor initially dims both for !! but updateDisplay (called on
+	// first output) re-creates the header in bashMode regardless of !! status.
 	borderColor := c.bashBorder
 	headerStyle := c.bashHeader
 	outputStyle := c.bashOutput
 	if e.BashExcluded {
 		borderColor = c.bashOutput.Copy()
-		headerStyle = c.bashOutput.Copy()
 	}
 
 	var sb strings.Builder

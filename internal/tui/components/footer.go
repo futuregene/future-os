@@ -289,19 +289,8 @@ func (f *Footer) buildLine2(width int) string {
 	// ── Left stats ───────────────────────────────────────────────────────
 	var statsParts []string
 
-	// Streaming indicator (TS pi-mono: animated spinner during streaming)
-	if f.streaming && f.workingVisible {
-		frames := spinnerFrames
-		if len(f.customFrames) > 0 {
-			frames = f.customFrames
-		}
-		frame := frames[f.spinnerFrame%len(frames)]
-		msg := f.workingMessage
-		if msg == "" {
-			msg = "Working..."
-		}
-		statsParts = append(statsParts, frame+" "+msg+" (Esc to interrupt)")
-	}
+	// Streaming indicator moved to statusLine() (TS pi-mono: statusContainer).
+	// Footer shows only stats + model during streaming, matching pi-mono.
 
 	if f.tokensIn > 0 {
 		statsParts = append(statsParts, "↑"+formatTokens(f.tokensIn))
