@@ -298,3 +298,94 @@ func loadPluginFile(path string, logger Logger) (Extension, error) {
 	// and plugin_loader_unsupported.go (guarded by //go:build !linux && !darwin).
 	return loadGoPlugin(path, logger)
 }
+
+// ---------------------------------------------------------------------------
+// Extension discovery — auto-detect extension paths from standard directories
+// ---------------------------------------------------------------------------
+
+// DiscoverExtensionPaths discovers extension paths from standard directories.
+// Mirrors pi-mono's discoverAndLoadExtensions:
+//   1. Global: ~/.xihu/extensions/
+//   2. Project: <cwd>/.xihu/extensions/
+//
+// Returns a deduplicated list of absolute paths that can be passed to
+// LoadExtensions. Never returns an error — missing directories are silently
+// skipped.
+func DiscoverExtensionPaths(cwd string) []string {
+	var paths []string
+	seen := make(map[string]bool)
+
+	// 1. Global extensions directory
+	homeDir, err := os.UserHomeDir()
+	if err == nil {
+		globalDir := filepath.Join(homeDir, ".xihu", "extensions")
+		discovered := discoverDir(globalDir)
+		for _, p := range discovered {
+			if !seen[p] {
+				seen[p] = true
+				paths = append(paths, p)
+			}
+		}
+	}
+
+	// 2. Project-local extensions directory
+	if cwd != "" {
+		localDir := filepath.Join(cwd, ".xihu", "extensions")
+		discovered := discoverDir(localDir)
+		for _, p := range discovered {
+			if !seen[p] {
+				seen[p] = true
+				paths = append(paths, p)
+			}
+		}
+	}
+
+	return paths
+}
+
+// discoverDir discovers extension paths within a single directory.
+// It scans for:
+//   - Direct files: *.json, *.so
+//   - Subdirectories containing extension.json or *.so
+func discoverDir(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil // directory doesn't exist — silently skip
+	}
+
+	var paths []string
+	for _, entry := range entries {
+		fullPath := filepath.Join(dir, entry.Name())
+		if entry.IsDir() {
+			// Check if subdirectory contains extension.json or *.so
+			subPaths := discoverSubDir(fullPath)
+			paths = append(paths, subPaths...)
+		} else {
+			ext := filepath.Ext(entry.Name())
+			if ext == ".json" || ext == ".so" {
+				paths = append(paths, fullPath)
+			}
+		}
+	}
+	return paths
+}
+
+// discoverSubDir discovers extension entry points within a subdirectory.
+// Returns the subdirectory path itself if it contains extension artifacts;
+// the caller (scanDirectory) will then handle the actual loading.
+func discoverSubDir(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if name == "extension.json" || strings.HasSuffix(name, ".so") {
+			return []string{dir}
+		}
+	}
+	return nil
+}

@@ -251,7 +251,7 @@ func main() {
 		MaxTurns:       cfg.MaxTurns,
 		ThinkingLevel:  thinking,
 		SystemPrompt:   builtPrompt,
-		NoTools:        args.NoTools,
+		NoTools:        resolveNoTools(args),
 		Verbose:        args.Verbose,
 		ExtensionPaths: args.Extensions,
 		NoExtensions:   args.NoExtensions,
@@ -725,4 +725,15 @@ func processSentinel(result string, eng *engine.Engine, sessMgr *session.Manager
 		fmt.Println(result)
 	}
 	return true
+}
+
+// resolveNoTools converts legacy NoTools/NoBuiltinTools flags to the string form.
+func resolveNoTools(args *Args) string {
+	if args.NoTools != "" {
+		return args.NoTools
+	}
+	if args.NoBuiltinTools {
+		return "builtin"
+	}
+	return ""
 }

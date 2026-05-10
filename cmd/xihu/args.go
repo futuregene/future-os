@@ -32,8 +32,8 @@ type Args struct {
 	SessionDir string
 
 	// Tools
-	NoTools        bool
-	NoBuiltinTools bool
+	NoTools        string // "" | "all" | "builtin"
+	NoBuiltinTools bool   // deprecated alias for --no-tools=builtin
 	Tools          []string // allowlist
 
 	// Resources
@@ -151,9 +151,10 @@ func parseArgs(raw []string) *Args {
 				a.ScopedModels = splitAndTrim(raw[i], ",")
 			}
 		case "--no-tools", "-nt":
-			a.NoTools = true
+			a.NoTools = "all"
 		case "--no-builtin-tools", "-nbt":
 			a.NoBuiltinTools = true
+			a.NoTools = "builtin"
 		case "--tools", "-t":
 			i++
 			if i < len(raw) {

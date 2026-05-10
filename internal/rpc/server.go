@@ -382,7 +382,8 @@ func (s *Server) handleCommand(cmd RpcCommand) *RpcResponse {
 	// Commands
 	// =================================================================
 	case "get_commands":
-		return success("get_commands", map[string]interface{}{"commands": []string{}})
+		cmds := as.GetCommands()
+		return success("get_commands", map[string]interface{}{"commands": cmds})
 
 	default:
 		return fail(cmd.Type, fmt.Sprintf("unknown command: %s", cmd.Type))

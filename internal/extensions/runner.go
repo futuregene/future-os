@@ -162,6 +162,79 @@ func (r *ExtensionRunner) Initialized() []Extension {
 }
 
 // ---------------------------------------------------------------------------
+// Event emission — mirrors pi-mono ExtensionRunner emit methods
+// ---------------------------------------------------------------------------
+
+// EmitBeforeAgentStart emits the before_agent_start event.
+// Extensions can modify systemPrompt or inject customMessages.
+// Returns the (possibly modified) system prompt and any custom messages to inject.
+func (r *ExtensionRunner) EmitBeforeAgentStart(systemPrompt string, userMessage string) (modifiedPrompt string, customMessages []string) {
+	modifiedPrompt = systemPrompt
+	ev := Event{Name: "before_agent_start", Data: map[string]interface{}{
+		"systemPrompt": systemPrompt,
+		"userMessage":  userMessage,
+	}}
+	r.Context.EventBus.Publish(ev)
+	return modifiedPrompt, nil
+}
+
+// EmitAgentStart emits the agent_start event.
+func (r *ExtensionRunner) EmitAgentStart() {
+	r.Context.EventBus.Publish(Event{Name: "agent_start", Data: nil})
+}
+
+// EmitAgentEnd emits the agent_end event.
+func (r *ExtensionRunner) EmitAgentEnd() {
+	r.Context.EventBus.Publish(Event{Name: "agent_end", Data: nil})
+}
+
+// EmitToolCall emits the tool_call event before a tool executes.
+func (r *ExtensionRunner) EmitToolCall(toolName string, args interface{}) {
+	r.Context.EventBus.Publish(Event{Name: "tool_call", Data: map[string]interface{}{
+		"tool": toolName,
+		"args": args,
+	}})
+}
+
+// EmitToolResult emits the tool_result event after a tool executes.
+func (r *ExtensionRunner) EmitToolResult(toolName string, result string, isError bool) {
+	r.Context.EventBus.Publish(Event{Name: "tool_result", Data: map[string]interface{}{
+		"tool":   toolName,
+		"result": result,
+		"isError": isError,
+	}})
+}
+
+// EmitInput emits the input event when user submits a message.
+// Extensions can transform the message; the first handler that returns
+// non-empty text overrides.
+func (r *ExtensionRunner) EmitInput(text string) string {
+	ev := Event{Name: "input", Data: map[string]interface{}{
+		"text": text,
+	}}
+	r.Context.EventBus.Publish(ev)
+	return text
+}
+
+// EmitContext emits the context event before each LLM call.
+// Extensions can read/modify context via the EventBus.
+func (r *ExtensionRunner) EmitContext(messageCount int) {
+	r.Context.EventBus.Publish(Event{Name: "context", Data: map[string]interface{}{
+		"messageCount": messageCount,
+	}})
+}
+
+// EmitSessionStart emits the session_start event.
+func (r *ExtensionRunner) EmitSessionStart() {
+	r.Context.EventBus.Publish(Event{Name: "session_start", Data: nil})
+}
+
+// EmitSessionShutdown emits the session_shutdown event.
+func (r *ExtensionRunner) EmitSessionShutdown() {
+	r.Context.EventBus.Publish(Event{Name: "session_shutdown", Data: nil})
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

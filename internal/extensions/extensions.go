@@ -309,6 +309,28 @@ type AutocompleteProvider func(query string) []string
 // ExtensionContext — the environment passed to extensions at Init time
 // ---------------------------------------------------------------------------
 
+// ExtensionActions provides runtime actions extensions can invoke.
+// This avoids circular imports between extensions and engine/agent.
+type ExtensionActions struct {
+	// Abort aborts the current agent operation (like Ctrl+C).
+	Abort func()
+
+	// IsIdle returns true if the agent is not currently processing.
+	IsIdle func() bool
+
+	// SendUserMessage injects a user message (steer: interrupts; followUp: queues).
+	SendUserMessage func(content string, deliverAs string) // deliverAs: "steer" | "followUp"
+
+	// SetModel switches the active model.
+	SetModel func(provider, modelID string) error
+
+	// GetThinkingLevel returns the current thinking level.
+	GetThinkingLevel func() string
+
+	// SetThinkingLevel sets the thinking level.
+	SetThinkingLevel func(level string)
+}
+
 // ExtensionContext provides extensions with access to xihu internals and
 // registration methods for tools, slash commands, and prompts.
 type ExtensionContext struct {
@@ -331,6 +353,10 @@ type ExtensionContext struct {
 	// Only available in TUI mode; nil in print/CLI mode.
 	UI ExtensionUI
 
+	// Actions provides runtime actions (abort, isIdle, sendMessage, setModel).
+	// Set by the engine after construction; nil-safe to call (no-ops if nil).
+	Actions *ExtensionActions
+
 	// registry is the shared extension registry (set internally).
 	registry *Registry
 }
@@ -349,6 +375,7 @@ func NewExtensionContext(sm *session.Manager, s *settings.Settings, bus *EventBu
 		Logger:          logger,
 		CWD:             cwd,
 		UI:              ui,
+		Actions:         &ExtensionActions{}, // safe no-ops by default
 		registry:        globalRegistry,
 	}
 }

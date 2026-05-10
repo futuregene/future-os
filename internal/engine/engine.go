@@ -120,8 +120,11 @@ type EngineOptions struct {
 	// NoExtensions disables extension loading entirely.
 	NoExtensions bool
 
-	// NoTools disables all tools if true.
-	NoTools bool
+	// NoTools controls tool visibility:
+	//   ""        — tools enabled, extensions merged
+	//   "all"     — all tools disabled
+	//   "builtin" — built-in tools only (no extension tools)
+	NoTools string
 
 	// Verbose enables verbose tool-call logging to stderr.
 	Verbose bool
@@ -201,21 +204,20 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 
 	// 3. Build AgentConfig
 	cfg := AgentConfig{
-		CWD:                       opts.CWD,
-		SystemPrompt:              opts.SystemPrompt,
-		MaxTurns:                  opts.MaxTurns,
-		ThinkingLevel:             opts.ThinkingLevel,
-		CompactionReserveTokens:   s.CompactionReserveTokens,
+		CWD:                        opts.CWD,
+		SystemPrompt:               opts.SystemPrompt,
+		MaxTurns:                   opts.MaxTurns,
+		ThinkingLevel:              opts.ThinkingLevel,
+		CompactionReserveTokens:    s.CompactionReserveTokens,
 		CompactionKeepRecentTokens: s.CompactionKeepRecentTokens,
-	}
-	if opts.NoTools {
-		cfg.NoTools = "all"
+		NoTools:                    opts.NoTools,
 	}
 	cfg = cfg.Default()
 
 	// 4. Resolve tools
 	toolList := opts.Tools
-	if opts.NoTools {
+	noTools := opts.NoTools == "all"
+	if noTools {
 		toolList = nil
 	} else if len(toolList) == 0 {
 		toolList = CodingTools()
@@ -262,19 +264,44 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 		}
 	}
 
-	// 8. Load extensions if configured
+	// 7. Load extensions
 	var extRunner *extensions.ExtensionRunner
-	if !opts.NoExtensions && len(opts.ExtensionPaths) > 0 {
-		extCtx := extensions.NewExtensionContext(sessMgr, s, extensions.NewEventBus(), nil, opts.CWD, nil)
-		runner, err := extensions.Run(opts.ExtensionPaths, extCtx)
-		if err != nil {
-			// Log but don't fail — extensions are optional
-			if opts.Verbose {
-				fmt.Fprintf(os.Stderr, "extension load warning: %v\n", err)
-			}
+	if !opts.NoExtensions {
+		// Auto-discover extension paths if none explicitly provided
+		extPaths := opts.ExtensionPaths
+		if len(extPaths) == 0 {
+			extPaths = extensions.DiscoverExtensionPaths(opts.CWD)
 		}
-		if runner != nil {
-			extRunner = runner
+		if len(extPaths) > 0 {
+			extCtx := extensions.NewExtensionContext(sessMgr, s, extensions.NewEventBus(), nil, opts.CWD, nil)
+			runner, err := extensions.Run(extPaths, extCtx)
+			if err != nil {
+				if opts.Verbose {
+					fmt.Fprintf(os.Stderr, "extension load warning: %v\n", err)
+				}
+			}
+			if runner != nil {
+				extRunner = runner
+
+				// Merge extension tools into agent loop (unless "builtin" mode)
+				if opts.NoTools != "builtin" {
+					extTools := extensions.GetAllTools()
+					toolList = append(toolList, extTools...)
+					loop.Tools = toolList
+				}
+
+				// Inject extension prompts into system prompt
+				extPrompts := extensions.GetAllPrompts()
+				if len(extPrompts) > 0 {
+					promptLines := make([]string, 0, len(extPrompts))
+					for name, tmpl := range extPrompts {
+						promptLines = append(promptLines, fmt.Sprintf("## Extension: %s\n%s", name, tmpl))
+					}
+					injectedPrompts := "\n\n<!-- BEGIN EXTENSION PROMPTS -->\n" + strings.Join(promptLines, "\n\n") + "\n<!-- END EXTENSION PROMPTS -->"
+					loop.SystemPrompt += injectedPrompts
+					loop.Config.SystemPrompt += injectedPrompts
+				}
+			}
 		}
 	}
 

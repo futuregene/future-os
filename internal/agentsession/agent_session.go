@@ -12,12 +12,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/huichen/xihu/internal/agent"
 	"github.com/huichen/xihu/internal/compaction"
 	"github.com/huichen/xihu/internal/engine"
+	"github.com/huichen/xihu/internal/extensions"
 	"github.com/huichen/xihu/internal/session"
 	"github.com/huichen/xihu/internal/tools"
 	"github.com/huichen/xihu/pkg/types"
@@ -957,4 +959,38 @@ func (s *AgentSession) GetUserMessagesForFork() []ForkMessage {
 type ForkMessage struct {
 	EntryID string `json:"entry_id"`
 	Text    string `json:"text"`
+}
+
+// SlashCommand describes a command available for invocation.
+// Mirrors pi-mono's RpcSlashCommand.
+type SlashCommand struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Source      string `json:"source"` // "extension" | "prompt" | "skill"
+}
+
+// GetCommands returns all available commands from extensions, prompts, and skills.
+// Mirrors pi-mono's getCommands().
+func (s *AgentSession) GetCommands() []SlashCommand {
+	var cmds []SlashCommand
+
+	// Extension slash commands
+	for cmdName := range extensions.GetAllSlashCommands() {
+		cmds = append(cmds, SlashCommand{
+			Name:        strings.TrimPrefix(cmdName, "/"),
+			Description: fmt.Sprintf("Extension command: %s", cmdName),
+			Source:      "extension",
+		})
+	}
+
+	// Prompt templates
+	for name := range extensions.GetAllPrompts() {
+		cmds = append(cmds, SlashCommand{
+			Name:        name,
+			Description: "Prompt template",
+			Source:      "prompt",
+		})
+	}
+
+	return cmds
 }
