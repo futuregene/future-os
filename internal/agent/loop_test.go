@@ -309,7 +309,7 @@ func TestRunStreamingWithMessages_LastMessageAssistant(t *testing.T) {
 	// Last message is from assistant — should be rejected
 	messages := []types.AgentMessage{
 		newUserAgentMessage("Hi"),
-		{Role: "assistant", Content: "Hello"},
+		{Role: "assistant", Content: []types.ContentBlock{types.TextBlock{Text: "Hello"}}},
 	}
 	ctx := context.Background()
 	_, _, err := l.RunStreamingWithMessages(ctx, messages, nil)

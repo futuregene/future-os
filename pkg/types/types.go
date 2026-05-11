@@ -10,29 +10,104 @@ import "encoding/json"
 // ---------------------------------------------------------------------------
 
 // AgentMessage represents an internal conversation message.
-// Unlike Message (which directly mirrors the LLM wire format), AgentMessage
-// uses typed content, explicit thinking/reasoning separation, and supports
-// metadata that should NOT be sent to the LLM.
+// Content uses ContentBlock interface for polymorphic blocks (text, image_url, tool_result)
+// matching TS pi-mono's ContentBlock[] union type.
 type AgentMessage struct {
-	Role    string        `json:"role"`              // "system", "user", "assistant", "tool"
-	Content string        `json:"content"`           // plain text content (user/assistant text)
-	Thinking string       `json:"thinking,omitempty"` // reasoning/thinking that stays internal
-	ToolCalls []AgentToolCall `json:"tool_calls,omitempty"` // outgoing tool calls from assistant
-	ToolCallID string     `json:"tool_call_id,omitempty"`   // tool result correlation ID
-	// Metadata is NOT sent to the LLM; it's for extensions, UI, and persistence.
-	Metadata map[string]interface{} `json:"metadata,omitempty"`
+	Role      string           `json:"role"`
+	Content   []ContentBlock   `json:"content"`
+	Thinking  string           `json:"thinking,omitempty"`
+	ToolCalls []AgentToolCall  `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // AgentToolCall is an internal tool call representation.
 type AgentToolCall struct {
-	ID       string          `json:"id"`
-	Name     string          `json:"name"`
-	Args     json.RawMessage `json:"args"`
+	ID   string          `json:"id"`
+	Name string          `json:"name"`
+	Args json.RawMessage `json:"args"`
 }
 
-// ConvertToLLM converts a slice of AgentMessages to LLM-compatible Messages.
-// System messages go first (position 0). Thinking content is stored in
-// ReasoningContent for provider-aware echo-back.
+// ─── ContentBlock interface & implementations ───────────────────────────────
+
+// ContentBlock is the interface for polymorphic message content.
+type ContentBlock interface {
+	BlockType() string
+	json.Marshaler
+}
+
+// TextBlock is a plain text content block.
+type TextBlock struct {
+	Text string `json:"text"`
+}
+
+func (b TextBlock) BlockType() string { return "text" }
+func (b TextBlock) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]string{"type": "text", "text": b.Text})
+}
+
+// ImageBlock is an image content block for multimodal models.
+type ImageBlock struct {
+	MimeType string `json:"mime_type,omitempty"`
+	Data     string `json:"data,omitempty"`
+	URL      string `json:"url,omitempty"`
+}
+
+func (b ImageBlock) BlockType() string { return "image_url" }
+func (b ImageBlock) MarshalJSON() ([]byte, error) {
+	m := map[string]interface{}{"type": "image_url"}
+	if b.URL != "" {
+		m["image_url"] = map[string]string{"url": b.URL}
+	} else {
+		m["image_url"] = map[string]string{"url": "data:" + b.MimeType + ";base64," + b.Data}
+	}
+	return json.Marshal(m)
+}
+
+// ToolResultBlock represents a tool execution result inside a message.
+type ToolResultBlock struct {
+	ToolCallID string `json:"tool_call_id"`
+	Content    string `json:"content"`
+	IsError    bool   `json:"is_error,omitempty"`
+}
+
+func (b ToolResultBlock) BlockType() string { return "tool_result" }
+func (b ToolResultBlock) MarshalJSON() ([]byte, error) {
+	m := map[string]interface{}{
+		"type":         "tool_result",
+		"tool_call_id": b.ToolCallID,
+		"content":      b.Content,
+	}
+	if b.IsError {
+		m["is_error"] = true
+	}
+	return json.Marshal(m)
+}
+
+// ─── AgentMessage helpers ───────────────────────────────────────────────────
+
+// Text returns concatenated text from all TextBlocks.
+func (m AgentMessage) Text() string {
+	var s string
+	for _, b := range m.Content {
+		if tb, ok := b.(TextBlock); ok {
+			s += tb.Text
+		}
+	}
+	return s
+}
+
+// AddText appends a TextBlock.
+func (m *AgentMessage) AddText(text string) {
+	m.Content = append(m.Content, TextBlock{Text: text})
+}
+
+// AddImage appends an ImageBlock.
+func (m *AgentMessage) AddImage(mimeType, data string) {
+	m.Content = append(m.Content, ImageBlock{MimeType: mimeType, Data: data})
+}
+
+// ConvertToLLM converts AgentMessages to LLM-compatible Messages.
 func ConvertToLLM(msgs []AgentMessage) []Message {
 	out := make([]Message, 0, len(msgs))
 	for _, m := range msgs {
@@ -49,40 +124,22 @@ func (m AgentMessage) toLLM() Message {
 		ToolCallID:       m.ToolCallID,
 	}
 
-	switch m.Role {
-	case "tool":
-		// Tool results: wrap content as text block
-		tc := TextContent{Type: "text", Text: m.Content}
-		b, _ := json.Marshal([]TextContent{tc})
+	if len(m.Content) > 0 {
+		b, _ := json.Marshal(m.Content)
 		llm.Content = b
+	}
 
-	case "assistant":
-		// Assistant: text + tool calls
-		if m.Content != "" {
-			tc := TextContent{Type: "text", Text: m.Content}
-			b, _ := json.Marshal([]TextContent{tc})
-			llm.Content = b
-		}
-		if len(m.ToolCalls) > 0 {
-			llm.ToolCalls = make([]ToolCall, len(m.ToolCalls))
-			for i, tc := range m.ToolCalls {
-				llm.ToolCalls[i] = ToolCall{
-					ID:   tc.ID,
-					Type: "function",
-					Function: ToolCallFn{
-						Name:      tc.Name,
-						Arguments: tc.Args,
-					},
-				}
+	if len(m.ToolCalls) > 0 {
+		llm.ToolCalls = make([]ToolCall, len(m.ToolCalls))
+		for i, tc := range m.ToolCalls {
+			llm.ToolCalls[i] = ToolCall{
+				ID:   tc.ID,
+				Type: "function",
+				Function: ToolCallFn{
+					Name:      tc.Name,
+					Arguments: tc.Args,
+				},
 			}
-		}
-
-	default:
-		// system, user: plain text content
-		if m.Content != "" {
-			tc := TextContent{Type: "text", Text: m.Content}
-			b, _ := json.Marshal([]TextContent{tc})
-			llm.Content = b
 		}
 	}
 
@@ -105,19 +162,39 @@ func agentMessageFromLLM(m Message) AgentMessage {
 		ToolCallID: m.ToolCallID,
 	}
 
-	// Extract text content
 	if len(m.Content) > 0 {
-		var blocks []TextContent
-		if err := json.Unmarshal(m.Content, &blocks); err == nil {
-			for _, b := range blocks {
-				if b.Type == "text" && b.Text != "" {
-					am.Content += b.Text
+		var rawBlocks []json.RawMessage
+		if err := json.Unmarshal(m.Content, &rawBlocks); err == nil {
+			for _, raw := range rawBlocks {
+				var tc struct{ Type string }
+				if json.Unmarshal(raw, &tc) != nil {
+					continue
 				}
+				switch tc.Type {
+				case "text":
+					var tb TextContent
+					if json.Unmarshal(raw, &tb) == nil && tb.Text != "" {
+						am.Content = append(am.Content, TextBlock{Text: tb.Text})
+					}
+				case "image_url":
+					var ib ImageContent
+					if json.Unmarshal(raw, &ib) == nil {
+						block := ImageBlock{MimeType: ib.MimeType, Data: ib.Data}
+						if ib.Source != nil {
+							block.URL = "data:" + ib.Source.MediaType + ";base64," + ib.Source.Data
+						}
+						am.Content = append(am.Content, block)
+					}
+				}
+			}
+		} else {
+			var s string
+			if json.Unmarshal(m.Content, &s) == nil && s != "" {
+				am.Content = append(am.Content, TextBlock{Text: s})
 			}
 		}
 	}
 
-	// Convert tool calls
 	if len(m.ToolCalls) > 0 {
 		am.ToolCalls = make([]AgentToolCall, len(m.ToolCalls))
 		for i, tc := range m.ToolCalls {
@@ -132,11 +209,6 @@ func agentMessageFromLLM(m Message) AgentMessage {
 	return am
 }
 
-// AgentMessageFromLLM converts a single LLM Message to AgentMessage.
-func AgentMessageFromLLM(m Message) AgentMessage {
-	return agentMessageFromLLM(m)
-}
-
 // Message represents a conversation message
 type Message struct {
 	Role    string          `json:"role"`
@@ -144,8 +216,6 @@ type Message struct {
 	ToolCalls []ToolCall    `json:"tool_calls,omitempty"`
 	ToolCallID string       `json:"tool_call_id,omitempty"`
 	Name       string       `json:"name,omitempty"`
-	// ReasoningContent preserves thinking/reasoning tokens that must be
-	// echoed back on subsequent API requests (required by DeepSeek, o-series, etc.)
 	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
@@ -156,11 +226,10 @@ type TextContent struct {
 }
 
 // ImageContent is an image content block for multimodal models.
-// Matches pi-mono's ImageContent type for @file image attachments.
 type ImageContent struct {
-	Type     string     `json:"type"`
-	MimeType string     `json:"mime_type,omitempty"`
-	Data     string     `json:"data,omitempty"`
+	Type     string       `json:"type"`
+	MimeType string       `json:"mime_type,omitempty"`
+	Data     string       `json:"data,omitempty"`
 	Source   *ImageSource `json:"source,omitempty"`
 }
 
@@ -173,9 +242,9 @@ type ImageSource struct {
 
 // ToolCall represents a tool call from the assistant
 type ToolCall struct {
-	ID       string          `json:"id"`
-	Type     string          `json:"type"`
-	Function ToolCallFn      `json:"function"`
+	ID       string     `json:"id"`
+	Type     string     `json:"type"`
+	Function ToolCallFn `json:"function"`
 }
 
 type ToolCallFn struct {
@@ -193,19 +262,15 @@ type Usage struct {
 }
 
 // StreamEvent is emitted during streaming.
-// Type is one of: text_start, text_delta, text_end,
-// thinking_start, thinking_delta, thinking_end,
-// toolcall_start, toolcall_delta, toolcall_end,
-// tool_call (legacy), stop, error, usage.
 type StreamEvent struct {
-	Type       string    // event type (see above)
-	Text       string    // delta text content
-	ToolCall   *ToolCall // complete tool call (tool_call / toolcall_end)
-	ToolName   string    // tool name (toolcall_start)
-	ToolID     string    // tool call ID (toolcall_start)
-	Usage      *Usage    // set when Type is "usage" (final usage stats)
-	StopReason string    // Anthropic stop_reason, mapped: "stop"|"length"|"toolUse"|"error"|"aborted" (TS pi-mono)
-	ErrorText  string    // error message when StopReason is "error" (TS pi-mono: refusal)
+	Type       string
+	Text       string
+	ToolCall   *ToolCall
+	ToolName   string
+	ToolID     string
+	Usage      *Usage
+	StopReason string
+	ErrorText  string
 }
 
 // Tool definition for the LLM
@@ -215,9 +280,9 @@ type ToolDef struct {
 }
 
 type FunctionDef struct {
-	Name        string             `json:"name"`
-	Description string             `json:"description"`
-	Parameters  json.RawMessage    `json:"parameters"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
 }
 
 // AgentTool wraps a tool definition with a handler
@@ -231,81 +296,45 @@ type AgentTool struct {
 type AgentConfig struct {
 	SystemPrompt   string
 	MaxTurns       int
-	ThinkingBudget int // tokens for thinking
-	MaxRetries     int // max auto-retry attempts (0 = no retry)
+	ThinkingBudget int
+	MaxRetries     int
 
-	// TransformContext is called before each LLM call to transform the message list.
-	// Useful for compaction, injection, or other context manipulation.
-	// The string argument is the current full response text so far.
 	TransformContext func([]Message, string) []Message
+	StopCondition    func(messages []Message, lastResponse string) bool
 
-	// StopCondition is checked after each turn. If it returns true, the loop stops early
-	// even if tool calls remain or MaxTurns hasn't been reached.
-	StopCondition func(messages []Message, lastResponse string) bool
-
-	// BeforeToolCall is called before executing each tool call.
-	// Return nil/empty to proceed normally. Return a non-empty ToolCallResult
-	// to skip execution and use the provided result/error directly.
-	// TS pi-mono: beforeToolCall hook in the 3-stage pipeline.
-	BeforeToolCall func(toolName string, toolCallID string, args json.RawMessage) *ToolCallResult
-
-	// PrepareToolCall is called before executing each tool call (after BeforeToolCall).
-	// It can transform the tool arguments (e.g., path sanitization, value coercion).
-	// Return the modified args. Return nil to use the original args unchanged.
-	// TS pi-mono: prepareToolCall stage in the 3-stage pipeline.
-	PrepareToolCall func(toolName string, args json.RawMessage) json.RawMessage
-
-	// FinalizeToolCall is called after executing each tool call (before AfterToolCall).
-	// It can transform the tool result (e.g., truncation, redaction, formatting).
-	// Return the final result and error to use.
-	// TS pi-mono: finalizeToolCall stage in the 3-stage pipeline.
-	FinalizeToolCall func(toolName string, result string, execErr error) (finalResult string, finalErr error)
-
-	// AfterToolCall is called after executing each tool call.
-	// The result can be modified by returning a non-nil ToolCallResult.
-	// TS pi-mono: afterToolCall hook in the 3-stage pipeline.
-	AfterToolCall func(toolName string, toolCallID string, args json.RawMessage, result string, execErr error) *ToolCallResult
-
-	// ToolsExecutionMode is the tool execution strategy: "parallel" (default) or "sequential".
-	// "parallel" executes multiple tool calls concurrently via goroutines.
-	// "sequential" executes them one at a time, in order.
-	// TS pi-mono: executionMode field in agent loop.
+	BeforeToolCall    func(toolName string, toolCallID string, args json.RawMessage) *ToolCallResult
+	PrepareToolCall   func(toolName string, args json.RawMessage) json.RawMessage
+	FinalizeToolCall  func(toolName string, result string, execErr error) (finalResult string, finalErr error)
+	AfterToolCall     func(toolName string, toolCallID string, args json.RawMessage, result string, execErr error) *ToolCallResult
 	ToolsExecutionMode string
 }
 
 // ToolCallResult allows hooks to override or intercept tool execution.
-// If Result is non-empty, the tool is NOT executed and Result is used as the output.
-// If IsError is true, Result is treated as an error message.
 type ToolCallResult struct {
-	Result  string // tool output (used if non-empty, skipping execution)
-	IsError bool   // treat Result as an error
+	Result  string
+	IsError bool
 }
 
-// Model identifies a model with full metadata, mirroring TS pi-mono's Model<Api>.
+// Model identifies a model with full metadata.
 type Model struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	Provider string `json:"provider"`
-	API      string `json:"api"` // "openai-completions", "anthropic-messages", etc.
+	API      string `json:"api"`
 	BaseURL  string `json:"baseUrl"`
 	ContextWindow int  `json:"contextWindow"`
 	MaxTokens     int  `json:"maxTokens"`
 	Reasoning     bool `json:"reasoning"`
-	// InputTypes lists supported input modalities: "text", "image"
 	InputTypes []string `json:"input,omitempty"`
-	// Cost per 1M tokens (0 = unknown)
 	Cost struct {
-		Input     float64 `json:"input"`
-		Output    float64 `json:"output"`
-		CacheRead float64 `json:"cacheRead"`
+		Input      float64 `json:"input"`
+		Output     float64 `json:"output"`
+		CacheRead  float64 `json:"cacheRead"`
 		CacheWrite float64 `json:"cacheWrite"`
 	} `json:"cost,omitempty"`
-	// ThinkingLevelMap maps thinking level names to provider-specific values
 	ThinkingLevelMap map[string]interface{} `json:"thinkingLevelMap,omitempty"`
-	// Headers are custom HTTP headers added to requests for this model
-	Headers map[string]string `json:"headers,omitempty"`
-	// Compat holds provider-specific compatibility flags
-	Compat interface{} `json:"compat,omitempty"`
+	Headers          map[string]string      `json:"headers,omitempty"`
+	Compat           interface{}            `json:"compat,omitempty"`
 }
 
 // LLMProvider abstracts streaming chat across providers

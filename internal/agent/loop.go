@@ -336,7 +336,7 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Ag
 
 		assistantMsg := types.AgentMessage{
 			Role:     "assistant",
-			Content:  fullText,
+			Content:  []types.ContentBlock{types.TextBlock{Text: fullText}},
 			Thinking: reasoningText,
 		}
 		// Convert LLM tool calls to agent tool calls
@@ -615,11 +615,11 @@ func (l *Loop) executeTool(tc types.ToolCall) (string, error) {
 }
 
 func newSystemAgentMessage(content string) types.AgentMessage {
-	return types.AgentMessage{Role: "system", Content: content}
+	return types.AgentMessage{Role: "system", Content: []types.ContentBlock{types.TextBlock{Text: content}}}
 }
 
 func newUserAgentMessage(content string) types.AgentMessage {
-	return types.AgentMessage{Role: "user", Content: content}
+	return types.AgentMessage{Role: "user", Content: []types.ContentBlock{types.TextBlock{Text: content}}}
 }
 
 func newToolAgentResult(callID, result string, err error) types.AgentMessage {
@@ -629,7 +629,7 @@ func newToolAgentResult(callID, result string, err error) types.AgentMessage {
 	}
 	return types.AgentMessage{
 		Role:       "tool",
-		Content:    text,
+		Content:    []types.ContentBlock{types.TextBlock{Text: text}},
 		ToolCallID: callID,
 	}
 }
