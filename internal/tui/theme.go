@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/alecthomas/chroma/v2"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -575,4 +576,41 @@ func (t *Theme) ToolTitleStyle() lipgloss.Style {
 func (t *Theme) ToolOutputStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
 		Foreground(lipgloss.Color(t.ToolOutput))
+}
+
+// ─── Chroma Style Generation ──────────────────────────────────────────────
+
+// BuildChromaStyle creates a chroma.Style from the Theme's syntax highlight colors.
+// This is available for custom renderers or future glamour integration.
+// Currently glamour uses its built-in dark/light styles with "terminal16m" formatter;
+// the Theme syntax slots are available for a future custom markdown renderer.
+func (t *Theme) BuildChromaStyle() *chroma.Style {
+	entries := chroma.StyleEntries{
+		chroma.Comment:         t.SyntaxComment,
+		chroma.CommentPreproc:  t.SyntaxComment,
+		chroma.Keyword:         t.SyntaxKeyword,
+		chroma.KeywordReserved: t.SyntaxKeyword,
+		chroma.KeywordNamespace: t.SyntaxKeyword,
+		chroma.KeywordType:     t.SyntaxType,
+		chroma.Operator:        t.SyntaxOperator,
+		chroma.Punctuation:     t.Muted,
+		chroma.Name:            t.Foreground,
+		chroma.NameBuiltin:     t.SyntaxFunction,
+		chroma.NameTag:         t.SyntaxFunction,
+		chroma.NameAttribute:   t.SyntaxVariable,
+		chroma.NameClass:       t.SyntaxType,
+		chroma.NameFunction:    t.SyntaxFunction,
+		chroma.NameDecorator:   t.SyntaxFunction,
+		chroma.LiteralNumber:   t.SyntaxNumber,
+		chroma.LiteralString:   t.SyntaxString,
+		chroma.LiteralStringEscape: t.SyntaxString,
+		chroma.GenericDeleted:  t.ErrorColor,
+		chroma.GenericInserted: t.Success,
+		chroma.Background:      "bg:" + t.MdCodeBlock,
+	}
+	style, err := chroma.NewStyle("xihu-"+t.Name, entries)
+	if err != nil {
+		return nil
+	}
+	return style
 }
