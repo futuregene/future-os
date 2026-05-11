@@ -15,7 +15,7 @@ func NewSystemMessageComponent(base *MessageComponentBase) *SystemMessageCompone
 // Render renders a system message entry.
 // Uses SystemStyle with a 2-space indent and wordWrap.
 func (c *SystemMessageComponent) Render(entry ChatEntry, width int) string {
-	return c.base.SystemStyle.Render("  " + wordWrap(entry.Content, width-10))
+	return c.base.SystemStyle.Render(wordWrap(entry.Content, width-4))
 }
 
 // Ensure SystemMessageComponent implements MessageComponent.

@@ -21,7 +21,7 @@ func newGlamourRenderer(style string, wordWrap int) (*glamour.TermRenderer, erro
 // NewChatViewport creates a new chat viewport with a glamour markdown renderer.
 func NewChatViewport() ChatViewport {
 	vp := viewport.New(80, 20)
-	vp.Style = lipgloss.NewStyle().PaddingLeft(2)
+	vp.Style = lipgloss.NewStyle().PaddingLeft(1)
 
 	renderer, err := newGlamourRenderer("dark", 80)
 	if err != nil {

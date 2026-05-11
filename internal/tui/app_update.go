@@ -56,7 +56,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 			m.customEditor.SetWidth(msg.Width - 4)
 			m.customEditor.SetHeight(msg.Height)
 		} else {
-			m.input.SetHeight(msg.Height)
+			m.input.SetHeight(1)
 			m.input.SetWidth(msg.Width - 4)
 		}
 		editorHeight := m.editorHeight()

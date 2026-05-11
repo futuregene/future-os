@@ -262,7 +262,7 @@ func (m *AppModel) showLoadedResources() {
 				filtered = append(filtered, item)
 			}
 		}
-		return dimStyle.Render("  " + strings.Join(filtered, ", "))
+		return dimStyle.Render(" " + strings.Join(filtered, ", "))
 	}
 
 	// ── [Context] section (TS: shown first) ──────────────────────────────

@@ -29,10 +29,10 @@ func (e *Editor) matches(ks, binding string, hardcoded ...string) bool {
 // NewEditor creates a new editor component.
 func NewEditor(style lipgloss.Style) Editor {
 	ta := textarea.New()
-	ta.Placeholder = "Type a message... (Enter=submit, Shift+Enter=newline)"
+	ta.Placeholder = "Message..."
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0 // unlimited
-	ta.SetHeight(3)
+	ta.SetHeight(1)
 
 	// Remove "enter" from the textarea's newline insertion keymap.
 	// We handle Enter ourselves for submit; Ctrl+J and Shift+Enter insert newlines.
@@ -42,8 +42,6 @@ func NewEditor(style lipgloss.Style) Editor {
 
 	if style.GetWidth() == 0 {
 		style = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder(), true).
-			BorderForeground(lipgloss.Color("#61afef")).
 			Padding(0, 1)
 	}
 

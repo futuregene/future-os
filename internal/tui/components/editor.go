@@ -1,7 +1,6 @@
 package components
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 	"unicode"
@@ -325,36 +324,10 @@ func (e *Editor) updateSlashMode() {
 // Focus focuses the editor.
 
 func (e Editor) View() string {
-	view := e.style.Render(e.area.View())
-
-	total := e.area.LineCount()
-	visible := e.area.Height()
-	if total <= visible {
-		return view
+	view := e.area.View()
+	// Only show first line (TS pi-mono: single-line inline prompt)
+	if idx := strings.Index(view, "\n"); idx >= 0 {
+		view = view[:idx]
 	}
-
-	// Approximate scroll position from cursor line (textarea auto-scrolls to cursor).
-	cursorLine := e.area.Line()
-	hiddenAbove := max(0, cursorLine-visible/2)
-	hiddenBelow := max(0, total-cursorLine-visible/2)
-
-	if hiddenAbove > 0 {
-		indicator := fmt.Sprintf("─── ↑ %d more", hiddenAbove)
-		if hiddenAbove > 1 {
-			indicator += " lines"
-		} else {
-			indicator += " line"
-		}
-		view = indicator + "\n" + view
-	}
-	if hiddenBelow > 0 {
-		indicator := fmt.Sprintf("─── ↓ %d more", hiddenBelow)
-		if hiddenBelow > 1 {
-			indicator += " lines"
-		} else {
-			indicator += " line"
-		}
-		view += "\n" + indicator
-	}
-	return view
+	return e.style.Render(view)
 }
