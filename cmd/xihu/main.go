@@ -223,24 +223,12 @@ func main() {
 		}
 	}
 
-	// ── Build system prompt ────────────────────────────────────────────────
-	customPrompt := firstNonEmpty(args.SystemPrompt, cfg.SystemPrompt)
-	appendText := strings.Join(args.AppendSystemPrompt, "\n")
-	builtPrompt := prompt.BuildPrompt(prompt.PromptOptions{
-		CustomPrompt:     customPrompt,
-		WorkingDirectory: cwd,
-		Date:             time.Now().Format("2006-01-02"),
-		Tools:            engine.CodingTools(),
-		Skills:           promptSkills,
-		AGENTSContent:    agentsContent,
-		AppendPrompt:     appendText,
-	})
-
 	// ── Build engine ───────────────────────────────────────────────────────
 	if baseURL == "" {
 		baseURL = "https://api.openai.com"
 	}
 
+	noToolsMode := resolveNoTools(args)
 	eng, err := engine.NewEngine(engine.EngineOptions{
 		BaseURL:        baseURL,
 		APIKey:         apiKey,
@@ -250,8 +238,8 @@ func main() {
 		SessionManager: sessMgr,
 		MaxTurns:       cfg.MaxTurns,
 		ThinkingLevel:  thinking,
-		SystemPrompt:   builtPrompt,
-		NoTools:        resolveNoTools(args),
+		SystemPrompt:   "", // will be set below after resolving active tools
+		NoTools:        noToolsMode,
 		Verbose:        args.Verbose,
 		ExtensionPaths: args.Extensions,
 		NoExtensions:   args.NoExtensions,
@@ -267,6 +255,52 @@ func main() {
 	if args.NoBuiltinTools {
 		eng.Loop.Tools = nil
 	}
+
+	// Apply --tools allowlist filter
+	if len(args.Tools) > 0 {
+		allowSet := make(map[string]bool, len(args.Tools))
+		for _, name := range args.Tools {
+			allowSet[name] = true
+		}
+		filtered := make([]types.AgentTool, 0, len(args.Tools))
+		for _, t := range eng.Loop.Tools {
+			if allowSet[t.Def.Function.Name] {
+				filtered = append(filtered, t)
+			}
+		}
+		eng.Loop.Tools = filtered
+	}
+
+	// ── Build system prompt (after tools are resolved) ─────────────────────
+	// Respect --no-tools / --no-builtin-tools / --no-skills / --tools in the prompt
+	customPrompt := firstNonEmpty(args.SystemPrompt, cfg.SystemPrompt)
+	appendText := strings.Join(args.AppendSystemPrompt, "\n")
+
+	// Determine which tools to show in the prompt
+	var promptTools []types.AgentTool
+	if noToolsMode == "all" {
+		promptTools = nil // no tools shown
+	} else {
+		promptTools = eng.Loop.Tools // actual active tools (after filtering)
+	}
+
+	// Determine which skills to show in the prompt
+	var promptSkillsFiltered []prompt.Skill
+	if !args.NoSkills {
+		promptSkillsFiltered = promptSkills
+	}
+
+	builtPrompt := prompt.BuildPrompt(prompt.PromptOptions{
+		CustomPrompt:     customPrompt,
+		WorkingDirectory: cwd,
+		Date:             time.Now().Format("2006-01-02"),
+		Tools:            promptTools,
+		Skills:           promptSkillsFiltered,
+		AGENTSContent:    agentsContent,
+		AppendPrompt:     appendText,
+	})
+	eng.Loop.SystemPrompt = builtPrompt
+	eng.Loop.Config.SystemPrompt = builtPrompt
 
 	// ── Create AgentSession ─────────────────────────────────────────────
 	as, err := agentsession.New(agentsession.AgentSessionConfig{
