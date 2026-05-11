@@ -16,6 +16,59 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
+// ─── Tool parameter types — replaces hand-written JSON Schema strings ────────
+// Each type defines both the Go struct for json.Unmarshal AND
+// the JSON Schema via types.SchemaOf[T]() (mirroring TS pi-mono's TypeBox).
+
+type BashParams struct {
+	Command string `json:"command" jsonschema:"required,description=The shell command to execute"`
+	Timeout int    `json:"timeout,omitempty" jsonschema:"description=Optional timeout in seconds"`
+}
+
+type ReadParams struct {
+	FilePath string `json:"file_path,omitempty" jsonschema:"description=Path to the file to read"`
+	Path     string `json:"path,omitempty" jsonschema:"description=Alias for file_path"`
+	Offset   int    `json:"offset,omitempty" jsonschema:"description=Line number to start reading from (1-indexed)"`
+	Limit    int    `json:"limit,omitempty" jsonschema:"description=Maximum number of lines to read"`
+}
+
+type WriteParams struct {
+	FilePath string `json:"file_path" jsonschema:"required,description=Path to the file to write"`
+	Content  string `json:"content" jsonschema:"required,description=Content to write to the file"`
+}
+
+type EditParams struct {
+	FilePath   string          `json:"file_path" jsonschema:"required,description=Path to the file to edit"`
+	OldString  string          `json:"old_string,omitempty" jsonschema:"description=Exact text to find and replace"`
+	NewString  string          `json:"new_string,omitempty" jsonschema:"description=Replacement text (empty to delete)"`
+	OldText    string          `json:"oldText,omitempty" jsonschema:"description=Alias for old_string (legacy)"`
+	NewText    string          `json:"newText,omitempty" jsonschema:"description=Alias for new_string (legacy)"`
+	ReplaceAll bool            `json:"replace_all,omitempty" jsonschema:"description=Replace all occurrences (default: false)"`
+	Edits      json.RawMessage `json:"edits,omitempty" jsonschema:"description=Array of edits for multi-edit mode"`
+}
+
+type grepParams struct {
+	Pattern    string `json:"pattern" jsonschema:"required,description=Regex pattern to search for"`
+	Path       string `json:"path,omitempty" jsonschema:"description=Directory or file to search in"`
+	Glob       string `json:"glob,omitempty" jsonschema:"description=File pattern filter (e.g. *.go)"`
+	IgnoreCase bool   `json:"ignoreCase,omitempty" jsonschema:"description=Case-insensitive search"`
+	Literal    bool   `json:"literal,omitempty" jsonschema:"description=Treat pattern as literal string"`
+	Context    int    `json:"context,omitempty" jsonschema:"description=Context lines before/after each match"`
+	Limit      int    `json:"limit,omitempty" jsonschema:"description=Max matching lines to return (default: 100)"`
+}
+
+type lsParams struct {
+	Path  string `json:"path,omitempty" jsonschema:"description=Directory path to list"`
+	Limit int    `json:"limit,omitempty" jsonschema:"description=Max entries (default: 500)"`
+}
+
+type findParams struct {
+	Pattern string `json:"pattern,omitempty" jsonschema:"description=Glob pattern (e.g. *.go)"`
+	Path    string `json:"path,omitempty" jsonschema:"description=Directory to search from"`
+	Limit   int    `json:"limit,omitempty" jsonschema:"description=Max results (default: 1000)"`
+}
+
+
 // Bash tool: run shell commands
 func BashTool() types.AgentTool {
 	return types.AgentTool{
@@ -24,14 +77,7 @@ func BashTool() types.AgentTool {
 			Function: types.FunctionDef{
 				Name:        "bash",
 				Description: "Execute a shell command in the project directory",
-				Parameters: json.RawMessage(`{
-					"type": "object",
-					"properties": {
-						"command": {"type": "string", "description": "The shell command to execute"},
-						"timeout": {"type": "integer", "description": "Optional timeout in seconds. If not specified, runs with no timeout."}
-					},
-					"required": ["command"]
-				}`),
+				Parameters: types.SchemaOf[BashParams](),
 			},
 		},
 		Guidelines: []string{
@@ -122,16 +168,7 @@ func ReadTool() types.AgentTool {
 			Function: types.FunctionDef{
 				Name:        "read",
 				Description: "Read the contents of a file. For text files, returns numbered lines (optionally offset/limit). For image files, returns a base64 data URL.",
-				Parameters: json.RawMessage(`{
-					"type": "object",
-					"properties": {
-						"file_path": {"type": "string", "description": "Path to the file to read"},
-						"path": {"type": "string", "description": "Alias for file_path"},
-						"offset": {"type": "integer", "description": "Line number to start reading from (1-indexed)"},
-						"limit": {"type": "integer", "description": "Maximum number of lines to read"}
-					},
-					"required": []
-				}`),
+				Parameters: types.SchemaOf[ReadParams](),
 			},
 		},
 		Guidelines: []string{
@@ -222,14 +259,7 @@ func WriteTool() types.AgentTool {
 			Function: types.FunctionDef{
 				Name:        "write",
 				Description: "Write content to a file, overwriting if it exists",
-				Parameters: json.RawMessage(`{
-					"type": "object",
-					"properties": {
-						"file_path": {"type": "string", "description": "Path to the file to write"},
-						"content": {"type": "string", "description": "Content to write to the file"}
-					},
-					"required": ["file_path", "content"]
-				}`),
+				Parameters: types.SchemaOf[WriteParams](),
 			},
 		},
 		Guidelines: []string{
@@ -556,19 +586,7 @@ func EditTool() types.AgentTool {
 			Function: types.FunctionDef{
 				Name: "edit",
 				Description: "Make targeted edits to a file. Supports single edit (old_string/new_string) or multi-edit (edits array). Uses fuzzy matching for smart quotes and trailing whitespace.",
-				Parameters: json.RawMessage(`{
-					"type": "object",
-					"properties": {
-						"file_path": {"type": "string", "description": "Path to the file to edit"},
-						"old_string": {"type": "string", "description": "Exact text to find and replace. Must be unique unless replace_all is true."},
-						"new_string": {"type": "string", "description": "Replacement text. Can be empty to delete the matched text."},
-						"oldText": {"type": "string", "description": "Alias for old_string (legacy compatibility)"},
-						"newText": {"type": "string", "description": "Alias for new_string (legacy compatibility)"},
-						"replace_all": {"type": "boolean", "description": "Replace all occurrences instead of requiring uniqueness (default: false)"},
-						"edits": {"type": "array", "items": {"type": "object", "properties": {"old_string": {"type": "string"}, "new_string": {"type": "string"}}, "required": ["old_string", "new_string"]}, "description": "Array of edits for multi-edit mode"}
-					},
-					"required": ["file_path"]
-				}`),
+				Parameters: types.SchemaOf[EditParams](),
 			},
 		},
 		Guidelines: []string{
@@ -774,17 +792,6 @@ func sortMatches(matches []matchRegion) {
 	}
 }
 
-// grepParams holds parameters for the Grep tool.
-type grepParams struct {
-	Pattern    string `json:"pattern"`
-	Path       string `json:"path"`
-	Glob       string `json:"glob"`
-	IgnoreCase bool   `json:"ignoreCase"`
-	Literal    bool   `json:"literal"`
-	Context    int    `json:"context"`
-	Limit      int    `json:"limit"`
-}
-
 // Grep tool: search file contents with regex. Uses ripgrep (rg) with --json
 // if available for structured output; falls back to system grep otherwise.
 func GrepTool() types.AgentTool {
@@ -794,19 +801,7 @@ func GrepTool() types.AgentTool {
 			Function: types.FunctionDef{
 				Name:        "grep",
 				Description: "Search for a pattern in file contents. Uses ripgrep with structured JSON output if available; falls back to system grep.",
-				Parameters: json.RawMessage(`{
-					"type": "object",
-					"properties": {
-						"pattern": {"type": "string", "description": "Regex pattern to search for"},
-						"path": {"type": "string", "description": "Directory or file to search in (default: current directory)"},
-						"glob": {"type": "string", "description": "File pattern filter (e.g., '*.go')"},
-						"ignoreCase": {"type": "boolean", "description": "Case-insensitive search (default: false)"},
-						"literal": {"type": "boolean", "description": "Treat pattern as a literal string, not a regex (default: false)"},
-						"context": {"type": "integer", "description": "Number of context lines before and after each match (default: 0)"},
-						"limit": {"type": "integer", "description": "Maximum number of matching lines to return (default: 100)"}
-					},
-					"required": ["pattern"]
-				}`),
+				Parameters: types.SchemaOf[grepParams](),
 			},
 		},
 		Guidelines: []string{

@@ -20,13 +20,7 @@ func LsTool() types.AgentTool {
 			Function: types.FunctionDef{
 				Name:        "ls",
 				Description: "List directory contents. Sorted alphabetically with directories first and a trailing / suffix. Shows file sizes. Configurable limit (default 500).",
-				Parameters: json.RawMessage(`{
-					"type": "object",
-					"properties": {
-						"path": {"type": "string", "description": "Directory path to list (default: current directory)"},
-						"limit": {"type": "integer", "description": "Maximum number of entries to return (default: 500)"}
-					}
-				}`),
+				Parameters: types.SchemaOf[lsParams](),
 			},
 		},
 		Guidelines: []string{
