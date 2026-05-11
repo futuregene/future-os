@@ -9,17 +9,14 @@ import (
 // Tool subsets
 // ---------------------------------------------------------------------------
 
-// CodingTools returns the full set of built-in coding tools:
-// bash, read, write, edit, grep, ls, find.
+// CodingTools returns the default built-in coding tools:
+// read, bash, edit, write (aligned with TS pi-mono).
 func CodingTools() []types.AgentTool {
 	return []types.AgentTool{
 		tools.BashTool(),
 		tools.ReadTool(),
 		tools.WriteTool(),
 		tools.EditTool(),
-		tools.GrepTool(),
-		tools.LsTool(),
-		tools.FindTool(),
 	}
 }
 
