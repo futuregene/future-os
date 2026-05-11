@@ -300,6 +300,7 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 			ThinkingBudget: thinkingLevelToBudget(cfg.ThinkingLevel),
 		},
 		SteeringQueue: agent.NewPendingMessageQueue(64, "all"),
+		FollowUpQueue: agent.NewPendingMessageQueue(64, "all"),
 		Verbose:       opts.Verbose,
 	}
 

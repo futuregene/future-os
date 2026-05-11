@@ -1080,3 +1080,1083 @@ func TestMergeSettings_AllFieldsComprehensive(t *testing.T) {
 		t.Errorf("EnableSkillCommands = %v, want true", result.EnableSkillCommands)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// LockSettings / UnlockSettings / IsLocked tests
+// ---------------------------------------------------------------------------
+
+func TestLockSettings_AcquireAndRelease(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.lock_test.json")
+
+	// Not locked initially
+	if IsLocked(path) {
+		t.Fatal("expected not locked initially")
+	}
+
+	// Acquire lock
+	if err := LockSettings(path); err != nil {
+		t.Fatalf("LockSettings() error: %v", err)
+	}
+	if !IsLocked(path) {
+		t.Fatal("expected locked after LockSettings")
+	}
+
+	// Double lock should fail
+	if err := LockSettings(path); err == nil {
+		t.Fatal("expected error on double lock")
+	}
+
+	// Unlock
+	if err := UnlockSettings(path); err != nil {
+		t.Fatalf("UnlockSettings() error: %v", err)
+	}
+	if IsLocked(path) {
+		t.Fatal("expected not locked after UnlockSettings")
+	}
+}
+
+func TestLockSettings_UnlockNonExistent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nonexistent.json")
+
+	// Unlock on non-existent should not error
+	if err := UnlockSettings(path); err != nil {
+		t.Fatalf("UnlockSettings() on non-existent should not error: %v", err)
+	}
+}
+
+func TestIsLocked_NonExistent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nonexistent.json")
+	if IsLocked(path) {
+		t.Fatal("IsLocked should return false for non-existent lock")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MigrateSettings tests
+// ---------------------------------------------------------------------------
+
+func TestMigrateSettings_ValidLevels(t *testing.T) {
+	// All valid thinking levels should pass through unchanged
+	validLevels := []string{"off", "minimal", "low", "medium", "high", "xhigh", "max", ""}
+	for _, level := range validLevels {
+		s := &Settings{
+			DefaultThinkingLevel: level,
+			ThinkingLevel:        level,
+		}
+		MigrateSettings(s)
+		if s.DefaultThinkingLevel != level {
+			t.Errorf("DefaultThinkingLevel changed from %q to %q", level, s.DefaultThinkingLevel)
+		}
+		if s.ThinkingLevel != level {
+			t.Errorf("ThinkingLevel changed from %q to %q", level, s.ThinkingLevel)
+		}
+	}
+}
+
+func TestMigrateSettings_InvalidThinkingLevel(t *testing.T) {
+	s := &Settings{
+		DefaultThinkingLevel: "invalid_level",
+		ThinkingLevel:        "also_invalid",
+	}
+	MigrateSettings(s)
+	if s.DefaultThinkingLevel != "" {
+		t.Errorf("DefaultThinkingLevel should be reset, got %q", s.DefaultThinkingLevel)
+	}
+	if s.ThinkingLevel != "" {
+		t.Errorf("ThinkingLevel should be reset, got %q", s.ThinkingLevel)
+	}
+}
+
+func TestMigrateSettings_ValidDoubleEscapeAction(t *testing.T) {
+	validActions := []string{"fork", "tree", "none", ""}
+	for _, action := range validActions {
+		s := &Settings{DoubleEscapeAction: action}
+		MigrateSettings(s)
+		if s.DoubleEscapeAction != action {
+			t.Errorf("DoubleEscapeAction changed from %q to %q", action, s.DoubleEscapeAction)
+		}
+	}
+}
+
+func TestMigrateSettings_InvalidDoubleEscapeAction(t *testing.T) {
+	s := &Settings{DoubleEscapeAction: "invalid"}
+	MigrateSettings(s)
+	if s.DoubleEscapeAction != "" {
+		t.Errorf("DoubleEscapeAction should be reset, got %q", s.DoubleEscapeAction)
+	}
+}
+
+func TestMigrateSettings_ValidTreeFilterMode(t *testing.T) {
+	validModes := []string{"all", "default", "user-only", "no-tools", "labeled-only", ""}
+	for _, mode := range validModes {
+		s := &Settings{TreeFilterMode: mode}
+		MigrateSettings(s)
+		if s.TreeFilterMode != mode {
+			t.Errorf("TreeFilterMode changed from %q to %q", mode, s.TreeFilterMode)
+		}
+	}
+}
+
+func TestMigrateSettings_InvalidTreeFilterMode(t *testing.T) {
+	s := &Settings{TreeFilterMode: "bogus"}
+	MigrateSettings(s)
+	if s.TreeFilterMode != "" {
+		t.Errorf("TreeFilterMode should be reset, got %q", s.TreeFilterMode)
+	}
+}
+
+func TestMigrateSettings_ValidSteeringAndFollowUp(t *testing.T) {
+	validModes := []string{"all", "one-at-a-time", ""}
+	for _, mode := range validModes {
+		s := &Settings{SteeringMode: mode, FollowUpMode: mode}
+		MigrateSettings(s)
+		if s.SteeringMode != mode {
+			t.Errorf("SteeringMode changed from %q to %q", mode, s.SteeringMode)
+		}
+		if s.FollowUpMode != mode {
+			t.Errorf("FollowUpMode changed from %q to %q", mode, s.FollowUpMode)
+		}
+	}
+}
+
+func TestMigrateSettings_InvalidSteeringAndFollowUp(t *testing.T) {
+	s := &Settings{SteeringMode: "broken", FollowUpMode: "also_broken"}
+	MigrateSettings(s)
+	if s.SteeringMode != "" {
+		t.Errorf("SteeringMode should be reset, got %q", s.SteeringMode)
+	}
+	if s.FollowUpMode != "" {
+		t.Errorf("FollowUpMode should be reset, got %q", s.FollowUpMode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Reload tests
+// ---------------------------------------------------------------------------
+
+func TestReload_Success(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "reload.json")
+
+	tru := true
+	original := &Settings{
+		DefaultModel:      "gpt-4o",
+		MaxTurns:          50,
+		CompactionEnabled: &tru,
+	}
+	if err := SaveSettings(path, original); err != nil {
+		t.Fatal(err)
+	}
+
+	// Start with a different settings struct
+	s := &Settings{DefaultModel: "old-model", MaxTurns: 10}
+	if err := s.Reload(path); err != nil {
+		t.Fatalf("Reload() error: %v", err)
+	}
+
+	if s.DefaultModel != "gpt-4o" {
+		t.Errorf("DefaultModel = %q, want gpt-4o", s.DefaultModel)
+	}
+	if s.MaxTurns != 50 {
+		t.Errorf("MaxTurns = %d, want 50", s.MaxTurns)
+	}
+	if s.CompactionEnabled == nil || *s.CompactionEnabled != true {
+		t.Errorf("CompactionEnabled = %v, want true", s.CompactionEnabled)
+	}
+}
+
+func TestReload_EmptyPath(t *testing.T) {
+	s := &Settings{}
+	if err := s.Reload(""); err == nil {
+		t.Fatal("expected error for empty path")
+	}
+}
+
+func TestReload_NonExistentFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nonexistent.json")
+	s := &Settings{DefaultModel: "keep-me"}
+	if err := s.Reload(path); err != nil {
+		t.Fatalf("Reload() on non-existent file should not error: %v", err)
+	}
+	// After loading non-existent, defaults to empty settings
+	if s.DefaultModel != "" {
+		t.Errorf("DefaultModel = %q, expected empty after reloading non-existent", s.DefaultModel)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ApplyOverrides tests
+// ---------------------------------------------------------------------------
+
+func TestApplyOverrides_NilOverrides(t *testing.T) {
+	base := &Settings{DefaultModel: "gpt-4o", MaxTurns: 50}
+	base.ApplyOverrides(nil)
+	if base.DefaultModel != "gpt-4o" {
+		t.Errorf("DefaultModel changed: %q", base.DefaultModel)
+	}
+	if base.MaxTurns != 50 {
+		t.Errorf("MaxTurns changed: %d", base.MaxTurns)
+	}
+}
+
+func TestApplyOverrides_StringFields(t *testing.T) {
+	base := &Settings{
+		DefaultProvider:  "openai",
+		DefaultModel:     "gpt-4o",
+		Theme:            "dark",
+		ShellPath:        "/bin/bash",
+		SystemPrompt:     "base prompt",
+		SessionDir:       "/tmp/base",
+		DoubleEscapeAction: "fork",
+		Transport:        "sse",
+		SteeringMode:     "all",
+	}
+	overrides := &Settings{
+		DefaultModel:      "claude-sonnet",
+		Theme:             "light",
+		ShellCommandPrefix: "source ~/.zshrc && ",
+		SessionDir:        "/tmp/override",
+		FollowUpMode:      "one-at-a-time",
+	}
+	base.ApplyOverrides(overrides)
+
+	if base.DefaultProvider != "openai" {
+		t.Errorf("DefaultProvider should be unchanged: %q", base.DefaultProvider)
+	}
+	if base.DefaultModel != "claude-sonnet" {
+		t.Errorf("DefaultModel = %q", base.DefaultModel)
+	}
+	if base.Theme != "light" {
+		t.Errorf("Theme = %q", base.Theme)
+	}
+	if base.ShellPath != "/bin/bash" {
+		t.Errorf("ShellPath = %q", base.ShellPath)
+	}
+	if base.ShellCommandPrefix != "source ~/.zshrc && " {
+		t.Errorf("ShellCommandPrefix = %q", base.ShellCommandPrefix)
+	}
+	if base.SessionDir != "/tmp/override" {
+		t.Errorf("SessionDir = %q", base.SessionDir)
+	}
+	if base.DoubleEscapeAction != "fork" {
+		t.Errorf("DoubleEscapeAction = %q", base.DoubleEscapeAction)
+	}
+	if base.Transport != "sse" {
+		t.Errorf("Transport = %q", base.Transport)
+	}
+	if base.SteeringMode != "all" {
+		t.Errorf("SteeringMode = %q", base.SteeringMode)
+	}
+	if base.FollowUpMode != "one-at-a-time" {
+		t.Errorf("FollowUpMode = %q", base.FollowUpMode)
+	}
+}
+
+func TestApplyOverrides_IntFields(t *testing.T) {
+	base := &Settings{
+		MaxTurns:                50,
+		CompactionReserveTokens: 100000,
+		EditorPaddingX:          2,
+	}
+	overrides := &Settings{
+		MaxTurns:                100,
+		CompactionKeepRecentTokens: 50000,
+		AutocompleteMaxVisible:   20,
+	}
+	base.ApplyOverrides(overrides)
+
+	if base.MaxTurns != 100 {
+		t.Errorf("MaxTurns = %d", base.MaxTurns)
+	}
+	if base.CompactionReserveTokens != 100000 {
+		t.Errorf("CompactionReserveTokens = %d", base.CompactionReserveTokens)
+	}
+	if base.CompactionKeepRecentTokens != 50000 {
+		t.Errorf("CompactionKeepRecentTokens = %d", base.CompactionKeepRecentTokens)
+	}
+	if base.EditorPaddingX != 2 {
+		t.Errorf("EditorPaddingX = %d", base.EditorPaddingX)
+	}
+	if base.AutocompleteMaxVisible != 20 {
+		t.Errorf("AutocompleteMaxVisible = %d", base.AutocompleteMaxVisible)
+	}
+}
+
+func TestApplyOverrides_BoolFields(t *testing.T) {
+	tru := true
+	fals := false
+	base := &Settings{
+		QuietStartup:        &fals,
+		CollapseChangelog:   &fals,
+		ShowHardwareCursor:  &fals,
+	}
+	overrides := &Settings{
+		QuietStartup:        &tru,
+		EnableInstallTelemetry: &tru,
+	}
+	base.ApplyOverrides(overrides)
+
+	if base.QuietStartup == nil || *base.QuietStartup != true {
+		t.Errorf("QuietStartup = %v", base.QuietStartup)
+	}
+	if base.CollapseChangelog == nil || *base.CollapseChangelog != false {
+		t.Errorf("CollapseChangelog = %v", base.CollapseChangelog)
+	}
+	if base.EnableInstallTelemetry == nil || *base.EnableInstallTelemetry != true {
+		t.Errorf("EnableInstallTelemetry = %v", base.EnableInstallTelemetry)
+	}
+}
+
+func TestApplyOverrides_SliceFields(t *testing.T) {
+	base := &Settings{
+		Extensions:    []string{"a", "b"},
+		Skills:        []string{"s1"},
+		EnabledModels: []string{"gpt-4o"},
+		NpmCommand:    []string{"npm"},
+		Packages:      []PackageSource{{Name: "pkg1", Version: "v1"}},
+	}
+	overrides := &Settings{
+		Extensions:    []string{"x", "y"},
+		ScopedModels:  []string{"openai/*"},
+		Themes:        []string{"theme1"},
+	}
+	base.ApplyOverrides(overrides)
+
+	if len(base.Extensions) != 2 || base.Extensions[0] != "x" {
+		t.Errorf("Extensions = %v", base.Extensions)
+	}
+	if len(base.Skills) != 1 || base.Skills[0] != "s1" {
+		t.Errorf("Skills = %v", base.Skills)
+	}
+	if len(base.ScopedModels) != 1 || base.ScopedModels[0] != "openai/*" {
+		t.Errorf("ScopedModels = %v", base.ScopedModels)
+	}
+	if len(base.Themes) != 1 || base.Themes[0] != "theme1" {
+		t.Errorf("Themes = %v", base.Themes)
+	}
+	if len(base.Packages) != 1 || base.Packages[0].Name != "pkg1" {
+		t.Errorf("Packages = %v", base.Packages)
+	}
+	if len(base.EnabledModels) != 1 || base.EnabledModels[0] != "gpt-4o" {
+		t.Errorf("EnabledModels = %v", base.EnabledModels)
+	}
+}
+
+func TestApplyOverrides_NestedStructs(t *testing.T) {
+	tru := true
+	base := &Settings{
+		Images:    &ImageSettings{AutoResize: &tru},
+		Terminal:  &TerminalSettings{ImageWidthCells: 80},
+		Retry:     &RetrySettings{MaxRetries: 3},
+		Markdown:  &MarkdownSettings{CodeBlockIndent: "2"},
+		Warnings:  &WarningSettings{AnthropicExtraUsage: &tru},
+		BranchSummary: &BranchSummarySettings{ReserveTokens: 1000},
+		ThinkingBudgets: &ThinkingBudgetsSettings{Low: 1000},
+	}
+	overrides := &Settings{
+		Images:    &ImageSettings{BlockImages: &tru},
+		Terminal:  &TerminalSettings{ShowImages: &tru},
+		Retry:     &RetrySettings{BaseDelayMs: 2000},
+		Markdown:  &MarkdownSettings{CodeBlockIndent: "4"},
+		Warnings:  &WarningSettings{},
+	}
+	base.ApplyOverrides(overrides)
+
+	// Images: overrides fully replaces (ApplyOverrides uses clone, not merge for nested structs)
+	if base.Images == nil {
+		t.Fatal("Images is nil")
+	}
+	if base.Images.AutoResize != nil {
+		t.Error("Images.AutoResize should be nil (overrides replace, not merge)")
+	}
+	if base.Images.BlockImages == nil || *base.Images.BlockImages != true {
+		t.Errorf("Images.BlockImages = %v", base.Images.BlockImages)
+	}
+
+	// Terminal: overrides replace
+	if base.Terminal.ImageWidthCells != 0 {
+		t.Errorf("Terminal.ImageWidthCells = %d (overrides replace, not merge)", base.Terminal.ImageWidthCells)
+	}
+	if base.Terminal.ShowImages == nil || *base.Terminal.ShowImages != true {
+		t.Errorf("Terminal.ShowImages = %v", base.Terminal.ShowImages)
+	}
+
+	// Retry: overrides replace
+	if base.Retry.MaxRetries != 0 {
+		t.Errorf("Retry.MaxRetries = %d", base.Retry.MaxRetries)
+	}
+	if base.Retry.BaseDelayMs != 2000 {
+		t.Errorf("Retry.BaseDelayMs = %d", base.Retry.BaseDelayMs)
+	}
+
+	// Markdown: overrides replace
+	if base.Markdown.CodeBlockIndent != "4" {
+		t.Errorf("Markdown.CodeBlockIndent = %q", base.Markdown.CodeBlockIndent)
+	}
+
+	// Warnings: overrides replace with empty struct
+	if base.Warnings.AnthropicExtraUsage != nil {
+		t.Error("Warnings.AnthropicExtraUsage should be nil (overrides replace)")
+	}
+
+	// BranchSummary: should survive (not overridden)
+	if base.BranchSummary == nil {
+		t.Fatal("BranchSummary is nil")
+	}
+	if base.BranchSummary.ReserveTokens != 1000 {
+		t.Errorf("BranchSummary.ReserveTokens = %d", base.BranchSummary.ReserveTokens)
+	}
+
+	// ThinkingBudgets: should survive (not overridden)
+	if base.ThinkingBudgets == nil {
+		t.Fatal("ThinkingBudgets is nil")
+	}
+	if base.ThinkingBudgets.Low != 1000 {
+		t.Errorf("ThinkingBudgets.Low = %d", base.ThinkingBudgets.Low)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Internal helper tests: boolPtr, copyStringSlice, copyPackageSources
+// ---------------------------------------------------------------------------
+
+func TestBoolPtr(t *testing.T) {
+	p := boolPtr(true)
+	if p == nil || *p != true {
+		t.Errorf("boolPtr(true) = %v", p)
+	}
+
+	p = boolPtr(false)
+	if p == nil || *p != false {
+		t.Errorf("boolPtr(false) = %v", p)
+	}
+}
+
+func TestCopyStringSlice_Nil(t *testing.T) {
+	if copyStringSlice(nil) != nil {
+		t.Error("copyStringSlice(nil) should return nil")
+	}
+}
+
+func TestCopyStringSlice_NonNil(t *testing.T) {
+	src := []string{"a", "b", "c"}
+	dst := copyStringSlice(src)
+	if len(dst) != 3 {
+		t.Fatalf("len = %d, want 3", len(dst))
+	}
+	src[0] = "modified"
+	if dst[0] != "a" {
+		t.Error("copyStringSlice should make a copy, not alias")
+	}
+}
+
+func TestCopyStringSlice_Empty(t *testing.T) {
+	src := []string{}
+	dst := copyStringSlice(src)
+	if dst == nil {
+		t.Error("copyStringSlice([]) should return empty slice, not nil")
+	}
+	if len(dst) != 0 {
+		t.Errorf("len = %d, want 0", len(dst))
+	}
+}
+
+func TestCopyPackageSources_Nil(t *testing.T) {
+	if copyPackageSources(nil) != nil {
+		t.Error("copyPackageSources(nil) should return nil")
+	}
+}
+
+func TestCopyPackageSources_NonNil(t *testing.T) {
+	src := []PackageSource{
+		{Name: "pkg1", Version: "v1", Source: "npm"},
+		{Name: "pkg2", Version: "v2", Source: "git"},
+	}
+	dst := copyPackageSources(src)
+	if len(dst) != 2 {
+		t.Fatalf("len = %d, want 2", len(dst))
+	}
+	if dst[0].Name != "pkg1" || dst[0].Version != "v1" || dst[0].Source != "npm" {
+		t.Errorf("dst[0] = %+v", dst[0])
+	}
+	src[0].Name = "modified"
+	if dst[0].Name != "pkg1" {
+		t.Error("copyPackageSources should make a copy, not alias")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Clone helper tests for nested structs
+// ---------------------------------------------------------------------------
+
+func TestCloneThinkingBudgets_Nil(t *testing.T) {
+	if cloneThinkingBudgets(nil) != nil {
+		t.Error("cloneThinkingBudgets(nil) should return nil")
+	}
+}
+
+func TestCloneThinkingBudgets_NonNil(t *testing.T) {
+	src := &ThinkingBudgetsSettings{Minimal: 100, Low: 500, Medium: 2000, High: 8000}
+	dst := cloneThinkingBudgets(src)
+	if dst == &(*src) {
+		t.Error("cloneThinkingBudgets should return a different pointer")
+	}
+	dst.Minimal = 999
+	if src.Minimal != 100 {
+		t.Errorf("src.Minimal mutated: %d", src.Minimal)
+	}
+}
+
+func TestCloneImageSettings_Nil(t *testing.T) {
+	if cloneImageSettings(nil) != nil {
+		t.Error("cloneImageSettings(nil) should return nil")
+	}
+}
+
+func TestCloneImageSettings_NonNil(t *testing.T) {
+	tru := true
+	fals := false
+	src := &ImageSettings{AutoResize: &tru, BlockImages: &fals}
+	dst := cloneImageSettings(src)
+	if dst == src {
+		t.Error("should be different pointer")
+	}
+	if dst.AutoResize == nil || *dst.AutoResize != true {
+		t.Errorf("dst.AutoResize = %v", dst.AutoResize)
+	}
+	if dst.BlockImages == nil || *dst.BlockImages != false {
+		t.Errorf("dst.BlockImages = %v", dst.BlockImages)
+	}
+	*dst.AutoResize = false
+	if *src.AutoResize != true {
+		t.Error("src.AutoResize mutated")
+	}
+}
+
+func TestCloneImageSettings_NilBools(t *testing.T) {
+	src := &ImageSettings{}
+	dst := cloneImageSettings(src)
+	if dst.AutoResize != nil {
+		t.Error("dst.AutoResize should be nil")
+	}
+	if dst.BlockImages != nil {
+		t.Error("dst.BlockImages should be nil")
+	}
+}
+
+func TestCloneTerminalSettings_Nil(t *testing.T) {
+	if cloneTerminalSettings(nil) != nil {
+		t.Error("cloneTerminalSettings(nil) should return nil")
+	}
+}
+
+func TestCloneTerminalSettings_NonNil(t *testing.T) {
+	tru := true
+	src := &TerminalSettings{
+		ShowImages:           &tru,
+		ImageWidthCells:      100,
+		ClearOnShrink:        &tru,
+		ShowTerminalProgress: &tru,
+	}
+	dst := cloneTerminalSettings(src)
+	if dst == src {
+		t.Error("should be different pointer")
+	}
+	dst.ImageWidthCells = 999
+	*dst.ShowImages = false
+	if src.ImageWidthCells != 100 {
+		t.Errorf("src.ImageWidthCells mutated: %d", src.ImageWidthCells)
+	}
+	if *src.ShowImages != true {
+		t.Error("src.ShowImages mutated")
+	}
+}
+
+func TestCloneRetrySettings_Nil(t *testing.T) {
+	if cloneRetrySettings(nil) != nil {
+		t.Error("cloneRetrySettings(nil) should return nil")
+	}
+}
+
+func TestCloneRetrySettings_NonNil(t *testing.T) {
+	tru := true
+	src := &RetrySettings{
+		Enabled:    &tru,
+		MaxRetries: 5,
+		BaseDelayMs: 1000,
+		Provider: &ProviderRetrySettings{
+			TimeoutMs:       30000,
+			MaxRetries:      3,
+			MaxRetryDelayMs: 60000,
+		},
+	}
+	dst := cloneRetrySettings(src)
+	if dst == src {
+		t.Error("should be different pointer")
+	}
+	if dst.Provider == src.Provider {
+		t.Error("Provider should be different pointer")
+	}
+	dst.MaxRetries = 99
+	dst.Provider.MaxRetries = 99
+	if src.MaxRetries != 5 {
+		t.Errorf("src.MaxRetries mutated: %d", src.MaxRetries)
+	}
+	if src.Provider.MaxRetries != 3 {
+		t.Errorf("src.Provider.MaxRetries mutated: %d", src.Provider.MaxRetries)
+	}
+}
+
+func TestCloneRetrySettings_NilProvider(t *testing.T) {
+	src := &RetrySettings{MaxRetries: 3, Provider: nil}
+	dst := cloneRetrySettings(src)
+	if dst.Provider != nil {
+		t.Error("dst.Provider should be nil")
+	}
+}
+
+func TestCloneBranchSummarySettings_Nil(t *testing.T) {
+	if cloneBranchSummarySettings(nil) != nil {
+		t.Error("cloneBranchSummarySettings(nil) should return nil")
+	}
+}
+
+func TestCloneBranchSummarySettings_NonNil(t *testing.T) {
+	tru := true
+	src := &BranchSummarySettings{ReserveTokens: 500, SkipPrompt: &tru}
+	dst := cloneBranchSummarySettings(src)
+	dst.ReserveTokens = 999
+	*dst.SkipPrompt = false
+	if src.ReserveTokens != 500 {
+		t.Errorf("src.ReserveTokens mutated: %d", src.ReserveTokens)
+	}
+	if *src.SkipPrompt != true {
+		t.Error("src.SkipPrompt mutated")
+	}
+}
+
+func TestCloneMarkdownSettings_Nil(t *testing.T) {
+	if cloneMarkdownSettings(nil) != nil {
+		t.Error("cloneMarkdownSettings(nil) should return nil")
+	}
+}
+
+func TestCloneMarkdownSettings_NonNil(t *testing.T) {
+	src := &MarkdownSettings{CodeBlockIndent: "4"}
+	dst := cloneMarkdownSettings(src)
+	dst.CodeBlockIndent = "8"
+	if src.CodeBlockIndent != "4" {
+		t.Errorf("src.CodeBlockIndent mutated: %s", src.CodeBlockIndent)
+	}
+}
+
+func TestCloneWarningSettings_Nil(t *testing.T) {
+	if cloneWarningSettings(nil) != nil {
+		t.Error("cloneWarningSettings(nil) should return nil")
+	}
+}
+
+func TestCloneWarningSettings_NonNil(t *testing.T) {
+	tru := true
+	src := &WarningSettings{AnthropicExtraUsage: &tru}
+	dst := cloneWarningSettings(src)
+	*dst.AnthropicExtraUsage = false
+	if *src.AnthropicExtraUsage != true {
+		t.Error("src.AnthropicExtraUsage mutated")
+	}
+}
+
+func TestCloneWarningSettings_NilBool(t *testing.T) {
+	src := &WarningSettings{}
+	dst := cloneWarningSettings(src)
+	if dst.AnthropicExtraUsage != nil {
+		t.Error("dst.AnthropicExtraUsage should be nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Merge helper tests for nested structs
+// ---------------------------------------------------------------------------
+
+func TestMergeThinkingBudgets_BothNil(t *testing.T) {
+	if mergeThinkingBudgets(nil, nil) != nil {
+		t.Error("mergeThinkingBudgets(nil, nil) should return nil")
+	}
+}
+
+func TestMergeThinkingBudgets_BaseOnly(t *testing.T) {
+	base := &ThinkingBudgetsSettings{Minimal: 100, Low: 500}
+	if mergeThinkingBudgets(base, nil) != base {
+		t.Error("mergeThinkingBudgets(base, nil) should return base unchanged")
+	}
+}
+
+func TestMergeThinkingBudgets_OverrideOnly(t *testing.T) {
+	override := &ThinkingBudgetsSettings{Low: 200, Medium: 1000}
+	result := mergeThinkingBudgets(nil, override)
+	if result.Low != 200 {
+		t.Errorf("Low = %d", result.Low)
+	}
+	if result.Medium != 1000 {
+		t.Errorf("Medium = %d", result.Medium)
+	}
+}
+
+func TestMergeThinkingBudgets_Merge(t *testing.T) {
+	base := &ThinkingBudgetsSettings{Minimal: 100, Low: 500, High: 8000}
+	override := &ThinkingBudgetsSettings{Low: 1000, Medium: 4000}
+	result := mergeThinkingBudgets(base, override)
+	if result.Minimal != 100 {
+		t.Errorf("Minimal = %d, want 100 (from base)", result.Minimal)
+	}
+	if result.Low != 1000 {
+		t.Errorf("Low = %d, want 1000 (from override)", result.Low)
+	}
+	if result.Medium != 4000 {
+		t.Errorf("Medium = %d, want 4000 (from override)", result.Medium)
+	}
+	if result.High != 8000 {
+		t.Errorf("High = %d, want 8000 (from base)", result.High)
+	}
+}
+
+func TestMergeImageSettings_BothNil(t *testing.T) {
+	if mergeImageSettings(nil, nil) != nil {
+		t.Error("mergeImageSettings(nil, nil) should return nil")
+	}
+}
+
+func TestMergeImageSettings_BaseOnly(t *testing.T) {
+	tru := true
+	base := &ImageSettings{AutoResize: &tru}
+	if mergeImageSettings(base, nil) != base {
+		t.Error("mergeImageSettings(base, nil) should return base unchanged")
+	}
+}
+
+func TestMergeImageSettings_OverrideOnly(t *testing.T) {
+	fals := false
+	override := &ImageSettings{BlockImages: &fals}
+	result := mergeImageSettings(nil, override)
+	if result.BlockImages == nil || *result.BlockImages != false {
+		t.Errorf("BlockImages = %v", result.BlockImages)
+	}
+}
+
+func TestMergeImageSettings_Merge(t *testing.T) {
+	tru := true
+	fals := false
+	base := &ImageSettings{AutoResize: &tru, BlockImages: &fals}
+	override := &ImageSettings{BlockImages: &tru}
+	result := mergeImageSettings(base, override)
+	if result.AutoResize == nil || *result.AutoResize != true {
+		t.Errorf("AutoResize = %v", result.AutoResize)
+	}
+	if result.BlockImages == nil || *result.BlockImages != true {
+		t.Errorf("BlockImages = %v, want true (from override)", result.BlockImages)
+	}
+}
+
+func TestMergeTerminalSettings_BothNil(t *testing.T) {
+	if mergeTerminalSettings(nil, nil) != nil {
+		t.Error("mergeTerminalSettings(nil, nil) should return nil")
+	}
+}
+
+func TestMergeTerminalSettings_BaseOnly(t *testing.T) {
+	tru := true
+	base := &TerminalSettings{ShowImages: &tru}
+	if mergeTerminalSettings(base, nil) != base {
+		t.Error("mergeTerminalSettings(base, nil) should return base unchanged")
+	}
+}
+
+func TestMergeTerminalSettings_OverrideOnly(t *testing.T) {
+	override := &TerminalSettings{ImageWidthCells: 120}
+	result := mergeTerminalSettings(nil, override)
+	if result.ImageWidthCells != 120 {
+		t.Errorf("ImageWidthCells = %d", result.ImageWidthCells)
+	}
+}
+
+func TestMergeTerminalSettings_Merge(t *testing.T) {
+	tru := true
+	fals := false
+	base := &TerminalSettings{ShowImages: &tru, ImageWidthCells: 80, ClearOnShrink: &fals}
+	override := &TerminalSettings{ImageWidthCells: 120, ShowTerminalProgress: &tru}
+	result := mergeTerminalSettings(base, override)
+	if result.ShowImages == nil || *result.ShowImages != true {
+		t.Errorf("ShowImages = %v", result.ShowImages)
+	}
+	if result.ImageWidthCells != 120 {
+		t.Errorf("ImageWidthCells = %d", result.ImageWidthCells)
+	}
+	if result.ClearOnShrink == nil || *result.ClearOnShrink != false {
+		t.Errorf("ClearOnShrink = %v", result.ClearOnShrink)
+	}
+	if result.ShowTerminalProgress == nil || *result.ShowTerminalProgress != true {
+		t.Errorf("ShowTerminalProgress = %v", result.ShowTerminalProgress)
+	}
+}
+
+func TestMergeProviderRetrySettings_BothNil(t *testing.T) {
+	if mergeProviderRetrySettings(nil, nil) != nil {
+		t.Error("mergeProviderRetrySettings(nil, nil) should return nil")
+	}
+}
+
+func TestMergeProviderRetrySettings_BaseOnly(t *testing.T) {
+	base := &ProviderRetrySettings{TimeoutMs: 30000}
+	if mergeProviderRetrySettings(base, nil) != base {
+		t.Error("mergeProviderRetrySettings(base, nil) should return base unchanged")
+	}
+}
+
+func TestMergeProviderRetrySettings_OverrideOnly(t *testing.T) {
+	override := &ProviderRetrySettings{MaxRetries: 5, TimeoutMs: 15000}
+	result := mergeProviderRetrySettings(nil, override)
+	if result.MaxRetries != 5 {
+		t.Errorf("MaxRetries = %d", result.MaxRetries)
+	}
+	if result.TimeoutMs != 15000 {
+		t.Errorf("TimeoutMs = %d", result.TimeoutMs)
+	}
+	if result == override {
+		t.Error("result should be a copy, not the same pointer")
+	}
+}
+
+func TestMergeProviderRetrySettings_Merge(t *testing.T) {
+	base := &ProviderRetrySettings{TimeoutMs: 30000, MaxRetries: 3, MaxRetryDelayMs: 60000}
+	override := &ProviderRetrySettings{MaxRetries: 5, TimeoutMs: 0}
+	result := mergeProviderRetrySettings(base, override)
+	if result.TimeoutMs != 30000 {
+		t.Errorf("TimeoutMs = %d, want 30000 (from base)", result.TimeoutMs)
+	}
+	if result.MaxRetries != 5 {
+		t.Errorf("MaxRetries = %d, want 5 (from override)", result.MaxRetries)
+	}
+	if result.MaxRetryDelayMs != 60000 {
+		t.Errorf("MaxRetryDelayMs = %d, want 60000 (from base)", result.MaxRetryDelayMs)
+	}
+}
+
+func TestMergeRetrySettings_BothNil(t *testing.T) {
+	if mergeRetrySettings(nil, nil) != nil {
+		t.Error("mergeRetrySettings(nil, nil) should return nil")
+	}
+}
+
+func TestMergeRetrySettings_BaseOnly(t *testing.T) {
+	tru := true
+	base := &RetrySettings{Enabled: &tru, MaxRetries: 3}
+	if mergeRetrySettings(base, nil) != base {
+		t.Error("mergeRetrySettings(base, nil) should return base unchanged")
+	}
+}
+
+func TestMergeRetrySettings_OverrideOnly(t *testing.T) {
+	override := &RetrySettings{MaxRetries: 10, BaseDelayMs: 2000, Provider: &ProviderRetrySettings{TimeoutMs: 15000}}
+	result := mergeRetrySettings(nil, override)
+	if result.MaxRetries != 10 {
+		t.Errorf("MaxRetries = %d", result.MaxRetries)
+	}
+	if result.BaseDelayMs != 2000 {
+		t.Errorf("BaseDelayMs = %d", result.BaseDelayMs)
+	}
+	if result.Provider == nil || result.Provider.TimeoutMs != 15000 {
+		t.Errorf("Provider = %v", result.Provider)
+	}
+}
+
+func TestMergeRetrySettings_Merge(t *testing.T) {
+	tru := true
+	base := &RetrySettings{
+		Enabled:    &tru,
+		MaxRetries: 3,
+		BaseDelayMs: 1000,
+		Provider:   &ProviderRetrySettings{TimeoutMs: 30000, MaxRetries: 2},
+	}
+	override := &RetrySettings{
+		MaxRetries: 5,
+		Provider:   &ProviderRetrySettings{MaxRetries: 4, MaxRetryDelayMs: 120000},
+	}
+	result := mergeRetrySettings(base, override)
+	if result.Enabled == nil || *result.Enabled != true {
+		t.Errorf("Enabled = %v", result.Enabled)
+	}
+	if result.MaxRetries != 5 {
+		t.Errorf("MaxRetries = %d", result.MaxRetries)
+	}
+	if result.BaseDelayMs != 1000 {
+		t.Errorf("BaseDelayMs = %d", result.BaseDelayMs)
+	}
+	if result.Provider == nil {
+		t.Fatal("Provider is nil")
+	}
+	if result.Provider.TimeoutMs != 30000 {
+		t.Errorf("Provider.TimeoutMs = %d, want 30000 (from base)", result.Provider.TimeoutMs)
+	}
+	if result.Provider.MaxRetries != 4 {
+		t.Errorf("Provider.MaxRetries = %d, want 4 (from override)", result.Provider.MaxRetries)
+	}
+	if result.Provider.MaxRetryDelayMs != 120000 {
+		t.Errorf("Provider.MaxRetryDelayMs = %d, want 120000 (from override)", result.Provider.MaxRetryDelayMs)
+	}
+}
+
+func TestMergeRetrySettings_MergeWithNilProvider(t *testing.T) {
+	base := &RetrySettings{
+		MaxRetries: 3,
+		Provider:   nil,
+	}
+	override := &RetrySettings{
+		Provider: &ProviderRetrySettings{MaxRetries: 5},
+	}
+	result := mergeRetrySettings(base, override)
+	if result.Provider == nil || result.Provider.MaxRetries != 5 {
+		t.Errorf("Provider = %v", result.Provider)
+	}
+	if result.MaxRetries != 3 {
+		t.Errorf("MaxRetries = %d", result.MaxRetries)
+	}
+}
+
+func TestMergeBranchSummarySettings_BothNil(t *testing.T) {
+	if mergeBranchSummarySettings(nil, nil) != nil {
+		t.Error("mergeBranchSummarySettings(nil, nil) should return nil")
+	}
+}
+
+func TestMergeBranchSummarySettings_BaseOnly(t *testing.T) {
+	tru := true
+	base := &BranchSummarySettings{SkipPrompt: &tru}
+	if mergeBranchSummarySettings(base, nil) != base {
+		t.Error("mergeBranchSummarySettings(base, nil) should return base unchanged")
+	}
+}
+
+func TestMergeBranchSummarySettings_OverrideOnly(t *testing.T) {
+	override := &BranchSummarySettings{ReserveTokens: 2000}
+	result := mergeBranchSummarySettings(nil, override)
+	if result.ReserveTokens != 2000 {
+		t.Errorf("ReserveTokens = %d", result.ReserveTokens)
+	}
+}
+
+func TestMergeBranchSummarySettings_Merge(t *testing.T) {
+	tru := true
+	fals := false
+	base := &BranchSummarySettings{ReserveTokens: 1000, SkipPrompt: &tru}
+	override := &BranchSummarySettings{ReserveTokens: 3000, SkipPrompt: &fals}
+	result := mergeBranchSummarySettings(base, override)
+	if result.ReserveTokens != 3000 {
+		t.Errorf("ReserveTokens = %d", result.ReserveTokens)
+	}
+	if result.SkipPrompt == nil || *result.SkipPrompt != false {
+		t.Errorf("SkipPrompt = %v", result.SkipPrompt)
+	}
+}
+
+func TestMergeMarkdownSettings_BothNil(t *testing.T) {
+	if mergeMarkdownSettings(nil, nil) != nil {
+		t.Error("mergeMarkdownSettings(nil, nil) should return nil")
+	}
+}
+
+func TestMergeMarkdownSettings_BaseOnly(t *testing.T) {
+	base := &MarkdownSettings{CodeBlockIndent: "2"}
+	if mergeMarkdownSettings(base, nil) != base {
+		t.Error("mergeMarkdownSettings(base, nil) should return base unchanged")
+	}
+}
+
+func TestMergeMarkdownSettings_OverrideOnly(t *testing.T) {
+	override := &MarkdownSettings{CodeBlockIndent: "4"}
+	result := mergeMarkdownSettings(nil, override)
+	if result.CodeBlockIndent != "4" {
+		t.Errorf("CodeBlockIndent = %q", result.CodeBlockIndent)
+	}
+}
+
+func TestMergeMarkdownSettings_Merge(t *testing.T) {
+	base := &MarkdownSettings{CodeBlockIndent: "2"}
+	override := &MarkdownSettings{CodeBlockIndent: "8"}
+	result := mergeMarkdownSettings(base, override)
+	if result.CodeBlockIndent != "8" {
+		t.Errorf("CodeBlockIndent = %q, want 8", result.CodeBlockIndent)
+	}
+}
+
+func TestMergeWarningSettings_BothNil(t *testing.T) {
+	if mergeWarningSettings(nil, nil) != nil {
+		t.Error("mergeWarningSettings(nil, nil) should return nil")
+	}
+}
+
+func TestMergeWarningSettings_BaseOnly(t *testing.T) {
+	tru := true
+	base := &WarningSettings{AnthropicExtraUsage: &tru}
+	if mergeWarningSettings(base, nil) != base {
+		t.Error("mergeWarningSettings(base, nil) should return base unchanged")
+	}
+}
+
+func TestMergeWarningSettings_OverrideOnly(t *testing.T) {
+	fals := false
+	override := &WarningSettings{AnthropicExtraUsage: &fals}
+	result := mergeWarningSettings(nil, override)
+	if result.AnthropicExtraUsage == nil || *result.AnthropicExtraUsage != false {
+		t.Errorf("AnthropicExtraUsage = %v", result.AnthropicExtraUsage)
+	}
+}
+
+func TestMergeWarningSettings_Merge(t *testing.T) {
+	tru := true
+	fals := false
+	base := &WarningSettings{AnthropicExtraUsage: &tru}
+	override := &WarningSettings{AnthropicExtraUsage: &fals}
+	result := mergeWarningSettings(base, override)
+	if result.AnthropicExtraUsage == nil || *result.AnthropicExtraUsage != false {
+		t.Errorf("AnthropicExtraUsage = %v, want false", result.AnthropicExtraUsage)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MergeSettings additional edge cases
+// ---------------------------------------------------------------------------
+
+func TestMergeSettings_EmptySettings(t *testing.T) {
+	base := &Settings{}
+	override := &Settings{}
+	result := MergeSettings(base, override)
+	if result.DefaultProvider != "" {
+		t.Errorf("expected empty settings, got DefaultProvider=%q", result.DefaultProvider)
+	}
+	if result.CompactionEnabled != nil {
+		t.Error("CompactionEnabled should be nil")
+	}
+}
+
+func TestMergeSettings_Clone_DoesNotAlias(t *testing.T) {
+	// Verify that MergeSettings always clones, even when one input is nil
+	base := &Settings{DefaultModel: "gpt-4o", Extensions: []string{"a"}}
+	// nil override -> should return clone of base
+	result := MergeSettings(base, nil)
+	result.DefaultModel = "modified"
+	if base.DefaultModel != "gpt-4o" {
+		t.Errorf("base.DefaultModel mutated: %q", base.DefaultModel)
+	}
+
+	// nil base -> should return clone of override
+	override := &Settings{DefaultModel: "claude", Extensions: []string{"b"}}
+	result = MergeSettings(nil, override)
+	result.Extensions[0] = "modified"
+	if override.Extensions[0] != "b" {
+		t.Errorf("override.Extensions mutated: %v", override.Extensions)
+	}
+}

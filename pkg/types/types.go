@@ -1,6 +1,9 @@
 package types
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // ---------------------------------------------------------------------------
 // AgentMessage — internal conversation representation
@@ -182,6 +185,25 @@ func agentMessageFromLLM(m Message) AgentMessage {
 						block := ImageBlock{MimeType: ib.MimeType, Data: ib.Data}
 						if ib.Source != nil {
 							block.URL = "data:" + ib.Source.MediaType + ";base64," + ib.Source.Data
+						}
+						// Fallback: parse image_url.url (OpenAI format)
+						if block.MimeType == "" && block.Data == "" && block.URL == "" {
+							var wrapper struct {
+								ImageURL struct{ URL string } `json:"image_url"`
+							}
+							if json.Unmarshal(raw, &wrapper) == nil && wrapper.ImageURL.URL != "" {
+								block.URL = wrapper.ImageURL.URL
+								// Parse data URI
+								if strings.HasPrefix(block.URL, "data:") {
+									parts := strings.SplitN(block.URL[5:], ";", 2)
+									if len(parts) == 2 {
+										block.MimeType = parts[0]
+										if strings.HasPrefix(parts[1], "base64,") {
+											block.Data = parts[1][7:]
+										}
+									}
+								}
+							}
 						}
 						am.Content = append(am.Content, block)
 					}
