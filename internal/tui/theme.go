@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -62,6 +64,38 @@ type Theme struct {
 	ThinkingMedium  string `json:"thinking_medium"`
 	ThinkingHigh    string `json:"thinking_high"`
 	ThinkingXhigh   string `json:"thinking_xhigh"`
+
+	// Markdown colors (TS pi-mono: 10 dedicated slots)
+	MdHeading         string `json:"md_heading"`
+	MdLink            string `json:"md_link"`
+	MdLinkUrl         string `json:"md_link_url"`
+	MdCode            string `json:"md_code"`
+	MdCodeBlock       string `json:"md_code_block"`
+	MdCodeBlockBorder string `json:"md_code_block_border"`
+	MdQuote           string `json:"md_quote"`
+	MdQuoteBorder     string `json:"md_quote_border"`
+	MdHr              string `json:"md_hr"`
+	MdListBullet      string `json:"md_list_bullet"`
+
+	// Syntax highlight colors (TS pi-mono: 9 slots)
+	SyntaxComment  string `json:"syntax_comment"`
+	SyntaxKeyword  string `json:"syntax_keyword"`
+	SyntaxFunction string `json:"syntax_function"`
+	SyntaxString   string `json:"syntax_string"`
+	SyntaxNumber   string `json:"syntax_number"`
+	SyntaxType     string `json:"syntax_type"`
+	SyntaxVariable string `json:"syntax_variable"`
+	SyntaxConstant string `json:"syntax_constant"`
+	SyntaxOperator string `json:"syntax_operator"`
+
+	// Additional UI colors
+	UserMessageBg   string `json:"user_message_bg"`
+	UserMessageText string `json:"user_message_text"`
+	ToolTitle       string `json:"tool_title"`
+	ToolOutput      string `json:"tool_output"`
+
+	// Theme variables (TS pi-mono: vars section with indirect references)
+	Vars map[string]string `json:"vars,omitempty"`
 }
 
 // DefaultTheme returns the built-in dark theme.
@@ -104,6 +138,32 @@ func DefaultTheme() *Theme {
 		ThinkingMedium:   "#81a2be",
 		ThinkingHigh:     "#b294bb",
 		ThinkingXhigh:    "#d183e8",
+		// Markdown colors
+		MdHeading:         "#cba6f7",
+		MdLink:            "#89b4fa",
+		MdLinkUrl:         "#a6adc8",
+		MdCode:            "#f9e2af",
+		MdCodeBlock:       "#45475a",
+		MdCodeBlockBorder: "#585b70",
+		MdQuote:           "#a6adc8",
+		MdQuoteBorder:     "#585b70",
+		MdHr:              "#585b70",
+		MdListBullet:      "#89b4fa",
+		// Syntax colors
+		SyntaxComment:  "#6c7086",
+		SyntaxKeyword:  "#cba6f7",
+		SyntaxFunction: "#89b4fa",
+		SyntaxString:   "#a6e3a1",
+		SyntaxNumber:   "#fab387",
+		SyntaxType:     "#f9e2af",
+		SyntaxVariable: "#cdd6f4",
+		SyntaxConstant: "#fab387",
+		SyntaxOperator: "#89dceb",
+		// Additional UI
+		UserMessageBg:   "#313244",
+		UserMessageText: "#cdd6f4",
+		ToolTitle:       "#f9e2af",
+		ToolOutput:      "#a6adc8",
 	}
 }
 
@@ -147,6 +207,32 @@ func LightTheme() *Theme {
 		ThinkingMedium:   "#6c6f85",
 		ThinkingHigh:     "#7c3aed",
 		ThinkingXhigh:    "#d946ef",
+		// Markdown colors
+		MdHeading:         "#8839ef",
+		MdLink:            "#1e66f5",
+		MdLinkUrl:         "#6c6f85",
+		MdCode:            "#fe640b",
+		MdCodeBlock:       "#ccd0da",
+		MdCodeBlockBorder: "#bcc0cc",
+		MdQuote:           "#8c8fa1",
+		MdQuoteBorder:     "#bcc0cc",
+		MdHr:              "#bcc0cc",
+		MdListBullet:      "#1e66f5",
+		// Syntax colors
+		SyntaxComment:  "#9ca0b0",
+		SyntaxKeyword:  "#8839ef",
+		SyntaxFunction: "#1e66f5",
+		SyntaxString:   "#40a02b",
+		SyntaxNumber:   "#fe640b",
+		SyntaxType:     "#df8e1d",
+		SyntaxVariable: "#4c4f69",
+		SyntaxConstant: "#fe640b",
+		SyntaxOperator: "#04a5e5",
+		// Additional UI
+		UserMessageBg:   "#dce0e8",
+		UserMessageText: "#4c4f69",
+		ToolTitle:       "#df8e1d",
+		ToolOutput:      "#6c6f85",
 	}
 }
 
@@ -160,117 +246,78 @@ func LoadTheme(path string) (*Theme, error) {
 	if err := json.Unmarshal(data, &t); err != nil {
 		return nil, err
 	}
-	// Apply defaults for missing fields
+	// Apply defaults for missing fields using reflection-based fallback
 	d := DefaultTheme()
-	if t.Background == "" {
-		t.Background = d.Background
-	}
-	if t.Foreground == "" {
-		t.Foreground = d.Foreground
-	}
-	if t.Border == "" {
-		t.Border = d.Border
-	}
-	if t.Accent == "" {
-		t.Accent = d.Accent
-	}
-	if t.UserColor == "" {
-		t.UserColor = d.UserColor
-	}
-	if t.AssistantColor == "" {
-		t.AssistantColor = d.AssistantColor
-	}
-	if t.ThinkingColor == "" {
-		t.ThinkingColor = d.ThinkingColor
-	}
-	if t.ToolColor == "" {
-		t.ToolColor = d.ToolColor
-	}
-	if t.ToolPendingBg == "" {
-		t.ToolPendingBg = d.ToolPendingBg
-	}
-	if t.ToolSuccessBg == "" {
-		t.ToolSuccessBg = d.ToolSuccessBg
-	}
-	if t.ToolErrorBg == "" {
-		t.ToolErrorBg = d.ToolErrorBg
-	}
-	if t.ErrorColor == "" {
-		t.ErrorColor = d.ErrorColor
-	}
-	if t.SystemColor == "" {
-		t.SystemColor = d.SystemColor
-	}
-	if t.DiffAddColor == "" {
-		t.DiffAddColor = d.DiffAddColor
-	}
-	if t.DiffDelColor == "" {
-		t.DiffDelColor = d.DiffDelColor
-	}
-	if t.ContextGreen == "" {
-		t.ContextGreen = d.ContextGreen
-	}
-	if t.ContextYellow == "" {
-		t.ContextYellow = d.ContextYellow
-	}
-	if t.ContextRed == "" {
-		t.ContextRed = d.ContextRed
-	}
-	if t.FooterBackground == "" {
-		t.FooterBackground = d.FooterBackground
-	}
-	if t.FooterForeground == "" {
-		t.FooterForeground = d.FooterForeground
-	}
-	if t.InputBorder == "" {
-		t.InputBorder = d.InputBorder
-	}
-	if t.BorderAccent == "" {
-		t.BorderAccent = d.BorderAccent
-	}
-	if t.BorderMuted == "" {
-		t.BorderMuted = d.BorderMuted
-	}
-	if t.ThinkingText == "" {
-		t.ThinkingText = d.ThinkingText
-	}
-	if t.Success == "" {
-		t.Success = d.Success
-	}
-	if t.Warning == "" {
-		t.Warning = d.Warning
-	}
-	if t.Muted == "" {
-		t.Muted = d.Muted
-	}
-	if t.Dim == "" {
-		t.Dim = d.Dim
-	}
-	if t.SelectedBg == "" {
-		t.SelectedBg = d.SelectedBg
-	}
-	if t.BashMode == "" {
-		t.BashMode = d.BashMode
-	}
-	if t.ThinkingOff == "" {
-		t.ThinkingOff = d.ThinkingOff
-	}
-	if t.ThinkingMinimal == "" {
-		t.ThinkingMinimal = d.ThinkingMinimal
-	}
-	if t.ThinkingLow == "" {
-		t.ThinkingLow = d.ThinkingLow
-	}
-	if t.ThinkingMedium == "" {
-		t.ThinkingMedium = d.ThinkingMedium
-	}
-	if t.ThinkingHigh == "" {
-		t.ThinkingHigh = d.ThinkingHigh
-	}
-	if t.ThinkingXhigh == "" {
-		t.ThinkingXhigh = d.ThinkingXhigh
-	}
+	fallbackName := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	t.applyDefaults(d, fallbackName)
 	return &t, nil
+}
+
+// applyDefaults fills zero-value string fields from a default theme.
+// Uses reflection to avoid 30+ if-statements per field.
+// If fallbackName is non-empty, sets it when Name is empty.
+func (t *Theme) applyDefaults(d *Theme, fallbackName string) {
+	tv := reflect.ValueOf(t).Elem()
+	dv := reflect.ValueOf(d).Elem()
+	for i := range tv.NumField() {
+		f := tv.Field(i)
+		if f.Kind() == reflect.String && f.String() == "" {
+			df := dv.Field(i)
+			if df.String() != "" {
+				f.SetString(df.String())
+			}
+		}
+	}
+	if t.Name == "" && fallbackName != "" {
+		t.Name = fallbackName
+	}
+}
+
+// ResolveVar resolves a variable reference like "$primary" or "${primary}"
+// from the theme's Vars map. Returns the resolved value, or the original
+// string if it's not a variable reference or can't be resolved.
+func (t *Theme) ResolveVar(v string) string {
+	if t.Vars == nil {
+		return v
+	}
+	// Strip $ prefix and optional ${} wrapping
+	key := v
+	if strings.HasPrefix(key, "${") && strings.HasSuffix(key, "}") {
+		key = key[2 : len(key)-1]
+	} else if strings.HasPrefix(key, "$") {
+		key = key[1:]
+	}
+	if resolved, ok := t.Vars[key]; ok {
+		return resolved
+	}
+	return v
+}
+
+// GetAllThemes returns names of all known themes: built-in (default, light) + discovered.
+func GetAllThemes(dir string) []string {
+	names := []string{"default", "light"}
+	seen := map[string]bool{"default": true, "light": true}
+
+	paths, err := DiscoverThemes(dir)
+	if err != nil {
+		return names
+	}
+	for _, p := range paths {
+		t, err := LoadTheme(p)
+		if err != nil {
+			continue
+		}
+		name := t.Name
+		if name == "" {
+			base := filepath.Base(p)
+			name = strings.TrimSuffix(base, filepath.Ext(base))
+		}
+		if !seen[name] {
+			names = append(names, name)
+			seen[name] = true
+		}
+	}
+	return names
 }
 
 // DiscoverThemes scans the themes directory for .json files.
@@ -378,4 +425,154 @@ func (t *Theme) ErrorStyle() lipgloss.Style {
 func (t *Theme) SystemStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
 		Foreground(lipgloss.Color(t.SystemColor))
+}
+
+// ─── Markdown Styles ───────────────────────────────────────────────────────
+
+// MdHeadingStyle returns the style for markdown headings.
+func (t *Theme) MdHeadingStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.MdHeading)).
+		Bold(true)
+}
+
+// MdLinkStyle returns the style for markdown links.
+func (t *Theme) MdLinkStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.MdLink)).
+		Underline(true)
+}
+
+// MdLinkUrlStyle returns the style for markdown link URLs.
+func (t *Theme) MdLinkUrlStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.MdLinkUrl))
+}
+
+// MdCodeStyle returns the style for inline code.
+func (t *Theme) MdCodeStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.MdCode))
+}
+
+// MdCodeBlockStyle returns the style for code block backgrounds.
+func (t *Theme) MdCodeBlockStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Background(lipgloss.Color(t.MdCodeBlock))
+}
+
+// MdCodeBlockBorderStyle returns the style for code block borders.
+func (t *Theme) MdCodeBlockBorderStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.MdCodeBlockBorder))
+}
+
+// MdQuoteStyle returns the style for markdown blockquotes.
+func (t *Theme) MdQuoteStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.MdQuote)).
+		Italic(true)
+}
+
+// MdQuoteBorderStyle returns the style for blockquote borders.
+func (t *Theme) MdQuoteBorderStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.MdQuoteBorder))
+}
+
+// MdHrStyle returns the style for horizontal rules.
+func (t *Theme) MdHrStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.MdHr))
+}
+
+// MdListBulletStyle returns the style for list bullets.
+func (t *Theme) MdListBulletStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.MdListBullet))
+}
+
+// ─── Syntax Highlight Styles ───────────────────────────────────────────────
+
+// SyntaxCommentStyle returns the style for code comments.
+func (t *Theme) SyntaxCommentStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.SyntaxComment)).
+		Italic(true)
+}
+
+// SyntaxKeywordStyle returns the style for syntax keywords.
+func (t *Theme) SyntaxKeywordStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.SyntaxKeyword)).
+		Bold(true)
+}
+
+// SyntaxFunctionStyle returns the style for syntax function names.
+func (t *Theme) SyntaxFunctionStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.SyntaxFunction))
+}
+
+// SyntaxStringStyle returns the style for syntax strings.
+func (t *Theme) SyntaxStringStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.SyntaxString))
+}
+
+// SyntaxNumberStyle returns the style for syntax numbers.
+func (t *Theme) SyntaxNumberStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.SyntaxNumber))
+}
+
+// SyntaxTypeStyle returns the style for syntax types.
+func (t *Theme) SyntaxTypeStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.SyntaxType))
+}
+
+// SyntaxVariableStyle returns the style for syntax variables.
+func (t *Theme) SyntaxVariableStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.SyntaxVariable))
+}
+
+// SyntaxConstantStyle returns the style for syntax constants.
+func (t *Theme) SyntaxConstantStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.SyntaxConstant))
+}
+
+// SyntaxOperatorStyle returns the style for syntax operators.
+func (t *Theme) SyntaxOperatorStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.SyntaxOperator))
+}
+
+// ─── Additional UI Styles ──────────────────────────────────────────────────
+
+// UserMessageBgStyle returns the background style for user messages.
+func (t *Theme) UserMessageBgStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Background(lipgloss.Color(t.UserMessageBg))
+}
+
+// UserMessageTextStyle returns the text style for user messages.
+func (t *Theme) UserMessageTextStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.UserMessageText))
+}
+
+// ToolTitleStyle returns the style for tool call titles.
+func (t *Theme) ToolTitleStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.ToolTitle)).
+		Bold(true)
+}
+
+// ToolOutputStyle returns the style for tool output text.
+func (t *Theme) ToolOutputStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.ToolOutput))
 }
