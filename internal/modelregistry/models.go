@@ -82,6 +82,7 @@ var modelsCatalog = []types.Model{
 			CacheWrite float64 `json:"cacheWrite"`
 		}{Input: 0.55, Output: 2.19}},
 	{ID: "deepseek-v4-pro", Name: "DeepSeek V4 Pro", Provider: "deepseek", API: "openai-completions", BaseURL: "https://api.deepseek.com/v1", ContextWindow: 131072, MaxTokens: 32000, Reasoning: false},
+	{ID: "deepseek-v4-flash", Name: "DeepSeek V4 Flash", Provider: "deepseek", API: "openai-completions", BaseURL: "https://api.deepseek.com/v1", ContextWindow: 131072, MaxTokens: 32000, Reasoning: false},
 	{ID: "deepseek-v4.5", Name: "DeepSeek V4.5", Provider: "deepseek", API: "openai-completions", BaseURL: "https://api.deepseek.com/v1", ContextWindow: 131072, MaxTokens: 32000, Reasoning: false},
 
 	// ─── Google ─────────────────────────────────────────────────────────────

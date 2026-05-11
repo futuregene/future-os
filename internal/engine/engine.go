@@ -186,11 +186,22 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 	if !resolved && opts.BaseURL != "" {
 		// Fall back: try to find a model matching the base URL's provider
 		api := apiregistry.LookupAPI(opts.BaseURL)
+		provider := providerFromURL(opts.BaseURL)
+		// Prefer model from the same provider, then any matching API
 		for _, m := range mreg.GetAll() {
-			if m.API == string(api) {
+			if m.API == string(api) && m.Provider == provider {
 				modelInfo = m
 				resolved = true
 				break
+			}
+		}
+		if !resolved {
+			for _, m := range mreg.GetAll() {
+				if m.API == string(api) {
+					modelInfo = m
+					resolved = true
+					break
+				}
 			}
 		}
 	}
