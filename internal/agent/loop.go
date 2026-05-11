@@ -147,21 +147,22 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Ag
 		workMessages := messages
 		if l.Config.TransformContext != nil {
 			beforeLen := len(workMessages)
-			if l.EventBus != nil {
-				l.EventBus.Emit(events.CompactionStart("auto"))
-			}
 			llmWork := types.ConvertToLLM(messages)
 			llmWork = l.Config.TransformContext(llmWork, "")
 			workMessages = types.ConvertFromLLM(llmWork)
-			if l.EventBus != nil {
-				if len(workMessages) < beforeLen {
-					tokensBefore := 0
-					summary := ""
-					if l.LastCompactionResult != nil {
-						tokensBefore = l.LastCompactionResult.TokensBefore
-						summary = l.LastCompactionResult.Summary
-						l.LastCompactionResult = nil // reset after use
-					}
+			if len(workMessages) < beforeLen {
+				// Compaction actually happened — emit events
+				if l.EventBus != nil {
+					l.EventBus.Emit(events.CompactionStart("auto"))
+				}
+				tokensBefore := 0
+				summary := ""
+				if l.LastCompactionResult != nil {
+					tokensBefore = l.LastCompactionResult.TokensBefore
+					summary = l.LastCompactionResult.Summary
+					l.LastCompactionResult = nil // reset after use
+				}
+				if l.EventBus != nil {
 					l.EventBus.Emit(events.CompactionEnd(tokensBefore, summary, false, "auto"))
 				}
 			}

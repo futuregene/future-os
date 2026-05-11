@@ -23,9 +23,10 @@ type CompactionSettings struct {
 }
 
 type CompactOptions struct {
-	ReserveTokens   int
+	ReserveTokens    int
 	KeepRecentTokens int
-	Summarizer      func(messages []types.Message) (string, error)
+	ContextWindow    int // model context window for shouldCompact check (TS-aligned)
+	Summarizer       func(messages []types.Message) (string, error)
 }
 
 type CompactionResult struct {
@@ -147,6 +148,7 @@ func FindCutPoint(messages []types.Message, startIndex, endIndex int, keepRecent
 }
 
 // Compact performs message compaction. Returns compacted messages and metadata.
+// Trigger aligned with TS pi-mono shouldCompact(): contextTokens > contextWindow - reserveTokens.
 func Compact(messages []types.Message, opts CompactOptions) ([]types.Message, *CompactionResult, error) {
 	tokensBefore := EstimateContextTokens(messages)
 	if opts.ReserveTokens == 0 {
@@ -155,11 +157,24 @@ func Compact(messages []types.Message, opts CompactOptions) ([]types.Message, *C
 	if opts.KeepRecentTokens == 0 {
 		opts.KeepRecentTokens = DefaultCompactionSettings.KeepRecentTokens
 	}
+	if opts.ContextWindow == 0 {
+		// Fallback: if no context window provided, use a reasonable default
+		opts.ContextWindow = 200000
+	}
 
-	// Use token budget from end
+	// TS-aligned trigger: compact when contextTokens > contextWindow - reserveTokens
+	if !ShouldCompact(tokensBefore, opts.ContextWindow, CompactionSettings{
+		Enabled:         true,
+		ReserveTokens:   opts.ReserveTokens,
+		KeepRecentTokens: opts.KeepRecentTokens,
+	}) {
+		return messages, nil, nil
+	}
+
+	// Use token budget from end for keep-recent
 	budget := opts.KeepRecentTokens
 	if budget > tokensBefore {
-		return messages, nil, nil
+		budget = tokensBefore
 	}
 
 	cut := FindCutPoint(messages, 0, len(messages), budget)

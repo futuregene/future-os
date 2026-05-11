@@ -306,10 +306,12 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 
 	// Wire up auto-compaction if configured
 	if cfg.CompactionReserveTokens > 0 {
+		contextWindow := modelInfo.ContextWindow
 		loop.Config.TransformContext = func(messages []types.Message, _ string) []types.Message {
 			compacted, result, _ := compaction.Compact(messages, compaction.CompactOptions{
 				ReserveTokens:    cfg.CompactionReserveTokens,
 				KeepRecentTokens: cfg.CompactionKeepRecentTokens,
+				ContextWindow:    contextWindow,
 			})
 			loop.LastCompactionResult = result
 			return compacted
