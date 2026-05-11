@@ -45,7 +45,7 @@ func GrepTool() types.AgentTool {
 
 // grepViaRipgrep runs rg --json and parses structured output.
 func grepViaRipgrep(rgPath string, params grepParams) (string, error) {
-	args := []string{"--json", "--no-heading", "--color", "never",
+	args := []string{"--json", "--no-heading", "--color", "never", "--hidden",
 		"--max-count", fmt.Sprintf("%d", params.Limit+1)} // +1 to detect overflow
 	if params.IgnoreCase {
 		args = append(args, "-i")

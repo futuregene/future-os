@@ -1,17 +1,17 @@
 package tools
 
 import (
-"encoding/json"
-"fmt"
-"os"
-"strings"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
 
-"github.com/huichen/xihu/pkg/types"
+	"github.com/huichen/xihu/pkg/types"
 )
 
 type editOp struct {
-	OldString string `json:"old_string"`
-	NewString string `json:"new_string"`
+	OldText string `json:"oldText"`
+	NewText string `json:"newText"`
 }
 
 // matchRegion records the byte range of a match in the original content.
@@ -21,45 +21,43 @@ type matchRegion struct {
 	oldEnd   int
 }
 
-// EditTool returns the enhanced Edit tool.
+// EditTool returns the enhanced Edit tool (TS pi-mono aligned).
 func EditTool() types.AgentTool {
 	return types.AgentTool{
 		Def: types.ToolDef{
 			Type: "function",
 			Function: types.FunctionDef{
-				Name: "edit",
-				Description: "Make targeted edits to a file. Supports single edit (old_string/new_string) or multi-edit (edits array). Uses fuzzy matching for smart quotes and trailing whitespace.",
-				Parameters: types.SchemaOf[EditParams](),
+				Name:        "edit",
+				Description: "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. Supports multi-edit via edits array. Uses fuzzy matching for smart quotes and trailing whitespace.",
+				Parameters:  types.SchemaOf[EditParams](),
 			},
 		},
 		Guidelines: []string{
 			"Include enough context lines for unique matching",
-			"Use replace_all for global changes",
 		},
 		Handler: func(args json.RawMessage) (string, error) {
 			// --- Parse parameters ---
 			var params struct {
-				FilePath   string          `json:"file_path"`
-				OldString  string          `json:"old_string"`
-				NewString  string          `json:"new_string"`
-				OldText    string          `json:"oldText"`
-				NewText    string          `json:"newText"`
-				ReplaceAll bool            `json:"replace_all"`
-				Edits      json.RawMessage `json:"edits"`
+				FilePath  string          `json:"path"`
+				OldString string          `json:"old_string"` // legacy alias
+				NewString string          `json:"new_string"` // legacy alias
+				OldText   string          `json:"oldText"`
+				NewText   string          `json:"newText"`
+				Edits     json.RawMessage `json:"edits"`
 			}
 			if err := json.Unmarshal(args, &params); err != nil {
 				return "", err
 			}
 			if params.FilePath == "" {
-				return "", fmt.Errorf("file_path is required")
+				return "", fmt.Errorf("path is required")
 			}
 
-			// Legacy alias fallback
-			if params.OldString == "" && params.OldText != "" {
-				params.OldString = params.OldText
+			// Legacy alias: old_string → oldText, new_string → newText
+			if params.OldText == "" && params.OldString != "" {
+				params.OldText = params.OldString
 			}
-			if params.NewString == "" && params.NewText != "" {
-				params.NewString = params.NewText
+			if params.NewText == "" && params.NewString != "" {
+				params.NewText = params.NewString
 			}
 
 			// --- Build edits list ---
@@ -72,10 +70,10 @@ func EditTool() types.AgentTool {
 					return "", fmt.Errorf("edits array is empty")
 				}
 			} else {
-				if params.OldString == "" {
-					return "", fmt.Errorf("old_string (or oldText) is required in single-edit mode")
+				if params.OldText == "" {
+					return "", fmt.Errorf("oldText (or old_string) is required in single-edit mode")
 				}
-				edits = []editOp{{OldString: params.OldString, NewString: params.NewString}}
+				edits = []editOp{{OldText: params.OldText, NewText: params.NewText}}
 			}
 
 			// --- Read file ---
@@ -93,7 +91,6 @@ func EditTool() types.AgentTool {
 			}
 
 			// --- Line ending normalization (#14) ---
-			// Detect original line endings, then normalize to LF for consistent matching.
 			lineEnding := detectLineEnding(originalContent)
 			originalContent = normalizeToLF(originalContent)
 
@@ -104,9 +101,9 @@ func EditTool() types.AgentTool {
 			// --- Find all matches ---
 			var matches []matchRegion
 			for ei, edit := range edits {
-				normOld := normalize(edit.OldString)
+				normOld := normalize(edit.OldText)
 				if normOld == "" {
-					return "", fmt.Errorf("edit[%d]: old_string normalizes to empty string", ei)
+					return "", fmt.Errorf("edit[%d]: oldText normalizes to empty string", ei)
 				}
 
 				searchStart := 0
@@ -125,12 +122,8 @@ func EditTool() types.AgentTool {
 						oldEnd:   origEnd,
 					})
 
-					// Advance past this match
-					searchStart = absPos + len(normOld)
-					if !params.ReplaceAll && len(edits) == 1 {
-						// Single-edit non-replace_all: only first match
-						break
-					}
+					// Each edit matches exactly once (TS pi-mono behavior)
+					break
 				}
 			}
 
@@ -139,19 +132,11 @@ func EditTool() types.AgentTool {
 				return "", fmt.Errorf("no matches found for any edit in %s", params.FilePath)
 			}
 
-			// --- Single-edit uniqueness check ---
-			if len(edits) == 1 && !params.ReplaceAll {
-				if len(matches) > 1 {
-					return "", fmt.Errorf("old_string matches %d times in %s — use replace_all=true or add more context lines", len(matches), params.FilePath)
-				}
-			}
-
 			// --- Overlap detection (multi-edit) ---
 			if len(edits) > 1 {
 				for i := 0; i < len(matches); i++ {
 					for j := i + 1; j < len(matches); j++ {
 						a, b := matches[i], matches[j]
-						// Check if [a.start, a.end) overlaps [b.start, b.end)
 						if a.oldStart < b.oldEnd && b.oldStart < a.oldEnd {
 							return "", fmt.Errorf(
 								"overlapping edits: edit[%d] at bytes [%d,%d) and edit[%d] at bytes [%d,%d)",
@@ -164,7 +149,6 @@ func EditTool() types.AgentTool {
 			}
 
 			// --- Apply replacements (reverse order to preserve positions) ---
-			// Sort matches by start position descending
 			sortMatches(matches)
 
 			result := originalContent
@@ -172,20 +156,15 @@ func EditTool() types.AgentTool {
 			skippedNoChange := 0
 			for _, m := range matches {
 				edit := edits[m.editIdx]
-
-				// No-change detection: if the matched text is identical to new_string,
-				// skip this replacement to avoid unnecessary file writes.
 				matchedText := originalContent[m.oldStart:m.oldEnd]
-				if matchedText == edit.NewString {
+				if matchedText == edit.NewText {
 					skippedNoChange++
 					continue
 				}
-
-				result = result[:m.oldStart] + edit.NewString + result[m.oldEnd:]
+				result = result[:m.oldStart] + edit.NewText + result[m.oldEnd:]
 				totalReplacements++
 			}
 
-			// If all replacements were skipped due to no-change, report it
 			if totalReplacements == 0 && skippedNoChange > 0 {
 				return fmt.Sprintf("No changes needed: all %d edit(s) already match the target content in %s", skippedNoChange, params.FilePath), nil
 			}
@@ -207,13 +186,12 @@ func EditTool() types.AgentTool {
 			// --- Generate unified diff ---
 			diff := generateUnifiedDiff(params.FilePath, originalContent, result)
 
-			// --- Build response ---
+			// --- Build response (TS pi-mono aligned) ---
 			var sb strings.Builder
 			if len(edits) == 1 {
-				fmt.Fprintf(&sb, "Edited %s: %d replacement(s)\n", params.FilePath, totalReplacements)
+				fmt.Fprintf(&sb, "Successfully replaced 1 block(s) in %s.\n", params.FilePath)
 			} else {
-				fmt.Fprintf(&sb, "Multi-edited %s: %d edit(s) applied, %d total replacement(s)\n",
-					params.FilePath, len(edits), totalReplacements)
+				fmt.Fprintf(&sb, "Successfully replaced %d block(s) in %s.\n", totalReplacements, params.FilePath)
 			}
 			if diff != "" {
 				sb.WriteString(diff)
@@ -234,5 +212,3 @@ func sortMatches(matches []matchRegion) {
 		}
 	}
 }
-
-// Grep tool: search file contents with regex. Uses ripgrep (rg) with --json

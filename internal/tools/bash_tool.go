@@ -1,15 +1,15 @@
 package tools
 
 import (
-"context"
-"encoding/json"
-"fmt"
-"os"
-"os/exec"
-"strings"
-"time"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
 
-"github.com/huichen/xihu/pkg/types"
+	"github.com/huichen/xihu/pkg/types"
 )
 
 func BashTool() types.AgentTool {
@@ -18,13 +18,12 @@ func BashTool() types.AgentTool {
 			Type: "function",
 			Function: types.FunctionDef{
 				Name:        "bash",
-				Description: "Execute a shell command in the project directory",
-				Parameters: types.SchemaOf[BashParams](),
+				Description: "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 50000 bytes. Optionally provide a timeout in seconds.",
+				Parameters:  types.SchemaOf[BashParams](),
 			},
 		},
 		Guidelines: []string{
 			"Prefer one bash command per turn",
-			"Check exit codes",
 		},
 		Handler: func(args json.RawMessage) (string, error) {
 			var params struct {
@@ -35,8 +34,6 @@ func BashTool() types.AgentTool {
 				return "", err
 			}
 
-			// Timeout is optional; if unspecified or <= 0, run without timeout.
-			// The context serves as an AbortSignal that can cancel the command.
 			var ctx context.Context
 			var cancel context.CancelFunc
 			if params.Timeout > 0 {
@@ -50,7 +47,6 @@ func BashTool() types.AgentTool {
 			cmd.Dir, _ = os.Getwd()
 			out, err := cmd.CombinedOutput()
 
-			// Determine exit code
 			exitCode := 0
 			if cmd.ProcessState != nil {
 				exitCode = cmd.ProcessState.ExitCode()
@@ -58,47 +54,28 @@ func BashTool() types.AgentTool {
 				exitCode = -1
 			}
 
-			// Handle timeout case
+			// Timeout (TS pi-mono: throws error)
 			if ctx.Err() == context.DeadlineExceeded {
-				if exitCode == 0 {
-					exitCode = -1
+				if params.Timeout > 0 {
+					return "", fmt.Errorf("Command timed out after %d seconds", params.Timeout)
 				}
+				return "", fmt.Errorf("Command timed out")
+			}
+
+			// Nonzero exit (TS pi-mono: throws error)
+			if exitCode != 0 {
+				return "", fmt.Errorf("Command exited with code %d", exitCode)
 			}
 
 			fullOutput := string(out)
-			const spillThreshold = 10000
 			const tailBytes = 50000
 
-			var result strings.Builder
-
-			// Line 1: exit code
-			fmt.Fprintf(&result, "exit code: %d\n", exitCode)
-
-			// Line 2 (optional): temp file path if output exceeds spill threshold
-			if len(fullOutput) > spillThreshold {
-				tmpFile, tmpErr := os.CreateTemp("", "pi-bash-*.txt")
-				if tmpErr != nil {
-					fmt.Fprintf(&result, "[failed to spill output: %v]\n", tmpErr)
-				} else {
-					if _, tmpErr := tmpFile.WriteString(fullOutput); tmpErr != nil {
-						tmpFile.Close()
-						os.Remove(tmpFile.Name())
-						fmt.Fprintf(&result, "[failed to spill output: %v]\n", tmpErr)
-					} else {
-						tmpFile.Close()
-						fmt.Fprintf(&result, "[full output at %s]\n", tmpFile.Name())
-					}
-				}
-			}
-
-			// Line 3+: output — truncated to last tailBytes bytes
+			// Truncate to last tailBytes bytes
 			if len(fullOutput) > tailBytes {
 				fullOutput = fullOutput[len(fullOutput)-tailBytes:]
 			}
-			result.WriteString(fullOutput)
 
-			return result.String(), nil
+			return strings.TrimSpace(fullOutput), nil
 		},
 	}
 }
-

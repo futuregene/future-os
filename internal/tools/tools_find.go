@@ -75,8 +75,7 @@ func findViaFd(fdPath string, params struct {
 		"--max-results", fmt.Sprintf("%d", params.Limit),
 		"--strip-cwd-prefix",
 		"--search-path", params.Path,
-		"--exclude", ".git",
-		"--exclude", "node_modules",
+		"--hidden",
 	}
 
 	cmd := exec.Command(fdPath, args...)
