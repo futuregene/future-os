@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/huichen/xihu/internal/apiregistry"
+	"github.com/huichen/xihu/internal/llm"
 	"github.com/huichen/xihu/internal/modelregistry"
 	"github.com/huichen/xihu/internal/session"
 	"github.com/huichen/xihu/internal/settings"
@@ -633,7 +635,7 @@ func (ctx ExtensionContext) GetFlag(name string) interface{} {
 
 // RegisterProvider registers an LLM provider configuration.
 // Mirrors pi-mono's registerProvider(name, config).
-// Also syncs to the engine-level ModelRegistry if available.
+// Also syncs to the engine-level ModelRegistry and API registry if available.
 func (ctx ExtensionContext) RegisterProvider(name string, config ProviderConfig) error {
 	if ctx.ModelRegistry != nil {
 		// Convert extension ProviderModel to modelregistry types
@@ -654,6 +656,16 @@ func (ctx ExtensionContext) RegisterProvider(name string, config ProviderConfig)
 		}
 		ctx.ModelRegistry.RegisterProvider(name, override)
 	}
+
+	// Register with the API registry so the engine can create clients for this
+	// provider when it is selected at runtime.
+	api := apiregistry.LookupAPI(config.BaseURL)
+	apiregistry.RegisterFromExtension(api, func(baseURL, apiKey string, opts *llm.StreamOptions) types.LLMProvider {
+		return apiregistry.NewLazyProvider(baseURL, apiKey, opts, func(bu, ak string, o *llm.StreamOptions) types.LLMProvider {
+			return llm.NewClient(bu, ak)
+		})
+	}, name)
+
 	return ctx.registry.RegisterProvider(name, config)
 }
 
@@ -663,6 +675,7 @@ func (ctx ExtensionContext) UnregisterProvider(name string) {
 	if ctx.ModelRegistry != nil {
 		ctx.ModelRegistry.UnregisterProvider(name)
 	}
+	apiregistry.UnregisterFromSource(name)
 	ctx.registry.UnregisterProvider(name)
 }
 

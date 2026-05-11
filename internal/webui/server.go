@@ -218,7 +218,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	ctx := r.Context()
-	finalText, finalMessages, err := loop.RunStreamingWithMessages(ctx, messages, func(text string) {
+	finalText, finalMessages, err := loop.RunStreamingWithMessages(ctx, types.ConvertFromLLM(messages), func(text string) {
 		data, _ := json.Marshal(map[string]string{"type": "text", "content": text})
 		fmt.Fprintf(w, "data: %s\n\n", data)
 		flusher.Flush()
@@ -232,7 +232,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save session
-	newEntries := session.MessagesToEntries(finalMessages, "")
+	newEntries := session.MessagesToEntries(types.ConvertToLLM(finalMessages), "")
 	sess.Entries = append(sess.Entries, newEntries...)
 	sess.Model = s.opts.Model
 	sess.BaseURL = s.opts.BaseURL

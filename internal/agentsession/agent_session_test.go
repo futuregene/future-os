@@ -15,10 +15,8 @@ import (
 func testEngine() *engine.Engine {
 	loop := &agent.Loop{
 		Model:        "test-model",
-		SteeringQueue: make(chan string, 64),
-		FollowUpQueue: make(chan string, 64),
-		SteeringMode:  "all",
-		FollowUpMode:  "all",
+		SteeringQueue: agent.NewPendingMessageQueue(64, "all"),
+		FollowUpQueue: agent.NewPendingMessageQueue(64, "all"),
 		Config:        types.AgentConfig{MaxTurns: 50},
 	}
 

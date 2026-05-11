@@ -387,7 +387,7 @@ func main() {
 	}
 	allMessages = append(allMessages, newUserMsg(userPrompt))
 
-	result, finalMessages, err := eng.Loop.RunStreamingWithMessages(ctx, allMessages, func(text string) {
+	result, finalMessages, err := eng.Loop.RunStreamingWithMessages(ctx, types.ConvertFromLLM(allMessages), func(text string) {
 		fmt.Print(text)
 	})
 	if err != nil {
@@ -398,7 +398,7 @@ func main() {
 	fmt.Println()
 
 	if !args.NoSession {
-		saveSession(sessMgr, sess, finalMessages, model, baseURL)
+		saveSession(sessMgr, sess, types.ConvertToLLM(finalMessages), model, baseURL)
 	}
 }
 

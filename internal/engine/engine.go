@@ -226,6 +226,8 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 	thinkingBudget := thinkingLevelToBudget(opts.ThinkingLevel)
 	if cl, ok := provider.(*llm.Client); ok {
 		cl.ThinkingBudget = thinkingBudget
+	} else if s, ok := provider.(apiregistry.ThinkingBudgetSetter); ok {
+		s.SetThinkingBudget(thinkingBudget)
 	}
 
 	// 3. Load/merge settings
@@ -298,7 +300,7 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 			MaxTurns:       cfg.MaxTurns,
 			ThinkingBudget: thinkingLevelToBudget(cfg.ThinkingLevel),
 		},
-		SteeringQueue: make(chan string, 64),
+		SteeringQueue: agent.NewPendingMessageQueue(64, "all"),
 		Verbose:       opts.Verbose,
 	}
 
@@ -376,35 +378,9 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 // ---------------------------------------------------------------------------
 
 // providerFromURL heuristically extracts a provider name from a base URL.
+// Delegates to apiregistry.LookupProviderFromURL.
 func providerFromURL(baseURL string) string {
-	if strings.Contains(baseURL, "anthropic.com") {
-		return "anthropic"
-	}
-	if strings.Contains(baseURL, "openai.com") {
-		return "openai"
-	}
-	if strings.Contains(baseURL, "deepseek.com") {
-		return "deepseek"
-	}
-	if strings.Contains(baseURL, "googleapis.com") || strings.Contains(baseURL, "generativelanguage") {
-		return "google"
-	}
-	if strings.Contains(baseURL, "aliyuncs.com") {
-		return "alibaba"
-	}
-	if strings.Contains(baseURL, "x.ai") {
-		return "xai"
-	}
-	if strings.Contains(baseURL, "moonshot.cn") {
-		return "moonshot"
-	}
-	if strings.Contains(baseURL, "bigmodel.cn") {
-		return "zhipu"
-	}
-	if strings.Contains(baseURL, "minimax.chat") || strings.Contains(baseURL, "minimaxi.com") {
-		return "minimax"
-	}
-	return "openai"
+	return apiregistry.LookupProviderFromURL(baseURL)
 }
 
 // ---------------------------------------------------------------------------

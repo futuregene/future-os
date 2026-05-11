@@ -398,8 +398,9 @@ func (s *AgentSession) runPrompt(text string, opts *PromptOptions) error {
 	// Emit agent_start
 	s.emit(AgentSessionEvent{Type: "agent_start"})
 
-	// Run the agent loop
-	finalText, finalMessages, err := s.engine.Loop.RunStreamingWithMessages(ctx, messages, func(text string) {
+	// Run the agent loop — convert session messages to internal AgentMessage format.
+	agentMessages := types.ConvertFromLLM(messages)
+	finalText, finalAgentMessages, err := s.engine.Loop.RunStreamingWithMessages(ctx, agentMessages, func(text string) {
 		// onText callback — could forward as streaming event
 	})
 
@@ -411,8 +412,8 @@ func (s *AgentSession) runPrompt(text string, opts *PromptOptions) error {
 		return err
 	}
 
-	// Save to session
-	newEntries := session.MessagesToEntries(finalMessages, "")
+	// Save to session — convert AgentMessages back to LLM Message format for persistence.
+	newEntries := session.MessagesToEntries(types.ConvertToLLM(finalAgentMessages), "")
 	s.engine.Session.Entries = append(s.engine.Session.Entries, newEntries...)
 	s.engine.Session.UpdatedAt = time.Now()
 
@@ -449,11 +450,7 @@ func (s *AgentSession) queueSteer(text string) error {
 	s.emitQueueUpdate()
 
 	// Also push to the loop's steering channel
-	select {
-	case s.engine.Loop.SteeringQueue <- text:
-	default:
-		// Channel full, message will be visible in queue_update
-	}
+	s.engine.Loop.Steer(text)
 	return nil
 }
 
@@ -466,10 +463,7 @@ func (s *AgentSession) queueFollowUp(text string) error {
 	s.emitQueueUpdate()
 
 	// Also push to the loop's followUp channel
-	select {
-	case s.engine.Loop.FollowUpQueue <- text:
-	default:
-	}
+	s.engine.Loop.FollowUp(text)
 	return nil
 }
 
@@ -623,13 +617,13 @@ func thinkingLevelToBudget(level string) int {
 // SetSteeringMode sets how steering messages are processed.
 func (s *AgentSession) SetSteeringMode(mode string) {
 	s.steeringMode = mode
-	s.engine.Loop.SteeringMode = mode
+	s.engine.Loop.SteeringQueue.Mode = mode
 }
 
 // SetFollowUpMode sets how follow-up messages are processed.
 func (s *AgentSession) SetFollowUpMode(mode string) {
 	s.followUpMode = mode
-	s.engine.Loop.FollowUpMode = mode
+	s.engine.Loop.FollowUpQueue.Mode = mode
 }
 
 // =============================================================================

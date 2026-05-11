@@ -48,17 +48,11 @@ type Loop struct {
 	// SessionID is used for event metadata.
 	SessionID string
 
-	// SteeringQueue is a buffered channel of steering messages (injected before each turn).
-	SteeringQueue chan string
+	// SteeringQueue is a buffered queue of steering messages (injected before each turn).
+	SteeringQueue *PendingMessageQueue
 
-	// FollowUpQueue is a buffered channel of follow-up messages (injected after agent finishes).
-	FollowUpQueue chan string
-
-	// SteeringMode controls steering behavior: "all" (default) or "one-at-a-time".
-	SteeringMode string
-
-	// FollowUpMode controls follow-up behavior: "all" (default) or "one-at-a-time".
-	FollowUpMode string
+	// FollowUpQueue is a buffered queue of follow-up messages (injected after agent finishes).
+	FollowUpQueue *PendingMessageQueue
 
 	// LastCompactionResult holds the result of the most recent compaction (set by TransformContext).
 	LastCompactionResult *compaction.CompactionResult
@@ -76,10 +70,8 @@ func NewLoop(provider types.LLMProvider, model string) *Loop {
 	return &Loop{
 		Provider:      provider,
 		Model:         model,
-		SteeringQueue: make(chan string, 64),
-		FollowUpQueue: make(chan string, 64),
-		SteeringMode:  "all",
-		FollowUpMode:  "all",
+		SteeringQueue: NewPendingMessageQueue(64, "all"),
+		FollowUpQueue: NewPendingMessageQueue(64, "all"),
 		Config: types.AgentConfig{
 			MaxTurns: DefaultMaxTurns,
 		},
@@ -87,8 +79,9 @@ func NewLoop(provider types.LLMProvider, model string) *Loop {
 }
 
 // RunStreamingWithMessages runs the agent loop with pre-existing messages,
-// returning final text and all messages.
-func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Message, onText func(string)) (string, []types.Message, error) {
+// returning final text and all messages. Uses AgentMessage internally, converting
+// to []types.Message via ConvertToLLM() before each LLM call.
+func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.AgentMessage, onText func(string)) (string, []types.AgentMessage, error) {
 	// Validate: last message must not be from assistant (the model responds next)
 	if len(messages) > 0 && messages[len(messages)-1].Role == "assistant" {
 		return "", messages, fmt.Errorf("agent: last message must not be from assistant (the model responds next)")
@@ -131,7 +124,7 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 	for turn := 0; turn < maxTurns; turn++ {
 		// Drain steering queue FIRST (before checking context cancellation).
 		// This ensures interrupt messages are not lost when context is cancelled.
-		steeringBefore := len(l.SteeringQueue)
+		steeringBefore := l.SteeringQueue.Len()
 		messages = l.drainSteering(messages)
 
 		// Check cancellation: only exit if no steering was just drained.
@@ -153,14 +146,17 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 			l.EventBus.Emit(events.TurnStart(turn))
 		}
 
-		// Apply context transform if configured (e.g., compaction)
+		// Apply context transform if configured (e.g., compaction).
+		// Convert to LLM Message format for TransformContext, then convert back.
 		workMessages := messages
 		if l.Config.TransformContext != nil {
 			beforeLen := len(workMessages)
 			if l.EventBus != nil {
 				l.EventBus.Emit(events.CompactionStart("auto"))
 			}
-			workMessages = l.Config.TransformContext(messages, "")
+			llmWork := types.ConvertToLLM(messages)
+			llmWork = l.Config.TransformContext(llmWork, "")
+			workMessages = types.ConvertFromLLM(llmWork)
 			if l.EventBus != nil {
 				if len(workMessages) < beforeLen {
 					tokensBefore := 0
@@ -185,7 +181,9 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 			cl.SetActiveCtx(ctx)
 		}
 
-		eventsCh, err := l.Provider.StreamChat(l.Model, workMessages, toolDefs, l.SystemPrompt)
+		// Convert agent messages to LLM wire format before the API call.
+		llmMessages := types.ConvertToLLM(workMessages)
+		eventsCh, err := l.Provider.StreamChat(l.Model, llmMessages, toolDefs, l.SystemPrompt)
 		if err != nil {
 			if l.EventBus != nil {
 				l.EventBus.Emit(events.ErrorEvent(err.Error()))
@@ -319,7 +317,7 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 		if lastError != nil {
 			// If steering messages are pending, the user interrupted during
 			// streaming. Drain steering and restart with a fresh context.
-			if len(l.SteeringQueue) > 0 {
+			if l.SteeringQueue.Len() > 0 {
 				messages = l.drainSteering(messages)
 				lastError = nil
 				ctx = l.setupTurnContext(baseCtx)
@@ -336,17 +334,24 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 			l.EventBus.Emit(events.MessageEnd("assistant"))
 		}
 
-		content, _ := json.Marshal([]types.TextContent{{Type: "text", Text: fullText}})
-		assistantMsg := types.Message{
-			Role:             "assistant",
-			Content:          content,
-			ToolCalls:        toolCalls,
-			ReasoningContent: reasoningText,
+		assistantMsg := types.AgentMessage{
+			Role:     "assistant",
+			Content:  fullText,
+			Thinking: reasoningText,
+		}
+		// Convert LLM tool calls to agent tool calls
+		for _, tc := range toolCalls {
+			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, types.AgentToolCall{
+				ID:   tc.ID,
+				Name: tc.Function.Name,
+				Args: tc.Function.Arguments,
+			})
 		}
 		messages = append(messages, assistantMsg)
 
-		// Check stop condition after this turn
-		if l.Config.StopCondition != nil && l.Config.StopCondition(messages, fullText) {
+		// Check stop condition after this turn.
+		// Convert to LLM Message format for the callback (backward compat).
+		if l.Config.StopCondition != nil && l.Config.StopCondition(types.ConvertToLLM(messages), fullText) {
 			if l.EventBus != nil {
 				l.EventBus.Emit(events.AgentEnd("stop_condition", &totalUsage, lastStopReason))
 			}
@@ -355,7 +360,7 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 
 		// If no tool calls, check if follow-up queue has pending messages before returning
 		if len(toolCalls) == 0 {
-			if len(l.FollowUpQueue) > 0 {
+			if l.FollowUpQueue.Len() > 0 {
 				messages = l.drainFollowUp(messages)
 				if l.EventBus != nil {
 					l.EventBus.Emit(events.TurnEnd(turn))
@@ -391,80 +396,128 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Me
 
 // RunStreaming runs the agent loop with streaming output (new session)
 func (l *Loop) RunStreaming(ctx context.Context, userPrompt string, onText func(string)) (string, error) {
-	messages := []types.Message{
-		newSystemMessage(l.SystemPrompt),
-		newUserMessage(userPrompt),
+	messages := []types.AgentMessage{
+		newSystemAgentMessage(l.SystemPrompt),
+		newUserAgentMessage(userPrompt),
 	}
 	result, _, err := l.RunStreamingWithMessages(ctx, messages, onText)
 	return result, err
 }
 
 // executeTools runs tool calls either sequentially or in parallel.
-func (l *Loop) executeTools(ctx context.Context, turn int, toolCalls []types.ToolCall, messages *[]types.Message) {
-	if l.ParallelTools && len(toolCalls) > 1 {
-		toolResults := make([]struct {
-			result    string
-			err       error
-			toolName  string
-			duration  time.Duration
-		}, len(toolCalls))
+func (l *Loop) executeTools(ctx context.Context, turn int, toolCalls []types.ToolCall, messages *[]types.AgentMessage) {
+	useParallel := l.ParallelTools
+	if l.Config.ToolsExecutionMode != "" {
+		useParallel = l.Config.ToolsExecutionMode == "parallel"
+	}
 
-		var wg sync.WaitGroup
-		for i, tc := range toolCalls {
-			wg.Add(1)
-			go func(idx int, call types.ToolCall) {
-				defer wg.Done()
-
-				if ctx.Err() != nil {
-					toolResults[idx].err = fmt.Errorf("context cancelled during tool execution at turn %d: %w", turn, ctx.Err())
-					return
-				}
-
-				if l.EventBus != nil {
-					l.EventBus.Emit(events.ToolStart(call.ID, call.Function.Name))
-				}
-				start := time.Now()
-				r, err := l.executeTool(call)
-				toolResults[idx].result = r
-				toolResults[idx].err = err
-				toolResults[idx].toolName = call.Function.Name
-				toolResults[idx].duration = time.Since(start)
-			}(i, tc)
-		}
-		wg.Wait()
-
-		for i, tc := range toolCalls {
-			if l.Verbose {
-				toolLog(tc.Function.Name, tc.Function.Arguments, toolResults[i].err, toolResults[i].duration)
-			}
-			emitToolEnd(l.EventBus, toolResults[i].toolName, toolResults[i].result, toolResults[i].err, toolResults[i].duration)
-			toolMsg := newToolResult(tc.ID, toolResults[i].result, toolResults[i].err)
-			*messages = append(*messages, toolMsg)
-		}
+	if useParallel && len(toolCalls) > 1 {
+		l.executeToolsParallel(ctx, turn, toolCalls, messages)
 	} else {
-		for _, tc := range toolCalls {
-			if err := ctx.Err(); err != nil {
-				if l.Verbose {
+		l.executeToolsSequential(ctx, turn, toolCalls, messages)
+	}
+}
+
+// executeToolsParallel runs all tool calls concurrently via goroutines.
+func (l *Loop) executeToolsParallel(ctx context.Context, turn int, toolCalls []types.ToolCall, messages *[]types.AgentMessage) {
+	toolResults := make([]struct {
+		result   string
+		err      error
+		toolName string
+		duration time.Duration
+	}, len(toolCalls))
+
+	var wg sync.WaitGroup
+	for i, tc := range toolCalls {
+		wg.Add(1)
+		go func(idx int, call types.ToolCall) {
+			defer wg.Done()
+
+			if ctx.Err() != nil {
+				toolResults[idx].err = fmt.Errorf("context cancelled during tool execution at turn %d: %w", turn, ctx.Err())
+				return
+			}
+
+			l.executeOneTool(ctx, call, idx, &toolResults[idx].result, &toolResults[idx].err, &toolResults[idx].toolName, &toolResults[idx].duration)
+		}(i, tc)
+	}
+	wg.Wait()
+
+	for i, tc := range toolCalls {
+		if l.Verbose {
+			toolLog(tc.Function.Name, tc.Function.Arguments, toolResults[i].err, toolResults[i].duration)
+		}
+		emitToolEnd(l.EventBus, toolResults[i].toolName, toolResults[i].result, toolResults[i].err, toolResults[i].duration)
+		toolMsg := newToolAgentResult(tc.ID, toolResults[i].result, toolResults[i].err)
+		*messages = append(*messages, toolMsg)
+	}
+}
+
+// executeToolsSequential runs tool calls one at a time.
+func (l *Loop) executeToolsSequential(ctx context.Context, turn int, toolCalls []types.ToolCall, messages *[]types.AgentMessage) {
+	for _, tc := range toolCalls {
+		if err := ctx.Err(); err != nil {
+			if l.Verbose {
 				fmt.Fprintf(os.Stderr, "\n[tool] %s: context cancelled\n", tc.Function.Name)
 			}
-				break
-			}
+			break
+		}
 
-			if l.EventBus != nil {
-				l.EventBus.Emit(events.ToolStart(tc.ID, tc.Function.Name))
-			}
-			start := time.Now()
-			result, err := l.executeTool(tc)
-			duration := time.Since(start)
+		var result string
+		var execErr error
+		var toolName string
+		var duration time.Duration
 
-			if l.Verbose {
-				toolLog(tc.Function.Name, tc.Function.Arguments, err, duration)
+		l.executeOneTool(ctx, tc, 0, &result, &execErr, &toolName, &duration)
+
+		if l.Verbose {
+			toolLog(tc.Function.Name, tc.Function.Arguments, execErr, duration)
+		}
+		emitToolEnd(l.EventBus, toolName, result, execErr, duration)
+		toolMsg := newToolAgentResult(tc.ID, result, execErr)
+		*messages = append(*messages, toolMsg)
+	}
+}
+
+// executeOneTool runs a single tool call with before/after hooks.
+func (l *Loop) executeOneTool(ctx context.Context, tc types.ToolCall, _ int, outResult *string, outErr *error, outName *string, outDuration *time.Duration) {
+	*outName = tc.Function.Name
+
+	// BeforeToolCall hook — allows extensions to intercept or skip execution.
+	// TS pi-mono: beforeToolCall in the 3-stage pipeline.
+	if l.Config.BeforeToolCall != nil {
+		if override := l.Config.BeforeToolCall(tc.Function.Name, tc.ID, tc.Function.Arguments); override != nil && override.Result != "" {
+			if override.IsError {
+				*outErr = fmt.Errorf("%s", override.Result)
+			} else {
+				*outResult = override.Result
 			}
-			emitToolEnd(l.EventBus, tc.Function.Name, result, err, duration)
-			toolMsg := newToolResult(tc.ID, result, err)
-			*messages = append(*messages, toolMsg)
+			return
 		}
 	}
+
+	if l.EventBus != nil {
+		l.EventBus.Emit(events.ToolStart(tc.ID, tc.Function.Name))
+	}
+	start := time.Now()
+	result, err := l.executeTool(tc)
+	*outDuration = time.Since(start)
+
+	// AfterToolCall hook — allows extensions to modify or mask results.
+	// TS pi-mono: afterToolCall in the 3-stage pipeline.
+	if l.Config.AfterToolCall != nil {
+		if override := l.Config.AfterToolCall(tc.Function.Name, tc.ID, tc.Function.Arguments, result, err); override != nil {
+			result = override.Result
+			if override.IsError && err == nil {
+				err = fmt.Errorf("%s", override.Result)
+			} else if !override.IsError {
+				err = nil
+			}
+		}
+	}
+
+	*outResult = result
+	*outErr = err
 }
 
 // emitToolEnd emits a tool_end event if the event bus is set.
@@ -481,100 +534,51 @@ func emitToolEnd(bus *events.EventBus, name, result string, execErr error, durat
 
 // drainSteering drains all pending messages from the steering queue and
 // returns the message list with steering messages appended as user messages.
-func (l *Loop) drainSteering(messages []types.Message) []types.Message {
-	drained := 0
-	for {
-		select {
-		case msg := <-l.SteeringQueue:
-			messages = append(messages, newUserMessage(msg))
-			drained++
-			if l.SteeringMode == "one-at-a-time" {
-				if drained > 0 {
-					log.Printf("[steering] injected %d steering message(s)", drained)
-				}
-				return messages
-			}
-		default:
-			if drained > 0 {
-				log.Printf("[steering] injected %d steering message(s)", drained)
-			}
-			return messages
-		}
+func (l *Loop) drainSteering(messages []types.AgentMessage) []types.AgentMessage {
+	msgs := l.SteeringQueue.Drain()
+	for _, msg := range msgs {
+		messages = append(messages, newUserAgentMessage(msg))
 	}
+	if len(msgs) > 0 {
+		log.Printf("[steering] injected %d steering message(s)", len(msgs))
+	}
+	return messages
 }
 
 // drainFollowUp drains messages from the follow-up queue.
-func (l *Loop) drainFollowUp(messages []types.Message) []types.Message {
-	drained := 0
-	for {
-		select {
-		case msg := <-l.FollowUpQueue:
-			messages = append(messages, newUserMessage(msg))
-			drained++
-			if l.FollowUpMode == "one-at-a-time" {
-				if drained > 0 {
-					log.Printf("[followup] injected %d follow-up message(s)", drained)
-				}
-				return messages
-			}
-		default:
-			if drained > 0 {
-				log.Printf("[followup] injected %d follow-up message(s)", drained)
-			}
-			return messages
-		}
+func (l *Loop) drainFollowUp(messages []types.AgentMessage) []types.AgentMessage {
+	msgs := l.FollowUpQueue.Drain()
+	for _, msg := range msgs {
+		messages = append(messages, newUserAgentMessage(msg))
 	}
+	if len(msgs) > 0 {
+		log.Printf("[followup] injected %d follow-up message(s)", len(msgs))
+	}
+	return messages
 }
 
 // ClearQueues drains all pending messages from both queues without injecting them.
 func (l *Loop) ClearQueues() {
-	for {
-		select {
-		case <-l.SteeringQueue:
-		default:
-			goto doneSteering
-		}
-	}
-doneSteering:
-	for {
-		select {
-		case <-l.FollowUpQueue:
-		default:
-			return
-		}
-	}
+	l.SteeringQueue.Clear()
+	l.FollowUpQueue.Clear()
 }
 
 // QueuedCounts returns separate steering and follow-up queue lengths.
 func (l *Loop) QueuedCounts() (steering, followUp int) {
-	return len(l.SteeringQueue), len(l.FollowUpQueue)
+	return l.SteeringQueue.Len(), l.FollowUpQueue.Len()
 }
 
 // PendingMessageCount returns the total pending messages in both queues.
 func (l *Loop) PendingMessageCount() int {
-	return len(l.SteeringQueue) + len(l.FollowUpQueue)
+	return l.SteeringQueue.Len() + l.FollowUpQueue.Len()
 }
 
 // DrainQueues drains all pending messages from both queues and returns them.
 func (l *Loop) DrainQueues() []string {
 	var msgs []string
-	for {
-		select {
-		case msg := <-l.SteeringQueue:
-			msgs = append(msgs, msg)
-		default:
-			goto doneSteering
-		}
-	}
-doneSteering:
-	for {
-		select {
-		case msg := <-l.FollowUpQueue:
-			msgs = append(msgs, msg)
-		default:
-			return msgs
-		}
-	}
+	msgs = append(msgs, l.SteeringQueue.Drain()...)
+	msgs = append(msgs, l.FollowUpQueue.Drain()...)
+	return msgs
 }
 
 func (l *Loop) executeTool(tc types.ToolCall) (string, error) {
@@ -586,18 +590,41 @@ func (l *Loop) executeTool(tc types.ToolCall) (string, error) {
 	return "", fmt.Errorf("tool %s not found", tc.Function.Name)
 }
 
+func newSystemAgentMessage(content string) types.AgentMessage {
+	return types.AgentMessage{Role: "system", Content: content}
+}
+
+func newUserAgentMessage(content string) types.AgentMessage {
+	return types.AgentMessage{Role: "user", Content: content}
+}
+
+func newToolAgentResult(callID, result string, err error) types.AgentMessage {
+	text := result
+	if err != nil {
+		text = fmt.Sprintf("Error: %s", err.Error())
+	}
+	return types.AgentMessage{
+		Role:       "tool",
+		Content:    text,
+		ToolCallID: callID,
+	}
+}
+
+// newSystemMessage is kept for backward compatibility with code that still uses Message.
 func newSystemMessage(content string) types.Message {
 	tc := types.TextContent{Type: "text", Text: content}
 	b, _ := json.Marshal([]types.TextContent{tc})
 	return types.Message{Role: "system", Content: b}
 }
 
+// newUserMessage is kept for backward compatibility with code that still uses Message.
 func newUserMessage(content string) types.Message {
 	tc := types.TextContent{Type: "text", Text: content}
 	b, _ := json.Marshal([]types.TextContent{tc})
 	return types.Message{Role: "user", Content: b}
 }
 
+// newToolResult is kept for backward compatibility with code that still uses Message.
 func newToolResult(callID, result string, err error) types.Message {
 	text := result
 	if err != nil {
@@ -645,11 +672,7 @@ func (l *Loop) Interrupt(message string) {
 	defer l.mu.Unlock()
 
 	// Queue the steering message
-	select {
-	case l.SteeringQueue <- message:
-	default:
-		// Queue full, drop
-	}
+	l.SteeringQueue.Enqueue(message)
 
 	// Cancel the current context if streaming
 	if l.interruptFn != nil {
@@ -662,19 +685,13 @@ func (l *Loop) Interrupt(message string) {
 // the current LLM stream. The message will be picked up at the start
 // of the next turn. TS pi-mono equivalent: Enter during streaming.
 func (l *Loop) Steer(message string) {
-	select {
-	case l.SteeringQueue <- message:
-	default:
-	}
+	l.SteeringQueue.Enqueue(message)
 }
 
 // FollowUp injects a follow-up message for after the agent finishes the current
 // turn. TS pi-mono equivalent: Alt+Enter queues message for later delivery.
 func (l *Loop) FollowUp(message string) {
-	select {
-	case l.FollowUpQueue <- message:
-	default:
-	}
+	l.FollowUpQueue.Enqueue(message)
 }
 
 // Abort cancels the current LLM stream without queuing a message.

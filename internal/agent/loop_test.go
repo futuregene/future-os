@@ -95,8 +95,11 @@ func TestNewLoop(t *testing.T) {
 	if l.SteeringQueue == nil {
 		t.Error("SteeringQueue should be initialized")
 	}
-	if cap(l.SteeringQueue) != 64 {
-		t.Errorf("SteeringQueue cap = %d, want 64", cap(l.SteeringQueue))
+	if l.SteeringQueue.Len() != 0 {
+		t.Error("SteeringQueue should be empty")
+	}
+	if l.FollowUpQueue == nil {
+		t.Error("FollowUpQueue should be initialized")
 	}
 }
 
@@ -106,8 +109,8 @@ func TestRunStreamingWithMessages_SimpleText(t *testing.T) {
 	}
 	l := NewLoop(mp, "test-model")
 
-	messages := []types.Message{
-		newUserMessage("Hi"),
+	messages := []types.AgentMessage{
+		newUserAgentMessage("Hi"),
 	}
 	ctx := context.Background()
 	var collectedText string
@@ -159,8 +162,8 @@ func TestRunStreamingWithMessages_ToolCall(t *testing.T) {
 	l := NewLoop(mp, "test-model")
 	l.Tools = []types.AgentTool{tool}
 
-	messages := []types.Message{
-		newUserMessage("Do something"),
+	messages := []types.AgentMessage{
+		newUserAgentMessage("Do something"),
 	}
 	ctx := context.Background()
 	result, msgs, err := l.RunStreamingWithMessages(ctx, messages, nil)
@@ -189,8 +192,8 @@ func TestRunStreamingWithMessages_AbortSignal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	messages := []types.Message{
-		newUserMessage("Hi"),
+	messages := []types.AgentMessage{
+		newUserAgentMessage("Hi"),
 	}
 	_, _, err := l.RunStreamingWithMessages(ctx, messages, nil)
 
@@ -213,10 +216,10 @@ func test_RunStreamingWithMessages_SteeringQueue(t *testing.T) {
 	l := NewLoop(mp, "test-model")
 
 	// Queue a steering message before starting
-	l.SteeringQueue <- "Steer: do more"
+	l.SteeringQueue.Enqueue("Steer: do more")
 
-	messages := []types.Message{
-		newUserMessage("Hi"),
+	messages := []types.AgentMessage{
+		newUserAgentMessage("Hi"),
 	}
 	ctx := context.Background()
 	result, _, err := l.RunStreamingWithMessages(ctx, messages, nil)
@@ -249,8 +252,8 @@ func test_RunStreamingWithMessages_FollowUp(t *testing.T) {
 	l := NewLoop(mp, "test-model")
 	l.Tools = []types.AgentTool{tool}
 
-	messages := []types.Message{
-		newUserMessage("Do something"),
+	messages := []types.AgentMessage{
+		newUserAgentMessage("Do something"),
 	}
 	ctx := context.Background()
 	result, _, err := l.RunStreamingWithMessages(ctx, messages, nil)
@@ -285,8 +288,8 @@ func TestRunStreamingWithMessages_MaxTurnsExceeded(t *testing.T) {
 	l.Config.MaxTurns = 3
 	l.Tools = []types.AgentTool{tool}
 
-	messages := []types.Message{
-		newUserMessage("Loop forever"),
+	messages := []types.AgentMessage{
+		newUserAgentMessage("Loop forever"),
 	}
 	ctx := context.Background()
 	_, _, err := l.RunStreamingWithMessages(ctx, messages, nil)
@@ -304,9 +307,9 @@ func TestRunStreamingWithMessages_LastMessageAssistant(t *testing.T) {
 	l := NewLoop(mp, "test-model")
 
 	// Last message is from assistant — should be rejected
-	messages := []types.Message{
-		newUserMessage("Hi"),
-		{Role: "assistant", Content: json.RawMessage(`[{"type":"text","text":"Hello"}]`)},
+	messages := []types.AgentMessage{
+		newUserAgentMessage("Hi"),
+		{Role: "assistant", Content: "Hello"},
 	}
 	ctx := context.Background()
 	_, _, err := l.RunStreamingWithMessages(ctx, messages, nil)
@@ -349,8 +352,8 @@ func TestRunStreamingWithMessages_ContextTransform(t *testing.T) {
 		return append([]types.Message{sys}, msgs...)
 	}
 
-	messages := []types.Message{
-		newUserMessage("Hi"),
+	messages := []types.AgentMessage{
+		newUserAgentMessage("Hi"),
 	}
 	ctx := context.Background()
 	_, _, err := l.RunStreamingWithMessages(ctx, messages, nil)
@@ -372,8 +375,8 @@ func TestRunStreamingWithMessages_StopCondition(t *testing.T) {
 		return lastResponse == "STOP"
 	}
 
-	messages := []types.Message{
-		newUserMessage("Hi"),
+	messages := []types.AgentMessage{
+		newUserAgentMessage("Hi"),
 	}
 	ctx := context.Background()
 	result, _, err := l.RunStreamingWithMessages(ctx, messages, nil)
@@ -392,8 +395,8 @@ func TestRunStreamingWithMessages_ProviderError(t *testing.T) {
 	}
 	l := NewLoop(mp, "test-model")
 
-	messages := []types.Message{
-		newUserMessage("Hi"),
+	messages := []types.AgentMessage{
+		newUserAgentMessage("Hi"),
 	}
 	ctx := context.Background()
 	_, _, err := l.RunStreamingWithMessages(ctx, messages, nil)
@@ -470,8 +473,8 @@ func TestRunStreamingWithMessages_ParallelTools(t *testing.T) {
 	l.ParallelTools = true
 	l.Tools = []types.AgentTool{makeTool("tool_a"), makeTool("tool_b")}
 
-	messages := []types.Message{
-		newUserMessage("Run both"),
+	messages := []types.AgentMessage{
+		newUserAgentMessage("Run both"),
 	}
 	ctx := context.Background()
 	_, _, err := l.RunStreamingWithMessages(ctx, messages, nil)
@@ -488,11 +491,11 @@ func TestDrainSteering(t *testing.T) {
 	l := NewLoop(&mockProvider{}, "test")
 
 	// Queue multiple messages
-	l.SteeringQueue <- "msg1"
-	l.SteeringQueue <- "msg2"
+	l.SteeringQueue.Enqueue("msg1")
+	l.SteeringQueue.Enqueue("msg2")
 
-	msgs := []types.Message{
-		newUserMessage("original"),
+	msgs := []types.AgentMessage{
+		newUserAgentMessage("original"),
 	}
 	result := l.drainSteering(msgs)
 
@@ -510,11 +513,8 @@ func TestDrainSteering(t *testing.T) {
 	}
 
 	// Channel should be drained
-	select {
-	case <-l.SteeringQueue:
+	if l.SteeringQueue.Len() != 0 {
 		t.Error("steering queue should be empty")
-	default:
-		// expected
 	}
 }
 

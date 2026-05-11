@@ -9,7 +9,7 @@ import "github.com/huichen/xihu/pkg/types"
 //   - ID: model identifier (without provider prefix)
 //   - Name: display name
 //   - Provider: canonical provider name
-//   - API: "openai-completions" | "anthropic-messages"
+//   - API: "openai-completions" | "anthropic-messages" | "mistral" | "google-gemini" | "cloudflare-workers"
 //   - BaseURL: provider API endpoint
 //   - ContextWindow: max context tokens
 //   - MaxTokens: max output tokens
@@ -112,4 +112,35 @@ var modelsCatalog = []types.Model{
 	// ─── ByteDance (Doubao) ─────────────────────────────────────────────────
 	{ID: "doubao-thought-pro", Name: "Doubao Thought Pro", Provider: "bytedance", API: "openai-completions", BaseURL: "https://ark.cn-beijing.volces.com/api/v3", ContextWindow: 131072, MaxTokens: 32768, Reasoning: true},
 	{ID: "doubao-pro-256k", Name: "Doubao Pro 256K", Provider: "bytedance", API: "openai-completions", BaseURL: "https://ark.cn-beijing.volces.com/api/v3", ContextWindow: 262144, MaxTokens: 16384, Reasoning: false},
+
+	// ─── Mistral ─────────────────────────────────────────────────────────────
+	{ID: "mistral-large", Name: "Mistral Large", Provider: "mistral", API: "mistral", BaseURL: "https://api.mistral.ai/v1", ContextWindow: 131072, MaxTokens: 131072, Reasoning: false,
+		Cost: struct {
+			Input     float64 `json:"input"`
+			Output    float64 `json:"output"`
+			CacheRead float64 `json:"cacheRead"`
+			CacheWrite float64 `json:"cacheWrite"`
+		}{Input: 2.00, Output: 6.00}},
+	{ID: "mistral-small", Name: "Mistral Small", Provider: "mistral", API: "mistral", BaseURL: "https://api.mistral.ai/v1", ContextWindow: 32768, MaxTokens: 32768, Reasoning: false},
+	{ID: "codestral", Name: "Codestral", Provider: "mistral", API: "mistral", BaseURL: "https://api.mistral.ai/v1", ContextWindow: 262144, MaxTokens: 262144, Reasoning: false},
+
+	// ─── Cloudflare Workers AI ────────────────────────────────────────────────
+	{ID: "@cf/meta/llama-4-maverick-17b-128e-instruct", Name: "Llama 4 Maverick (CF)", Provider: "cloudflare", API: "cloudflare-workers", BaseURL: "https://api.cloudflare.com/client/v4", ContextWindow: 131072, MaxTokens: 8192, Reasoning: false},
+	{ID: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b", Name: "DeepSeek R1 Distill (CF)", Provider: "cloudflare", API: "cloudflare-workers", BaseURL: "https://api.cloudflare.com/client/v4", ContextWindow: 32768, MaxTokens: 16384, Reasoning: true},
+
+	// ─── AWS Bedrock ─────────────────────────────────────────────────────────
+	{ID: "us.anthropic.claude-sonnet-4-20250514-v1:0", Name: "Claude Sonnet 4 (Bedrock)", Provider: "aws", API: "anthropic-messages", BaseURL: "https://bedrock-runtime.us-east-1.amazonaws.com", ContextWindow: 200000, MaxTokens: 64000, Reasoning: true},
+	{ID: "us.anthropic.claude-opus-4-20250514-v1:0", Name: "Claude Opus 4 (Bedrock)", Provider: "aws", API: "anthropic-messages", BaseURL: "https://bedrock-runtime.us-east-1.amazonaws.com", ContextWindow: 200000, MaxTokens: 64000, Reasoning: true},
+
+	// ─── Groq ────────────────────────────────────────────────────────────────
+	{ID: "llama-4-maverick-17b-128e-instruct", Name: "Llama 4 Maverick (Groq)", Provider: "groq", API: "openai-completions", BaseURL: "https://api.groq.com/openai/v1", ContextWindow: 131072, MaxTokens: 8192, Reasoning: false},
+	{ID: "deepseek-r1-distill-llama-70b", Name: "DeepSeek R1 70B (Groq)", Provider: "groq", API: "openai-completions", BaseURL: "https://api.groq.com/openai/v1", ContextWindow: 131072, MaxTokens: 32768, Reasoning: true},
+
+	// ─── Fireworks ───────────────────────────────────────────────────────────
+	{ID: "accounts/fireworks/models/llama-v3p1-405b-instruct", Name: "Llama 3.1 405B (Fireworks)", Provider: "fireworks", API: "openai-completions", BaseURL: "https://api.fireworks.ai/inference/v1", ContextWindow: 131072, MaxTokens: 16384, Reasoning: false},
+	{ID: "accounts/fireworks/models/deepseek-r1", Name: "DeepSeek R1 (Fireworks)", Provider: "fireworks", API: "openai-completions", BaseURL: "https://api.fireworks.ai/inference/v1", ContextWindow: 131072, MaxTokens: 32768, Reasoning: true},
+
+	// ─── Together AI ─────────────────────────────────────────────────────────
+	{ID: "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8", Name: "Llama 4 Maverick (Together)", Provider: "together", API: "openai-completions", BaseURL: "https://api.together.xyz/v1", ContextWindow: 131072, MaxTokens: 8192, Reasoning: false},
+	{ID: "deepseek-ai/DeepSeek-R1", Name: "DeepSeek R1 (Together)", Provider: "together", API: "openai-completions", BaseURL: "https://api.together.xyz/v1", ContextWindow: 131072, MaxTokens: 32768, Reasoning: true},
 }

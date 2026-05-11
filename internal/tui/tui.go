@@ -105,7 +105,7 @@ func runCLI(as *agentsession.AgentSession, sess *session.Session, initialPrompt 
 	messages = append(messages, newUserMsg(initialPrompt))
 
 	ctx := context.Background()
-	result, _, err := as.Loop().RunStreamingWithMessages(ctx, messages, func(text string) {
+	result, _, err := as.Loop().RunStreamingWithMessages(ctx, types.ConvertFromLLM(messages), func(text string) {
 		fmt.Print(text)
 	})
 	if err != nil {

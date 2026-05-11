@@ -529,7 +529,7 @@ func NewAppModel(as *agentsession.AgentSession, sessMgr *session.Manager, sess *
 	}
 
 	// Propagate steering mode to agent loop
-	as.Loop().SteeringMode = app.steeringMode
+	as.Loop().SteeringQueue.Mode = app.steeringMode
 
 	// Wire autocomplete max visible
 	app.autocomplete.SetMaxVisible(app.autocompleteMax)
@@ -3117,7 +3117,7 @@ func (m *AppModel) runAgent(text string, myID int32) {
 	}()
 
 	ctx := context.Background()
-	_, finalMessages, err := m.agent.Loop().RunStreamingWithMessages(ctx, messages, func(chunk string) {
+	_, finalMessages, err := m.agent.Loop().RunStreamingWithMessages(ctx, types.ConvertFromLLM(messages), func(chunk string) {
 		if m.program != nil && atomic.LoadInt32(&m.streamID) == myID {
 			m.program.Send(StreamTextMsg(chunk))
 		}
@@ -3128,7 +3128,7 @@ func (m *AppModel) runAgent(text string, myID int32) {
 		newMessages := finalMessages[initialMsgCount:] // assistant messages + tool results
 		for _, msg := range newMessages {
 			parentID := session.EffectiveLeafID(m.session)
-			entry := session.MessageToEntry(msg, parentID)
+			entry := session.MessageToEntry(types.ConvertToLLM([]types.AgentMessage{msg})[0], parentID)
 			if err := m.sessMgr.AddEntry(m.session, entry); err == nil {
 				// LeafID is auto-updated by AddEntry
 			}
@@ -3811,10 +3811,10 @@ func (m *AppModel) showSettingsSelector() {
 			} else {
 				m.steeringMode = "one-at-a-time"
 			}
-			m.agent.Loop().SteeringMode = m.steeringMode
-			m.saveSettings()
-			go func() { time.Sleep(50 * time.Millisecond); if m.program != nil { m.program.Send(refreshSettingsMsg{}) } }()
-		case "follow_up":
+		m.agent.Loop().SteeringQueue.Mode = m.steeringMode
+		m.saveSettings()
+		go func() { time.Sleep(50 * time.Millisecond); if m.program != nil { m.program.Send(refreshSettingsMsg{}) } }()
+	case "follow_up":
 			if m.followUpMode == "one-at-a-time" {
 				m.followUpMode = "all"
 			} else {
@@ -3987,7 +3987,7 @@ func (m *AppModel) reload() {
 		if newSettings.SteeringMode != "" {
 			m.steeringMode = newSettings.SteeringMode
 			if m.agent != nil {
-				m.agent.Loop().SteeringMode = newSettings.SteeringMode
+				m.agent.Loop().SteeringQueue.Mode = newSettings.SteeringMode
 			}
 		}
 		if newSettings.FollowUpMode != "" {

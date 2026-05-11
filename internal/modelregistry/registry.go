@@ -6,6 +6,9 @@
 package modelregistry
 
 import (
+	"log"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -33,12 +36,32 @@ type Registry struct {
 	scopedModels []string
 }
 
-// New creates a new Registry with the embedded catalog.
+// New creates a new Registry with the embedded catalog, augmented with
+// user-defined models from ~/.xihu/models.json (if present).
 func New() *Registry {
-	return &Registry{
+	r := &Registry{
 		catalog:   modelsCatalog,
 		overrides: make(map[string]ProviderOverride),
 	}
+
+	// Auto-load user models from ~/.xihu/models.json
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("[modelregistry] cannot determine home dir: %v", err)
+		return r
+	}
+	userModelsPath := filepath.Join(home, ".xihu", "models.json")
+	userModels, err := LoadUserModels(userModelsPath)
+	if err != nil {
+		log.Printf("[modelregistry] failed to load user models: %v", err)
+		return r
+	}
+	if len(userModels) > 0 {
+		r.catalog = append(r.catalog, userModels...)
+		log.Printf("[modelregistry] loaded %d user model(s) from %s", len(userModels), userModelsPath)
+	}
+
+	return r
 }
 
 // ─── Query ───────────────────────────────────────────────────────────────────
@@ -296,6 +319,32 @@ func DefaultModel(provider string) string {
 		return "gpt-4o"
 	case "deepseek":
 		return "deepseek-chat"
+	case "google":
+		return "gemini-2.5-flash"
+	case "alibaba":
+		return "qwen3.6-plus"
+	case "xai":
+		return "grok-5-mini"
+	case "moonshot":
+		return "kimi-k2-turbo"
+	case "zhipu":
+		return "glm-5"
+	case "minimax":
+		return "minimax-m2.5"
+	case "bytedance":
+		return "doubao-pro-256k"
+	case "mistral":
+		return "mistral-large"
+	case "cloudflare":
+		return "@cf/meta/llama-4-maverick-17b-128e-instruct"
+	case "aws":
+		return "us.anthropic.claude-sonnet-4-20250514-v1:0"
+	case "groq":
+		return "llama-4-maverick-17b-128e-instruct"
+	case "fireworks":
+		return "accounts/fireworks/models/llama-v3p1-405b-instruct"
+	case "together":
+		return "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
 	default:
 		return ""
 	}
