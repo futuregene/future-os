@@ -211,16 +211,28 @@ func ValidateSkill(s Skill) error {
 
 // FormatSkillsXML formats a list of skills as an XML <available_skills> block
 // suitable for injection into a system prompt.
+// Uses nested elements format aligned with TS pi-mono's formatSkillsForPrompt().
+// Skills with DisableModelInvocation=true are excluded.
 func FormatSkillsXML(skills []Skill) string {
-	if len(skills) == 0 {
+	// Filter out disableModelInvocation skills
+	visible := make([]Skill, 0, len(skills))
+	for _, s := range skills {
+		if !s.DisableModelInvocation {
+			visible = append(visible, s)
+		}
+	}
+	if len(visible) == 0 {
 		return ""
 	}
 
 	var sb strings.Builder
 	sb.WriteString("<available_skills>\n")
-	for _, s := range skills {
-		sb.WriteString(fmt.Sprintf("  <skill name=\"%s\">%s</skill>\n",
-			escapeXML(s.Name), escapeXML(s.Description)))
+	for _, s := range visible {
+		sb.WriteString("  <skill>\n")
+		sb.WriteString(fmt.Sprintf("    <name>%s</name>\n", escapeXML(s.Name)))
+		sb.WriteString(fmt.Sprintf("    <description>%s</description>\n", escapeXML(s.Description)))
+		sb.WriteString(fmt.Sprintf("    <location>%s</location>\n", escapeXML(s.Path)))
+		sb.WriteString("  </skill>\n")
 	}
 	sb.WriteString("</available_skills>")
 

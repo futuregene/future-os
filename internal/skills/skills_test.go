@@ -298,7 +298,7 @@ func TestFormatSkillsXML_Empty(t *testing.T) {
 
 func TestFormatSkillsXML_Single(t *testing.T) {
 	skills := []Skill{
-		{Name: "refactor", Description: "Refactor Go code"},
+		{Name: "refactor", Description: "Refactor Go code", Path: "/skills/refactor.md"},
 	}
 	result := FormatSkillsXML(skills)
 
@@ -308,22 +308,26 @@ func TestFormatSkillsXML_Single(t *testing.T) {
 	if !strings.Contains(result, "</available_skills>") {
 		t.Error("missing closing tag")
 	}
-	if !strings.Contains(result, `<skill name="refactor">Refactor Go code</skill>`) {
-		t.Error("missing skill element")
+	// TS pi-mono aligned: nested elements
+	if !strings.Contains(result, "<name>refactor</name>") {
+		t.Error("missing name element")
+	}
+	if !strings.Contains(result, "<description>Refactor Go code</description>") {
+		t.Error("missing description element")
 	}
 }
 
 func TestFormatSkillsXML_Multiple(t *testing.T) {
 	skills := []Skill{
-		{Name: "refactor", Description: "Refactor Go code"},
-		{Name: "test-gen", Description: "Generate unit tests"},
+		{Name: "refactor", Description: "Refactor Go code", Path: "/skills/refactor.md"},
+		{Name: "test-gen", Description: "Generate unit tests", Path: "/skills/test-gen.md"},
 	}
 	result := FormatSkillsXML(skills)
 
-	if !strings.Contains(result, `<skill name="refactor">Refactor Go code</skill>`) {
+	if !strings.Contains(result, "<name>refactor</name>") {
 		t.Error("missing refactor skill")
 	}
-	if !strings.Contains(result, `<skill name="test-gen">Generate unit tests</skill>`) {
+	if !strings.Contains(result, "<name>test-gen</name>") {
 		t.Error("missing test-gen skill")
 	}
 }
@@ -342,6 +346,24 @@ func TestFormatSkillsXML_Escaping(t *testing.T) {
 	}
 	if !strings.Contains(result, "&gt;") {
 		t.Error("missing XML escaping for >")
+	}
+}
+
+func TestFormatSkillsXML_DisableModelInvocation(t *testing.T) {
+	skills := []Skill{
+		{Name: "visible", Description: "Visible skill", Path: "/skills/visible.md"},
+		{Name: "hidden", Description: "Hidden skill", Path: "/skills/hidden.md", DisableModelInvocation: true},
+	}
+	result := FormatSkillsXML(skills)
+
+	if !strings.Contains(result, "<name>visible</name>") {
+		t.Error("visible skill should appear")
+	}
+	if strings.Contains(result, "<name>hidden</name>") {
+		t.Error("hidden skill should NOT appear when DisableModelInvocation=true")
+	}
+	if strings.Count(result, "<skill>") != 1 {
+		t.Errorf("expected 1 <skill> element, got %d", strings.Count(result, "<skill>"))
 	}
 }
 

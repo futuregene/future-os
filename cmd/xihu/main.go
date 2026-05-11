@@ -200,9 +200,10 @@ func main() {
 	var promptSkills []prompt.Skill
 	for _, s := range resolvedSkills {
 		promptSkills = append(promptSkills, prompt.Skill{
-			Name:        s.Name,
-			Description: s.Description,
-			Location:    s.Path,
+			Name:                   s.Name,
+			Description:            s.Description,
+			Location:               s.Path,
+			DisableModelInvocation: s.DisableModelInvocation,
 		})
 	}
 

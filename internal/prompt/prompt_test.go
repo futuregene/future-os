@@ -34,8 +34,9 @@ func makeBashTool() types.AgentTool {
 
 func TestBuildPrompt_Default(t *testing.T) {
 	result := BuildPrompt(PromptOptions{})
-	if !strings.Contains(result, piDocsSection) {
-		t.Errorf("expected default prompt in output, got: %s", result)
+	// Default identity should contain pi harness text (TS pi-mono aligned)
+	if !strings.Contains(result, "expert coding assistant operating inside pi") {
+		t.Errorf("expected pi identity in output, got: %s", result)
 	}
 }
 
@@ -45,8 +46,9 @@ func TestBuildPrompt_CustomPrompt(t *testing.T) {
 	if !strings.HasPrefix(result, custom) {
 		t.Errorf("expected custom prompt as base, got: %s", result)
 	}
-	if strings.Contains(result, piDocsSection) {
-		t.Errorf("default prompt should not appear when custom is set")
+	// Default pi identity should not appear when custom is set
+	if strings.Contains(result, "expert coding assistant operating inside pi") {
+		t.Error("default prompt should not appear when custom is set")
 	}
 }
 
@@ -103,7 +105,7 @@ func TestBuildPrompt_ToolSnippets(t *testing.T) {
 
 func TestBuildPrompt_NoTools(t *testing.T) {
 	result := BuildPrompt(PromptOptions{})
-	// New behavior: "(none)" is shown when no tools
+	// When no tools: "(none)" is shown
 	if !strings.Contains(result, "(none)") {
 		t.Error("tools section should show (none) when no tools provided")
 	}
@@ -112,8 +114,11 @@ func TestBuildPrompt_NoTools(t *testing.T) {
 func TestBuildPrompt_AGENTSContent(t *testing.T) {
 	content := "# Project Rules\n- Keep it simple"
 	result := BuildPrompt(PromptOptions{AGENTSContent: content})
-	if !strings.Contains(result, "## Project Context") {
+	if !strings.Contains(result, "# Project Context") {
 		t.Error("missing Project Context heading")
+	}
+	if !strings.Contains(result, "Project-specific instructions and guidelines:") {
+		t.Error("missing instructions and guidelines text")
 	}
 	if !strings.Contains(result, "# Project Rules") {
 		t.Error("missing AGENTS content")
@@ -122,7 +127,7 @@ func TestBuildPrompt_AGENTSContent(t *testing.T) {
 
 func TestBuildPrompt_EmptyAGENTSContent(t *testing.T) {
 	result := BuildPrompt(PromptOptions{AGENTSContent: ""})
-	if strings.Contains(result, "## Project Context") {
+	if strings.Contains(result, "# Project Context") {
 		t.Error("Project Context should not appear when empty")
 	}
 }
@@ -141,11 +146,16 @@ func TestBuildPrompt_Skills(t *testing.T) {
 	if !strings.Contains(result, "</available_skills>") {
 		t.Error("missing closing available_skills tag")
 	}
-	if !strings.Contains(result, `name="refactor"`) {
-		t.Error("missing refactor skill")
+	// TS pi-mono format: nested elements
+	if !strings.Contains(result, "<name>refactor</name>") {
+		t.Error("missing refactor skill in nested format")
 	}
-	if !strings.Contains(result, `name="test-gen"`) {
-		t.Error("missing test-gen skill")
+	if !strings.Contains(result, "<name>test-gen</name>") {
+		t.Error("missing test-gen skill in nested format")
+	}
+	// TS pi-mono lead-in text
+	if !strings.Contains(result, "The following skills provide specialized instructions") {
+		t.Error("missing skills lead-in text")
 	}
 }
 
@@ -184,11 +194,11 @@ func TestBuildPrompt_GuidelinesDeduplication(t *testing.T) {
 	}
 	result := BuildPrompt(PromptOptions{PromptGuidelines: guidelines})
 	// Default guidelines always include "Be concise in your responses"
-	// "General Guidelines:" header should be present (default guidelines exist)
-	if !strings.Contains(result, "General Guidelines:") {
-		t.Error("missing General Guidelines header")
+	// "Guidelines:" header should be present
+	if !strings.Contains(result, "Guidelines:") {
+		t.Error("missing Guidelines header")
 	}
-	// Check that deduplication works even with default guidelines
+	// Check that deduplication works
 	count := strings.Count(result, "- Be concise\n")
 	if count != 1 {
 		t.Errorf("expected 1 occurrence of '- Be concise' in guidelines, got %d", count)
@@ -201,7 +211,7 @@ func TestBuildPrompt_GuidelinesDeduplication(t *testing.T) {
 func TestBuildPrompt_DefaultGuidelines(t *testing.T) {
 	// Default behavioral guidelines are always present
 	result := BuildPrompt(PromptOptions{})
-	if !strings.Contains(result, "General Guidelines:") {
+	if !strings.Contains(result, "Guidelines:") {
 		t.Error("default behavioral guidelines should always appear")
 	}
 	if !strings.Contains(result, "Be concise in your responses") {
@@ -216,8 +226,8 @@ func TestBuildPrompt_AppendPrompt(t *testing.T) {
 	result := BuildPrompt(PromptOptions{
 		AppendPrompt: "Remember to always format your output.",
 	})
-	if !strings.HasSuffix(strings.TrimSpace(result), "Remember to always format your output.") {
-		t.Errorf("append prompt should be at the end, got: %s", result)
+	if !strings.Contains(result, "Remember to always format your output.") {
+		t.Errorf("append prompt should appear, got: %s", result)
 	}
 }
 
@@ -246,17 +256,12 @@ func TestBuildPrompt_FullIntegration(t *testing.T) {
 		"You are an expert Go developer.",
 		"Current date: 2026-05-08",
 		"Current working directory: /home/dev/project",
-		"Available tools:",
-		"- bash: Execute shell commands",
-		"- read: Read file contents",
-		"## Project Context",
+		"# Project Context",
+		"Project-specific instructions and guidelines:",
 		"# AGENTS.md",
 		"<available_skills>",
-		`name="go-dev"`,
+		"<name>go-dev</name>",
 		"</available_skills>",
-		"General Guidelines:",
-		"- Use idiomatic Go",
-		"- Handle errors properly",
 		"Always run tests before submitting.",
 	}
 
@@ -266,8 +271,13 @@ func TestBuildPrompt_FullIntegration(t *testing.T) {
 		}
 	}
 
-	// Default prompt should not appear since custom is set
-	if strings.Contains(result, piDocsSection) {
+	// Tools/guidelines NOT injected when customPrompt is set (TS pi-mono behavior)
+	if strings.Contains(result, "Available tools:") {
+		t.Error("tools should not appear when custom prompt is set")
+	}
+
+	// Default pi identity should not appear since custom is set
+	if strings.Contains(result, "expert coding assistant operating inside pi") {
 		t.Error("default prompt should not appear when custom prompt is set")
 	}
 }
@@ -293,14 +303,14 @@ func TestBuildPrompt_ToolWithRawJSONParams(t *testing.T) {
 }
 
 func TestBuildPrompt_DynamicGuidelines(t *testing.T) {
-	// Bash-only: should suggest using bash for file ops
+	// Bash-only: should suggest using bash for file ops (TS pi-mono aligned)
 	bashOnly := []types.AgentTool{makeBashTool()}
 	result := BuildPrompt(PromptOptions{Tools: bashOnly})
-	if !strings.Contains(result, "Use bash for file system operations") {
+	if !strings.Contains(result, "Use bash for file operations like ls, rg, find") {
 		t.Error("missing dynamic guideline for bash-only mode")
 	}
 
-	// Bash + grep: should suggest preferring grep over bash
+	// Bash + grep: should suggest preferring grep/find/ls over bash (TS pi-mono aligned)
 	bashAndGrep := []types.AgentTool{makeBashTool(), {
 		Def: types.ToolDef{
 			Type: "function",
@@ -311,8 +321,37 @@ func TestBuildPrompt_DynamicGuidelines(t *testing.T) {
 		},
 	}}
 	result2 := BuildPrompt(PromptOptions{Tools: bashAndGrep})
-	if !strings.Contains(result2, "Prefer specialized tools") {
+	if !strings.Contains(result2, "Prefer grep/find/ls tools over bash for file exploration") {
 		t.Error("missing dynamic guideline for bash+grep mode")
+	}
+}
+
+func TestBuildPrompt_DisableModelInvocation(t *testing.T) {
+	tools := []types.AgentTool{makeReadTool()}
+	skills := []Skill{
+		{Name: "visible", Description: "Visible skill", Location: "/skills/visible.md"},
+		{Name: "hidden", Description: "Hidden skill", Location: "/skills/hidden.md", DisableModelInvocation: true},
+	}
+	result := BuildPrompt(PromptOptions{Skills: skills, Tools: tools})
+	if !strings.Contains(result, "<name>visible</name>") {
+		t.Error("visible skill should appear")
+	}
+	if strings.Contains(result, "<name>hidden</name>") {
+		t.Error("hidden skill should NOT appear when DisableModelInvocation=true")
+	}
+}
+
+func TestBuildPrompt_IdentitySection(t *testing.T) {
+	result := BuildPrompt(PromptOptions{
+		WorkingDirectory: "/tmp/test",
+		Date:             "2026-01-01",
+	})
+	// TS pi-mono aligned identity
+	if !strings.Contains(result, "You are an expert coding assistant operating inside pi") {
+		t.Error("missing TS-aligned identity text")
+	}
+	if !strings.Contains(result, "coding agent harness") {
+		t.Error("missing 'coding agent harness' in identity")
 	}
 }
 
@@ -382,5 +421,32 @@ func TestEscapeXML(t *testing.T) {
 		if got != tt.expect {
 			t.Errorf("escapeXML(%q) = %q, want %q", tt.input, got, tt.expect)
 		}
+	}
+}
+
+func TestFilterVisibleSkills(t *testing.T) {
+	skills := []Skill{
+		{Name: "a", DisableModelInvocation: false},
+		{Name: "b", DisableModelInvocation: true},
+		{Name: "c", DisableModelInvocation: false},
+	}
+	visible := filterVisibleSkills(skills)
+	if len(visible) != 2 {
+		t.Errorf("expected 2 visible skills, got %d", len(visible))
+	}
+	if visible[0].Name != "a" || visible[1].Name != "c" {
+		t.Errorf("expected [a, c], got %v", visible)
+	}
+}
+
+func TestContains(t *testing.T) {
+	if !contains([]string{"a", "b", "c"}, "b") {
+		t.Error("expected to find b")
+	}
+	if contains([]string{"a", "b", "c"}, "d") {
+		t.Error("expected not to find d")
+	}
+	if contains(nil, "a") {
+		t.Error("expected not to find in nil slice")
 	}
 }
