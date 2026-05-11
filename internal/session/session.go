@@ -319,8 +319,18 @@ func (m *Manager) List(cwd string) ([]Session, error) {
 	return sessions, nil
 }
 
+// SessionSummary is a lightweight summary of a session for cross-project lookups.
+type SessionSummary struct {
+	ID        string    `json:"id"`
+	CWD       string    `json:"cwd"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Model     string    `json:"model"`
+	Name      string    `json:"name,omitempty"`
+}
+
 // ListAll lists all sessions across all CWD directories (TS pi-mono: SessionManager.listAll).
-func (m *Manager) ListAll() ([]Session, error) {
+// Returns lightweight SessionSummary structs instead of full sessions for efficient cross-project lookups.
+func (m *Manager) ListAll() ([]SessionSummary, error) {
 	if err := os.MkdirAll(m.Dir, 0755); err != nil {
 		return nil, err
 	}
@@ -333,7 +343,7 @@ func (m *Manager) ListAll() ([]Session, error) {
 		return nil, err
 	}
 
-	var sessions []Session
+	var summaries []SessionSummary
 	for _, cwdEntry := range cwdDirs {
 		if !cwdEntry.IsDir() {
 			continue
@@ -350,20 +360,69 @@ func (m *Manager) ListAll() ([]Session, error) {
 			if filepath.Ext(entry.Name()) != ".jsonl" {
 				continue
 			}
-			s, err := m.loadFromPath(filepath.Join(cwdPath, entry.Name()))
-			if err != nil || s == nil {
-				continue
+			summary := loadSessionSummary(filepath.Join(cwdPath, entry.Name()))
+			if summary != nil {
+				summaries = append(summaries, *summary)
 			}
-			sessions = append(sessions, *s)
 		}
 	}
 
 	// Sort by UpdatedAt descending
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[j].UpdatedAt.Before(sessions[i].UpdatedAt)
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[j].UpdatedAt.Before(summaries[i].UpdatedAt)
 	})
 
-	return sessions, nil
+	return summaries, nil
+}
+
+// loadSessionSummary parses only the first line (session_info entry) of a JSONL file
+// to extract metadata without loading the full session.
+func loadSessionSummary(path string) *SessionSummary {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var entry SessionEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			return nil
+		}
+		if entry.Type != EntryTypeSessionInfo {
+			return nil
+		}
+		var meta struct {
+			CWD       string `json:"cwd"`
+			UpdatedAt string `json:"updated_at"`
+			CreatedAt string `json:"created_at"`
+			Name      string `json:"name"`
+		}
+		if err := json.Unmarshal(entry.Content, &meta); err != nil {
+			return nil
+		}
+		summary := &SessionSummary{
+			ID:    entry.ID,
+			CWD:   meta.CWD,
+			Model: entry.Model,
+			Name:  meta.Name,
+		}
+		if t, err := time.Parse(time.RFC3339, meta.UpdatedAt); err == nil {
+			summary.UpdatedAt = t
+		} else if t, err := time.Parse(time.RFC3339, meta.CreatedAt); err == nil {
+			summary.UpdatedAt = t
+		} else {
+			summary.UpdatedAt = entry.Timestamp
+		}
+		return summary
+	}
+	return nil
 }
 
 // Load loads a session by ID and CWD.
@@ -785,6 +844,46 @@ func MessagesToEntries(messages []types.Message, rootParentID string) []SessionE
 		parentID = entry.ID
 	}
 	return entries
+}
+
+// GenerateBranchSummary generates a short summary of the session entries starting
+// from fromEntryID, using the provided LLM summarizer function. The summary is
+// stored as a branch_summary entry in the session.
+//
+// Parameters:
+//   - s: the session to store the branch_summary entry in
+//   - fromEntryID: the entry ID identifying the branch root
+//   - parentID: the parent ID for the new branch_summary entry
+//   - summarizer: function that takes messages and returns a short summary string
+//   - fromHook: whether this summary was triggered by a hook
+//
+// Returns the generated summary string and any error.
+func (m *Manager) GenerateBranchSummary(s *Session, fromEntryID, parentID string, summarizer func([]types.Message) (string, error), fromHook bool) (string, error) {
+	// Walk the branch from fromEntryID to root to get the messages
+	chain := ForEachEntry(s.Entries, fromEntryID)
+	if len(chain) == 0 {
+		return "", fmt.Errorf("no entries found for fromEntryID %q", fromEntryID)
+	}
+
+	// Convert chain to messages in chronological order (root to leaf)
+	messages := BuildContextFromLeaf(s.Entries, fromEntryID)
+	if len(messages) == 0 {
+		return "", fmt.Errorf("no messages to summarize for fromEntryID %q", fromEntryID)
+	}
+
+	// Call the LLM summarizer
+	summary, err := summarizer(messages)
+	if err != nil {
+		return "", fmt.Errorf("summarize branch: %w", err)
+	}
+
+	// Create and store the branch_summary entry
+	entry := BranchSummaryEntry(summary, fromEntryID, parentID, fromHook)
+	if err := m.AddEntry(s, entry); err != nil {
+		return "", fmt.Errorf("store branch summary: %w", err)
+	}
+
+	return summary, nil
 }
 
 // ForkSession creates a new session from a specific entry in the parent session.

@@ -164,6 +164,11 @@ type AgentSession struct {
 	totalInputTokens  int
 	totalOutputTokens int
 	totalCost         float64
+
+	// Event-driven persistence: debounced auto-save on agent_end/turn_end/message_end
+	saveTimer   *time.Timer
+	saveMu      sync.Mutex
+	savePending bool
 }
 
 // New creates a new AgentSession from config.
@@ -185,6 +190,9 @@ func New(cfg AgentSessionConfig) (*AgentSession, error) {
 		steeringMode:    SteeringModeAll,
 		followUpMode:    FollowUpModeAll,
 	}
+
+	// Wire up event-driven session persistence (non-blocking, debounced)
+	s.setupAutoSave()
 
 	return s, nil
 }
@@ -292,6 +300,46 @@ func (s *AgentSession) emit(event AgentSessionEvent) {
 	for _, l := range listeners {
 		l(event)
 	}
+}
+
+// setupAutoSave wires up a self-subscriber that triggers a debounced session
+// save on agent_end, turn_end, and message_end events. The save is non-blocking.
+func (s *AgentSession) setupAutoSave() {
+	s.Subscribe(func(event AgentSessionEvent) {
+		switch event.Type {
+		case "agent_end", "turn_end", "message_end":
+			s.debouncedSave()
+		}
+	})
+}
+
+// debouncedSave triggers a non-blocking, debounced session save. Multiple
+// rapid calls within the debounce window (200ms) are coalesced into a single
+// save operation.
+func (s *AgentSession) debouncedSave() {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+
+	if s.savePending {
+		return // already scheduled
+	}
+	s.savePending = true
+
+	if s.saveTimer != nil {
+		s.saveTimer.Stop()
+	}
+
+	s.saveTimer = time.AfterFunc(200*time.Millisecond, func() {
+		s.saveMu.Lock()
+		s.savePending = false
+		s.saveMu.Unlock()
+
+		if s.engine != nil && s.engine.SessionManager != nil && s.engine.Session != nil {
+			if err := s.engine.SessionManager.Save(s.engine.Session); err != nil {
+				log.Printf("agentsession: auto-save session: %v", err)
+			}
+		}
+	})
 }
 
 // emitQueueUpdate emits a queue_update event.

@@ -479,11 +479,16 @@ func (l *Loop) executeToolsSequential(ctx context.Context, turn int, toolCalls [
 	}
 }
 
-// executeOneTool runs a single tool call with before/after hooks.
+// executeOneTool runs a single tool call with the full 3-stage pipeline:
+//   1. BeforeToolCall — intercept/skip execution
+//   2. PrepareToolCall — transform arguments
+//   3. Execute the tool
+//   4. FinalizeToolCall — transform result/error
+//   5. AfterToolCall — modify or mask results
 func (l *Loop) executeOneTool(ctx context.Context, tc types.ToolCall, _ int, outResult *string, outErr *error, outName *string, outDuration *time.Duration) {
 	*outName = tc.Function.Name
 
-	// BeforeToolCall hook — allows extensions to intercept or skip execution.
+	// Stage 1: BeforeToolCall hook — allows extensions to intercept or skip execution.
 	// TS pi-mono: beforeToolCall in the 3-stage pipeline.
 	if l.Config.BeforeToolCall != nil {
 		if override := l.Config.BeforeToolCall(tc.Function.Name, tc.ID, tc.Function.Arguments); override != nil && override.Result != "" {
@@ -496,14 +501,33 @@ func (l *Loop) executeOneTool(ctx context.Context, tc types.ToolCall, _ int, out
 		}
 	}
 
+	// Stage 2: PrepareToolCall hook — transform arguments before execution.
+	// TS pi-mono: prepareToolCall in the 3-stage pipeline.
+	effectiveArgs := tc.Function.Arguments
+	if l.Config.PrepareToolCall != nil {
+		if modified := l.Config.PrepareToolCall(tc.Function.Name, tc.Function.Arguments); modified != nil {
+			effectiveArgs = modified
+		}
+	}
+
 	if l.EventBus != nil {
 		l.EventBus.Emit(events.ToolStart(tc.ID, tc.Function.Name))
 	}
 	start := time.Now()
-	result, err := l.executeTool(tc)
+
+	// Stage 3: Execute the tool with (possibly modified) arguments.
+	effectiveTC := tc
+	effectiveTC.Function.Arguments = effectiveArgs
+	result, err := l.executeTool(effectiveTC)
 	*outDuration = time.Since(start)
 
-	// AfterToolCall hook — allows extensions to modify or mask results.
+	// Stage 4: FinalizeToolCall hook — transform result/error after execution.
+	// TS pi-mono: finalizeToolCall in the 3-stage pipeline.
+	if l.Config.FinalizeToolCall != nil {
+		result, err = l.Config.FinalizeToolCall(tc.Function.Name, result, err)
+	}
+
+	// Stage 5: AfterToolCall hook — allows extensions to modify or mask results.
 	// TS pi-mono: afterToolCall in the 3-stage pipeline.
 	if l.Config.AfterToolCall != nil {
 		if override := l.Config.AfterToolCall(tc.Function.Name, tc.ID, tc.Function.Arguments, result, err); override != nil {

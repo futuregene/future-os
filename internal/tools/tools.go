@@ -268,9 +268,55 @@ var smartQuoteReplacer = strings.NewReplacer(
 	"\uff02", "\"", // fullwidth quotation mark
 )
 
+// dashReplacer normalizes various Unicode dash characters to ASCII "-".
+// #15 Unicode normalization: dashes.
+var dashReplacer = strings.NewReplacer(
+	"\u2010", "-", // hyphen
+	"\u2011", "-", // non-breaking hyphen
+	"\u2012", "-", // figure dash
+	"\u2013", "-", // en dash
+	"\u2014", "-", // em dash
+	"\u2015", "-", // horizontal bar
+	"\u2212", "-", // minus sign
+)
+
+// spaceReplacer normalizes various Unicode space characters to ASCII " ".
+// #15 Unicode normalization: spaces.
+var spaceReplacer = strings.NewReplacer(
+	"\u00A0", " ", // no-break space
+	"\u2002", " ", // en space
+	"\u2003", " ", // em space
+	"\u2004", " ", // three-per-em space
+	"\u2005", " ", // four-per-em space
+	"\u2006", " ", // six-per-em space
+	"\u2007", " ", // figure space
+	"\u2008", " ", // punctuation space
+	"\u2009", " ", // thin space
+	"\u200A", " ", // hair space
+	"\u202F", " ", // narrow no-break space
+	"\u205F", " ", // medium mathematical space
+	"\u3000", " ", // ideographic space
+)
+
+// unicodeDashSet tracks which runes normalize to "-" (for use in buildByteMapper).
+var unicodeDashSet = map[rune]bool{
+	'\u2010': true, '\u2011': true, '\u2012': true, '\u2013': true,
+	'\u2014': true, '\u2015': true, '\u2212': true,
+}
+
+// unicodeSpaceSet tracks which runes normalize to " " (for use in buildByteMapper).
+var unicodeSpaceSet = map[rune]bool{
+	'\u00A0': true, '\u2002': true, '\u2003': true, '\u2004': true,
+	'\u2005': true, '\u2006': true, '\u2007': true, '\u2008': true,
+	'\u2009': true, '\u200A': true, '\u202F': true, '\u205F': true,
+	'\u3000': true,
+}
+
 // normalize applies fuzzy matching transformations:
 //   - NFKC Unicode normalization (combining characters, fullwidth forms, etc.)
 //   - Replace smart quotes with ASCII
+//   - Replace Unicode dashes with ASCII "-" (see dashReplacer)
+//   - Replace Unicode spaces with ASCII " " (see spaceReplacer)
 //   - Strip trailing whitespace from each line
 func normalize(s string) string {
 	// NFKC normalization: decompose and recompose characters, convert fullwidth
@@ -280,7 +326,10 @@ func normalize(s string) string {
 
 	lines := strings.Split(s, "\n")
 	for i, line := range lines {
-		lines[i] = strings.TrimRight(smartQuoteReplacer.Replace(line), " \t")
+		line = smartQuoteReplacer.Replace(line)
+		line = dashReplacer.Replace(line)
+		line = spaceReplacer.Replace(line)
+		lines[i] = strings.TrimRight(line, " \t")
 	}
 	return strings.Join(lines, "\n")
 }
@@ -318,6 +367,23 @@ func buildByteMapper(orig, norm string) []int {
 			}
 		}
 
+		// Check for Unicode dash/space → ASCII replacement (multi-byte → 1-byte)
+		if oi < len(orig) {
+			r, size := utf8.DecodeRuneInString(orig[oi:])
+			if size > 1 {
+				if unicodeDashSet[r] && ni < len(norm) && norm[ni] == '-' {
+					oi += size
+					ni++
+					continue
+				}
+				if unicodeSpaceSet[r] && ni < len(norm) && norm[ni] == ' ' {
+					oi += size
+					ni++
+					continue
+				}
+			}
+		}
+
 		// Trailing whitespace stripped from line: skip whitespace in original
 		if (orig[oi] == ' ' || orig[oi] == '\t') && ni < len(norm) && norm[ni] == '\n' {
 			oi++
@@ -344,6 +410,31 @@ func buildByteMapper(orig, norm string) []int {
 	}
 
 	return mapper
+}
+
+// ---------------------------------------------------------------------------
+// CRLF handling (#14)
+// ---------------------------------------------------------------------------
+
+// detectLineEnding detects whether content uses "\r\n" or "\n" line endings.
+func detectLineEnding(content string) string {
+	if strings.Contains(content, "\r\n") {
+		return "\r\n"
+	}
+	return "\n"
+}
+
+// normalizeToLF replaces CRLF line endings with LF.
+func normalizeToLF(content string) string {
+	return strings.ReplaceAll(content, "\r\n", "\n")
+}
+
+// restoreLineEndings restores original line endings in content.
+func restoreLineEndings(content string, lineEnding string) string {
+	if lineEnding == "\r\n" {
+		return strings.ReplaceAll(content, "\n", "\r\n")
+	}
+	return content
 }
 
 // ---------------------------------------------------------------------------
@@ -540,6 +631,11 @@ func EditTool() types.AgentTool {
 				originalContent = string(data[3:])
 			}
 
+			// --- Line ending normalization (#14) ---
+			// Detect original line endings, then normalize to LF for consistent matching.
+			lineEnding := detectLineEnding(originalContent)
+			originalContent = normalizeToLF(originalContent)
+
 			// --- Normalize content + build mapper ---
 			normalizedContent := normalize(originalContent)
 			mapper := buildByteMapper(originalContent, normalizedContent)
@@ -632,6 +728,9 @@ func EditTool() types.AgentTool {
 			if totalReplacements == 0 && skippedNoChange > 0 {
 				return fmt.Sprintf("No changes needed: all %d edit(s) already match the target content in %s", skippedNoChange, params.FilePath), nil
 			}
+
+			// --- Restore line endings (#14) ---
+			result = restoreLineEndings(result, lineEnding)
 
 			// --- Restore BOM ---
 			output := result
