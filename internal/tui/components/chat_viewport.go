@@ -137,6 +137,19 @@ type ChatViewport struct {
 	borderStyle lipgloss.Style
 	// Animated spinner state (TS pi-mono: Loader spinner)
 	spinnerFrame int
+
+	// Message components: each message type has its own independent component class,
+	// matching TS pi-mono's pattern (AssistantMessageComponent, ToolExecutionComponent, etc.)
+	componentBase MessageComponentBase
+	assistantComp AssistantMessageComponent
+	thinkingComp  ThinkingMessageComponent
+	toolCallComp  ToolCallComponent
+	toolResultComp ToolResultComponent
+	bashComp      BashExecutionComponent
+	errorComp     ErrorMessageComponent
+	systemComp    SystemMessageComponent
+	customMsgComp CustomMessageComponent
+	userMsgComp   UserMessageComponent
 }
 
 // newGlamourRenderer creates a glamour terminal renderer with consistent settings.
@@ -242,6 +255,48 @@ func (c *ChatViewport) SetSize(w, h int) {
 	if err == nil {
 		c.mdRenderer = renderer
 	}
+}
+
+// syncComponentBase populates the shared component base from the ChatViewport's
+// current state. Called at the start of View() so components always see fresh styles,
+// toggles, and the markdown renderer (which may be rebuilt on SetSize).
+func (c *ChatViewport) syncComponentBase() {
+	cb := &c.componentBase
+	cb.MdRenderer = c.mdRenderer
+	cb.HideAllThinking = &c.HideAllThinking
+	cb.HiddenThinkingLabel = &c.HiddenThinkingLabel
+	cb.AllToolsExpanded = &c.AllToolsExpanded
+	cb.ShowImages = &c.ShowImages
+	cb.ImageWidthCells = &c.imageWidthCells
+	cb.ToolToggleKey = &c.ToolToggleKey
+	cb.SpinnerFrame = &c.spinnerFrame
+	cb.AssistantStyle = c.assistantStyle
+	cb.ThinkingStyle = c.thinkingStyle
+	cb.ThinkingDim = c.thinkingDim
+	cb.ToolStyle = c.toolStyle
+	cb.ToolPendingBg = c.toolPendingBg
+	cb.ToolSuccessBg = c.toolSuccessBg
+	cb.ToolErrorBg = c.toolErrorBg
+	cb.ToolSuccess = c.toolSuccess
+	cb.ToolError = c.toolError
+	cb.ErrorStyle = c.errorStyle
+	cb.SystemStyle = c.systemStyle
+	cb.WarningStyle = c.warningStyle
+	cb.BashBorder = c.bashBorder
+	cb.BashHeader = c.bashHeader
+	cb.BashOutput = c.bashOutput
+	cb.BashStatus = c.bashStatus
+	cb.BashErrorStatus = c.bashErrorStatus
+	cb.DiffAdd = c.diffAdd
+	cb.DiffDel = c.diffDel
+	cb.DiffCtx = c.diffCtx
+	cb.DiffHeader = c.diffHeader
+	cb.CustomMessageBg = c.customMessageBg
+	cb.CustomMessageLabel = c.customMessageLabel
+	cb.CustomLabelStyle = c.customLabelStyle
+	cb.CustomDimStyle = c.customDimStyle
+	cb.UserMessageBg = c.userMessageBg
+	cb.BorderStyle = c.borderStyle
 }
 
 // SetTheme updates all chat styles from theme colors.
@@ -564,14 +619,6 @@ func (c *ChatViewport) SetImageWidth(width int) {
 	c.imageWidthCells = width
 }
 
-// toggleKey returns the tool toggle key string with fallback.
-func (c *ChatViewport) toggleKey() string {
-	if c.ToolToggleKey != "" {
-		return c.ToolToggleKey
-	}
-	return "Ctrl+O"
-}
-
 // ToggleAllTools toggles ALL tool results and bash entries globally (TS pi-mono: Ctrl+O).
 func (c *ChatViewport) ToggleAllTools() {
 	c.mu.Lock()
@@ -804,16 +851,25 @@ func (c *ChatViewport) HasRunningTools() bool {
 	return false
 }
 
-// spinnerChar returns the current spinner animation frame (TS pi-mono: Loader frame).
-func (c *ChatViewport) spinnerChar() string {
-	return spinnerChars[c.spinnerFrame%len(spinnerChars)]
-}
-
-// View renders the chat viewport. All entries are rendered to a single
-// string, and the viewport handles the scrolling window.
+// View renders the chat viewport by delegating to per-message-type components,
+// matching TS pi-mono's pattern of independent component classes.
 func (c *ChatViewport) View() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Sync shared state to component base (styles, toggles, renderer)
+	c.syncComponentBase()
+
+	// Wire component instances once (they embed base, which we just synced)
+	c.assistantComp.base = &c.componentBase
+	c.thinkingComp.base = &c.componentBase
+	c.toolCallComp.base = &c.componentBase
+	c.toolResultComp.base = &c.componentBase
+	c.bashComp.base = &c.componentBase
+	c.errorComp.base = &c.componentBase
+	c.systemComp.base = &c.componentBase
+	c.customMsgComp.base = &c.componentBase
+	c.userMsgComp.base = &c.componentBase
 
 	var sb strings.Builder
 	sb.WriteByte('\n')
@@ -821,231 +877,40 @@ func (c *ChatViewport) View() string {
 	for i, e := range c.entries {
 		switch e.Type {
 		case "text":
-			// OSC 133 zones only when no tool calls in this message (TS pi-mono)
-			hasToolCalls := c.hasToolCalls(i)
-			if !hasToolCalls {
-				sb.WriteString(osc133ZoneStart)
-			}
-			rendered, err := c.mdRenderer.Render(e.Content)
-			if err != nil {
-				sb.WriteString(c.assistantStyle.Render(wordWrap(e.Content, c.width-10)))
-			} else {
-				rendered = strings.TrimSuffix(rendered, "\n")
-				sb.WriteString(wrapURLsOSC8(rendered))
-			}
-			if !hasToolCalls {
-				sb.WriteString(osc133ZoneEnd)
-				sb.WriteString(osc133ZoneFinal)
-			}
-			// Stop reason rendering (TS pi-mono: stopReason)
-			if e.StopReason == "aborted" {
-				sb.WriteByte('\n')
-				abortMsg := "Operation aborted"
-				if e.ErrorMessage != "" && e.ErrorMessage != "Request was aborted" {
-					abortMsg = e.ErrorMessage
-				}
-				sb.WriteString(c.errorStyle.Render(abortMsg))
-			} else if e.StopReason == "error" {
-				sb.WriteByte('\n')
-				errMsg := "Unknown error"
-				if e.ErrorMessage != "" {
-					errMsg = e.ErrorMessage
-				}
-				sb.WriteString(c.errorStyle.Render("Error: " + errMsg))
-			} else if e.StopReason == "length" {
-				sb.WriteByte('\n')
-				sb.WriteString(c.warningStyle.Render("[Output truncated — model reached token limit]"))
-			}
+			c.assistantComp.HasFollowingToolCalls = c.hasToolCalls(i)
+			sb.WriteString(c.assistantComp.Render(e, c.width))
 		case "thinking":
-			if c.HideAllThinking {
-				sb.WriteString(c.thinkingDim.Render("💭 " + c.HiddenThinkingLabel))
-			} else if e.Expanded {
-				rendered, err := c.mdRenderer.Render(e.Content)
-				if err != nil {
-					sb.WriteString(c.thinkingStyle.Render("💭 " + wordWrap(e.Content, c.width-10)))
-				} else {
-					rendered = strings.TrimSuffix(rendered, "\n")
-					sb.WriteString(c.thinkingStyle.Render("💭 " + wrapURLsOSC8(rendered)))
-				}
-			} else {
-				sb.WriteString(c.thinkingDim.Render("💭 " + c.HiddenThinkingLabel))
-			}
+			sb.WriteString(c.thinkingComp.Render(e, c.width))
 		case "tool_call":
-			// Compact read rendering (TS pi-mono: compact read for system files)
-			// Classify on the fly since args may have been completed after AddToolCall
+			// Classify compact read on the fly (args may have been completed after AddToolCall)
 			if e.CompactReadKind == "" && e.ToolName == "read" {
 				kind, label := classifyCompactRead(e.ToolArgs)
 				if kind != "" {
 					e.CompactReadKind = kind
 					e.CompactReadLabel = label
 					e.Expanded = false
+					c.entries[i] = e
 				}
 			}
-			if e.CompactReadKind != "" {
-				var compactLine string
-				switch e.CompactReadKind {
-				case "skill":
-					compactLine = c.customLabelStyle.Render("[skill] ") + e.CompactReadLabel
-				case "docs":
-					compactLine = c.toolStyle.Render("read docs ") + e.CompactReadLabel
-				case "resource":
-					compactLine = c.toolStyle.Render("read resource ") + e.CompactReadLabel
-				}
-				if lr := formatLineRange(e.ToolArgs); lr != "" {
-					compactLine += c.warningStyle.Render(lr)
-				}
-				if !e.Expanded {
-					compactLine += c.customDimStyle.Render(" (" + c.toggleKey() + " to expand)")
-				}
-				sb.WriteString(applyLineBg(compactLine, c.width, c.toolPendingBg))
-				if e.Expanded && e.ToolArgs != "" {
-					sb.WriteByte('\n')
-					sb.WriteString(prefixedLineBg("  args: ", wordWrap(e.ToolArgs, c.width-14), c.width, c.toolPendingBg))
-				}
-				break
-			}
-			// Tool call: pending (yellow) or running (with spinner)
-			line := c.toolStyle.Render(toolIcon(e.ToolName) + e.ToolName)
-			argsPreview := toolArgsPreview(e.ToolName, e.ToolArgs)
-			if argsPreview != "" {
-				line += " " + argsPreview
-			}
-			if e.ToolPending {
-				line += c.toolStyle.Render("  " + c.spinnerChar() + " Running... (Esc to cancel)")
-			}
-			sb.WriteString(applyLineBg(line, c.width, c.toolPendingBg))
-			if e.Expanded && e.ToolArgs != "" {
-				sb.WriteByte('\n')
-				sb.WriteString(prefixedLineBg("  args: ", wordWrap(e.ToolArgs, c.width-14), c.width, c.toolPendingBg))
-			}
+			sb.WriteString(c.toolCallComp.Render(e, c.width))
 		case "tool_result":
-			// Compact read result: show compact one-liner when collapsed (TS pi-mono hides result)
-			if e.CompactReadKind != "" {
-				bgStyle := c.toolSuccessBg
-				icon := "✓ "
-				if e.IsError {
-					bgStyle = c.toolErrorBg
-					icon = "✗ "
-				}
-				var compactLine string
-				switch e.CompactReadKind {
-				case "skill":
-					compactLine = c.customLabelStyle.Render("[skill] ") + e.CompactReadLabel
-				case "docs":
-					compactLine = c.toolStyle.Render("read docs ") + e.CompactReadLabel
-				case "resource":
-					compactLine = c.toolStyle.Render("read resource ") + e.CompactReadLabel
-				}
-				if lr := formatLineRange(e.ToolArgs); lr != "" {
-					compactLine += c.warningStyle.Render(lr)
-				}
-				if !e.Expanded {
-					compactLine += c.customDimStyle.Render(" (" + c.toggleKey() + " to expand)")
-				}
-				sb.WriteString(applyLineBg(icon + compactLine, c.width, bgStyle))
-				if e.Expanded && e.Content != "" {
-					sb.WriteByte(0x0a)
-					if isDiffContent(e.Content) {
-						diffStyle := DiffStyle{
-							Add:     c.diffAdd,
-							Del:     c.diffDel,
-							Context: c.diffCtx,
-							Header:  c.diffHeader,
-							Inverse: lipgloss.NewStyle().Reverse(true),
-						}
-						rendered := RenderDiff(e.Content, diffStyle)
-						sb.WriteString(prefixedLineBg(" ", rendered, c.width, bgStyle))
-					} else {
-						sb.WriteString(prefixedLineBg(" ", wordWrap(e.Content, c.width-14), c.width, bgStyle))
-					}
-				}
-				break
-			}
-			// Tool result: green (success) or red (error) background
-			var bgStyle lipgloss.Style
-			var icon string
-			if e.IsError {
-				bgStyle = c.toolErrorBg
-				icon = "✗ "
-			} else {
-				bgStyle = c.toolSuccessBg
-				icon = "✓ "
-			}
-			// Duration display (TS pi-mono: "Took X.Xs")
-			durPart := ""
-			if e.ToolDuration != "" {
-				durPart = "  Took " + e.ToolDuration
-			}
-			detail := toolResultDetail(e)
-			header := icon + toolIcon(e.ToolName) + e.ToolName + detail + durPart
-			if !e.Expanded && e.Content != "" {
-				header += "  (" + c.toggleKey() + " to expand)"
-			}
-			sb.WriteString(applyLineBg(header, c.width, bgStyle))
-			if e.Expanded && e.Content != "" {
-				sb.WriteByte('\n')
-				if isDiffContent(e.Content) {
-					diffStyle := DiffStyle{
-						Add:     c.diffAdd,
-						Del:     c.diffDel,
-						Context: c.diffCtx,
-						Header:  c.diffHeader,
-						Inverse: lipgloss.NewStyle().Reverse(true),
-					}
-					rendered := RenderDiff(e.Content, diffStyle)
-					sb.WriteString(prefixedLineBg(" ", rendered, c.width, bgStyle))
-				} else {
-					sb.WriteString(prefixedLineBg(" ", wordWrap(e.Content, c.width-14), c.width, bgStyle))
-				}
-			// Inline images (TS pi-mono: ImageBlock rendering in tool results)
-			if e.Expanded && c.ShowImages && len(e.ImageBlocks) > 0 {
-				imageTheme := ImageTheme{
-					FallbackColor: func(s string) string {
-						return lipgloss.NewStyle().Foreground(lipgloss.Color("#6c7086")).Render(s)
-					},
-				}
-				for _, ib := range e.ImageBlocks {
-					maxImgWidth := c.width - 4
-					if c.imageWidthCells > 0 && c.imageWidthCells < maxImgWidth {
-						maxImgWidth = c.imageWidthCells
-					}
-					img := NewImage(ib.Base64Data, ib.MimeType, imageTheme, ImageOptions{
-						MaxWidthCells: maxImgWidth,
-					})
-					imageLines := img.Render(c.width)
-					for _, line := range imageLines {
-						sb.WriteByte('\n')
-						sb.WriteString(applyLineBg("  "+line, c.width, bgStyle))
-					}
-				}
-			}
-			}
+			sb.WriteString(c.toolResultComp.Render(e, c.width))
 		case "bash":
-			sb.WriteString(c.renderBashEntry(e))
+			sb.WriteString(c.bashComp.Render(e, c.width))
 		case "error":
-			sb.WriteString(c.errorStyle.Render("Error: " + wordWrap(e.Content, c.width-10)))
+			sb.WriteString(c.errorComp.Render(e, c.width))
 		case "warning":
-			sb.WriteString(c.warningStyle.Render("Warning: " + wordWrap(e.Content, c.width-10)))
+			sb.WriteString(c.errorComp.Render(e, c.width))
 		case "system":
-			sb.WriteString(c.systemStyle.Render("  " + wordWrap(e.Content, c.width-10)))
+			sb.WriteString(c.systemComp.Render(e, c.width))
 		case "custom_message":
-			sb.WriteString(c.renderCustomMessageEntry(e))
+			sb.WriteString(c.customMsgComp.Render(e, c.width))
 		case "user_message":
-			sb.WriteString(osc133ZoneStart)
-			rendered, err := c.mdRenderer.Render(e.Content)
-			if err != nil {
-				sb.WriteString(prefixedLineBg(" ", wordWrap(e.Content, c.width-14), c.width, c.userMessageBg))
-			} else {
-				rendered = strings.TrimSuffix(rendered, "\n")
-				sb.WriteString(prefixedLineBg(" ", wrapURLsOSC8(rendered), c.width, c.userMessageBg))
-			}
-			sb.WriteString(osc133ZoneEnd)
-			sb.WriteString(osc133ZoneFinal)
+			sb.WriteString(c.userMsgComp.Render(e, c.width))
 		}
 		// Inter-entry spacing (TS pi-mono: Spacer(1) between message blocks)
 		if i < len(c.entries)-1 {
-			next := c.entries[i+1]
-			needBlank := needsBlankLine(e, next)
+			needBlank := needsBlankLine(e, c.entries[i+1])
 			sb.WriteByte('\n')
 			if needBlank {
 				sb.WriteByte('\n')
@@ -1327,9 +1192,6 @@ func prefixedLineBg(prefix, content string, width int, style lipgloss.Style) str
 	return applyLineBg(strings.Join(lines, "\n"), width, style)
 }
 
-// renderBashEntry renders a bash execution entry with bordered display
-// matching TS pi-mono BashExecutionComponent style.
-
 // wrapURLsOSC8 wraps bare http/https URLs in OSC 8 hyperlink sequences (TS pi-mono).
 // Handles ANSI escape codes that may be interleaved within URLs.
 func wrapURLsOSC8(s string) string {
@@ -1453,213 +1315,6 @@ func TruncateByWidth(s string, maxWidth int) string {
 	}
 	return s
 }
-func (c *ChatViewport) renderBashEntry(e ChatEntry) string {
-	width := c.width - 6
-	if width < 20 {
-		width = 20
-	}
-
-	// TS pi-mono: border dim for !! (excluded); header in bashMode per updateDisplay.
-	// pi-mono constructor initially dims both for !! but updateDisplay (called on
-	// first output) re-creates the header in bashMode regardless of !! status.
-	borderColor := c.bashBorder
-	headerStyle := c.bashHeader
-	outputStyle := c.bashOutput
-	if e.BashExcluded {
-		borderColor = c.bashOutput.Copy()
-	}
-
-	var sb strings.Builder
-
-	// DynamicBorder top (TS pi-mono: DynamicBorder)
-	sb.WriteString(borderColor.Render(strings.Repeat("─", width)))
-	sb.WriteByte('\n')
-
-	// Command header (TS pi-mono: "$ command")
-	cmdDisplay := e.BashCommand
-	if lipgloss.Width(cmdDisplay) > width-4 {
-		cmdDisplay = TruncateByWidth(cmdDisplay, width-7) + "..."
-	}
-	sb.WriteString("  " + headerStyle.Render("$ "+cmdDisplay))
-	sb.WriteByte('\n')
-
-	// Build visual (word-wrapped) lines for width-aware truncation (TS pi-mono: visual-truncate)
-	previewLines := 20
-	contentWidth := width - 2
-	if contentWidth < 10 {
-		contentWidth = 10
-	}
-	var visualLines []string
-	for _, line := range e.BashLines {
-		if lipgloss.Width(line) <= contentWidth {
-			visualLines = append(visualLines, line)
-		} else {
-			visualLines = append(visualLines, strings.Split(wordWrap(line, contentWidth), "\n")...)
-		}
-	}
-
-	hiddenCount := 0
-	visibleLines := visualLines
-	if !e.Expanded && len(visualLines) > previewLines {
-		hiddenCount = len(visualLines) - previewLines
-		visibleLines = visualLines[len(visualLines)-previewLines:]
-	}
-
-	// Output lines (TS pi-mono: 1-space indent, muted color)
-	for _, line := range visibleLines {
-		displayLine := line
-		if lipgloss.Width(displayLine) > contentWidth {
-			displayLine = TruncateByWidth(displayLine, contentWidth-3) + "..."
-		}
-		sb.WriteString("  " + outputStyle.Render(displayLine))
-		sb.WriteByte('\n')
-	}
-
-	// Status line
-	if e.BashRunning {
-		runningText := "  " + c.spinnerChar() + " Running... (Esc to cancel)"
-		sb.WriteString(outputStyle.Render(runningText))
-	} else {
-		cancelled := e.BashExitCode == -1
-
-		var statusParts []string
-
-		// Hidden lines info (shown regardless of exit code)
-		if hiddenCount > 0 {
-			if e.Expanded {
-				statusParts = append(statusParts, c.bashOutput.Render("("+c.toggleKey()+" to collapse)"))
-			} else {
-				statusParts = append(statusParts, c.bashOutput.Render(fmt.Sprintf("... %d more lines ("+c.toggleKey()+" to expand)", hiddenCount)))
-			}
-		}
-
-		// Exit status: suppressed for exit 0 (TS pi-mono: no status for success)
-		if cancelled {
-			statusParts = append(statusParts, c.warningStyle.Render("(cancelled)"))
-		} else if e.BashExitCode != 0 {
-			statusParts = append(statusParts, c.bashErrorStatus.Render(fmt.Sprintf("(exit %d)", e.BashExitCode)))
-		}
-
-		// Truncation warning inline in border (TS pi-mono: Output truncated. Full output: {path})
-		if e.BashTruncated && e.BashFullOutputPath != "" {
-			statusParts = append(statusParts, c.warningStyle.Render("Output truncated. Full output: "+e.BashFullOutputPath))
-		}
-
-		if len(statusParts) > 0 {
-			sb.WriteString("  " + strings.Join(statusParts, "\n  "))
-		}
-	}
-	sb.WriteByte('\n')
-
-	// DynamicBorder bottom (TS pi-mono: DynamicBorder)
-	sb.WriteString(borderColor.Render(strings.Repeat("─", width)))
-
-	return sb.String()
-}
-
-// renderCustomMessageEntry renders a custom_message entry matching TS pi-mono components:
-// CompactionSummaryMessageComponent, BranchSummaryMessageComponent, and generic CustomMessageComponent.
-func (c *ChatViewport) renderCustomMessageEntry(e ChatEntry) string {
-	labelOnBg := c.customMessageBg.Copy().Inherit(c.customMessageLabel)
-	textOnBg := c.customMessageBg.Copy()
-	dimOnBg := c.customMessageBg.Copy().Foreground(lipgloss.Color("#5c6370"))
-
-	label := labelOnBg.Render("[" + e.CustomType + "]")
-	toggleKey := c.toggleKey()
-
-	switch e.CustomType {
-	case "compaction":
-		tokenStr := formatTokenCount(e.TokensBefore)
-		if e.Expanded && e.Content != "" {
-			labelLine := padLineToWidth(label, c.width, c.customMessageBg)
-			spacerLine := padLineToWidth(textOnBg.Render(""), c.width, c.customMessageBg)
-			mdContent := "**Compacted from " + tokenStr + " tokens**\n\n" + e.Content
-			rendered, err := c.mdRenderer.Render(mdContent)
-			if err != nil {
-				rendered = wordWrap(mdContent, c.width-10)
-			}
-			rendered = strings.TrimSuffix(rendered, "\n")
-			return labelLine + "\n" + spacerLine + "\n" + prefixedLineBg(" ", wrapURLsOSC8(rendered), c.width, c.customMessageBg)
-		}
-		msg := textOnBg.Render("Compacted from " + tokenStr + " tokens (")
-		keyHint := dimOnBg.Render(toggleKey)
-		suffix := textOnBg.Render(" to expand)")
-		labelLine := padLineToWidth(label, c.width, c.customMessageBg)
-		contentLine := padLineToWidth(textOnBg.Render(" "+msg+keyHint+suffix), c.width, c.customMessageBg)
-		return labelLine + "\n" + contentLine
-
-	case "branch":
-		if e.Expanded && e.Content != "" {
-			labelLine := padLineToWidth(label, c.width, c.customMessageBg)
-			spacerLine := padLineToWidth(textOnBg.Render(""), c.width, c.customMessageBg)
-			mdContent := "**Branch Summary**\n\n" + e.Content
-			rendered, err := c.mdRenderer.Render(mdContent)
-			if err != nil {
-				rendered = wordWrap(mdContent, c.width-10)
-			}
-			rendered = strings.TrimSuffix(rendered, "\n")
-			return labelLine + "\n" + spacerLine + "\n" + prefixedLineBg(" ", wrapURLsOSC8(rendered), c.width, c.customMessageBg)
-		}
-		msg := textOnBg.Render("Branch summary (")
-		keyHint := dimOnBg.Render(toggleKey)
-		suffix := textOnBg.Render(" to expand)")
-		labelLine := padLineToWidth(label, c.width, c.customMessageBg)
-		contentLine := padLineToWidth(textOnBg.Render(" "+msg+keyHint+suffix), c.width, c.customMessageBg)
-		return labelLine + "\n" + contentLine
-
-	case "skill":
-		// TS pi-mono: SkillInvocationMessageComponent
-		// Content format: "name\n\nfullSkillContent"
-		name := e.Content
-		fullContent := ""
-		if idx := strings.Index(e.Content, "\n\n"); idx != -1 {
-			name = e.Content[:idx]
-			fullContent = e.Content[idx+2:]
-		}
-		if e.Expanded && fullContent != "" {
-			labelLine := padLineToWidth(label, c.width, c.customMessageBg)
-			spacerLine := padLineToWidth(textOnBg.Render(""), c.width, c.customMessageBg)
-			mdContent := "**" + name + "**\n\n" + fullContent
-			rendered, err := c.mdRenderer.Render(mdContent)
-			if err != nil {
-				return labelLine + "\n" + spacerLine + "\n" +
-					prefixedLineBg(" ", wordWrap(mdContent, c.width-14), c.width, c.customMessageBg)
-			}
-			rendered = strings.TrimSuffix(rendered, "\n")
-			return labelLine + "\n" + spacerLine + "\n" +
-				prefixedLineBg(" ", wrapURLsOSC8(rendered), c.width, c.customMessageBg)
-		}
-		hint := dimOnBg.Render(" (" + toggleKey + " to expand)")
-		return padLineToWidth(label+" "+textOnBg.Render(name)+hint, c.width, c.customMessageBg)
-
-	default:
-		// Generic handling for prompt, etc. (TS pi-mono: CustomMessageComponent)
-		if e.Expanded && e.Content != "" {
-			labelLine := padLineToWidth(label, c.width, c.customMessageBg)
-			spacerLine := padLineToWidth(textOnBg.Render(""), c.width, c.customMessageBg)
-			rendered, err := c.mdRenderer.Render(e.Content)
-			if err != nil {
-				return labelLine + "\n" + spacerLine + "\n" + prefixedLineBg(" ", wordWrap(e.Content, c.width-14), c.width, c.customMessageBg)
-			}
-			rendered = strings.TrimSuffix(rendered, "\n")
-			return labelLine + "\n" + spacerLine + "\n" +
-				prefixedLineBg(" ", wrapURLsOSC8(rendered), c.width, c.customMessageBg)
-		}
-		if e.Content != "" {
-			firstLine := e.Content
-			if idx := strings.IndexByte(firstLine, '\n'); idx != -1 {
-				firstLine = firstLine[:idx]
-			}
-			if lipgloss.Width(firstLine) > 80 {
-				firstLine = TruncateByWidth(firstLine, 77) + "..."
-			}
-			hint := dimOnBg.Render(" (" + toggleKey + " to expand)")
-			return padLineToWidth(label+" "+textOnBg.Render(firstLine)+hint, c.width, c.customMessageBg)
-		}
-		return padLineToWidth(label, c.width, c.customMessageBg)
-	}
-}
-
 // toolArgsPreview returns a human-readable preview of tool arguments.
 
 // toolIcon returns a per-tool icon matching TS pi-mono tool icons.
