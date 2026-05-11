@@ -321,6 +321,33 @@ func (c *ChatViewport) Clear() {
 	c.vp.SetContent("")
 }
 
+// GetEntries returns a copy of all chat entries (thread-safe).
+func (c *ChatViewport) GetEntries() []ChatEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	result := make([]ChatEntry, len(c.entries))
+	copy(result, c.entries)
+	return result
+}
+
+// KeepEntries keeps only entries at the given indices, discarding the rest.
+func (c *ChatViewport) KeepEntries(indices []int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	idxSet := make(map[int]bool, len(indices))
+	for _, i := range indices {
+		idxSet[i] = true
+	}
+	kept := make([]ChatEntry, 0, len(indices))
+	for i, e := range c.entries {
+		if idxSet[i] {
+			kept = append(kept, e)
+		}
+	}
+	c.entries = kept
+	c.vp.SetContent("") // force rebuild on next View()
+}
+
 // AppendChatEntry appends a pre-built ChatEntry and updates the viewport.
 func (c *ChatViewport) ScrollToTop() {
 	c.vp.GotoTop()

@@ -254,6 +254,7 @@ type AppModel struct {
 
 	// Help overlay state
 	welcomeExpanded bool
+	lastWelcomeMsg  *WelcomeMsg // stored for rebuild on toggle
 
 	// Tree selector transient state
 	treeFoldedNodes    map[string]bool

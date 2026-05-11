@@ -270,6 +270,9 @@ func NewAppModel(as *agentsession.AgentSession, sessMgr *session.Manager, sess *
 		app.footer.SetEntryCount(len(sess.Entries))
 	}
 
+	// Show "? (auto)" at startup (TS pi-mono: always shows context% in footer)
+	app.footer.SetContextUsage(0, 0, app.autoCompact)
+
 	// Track unique providers for footer display (TS pi-mono: only show provider when >1)
 	providers := make(map[string]bool)
 	for _, m := range availableModels {

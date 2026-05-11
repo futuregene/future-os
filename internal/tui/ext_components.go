@@ -17,6 +17,9 @@ type HeaderComponent interface {
 
 	// SetWidth informs the component of the current terminal width in columns.
 	SetWidth(w int)
+
+	// Height returns the number of visual rows this header occupies.
+	Height() int
 }
 
 // ─── FooterComponent ──────────────────────────────────────────────────────────

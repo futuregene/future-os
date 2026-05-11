@@ -18,6 +18,7 @@ func (h *testHeader) Init() tea.Cmd                          { return nil }
 func (h *testHeader) View() string                            { return h.text }
 func (h *testHeader) Update(msg tea.Msg) (tea.Model, tea.Cmd) { return h, nil }
 func (h *testHeader) SetWidth(w int)                          { h.width = w }
+func (h *testHeader) Height() int                             { return 1 }
 
 // testFooter is a minimal FooterComponent for testing.
 type testFooter struct {

@@ -2,7 +2,6 @@
 package tui
 
 import (
-
 	"context"
 	"fmt"
 	"os"
@@ -14,8 +13,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/huichen/xihu/internal/utils"
-
-
 )
 
 // ─── Message Types ─────────────────────────────────────────────────────────
@@ -27,125 +24,297 @@ func (m *AppModel) showWelcome(msg WelcomeMsg) {
 	if m.quietStartup {
 		return
 	}
+
+	// Store welcome data for rebuild on toggle
+	m.lastWelcomeMsg = &msg
+
 	accentStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(msg.ThemeAccent)).
 		Bold(true)
 	dimStyle := lipgloss.NewStyle().
 		Faint(true)
-	warningStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(m.theme.Warning))
 
-	m.chat.AppendSystem(accentStyle.Render("xihu v" + utils.Version))
+	// ── Logo + instructions (TS pi-mono: builtInHeader ExpandableText) ──────
+	// Logo: "xihu vX.X.X" — bold accent + dim (TS: theme.bold(theme.fg("accent", APP_NAME)) + theme.fg("dim", ` v${version}`))
+	// Prepend a leading spacer entry so the viewport doesn't clip the first line.
+	m.chat.AppendSystem("")
+	m.chat.AppendSystem(accentStyle.Render("xihu") + dimStyle.Render(" v"+utils.Version))
 
-	// Check for new changelog entries and show as non-capturing banner
+	if m.welcomeExpanded {
+		m.renderExpandedInstructions()
+	} else {
+		m.renderCompactInstructions()
+	}
+
+	// ── Onboarding text (TS pi-mono: "Pi can explain its own features...") ──
+	m.chat.AppendSystem("")
+	m.chat.AppendSystem(dimStyle.Render("Xihu can explain its own features and look up its docs. Ask it how to use or extend Xihu."))
+
+	// ── Changelog (async) ──────────────────────────────────────────────────
 	m.checkChangelog()
 
-	// Asynchronously check for newer version
+	// ── Version / tmux checks (async) ──────────────────────────────────────
 	go m.checkNewVersion()
-
-	// Asynchronously check tmux keyboard setup (TS pi-mono: checkTmuxKeyboardSetup)
 	go m.checkTmuxKeyboard()
 
-	// Show settings/model loading errors (TS pi-mono: models.json / settings errors at startup)
+	// ── Settings/model errors (TS pi-mono: models.json / settings errors) ──
 	if msg.SettingsError != "" {
 		m.chat.AppendError("settings error: " + msg.SettingsError)
 	}
 
-	if !m.welcomeExpanded {
-		// Collapsed: brief status (uses actual keybinding for toggle header)
-		toggleKey := formatKeyStr(m.keybindings, GlobalToggleHeader)
-		if toggleKey == "" {
-			toggleKey = "Ctrl+H"
-		}
-		m.chat.AppendSystem(dimStyle.Render("  " + toggleKey + " expand header for all shortcuts"))
+	// ── Loaded resources (TS pi-mono: showLoadedResources) ─────────────────
+	m.showLoadedResources()
+
+	// ── Diagnostics ────────────────────────────────────────────────────────
+	if len(msg.SkillCollisions) > 0 || len(msg.ExtensionDiagnostics) > 0 || len(msg.KeybindingConflicts) > 0 {
+		m.showLoadedDiagnostics(msg.SkillCollisions, msg.ExtensionDiagnostics, msg.KeybindingConflicts)
+	}
+}
+
+// rebuildWelcome clears the welcome entries and re-renders them.
+// Called when welcomeExpanded is toggled (Ctrl+H).
+func (m *AppModel) rebuildWelcome() {
+	if m.lastWelcomeMsg == nil {
 		return
 	}
+	msg := *m.lastWelcomeMsg
 
-	// Expanded: brief summary — uses actual keybinding values
-	submitKey := formatKeyStr(m.keybindings, InputSubmit)
-	if submitKey == "" {
-		submitKey = "Enter"
+	// Clear previous welcome entries from chat.
+	// We remove all system-type entries up to (but not including) diagnostics.
+	// A simpler approach: clear all system entries and re-add.
+	entries := m.chat.GetEntries()
+	// Find the range of welcome entries: from the first system entry
+	// (logo "xihu v...") up to the last resource/diagnostic entry.
+	// We rebuild all non-streaming, non-user entries.
+	var keep []int // indices to keep
+	inWelcome := false
+	afterWelcome := false
+	for i, e := range entries {
+		if !afterWelcome {
+			if e.Type == "system" || e.Type == "error" || e.Type == "warning" {
+				inWelcome = true
+				continue // skip welcome entries
+			}
+			if inWelcome && (e.Type == "custom_message" || e.Type == "user_message") {
+				afterWelcome = true
+			}
+		}
+		if afterWelcome || !inWelcome {
+			keep = append(keep, i)
+		}
 	}
+	if len(keep) > 0 {
+		m.chat.KeepEntries(keep)
+	} else {
+		m.chat.Clear()
+	}
+
+	// Re-render
+	m.showWelcome(msg)
+}
+
+// renderCompactInstructions renders the collapsed-mode keybinding hints.
+// TS pi-mono compactInstructions format:
+//
+//	escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+func (m *AppModel) renderCompactInstructions() {
+	dimStyle := lipgloss.NewStyle().Faint(true)
+
 	interruptKey := formatKeyStr(m.keybindings, GlobalInterrupt)
 	if interruptKey == "" {
-		interruptKey = "Esc"
+		interruptKey = "escape"
 	}
-	toggleKey := formatKeyStr(m.keybindings, GlobalToggleHeader)
-	if toggleKey == "" {
-		toggleKey = "Ctrl+H"
+	clearKey := formatKeyStr(m.keybindings, GlobalClear)
+	if clearKey == "" {
+		clearKey = "ctrl+c"
 	}
-	m.chat.AppendSystem(fmt.Sprintf("  %s=submit · %s=interrupt · / commands · ! bash · %s=toggle header",
-		submitKey, interruptKey, toggleKey))
+	exitKey := formatKeyStr(m.keybindings, GlobalExit)
+	if exitKey == "" {
+		exitKey = "ctrl+d"
+	}
+	moreKey := formatKeyStr(m.keybindings, GlobalToggleTools)
+	if moreKey == "" {
+		moreKey = "ctrl+o"
+	}
 
-	// Show loaded skills (TS pi-mono: showLoadedResources Skills section)
-	if len(msg.Skills) > 0 {
-		skillNames := make([]string, len(msg.Skills))
-		for i, s := range msg.Skills {
-			skillNames[i] = s.Name
+	// Normalize to lowercase for TS-style display
+	interruptKey = strings.ToLower(interruptKey)
+	clearKey = strings.ToLower(clearKey)
+	exitKey = strings.ToLower(exitKey)
+	moreKey = strings.ToLower(moreKey)
+
+	compactInstructions := fmt.Sprintf("%s interrupt · %s/%s clear/exit · / commands · ! bash · %s more",
+		interruptKey, clearKey, exitKey, moreKey)
+	m.chat.AppendSystem(dimStyle.Render(compactInstructions))
+
+	// Expand hint (TS: "Press ctrl+o to show full startup help and loaded resources.")
+	m.chat.AppendSystem(dimStyle.Render("Press " + moreKey + " to show full startup help and loaded resources."))
+}
+
+// renderExpandedInstructions renders the full keybinding list.
+// TS pi-mono expandedInstructions: 16 keybinding lines.
+func (m *AppModel) renderExpandedInstructions() {
+	dimStyle := lipgloss.NewStyle().Faint(true)
+
+	hint := func(binding KeybindingID, description string) string {
+		key := formatKeyStr(m.keybindings, binding)
+		if key == "" {
+			key = string(defaultKeyForBinding(binding))
 		}
-		// Group by source
-		userSkills := make([]string, 0)
-		projectSkills := make([]string, 0)
-		otherSkills := make([]string, 0)
-		for _, s := range msg.Skills {
-			switch s.Source {
-			case "project":
-				projectSkills = append(projectSkills, s.Name)
-			case "user":
-				userSkills = append(userSkills, s.Name)
-			default:
-				otherSkills = append(otherSkills, s.Name)
+		return dimStyle.Render(strings.ToLower(key) + " to " + description)
+	}
+	rawHint := func(key string, description string) string {
+		return dimStyle.Render(key + " to " + description)
+	}
+
+	// Match TS pi-mono expandedInstructions order exactly
+	instructions := []string{
+		hint(GlobalInterrupt, "interrupt"),
+		hint(GlobalClear, "clear"),
+		rawHint(strings.ToLower(formatKeyStrDefault(m.keybindings, GlobalClear, "ctrl+c"))+" twice", "to exit"),
+		hint(GlobalExit, "to exit (empty)"),
+		rawHint("ctrl+z", "to suspend"),
+		rawHint(strings.ToLower(formatKeyStrDefault(m.keybindings, EditorDeleteToLineEnd, "ctrl+k")), "to delete to end"),
+		rawHint(strings.ToLower(formatKeyStrDefault(m.keybindings, GlobalCycleThinking, "shift+tab")), "to cycle thinking level"),
+		rawHint(
+			strings.ToLower(formatKeyStrDefault(m.keybindings, GlobalCycleModelFwd, "ctrl+p"))+"/"+
+				strings.ToLower(formatKeyStrDefault(m.keybindings, GlobalCycleModelBack, "shift+ctrl+p")),
+			"to cycle models",
+		),
+		hint(GlobalModelSelector, "to select model"),
+		hint(GlobalToggleTools, "to expand tools"),
+		hint(GlobalToggleThinking, "to expand thinking"),
+		hint(GlobalExternalEditor, "for external editor"),
+		rawHint("/", "for commands"),
+		rawHint("!", "to run bash"),
+		rawHint("!!", "to run bash (no context)"),
+		rawHint("alt+enter", "to queue follow-up"),
+		rawHint("alt+up", "to edit all queued messages"),
+		rawHint("ctrl+v", "to paste image"),
+		rawHint("drop files", "to attach"),
+	}
+
+	for _, line := range instructions {
+		m.chat.AppendSystem(line)
+	}
+}
+
+// formatKeyStrDefault is like formatKeyStr but returns a default if not found.
+func formatKeyStrDefault(kb *KeybindingsManager, binding KeybindingID, defaultKey string) string {
+	key := formatKeyStr(kb, binding)
+	if key == "" {
+		return defaultKey
+	}
+	return key
+}
+
+// defaultKeyForBinding returns the default key string for a binding ID.
+func defaultKeyForBinding(binding KeybindingID) string {
+	switch binding {
+	case GlobalInterrupt:
+		return "escape"
+	case GlobalClear:
+		return "ctrl+c"
+	case GlobalExit:
+		return "ctrl+d"
+	case GlobalToggleTools:
+		return "ctrl+o"
+	case GlobalToggleThinking:
+		return "ctrl+t"
+	case GlobalExternalEditor:
+		return "ctrl+g"
+	case GlobalModelSelector:
+		return "ctrl+l"
+	case GlobalCycleModelFwd:
+		return "ctrl+p"
+	case GlobalCycleModelBack:
+		return "shift+ctrl+p"
+	case GlobalCycleThinking:
+		return "shift+tab"
+	case GlobalToggleHeader:
+		return "ctrl+h"
+	case EditorDeleteToLineEnd:
+		return "ctrl+k"
+	default:
+		return "?"
+	}
+}
+
+// showLoadedResources renders the [Skills], [Extensions], [Context], [Prompts],
+// [Themes] sections in collapsed compact format.
+// Always shown (not just in expanded mode), matching TS pi-mono showLoadedResources.
+func (m *AppModel) showLoadedResources() {
+	if m.lastWelcomeMsg == nil {
+		return
+	}
+	msg := *m.lastWelcomeMsg
+
+	dimStyle := lipgloss.NewStyle().Faint(true)
+	sectionHeader := func(name string) string {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.MdHeading)).Render("[" + name + "]")
+	}
+	compactList := func(items []string) string {
+		// Filter empty, sort
+		filtered := make([]string, 0, len(items))
+		for _, item := range items {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				filtered = append(filtered, item)
 			}
 		}
-		m.chat.AppendSystem("[Skills]")
-		m.chat.AppendSystem(dimStyle.Render("  " + strings.Join(skillNames, ", ")))
-		if len(projectSkills) > 0 {
-			m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("  project: %s", strings.Join(projectSkills, ", "))))
-		}
-		if len(userSkills) > 0 {
-			m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("  user: %s", strings.Join(userSkills, ", "))))
-		}
-		if len(otherSkills) > 0 {
-			m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("  other: %s", strings.Join(otherSkills, ", "))))
-		}
+		return dimStyle.Render("  " + strings.Join(filtered, ", "))
 	}
 
-	// Show loaded extensions
-	if m.extRunner != nil {
-		loaded := m.extRunner.Initialized()
-		if len(loaded) > 0 {
-			names := make([]string, len(loaded))
-			for i, e := range loaded {
-				names[i] = e.Name()
-			}
-			m.chat.AppendSystem("[Extensions]")
-			m.chat.AppendSystem(dimStyle.Render("  " + strings.Join(names, ", ")))
-		}
-	} else if len(msg.Extensions) > 0 {
-		m.chat.AppendSystem("[Extensions] " + strings.Join(msg.Extensions, ", "))
-	}
-
-	// Show context files (TS pi-mono: showLoadedResources Context section)
+	// ── [Context] section (TS: shown first) ──────────────────────────────
 	if len(msg.ContextFiles) > 0 {
 		contextCompact := make([]string, len(msg.ContextFiles))
 		for i, fp := range msg.ContextFiles {
 			contextCompact[i] = formatContextPath(fp)
 		}
-		m.chat.AppendSystem("[Context]")
-		m.chat.AppendSystem(dimStyle.Render("  " + strings.Join(contextCompact, ", ")))
+		m.chat.AppendSystem("")
+		m.chat.AppendSystem(sectionHeader("Context"))
+		m.chat.AppendSystem(compactList(contextCompact))
 	}
 
-	// Show prompt templates (TS pi-mono: showLoadedResources Prompts section)
+	// ── [Skills] section ─────────────────────────────────────────────────
+	if len(msg.Skills) > 0 {
+		skillNames := make([]string, len(msg.Skills))
+		for i, s := range msg.Skills {
+			skillNames[i] = s.Name
+		}
+		m.chat.AppendSystem("")
+		m.chat.AppendSystem(sectionHeader("Skills"))
+		m.chat.AppendSystem(compactList(skillNames))
+	}
+
+	// ── [Extensions] section ─────────────────────────────────────────────
+	extNames := make([]string, 0)
+	if m.extRunner != nil {
+		loaded := m.extRunner.Initialized()
+		for _, e := range loaded {
+			extNames = append(extNames, e.Name())
+		}
+	} else if len(msg.Extensions) > 0 {
+		extNames = msg.Extensions
+	}
+	if len(extNames) > 0 {
+		m.chat.AppendSystem("")
+		m.chat.AppendSystem(sectionHeader("Extensions"))
+		m.chat.AppendSystem(compactList(extNames))
+	}
+
+	// ── [Prompts] section ────────────────────────────────────────────────
 	if len(msg.PromptTemplates) > 0 {
 		templateNames := make([]string, len(msg.PromptTemplates))
 		for i, t := range msg.PromptTemplates {
 			templateNames[i] = "/" + t.Name
 		}
-		m.chat.AppendSystem("[Prompts]")
-		m.chat.AppendSystem(dimStyle.Render("  " + strings.Join(templateNames, ", ")))
+		m.chat.AppendSystem("")
+		m.chat.AppendSystem(sectionHeader("Prompts"))
+		m.chat.AppendSystem(compactList(templateNames))
 	}
 
-	// Show loaded themes (TS pi-mono: showLoadedResources Themes section)
+	// ── [Themes] section ─────────────────────────────────────────────────
 	customThemePaths, _ := DiscoverThemes("")
 	if len(customThemePaths) > 0 {
 		themeNames := make([]string, 0, len(customThemePaths))
@@ -157,39 +326,41 @@ func (m *AppModel) showWelcome(msg WelcomeMsg) {
 				themeNames = append(themeNames, filepath.Base(p))
 			}
 		}
-		m.chat.AppendSystem("[Themes]")
-		m.chat.AppendSystem(dimStyle.Render("  " + strings.Join(themeNames, ", ")))
+		m.chat.AppendSystem("")
+		m.chat.AppendSystem(sectionHeader("Themes"))
+		m.chat.AppendSystem(compactList(themeNames))
 	}
 
-	// Detect and show prompt template collisions (TS pi-mono: [Prompt conflicts])
+	// ── Prompt conflicts ─────────────────────────────────────────────────
 	if len(msg.PromptTemplates) > 0 {
 		promptCollisions := m.detectPromptCollisions(msg.PromptTemplates)
 		if len(promptCollisions) > 0 {
+			warningStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Warning))
+			m.chat.AppendSystem("")
 			m.chat.AppendSystem(warningStyle.Render("[Prompt conflicts]"))
 			for _, c := range promptCollisions {
 				m.chat.AppendSystem(warningStyle.Render(fmt.Sprintf("  %q collision:", c.Name)))
-				m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("    \xe2\x9c\x93 %s", c.WinnerPath)))
-				m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("    \xe2\x9c\x97 %s (skipped)", c.LoserPath)))
+				m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("    \u2713 %s", c.WinnerPath)))
+				m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("    \u2717 %s (skipped)", c.LoserPath)))
 			}
 		}
 	}
 
-	// Detect and show theme collisions (TS pi-mono: [Theme conflicts])
+	// ── Theme conflicts ──────────────────────────────────────────────────
 	themeCollisions := m.detectThemeCollisions()
 	if len(themeCollisions) > 0 {
+		warningStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Warning))
+		m.chat.AppendSystem("")
 		m.chat.AppendSystem(warningStyle.Render("[Theme conflicts]"))
 		for _, c := range themeCollisions {
 			m.chat.AppendSystem(warningStyle.Render(fmt.Sprintf("  %q collision:", c.Name)))
-			m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("    \xe2\x9c\x93 %s", c.WinnerPath)))
-			m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("    \xe2\x9c\x97 %s (skipped)", c.LoserPath)))
+			m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("    \u2713 %s", c.WinnerPath)))
+			m.chat.AppendSystem(dimStyle.Render(fmt.Sprintf("    \u2717 %s (skipped)", c.LoserPath)))
 		}
 	}
-
-	// Show diagnostics (TS pi-mono: showLoadedResources diagnostics section)
-	if len(msg.SkillCollisions) > 0 || len(msg.ExtensionDiagnostics) > 0 || len(msg.KeybindingConflicts) > 0 {
-		m.showLoadedDiagnostics(msg.SkillCollisions, msg.ExtensionDiagnostics, msg.KeybindingConflicts)
-	}
 }
+
+// ─── Changelog ─────────────────────────────────────────────────────────────
 
 // getExtDiagnostics returns extension init/load diagnostics from the extension runner.
 func (m *AppModel) checkChangelog() {
@@ -312,6 +483,8 @@ func buildChangelogBanner(entry utils.ChangelogEntry) string {
 
 	return sb.String()
 }
+
+// ─── Version / Tmux Checks ─────────────────────────────────────────────────
 
 // checkNewVersion asynchronously checks for a newer xihu version and shows a notification.
 func (m *AppModel) checkNewVersion() {

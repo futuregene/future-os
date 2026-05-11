@@ -64,9 +64,9 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 			m.customFooter.SetWidth(msg.Width)
 		}
 		footerHeight := m.footerHeight()
-		headerHeight := 2
-		if m.customHeader == nil && m.header.Expanded() {
-			headerHeight = 7
+		headerHeight := 3 // spacer + empty + spacer (TS pi-mono headerContainer)
+		if m.customHeader != nil {
+			headerHeight = m.customHeader.Height()
 		}
 		m.chat.SetSize(msg.Width, msg.Height-editorHeight-footerHeight-headerHeight)
 		m.footer.SetWidth(msg.Width)
@@ -140,14 +140,17 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 					_, cmd := m.input.Update(msg)
 					return m, cmd
 				}
-			case m.keybindings.Matches(ks, GlobalToggleHeader):
-				m.header.Toggle()
-				headerHeight := 2
-				if m.header.Expanded() {
-					headerHeight = 7
-				}
+		case m.keybindings.Matches(ks, GlobalToggleHeader):
+			m.welcomeExpanded = !m.welcomeExpanded
+			// Rebuild welcome message with new expansion state
+			m.rebuildWelcome()
+			// Recalculate chat size
 			editorHeight := m.editorHeight()
 			footerHeight := m.footerHeight()
+			headerHeight := 3 // spacer + empty + spacer (TS pi-mono headerContainer)
+			if m.customHeader != nil {
+				headerHeight = m.customHeader.Height()
+			}
 			m.chat.SetSize(m.width, m.height-editorHeight-footerHeight-headerHeight)
 			return m, nil
 		case m.keybindings.Matches(ks, GlobalToggleTools):
@@ -217,16 +220,14 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 				return m, cmd
 			}
 		case "ctrl+h":
-			// Toggle header expanded/collapsed (TS pi-mono: ExpandableText header)
-			if m.customHeader != nil {
-				// Custom header — just re-layout
-			} else {
-				m.header.Toggle()
-			}
-			headerHeight := 2
-			if m.customHeader == nil && m.header.Expanded() {
-				headerHeight = 7
-			}
+		// Toggle header expanded/collapsed (TS pi-mono: ExpandableText header)
+		if m.customHeader != nil {
+			// Custom header — just re-layout
+		}
+		headerHeight := 3 // spacer + empty + spacer
+		if m.customHeader != nil {
+			headerHeight = m.customHeader.Height()
+		}
 			editorHeight := m.editorHeight()
 			footerHeight := m.footerHeight()
 			m.chat.SetSize(m.width, m.height-editorHeight-footerHeight-headerHeight)

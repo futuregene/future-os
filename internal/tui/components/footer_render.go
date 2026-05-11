@@ -250,8 +250,13 @@ func (f *Footer) buildExtensionLine(width int) string {
 
 // formatContextBar returns a colored context percentage string like "73.2%/128k (auto)".
 // Uses TS pi-mono color scheme: >90% red, >70% yellow, ≤70% no color.
+// Always shows context% when autoCompact is enabled (TS pi-mono always pushes to statsParts).
 func (f *Footer) formatContextBar() string {
+	// Show "?/max (auto)" at startup when context is unknown
 	if f.contextPercent <= 0 && f.contextMaxTokens <= 0 {
+		if f.autoCompact {
+			return "? (auto)"
+		}
 		return ""
 	}
 

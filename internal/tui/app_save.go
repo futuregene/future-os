@@ -2,16 +2,11 @@
 package tui
 
 import (
-
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
-
 	"github.com/huichen/xihu/internal/settings"
-
-
 )
 
 // ─── Message Types ─────────────────────────────────────────────────────────
@@ -153,56 +148,6 @@ func (m *AppModel) ApplyTheme(t *Theme) {
 // boolToStr renders a boolean as "true" or "false".
 // fuzzyMatch returns true if each character in pattern appears in order in s (case-sensitive, caller lowercases).
 func (m *AppModel) updateHeaderHints() {
-	kb := m.keybindings
-	if kb == nil {
-		return
-	}
-	formatKey := func(id KeybindingID) string {
-		keys := kb.GetKeys(id)
-		if len(keys) > 0 {
-			return keys[0]
-		}
-		return ""
-	}
-
-	// Compact mode
-	hints := fmt.Sprintf("%s interrupt  %s clear  / commands  ! bash  %s help  %s tools",
-		formatKey(GlobalInterrupt),
-		formatKey(GlobalClear),
-		formatKey(GlobalToggleHeader),
-		formatKey(GlobalToggleTools),
-	)
-	m.header.SetHints(hints)
-
-	// Expanded mode — each section uses actual keybinding values
-	nav := fmt.Sprintf("%s/%s/%s/%s cursor  %s/%s scroll  %s/%s line start/end  gg top  G bottom",
-		formatKey(EditorCursorUp), formatKey(EditorCursorDown),
-		formatKey(EditorCursorLeft), formatKey(EditorCursorRight),
-		formatKey(EditorPageUp), formatKey(EditorPageDown),
-		formatKey(EditorCursorLineStart), formatKey(EditorCursorLineEnd),
-	)
-	edit := fmt.Sprintf("%s submit  %s newline  %s complete  %s yank  %s yank-pop  %s undo",
-		formatKey(InputSubmit),
-		formatKey(InputNewLine),
-		formatKey(InputTab),
-		formatKey(EditorYank),
-		formatKey(EditorYankPop),
-		formatKey(EditorUndo),
-	)
-	acts := fmt.Sprintf("%s interrupt  %s clear  %s exit  %s model  %s edit  %s tools  %s thinking",
-		formatKey(GlobalInterrupt),
-		formatKey(GlobalClear),
-		formatKey(GlobalExit),
-		formatKey(GlobalModelSelector),
-		formatKey(GlobalExternalEditor),
-		formatKey(GlobalToggleTools),
-		formatKey(GlobalToggleThinking),
-	)
-	msgs := fmt.Sprintf("alt+enter queue follow-up  alt+up dequeue")
-	more := fmt.Sprintf("/fork  /tree  /settings  /theme  /session info  %s collapse",
-		formatKey(GlobalToggleHeader),
-	)
-	m.header.SetExpandedHints(nav, edit, acts, msgs, more)
 }
 
 // reload reloads settings, keybindings, and re-applies theme from disk.
