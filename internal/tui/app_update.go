@@ -579,6 +579,9 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 		m.streaming = false
 		m.stopProgress()
 		m.footer.SetWorkingMessage("")
+		// Scroll to show latest response, then stop auto-scrolling (TS pi-mono behavior)
+		m.chat.ScrollToBottom()
+		m.chat.DisableAutoScroll()
 		// Auto-save session after each agent turn (TS pi-mono: saves on message_end)
 		if m.sessMgr != nil && m.session != nil {
 			m.sessMgr.Save(m.session)
@@ -601,6 +604,9 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 		if msg.Truncated && msg.FullOutputPath != "" {
 			m.chat.AppendWarning("Output truncated. Full output: " + msg.FullOutputPath)
 		}
+		// Scroll to show completed output, then stop auto-scrolling (TS pi-mono behavior)
+		m.chat.ScrollToBottom()
+		m.chat.DisableAutoScroll()
 		return m, nil
 
 	case ShareResultMsg:

@@ -91,7 +91,7 @@ func needsBlankLine(current, next ChatEntry) bool {
 		return next.Type != "tool_result" && next.Type != "tool_call"
 	}
 	if current.Type == "bash" {
-		return true
+		return next.Type != "bash" // TS pi-mono: trailing \n in bash component provides spacing
 	}
 	if current.Type == "custom_message" || current.Type == "system" ||
 		current.Type == "error" || current.Type == "warning" {

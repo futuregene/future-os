@@ -56,21 +56,23 @@ func (c *BashExecutionComponent) Render(entry ChatEntry, width int) string {
 
 	var sb strings.Builder
 
-	// DynamicBorder top (TS pi-mono: DynamicBorder)
-	sb.WriteString(borderStyle.Render(strings.Repeat("─", contentWidth)))
+	// DynamicBorder top (TS pi-mono: DynamicBorder at full width)
+	// The viewport's PaddingLeft(2) provides the indent.
+	border := borderStyle.Render(strings.Repeat("─", width))
+	sb.WriteString(border)
 	sb.WriteByte('\n')
 
-	// Command header (TS pi-mono: "$ command")
+	// Command header (TS pi-mono: "$ command" with 1-space indent)
 	cmdDisplay := entry.BashCommand
-	if lipgloss.Width(cmdDisplay) > contentWidth-4 {
-		cmdDisplay = TruncateByWidth(cmdDisplay, contentWidth-7) + "..."
+	if lipgloss.Width(cmdDisplay) > width-4 {
+		cmdDisplay = TruncateByWidth(cmdDisplay, width-7) + "..."
 	}
-	sb.WriteString("  " + headerStyle.Render("$ "+cmdDisplay))
+	sb.WriteString(" " + headerStyle.Render("$ "+cmdDisplay))
 	sb.WriteByte('\n')
 
 	// Build visual (word-wrapped) lines for width-aware truncation (TS pi-mono: visual-truncate)
 	previewLines := 20
-	lineContentWidth := contentWidth - 2
+	lineContentWidth := width - 4
 	if lineContentWidth < 10 {
 		lineContentWidth = 10
 	}
@@ -90,19 +92,30 @@ func (c *BashExecutionComponent) Render(entry ChatEntry, width int) string {
 		visibleLines = visualLines[len(visualLines)-previewLines:]
 	}
 
+	// Empty line before output (TS pi-mono: \n before styled output)
+	if len(visibleLines) > 0 {
+		sb.WriteByte('\n')
+	}
+
 	// Output lines (TS pi-mono: 1-space indent, muted color)
 	for _, line := range visibleLines {
 		displayLine := line
 		if lipgloss.Width(displayLine) > lineContentWidth {
 			displayLine = TruncateByWidth(displayLine, lineContentWidth-3) + "..."
 		}
-		sb.WriteString("  " + outputStyle.Render(displayLine))
+		sb.WriteString(" " + outputStyle.Render(displayLine))
+		sb.WriteByte('\n')
+	}
+
+	// Status line (TS pi-mono: starts with \n before status, or adds empty after output)
+	hadOutput := len(visibleLines) > 0
+	if hadOutput {
 		sb.WriteByte('\n')
 	}
 
 	// Status line
 	if entry.BashRunning {
-		runningText := "  " + c.spinnerChar() + " Running... (Esc to cancel)"
+		runningText := " " + c.spinnerChar() + " Running... (Esc to cancel)"
 		sb.WriteString(outputStyle.Render(runningText))
 	} else {
 		cancelled := entry.BashExitCode == -1
@@ -131,13 +144,17 @@ func (c *BashExecutionComponent) Render(entry ChatEntry, width int) string {
 		}
 
 		if len(statusParts) > 0 {
-			sb.WriteString("  " + strings.Join(statusParts, "\n  "))
+			sb.WriteString(" " + strings.Join(statusParts, "\n "))
 		}
 	}
-	sb.WriteByte('\n')
+	// Only add \n before border if no output was shown (TS pi-mono: border follows output directly when no status)
+	if !hadOutput {
+		sb.WriteByte('\n')
+	}
 
-	// DynamicBorder bottom (TS pi-mono: DynamicBorder)
-	sb.WriteString(borderStyle.Render(strings.Repeat("─", contentWidth)))
+	// DynamicBorder bottom (TS pi-mono: DynamicBorder at full width)
+	sb.WriteString(borderStyle.Render(strings.Repeat("─", width)))
+	sb.WriteByte('\n') // trailing newline for inter-entry spacing
 
 	return sb.String()
 }

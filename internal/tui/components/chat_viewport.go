@@ -355,6 +355,11 @@ func (c *ChatViewport) ScrollToTop() {
 }
 
 // ScrollToBottom jumps to the bottom of the chat (G, follow mode).
+func (c *ChatViewport) DisableAutoScroll() {
+	c.autoScroll = false
+}
+
+// ScrollToBottom jumps to the bottom of the chat (G, follow mode).
 func (c *ChatViewport) ScrollToBottom() {
 	c.vp.GotoBottom()
 	c.autoScroll = true
