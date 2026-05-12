@@ -97,17 +97,8 @@ func unmarshalJSON(data []byte, v interface{}) error {
 	return json.Unmarshal(data, v)
 }
 
-// InitBuiltinModels initializes the models catalog from the built-in pi-compatible models.
-// Called during startup to populate the runtime catalog.
-func InitBuiltinModels() []types.Model {
-	cfg := models.BuiltinConfig()
-	resolved := models.ResolveModels(cfg)
-	result := make([]types.Model, 0, len(resolved))
-	for _, rm := range resolved {
-		result = append(result, resolvedToTypesModel(rm))
-	}
-	return result
-}
+// InitBuiltinModels is auto-generated from pi-mono's models.generated.ts.
+// See models_generated.go for the full catalog.
 
 // UserModelsPath returns ~/.xihu/models.json.
 func UserModelsPath() string {

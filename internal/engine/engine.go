@@ -175,6 +175,35 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 	// 0. Initialize model registry with embedded catalog
 	mreg := modelregistry.New()
 
+	// 0.5. Load/merge settings BEFORE model resolution so defaults apply
+	s := opts.Settings
+	if s == nil {
+		var err error
+		s, err = settings.LoadAll()
+		if err != nil {
+			return nil, fmt.Errorf("load settings: %w", err)
+		}
+	}
+
+	// Apply settings overrides to opts where not explicitly set
+	if opts.SystemPrompt == "" && s.SystemPrompt != "" {
+		opts.SystemPrompt = s.SystemPrompt
+	}
+	if opts.MaxTurns <= 0 && s.MaxTurns > 0 {
+		opts.MaxTurns = s.MaxTurns
+	}
+	if opts.ThinkingLevel == "" && s.DefaultThinkingLevel != "" {
+		opts.ThinkingLevel = s.DefaultThinkingLevel
+	}
+	if opts.Model == "" && s.DefaultModel != "" {
+		// If default_provider is set, use canonical "provider/model" format
+		if s.DefaultProvider != "" && !strings.Contains(s.DefaultModel, "/") {
+			opts.Model = s.DefaultProvider + "/" + s.DefaultModel
+		} else {
+			opts.Model = s.DefaultModel
+		}
+	}
+
 	// 1. Resolve model — try explicit provider/model, then fall back to base URL detection
 	var modelInfo types.Model
 	var resolved bool
@@ -240,31 +269,7 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 		s.SetThinkingBudget(thinkingBudget)
 	}
 
-	// 3. Load/merge settings
-	s := opts.Settings
-	if s == nil {
-		var err error
-		s, err = settings.LoadAll()
-		if err != nil {
-			return nil, fmt.Errorf("load settings: %w", err)
-		}
-	}
-
-	// Apply settings overrides to opts where not explicitly set
-	if opts.SystemPrompt == "" && s.SystemPrompt != "" {
-		opts.SystemPrompt = s.SystemPrompt
-	}
-	if opts.MaxTurns <= 0 && s.MaxTurns > 0 {
-		opts.MaxTurns = s.MaxTurns
-	}
-	if opts.ThinkingLevel == "" && s.DefaultThinkingLevel != "" {
-		opts.ThinkingLevel = s.DefaultThinkingLevel
-	}
-	if opts.Model == "" && s.DefaultModel != "" {
-		opts.Model = s.DefaultModel
-	}
-
-	// 4. Build AgentConfig
+	// 3. Create LLM provider via API registry
 	cfg := AgentConfig{
 		CWD:                        opts.CWD,
 		SystemPrompt:               opts.SystemPrompt,

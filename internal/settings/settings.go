@@ -25,44 +25,44 @@ type ThinkingBudgetsSettings struct {
 
 // ImageSettings holds image-related settings.
 type ImageSettings struct {
-	AutoResize  *bool `json:"auto_resize,omitempty"`
-	BlockImages *bool `json:"block_images,omitempty"`
+	AutoResize  *bool `json:"autoResize,omitempty"`
+	BlockImages *bool `json:"blockImages,omitempty"`
 }
 
 // TerminalSettings holds terminal display settings.
 type TerminalSettings struct {
-	ShowImages           *bool `json:"show_images,omitempty"`
-	ImageWidthCells      int   `json:"image_width_cells,omitempty"`
-	ClearOnShrink        *bool `json:"clear_on_shrink,omitempty"`
-	ShowTerminalProgress *bool `json:"show_terminal_progress,omitempty"`
+	ShowImages           *bool `json:"showImages,omitempty"`
+	ImageWidthCells      int   `json:"imageWidthCells,omitempty"`
+	ClearOnShrink        *bool `json:"clearOnShrink,omitempty"`
+	ShowTerminalProgress *bool `json:"showTerminalProgress,omitempty"`
 }
 
 // ProviderRetrySettings holds provider-specific retry settings.
 type ProviderRetrySettings struct {
-	TimeoutMs       int `json:"timeout_ms,omitempty"`
+	TimeoutMs       int `json:"timeoutMs,omitempty"`
 	MaxRetries      int `json:"max_retries,omitempty"`
-	MaxRetryDelayMs int `json:"max_retry_delay_ms,omitempty"`
+	MaxRetryDelayMs int `json:"maxRetryDelayMs,omitempty"`
 }
 
 // RetrySettings holds retry behavior settings.
 type RetrySettings struct {
 	Enabled         *bool                 `json:"enabled,omitempty"`
 	MaxRetries      int                   `json:"max_retries,omitempty"`
-	BaseDelayMs     int                   `json:"base_delay_ms,omitempty"`
-	TimeoutMs       int                   `json:"timeout_ms,omitempty"`
-	MaxRetryDelayMs int                   `json:"max_retry_delay_ms,omitempty"`
+	BaseDelayMs     int                   `json:"baseDelayMs,omitempty"`
+	TimeoutMs       int                   `json:"timeoutMs,omitempty"`
+	MaxRetryDelayMs int                   `json:"maxRetryDelayMs,omitempty"`
 	Provider        *ProviderRetrySettings `json:"provider,omitempty"`
 }
 
 // BranchSummarySettings holds branch summary settings.
 type BranchSummarySettings struct {
-	ReserveTokens int   `json:"reserve_tokens,omitempty"`
-	SkipPrompt    *bool `json:"skip_prompt,omitempty"`
+	ReserveTokens int   `json:"reserveTokens,omitempty"`
+	SkipPrompt    *bool `json:"skipPrompt,omitempty"`
 }
 
 // MarkdownSettings holds markdown rendering settings.
 type MarkdownSettings struct {
-	CodeBlockIndent string `json:"code_block_indent,omitempty"`
+	CodeBlockIndent string `json:"codeBlockIndent,omitempty"`
 }
 
 // PackageSource represents a package source configuration.
@@ -75,7 +75,7 @@ type PackageSource struct {
 
 // WarningSettings holds warning-related settings.
 type WarningSettings struct {
-	AnthropicExtraUsage *bool `json:"anthropic_extra_usage,omitempty"`
+	AnthropicExtraUsage *bool `json:"anthropicExtraUsage,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -88,42 +88,42 @@ type WarningSettings struct {
 // set in a JSON file can override a "true" from a parent config.
 type Settings struct {
 	// DefaultProvider is the default LLM provider (e.g. "openai", "anthropic").
-	DefaultProvider string `json:"default_provider,omitempty"`
+	DefaultProvider string `json:"defaultProvider,omitempty"`
 
 	// DefaultModel is the default model name (e.g. "gpt-4o", "claude-sonnet-4-20250514").
-	DefaultModel string `json:"default_model,omitempty"`
+	DefaultModel string `json:"defaultModel,omitempty"`
 
 	// DefaultThinkingLevel sets the thinking/reasoning level for models that support it.
-	DefaultThinkingLevel string `json:"default_thinking_level,omitempty"`
+	DefaultThinkingLevel string `json:"defaultThinkingLevel,omitempty"`
 
 	// Theme sets the UI theme (e.g. "dark", "light").
 	Theme string `json:"theme,omitempty"`
 
 	// CompactionEnabled controls whether automatic context compaction is active.
 	// nil means "not configured" (inherit from parent config).
-	CompactionEnabled *bool `json:"compaction_enabled,omitempty"`
+	CompactionEnabled *bool `json:"compactionEnabled,omitempty"`
 
 	// CompactionReserveTokens is the token budget threshold. Compaction only
 	// triggers when total tokens exceed this value. 0 means use default.
-	CompactionReserveTokens int `json:"compaction_reserve_tokens,omitempty"`
+	CompactionReserveTokens int `json:"compactionReserveTokens,omitempty"`
 
 	// CompactionKeepRecentTokens is the token budget for recent messages
 	// kept uncompacted. 0 means use default.
-	CompactionKeepRecentTokens int `json:"compaction_keep_recent_tokens,omitempty"`
+	CompactionKeepRecentTokens int `json:"compactionKeepRecentTokens,omitempty"`
 
 	// ShellPath is the path to the shell binary (e.g. "/bin/bash").
-	ShellPath string `json:"shell_path,omitempty"`
+	ShellPath string `json:"shellPath,omitempty"`
 
 	// ShellCommandPrefix is a prefix prepended to every shell command
 	// (e.g. "source ~/.bashrc && ").
-	ShellCommandPrefix string `json:"shell_command_prefix,omitempty"`
+	ShellCommandPrefix string `json:"shellCommandPrefix,omitempty"`
 
 	// MaxTurns is the maximum number of agent loop turns before stopping.
 	// 0 means use default.
-	MaxTurns int `json:"max_turns,omitempty"`
+	MaxTurns int `json:"maxTurns,omitempty"`
 
 	// SystemPrompt is a custom system prompt that overrides the built-in default.
-	SystemPrompt string `json:"system_prompt,omitempty"`
+	SystemPrompt string `json:"systemPrompt,omitempty"`
 
 	// Extensions is a list of file paths to extension modules.
 	Extensions []string `json:"extensions,omitempty"`
@@ -136,18 +136,18 @@ type Settings struct {
 
 	// EnableSkillCommands controls whether slash-command skill invocation is enabled.
 	// nil means "not configured" (inherit from parent config).
-	EnableSkillCommands *bool `json:"enable_skill_commands,omitempty"`
+	EnableSkillCommands *bool `json:"enableSkillCommands,omitempty"`
 
 	// --- New fields below ---
 
 	// ThinkingLevel sets the thinking/reasoning level (minimal/low/medium/high).
-	ThinkingLevel string `json:"thinking_level,omitempty"`
+	ThinkingLevel string `json:"thinkingLevel,omitempty"`
 
 	// ThinkingBudgets holds custom token budgets for thinking levels.
-	ThinkingBudgets *ThinkingBudgetsSettings `json:"thinking_budgets,omitempty"`
+	ThinkingBudgets *ThinkingBudgetsSettings `json:"thinkingBudgets,omitempty"`
 
 	// HideThinkingBlock controls whether thinking blocks are hidden in output.
-	HideThinkingBlock *bool `json:"hide_thinking_block,omitempty"`
+	HideThinkingBlock *bool `json:"hideThinkingBlock,omitempty"`
 
 	// Images holds image-related settings.
 	Images *ImageSettings `json:"images,omitempty"`
@@ -159,25 +159,25 @@ type Settings struct {
 	Retry *RetrySettings `json:"retry,omitempty"`
 
 	// BranchSummary holds branch summary settings.
-	BranchSummary *BranchSummarySettings `json:"branch_summary,omitempty"`
+	BranchSummary *BranchSummarySettings `json:"branchSummary,omitempty"`
 
 	// QuietStartup suppresses startup messages when true.
-	QuietStartup *bool `json:"quiet_startup,omitempty"`
+	QuietStartup *bool `json:"quietStartup,omitempty"`
 
 	// NpmCommand is the npm command to use for package operations (argv-style).
-	NpmCommand []string `json:"npm_command,omitempty"`
+	NpmCommand []string `json:"npmCommand,omitempty"`
 
 	// CollapseChangelog shows condensed changelog after update.
-	CollapseChangelog *bool `json:"collapse_changelog,omitempty"`
+	CollapseChangelog *bool `json:"collapseChangelog,omitempty"`
 
 	// EditorPaddingX is the horizontal padding for the input editor.
-	EditorPaddingX int `json:"editor_padding_x,omitempty"`
+	EditorPaddingX int `json:"editorPaddingX,omitempty"`
 
 	// AutocompleteMaxVisible is the max visible items in autocomplete dropdown.
-	AutocompleteMaxVisible int `json:"autocomplete_max_visible,omitempty"`
+	AutocompleteMaxVisible int `json:"autocompleteMaxVisible,omitempty"`
 
 	// ShowHardwareCursor controls terminal cursor visibility for IME support.
-	ShowHardwareCursor *bool `json:"show_hardware_cursor,omitempty"`
+	ShowHardwareCursor *bool `json:"showHardwareCursor,omitempty"`
 
 	// Markdown holds markdown rendering settings.
 	Markdown *MarkdownSettings `json:"markdown,omitempty"`
@@ -186,31 +186,31 @@ type Settings struct {
 	Warnings *WarningSettings `json:"warnings,omitempty"`
 
 	// SessionDir is a custom session storage directory.
-	SessionDir string `json:"session_dir,omitempty"`
+	SessionDir string `json:"sessionDir,omitempty"`
 
 	// ScopedModels is a list of scoped model patterns.
-	ScopedModels []string `json:"scoped_models,omitempty"`
+	ScopedModels []string `json:"scopedModels,omitempty"`
 
 	// DoubleEscapeAction is the action for double-escape with empty editor.
-	DoubleEscapeAction string `json:"double_escape_action,omitempty"`
+	DoubleEscapeAction string `json:"doubleEscapeAction,omitempty"`
 
 	// TreeFilterMode is the default filter when opening /tree.
-	TreeFilterMode string `json:"tree_filter_mode,omitempty"`
+	TreeFilterMode string `json:"treeFilterMode,omitempty"`
 
 	// EnabledModels is a list of enabled model patterns for cycling.
-	EnabledModels []string `json:"enabled_models,omitempty"`
+	EnabledModels []string `json:"enabledModels,omitempty"`
 
 	// Transport is the transport mechanism (sse/websocket).
 	Transport string `json:"transport,omitempty"`
 
 	// SteeringMode controls steering behavior (all/one-at-a-time).
-	SteeringMode string `json:"steering_mode,omitempty"`
+	SteeringMode string `json:"steeringMode,omitempty"`
 
 	// FollowUpMode controls follow-up behavior (all/one-at-a-time).
-	FollowUpMode string `json:"follow_up_mode,omitempty"`
+	FollowUpMode string `json:"followUpMode,omitempty"`
 
 	// EnableInstallTelemetry opt-in to installation telemetry.
-	EnableInstallTelemetry *bool `json:"enable_install_telemetry,omitempty"`
+	EnableInstallTelemetry *bool `json:"enableInstallTelemetry,omitempty"`
 
 	// Packages is a list of package sources.
 	Packages []PackageSource `json:"packages,omitempty"`
@@ -219,7 +219,7 @@ type Settings struct {
 	Themes []string `json:"themes,omitempty"`
 
 	// LastChangelogVersion tracks the last viewed changelog version.
-	LastChangelogVersion string `json:"last_changelog_version,omitempty"`
+	LastChangelogVersion string `json:"lastChangelogVersion,omitempty"`
 }
 
 // LoadSettings reads and parses a Settings JSON file from the given path.

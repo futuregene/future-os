@@ -32,7 +32,6 @@ func LoadAuth() (*Store, error) {
 
 	paths := []string{
 		filepath.Join(home, ".xihu", "auth.json"),
-		filepath.Join(home, ".pi", "agent", "auth.json"),
 	}
 
 	var data []byte

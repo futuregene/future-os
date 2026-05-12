@@ -4,54 +4,206 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
+	authpkg "github.com/huichen/xihu/internal/auth"
 	"github.com/huichen/xihu/internal/modelregistry"
 	"github.com/huichen/xihu/internal/session"
 	"github.com/huichen/xihu/pkg/types"
 )
-
 // listModels prints available models (with optional fuzzy search).
+// Mirrors pi's listModels: uses getAvailable() (auth-filtered), tabular format,
+// sorted by provider then model ID, with human-readable token counts.
 func listModels(query string) {
 	mreg := modelregistry.New()
-	all := mreg.GetAll()
 
+	// Load auth store for auth filtering
+	authStore, err := authpkg.LoadAuth()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to load auth: %v\n", err)
+		authStore = nil
+	}
+
+	// Load models.json apiKey per provider (pi reads auth from both auth.json and models.json)
+	modelsAPIKeys := loadModelsAPIKeys()
+
+	// Determine which providers have auth configured — mirrors pi's hasConfiguredAuth:
+	// 1. auth.json by provider
+	// 2. models.json provider apiKey field
+	// 3. environment variables
+	hasAuth := func(provider string) bool {
+		if authStore != nil && authStore.Get(provider) != "" {
+			return true
+		}
+		if modelsAPIKeys[provider] {
+			return true
+		}
+		upper := strings.ToUpper(strings.ReplaceAll(provider, "-", "_"))
+		if os.Getenv(upper+"_API_KEY") != "" {
+			return true
+		}
+		if os.Getenv("LLM_API_KEY") != "" {
+			return true
+		}
+		return false
+	}
+
+	// Use GetAvailable (auth-filtered) like pi
+	all := mreg.GetAvailable(hasAuth)
+
+	if len(all) == 0 {
+		fmt.Println("No models with configured auth. Add API keys to ~/.xihu/auth.json, ~/.xihu/models.json, or set environment variables.")
+		return
+	}
+
+	// Apply fuzzy filter if query provided
 	if query != "true" {
-		// Filter by query
-		var filtered []types.Model
-		for _, m := range all {
-			if strings.Contains(strings.ToLower(m.ID), strings.ToLower(query)) ||
-				strings.Contains(strings.ToLower(m.Provider), strings.ToLower(query)) {
-				filtered = append(filtered, m)
-			}
-		}
-		all = filtered
+		all = fuzzyFilterModels(all, query)
 	}
 
-	fmt.Printf("Available models (%d):\n", len(all))
-	for _, m := range all {
-		full := m.Provider + "/" + m.ID
-		reasoning := ""
-		if m.Reasoning {
-			reasoning = " [reasoning]"
-		}
-		vision := ""
-		for _, t := range m.InputTypes {
-			if t == "image" {
-				vision = " [vision]"
-				break
-			}
-		}
-		cost := ""
-		if m.Cost.Input > 0 {
-			cost = fmt.Sprintf(" ($%.2f/$%.2f)", m.Cost.Input, m.Cost.Output)
-		}
-		ctx := ""
-		if m.ContextWindow > 0 {
-			ctx = fmt.Sprintf(" [%dK ctx]", m.ContextWindow/1000)
-		}
-		fmt.Printf("  %-40s%s%s%s%s\n", full, reasoning, vision, cost, ctx)
+	if len(all) == 0 {
+		fmt.Printf("No models matching %q\n", query)
+		return
 	}
+
+	// Sort by provider, then by model ID (same as pi)
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].Provider != all[j].Provider {
+			return all[i].Provider < all[j].Provider
+		}
+		return all[i].ID < all[j].ID
+	})
+
+	// Build rows for column width calculation
+	type row struct {
+		provider, model, context, maxOut, thinking, images string
+	}
+	rows := make([]row, len(all))
+	for i, m := range all {
+		rows[i] = row{
+			provider: m.Provider,
+			model:    m.ID,
+			context:  formatTokenCount(m.ContextWindow),
+			maxOut:   formatTokenCount(m.MaxTokens),
+			thinking: func() string { if m.Reasoning { return "yes" }; return "no" }(),
+			images:   func() string { for _, t := range m.InputTypes { if t == "image" { return "yes" } }; return "no" }(),
+		}
+	}
+
+	// Calculate column widths
+	headers := row{provider: "provider", model: "model", context: "context", maxOut: "max-out", thinking: "thinking", images: "images"}
+	wp := len(headers.provider)
+	wm := len(headers.model)
+	wc := len(headers.context)
+	wmo := len(headers.maxOut)
+	wt := len(headers.thinking)
+	wi := len(headers.images)
+	for _, r := range rows {
+		if len(r.provider) > wp {
+			wp = len(r.provider)
+		}
+		if len(r.model) > wm {
+			wm = len(r.model)
+		}
+		if len(r.context) > wc {
+			wc = len(r.context)
+		}
+		if len(r.maxOut) > wmo {
+			wmo = len(r.maxOut)
+		}
+		if len(r.thinking) > wt {
+			wt = len(r.thinking)
+		}
+		if len(r.images) > wi {
+			wi = len(r.images)
+		}
+	}
+
+	// Print header
+	fmt.Printf("%-*s  %-*s  %-*s  %-*s  %-*s  %-*s\n",
+		wp, headers.provider,
+		wm, headers.model,
+		wc, headers.context,
+		wmo, headers.maxOut,
+		wt, headers.thinking,
+		wi, headers.images)
+
+	// Print rows
+	for _, r := range rows {
+		fmt.Printf("%-*s  %-*s  %-*s  %-*s  %-*s  %-*s\n",
+			wp, r.provider,
+			wm, r.model,
+			wc, r.context,
+			wmo, r.maxOut,
+			wt, r.thinking,
+			wi, r.images)
+	}
+}
+
+// formatTokenCount formats a number as human-readable (e.g., 200000 -> "200K", 1000000 -> "1M").
+// Matches pi's formatTokenCount exactly.
+func formatTokenCount(count int) string {
+	if count <= 0 {
+		return "0"
+	}
+	if count >= 1_000_000 {
+		millions := float64(count) / 1_000_000
+		if millions == float64(int(millions)) {
+			return fmt.Sprintf("%dM", int(millions))
+		}
+		return fmt.Sprintf("%.1fM", millions)
+	}
+	if count >= 1_000 {
+		thousands := float64(count) / 1_000
+		if thousands == float64(int(thousands)) {
+			return fmt.Sprintf("%dK", int(thousands))
+		}
+		return fmt.Sprintf("%.1fK", thousands)
+	}
+	return fmt.Sprintf("%d", count)
+}
+
+// fuzzyFilterModels filters models by matching the query against provider+model ID.
+func fuzzyFilterModels(models []types.Model, query string) []types.Model {
+	q := strings.ToLower(query)
+	var filtered []types.Model
+	for _, m := range models {
+		s := strings.ToLower(m.Provider + " " + m.ID)
+		if strings.Contains(s, q) {
+			filtered = append(filtered, m)
+		}
+	}
+	return filtered
+}
+
+// loadModelsAPIKeys reads ~/.xihu/models.json and returns a set of provider names
+// that have an apiKey configured. Mirrors pi's storeProviderRequestConfig behavior.
+func loadModelsAPIKeys() map[string]bool {
+	result := make(map[string]bool)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return result
+	}
+	data, err := os.ReadFile(home + "/.xihu/models.json")
+	if err != nil {
+		return result
+	}
+	var cfg struct {
+		Providers map[string]json.RawMessage `json:"providers"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return result
+	}
+	for name, raw := range cfg.Providers {
+		var pc struct {
+			APIKey string `json:"apiKey"`
+		}
+		if json.Unmarshal(raw, &pc) == nil && pc.APIKey != "" {
+			result[name] = true
+		}
+	}
+	return result
 }
 
 // parseModelString parses a model string like "provider/model:thinking" into components.

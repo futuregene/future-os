@@ -8,27 +8,6 @@ import (
 	"testing"
 )
 
-func TestLoadRegistryFileNotExist(t *testing.T) {
-	tmpDir := t.TempDir()
-	path := filepath.Join(tmpDir, "nonexistent.json")
-
-	r, err := LoadRegistry(path)
-	if err != nil {
-		t.Fatalf("LoadRegistry: %v", err)
-	}
-	if r == nil {
-		t.Fatal("registry is nil")
-	}
-	if len(r.Models) == 0 {
-		t.Fatal("models is empty — should have builtins")
-	}
-
-	// File should have been created
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("bootstrap file not created: %v", err)
-	}
-}
-
 func TestLoadRegistryInvalidJSON(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "invalid.json")
@@ -98,8 +77,6 @@ func TestLoadRegistryNullProviders(t *testing.T) {
 
 	r, err := LoadRegistry(path)
 	if err == nil {
-		// Empty providers → should return error since it's valid JSON but no providers
-		// Actually the new code treats empty as valid but no models
 		if len(r.Models) > 0 {
 			t.Fatal("expected no models for empty config")
 		}
@@ -183,29 +160,8 @@ func TestXihuDefaultPath(t *testing.T) {
 	}
 }
 
-func TestBuiltinModels(t *testing.T) {
-	cfg := BuiltinConfig()
-	models := resolveModels(cfg)
-	if len(models) < 20 {
-		t.Errorf("builtins = %d, want >= 20", len(models))
-	}
-
-	ids := make(map[string]bool)
-	for _, m := range models {
-		ids[m.ID] = true
-	}
-
-	required := []string{"gpt-4o", "claude-sonnet-4", "deepseek-chat"}
-	for _, id := range required {
-		if !ids[id] {
-			t.Errorf("missing builtin: %s", id)
-		}
-	}
-}
-
 func TestFindExactMatch(t *testing.T) {
-	cfg := BuiltinConfig()
-	r := &Registry{config: cfg, Models: resolveModels(cfg)}
+	r := makeTestRegistry()
 
 	m, err := r.Find("gpt-4o")
 	if err != nil {
@@ -217,8 +173,7 @@ func TestFindExactMatch(t *testing.T) {
 }
 
 func TestFindProviderSlashID(t *testing.T) {
-	cfg := BuiltinConfig()
-	r := &Registry{config: cfg, Models: resolveModels(cfg)}
+	r := makeTestRegistry()
 
 	m, err := r.Find("openai/gpt-4o")
 	if err != nil {
@@ -230,8 +185,7 @@ func TestFindProviderSlashID(t *testing.T) {
 }
 
 func TestFindCaseInsensitive(t *testing.T) {
-	cfg := BuiltinConfig()
-	r := &Registry{config: cfg, Models: resolveModels(cfg)}
+	r := makeTestRegistry()
 
 	m, err := r.Find("GPT-4O")
 	if err != nil {
@@ -243,8 +197,7 @@ func TestFindCaseInsensitive(t *testing.T) {
 }
 
 func TestFindPrefix(t *testing.T) {
-	cfg := BuiltinConfig()
-	r := &Registry{config: cfg, Models: resolveModels(cfg)}
+	r := makeTestRegistry()
 
 	m, err := r.Find("gpt-4")
 	if err != nil {
@@ -256,8 +209,7 @@ func TestFindPrefix(t *testing.T) {
 }
 
 func TestFindSubstring(t *testing.T) {
-	cfg := BuiltinConfig()
-	r := &Registry{config: cfg, Models: resolveModels(cfg)}
+	r := makeTestRegistry()
 
 	m, err := r.Find("mini")
 	if err != nil {
@@ -269,8 +221,7 @@ func TestFindSubstring(t *testing.T) {
 }
 
 func TestFindEmptyQuery(t *testing.T) {
-	cfg := BuiltinConfig()
-	r := &Registry{config: cfg, Models: resolveModels(cfg)}
+	r := makeTestRegistry()
 
 	_, err := r.Find("")
 	if err == nil {
@@ -279,8 +230,7 @@ func TestFindEmptyQuery(t *testing.T) {
 }
 
 func TestFindNotFound(t *testing.T) {
-	cfg := BuiltinConfig()
-	r := &Registry{config: cfg, Models: resolveModels(cfg)}
+	r := makeTestRegistry()
 
 	_, err := r.Find("xyzzy-nosuchmodel-999")
 	if err == nil {
@@ -293,6 +243,29 @@ func TestFindNilRegistry(t *testing.T) {
 	_, err := r.Find("gpt-4o")
 	if err == nil {
 		t.Fatal("expected error for nil registry")
+	}
+}
+
+func TestGetAll(t *testing.T) {
+	r := makeTestRegistry()
+
+	all := r.GetAll()
+	if len(all) != 3 {
+		t.Errorf("GetAll = %d, want 3", len(all))
+	}
+}
+
+func TestGetByProvider(t *testing.T) {
+	r := makeTestRegistry()
+
+	openaiModels := r.GetByProvider("openai")
+	if len(openaiModels) == 0 {
+		t.Error("expected OpenAI models")
+	}
+	for _, m := range openaiModels {
+		if m.Provider != "openai" {
+			t.Errorf("provider = %s, want openai", m.Provider)
+		}
 	}
 }
 
@@ -312,31 +285,6 @@ func TestSupportsText(t *testing.T) {
 	m := &ResolvedModel{Input: []string{"text", "image"}}
 	if !m.SupportsText() {
 		t.Error("expected SupportsText = true")
-	}
-}
-
-func TestGetAll(t *testing.T) {
-	cfg := BuiltinConfig()
-	r := &Registry{config: cfg, Models: resolveModels(cfg)}
-
-	all := r.GetAll()
-	if len(all) < 20 {
-		t.Errorf("GetAll = %d, want >= 20", len(all))
-	}
-}
-
-func TestGetByProvider(t *testing.T) {
-	cfg := BuiltinConfig()
-	r := &Registry{config: cfg, Models: resolveModels(cfg)}
-
-	openaiModels := r.GetByProvider("openai")
-	if len(openaiModels) == 0 {
-		t.Error("expected OpenAI models")
-	}
-	for _, m := range openaiModels {
-		if m.Provider != "openai" {
-			t.Errorf("provider = %s, want openai", m.Provider)
-		}
 	}
 }
 
@@ -379,38 +327,20 @@ func TestModelOverrideMerge(t *testing.T) {
 	}
 }
 
-func TestPiCompatibleModelsFile(t *testing.T) {
-	// Verify bootstrap produces pi-compatible format
-	tmpDir := t.TempDir()
-	path := filepath.Join(tmpDir, "models.json")
-
-	r, err := LoadRegistry(path)
-	if err != nil {
-		t.Fatalf("LoadRegistry: %v", err)
-	}
-
-	// Save and verify format
-	err = r.Save()
-	if err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read file: %v", err)
-	}
-
-	var cfg ModelsConfig
-	if err := jsonUnmarshal(data, &cfg); err != nil {
-		t.Fatalf("parse as pi format: %v", err)
-	}
-
-	if cfg.Providers == nil {
-		t.Fatal("providers is nil")
-	}
-	if len(cfg.Providers) == 0 {
-		t.Fatal("providers is empty")
-	}
+// makeTestRegistry creates a minimal in-memory registry for Find/Get tests.
+func makeTestRegistry() *Registry {
+	cfg := &ModelsConfig{Providers: map[string]ProviderConfig{
+		"openai": {
+			BaseURL: strPtr("https://api.openai.com/v1"),
+			API:     strPtr("openai-completions"),
+			Models: []ModelDefinition{
+				{ID: "gpt-4o", Name: strPtr("GPT-4o"), ContextWindow: intPtr(128000)},
+				{ID: "gpt-4o-mini", Name: strPtr("GPT-4o Mini"), ContextWindow: intPtr(128000)},
+				{ID: "o3-mini", Name: strPtr("O3 Mini"), ContextWindow: intPtr(200000)},
+			},
+		},
+	}}
+	return &Registry{config: cfg, Models: resolveModels(cfg)}
 }
 
 // Helpers

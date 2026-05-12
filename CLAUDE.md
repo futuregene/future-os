@@ -2,12 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Go 1.26.1+, module `github.com/huichen/xihu`.
+
 ## Build/Run/Test
 
 ```bash
 make build          # Build both CLI (xihu) and web (xihu-web) binaries to bin/
 make run            # Build and run CLI (pass ARGS="--help" for flags)
-make test           # All tests
+make test           # All tests (24 test files, timeout 120s)
 make test-verbose   # All tests with verbose output
 make test-race      # All tests with race detector
 make test-cover     # All tests with coverage profile
@@ -26,7 +28,7 @@ go test -count=1 -v ./internal/skills/
 
 **xihu** is a Go AI coding assistant CLI (similar to Claude Code) with a Bubble Tea TUI. Two entry points:
 
-- `cmd/xihu/main.go` — CLI entry point: parses 30+ flags, resolves model/provider/API key/auth, configures session management (fork/resume/continue), discovers skills, builds system prompt, and either launches the TUI or runs in non-interactive print mode
+- `cmd/xihu/main.go` — CLI entry point: parses 30+ flags, resolves model/provider/API key/auth, configures session management (fork/resume/continue), discovers skills, builds system prompt, and either launches the TUI or runs in non-interactive print/RPC/JSON mode. The `config` subcommand (`cmd/xihu/config.go`) launches a resource-configuration TUI for managing models.json and other resources.
 - `cmd/xihu-web/main.go` — Web server entry point (minimal, port via `PORT` env, defaults to 8080)
 
 ### Core components
@@ -53,7 +55,7 @@ go test -count=1 -v ./internal/skills/
 
 **`internal/skills/skills.go`** — Discovers skills by walking directories (`~/.xihu/skills/`, `.xihu/skills/`, `~/.agents/skills/`, `~/.pi/agent/skills/`) for `SKILL.md` files with YAML frontmatter (name, description, disable-model-invocation). Resolves naming collisions (project > user priority).
 
-**`internal/extensions/`** — Plugin architecture: extensions can register tools, slash commands, and prompts. Supports Go plugins (.so) and JSON config-based extensions, with an internal event bus for pub/sub between extensions.
+**`internal/extensions/`** — Plugin architecture: extensions can register tools, slash commands, and prompts. Supports Go plugins (.so) and JSON config-based extensions, with an internal event bus for pub/sub between extensions. Go plugin loading is guarded by build tags (`linux || darwin` only; `plugin_loader_unsupported.go` for other platforms).
 
 **`internal/events/`** — Event types and EventBus for bridging agent streaming events to the TUI (thinking deltas, tool calls, tool results, usage stats).
 
@@ -65,13 +67,25 @@ go test -count=1 -v ./internal/skills/
 
 **`internal/auth/`** — Reads API credentials from `~/.xihu/auth.json` (keyed by provider), with fallback to `~/.pi/agent/auth.json` for migration compatibility.
 
-**`internal/rpc/`** — Headless RPC server using JSONL over stdin/stdout. Mirrors pi-mono's RPC protocol: commands in (message, new_session, set_model, compact, etc.), responses and AgentSessionEvents out. Framing is strict `\n`-delimited JSONL.
-
 **`internal/exec/`** — Standalone bash executor with ANSI stripping, binary sanitization, tail truncation, process tree killing, and AbortSignal support. Used by the bash tool.
 
 **`internal/diagnostic/`** — Diagnostic events (warnings, errors, file collisions) emitted during operations.
 
-**`pkg/types/`** — Shared types: `Message`, `ToolCall`, `StreamEvent`, `AgentTool`, `AgentConfig`, `LLMProvider` interface.
+**`internal/models/`** — Parses `models.json` provider configuration files (provider-centric format with model lists and capabilities). Includes builtin model catalog (`models_builtin.go`) and fuzzy model matching via Levenshtein distance.
+
+**`internal/config/`** — Resource configuration manager: discovers and watches `models.json` files across global/project locations, auto-reloads on changes, resolves resource patterns for provider endpoints.
+
+**`internal/apiregistry/`** — Known API endpoint registry: maps provider names to base URLs for common providers (Anthropic, OpenAI, OpenRouter, DeepSeek, etc.).
+
+**`internal/utils/`** — Shared utilities: version info (`version.go`), changelog display, MIME type detection.
+
+**`internal/webui/`** — Web UI served by `xihu-web`: an HTTP server that provides a browser-based chat interface, with static assets under `internal/webui/static/`.
+
+**`internal/rpc/`** — Headless RPC server using JSONL over stdin/stdout. Mirrors pi-mono's RPC protocol: commands in (message, new_session, set_model, compact, etc.), responses and AgentSessionEvents out. Framing is strict `\n`-delimited JSONL.
+
+**`pkg/types/`** — Shared types: `Message`, `ToolCall`, `StreamEvent`, `AgentTool`, `AgentConfig`, `LLMProvider` interface. Also `jsonschema.go` — generates JSON Schema from Go structs with `jsonschema:` struct tags via `types.SchemaOf[T]()`, mirroring pi-mono's TypeBox pattern. Used by all tools for parameter schema generation.
+
+**`pkg/rpcclient/`** — Go client library for programmatically consuming xihu in RPC mode. Talks JSONL over stdin/stdout to an `xihu --mode rpc` process. Provides typed methods for all RPC commands (message, set_model, compact, etc.) and parses streamed AgentSessionEvents.
 
 ### Provider model
 

@@ -207,16 +207,6 @@ func XihuDefaultPath() string {
 func LoadRegistry(path string) (*Registry, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			// Bootstrap from builtins
-			r := &Registry{rawPath: path}
-			r.config = BuiltinConfig()
-			r.Models = resolveModels(r.config)
-			if saveErr := r.Save(); saveErr != nil {
-				return nil, fmt.Errorf("bootstrap models file %s: %w", path, saveErr)
-			}
-			return r, nil
-		}
 		return nil, fmt.Errorf("read models file %s: %w", path, err)
 	}
 
@@ -315,12 +305,6 @@ func migrateLegacyModels(legacy map[string]LegacyModelInfo) *ModelsConfig {
 
 // ResolveModels is the exported version of resolveModels.
 func ResolveModels(cfg *ModelsConfig) []ResolvedModel {
-	return resolveModels(cfg)
-}
-
-// BuiltinModels returns the built-in models as a flat slice (for backward compatibility).
-func BuiltinModels() []ResolvedModel {
-	cfg := BuiltinConfig()
 	return resolveModels(cfg)
 }
 
