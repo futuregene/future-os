@@ -2,7 +2,6 @@
 package tui
 
 import (
-
 	"fmt"
 	"os"
 	"strings"
@@ -15,8 +14,6 @@ import (
 	"github.com/huichen/xihu/internal/extensions"
 	"github.com/huichen/xihu/internal/prompt"
 	"github.com/huichen/xihu/internal/tui/components"
-
-
 )
 
 // ─── Message Types ─────────────────────────────────────────────────────────
@@ -114,6 +111,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 			ks := msg.String()
 			switch {
 			case m.keybindings.Matches(ks, GlobalInterrupt):
+				m.printConversationOnExit()
 				m.quitting = true
 				return m, tea.Quit
 			case m.keybindings.Matches(ks, GlobalClear):
@@ -125,6 +123,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 					now := time.Now()
 					if now.Sub(m.lastCtrlCTime) < 500*time.Millisecond {
 						m.lastCtrlCTime = time.Time{}
+						m.printConversationOnExit()
 						m.quitting = true
 						return m, tea.Quit
 					}
@@ -133,6 +132,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 				}
 			case m.keybindings.Matches(ks, GlobalExit):
 				if !m.streaming && !m.compacting && m.editorEmpty() {
+					m.printConversationOnExit()
 					m.quitting = true
 					return m, tea.Quit
 				}
@@ -140,22 +140,22 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 					_, cmd := m.input.Update(msg)
 					return m, cmd
 				}
-		case m.keybindings.Matches(ks, GlobalToggleHeader):
-			m.welcomeExpanded = !m.welcomeExpanded
-			// Rebuild welcome message with new expansion state
-			m.rebuildWelcome()
-			// Recalculate chat size
-			editorHeight := m.editorHeight()
-			footerHeight := m.footerHeight()
-			headerHeight := 0 // header is now a no-op — welcome text lives in chat viewport
-			if m.customHeader != nil {
-				headerHeight = m.customHeader.Height()
-			}
-			m.chat.SetSize(m.width, m.height-editorHeight-footerHeight-headerHeight)
-			return m, nil
-		case m.keybindings.Matches(ks, GlobalToggleTools):
-			m.chat.ToggleAllTools()
-			return m, nil
+			case m.keybindings.Matches(ks, GlobalToggleHeader):
+				m.welcomeExpanded = !m.welcomeExpanded
+				// Rebuild welcome message with new expansion state
+				m.rebuildWelcome()
+				// Recalculate chat size
+				editorHeight := m.editorHeight()
+				footerHeight := m.footerHeight()
+				headerHeight := 0 // header is now a no-op — welcome text lives in chat viewport
+				if m.customHeader != nil {
+					headerHeight = m.customHeader.Height()
+				}
+				m.chat.SetSize(m.width, m.height-editorHeight-footerHeight-headerHeight)
+				return m, nil
+			case m.keybindings.Matches(ks, GlobalToggleTools):
+				m.chat.ToggleAllTools()
+				return m, nil
 			case m.keybindings.Matches(ks, GlobalToggleThinking):
 				m.chat.HideAllThinking = !m.chat.HideAllThinking
 				visible := "hidden"
@@ -198,6 +198,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 			now := time.Now()
 			if now.Sub(m.lastCtrlCTime) < 500*time.Millisecond {
 				m.lastCtrlCTime = time.Time{}
+				m.printConversationOnExit()
 				m.quitting = true
 				return m, tea.Quit
 			}
@@ -211,6 +212,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 			return m, tea.Suspend
 		case "ctrl+d":
 			if !m.streaming && !m.compacting && m.editorEmpty() {
+				m.printConversationOnExit()
 				m.quitting = true
 				return m, tea.Quit
 			}
@@ -220,14 +222,14 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 				return m, cmd
 			}
 		case "ctrl+h":
-		// Toggle header expanded/collapsed (TS pi-mono: ExpandableText header)
-		if m.customHeader != nil {
-			// Custom header — just re-layout
-		}
-		headerHeight := 3 // spacer + empty + spacer
-		if m.customHeader != nil {
-			headerHeight = m.customHeader.Height()
-		}
+			// Toggle header expanded/collapsed (TS pi-mono: ExpandableText header)
+			if m.customHeader != nil {
+				// Custom header — just re-layout
+			}
+			headerHeight := 3 // spacer + empty + spacer
+			if m.customHeader != nil {
+				headerHeight = m.customHeader.Height()
+			}
 			editorHeight := m.editorHeight()
 			footerHeight := m.footerHeight()
 			m.chat.SetSize(m.width, m.height-editorHeight-footerHeight-headerHeight)
@@ -475,7 +477,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 							break
 						}
 						m.chat.AppendCustomMessage("skill", fmt.Sprintf("Invoking skill: %s\n%s", s.Name, s.Description))
-						go m.runAgent("Follow the skill instructions:\n\n" + string(content), m.streamID)
+						go m.runAgent("Follow the skill instructions:\n\n"+string(content), m.streamID)
 						found = true
 						break
 					}
@@ -556,9 +558,11 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 		durStr := formatDuration(msg.DurationMs)
 		if msg.ID == "bash" {
 			if msg.Error != "" {
-				m.chat.CompleteBash(1, false); m.chat.SetLastBashDuration(durStr)
+				m.chat.CompleteBash(1, false)
+				m.chat.SetLastBashDuration(durStr)
 			} else {
-				m.chat.CompleteBash(0, false); m.chat.SetLastBashDuration(durStr)
+				m.chat.CompleteBash(0, false)
+				m.chat.SetLastBashDuration(durStr)
 			}
 			_ = durStr
 		} else {
@@ -1132,4 +1136,49 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// View renders the entire UI.
+// printConversationOnExit dumps the session conversation to stderr so it
+// persists in the terminal scrollback after the TUI exits.
+func (m *AppModel) printConversationOnExit() {
+	entries := m.chat.GetEntries()
+	for _, e := range entries {
+		// Skip empty system entries (spacers)
+		if e.Type == "system" && strings.TrimSpace(e.Content) == "" {
+			continue
+		}
+		// Skip pure thinking blocks that are hidden anyway
+		if e.Type == "thinking" && strings.TrimSpace(e.Content) == "" {
+			continue
+		}
+
+		prefix := ""
+		content := e.Content
+		switch e.Type {
+		case "user_message":
+			prefix = "\n> "
+		case "text":
+			prefix = "\n"
+		case "thinking":
+			prefix = "\n[thinking]\n"
+		case "bash":
+			prefix = "\n$ " + e.BashCommand + "\n"
+			content = strings.Join(e.BashLines, "\n")
+		case "system":
+			prefix = "\n  "
+		case "tool_call":
+			prefix = "\n[tool:" + e.ToolName + "]\n"
+			content = ""
+		case "tool_result":
+			prefix = "\n[tool result]\n"
+		case "error":
+			prefix = "\n[error] "
+		case "warning":
+			prefix = "\n[warn] "
+		}
+
+		if content == "" && prefix == "" {
+			continue
+		}
+		fmt.Fprintln(os.Stderr, prefix+content)
+	}
+	fmt.Fprintln(os.Stderr, "\n[xihu] session ended — conversation preserved above ↑")
+}
