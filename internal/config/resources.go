@@ -269,20 +269,20 @@ func isResourceEnabled(path string, resType ResourceType, globalSettings, projec
 		return true
 	}
 
+	// Generate relative path pattern for this resource
+	resourcePattern := getResourcePattern(path, scope)
+
 	for _, p := range patterns {
 		prefix := ""
 		pattern := p
-		if strings.HasPrefix(p, "+") || strings.HasPrefix(p, "-") {
+		if strings.HasPrefix(p, "+") || strings.HasPrefix(p, "-") || strings.HasPrefix(p, "!") {
 			prefix = p[:1]
 			pattern = p[1:]
 		}
 
-		if matchPattern(path, pattern) {
-			if prefix == "-" {
+		if matchPattern(resourcePattern, pattern) {
+			if prefix == "-" || prefix == "!" {
 				return false
-			}
-			if prefix == "+" {
-				return true
 			}
 			return true
 		}
@@ -291,21 +291,26 @@ func isResourceEnabled(path string, resType ResourceType, globalSettings, projec
 	return false
 }
 
-func matchPattern(path, pattern string) bool {
-	if path == pattern {
+func matchPattern(resourcePath, pattern string) bool {
+	// Exact match
+	if resourcePath == pattern {
 		return true
 	}
-	if filepath.Base(path) == pattern {
-		return true
-	}
-	if filepath.Base(filepath.Dir(path)) == pattern {
-		return true
-	}
-	matched, err := filepath.Match(pattern, filepath.Base(path))
+	// Glob match (e.g., skills/*/SKILL.md)
+	matched, err := filepath.Match(pattern, resourcePath)
 	if err == nil && matched {
 		return true
 	}
-	if strings.Contains(path, pattern) {
+	// Match by filename only
+	if filepath.Base(resourcePath) == pattern {
+		return true
+	}
+	// Match by directory name (for skills with SKILL.md)
+	if filepath.Base(resourcePath) == "SKILL.md" && filepath.Base(filepath.Dir(resourcePath)) == pattern {
+		return true
+	}
+	// Substring match for partial paths
+	if strings.Contains(resourcePath, pattern) {
 		return true
 	}
 	return false
@@ -327,6 +332,7 @@ func ExpandHome(path string) string {
 }
 
 // ToggleResource updates the settings to enable or disable a resource.
+// Uses relative path patterns matching pi's getResourcePattern behavior.
 func ToggleResource(path string, resType ResourceType, scope string, enabled bool) error {
 	globalPath, projectPath := settings.GetDefaultPaths()
 	var targetPath string
@@ -353,15 +359,14 @@ func ToggleResource(path string, resType ResourceType, scope string, enabled boo
 		patterns = s.Themes
 	}
 
-	pattern := filepath.Base(path)
-	if filepath.Base(path) == "SKILL.md" {
-		pattern = filepath.Base(filepath.Dir(path))
-	}
+	// Generate relative path pattern (matching pi's getResourcePattern)
+	pattern := getResourcePattern(path, scope)
 
+	// Remove existing patterns for this resource (support +, -, ! prefixes)
 	updated := make([]string, 0, len(patterns))
 	for _, p := range patterns {
 		stripped := p
-		if strings.HasPrefix(p, "+") || strings.HasPrefix(p, "-") {
+		if strings.HasPrefix(p, "+") || strings.HasPrefix(p, "-") || strings.HasPrefix(p, "!") {
 			stripped = p[1:]
 		}
 		if stripped != pattern {
@@ -387,4 +392,25 @@ func ToggleResource(path string, resType ResourceType, scope string, enabled boo
 	}
 
 	return settings.SaveSettings(targetPath, s)
+}
+
+// getResourcePattern returns the relative path pattern for a resource,
+// matching pi's getResourcePattern behavior.
+func getResourcePattern(path string, scope string) string {
+	home, _ := os.UserHomeDir()
+	var baseDir string
+	if scope == "project" {
+		cwd, _ := os.Getwd()
+		baseDir = filepath.Join(cwd, ".xihu")
+	} else {
+		baseDir = filepath.Join(home, ".xihu")
+	}
+	rel, err := filepath.Rel(baseDir, path)
+	if err != nil {
+		if filepath.Base(path) == "SKILL.md" {
+			return filepath.Base(filepath.Dir(path))
+		}
+		return filepath.Base(path)
+	}
+	return rel
 }
