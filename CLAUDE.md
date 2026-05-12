@@ -8,7 +8,10 @@ Go 1.26.1+, module `github.com/huichen/xihu`.
 
 ```bash
 make build          # Build both CLI (xihu) and web (xihu-web) binaries to bin/
+make build-cli      # Build CLI only (faster iteration)
+make build-web      # Build web server only
 make run            # Build and run CLI (pass ARGS="--help" for flags)
+make run-web        # Build and run web server (pass PORT=9090 for custom port)
 make test           # All tests (24 test files, timeout 120s)
 make test-verbose   # All tests with verbose output
 make test-race      # All tests with race detector
@@ -16,6 +19,9 @@ make test-cover     # All tests with coverage profile
 make test-cover-html # Coverage in browser
 make lint           # go vet
 make fmt            # go fmt
+make fmt-check      # Check formatting (useful for CI/pre-commit)
+make generate-models # Regenerate model catalog from external APIs
+make install        # Install binaries to GOPATH/bin
 make help           # Show all targets
 ```
 
@@ -23,6 +29,8 @@ Run a single package's tests:
 ```bash
 go test -count=1 -v ./internal/skills/
 ```
+
+Builds use `CGO_ENABLED=0` for static binaries with no libc dependency.
 
 ## Architecture
 
@@ -71,7 +79,7 @@ go test -count=1 -v ./internal/skills/
 
 **`internal/diagnostic/`** — Diagnostic events (warnings, errors, file collisions) emitted during operations.
 
-**`internal/models/`** — Parses `models.json` provider configuration files (provider-centric format with model lists and capabilities). Includes builtin model catalog (`models_builtin.go`) and fuzzy model matching via Levenshtein distance.
+**`internal/models/`** — Parses `models.json` provider configuration files (provider-centric format with model lists and capabilities). Includes builtin model catalog (`models_builtin.go`) — **generated** by `make generate-models` (via `internal/modelregistry/generate_models.go`) from external APIs (models.dev, OpenRouter, Vercel AI Gateway). Also fuzzy model matching via Levenshtein distance.
 
 **`internal/config/`** — Resource configuration manager: discovers and watches `models.json` files across global/project locations, auto-reloads on changes, resolves resource patterns for provider endpoints.
 
