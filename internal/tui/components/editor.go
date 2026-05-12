@@ -270,7 +270,7 @@ func (e *Editor) ExitSlashMode() {
 	e.bashMode = false
 	e.fileMode = false
 	e.symbolMode = false
-	e.area.Placeholder = "Type a message... (Enter=submit, Shift+Enter=newline)"
+	e.area.Placeholder = "Message..."
 }
 
 // SetSlashCandidates sets the autocomplete candidates for slash commands.
@@ -314,7 +314,7 @@ func (e *Editor) updateSlashMode() {
 			e.style = e.style.Copy().BorderForeground(lipgloss.Color(e.symbolBorderColor))
 		}
 	} else {
-		e.area.Placeholder = "Type a message... (Enter=submit, Shift+Enter=newline)"
+		e.area.Placeholder = "Message..."
 		if e.defaultBorderColor != "" {
 			e.style = e.style.Copy().BorderForeground(lipgloss.Color(e.defaultBorderColor))
 		}

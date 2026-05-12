@@ -11,8 +11,10 @@ make test           # All tests
 make test-verbose   # All tests with verbose output
 make test-race      # All tests with race detector
 make test-cover     # All tests with coverage profile
+make test-cover-html # Coverage in browser
 make lint           # go vet
 make fmt            # go fmt
+make help           # Show all targets
 ```
 
 Run a single package's tests:
@@ -43,11 +45,11 @@ go test -count=1 -v ./internal/skills/
 
 **`internal/compaction/compaction.go`** — Context compaction: estimates tokens (chars/4 heuristic), finds safe cut points (user/assistant message boundaries, never tool results), summarizes file operations (reads/writes), and replaces older messages with a compacted user message.
 
-**`internal/tools/`** — Seven built-in tools (bash, read, write, edit, grep, ls, find). Each returns an `AgentTool` with a JSON Schema definition, handler, and guidelines. The edit tool uses Unicode NFKC normalization + smart quote replacement for fuzzy matching, supports single-edit and multi-edit (array) modes, overlap detection, and no-change skipping.
+**`internal/tools/`** — Default coding tool set is 4 tools (bash, read, write, edit). grep/ls/find also exist as optional tools (used by `AllTools()` or `ReadOnlyTools()`). Each returns an `AgentTool` with a JSON Schema definition, handler, and guidelines. The edit tool uses Unicode NFKC normalization + smart quote replacement for fuzzy matching, supports single-edit and multi-edit (array) modes, overlap detection, and no-change skipping. `internal/engine/engine_tools.go` defines `CodingTools()` (the 4 defaults) and `ReadOnlyTools()` (read, grep, ls, find).
 
 **`internal/settings/settings.go`** — Deep-merge settings from `~/.xihu/settings.json` (global) and `.xihu/settings.json` (project), with project overriding global. Supports settings locking (O_EXCL .lock files) and migration between format versions.
 
-**`internal/commands/slash.go`** — 22 slash commands dispatched by the `/command` handler. Some return sentinel strings (e.g. `NEW_SESSION`, `RESUME:<id>`, `FORK:<id>:<entry>`, `COMPACT:`, `QUIT`) that the main loop interprets to trigger session lifecycle operations.
+**`internal/commands/slash.go`** — 25 slash commands dispatched by the `/command` handler. Some return sentinel strings (e.g. `NEW_SESSION`, `RESUME:<id>`, `FORK:<id>:<entry>`, `COMPACT:`, `QUIT`) that the main loop interprets to trigger session lifecycle operations.
 
 **`internal/skills/skills.go`** — Discovers skills by walking directories (`~/.xihu/skills/`, `.xihu/skills/`, `~/.agents/skills/`, `~/.pi/agent/skills/`) for `SKILL.md` files with YAML frontmatter (name, description, disable-model-invocation). Resolves naming collisions (project > user priority).
 
@@ -56,6 +58,18 @@ go test -count=1 -v ./internal/skills/
 **`internal/events/`** — Event types and EventBus for bridging agent streaming events to the TUI (thinking deltas, tool calls, tool results, usage stats).
 
 **`internal/prompt/`** — System prompt builder with template support and skill injection.
+
+**`internal/agentsession/`** — AgentSession: central abstraction for agent lifecycle shared across CLI, web, and RPC modes. Wraps the Engine and adds session-level control: event subscription, prompt/steer/followUp, model management, compaction, and session statistics. The Go equivalent of pi-mono's AgentSession class.
+
+**`internal/modelregistry/`** — Model discovery and registration (mirrors TS pi-mono's ModelRegistry). Embeds a built-in model catalog, supports runtime overrides via configuration, and resolves provider→model chains.
+
+**`internal/auth/`** — Reads API credentials from `~/.xihu/auth.json` (keyed by provider), with fallback to `~/.pi/agent/auth.json` for migration compatibility.
+
+**`internal/rpc/`** — Headless RPC server using JSONL over stdin/stdout. Mirrors pi-mono's RPC protocol: commands in (message, new_session, set_model, compact, etc.), responses and AgentSessionEvents out. Framing is strict `\n`-delimited JSONL.
+
+**`internal/exec/`** — Standalone bash executor with ANSI stripping, binary sanitization, tail truncation, process tree killing, and AbortSignal support. Used by the bash tool.
+
+**`internal/diagnostic/`** — Diagnostic events (warnings, errors, file collisions) emitted during operations.
 
 **`pkg/types/`** — Shared types: `Message`, `ToolCall`, `StreamEvent`, `AgentTool`, `AgentConfig`, `LLMProvider` interface.
 

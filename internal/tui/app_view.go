@@ -33,28 +33,36 @@ func (m AppModel) View() string {
 	// Transient status container (TS pi-mono: statusContainer)
 	statusView := m.statusLine()
 
-	// Build widget views (above/below editor)
+	// Filter empty widgets to avoid blank lines in layout
 	widgetAboveView := m.widgetsView(m.widgetsAbove)
 	widgetBelowView := m.widgetsView(m.widgetsBelow)
 
-	main := lipgloss.JoinVertical(
-		lipgloss.Top,
-		headerView,
-		chatView,
-		pendingView,
-		statusView,
-		widgetAboveView,
-		inputView,
-		widgetBelowView,
-		footerView,
-	)
+	// Build main layout, skipping empty widget sections
+	var mainParts []string
+	mainParts = append(mainParts, headerView, chatView, pendingView, statusView)
+	if widgetAboveView != "" {
+		mainParts = append(mainParts, widgetAboveView)
+	}
+	mainParts = append(mainParts, inputView)
+	if widgetBelowView != "" {
+		mainParts = append(mainParts, widgetBelowView)
+	}
+	mainParts = append(mainParts, footerView)
+
+	main := lipgloss.JoinVertical(lipgloss.Top, mainParts...)
 
 	var result string
 
 	// Show autocomplete popover above the input
 	if m.autocomplete.Active() {
 		acView := m.autocomplete.View()
-		result = lipgloss.JoinVertical(lipgloss.Top, headerView, chatView, pendingView, statusView, acView, inputView, footerView)
+		var acParts []string
+		acParts = append(acParts, headerView, chatView, pendingView, statusView)
+		if widgetAboveView != "" {
+			acParts = append(acParts, widgetAboveView)
+		}
+		acParts = append(acParts, acView, inputView, footerView)
+		result = lipgloss.JoinVertical(lipgloss.Top, acParts...)
 	} else if m.overlay.Active() {
 		// Show overlay (modal or non-capturing)
 		overlayView := m.overlay.View()

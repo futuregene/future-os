@@ -56,23 +56,20 @@ func (f *Footer) buildLine1(width int) string {
 		pwd = pwd + " • " + f.sessionName
 	}
 
-	// Truncate if too wide (accounting for dim ANSI codes)
-	rendered := f.dimStyle.Render(pwd)
-	if lipgloss.Width(rendered) > width && width > 0 {
-		// Truncate the plain text, not the rendered version
-		for lipgloss.Width(f.dimStyle.Render(pwd)) > width && len(pwd) > 3 {
+	// Truncate if too wide — measure plain text width, not ANSI-rendered
+	plainWidth := lipgloss.Width(pwd)
+	if plainWidth > width && width > 0 {
+		for lipgloss.Width(pwd) > width && len(pwd) > 3 {
 			pwd = pwd[:len(pwd)-1]
 		}
-		// Safety: ensure we don't produce zero-length
 		if len(pwd) <= 3 {
 			pwd = "..."
 		} else {
 			pwd = pwd + "..."
 		}
-		rendered = f.dimStyle.Render(pwd)
 	}
 
-	return rendered
+	return f.dimStyle.Render(pwd)
 }
 
 // buildLine2 constructs the stats + model line with left/right layout.
