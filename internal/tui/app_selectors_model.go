@@ -71,8 +71,8 @@ func (m *AppModel) showModelSelector() {
 			desc := "[" + provider + "]"
 			caps := ""
 			if info, ok := modelInfoMap[name]; ok {
-				if info.MaxTokens > 0 {
-					desc += fmt.Sprintf("  %dK ctx", info.MaxTokens/1000)
+				if info.ContextWindow > 0 {
+					desc += fmt.Sprintf("  %dK ctx", info.ContextWindow/1000)
 				}
 				caps := ""
 				if info.Reasoning {
@@ -90,8 +90,8 @@ func (m *AppModel) showModelSelector() {
 					desc += fmt.Sprintf("  $%.1f/$%.1f", info.Cost.Input*10, info.Cost.Output*10)
 				}
 			} else if info, ok := modelInfoMap[model]; ok {
-				if info.MaxTokens > 0 {
-					desc += fmt.Sprintf("  %dK ctx", info.MaxTokens/1000)
+				if info.ContextWindow > 0 {
+					desc += fmt.Sprintf("  %dK ctx", info.ContextWindow/1000)
 				}
 				caps := ""
 				if info.Reasoning {
