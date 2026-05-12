@@ -39,6 +39,14 @@ type Model struct {
 	MaxTokens     int
 	CostInput     float64
 	CostOutput    float64
+	CostCacheRead  float64
+	CostCacheWrite float64
+	// CompatJSON is pre-serialized JSON for the model's compat field.
+	CompatJSON string
+	// TLMJSON is pre-serialized JSON for the model's thinkingLevelMap field.
+	TLMJSON string
+	// HeadersJSON is pre-serialized JSON for the model's headers field.
+	HeadersJSON string
 }
 
 // ─── models.dev types ────────────────────────────────────────────────────────
@@ -104,6 +112,20 @@ func (m ModelsDevModel) costOutput() float64 {
 	return 0
 }
 
+func (m ModelsDevModel) costCacheRead() float64 {
+	if m.Cost != nil && m.Cost.CacheRead != nil {
+		return *m.Cost.CacheRead
+	}
+	return 0
+}
+
+func (m ModelsDevModel) costCacheWrite() float64 {
+	if m.Cost != nil && m.Cost.CacheWrite != nil {
+		return *m.Cost.CacheWrite
+	}
+	return 0
+}
+
 func (m ModelsDevModel) hasImageInput() bool {
 	if m.Modalities == nil {
 		return false
@@ -114,6 +136,116 @@ func (m ModelsDevModel) hasImageInput() bool {
 		}
 	}
 	return false
+}
+
+// ─── Thinking level map constants (mirrors pi's generate-models.ts) ────────
+
+// deepseekV4TLM matches pi's DEEPSEEK_V4_THINKING_LEVEL_MAP.
+var deepseekV4TLM = map[string]interface{}{
+	"minimal": nil,
+	"low":     nil,
+	"medium":  nil,
+	"high":    "high",
+	"xhigh":   "max",
+}
+
+func tlmJSON(m map[string]interface{}) string {
+	b, _ := json.Marshal(m)
+	return string(b)
+}
+
+func mergeTLM(model *Model, m map[string]interface{}) {
+	existing := make(map[string]interface{})
+	if model.TLMJSON != "" {
+		json.Unmarshal([]byte(model.TLMJSON), &existing)
+	}
+	for k, v := range m {
+		existing[k] = v
+	}
+	model.TLMJSON = tlmJSON(existing)
+}
+
+func supportsOpenAiXhigh(modelID string) bool {
+	return strings.Contains(modelID, "gpt-5.2") ||
+		strings.Contains(modelID, "gpt-5.3") ||
+		strings.Contains(modelID, "gpt-5.4") ||
+		strings.Contains(modelID, "gpt-5.5")
+}
+
+func isGoogleThinkingAPI(api string) bool {
+	return api == "google-generative-ai" || api == "google-vertex"
+}
+
+func isGemini3ProModel(id string) bool {
+	return strings.Contains(strings.ToLower(id), "gemini-3") && strings.Contains(strings.ToLower(id), "pro")
+}
+
+func isGemini3FlashModel(id string) bool {
+	return strings.Contains(strings.ToLower(id), "gemini-3") && strings.Contains(strings.ToLower(id), "flash")
+}
+
+func isGemma4Model(id string) bool {
+	return strings.Contains(strings.ToLower(id), "gemma-4") || strings.Contains(strings.ToLower(id), "gemma4")
+}
+
+// applyThinkingLevelMetadata mirrors pi's applyThinkingLevelMetadata.
+func applyThinkingLevelMetadata(m *Model) {
+	api := m.API
+	id := m.ID
+	provider := m.Provider
+
+	// gpt-5.x — off is null (thinking off mode maps to reasoning_effort=none)
+	if strings.HasPrefix(id, "gpt-5") && (api == "openai-responses" || api == "azure-openai-responses" || api == "openai-completions") {
+		mergeTLM(m, map[string]interface{}{"off": nil})
+	}
+	// GPT-5.2/5.3/5.4/5.5 → xhigh support
+	if supportsOpenAiXhigh(id) {
+		mergeTLM(m, map[string]interface{}{"xhigh": "xhigh"})
+	}
+	// Claude Opus 4.6
+	if strings.Contains(id, "opus-4-6") || strings.Contains(id, "opus-4.6") {
+		mergeTLM(m, map[string]interface{}{"xhigh": "max"})
+	}
+	// Claude Opus 4.7
+	if strings.Contains(id, "opus-4-7") || strings.Contains(id, "opus-4.7") {
+		mergeTLM(m, map[string]interface{}{"xhigh": "xhigh"})
+	}
+	// deepseek-v4 + openai-completions (initial pass)
+	if api == "openai-completions" && strings.Contains(id, "deepseek-v4") {
+		mergeTLM(m, deepseekV4TLM)
+	}
+	// Gemini 3 Pro (google/google-vertex providers, any API)
+	if (provider == "google" || provider == "google-vertex" || isGoogleThinkingAPI(api)) && isGemini3ProModel(id) {
+		mergeTLM(m, map[string]interface{}{
+			"off": nil, "minimal": nil, "low": "LOW", "medium": nil, "high": "HIGH",
+		})
+	}
+	// Gemini 3 Flash (google/google-vertex providers, any API)
+	if (provider == "google" || provider == "google-vertex" || isGoogleThinkingAPI(api)) && isGemini3FlashModel(id) {
+		mergeTLM(m, map[string]interface{}{"off": nil})
+	}
+	// Gemma 4 (google/google-vertex providers, any API)
+	if (provider == "google" || provider == "google-vertex" || isGoogleThinkingAPI(api)) && isGemma4Model(id) {
+		mergeTLM(m, map[string]interface{}{
+			"off": nil, "minimal": "MINIMAL", "low": nil, "medium": nil, "high": "HIGH",
+		})
+	}
+	// Groq qwen/qwen3-32b
+	if provider == "groq" && id == "qwen/qwen3-32b" {
+		mergeTLM(m, map[string]interface{}{
+			"minimal": nil, "low": nil, "medium": nil, "high": "default",
+		})
+	}
+	// openai-codex GPT-5
+	if provider == "openai-codex" && supportsOpenAiXhigh(id) {
+		mergeTLM(m, map[string]interface{}{"minimal": "low"})
+	}
+	// openai-codex gpt-5.1-codex-mini
+	if provider == "openai-codex" && id == "gpt-5.1-codex-mini" {
+		mergeTLM(m, map[string]interface{}{
+			"minimal": "medium", "low": "medium", "medium": "medium", "high": "high",
+		})
+	}
 }
 
 // ─── OpenRouter types ────────────────────────────────────────────────────────
@@ -199,6 +331,97 @@ func main() {
 
 	// 6. Add opencode / opencode-go models (pi generates these with static IDs)
 	allModels = append(allModels, opencodeModels()...)
+
+	// ── Post-processing: compat, thinking level, context fixes (mirrors pi) ────
+	// OpenCode variants list Claude Sonnet 4/4.5 with 1M context, actual limit is 200K
+	for i := range allModels {
+		m := &allModels[i]
+		if (m.Provider == "opencode" || m.Provider == "opencode-go") && (m.ID == "claude-sonnet-4-5" || m.ID == "claude-sonnet-4") {
+			m.ContextWindow = 200000
+		}
+		if (m.Provider == "opencode" || m.Provider == "opencode-go") && m.ID == "gpt-5.4" {
+			m.ContextWindow = 272000
+			m.MaxTokens = 128000
+		}
+		if m.Provider == "openai" && (m.ID == "gpt-5.4" || m.ID == "gpt-5.5") {
+			m.ContextWindow = 272000
+			m.MaxTokens = 128000
+		}
+		// Stabilize OpenRouter model metadata
+		if m.Provider == "openrouter" && m.ID == "moonshotai/kimi-k2.5" {
+			m.CostInput = 0.41
+			m.CostOutput = 2.06
+			m.CostCacheRead = 0.07
+			m.MaxTokens = 4096
+		}
+		if m.Provider == "openrouter" && m.ID == "z-ai/glm-5" {
+			m.CostInput = 0.6
+			m.CostOutput = 1.9
+			m.CostCacheRead = 0.119
+		}
+	}
+
+	// DeepSeek V4 compat + thinking level map for all deepseek-v4 models
+	deepseekCompatJSON := `{"requiresReasoningContentOnAssistantMessages":true,"thinkingFormat":"deepseek"}`
+	for i := range allModels {
+		m := &allModels[i]
+		if m.API == "openai-completions" && strings.Contains(m.ID, "deepseek-v4") {
+			if m.CompatJSON == "" {
+				m.CompatJSON = deepseekCompatJSON
+			} else {
+				// Merge with existing
+				var existing map[string]interface{}
+				json.Unmarshal([]byte(m.CompatJSON), &existing)
+				existing["requiresReasoningContentOnAssistantMessages"] = true
+				existing["thinkingFormat"] = "deepseek"
+				m.CompatJSON = tlmJSON(existing)
+			}
+			mergeTLM(m, deepseekV4TLM)
+		}
+	}
+
+	// ── Provider-level compat (mirrors pi's per-provider settings) ──────────
+	zaiCompat := `{"supportsDeveloperRole":false,"thinkingFormat":"zai","zaiToolStream":true}`
+	// ZAI models that don't support tool stream
+	zaiNoToolStream := map[string]bool{"glm-4.5": true, "glm-4.5-air": true, "glm-4.5-flash": true, "glm-4.5v": true}
+	hfCompat := `{"supportsDeveloperRole":false}`
+	moonshotCompat := `{"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":false,"maxTokensField":"max_tokens","supportsStrictMode":false}`
+	copilotCompat := `{"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":false}`
+	cfSessionCompat := `{"sendSessionAffinityHeaders":true}`
+
+	for i := range allModels {
+		m := &allModels[i]
+		switch m.Provider {
+		case "zai":
+			if zaiNoToolStream[m.ID] {
+				m.CompatJSON = `{"supportsDeveloperRole":false,"thinkingFormat":"zai"}`
+			} else {
+				m.CompatJSON = zaiCompat
+			}
+		case "huggingface":
+			m.CompatJSON = hfCompat
+		case "moonshotai", "moonshotai-cn":
+			m.CompatJSON = moonshotCompat
+		case "github-copilot":
+			if m.API == "openai-completions" {
+				m.CompatJSON = copilotCompat
+			}
+			m.HeadersJSON = `{"User-Agent":"GitHubCopilotChat/0.35.0","Editor-Version":"vscode/1.107.0","Editor-Plugin-Version":"copilot-chat/0.35.0","Copilot-Integration-Id":"vscode-chat"}`
+		case "cloudflare-ai-gateway":
+			if strings.Contains(m.ID, "workers-ai/") {
+				m.CompatJSON = cfSessionCompat
+			}
+		case "cloudflare-workers-ai":
+			m.CompatJSON = cfSessionCompat
+		case "kimi-coding":
+			m.HeadersJSON = `{"User-Agent":"KimiCLI/1.5"}`
+		}
+	}
+
+	// Apply thinking level metadata to ALL models
+	for i := range allModels {
+		applyThinkingLevelMetadata(&allModels[i])
+	}
 
 	if len(allModels) == 0 {
 		fmt.Fprintln(os.Stderr, "Error: no models fetched")
@@ -456,6 +679,7 @@ func processProvider(data ModelsDevResponse, key, api, baseURL, provider string)
 			Reasoning: m.reasoning(), Input: input,
 			ContextWindow: m.contextWindow(), MaxTokens: m.maxTokens(),
 			CostInput: m.costInput(), CostOutput: m.costOutput(),
+			CostCacheRead: m.costCacheRead(), CostCacheWrite: m.costCacheWrite(),
 		})
 	}
 	return models
@@ -487,6 +711,7 @@ func processBedrock(data ModelsDevResponse) []Model {
 			Reasoning: m.reasoning(), Input: input,
 			ContextWindow: m.contextWindow(), MaxTokens: m.maxTokens(),
 			CostInput: m.costInput(), CostOutput: m.costOutput(),
+			CostCacheRead: m.costCacheRead(), CostCacheWrite: m.costCacheWrite(),
 		})
 	}
 	return models
@@ -524,6 +749,7 @@ func processKimiCoding(data ModelsDevResponse) []Model {
 			Reasoning: m.reasoning(), Input: []string{"text"},
 			ContextWindow: m.contextWindow(), MaxTokens: m.maxTokens(),
 			CostInput: m.costInput(), CostOutput: m.costOutput(),
+			CostCacheRead: m.costCacheRead(), CostCacheWrite: m.costCacheWrite(),
 		})
 	}
 	return models
@@ -554,6 +780,7 @@ func processGitHubCopilot(data ModelsDevResponse) []Model {
 			Reasoning: m.reasoning(), Input: input,
 			ContextWindow: m.contextWindow(), MaxTokens: m.maxTokens(),
 			CostInput: m.costInput(), CostOutput: m.costOutput(),
+			CostCacheRead: m.costCacheRead(), CostCacheWrite: m.costCacheWrite(),
 		})
 	}
 	return models
@@ -601,16 +828,30 @@ func generateGoFile(byProvider map[string][]Model, total int) {
 	b.WriteString(fmt.Sprintf("// Generated at %s\n", time.Now().Format(time.RFC3339)))
 	b.WriteString(fmt.Sprintf("// %d models across %d providers\n", total, len(byProvider)))
 	b.WriteString("\npackage modelregistry\n\n")
-	b.WriteString("import \"github.com/huichen/xihu/pkg/types\"\n\n")
+	b.WriteString("import (\n")
+	b.WriteString("\t\"encoding/json\"\n\n")
+	b.WriteString("\t\"github.com/huichen/xihu/pkg/types\"\n")
+	b.WriteString(")\n\n")
 	b.WriteString("// InitBuiltinModels returns the complete built-in model catalog.\n")
 	b.WriteString("func InitBuiltinModels() []types.Model {\n")
-	b.WriteString("\tmk := func(id, provider string, ctx, max int, reasoning bool, input []string, inCost, outCost float64, api, baseURL string) types.Model {\n")
+	b.WriteString("\tmk := func(id, name, provider string, ctx, max int, reasoning bool, input []string, inCost, outCost, cacheRead, cacheWrite float64, compatJSON, tlmJSON, headersJSON, api, baseURL string) types.Model {\n")
 	b.WriteString("\t\tm := types.Model{\n")
-	b.WriteString("\t\t\tID: id, Provider: provider, ContextWindow: ctx, MaxTokens: max,\n")
+	b.WriteString("\t\t\tID: id, Name: name, Provider: provider, ContextWindow: ctx, MaxTokens: max,\n")
 	b.WriteString("\t\t\tReasoning: reasoning, InputTypes: input, API: api, BaseURL: baseURL,\n")
 	b.WriteString("\t\t}\n")
 	b.WriteString("\t\tm.Cost.Input = inCost\n")
 	b.WriteString("\t\tm.Cost.Output = outCost\n")
+	b.WriteString("\t\tm.Cost.CacheRead = cacheRead\n")
+	b.WriteString("\t\tm.Cost.CacheWrite = cacheWrite\n")
+	b.WriteString("\t\tif compatJSON != \"\" {\n")
+	b.WriteString("\t\t\tjson.Unmarshal([]byte(compatJSON), &m.Compat)\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\tif tlmJSON != \"\" {\n")
+	b.WriteString("\t\t\tjson.Unmarshal([]byte(tlmJSON), &m.ThinkingLevelMap)\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\tif headersJSON != \"\" {\n")
+	b.WriteString("\t\t\tjson.Unmarshal([]byte(headersJSON), &m.Headers)\n")
+	b.WriteString("\t\t}\n")
 	b.WriteString("\t\treturn m\n")
 	b.WriteString("\t}\n")
 	b.WriteString("\treturn []types.Model{\n")
@@ -627,11 +868,17 @@ func generateGoFile(byProvider map[string][]Model, total int) {
 		sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 		for _, m := range models {
 			eid := strings.ReplaceAll(strings.ReplaceAll(m.ID, "\\", "\\\\"), "\"", "\\\"")
+			ename := strings.ReplaceAll(strings.ReplaceAll(m.Name, "\\", "\\\\"), "\"", "\\\"")
 			inputStr := "[]string{" + strings.Join(quoteStrings(m.Input), ", ") + "}"
 			cIn := fmt.Sprintf("%.2f", m.CostInput)
 			cOut := fmt.Sprintf("%.2f", m.CostOutput)
-			b.WriteString(fmt.Sprintf("\t\tmk(\"%s\", \"%s\", %d, %d, %t, %s, %s, %s, \"%s\", \"%s\"),\n",
-				eid, m.Provider, m.ContextWindow, m.MaxTokens, m.Reasoning, inputStr, cIn, cOut, m.API, m.BaseURL))
+			cCR := fmt.Sprintf("%.2f", m.CostCacheRead)
+			cCW := fmt.Sprintf("%.2f", m.CostCacheWrite)
+			eCompat := strings.ReplaceAll(strings.ReplaceAll(m.CompatJSON, "\\", "\\\\"), "\"", "\\\"")
+			eTLM := strings.ReplaceAll(strings.ReplaceAll(m.TLMJSON, "\\", "\\\\"), "\"", "\\\"")
+			eHeaders := strings.ReplaceAll(strings.ReplaceAll(m.HeadersJSON, "\\", "\\\\"), "\"", "\\\"")
+			b.WriteString(fmt.Sprintf("\t\tmk(\"%s\", \"%s\", \"%s\", %d, %d, %t, %s, %s, %s, %s, %s, \"%s\", \"%s\", \"%s\", \"%s\", \"%s\"),\n",
+				eid, ename, m.Provider, m.ContextWindow, m.MaxTokens, m.Reasoning, inputStr, cIn, cOut, cCR, cCW, eCompat, eTLM, eHeaders, m.API, m.BaseURL))
 		}
 	}
 	b.WriteString("\t}\n}\n")

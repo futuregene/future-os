@@ -207,7 +207,11 @@ func (m *AppModel) cycleModelForward() {
 	}
 	m.modelIndex = (m.modelIndex + 1) % len(models)
 	newModel := models[m.modelIndex]
-	m.agent.Loop().Model = newModel
+	// Also re-resolve provider (base URL, API key) for the new model
+	if err := m.agent.Engine().SwitchModel(newModel); err != nil {
+		m.chat.AppendSystem("Failed to switch model: " + err.Error())
+		return
+	}
 	modelName, provider := parseModelString(newModel)
 	m.footer.SetSession(m.session.CWD, getGitBranch(m.session.CWD), m.session.GetSessionName(), modelName, m.thinkingLevel, provider)
 	m.footer.SetHasReasoning(supportsThinking(modelName))
@@ -241,7 +245,11 @@ func (m *AppModel) cycleModelBackward() {
 		m.modelIndex = len(models) - 1
 	}
 	newModel := models[m.modelIndex]
-	m.agent.Loop().Model = newModel
+	// Also re-resolve provider (base URL, API key) for the new model
+	if err := m.agent.Engine().SwitchModel(newModel); err != nil {
+		m.chat.AppendSystem("Failed to switch model: " + err.Error())
+		return
+	}
 	modelName, provider := parseModelString(newModel)
 	m.footer.SetSession(m.session.CWD, getGitBranch(m.session.CWD), m.session.GetSessionName(), modelName, m.thinkingLevel, provider)
 	m.footer.SetHasReasoning(supportsThinking(modelName))
@@ -288,7 +296,11 @@ func (m *AppModel) getCyclableModels() []string {
 // switchToModel switches the agent to the specified model (from model selector).
 func (m *AppModel) switchToModel(model string) {
 	defer m.setTerminalTitle()
-	m.agent.Loop().Model = model
+	// Also re-resolve provider (base URL, API key) for the new model
+	if err := m.agent.Engine().SwitchModel(model); err != nil {
+		m.chat.AppendSystem("Failed to switch model: " + err.Error())
+		return
+	}
 	// Update model index
 	for i, m2 := range m.availableModels {
 		if m2 == model {

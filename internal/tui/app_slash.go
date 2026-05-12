@@ -339,7 +339,9 @@ func (m *AppModel) handleSlashCmd(text string) (string, bool) {
 	}
 	result, err := commands.Handle(text, ctx)
 	if err != nil {
-		return "", false
+		// Show user-facing errors as system messages instead of falling through to AI agent.
+		// This prevents slash commands like /compact (when no messages) from being sent to the LLM.
+		return err.Error(), true
 	}
 
 	// Handle sentinel return values from commands

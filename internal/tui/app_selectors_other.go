@@ -44,19 +44,17 @@ func (m *AppModel) cycleThinking() {
 
 	m.thinkingLevel = next
 
+	// Propagate to LLM client via engine
+	if eng := m.agent.Engine(); eng != nil {
+		eng.SetThinkingLevel(next)
+	}
+
 	// Update footer display
 	_, provider := parseModelString(m.agent.Loop().Model)
 	m.footer.SetSession(m.session.CWD, getGitBranch(m.session.CWD), m.session.GetSessionName(), modelName, next, provider)
 	m.footer.SetHasReasoning(supportsThinking(modelName))
 	m.footer.SetEntryCount(len(m.session.Entries))
 	m.input.SetBorderColor(m.theme.ThinkingBorderColor(next))
-
-	// Also update the agent's thinking budget
-	if m.agent.Loop().Provider != nil {
-		// The thinking level is passed to the LLM client via the engine
-		// For now, we just show it in the footer - the actual model thinking
-		// is controlled by the LLM client's ThinkingBudget field
-	}
 
 	m.chat.AppendSystem("Thinking level: " + next)
 }
@@ -167,6 +165,10 @@ func (m *AppModel) showThinkingSelector() {
 		if value != "" && value != m.thinkingLevel {
 			m.thinkingLevel = value
 			m.saveSettings()
+			// Propagate to LLM client via engine
+			if eng := m.agent.Engine(); eng != nil {
+				eng.SetThinkingLevel(value)
+			}
 			// Update footer
 			_, provider := parseModelString(m.agent.Loop().Model)
 			modelName := m.agent.Loop().Model

@@ -47,6 +47,7 @@ func resolvedToTypesModel(rm models.ResolvedModel) types.Model {
 		Provider:      rm.Provider,
 		API:           rm.API,
 		BaseURL:       rm.BaseURL,
+		APIKey:        rm.APIKey,
 		ContextWindow: rm.ContextWindow,
 		MaxTokens:     rm.MaxTokens,
 		Reasoning:     rm.Reasoning,

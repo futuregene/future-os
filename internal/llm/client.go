@@ -22,12 +22,20 @@ type Client struct {
 	ReasoningEffort    string
 	ToolChoice         interface{}
 	EnableCacheControl bool
-	ThinkingBudget     int // 0 = off/disabled, >0 = token budget
+	ThinkingBudget     int // 0 = off/disabled, >0 = token budget (legacy fallback)
 	StreamOpts         *StreamOptions
 	OnPayload          func(payload []byte)
 	OnResponse         func(statusCode int, headers map[string][]string)
 	IsCloudflare       bool
 	IsCopilot          bool
+
+	// Thinking context — populated from ModelInfo by engine.
+	// When set, these drive API parameter formatting per pi's compat model.
+	ThinkingLevel                        string
+	ThinkingLevelMap                     map[string]interface{}
+	CompatThinkingFormat                 string // "openai" | "openrouter" | "deepseek" | "zai" | "qwen" | "qwen-chat-template"
+	CompatSupportsReasoningEffort        bool
+	CompatRequiresReasoningOnAssistant   bool
 
 	// ActiveCtx, if set, is used as the context for streaming HTTP requests.
 	// When cancelled, the HTTP request is aborted. Set by agent loop for interrupt support.
@@ -64,7 +72,8 @@ func (c *Client) StreamChat(model string, messages []types.Message, tools []type
 		sysMsg := types.Message{Role: "system", Content: sysContent}
 		messages = append([]types.Message{sysMsg}, messages...)
 	}
-	msgs := convertToOpenAIMessages(messages)
+	// Pass requiresReasoningOnAssistant flag for DeepSeek-style compat
+	msgs := convertToOpenAIMessages(messages, c.CompatRequiresReasoningOnAssistant && c.ThinkingLevel != "off")
 
 	params := openai.ChatCompletionNewParams{
 		Model:    shared.ChatModel(model),
@@ -72,17 +81,76 @@ func (c *Client) StreamChat(model string, messages []types.Message, tools []type
 		Tools:    convertToOpenAITools(tools),
 	}
 
-	// Thinking / reasoning control (DeepSeek, o-series models, etc.)
-	if c.ThinkingBudget > 0 {
-		// Enable thinking with budget (some providers use "thinking", others "reasoning_effort")
+	// Thinking / reasoning control — aligned with pi's openai-completions.ts
+	// Uses compat.thinkingFormat (from model metadata) to decide parameter format.
+	// Falls back to legacy budget_tokens approach when no compat is set.
+	if c.ThinkingLevel != "" && c.CompatThinkingFormat != "" {
+		reasoningEnabled := c.ThinkingLevel != "off"
+		levelValue := c.ThinkingLevel
+		// Apply thinkingLevelMap mapping: e.g. deepseek "high" → "high", "xhigh" → "max"
+		if mapped, ok := c.ThinkingLevelMap[c.ThinkingLevel]; ok && mapped != nil {
+			levelValue = fmt.Sprint(mapped)
+		}
+
+		switch c.CompatThinkingFormat {
+		case "zai":
+			params.SetExtraFields(map[string]any{"enable_thinking": reasoningEnabled})
+		case "qwen":
+			params.SetExtraFields(map[string]any{"enable_thinking": reasoningEnabled})
+		case "qwen-chat-template":
+			params.SetExtraFields(map[string]any{
+				"chat_template_kwargs": map[string]any{
+					"enable_thinking":  reasoningEnabled,
+					"preserve_thinking": true,
+				},
+			})
+		case "deepseek":
+			thinkingType := "disabled"
+			if reasoningEnabled {
+				thinkingType = "enabled"
+			}
+			extra := map[string]any{
+				"thinking": map[string]any{"type": thinkingType},
+			}
+			if reasoningEnabled {
+				extra["reasoning_effort"] = levelValue
+			}
+			params.SetExtraFields(extra)
+		case "openrouter":
+			if reasoningEnabled {
+				params.SetExtraFields(map[string]any{
+					"reasoning": map[string]any{"effort": levelValue},
+				})
+			} else {
+				offVal := c.thinkingLevelMapOffValue()
+				if offVal != "" {
+					params.SetExtraFields(map[string]any{
+						"reasoning": map[string]any{"effort": offVal},
+					})
+				}
+			}
+		default: // "openai" or unknown
+			if reasoningEnabled {
+				if c.CompatSupportsReasoningEffort {
+					params.SetExtraFields(map[string]any{"reasoning_effort": levelValue})
+				}
+			} else if c.CompatSupportsReasoningEffort {
+				offVal := c.thinkingLevelMapOffValue()
+				if offVal != "" {
+					params.SetExtraFields(map[string]any{"reasoning_effort": offVal})
+				}
+			}
+		}
+	} else if c.ThinkingBudget > 0 {
+		// Legacy fallback: enable thinking with budget for models without compat metadata
 		params.SetExtraFields(map[string]any{
 			"thinking": map[string]any{
 				"type":          "enabled",
 				"budget_tokens": c.ThinkingBudget,
 			},
 		})
-	} else if c.ThinkingBudget == 0 && c.ReasoningEffort == "" {
-		// Explicitly disable thinking. Some APIs (DeepSeek) check for "enabled" vs missing key.
+	} else if c.ThinkingBudget == 0 && c.ReasoningEffort == "" && c.ThinkingLevel == "" {
+		// Legacy fallback: explicitly disable thinking
 		params.SetExtraFields(map[string]any{
 			"thinking": map[string]any{
 				"type": "disabled",
@@ -294,7 +362,7 @@ func (c *Client) streamFromSDK(stream *ssestream.Stream[openai.ChatCompletionChu
 	events <- types.StreamEvent{Type: "stop"}
 }
 
-func convertToOpenAIMessages(messages []types.Message) []openai.ChatCompletionMessageParamUnion {
+func convertToOpenAIMessages(messages []types.Message, needsEmptyReasoningOnAssistant bool) []openai.ChatCompletionMessageParamUnion {
 	result := make([]openai.ChatCompletionMessageParamUnion, 0, len(messages))
 	for _, msg := range messages {
 		content := extractMsgText(msg.Content)
@@ -323,10 +391,22 @@ func convertToOpenAIMessages(messages []types.Message) []openai.ChatCompletionMe
 				// Inject reasoning_content for providers that require it echoed back
 				if msg.ReasoningContent != "" {
 					ap.SetExtraFields(map[string]any{"reasoning_content": msg.ReasoningContent})
+				} else if needsEmptyReasoningOnAssistant {
+					ap.SetExtraFields(map[string]any{"reasoning_content": ""})
 				}
 				result = append(result, openai.ChatCompletionMessageParamUnion{OfAssistant: &ap})
 			} else {
-				result = append(result, openai.AssistantMessage(content))
+				amsg := openai.AssistantMessage(content)
+				// For DeepSeek compat: inject empty reasoning_content on replayed messages
+				if needsEmptyReasoningOnAssistant {
+					result = append(result, amsg)
+					last := result[len(result)-1]
+					if last.OfAssistant != nil {
+						last.OfAssistant.SetExtraFields(map[string]any{"reasoning_content": ""})
+					}
+				} else {
+					result = append(result, amsg)
+				}
 			}
 			// Inject reasoning_content into the last assistant message if present
 			if msg.ReasoningContent != "" && len(result) > 0 {
@@ -374,6 +454,23 @@ func extractMsgText(content json.RawMessage) string {
 		return s
 	}
 	return string(content)
+}
+
+// thinkingLevelMapOffValue returns the off-level mapping value from ThinkingLevelMap.
+// Returns empty string if not found or not a string (null values are skipped).
+func (c *Client) thinkingLevelMapOffValue() string {
+	if c.ThinkingLevelMap == nil {
+		return ""
+	}
+	val, ok := c.ThinkingLevelMap["off"]
+	if !ok || val == nil {
+		return ""
+	}
+	s, ok := val.(string)
+	if !ok {
+		return ""
+	}
+	return s
 }
 
 var _ = context.Background

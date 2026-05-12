@@ -163,6 +163,7 @@ type ResolvedModel struct {
 	Provider         string           `json:"provider"`
 	API              string           `json:"api"`
 	BaseURL          string           `json:"baseUrl"`
+	APIKey           string           `json:"apiKey,omitempty"`
 	Reasoning        bool             `json:"reasoning"`
 	ThinkingLevelMap *ThinkingLevelMap `json:"thinkingLevelMap,omitempty"`
 	Input            []string         `json:"input"` // ["text"] or ["text", "image"]
@@ -320,6 +321,10 @@ func resolveModels(cfg *ModelsConfig) []ResolvedModel {
 			if baseURL == "" {
 				continue
 			}
+			apiKey := ""
+			if provider.APIKey != nil {
+				apiKey = *provider.APIKey
+			}
 
 			// Apply model override if present
 			override := provider.ModelOverrides[modelDef.ID]
@@ -381,6 +386,7 @@ func resolveModels(cfg *ModelsConfig) []ResolvedModel {
 				Provider:         providerName,
 				API:              api,
 				BaseURL:          baseURL,
+				APIKey:           apiKey,
 				Reasoning:        reasoning,
 				ThinkingLevelMap: orThinkingLevelMap(modelDef.ThinkingLevelMap, override.ThinkingLevelMap),
 				Input:            input,

@@ -344,6 +344,7 @@ type Model struct {
 	Provider string `json:"provider"`
 	API      string `json:"api"`
 	BaseURL  string `json:"baseUrl"`
+	APIKey   string `json:"-"` // not serialized, populated from provider config at runtime
 	ContextWindow int  `json:"contextWindow"`
 	MaxTokens     int  `json:"maxTokens"`
 	Reasoning     bool `json:"reasoning"`

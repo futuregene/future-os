@@ -74,6 +74,13 @@ type LazyProvider struct {
 	mu             sync.Mutex
 	provider       types.LLMProvider // constructed on first use
 	thinkingBudget int               // budget to apply to llm.Client on construction
+
+	// Thinking context — populated from ModelInfo, applied when materialized.
+	thinkingLevel                        string
+	thinkingLevelMap                     map[string]interface{}
+	compatThinkingFormat                 string
+	compatSupportsReasoningEffort        bool
+	compatRequiresReasoningOnAssistant   bool
 }
 
 // NewLazyProvider creates a LazyProvider that defers calling factory until
@@ -101,16 +108,46 @@ func (lp *LazyProvider) SetThinkingBudget(budget int) {
 	}
 }
 
+// SetThinkingContext applies the thinking context (level, levelMap, compat)
+// to the lazy provider. If already materialized, applies immediately.
+func (lp *LazyProvider) SetThinkingContext(level string, levelMap map[string]interface{}, format string, sre bool, rra bool) {
+	lp.mu.Lock()
+	defer lp.mu.Unlock()
+	lp.thinkingLevel = level
+	lp.thinkingLevelMap = levelMap
+	lp.compatThinkingFormat = format
+	lp.compatSupportsReasoningEffort = sre
+	lp.compatRequiresReasoningOnAssistant = rra
+
+	if lp.provider != nil {
+		if cl, ok := lp.provider.(*llm.Client); ok {
+			cl.ThinkingLevel = level
+			cl.ThinkingLevelMap = levelMap
+			cl.CompatThinkingFormat = format
+			cl.CompatSupportsReasoningEffort = sre
+			cl.CompatRequiresReasoningOnAssistant = rra
+		}
+	}
+}
+
 // StreamChat materializes the underlying provider on first call and delegates.
 func (lp *LazyProvider) StreamChat(model string, messages []types.Message, tools []types.ToolDef, systemPrompt string) (<-chan types.StreamEvent, error) {
 	lp.mu.Lock()
 	if lp.provider == nil {
 		lp.provider = lp.factory(lp.baseURL, lp.apiKey, lp.opts)
 		// Apply deferred thinking budget
-		if lp.thinkingBudget > 0 {
+		if lp.thinkingBudget > 0 && lp.provider != nil {
 			if cl, ok := lp.provider.(*llm.Client); ok {
 				cl.ThinkingBudget = lp.thinkingBudget
 			}
+		}
+		// Apply deferred thinking context
+		if cl, ok := lp.provider.(*llm.Client); ok {
+			cl.ThinkingLevel = lp.thinkingLevel
+			cl.ThinkingLevelMap = lp.thinkingLevelMap
+			cl.CompatThinkingFormat = lp.compatThinkingFormat
+			cl.CompatSupportsReasoningEffort = lp.compatSupportsReasoningEffort
+			cl.CompatRequiresReasoningOnAssistant = lp.compatRequiresReasoningOnAssistant
 		}
 	}
 	prov := lp.provider

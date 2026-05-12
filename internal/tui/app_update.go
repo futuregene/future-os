@@ -377,14 +377,14 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 					m.input.SetValue(selected)
 				}
 				return m, nil
-			case "enter":
-				selected := m.autocomplete.Selected()
-				if selected != "" {
+			case "enter", "ctrl+m":
+				// Tab also accepts: set editor to selected and let Enter pass through
+				if selected := m.autocomplete.Selected(); selected != "" {
 					m.input.SetValue(selected)
-					m.autocomplete.Hide()
-					m.input.ExitSlashMode()
 				}
-				return m, nil
+				m.autocomplete.Hide()
+				m.input.ExitSlashMode()
+				// Fall through to let editor handle Enter normally
 			}
 		}
 

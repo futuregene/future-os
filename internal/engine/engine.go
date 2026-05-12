@@ -151,6 +151,7 @@ type Engine struct {
 	Provider       types.LLMProvider
 	Model          string
 	ModelInfo      types.Model        // full model metadata from registry
+	APIKey         string             // LLM API key (used when switching models)
 	Config         AgentConfig
 	Tools          []types.AgentTool
 	Session        *session.Session
@@ -261,13 +262,15 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 	}
 	provider := factory(modelInfo.BaseURL, opts.APIKey, nil)
 
-	// Resolve thinking budget for OpenAI-compatible clients
+	// Resolve thinking budget and context for the provider
 	thinkingBudget := thinkingLevelToBudget(opts.ThinkingLevel)
 	if cl, ok := provider.(*llm.Client); ok {
 		cl.ThinkingBudget = thinkingBudget
 	} else if s, ok := provider.(apiregistry.ThinkingBudgetSetter); ok {
 		s.SetThinkingBudget(thinkingBudget)
 	}
+	// Propagate model-specific thinking metadata (compat, thinkingLevelMap)
+	applyThinkingContext(provider, modelInfo, opts.ThinkingLevel)
 
 	// 3. Create LLM provider via API registry
 	cfg := AgentConfig{
@@ -307,7 +310,7 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 	// 7. Build the agent loop
 	loop := &agent.Loop{
 		Provider:      provider,
-		Model:         opts.Model,
+		Model:         modelInfo.ID, // bare ID for API calls, not "provider/model"
 		SystemPrompt:  cfg.SystemPrompt,
 		Tools:         toolList,
 		Config: types.AgentConfig{
@@ -380,6 +383,7 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 		Provider:        provider,
 		Model:           opts.Model,
 		ModelInfo:       modelInfo,
+		APIKey:          opts.APIKey,
 		Config:          cfg,
 		Tools:           toolList,
 		Session:         sess,
@@ -398,6 +402,78 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 // Getwd returns the engine's working directory.
 func (e *Engine) Getwd() string {
 	return e.Config.CWD
+}
+
+// SwitchModel re-resolves a model from the registry, recreates the LLM provider,
+// and updates the agent loop. Must be called after Model changes on the loop to
+// ensure the BaseURL, API key, and provider client are correct for the new model.
+func (e *Engine) SwitchModel(modelID string) error {
+	// Resolve model from registry
+	modelInfo, resolved := e.ModelRegistry.Resolve(modelID)
+	if !resolved {
+		return fmt.Errorf("model %q not found in registry", modelID)
+	}
+
+	// Apply provider overrides
+	if ov, ok := e.ModelRegistry.GetProviderOverride(modelInfo.Provider); ok && ov.BaseURL != "" {
+		modelInfo.BaseURL = ov.BaseURL
+	}
+
+	// Create new LLM provider for the new model
+	api := apiregistry.API(modelInfo.API)
+	factory, err := apiregistry.Get(api)
+	if err != nil {
+		return fmt.Errorf("resolve provider for API %q (model %s): %w", api, modelID, err)
+	}
+	// Use the model's own API key if available, otherwise fall back to the engine default
+	apiKey := modelInfo.APIKey
+	if apiKey == "" {
+		apiKey = e.APIKey
+	}
+	provider := factory(modelInfo.BaseURL, apiKey, nil)
+
+	// Apply thinking budget and context to new provider
+	thinkingBudget := e.Loop.Config.ThinkingBudget
+	if cl, ok := provider.(*llm.Client); ok {
+		cl.ThinkingBudget = thinkingBudget
+	} else if s, ok := provider.(apiregistry.ThinkingBudgetSetter); ok {
+		s.SetThinkingBudget(thinkingBudget)
+	}
+	applyThinkingContext(provider, modelInfo, e.Config.ThinkingLevel)
+
+	// Update engine and loop.
+	// e.Model stores the full qualified name (provider/model) for display/UI.
+	// e.Loop.Model stores just the bare model ID for API calls.
+	e.Provider = provider
+	e.Model = modelID
+	e.ModelInfo = modelInfo
+	e.Loop.Provider = provider
+	e.Loop.Model = modelInfo.ID // bare ID, not "provider/model"
+	e.Session.Model = modelID
+	e.Session.BaseURL = modelInfo.BaseURL
+
+	return nil
+}
+
+// SetThinkingLevel updates the thinking level and propagates it to the LLM client.
+// level must be one of: "off", "minimal", "low", "medium", "high", "xhigh", "max".
+// Clamps the level to what the current model actually supports via ThinkingLevelMap.
+func (e *Engine) SetThinkingLevel(level string) {
+	// Clamp using model's ThinkingLevelMap (mirrors pi's clampThinkingLevel)
+	clamped, _ := fixThinkingLevel(e.ModelInfo, level)
+
+	e.Config.ThinkingLevel = clamped
+	budget := thinkingLevelToBudget(clamped)
+	e.Loop.Config.ThinkingBudget = budget
+	if cl, ok := e.Provider.(*llm.Client); ok {
+		cl.ThinkingBudget = budget
+		cl.ThinkingLevel = clamped
+		cl.ThinkingLevelMap = e.ModelInfo.ThinkingLevelMap
+	} else if s, ok := e.Provider.(apiregistry.ThinkingBudgetSetter); ok {
+		s.SetThinkingBudget(budget)
+	}
+	// Propagate updated thinking context to provider (works for both Client and LazyProvider)
+	applyThinkingContext(e.Provider, e.ModelInfo, clamped)
 }
 
 // Chdir changes the engine's working directory. Validates the directory exists

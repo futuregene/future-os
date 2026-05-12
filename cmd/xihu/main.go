@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -333,23 +334,35 @@ func main() {
 	}
 
 	// ── Build user prompt (messages + @files) ──────────────────────────────
+	// pi-mono alignment: resolve to absolute paths, pass images as base64 attachments.
 	var promptParts []string
+	var imageAttachments []types.ImageContent
 	for _, f := range args.FileArgs {
-		if mime := utils.DetectImageMimeTypeFromExtension(f); mime != "" {
-			if confirmed, _ := utils.DetectImageMimeType(f); confirmed != "" || mime == "image/svg+xml" {
-				data, err := os.ReadFile(f)
+		absPath, err := filepath.Abs(f)
+		if err != nil {
+			absPath = f
+		}
+		if mime := utils.DetectImageMimeTypeFromExtension(absPath); mime != "" {
+			if confirmed, _ := utils.DetectImageMimeType(absPath); confirmed != "" || mime == "image/svg+xml" {
+				data, err := os.ReadFile(absPath)
 				if err == nil {
-					imageTag := fmt.Sprintf("<file name=\"%s\" type=\"%s\">[Image: %s]</file>",
-						f, mime, filepath.Base(f))
-					promptParts = append(promptParts, imageTag)
-					_ = data
+					base64Data := base64.StdEncoding.EncodeToString(data)
+					imageAttachments = append(imageAttachments, types.ImageContent{
+						Type:     "image",
+						MimeType: mime,
+						Data:     base64Data,
+					})
+					// pi-mono format: empty body, just the file reference
+					promptParts = append(promptParts,
+						fmt.Sprintf("<file name=\"%s\"></file>", absPath))
 					continue
 				}
 			}
 		}
-		data, err := os.ReadFile(f)
+		data, err := os.ReadFile(absPath)
 		if err == nil {
-			promptParts = append(promptParts, fmt.Sprintf("<file name=\"%s\">\n%s\n</file>", f, string(data)))
+			promptParts = append(promptParts,
+				fmt.Sprintf("<file name=\"%s\">\n%s\n</file>", absPath, string(data)))
 		}
 	}
 	promptParts = append(promptParts, args.Messages...)
@@ -448,7 +461,7 @@ func main() {
 	if len(sess.Entries) > 0 {
 		allMessages = session.BuildContext(sess.Entries)
 	}
-	allMessages = append(allMessages, newUserMsg(userPrompt))
+	allMessages = append(allMessages, newUserMsg(userPrompt, imageAttachments...))
 
 	result, finalMessages, err := eng.Loop.RunStreamingWithMessages(ctx, types.ConvertFromLLM(allMessages), func(text string) {
 		fmt.Print(text)
@@ -465,9 +478,27 @@ func main() {
 	}
 }
 
-func newUserMsg(content string) types.Message {
+func newUserMsg(content string, images ...types.ImageContent) types.Message {
+	if len(images) == 0 {
+		tc := types.TextContent{Type: "text", Text: content}
+		b, _ := json.Marshal([]types.TextContent{tc})
+		return types.Message{Role: "user", Content: b}
+	}
+	// Multimodal: text + image content blocks
+	blocks := make([]json.RawMessage, 0, 1+len(images))
 	tc := types.TextContent{Type: "text", Text: content}
-	b, _ := json.Marshal([]types.TextContent{tc})
+	tb, _ := json.Marshal(tc)
+	blocks = append(blocks, tb)
+	for _, img := range images {
+		ib, _ := json.Marshal(types.ImageContent{
+			Type:     img.Type,
+			MimeType: img.MimeType,
+			Data:     img.Data,
+			Source:   img.Source,
+		})
+		blocks = append(blocks, ib)
+	}
+	b, _ := json.Marshal(blocks)
 	return types.Message{Role: "user", Content: b}
 }
 
