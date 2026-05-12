@@ -10,7 +10,6 @@ import (
 // FooterStyle returns the lipgloss style for the footer.
 func (t *Theme) FooterStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
-		Background(lipgloss.Color(t.FooterBackground)).
 		Foreground(lipgloss.Color(t.FooterForeground)).
 		Padding(0, 1).
 		Width(120)

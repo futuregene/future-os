@@ -78,25 +78,21 @@ func isWideRune(r rune) bool {
 
 // needsBlankLine returns true if a blank line should separate two consecutive entries (TS pi-mono: Spacer(1)).
 func needsBlankLine(current, next ChatEntry) bool {
-	// Blank line between distinct message blocks: user→assistant, assistant→next message,
-	// tool results→next, bash→next, compaction→next, etc.
-	// Blank line between: user_msg→anything, anything→next distinct block
 	if current.Type == "user_message" {
-		return true
+		// user_message adds its own trailing blank line with background
+		return false
 	}
 	if current.Type == "text" || current.Type == "thinking" {
-		return next.Type != "thinking" // no blank between consecutive thinking blocks
+		return false
 	}
 	if current.Type == "tool_result" || current.Type == "tool_call" {
 		return next.Type != "tool_result" && next.Type != "tool_call"
 	}
 	if current.Type == "bash" {
-		return false // TS pi-mono: bash component's trailing \n already provides inter-entry spacing
+		return false
 	}
 	if current.Type == "custom_message" || current.Type == "system" ||
 		current.Type == "error" || current.Type == "warning" {
-		// Don't add blank lines between consecutive system/warning/error entries
-		// (TS pi-mono: compact resource sections)
 		if (current.Type == "system" && next.Type == "system") ||
 			(current.Type == "warning" && next.Type == "warning") ||
 			(current.Type == "error" && next.Type == "error") {

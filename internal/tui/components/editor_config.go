@@ -36,6 +36,15 @@ func NewEditor(style lipgloss.Style) Editor {
 	ta.CharLimit = 0 // unlimited
 	ta.SetHeight(1)
 
+	// Remove background from textarea for clean inline prompt (pi-style)
+	ta.FocusedStyle.Base = lipgloss.NewStyle()
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("#585b70"))
+	ta.FocusedStyle.Text = lipgloss.NewStyle()
+	ta.FocusedStyle.Prompt = lipgloss.NewStyle()
+	ta.FocusedStyle.EndOfBuffer = lipgloss.NewStyle()
+	ta.BlurredStyle = ta.FocusedStyle
+
 	// Remove "enter" from the textarea's newline insertion keymap.
 	// We handle Enter ourselves for submit; Ctrl+J and Shift+Enter insert newlines.
 	km := ta.KeyMap

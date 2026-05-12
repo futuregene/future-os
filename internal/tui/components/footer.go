@@ -77,7 +77,6 @@ type Footer struct {
 func NewFooter(baseStyle lipgloss.Style, ctxGreen, ctxYellow, ctxRed string) Footer {
 	if baseStyle.GetWidth() == 0 {
 		baseStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("#21252b")).
 			Foreground(lipgloss.Color("#abb2bf"))
 	}
 
@@ -104,10 +103,11 @@ func NewFooter(baseStyle lipgloss.Style, ctxGreen, ctxYellow, ctxRed string) Foo
 
 // SetStyle updates the footer's base style and context bar colors (for live theme reload).
 func (f *Footer) SetStyle(baseStyle lipgloss.Style, ctxGreen, ctxYellow, ctxRed string) {
+	f.baseStyle = baseStyle.Copy().UnsetBackground()
 	if baseStyle.GetWidth() == 0 {
 		f.baseStyle = f.baseStyle.Copy().UnsetWidth()
 	} else {
-		f.baseStyle = baseStyle
+		f.baseStyle = baseStyle.Copy().UnsetBackground()
 	}
 	f.dimStyle = f.baseStyle.Copy().Faint(true)
 	f.ctxGreen = lipgloss.NewStyle().Foreground(lipgloss.Color(ctxGreen))

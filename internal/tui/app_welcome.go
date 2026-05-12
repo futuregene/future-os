@@ -32,7 +32,7 @@ func (m *AppModel) showWelcome(msg WelcomeMsg) {
 		Foreground(lipgloss.Color(msg.ThemeAccent)).
 		Bold(true)
 	dimStyle := lipgloss.NewStyle().
-		Faint(true)
+		Foreground(lipgloss.Color(m.theme.Dim))
 
 	// ── Logo + instructions (TS pi-mono: builtInHeader ExpandableText) ──────
 	// Logo: "xihu vX.X.X" — bold accent + dim (TS: theme.bold(theme.fg("accent", APP_NAME)) + theme.fg("dim", ` v${version}`))
@@ -118,7 +118,7 @@ func (m *AppModel) rebuildWelcome() {
 //
 //	escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
 func (m *AppModel) renderCompactInstructions() {
-	dimStyle := lipgloss.NewStyle().Faint(true)
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Dim))
 
 	interruptKey := formatKeyStr(m.keybindings, GlobalInterrupt)
 	if interruptKey == "" {
@@ -154,7 +154,7 @@ func (m *AppModel) renderCompactInstructions() {
 // renderExpandedInstructions renders the full keybinding list.
 // TS pi-mono expandedInstructions: 16 keybinding lines.
 func (m *AppModel) renderExpandedInstructions() {
-	dimStyle := lipgloss.NewStyle().Faint(true)
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Dim))
 
 	hint := func(binding KeybindingID, description string) string {
 		key := formatKeyStr(m.keybindings, binding)
@@ -249,7 +249,7 @@ func (m *AppModel) showLoadedResources() {
 	}
 	msg := *m.lastWelcomeMsg
 
-	dimStyle := lipgloss.NewStyle().Faint(true)
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Dim))
 	sectionHeader := func(name string) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.MdHeading)).Render("[" + name + "]")
 	}
@@ -283,7 +283,8 @@ func (m *AppModel) showLoadedResources() {
 		for i, s := range msg.Skills {
 			skillNames[i] = s.Name
 		}
-		if firstSection { m.chat.AppendSystem(""); firstSection = false }
+		// Always blank line before Skills (pi-style spacing)
+		m.chat.AppendSystem("")
 		m.chat.AppendSystem(sectionHeader("Skills"))
 		m.chat.AppendSystem(compactList(skillNames))
 	}

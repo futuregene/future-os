@@ -5,7 +5,8 @@ import (
 )
 
 // ThinkingMessageComponent renders "thinking" type chat entries.
-// Extracted from ChatViewport.View() matching TS pi-mono's ThinkingBlock pattern.
+// Pi-style: simple italicized dim text without emoji/border, matching the
+// inline thinking appearance in pi's TUI.
 type ThinkingMessageComponent struct {
 	base *MessageComponentBase
 }
@@ -15,10 +16,10 @@ func NewThinkingMessageComponent(base *MessageComponentBase) *ThinkingMessageCom
 	return &ThinkingMessageComponent{base: base}
 }
 
-// Render renders a thinking block entry.
+// Render renders a thinking block as dim italic text (pi-style).
 // If HideAllThinking is enabled, shows a dim label.
-// If expanded, renders via glamour markdown (or wordWrap fallback).
-// Otherwise, shows a dim label with the hidden thinking label text.
+// Otherwise renders as dim italicized inline text, skipping glamour markdown
+// to preserve the italic styling.
 func (c *ThinkingMessageComponent) Render(entry ChatEntry, width int) string {
 	hideThinking := c.base.HideAllThinking != nil && *c.base.HideAllThinking
 	label := "Thinking..."
@@ -31,12 +32,19 @@ func (c *ThinkingMessageComponent) Render(entry ChatEntry, width int) string {
 	}
 
 	if entry.Expanded {
-		rendered, err := c.base.MdRenderer.Render(entry.Content)
-		if err != nil {
-			return c.base.ThinkingStyle.Render("💭 " + wordWrap(entry.Content, width-10))
+		// Pi-style: simple dim italic text, skip glamour to preserve italic
+		// Leading blank line to separate from previous entry
+		// Indented with one space to align with user message
+		content := wordWrap(entry.Content, width-5)
+		lines := strings.Split(content, "\n")
+		var sb strings.Builder
+		for i, line := range lines {
+			if i > 0 {
+				sb.WriteByte('\n')
+			}
+			sb.WriteString(" " + line)
 		}
-		rendered = strings.TrimSuffix(rendered, "\n")
-		return c.base.ThinkingStyle.Render("💭 " + wrapURLsOSC8(rendered))
+		return "\n" + c.base.ThinkingStyle.Render(sb.String())
 	}
 
 	return c.base.ThinkingDim.Render("💭 " + label)

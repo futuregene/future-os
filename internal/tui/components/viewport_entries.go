@@ -25,17 +25,27 @@ func (c *ChatViewport) AppendText(text string) {
 }
 
 // AppendThinking adds a thinking chunk.
+// Searches backwards for an existing thinking entry within the current turn,
+// stopping at a user_message boundary. This consolidates interleaved
+// thinking/text chunks while keeping separate turns distinct.
 func (c *ChatViewport) AppendThinking(text string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if len(c.entries) > 0 && c.entries[len(c.entries)-1].Type == "thinking" {
-		c.entries[len(c.entries)-1].Content += text
-		if c.vp.AtBottom() {
-			c.autoScroll = true
+	// Search backwards for the last thinking entry, stop at turn boundary
+	for i := len(c.entries) - 1; i >= 0; i-- {
+		if c.entries[i].Type == "user_message" || c.entries[i].Type == "tool_result" {
+			break // New turn boundary, stop searching
 		}
-		return
+		if c.entries[i].Type == "thinking" {
+			c.entries[i].Content += text
+			if c.vp.AtBottom() {
+				c.autoScroll = true
+			}
+			return
+		}
 	}
+	// No existing thinking entry in this turn — create one
 	c.entries = append(c.entries, ChatEntry{
 		Type:     "thinking",
 		Content:  text,

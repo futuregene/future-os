@@ -40,13 +40,13 @@ func (m AppModel) View() string {
 	main := lipgloss.JoinVertical(
 		lipgloss.Top,
 		headerView,
-		footerView,
 		chatView,
 		pendingView,
 		statusView,
 		widgetAboveView,
 		inputView,
 		widgetBelowView,
+		footerView,
 	)
 
 	var result string
@@ -54,7 +54,7 @@ func (m AppModel) View() string {
 	// Show autocomplete popover above the input
 	if m.autocomplete.Active() {
 		acView := m.autocomplete.View()
-		result = lipgloss.JoinVertical(lipgloss.Top, headerView, footerView, chatView, pendingView, statusView, acView, inputView)
+		result = lipgloss.JoinVertical(lipgloss.Top, headerView, chatView, pendingView, statusView, acView, inputView, footerView)
 	} else if m.overlay.Active() {
 		// Show overlay (modal or non-capturing)
 		overlayView := m.overlay.View()
@@ -121,7 +121,7 @@ func (m *AppModel) editorEmpty() bool {
 	if m.customEditor != nil {
 		return m.customEditor.Empty()
 	}
-	return m.editorEmpty()
+	return m.input.Empty()
 }
 
 // footerHeight returns the current footer height in rows.
@@ -211,25 +211,32 @@ func (m *AppModel) statusLine() string {
 	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Muted))
 
 	if m.compacting {
-		return mutedStyle.Render("  Compacting context... (Esc to cancel)")
+		spinnerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Accent))
+		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+		frame := frames[m.spinnerFrame%len(frames)]
+		return spinnerStyle.Render("  "+frame+" ") + mutedStyle.Render("Compacting context... (Esc to cancel)")
 	}
 	if m.retryTicking {
-		msg := fmt.Sprintf("  Retrying (%d/%d) in %ds... (Esc to cancel)",
+		spinnerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Accent))
+		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+		frame := frames[m.spinnerFrame%len(frames)]
+		msg := fmt.Sprintf("Retrying (%d/%d) in %ds... (Esc to cancel)",
 			m.retryAttempt, m.retryMaxAttempts, m.retryDelaySec)
-		return mutedStyle.Render(msg)
+		return spinnerStyle.Render("  "+frame+" ") + mutedStyle.Render(msg)
 	}
 	if m.streaming && m.workingVisible {
 		msg := m.workingMessage
 		if msg == "" {
 			msg = "Working..."
 		}
-		// Use pi-mono spinner frame
+		// Pi-style: accent spinner + muted message
 		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 		if len(m.workingFrames) > 0 {
 			frames = m.workingFrames
 		}
 		frame := frames[m.spinnerFrame%len(frames)]
-		return mutedStyle.Render("  " + frame + " " + msg + " (Esc to interrupt)")
+		spinnerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Accent))
+		return spinnerStyle.Render("  "+frame+" ") + mutedStyle.Render(msg+" (Esc to interrupt)")
 	}
 	return ""
 }

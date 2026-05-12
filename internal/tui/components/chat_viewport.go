@@ -38,14 +38,14 @@ func NewChatViewport() ChatViewport {
 		assistantStyle: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#abb2bf")),
 		thinkingStyle: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#c678dd")).
+			Foreground(lipgloss.Color("#7f849c")).
 			Italic(true),
 		thinkingBorder: lipgloss.NewStyle().
 			Border(lipgloss.NormalBorder(), false, true).
 			BorderForeground(lipgloss.Color("#5c6370")).
 			PaddingLeft(1),
 		thinkingDim: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#5c6370")).
+			Foreground(lipgloss.Color("#6c7086")).
 			Italic(true),
 		toolStyle: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#e5c07b")),
@@ -65,8 +65,7 @@ func NewChatViewport() ChatViewport {
 		errorStyle: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#e06c75")),
 		systemStyle: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#5c6370")).
-			Italic(true),
+			Foreground(lipgloss.Color("#7f849c")),
 		warningStyle: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#e5c07b")),
 		bashBorder: lipgloss.NewStyle().
@@ -90,7 +89,7 @@ func NewChatViewport() ChatViewport {
 			Bold(true),
 		customDimStyle: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#6c7086")),
-		// User message styling (TS pi-mono: UserMessageComponent)
+		// User message styling — distinct background
 		userMessageBg: lipgloss.NewStyle().
 			Background(lipgloss.Color("#343541")),
 		// DynamicBorder styling (TS pi-mono: DynamicBorder)
@@ -167,7 +166,7 @@ func (c *ChatViewport) SetTheme(accent, muted, dim, warning, success, errColor, 
 	c.toolSuccess = lipgloss.NewStyle().Foreground(lipgloss.Color(success))
 	c.toolError = lipgloss.NewStyle().Foreground(lipgloss.Color(errColor))
 	c.errorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(errColor))
-	c.systemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(dim)).Italic(true)
+	c.systemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(dim))
 	c.warningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(warning))
 	c.bashBorder = lipgloss.NewStyle().Foreground(lipgloss.Color(warning))
 	c.bashHeader = lipgloss.NewStyle().Foreground(lipgloss.Color(warning)).Bold(true)

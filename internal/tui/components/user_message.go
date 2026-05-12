@@ -17,22 +17,35 @@ func NewUserMessageComponent(base *MessageComponentBase) *UserMessageComponent {
 	return &UserMessageComponent{base: base}
 }
 
-// Render renders a user message entry.
-// Wraps in OSC 133 zones (start/end/final).
-// Uses glamour markdown rendering with wordWrap fallback.
-// Applies UserMessageBg background via prefixedLineBg.
+// Render renders a user message entry with distinct background.
+// Skips glamour markdown rendering to avoid ANSI reset codes that
+// strip the background color from the text cells.
+// Adds a blank line above and below with the same background color.
 func (c *UserMessageComponent) Render(entry ChatEntry, width int) string {
 	var sb strings.Builder
 
 	sb.WriteString(osc133ZoneStart)
 
-	rendered, err := c.base.MdRenderer.Render(entry.Content)
-	if err != nil {
-		sb.WriteString(prefixedLineBg(" ", wordWrap(entry.Content, width-14), width, c.base.UserMessageBg))
-	} else {
-		rendered = strings.TrimSuffix(rendered, "\n")
-		sb.WriteString(prefixedLineBg(" ", wrapURLsOSC8(rendered), width, c.base.UserMessageBg))
+	// Leading blank line with same background
+	sb.WriteString(applyLineBg("", width-4, c.base.UserMessageBg))
+	sb.WriteByte('\n')
+
+	// Message content with background extended to full width
+	// Indented with one space to not flush against the left edge
+	wrapped := wordWrap(entry.Content, width-5)
+	lines := strings.Split(wrapped, "\n")
+	var indented strings.Builder
+	for i, line := range lines {
+		if i > 0 {
+			indented.WriteByte('\n')
+		}
+		indented.WriteString(" " + line)
 	}
+	sb.WriteString(applyLineBg(indented.String(), width-4, c.base.UserMessageBg))
+
+	// Trailing blank line with same background
+	sb.WriteByte('\n')
+	sb.WriteString(applyLineBg("", width-4, c.base.UserMessageBg))
 
 	sb.WriteString(osc133ZoneEnd)
 	sb.WriteString(osc133ZoneFinal)

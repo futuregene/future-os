@@ -94,7 +94,7 @@ func (e *Editor) Reset() {
 	e.area.Reset()
 	e.slashMode = false
 	e.bashMode = false
-	e.area.Placeholder = "Type a message... (Enter=submit, Shift+Enter=newline)"
+	e.area.Placeholder = "Message..."
 }
 
 // SetValue replaces the editor content.
@@ -329,5 +329,11 @@ func (e Editor) View() string {
 	if idx := strings.Index(view, "\n"); idx >= 0 {
 		view = view[:idx]
 	}
-	return e.style.Render(view)
+	// Pi-style: horizontal rule lines above and below editor, full width
+	w := e.area.Width()
+	if w <= 0 {
+		w = 80
+	}
+	rule := lipgloss.NewStyle().Foreground(lipgloss.Color("#585b70")).Render(strings.Repeat("─", w))
+	return rule + "\n" + view + "\n" + rule
 }
