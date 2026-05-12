@@ -6,9 +6,6 @@
 package modelregistry
 
 import (
-	"log"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -39,26 +36,18 @@ type Registry struct {
 // New creates a new Registry with the embedded catalog, augmented with
 // user-defined models from ~/.xihu/models.json (if present).
 func New() *Registry {
+	// Initialize catalog from built-in pi-compatible models
+	catalog := InitBuiltinModels()
+
 	r := &Registry{
-		catalog:   modelsCatalog,
+		catalog:   catalog,
 		overrides: make(map[string]ProviderOverride),
 	}
 
-	// Auto-load user models from ~/.xihu/models.json
-	home, err := os.UserHomeDir()
-	if err != nil {
-		log.Printf("[modelregistry] cannot determine home dir: %v", err)
-		return r
-	}
-	userModelsPath := filepath.Join(home, ".xihu", "models.json")
-	userModels, err := LoadUserModels(userModelsPath)
-	if err != nil {
-		log.Printf("[modelregistry] failed to load user models: %v", err)
-		return r
-	}
+	// Auto-load user models from ~/.xihu/models.json or ~/.pi/agent/models.json
+	userModels := LoadUserModelsAuto()
 	if len(userModels) > 0 {
 		r.catalog = append(r.catalog, userModels...)
-		log.Printf("[modelregistry] loaded %d user model(s) from %s", len(userModels), userModelsPath)
 	}
 
 	return r

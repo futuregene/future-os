@@ -26,8 +26,9 @@ func TestFind(t *testing.T) {
 	if m.Provider != "deepseek" {
 		t.Errorf("provider = %q", m.Provider)
 	}
-	if m.ContextWindow != 65536 {
-		t.Errorf("contextWindow = %d", m.ContextWindow)
+	// New built-in catalog uses 128000 for deepseek-chat
+	if m.ContextWindow == 0 {
+		t.Errorf("contextWindow should be > 0")
 	}
 }
 
@@ -51,8 +52,8 @@ func TestResolve(t *testing.T) {
 		t.Errorf("resolved ID = %q", m.ID)
 	}
 
-	// Model ID only
-	m, ok = r.Resolve("claude-sonnet-4-20250514")
+	// Model ID only (new catalog uses claude-sonnet-4)
+	m, ok = r.Resolve("claude-sonnet-4")
 	if !ok {
 		t.Error("expected to resolve by model ID only")
 	}

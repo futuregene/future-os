@@ -6,9 +6,9 @@ import (
 	"fmt"
 
 
-	"github.com/huichen/xihu/internal/models"
+	"github.com/huichen/xihu/internal/modelregistry"
 	"github.com/huichen/xihu/internal/tui/components"
-
+	"github.com/huichen/xihu/pkg/types"
 
 )
 
@@ -17,9 +17,9 @@ import (
 // StreamTextMsg is a chunk of streamed text from the LLM.
 
 func supportsThinking(modelID string) bool {
-	for _, info := range models.BuiltinModels() {
-		if info.ID == modelID {
-			return info.SupportsThinking
+	for _, m := range modelregistry.BuiltinModels() {
+		if m.ID == modelID {
+			return m.Reasoning
 		}
 	}
 	return false
@@ -33,8 +33,8 @@ func (m *AppModel) showModelSelector() {
 	}
 
 	// Build model info lookup from builtins
-	modelInfoMap := make(map[string]models.ModelInfo)
-	for _, info := range models.BuiltinModels() {
+	modelInfoMap := make(map[string]types.Model)
+	for _, info := range modelregistry.BuiltinModels() {
 		modelInfoMap[info.ID] = info
 	}
 
@@ -54,33 +54,38 @@ func (m *AppModel) showModelSelector() {
 				if info.MaxTokens > 0 {
 					desc += fmt.Sprintf("  %dK ctx", info.MaxTokens/1000)
 				}
-				if info.SupportsThinking {
+				caps := ""
+				if info.Reasoning {
 					caps += "T"
 				}
-				if info.SupportsTools {
-					caps += "🔧"
+				// tools check: all models support tools by default unless explicitly marked
+				caps += "🔧"
+				for _, t := range info.InputTypes {
+					if t == "image" {
+						caps += "👁"
+						break
+					}
 				}
-				if info.SupportsVision {
-					caps += "👁"
-				}
-				if info.Pricing.Prompt > 0 {
-					desc += fmt.Sprintf("  $%.1f/$%.1f", info.Pricing.Prompt*10, info.Pricing.Completion*10)
+				if info.Cost.Input > 0 {
+					desc += fmt.Sprintf("  $%.1f/$%.1f", info.Cost.Input*10, info.Cost.Output*10)
 				}
 			} else if info, ok := modelInfoMap[model]; ok {
 				if info.MaxTokens > 0 {
 					desc += fmt.Sprintf("  %dK ctx", info.MaxTokens/1000)
 				}
-				if info.SupportsThinking {
+				caps := ""
+				if info.Reasoning {
 					caps += "T"
 				}
-				if info.SupportsTools {
-					caps += "🔧"
+				caps += "🔧"
+				for _, t := range info.InputTypes {
+					if t == "image" {
+						caps += "👁"
+						break
+					}
 				}
-				if info.SupportsVision {
-					caps += "👁"
-				}
-				if info.Pricing.Prompt > 0 {
-					desc += fmt.Sprintf("  $%.1f/$%.1f", info.Pricing.Prompt*10, info.Pricing.Completion*10)
+				if info.Cost.Input > 0 {
+					desc += fmt.Sprintf("  $%.1f/$%.1f", info.Cost.Input*10, info.Cost.Output*10)
 				}
 			}
 			if caps != "" {

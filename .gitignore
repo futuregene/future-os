@@ -16,4 +16,4 @@ vendor/
 *.swp
 *.swo
 bin/
-xihu
+/xihu

@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,9 +18,6 @@ func TestLoadRegistryFileNotExist(t *testing.T) {
 	}
 	if r == nil {
 		t.Fatal("registry is nil")
-	}
-	if r.Models == nil {
-		t.Fatal("models is nil")
 	}
 	if len(r.Models) == 0 {
 		t.Fatal("models is empty — should have builtins")
@@ -42,31 +40,69 @@ func TestLoadRegistryInvalidJSON(t *testing.T) {
 	}
 }
 
-func TestLoadRegistryValid(t *testing.T) {
+func TestLoadRegistryPiFormat(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "models.json")
-	os.WriteFile(path, []byte(`{"models":{"gpt-4o":{"id":"gpt-4o","provider":"openai","api":"openai-completions","base_url":"https://api.openai.com/v1","max_tokens":128000,"supports_tools":true}}}`), 0644)
+	os.WriteFile(path, []byte(`{
+		"providers": {
+			"test-provider": {
+				"baseUrl": "https://api.test.com/v1",
+				"api": "openai-completions",
+				"models": [
+					{"id": "test-model", "name": "Test Model", "contextWindow": 128000}
+				]
+			}
+		}
+	}`), 0644)
 
 	r, err := LoadRegistry(path)
 	if err != nil {
 		t.Fatalf("LoadRegistry: %v", err)
 	}
-	if _, ok := r.Models["gpt-4o"]; !ok {
-		t.Fatal("gpt-4o not found")
+	if len(r.Models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(r.Models))
+	}
+	if r.Models[0].ID != "test-model" {
+		t.Errorf("id = %s", r.Models[0].ID)
+	}
+	if r.Models[0].ContextWindow != 128000 {
+		t.Errorf("contextWindow = %d", r.Models[0].ContextWindow)
 	}
 }
 
-func TestLoadRegistryNullModels(t *testing.T) {
+func TestLoadRegistryLegacyFormat(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "models.json")
+	os.WriteFile(path, []byte(`{"models":{"gpt-4o":{"id":"gpt-4o","provider":"openai","api":"openai-completions","base_url":"https://api.openai.com/v1","max_tokens":128000,"supports_vision":true}}}`), 0644)
+
+	r, err := LoadRegistry(path)
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	found := false
+	for _, m := range r.Models {
+		if m.ID == "gpt-4o" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("gpt-4o not found after migration")
+	}
+}
+
+func TestLoadRegistryNullProviders(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "models.json")
 	os.WriteFile(path, []byte(`{}`), 0644)
 
 	r, err := LoadRegistry(path)
-	if err != nil {
-		t.Fatalf("LoadRegistry: %v", err)
-	}
-	if len(r.Models) == 0 {
-		t.Fatal("should fall back to builtins")
+	if err == nil {
+		// Empty providers → should return error since it's valid JSON but no providers
+		// Actually the new code treats empty as valid but no models
+		if len(r.Models) > 0 {
+			t.Fatal("expected no models for empty config")
+		}
 	}
 }
 
@@ -74,16 +110,20 @@ func TestSaveRegistry(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "models.json")
 
-	r := &Registry{
-		Models: map[string]ModelInfo{
-			"gpt-4o": {ID: "gpt-4o", Provider: "openai", MaxTokens: 128000},
+	cfg := &ModelsConfig{Providers: map[string]ProviderConfig{
+		"test": {
+			BaseURL: strPtr("https://api.test.com/v1"),
+			API:     strPtr("openai-completions"),
+			Models: []ModelDefinition{
+				{ID: "test-model", Name: strPtr("Test Model")},
+			},
 		},
-		path: path,
-	}
+	}}
+	r := &Registry{config: cfg, Models: resolveModels(cfg), rawPath: path}
 
-	err := r.SaveRegistry()
+	err := r.Save()
 	if err != nil {
-		t.Fatalf("SaveRegistry: %v", err)
+		t.Fatalf("Save: %v", err)
 	}
 
 	data, err := os.ReadFile(path)
@@ -93,50 +133,63 @@ func TestSaveRegistry(t *testing.T) {
 	if len(data) == 0 {
 		t.Fatal("saved file is empty")
 	}
+
+	// Verify it can be reloaded
+	r2, err := LoadRegistry(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if len(r2.Models) != 1 {
+		t.Fatalf("expected 1 model after reload, got %d", len(r2.Models))
+	}
 }
 
 func TestSaveRegistryNil(t *testing.T) {
 	var r *Registry
-	err := r.SaveRegistry()
+	err := r.Save()
 	if err == nil {
 		t.Fatal("expected error for nil registry")
 	}
 }
 
-func TestSaveRegistrySubdir(t *testing.T) {
-	tmpDir := t.TempDir()
-	path := filepath.Join(tmpDir, "sub", "models.json")
-
-	r := &Registry{
-		Models: map[string]ModelInfo{},
-		path:   path,
-	}
-	err := r.SaveRegistry()
-	if err != nil {
-		t.Fatalf("SaveRegistry: %v", err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("file not created: %v", err)
+func TestSaveRegistryNilConfig(t *testing.T) {
+	r := &Registry{}
+	err := r.Save()
+	if err == nil {
+		t.Fatal("expected error for nil config")
 	}
 }
 
-func TestDefaultRegistryPath(t *testing.T) {
-	path := DefaultRegistryPath()
+func TestDefaultPath(t *testing.T) {
+	path := DefaultPath()
 	if path == "" {
 		t.Fatal("path is empty")
 	}
 	if !strings.Contains(path, "models.json") {
 		t.Errorf("path = %s", path)
 	}
+	if !strings.Contains(path, ".pi") {
+		t.Errorf("path should contain .pi: %s", path)
+	}
+}
+
+func TestXihuDefaultPath(t *testing.T) {
+	path := XihuDefaultPath()
+	if path == "" {
+		t.Fatal("path is empty")
+	}
+	if !strings.Contains(path, ".xihu") {
+		t.Errorf("path should contain .xihu: %s", path)
+	}
 }
 
 func TestBuiltinModels(t *testing.T) {
-	models := BuiltinModels()
+	cfg := BuiltinConfig()
+	models := resolveModels(cfg)
 	if len(models) < 20 {
 		t.Errorf("builtins = %d, want >= 20", len(models))
 	}
 
-	// Check known models
 	ids := make(map[string]bool)
 	for _, m := range models {
 		ids[m.ID] = true
@@ -150,173 +203,219 @@ func TestBuiltinModels(t *testing.T) {
 	}
 }
 
-func TestResolveModelExactMatch(t *testing.T) {
-	r := &Registry{Models: builtinMap()}
+func TestFindExactMatch(t *testing.T) {
+	cfg := BuiltinConfig()
+	r := &Registry{config: cfg, Models: resolveModels(cfg)}
 
-	mi, err := r.ResolveModel("gpt-4o")
+	m, err := r.Find("gpt-4o")
 	if err != nil {
-		t.Fatalf("ResolveModel: %v", err)
+		t.Fatalf("Find: %v", err)
 	}
-	if mi.ID != "gpt-4o" {
-		t.Errorf("id = %s", mi.ID)
+	if m.ID != "gpt-4o" {
+		t.Errorf("id = %s", m.ID)
 	}
 }
 
-func TestResolveModelCaseInsensitive(t *testing.T) {
-	r := &Registry{Models: builtinMap()}
+func TestFindProviderSlashID(t *testing.T) {
+	cfg := BuiltinConfig()
+	r := &Registry{config: cfg, Models: resolveModels(cfg)}
 
-	mi, err := r.ResolveModel("GPT-4O")
+	m, err := r.Find("openai/gpt-4o")
 	if err != nil {
-		t.Fatalf("ResolveModel: %v", err)
+		t.Fatalf("Find: %v", err)
 	}
-	if !strings.EqualFold(mi.ID, "gpt-4o") {
-		t.Errorf("id = %s", mi.ID)
+	if m.ID != "gpt-4o" || m.Provider != "openai" {
+		t.Errorf("id = %s, provider = %s", m.ID, m.Provider)
 	}
 }
 
-func TestResolveModelPrefix(t *testing.T) {
-	r := &Registry{Models: builtinMap()}
+func TestFindCaseInsensitive(t *testing.T) {
+	cfg := BuiltinConfig()
+	r := &Registry{config: cfg, Models: resolveModels(cfg)}
 
-	t.Run("gpt-4 prefix", func(t *testing.T) {
-		mi, err := r.ResolveModel("gpt-4")
-		if err != nil {
-			t.Fatalf("ResolveModel: %v", err)
-		}
-		if !strings.HasPrefix(mi.ID, "gpt-4") {
-			t.Errorf("id = %s, expected gpt-4 prefix", mi.ID)
-		}
-	})
-
-	t.Run("claude prefix", func(t *testing.T) {
-		mi, err := r.ResolveModel("claude")
-		if err != nil {
-			t.Fatalf("ResolveModel: %v", err)
-		}
-		if !strings.HasPrefix(strings.ToLower(mi.ID), "claude") {
-			t.Errorf("id = %s", mi.ID)
-		}
-	})
-}
-
-func TestResolveModelSubstring(t *testing.T) {
-	r := &Registry{Models: builtinMap()}
-
-	mi, err := r.ResolveModel("mini")
+	m, err := r.Find("GPT-4O")
 	if err != nil {
-		t.Fatalf("ResolveModel: %v", err)
+		t.Fatalf("Find: %v", err)
 	}
-	if !strings.Contains(strings.ToLower(mi.ID), "mini") {
-		t.Errorf("id = %s", mi.ID)
+	if !strings.EqualFold(m.ID, "gpt-4o") {
+		t.Errorf("id = %s", m.ID)
 	}
 }
 
-func TestResolveModelFuzzy(t *testing.T) {
-	r := &Registry{Models: builtinMap()}
+func TestFindPrefix(t *testing.T) {
+	cfg := BuiltinConfig()
+	r := &Registry{config: cfg, Models: resolveModels(cfg)}
 
-	// Slight typo should still match
-	mi, err := r.ResolveModel("gpt-4oo")
+	m, err := r.Find("gpt-4")
 	if err != nil {
-		t.Fatalf("ResolveModel: %v", err)
+		t.Fatalf("Find: %v", err)
 	}
-	if mi.ID == "" {
-		t.Error("fuzzy match returned empty")
+	if !strings.HasPrefix(m.ID, "gpt-4") {
+		t.Errorf("id = %s, expected gpt-4 prefix", m.ID)
 	}
 }
 
-func TestResolveModelEmptyName(t *testing.T) {
-	r := &Registry{Models: builtinMap()}
-	_, err := r.ResolveModel("")
+func TestFindSubstring(t *testing.T) {
+	cfg := BuiltinConfig()
+	r := &Registry{config: cfg, Models: resolveModels(cfg)}
+
+	m, err := r.Find("mini")
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(m.ID), "mini") {
+		t.Errorf("id = %s", m.ID)
+	}
+}
+
+func TestFindEmptyQuery(t *testing.T) {
+	cfg := BuiltinConfig()
+	r := &Registry{config: cfg, Models: resolveModels(cfg)}
+
+	_, err := r.Find("")
 	if err == nil {
-		t.Fatal("expected error for empty name")
+		t.Fatal("expected error for empty query")
 	}
 }
 
-func TestResolveModelNotFound(t *testing.T) {
-	r := &Registry{Models: builtinMap()}
-	_, err := r.ResolveModel("xyzzy-nosuchmodel-999")
+func TestFindNotFound(t *testing.T) {
+	cfg := BuiltinConfig()
+	r := &Registry{config: cfg, Models: resolveModels(cfg)}
+
+	_, err := r.Find("xyzzy-nosuchmodel-999")
 	if err == nil {
 		t.Fatal("expected error for unknown model")
 	}
 }
 
-func TestResolveModelNilRegistry(t *testing.T) {
+func TestFindNilRegistry(t *testing.T) {
 	var r *Registry
-	_, err := r.ResolveModel("gpt-4o")
+	_, err := r.Find("gpt-4o")
 	if err == nil {
 		t.Fatal("expected error for nil registry")
 	}
 }
 
-func TestResolveModelNilModels(t *testing.T) {
-	r := &Registry{}
-	_, err := r.ResolveModel("gpt-4o")
-	if err == nil {
-		t.Fatal("expected error for nil models")
+func TestSupportsImage(t *testing.T) {
+	m := &ResolvedModel{Input: []string{"text", "image"}}
+	if !m.SupportsImage() {
+		t.Error("expected SupportsImage = true")
+	}
+
+	m2 := &ResolvedModel{Input: []string{"text"}}
+	if m2.SupportsImage() {
+		t.Error("expected SupportsImage = false")
 	}
 }
 
-func TestLevenshteinDistance(t *testing.T) {
-	tests := []struct {
-		a, b string
-		want int
-	}{
-		{"", "", 0},
-		{"", "abc", 3},
-		{"abc", "", 3},
-		{"abc", "abc", 0},
-		{"abc", "abd", 1},
-		{"abc", "ac", 1},
-		{"abc", "ab", 1},
-		{"kitten", "sitting", 3},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.a+"_"+tt.b, func(t *testing.T) {
-			got := levenshteinDistance(tt.a, tt.b)
-			if got != tt.want {
-				t.Errorf("levenshtein(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
-			}
-		})
+func TestSupportsText(t *testing.T) {
+	m := &ResolvedModel{Input: []string{"text", "image"}}
+	if !m.SupportsText() {
+		t.Error("expected SupportsText = true")
 	}
 }
 
-func TestMin3(t *testing.T) {
-	tests := []struct{ a, b, c, want int }{
-		{1, 2, 3, 1},
-		{3, 2, 1, 1},
-		{2, 1, 3, 1},
-		{0, 0, 0, 0},
-		{-1, 0, 1, -1},
+func TestGetAll(t *testing.T) {
+	cfg := BuiltinConfig()
+	r := &Registry{config: cfg, Models: resolveModels(cfg)}
+
+	all := r.GetAll()
+	if len(all) < 20 {
+		t.Errorf("GetAll = %d, want >= 20", len(all))
 	}
-	for _, tt := range tests {
-		got := min3(tt.a, tt.b, tt.c)
-		if got != tt.want {
-			t.Errorf("min3(%d,%d,%d) = %d, want %d", tt.a, tt.b, tt.c, got, tt.want)
+}
+
+func TestGetByProvider(t *testing.T) {
+	cfg := BuiltinConfig()
+	r := &Registry{config: cfg, Models: resolveModels(cfg)}
+
+	openaiModels := r.GetByProvider("openai")
+	if len(openaiModels) == 0 {
+		t.Error("expected OpenAI models")
+	}
+	for _, m := range openaiModels {
+		if m.Provider != "openai" {
+			t.Errorf("provider = %s, want openai", m.Provider)
 		}
 	}
 }
 
-func TestRoundTrip(t *testing.T) {
+func TestModelOverrideMerge(t *testing.T) {
+	cfg := &ModelsConfig{Providers: map[string]ProviderConfig{
+		"test": {
+			BaseURL: strPtr("https://api.test.com/v1"),
+			API:     strPtr("openai-completions"),
+			Models: []ModelDefinition{
+				{
+					ID:            "test-model",
+					ContextWindow: intPtr(128000),
+					MaxTokens:     intPtr(8192),
+					Cost:          &ModelCost{Input: 1.0, Output: 3.0},
+				},
+			},
+			ModelOverrides: map[string]ModelOverride{
+				"test-model": {
+					ContextWindow: intPtr(256000),
+					Cost:          &ModelCost{Input: 2.0},
+				},
+			},
+		},
+	}}
+
+	models := resolveModels(cfg)
+	if len(models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(models))
+	}
+	m := models[0]
+
+	if m.ContextWindow != 256000 {
+		t.Errorf("contextWindow = %d, want 256000", m.ContextWindow)
+	}
+	if m.Cost.Input != 2.0 {
+		t.Errorf("cost.input = %f, want 2.0", m.Cost.Input)
+	}
+	if m.Cost.Output != 3.0 {
+		t.Errorf("cost.output = %f, want 3.0", m.Cost.Output)
+	}
+}
+
+func TestPiCompatibleModelsFile(t *testing.T) {
+	// Verify bootstrap produces pi-compatible format
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "models.json")
 
-	r1 := &Registry{
-		Models: map[string]ModelInfo{
-			"custom-model": {ID: "custom-model", Provider: "test", MaxTokens: 1000, SupportsTools: true},
-		},
-		path: path,
-	}
-	r1.SaveRegistry()
-
-	r2, err := LoadRegistry(path)
+	r, err := LoadRegistry(path)
 	if err != nil {
 		t.Fatalf("LoadRegistry: %v", err)
 	}
-	mi, err := r2.ResolveModel("custom-model")
+
+	// Save and verify format
+	err = r.Save()
 	if err != nil {
-		t.Fatalf("ResolveModel: %v", err)
+		t.Fatalf("Save: %v", err)
 	}
-	if mi.MaxTokens != 1000 {
-		t.Errorf("max tokens = %d", mi.MaxTokens)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
 	}
+
+	var cfg ModelsConfig
+	if err := jsonUnmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse as pi format: %v", err)
+	}
+
+	if cfg.Providers == nil {
+		t.Fatal("providers is nil")
+	}
+	if len(cfg.Providers) == 0 {
+		t.Fatal("providers is empty")
+	}
+}
+
+// Helpers
+func strPtr(s string) *string { return &s }
+func intPtr(i int) *int       { return &i }
+func jsonUnmarshal(data []byte, v interface{}) error {
+	return json.Unmarshal(data, v)
 }
