@@ -34,7 +34,6 @@ func runConfigCommand(cwd string) {
 		fmt.Println("  ~/.xihu/skills/      User skills")
 		fmt.Println("  .xihu/skills/        Project skills")
 		fmt.Println("  ~/.agents/skills/    Agents skills")
-		fmt.Println("  ~/.pi/agent/skills/  Pi skills (compatibility)")
 		fmt.Println()
 		fmt.Println("Create SKILL.md files in these directories to add skills.")
 		os.Exit(0)

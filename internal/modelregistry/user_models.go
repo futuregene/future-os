@@ -2,7 +2,6 @@ package modelregistry
 
 import (
 	"encoding/json"
-	"log"
 	"os"
 	"path/filepath"
 
@@ -117,33 +116,4 @@ func UserModelsPath() string {
 		home = os.TempDir()
 	}
 	return filepath.Join(home, ".xihu", "models.json")
-}
-
-// SharedModelsPath returns ~/.pi/agent/models.json (shared with pi).
-func SharedModelsPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = os.TempDir()
-	}
-	return filepath.Join(home, ".pi", "agent", "models.json")
-}
-
-// LoadUserModelsAuto tries ~/.xihu/models.json first, then ~/.pi/agent/models.json.
-// This allows xihu to share models with pi.
-func LoadUserModelsAuto() []types.Model {
-	userPath := UserModelsPath()
-	userModels, err := LoadUserModels(userPath)
-	if err == nil && len(userModels) > 0 {
-		log.Printf("[modelregistry] loaded %d user model(s) from %s", len(userModels), userPath)
-		return userModels
-	}
-
-	sharedPath := SharedModelsPath()
-	sharedModels, err := LoadUserModels(sharedPath)
-	if err == nil && len(sharedModels) > 0 {
-		log.Printf("[modelregistry] loaded %d model(s) from shared pi config %s", len(sharedModels), sharedPath)
-		return sharedModels
-	}
-
-	return nil
 }

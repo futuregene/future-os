@@ -71,7 +71,6 @@ func ResolveResources(cwd string, globalSettings, projectSettings *settings.Sett
 		{filepath.Join(home, ".xihu", "skills"), "user", "User (~/.xihu/)"},
 		{filepath.Join(cwd, ".xihu", "skills"), "project", "Project (.xihu/)"},
 		{filepath.Join(home, ".agents", "skills"), "agents", "Agents (~/.agents/)"},
-		{filepath.Join(home, ".pi", "agent", "skills"), "pi", "Pi (~/.pi/agent/)"},
 	}
 
 	extDirs := []discoveryDir{
@@ -160,7 +159,7 @@ func ResolveResources(cwd string, globalSettings, projectSettings *settings.Sett
 		groups = append(groups, *g)
 	}
 
-	scopeOrder := map[string]int{"user": 0, "project": 1, "agents": 2, "pi": 3}
+	scopeOrder := map[string]int{"user": 0, "project": 1, "agents": 2}
 	sort.Slice(groups, func(i, j int) bool {
 		return scopeOrder[groups[i].Scope] < scopeOrder[groups[j].Scope]
 	})

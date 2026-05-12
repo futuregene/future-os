@@ -310,8 +310,6 @@ func (m *ConfigSelectorModel) View() string {
 					label = "Project (.xihu/)"
 				} else if e.Group.Scope == "agents" {
 					label = "Agents (~/.agents/)"
-				} else if e.Group.Scope == "pi" {
-					label = "Pi (~/.pi/agent/)"
 				}
 				b.WriteString(groupStyle.Render(label))
 			}

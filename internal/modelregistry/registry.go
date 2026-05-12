@@ -6,6 +6,7 @@
 package modelregistry
 
 import (
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -44,10 +45,15 @@ func New() *Registry {
 		overrides: make(map[string]ProviderOverride),
 	}
 
-	// Auto-load user models from ~/.xihu/models.json or ~/.pi/agent/models.json
-	userModels := LoadUserModelsAuto()
+	// Auto-load user models from ~/.xihu/models.json
+	userModels, err := LoadUserModels(UserModelsPath())
+	if err != nil {
+		log.Printf("[modelregistry] failed to load user models: %v", err)
+		return r
+	}
 	if len(userModels) > 0 {
 		r.catalog = append(r.catalog, userModels...)
+		log.Printf("[modelregistry] loaded %d user model(s) from %s", len(userModels), UserModelsPath())
 	}
 
 	return r

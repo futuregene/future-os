@@ -1,5 +1,5 @@
 // Package models provides a model registry aligned with pi's models.json format.
-// Models are loaded from ~/.pi/agent/models.json (shared with pi) or ~/.xihu/models.json.
+// Models are loaded from ~/.xihu/models.json.
 // The format uses a provider-centric structure:
 //
 //	{
@@ -184,13 +184,13 @@ type Registry struct {
 	rawPath string // file path this was loaded from
 }
 
-// Default paths — xihu uses ~/.pi/agent/models.json to share with pi.
+// DefaultPath returns ~/.xihu/models.json.
 func DefaultPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = os.TempDir()
 	}
-	return filepath.Join(home, ".pi", "agent", "models.json")
+	return filepath.Join(home, ".xihu", "models.json")
 }
 
 // XihuDefaultPath returns ~/.xihu/models.json (xihu-specific).

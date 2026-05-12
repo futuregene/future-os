@@ -168,8 +168,8 @@ func TestDefaultPath(t *testing.T) {
 	if !strings.Contains(path, "models.json") {
 		t.Errorf("path = %s", path)
 	}
-	if !strings.Contains(path, ".pi") {
-		t.Errorf("path should contain .pi: %s", path)
+	if !strings.Contains(path, ".xihu") {
+		t.Errorf("path should contain .xihu: %s", path)
 	}
 }
 

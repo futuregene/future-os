@@ -199,7 +199,7 @@ func main() {
 	}
 
 	// ── Discover skills ────────────────────────────────────────────────────
-	searchDirs := []string{skills.UserSkillsDir, skills.ProjectSkillsDir, skills.AgentsSkillsDir, skills.PiSkillsDir}
+	searchDirs := []string{skills.UserSkillsDir, skills.ProjectSkillsDir, skills.AgentsSkillsDir}
 	allSkills, _ := skills.DiscoverSkills(searchDirs, "user")
 	resolvedSkills, skillCollisions := skills.ResolveCollisionsWithDiagnostics(allSkills)
 
