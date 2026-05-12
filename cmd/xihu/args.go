@@ -350,17 +350,15 @@ Examples:
   # Read-only mode (no file modifications)
   xihu --tools read,grep,find,ls -p "Review the code"
 
-  # Export a session to HTML
-  xihu --export session.jsonl output.html
+  # Export a session to JSON
+  xihu --export session.jsonl output.json
 
 Environment:
   LLM_API_KEY                     API key for LLM provider
   LLM_BASE_URL                    Base URL for API endpoint
   LLM_MODEL                       Default model name
-  ANTHROPIC_API_KEY               Anthropic Claude API key
-  OPENAI_API_KEY                  OpenAI API key
-  COBALT_OFFLINE                  Disable network ops when set to 1/true
-  COBALT_SESSION_DIR              Session storage directory
+  XIHU_OFFLINE                    Disable network ops and version check (same as --offline)
+  XIHU_SKIP_VERSION_CHECK         Skip version check only
 
 Built-in Tools:
   read   - Read file contents

@@ -32,6 +32,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "⚠ %s\n", d)
 	}
 
+	// --offline: set XIHU_OFFLINE and XIHU_SKIP_VERSION_CHECK (mirrors pi: PI_OFFLINE=1, PI_SKIP_VERSION_CHECK=1)
+	if args.Offline {
+		os.Setenv("XIHU_OFFLINE", "1")
+		os.Setenv("XIHU_SKIP_VERSION_CHECK", "1")
+	}
+
 	if args.Help {
 		printHelp()
 	}
@@ -127,6 +133,10 @@ func main() {
 			fmt.Fprintf(os.Stderr, "  thinking: %s", thinking)
 		}
 		fmt.Fprintln(os.Stderr)
+		// Print model cycling scopes (mirrors pi: list of --models patterns)
+		if len(args.ScopedModels) > 0 {
+			fmt.Fprintf(os.Stderr, "\033[33m[scopes]\033[0m %s\n", strings.Join(args.ScopedModels, ", "))
+		}
 	}
 
 	// ── Session: --fork / --session / --resume / --continue / new ─────────

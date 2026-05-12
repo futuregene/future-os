@@ -11,6 +11,7 @@ import (
 	"time"
 
 
+	"github.com/huichen/xihu/internal/compaction"
 	"github.com/huichen/xihu/internal/modelregistry"
 	"github.com/huichen/xihu/internal/session"
 	"github.com/huichen/xihu/internal/tui/components"
@@ -46,14 +47,15 @@ func (m *AppModel) runAgent(text string, myID int32) {
 		}
 	}
 
-	// Show streaming indicator immediately via footer
-	if m.program != nil {
-		m.program.Send(StatusMsg{
-			TokensIn:  m.lastStatus.TokensIn,
-			TokensOut: m.lastStatus.TokensOut,
-			Streaming: true,
-		})
-	}
+	// Accumulated stats (declared here so they can be used in initial StatusMsg before goroutine)
+	var tokensIn, tokensOut, cacheR, cacheW int
+	var contextTokens int // estimated current context size
+	// Carry forward previous stats
+	tokensIn = m.lastStatus.TokensIn
+	tokensOut = m.lastStatus.TokensOut
+	cacheR = m.lastStatus.TokensCacheR
+	cacheW = m.lastStatus.TokensCacheW
+	contextTokens = m.lastStatus.ContextTokens
 
 	var messages []types.Message
 	if m.session != nil && len(m.session.Entries) > 0 {
@@ -76,18 +78,26 @@ func (m *AppModel) runAgent(text string, myID int32) {
 		}
 	}
 
+	// Estimate initial context size (before first LLM call) for accurate context % at startup
+	contextTokens = compaction.EstimateContextTokens(messages)
+
+	// Show streaming indicator and initial context % via footer
+	if m.program != nil {
+		m.program.Send(StatusMsg{
+			TokensIn:      m.lastStatus.TokensIn,
+			TokensOut:     m.lastStatus.TokensOut,
+			TokensCacheR:  m.lastStatus.TokensCacheR,
+			TokensCacheW:  m.lastStatus.TokensCacheW,
+			ContextTokens: contextTokens,
+			ContextWin:    contextWin,
+			Streaming:     true,
+		})
+	}
+
 	// Subscribe to EventBus
 	subID := fmt.Sprintf("tui-%d", time.Now().UnixNano())
 	eventsCh := m.eventBus.Subscribe(subID)
 	defer m.eventBus.Unsubscribe(subID)
-
-	// Accumulated stats
-	var tokensIn, tokensOut, cacheR, cacheW int
-	// Carry forward previous stats
-	tokensIn = m.lastStatus.TokensIn
-	tokensOut = m.lastStatus.TokensOut
-	cacheR = m.lastStatus.TokensCacheR
-	cacheW = m.lastStatus.TokensCacheW
 
 	// Goroutine to forward EventBus events to Bubble Tea
 	go func() {
@@ -144,21 +154,20 @@ func (m *AppModel) runAgent(text string, myID int32) {
 				if cw, ok := evt.Data["cache_write_tokens"].(int); ok {
 					cacheW += cw
 				}
+				// Update context size estimate from usage (tokens are accumulated per-call)
+				contextTokens = tokensIn + tokensOut
 				// Send intermediate status with cost and context% (TS pi-mono: live stats)
 				if m.program != nil {
 					totalCost := calcModelCost(tokensIn, tokensOut, cacheR, cacheW, modelCost)
-					ctxPct := 0.0
-					if contextWin > 0 {
-						ctxPct = float64(tokensIn+tokensOut) / float64(contextWin)
-					}
 					m.program.Send(StatusMsg{
-						TokensIn:     tokensIn,
-						TokensOut:    tokensOut,
-						TokensCacheR: cacheR,
-						TokensCacheW: cacheW,
-						TotalCost:    totalCost,
-						ContextUsed:  ctxPct,
-						Streaming:    true,
+						TokensIn:      tokensIn,
+						TokensOut:     tokensOut,
+						TokensCacheR:  cacheR,
+						TokensCacheW:  cacheW,
+						TotalCost:     totalCost,
+						ContextTokens: contextTokens,
+						ContextWin:    contextWin,
+						Streaming:     true,
 					})
 				}
 			case "auto_retry_start":
@@ -264,18 +273,15 @@ func (m *AppModel) runAgent(text string, myID int32) {
 				// Send final status
 				if m.program != nil {
 					totalCost := calcModelCost(tokensIn, tokensOut, cacheR, cacheW, modelCost)
-					ctxPct := 0.0
-					if contextWin > 0 {
-						ctxPct = float64(tokensIn+tokensOut) / float64(contextWin)
-					}
 					m.program.Send(StatusMsg{
-						TokensIn:     tokensIn,
-						TokensOut:    tokensOut,
-						TokensCacheR: cacheR,
-						TokensCacheW: cacheW,
-						TotalCost:    totalCost,
-						ContextUsed:  ctxPct,
-						Streaming:    false,
+						TokensIn:      tokensIn,
+						TokensOut:     tokensOut,
+						TokensCacheR:  cacheR,
+						TokensCacheW:  cacheW,
+						TotalCost:     totalCost,
+						ContextTokens: contextTokens,
+						ContextWin:    contextWin,
+						Streaming:     false,
 					})
 				}
 			}

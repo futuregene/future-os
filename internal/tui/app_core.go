@@ -143,6 +143,9 @@ func NewAppModel(as *agentsession.AgentSession, sessMgr *session.Manager, sess *
 			anthropicExtraUsage: false,
 		}
 
+	// Auto-compaction defaults to true (matching pi-mono), config can override
+	app.autoCompact = true
+
 	// Apply settings from config files (project overrides global)
 	if cfg != nil {
 		if cfg.DoubleEscapeAction != "" {

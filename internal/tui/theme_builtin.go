@@ -14,7 +14,7 @@ func DefaultTheme() *Theme {
 		AssistantColor:   "#cdd6f4",
 		ThinkingColor:    "#7f849c",
 		ThinkingText:     "#a6adc8",
-		ToolColor:        "#f9e2af",
+		ToolColor:        "#ffffff",
 		ToolPendingBg:    "#282832",
 		ToolSuccessBg:    "#283228",
 		ToolErrorBg:      "#3c2828",
@@ -64,7 +64,7 @@ func DefaultTheme() *Theme {
 		// Additional UI
 		UserMessageBg:   "#313244",
 		UserMessageText: "#cdd6f4",
-		ToolTitle:       "#f9e2af",
+		ToolTitle:       "#ffffff",
 		ToolOutput:      "#a6adc8",
 	}
 }

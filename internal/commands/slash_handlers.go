@@ -359,7 +359,7 @@ func handleHotkeys() (string, error) {
   Enter        Send message
   Shift+Enter  New line
 
-Slash commands (22 total):
+Slash commands (25 total):
   /help                 Show help about xihu
   /model [name]         Set or show model
   /baseurl [url]        Set or show base URL

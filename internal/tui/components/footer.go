@@ -137,16 +137,19 @@ func (f Footer) Model() string { return f.model }
 func (f Footer) Provider() string { return f.provider }
 
 // Update updates footer stats from a StatusMsg equivalent.
-func (f *Footer) Update(tokensIn, tokensOut, cacheR, cacheW int, cost, ctxUsed float64, streaming bool) {
+// contextTokens: estimated current context size in tokens (used for context % display).
+// contextWin: context window size in tokens (denominator for context %).
+func (f *Footer) Update(tokensIn, tokensOut, cacheR, cacheW int, cost float64, contextTokens, contextWin int, streaming bool) {
 	f.tokensIn = tokensIn
 	f.tokensOut = tokensOut
 	f.tokensCacheR = cacheR
 	f.tokensCacheW = cacheW
 	f.totalCost = cost
-	f.contextUsed = ctxUsed
-	// Sync to contextPercent for display (ctxUsed is 0.0 ~ 1.0)
-	if ctxUsed > 0 {
-		f.contextPercent = ctxUsed * 100
+	// Compute context % from current context size, not accumulated token counts.
+	// This matches pi-mono: context % drops after compaction.
+	f.contextUsed = 0
+	if contextWin > 0 && contextTokens > 0 {
+		f.contextPercent = float64(contextTokens) / float64(contextWin) * 100
 	}
 	f.streaming = streaming
 }

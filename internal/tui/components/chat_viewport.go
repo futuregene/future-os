@@ -49,16 +49,16 @@ func NewChatViewport() ChatViewport {
 			Foreground(lipgloss.Color("#6c7086")).
 			Italic(true),
 		toolStyle: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#e5c07b")),
+			Foreground(lipgloss.Color("#ffffff")),
 		toolPendingBg: lipgloss.NewStyle().
-			Background(lipgloss.Color("#3a3a00")).
-			Foreground(lipgloss.Color("#e5c07b")),
+			Background(lipgloss.Color("#282832")).
+			Foreground(lipgloss.Color("#ffffff")),
 		toolSuccessBg: lipgloss.NewStyle().
-			Background(lipgloss.Color("#1a3a1a")).
-			Foreground(lipgloss.Color("#98c379")),
+			Background(lipgloss.Color("#283228")).
+			Foreground(lipgloss.Color("#ffffff")),
 		toolErrorBg: lipgloss.NewStyle().
-			Background(lipgloss.Color("#3a1a1a")).
-			Foreground(lipgloss.Color("#e06c75")),
+			Background(lipgloss.Color("#3c2828")).
+			Foreground(lipgloss.Color("#ffffff")),
 		toolSuccess: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#98c379")),
 		toolError: lipgloss.NewStyle().
@@ -72,7 +72,7 @@ func NewChatViewport() ChatViewport {
 		bashBorder: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#5c6370")),
 		bashHeader: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#e5c07b")).Bold(true),
+			Foreground(lipgloss.Color("#ffffff")).Bold(true),
 		bashOutput: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#6c7086")),
 		bashStatus: lipgloss.NewStyle().
@@ -160,17 +160,17 @@ func (c *ChatViewport) SetTheme(accent, muted, dim, warning, success, errColor, 
 	c.assistantStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(muted))
 	c.thinkingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(thinkingColor)).Italic(true)
 	c.thinkingDim = lipgloss.NewStyle().Foreground(lipgloss.Color(dim)).Italic(true)
-	c.toolStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(warning))
-	c.toolPendingBg = lipgloss.NewStyle().Background(lipgloss.Color(toolPendingBgHex)).Foreground(lipgloss.Color(warning))
-	c.toolSuccessBg = lipgloss.NewStyle().Background(lipgloss.Color(toolSuccessBgHex)).Foreground(lipgloss.Color(success))
-	c.toolErrorBg = lipgloss.NewStyle().Background(lipgloss.Color(toolErrorBgHex)).Foreground(lipgloss.Color(errColor))
+	c.toolStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff"))
+	c.toolPendingBg = lipgloss.NewStyle().Background(lipgloss.Color(toolPendingBgHex)).Foreground(lipgloss.Color("#ffffff"))
+	c.toolSuccessBg = lipgloss.NewStyle().Background(lipgloss.Color(toolSuccessBgHex)).Foreground(lipgloss.Color("#ffffff"))
+	c.toolErrorBg = lipgloss.NewStyle().Background(lipgloss.Color(toolErrorBgHex)).Foreground(lipgloss.Color("#ffffff"))
 	c.toolSuccess = lipgloss.NewStyle().Foreground(lipgloss.Color(success))
 	c.toolError = lipgloss.NewStyle().Foreground(lipgloss.Color(errColor))
 	c.errorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(errColor))
 	c.systemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(dim))
 	c.warningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(warning))
 	c.bashBorder = lipgloss.NewStyle().Foreground(lipgloss.Color(warning))
-	c.bashHeader = lipgloss.NewStyle().Foreground(lipgloss.Color(warning)).Bold(true)
+	c.bashHeader = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Bold(true)
 	c.bashOutput = lipgloss.NewStyle().Foreground(lipgloss.Color(dim))
 	c.bashStatus = lipgloss.NewStyle().Foreground(lipgloss.Color(success))
 	c.bashErrorStatus = lipgloss.NewStyle().Foreground(lipgloss.Color(errColor))

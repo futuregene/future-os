@@ -32,14 +32,11 @@ func (m *AppModel) handleSlashCmd(text string) (string, bool) {
 	case "/help":
 		return "xihu — AI coding assistant.\n\n" +
 			"Quick start:\n" +
-			"  /model       select model\n" +
+			"  /model       select model (opens selector UI)\n" +
 			"  /settings    configure app settings\n" +
-			"  /login       set up API key\n" +
-			"\n" +
-			"Reference:\n" +
+			"  /login       configure provider authentication\n" +
+			"  /new         start a new session\n" +
 			"  /hotkeys     all keyboard shortcuts\n" +
-			"  /commands    list all slash commands\n" +
-			"  /session     session stats (tokens, cost, etc.)\n" +
 			"  /help        this help", true
 	case "/hotkeys":
 		m.showHelpOverlay()
@@ -102,20 +99,6 @@ func (m *AppModel) handleSlashCmd(text string) (string, bool) {
 	case "/quit":
 		m.quitting = true
 		return "", true
-	case "/clear":
-		if m.session != nil && m.sessMgr != nil {
-			m.session.ID = session.GenerateID()
-			m.session.Entries = nil
-			m.session.Name = ""
-			m.session.CreatedAt = time.Now()
-			m.session.UpdatedAt = time.Now()
-			if err := m.sessMgr.Save(m.session); err == nil {
-				m.footer.SetSession(m.session.CWD, getGitBranch(m.session.CWD), "", "", "", "")
-				return "✓ New session started", true
-			}
-			return "Error creating new session", true
-		}
-		return "No active session", true
 	case "/scoped-models":
 		if len(parts) > 1 {
 			sub := strings.ToLower(parts[1])

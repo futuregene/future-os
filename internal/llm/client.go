@@ -206,13 +206,22 @@ func (c *Client) streamFromSDK(stream *ssestream.Stream[openai.ChatCompletionChu
 				CompletionTokens: int(chunk.Usage.CompletionTokens),
 				TotalTokens:      int(chunk.Usage.TotalTokens),
 			}
-			// Try to extract cache tokens from ExtraFields (DeepSeek / Anthropic)
-			if cr, ok := chunk.Usage.JSON.ExtraFields["cache_read_input_tokens"]; ok {
+			// Cache read tokens: prefer OpenAI standard field (PromptTokensDetails.CachedTokens),
+			// fallback to Anthropic-style ExtraField (cache_read_input_tokens)
+			if chunk.Usage.PromptTokensDetails.CachedTokens > 0 {
+				usage.CacheReadTokens = int(chunk.Usage.PromptTokensDetails.CachedTokens)
+			} else if cr, ok := chunk.Usage.JSON.ExtraFields["cache_read_input_tokens"]; ok {
 				if v, err := strconv.Atoi(fmt.Sprint(cr.Raw())); err == nil {
 					usage.CacheReadTokens = v
 				}
 			}
-			if cw, ok := chunk.Usage.JSON.ExtraFields["cache_creation_input_tokens"]; ok {
+			// Cache write tokens: try OpenAI-style ExtraField first (cache_write_tokens),
+			// then Anthropic-style (cache_creation_input_tokens)
+			if cw, ok := chunk.Usage.PromptTokensDetails.JSON.ExtraFields["cache_write_tokens"]; ok {
+				if v, err := strconv.Atoi(fmt.Sprint(cw.Raw())); err == nil {
+					usage.CacheWriteTokens = v
+				}
+			} else if cw, ok := chunk.Usage.JSON.ExtraFields["cache_creation_input_tokens"]; ok {
 				if v, err := strconv.Atoi(fmt.Sprint(cw.Raw())); err == nil {
 					usage.CacheWriteTokens = v
 				}

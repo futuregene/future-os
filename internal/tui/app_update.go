@@ -936,7 +936,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 		m.footer.Update(
 			msg.TokensIn, msg.TokensOut,
 			msg.TokensCacheR, msg.TokensCacheW,
-			msg.TotalCost, msg.ContextUsed,
+			msg.TotalCost, msg.ContextTokens, msg.ContextWin,
 			msg.Streaming,
 		)
 		return m, nil

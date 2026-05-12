@@ -317,9 +317,8 @@ func isatty(fd int) bool {
 	return (stat.Mode() & os.ModeCharDevice) != 0
 }
 
-// exportSession exports a session to HTML.
+// exportSession exports a session to JSON (pi-mono exports to HTML with full syntax highlighting).
 func exportSession(sess *session.Session, path string) {
-	// Simple JSON export for now
 	data, err := json.MarshalIndent(sess, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error marshaling session: %v\n", err)

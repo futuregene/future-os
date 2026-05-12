@@ -102,13 +102,15 @@ type BashExecResultMsg struct {
 
 // StatusMsg updates the footer status bar.
 type StatusMsg struct {
-	TokensIn     int
-	TokensOut    int
-	TokensCacheR int
-	TokensCacheW int
-	TotalCost    float64
-	ContextUsed  float64 // 0.0 ~ 1.0
-	Streaming    bool
+	TokensIn      int
+	TokensOut     int
+	TokensCacheR  int
+	TokensCacheW  int
+	TotalCost     float64
+	ContextUsed   float64 // 0.0 ~ 1.0 — context usage ratio (deprecated, use ContextTokens+ContextWin)
+	ContextTokens int     // estimated current context size in tokens
+	ContextWin    int     // context window size in tokens (denominator for %)
+	Streaming     bool
 }
 
 // TickMsg advances spinner/loader animations (sent by tea.Tick).
