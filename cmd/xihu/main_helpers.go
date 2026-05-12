@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -342,7 +343,22 @@ func saveSession(mgr *session.Manager, sess *session.Session, messages []types.M
 	}
 }
 
-// processSentinel handles sentinel commands from slash command output.
+// matchModelPattern checks if a model ID matches a pattern (exact or glob).
+// Pattern can be a full "provider/id" or just "id". Supports *, ?, [ globs.
+func matchModelPattern(pat, fullID, modelID string) bool {
+	// Check exact matches first
+	if pat == fullID || pat == modelID {
+		return true
+	}
+	// Check glob against full ID and model ID
+	if matched, _ := filepath.Match(pat, fullID); matched {
+		return true
+	}
+	if matched, _ := filepath.Match(pat, modelID); matched {
+		return true
+	}
+	return false
+}
 func processSentinel(result string, eng interface{}, mgr *session.Manager, sess *session.Session, ctx interface{}) bool {
 	// Check for sentinel markers in command output
 	if strings.Contains(result, "__XIHU_SENTINEL__") {

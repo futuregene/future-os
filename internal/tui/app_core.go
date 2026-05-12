@@ -222,9 +222,9 @@ func NewAppModel(as *agentsession.AgentSession, sessMgr *session.Manager, sess *
 		if cfg.LastChangelogVersion != "" {
 			app.lastChangelogVersion = cfg.LastChangelogVersion
 		}
-		// Scoped models
-		if len(cfg.ScopedModels) > 0 {
-			app.applyScopedModels(cfg.ScopedModels)
+		// Scoped models (pi uses enabledModels in settings.json)
+		if len(cfg.EnabledModels) > 0 {
+			app.applyScopedModels(cfg.EnabledModels)
 		}
 	}
 

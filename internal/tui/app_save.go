@@ -72,24 +72,29 @@ func (m *AppModel) saveSettings() {
 		BlockImages: &bi,
 	}
 
-	// Scoped models — save enabled models in display order
-	var scopedList []string
-	for _, model := range m.modelOrder {
-		if m.scopedModels[model] {
-			scopedList = append(scopedList, model)
+	// Scoped models — save enabled models in display order (pi: enabledModels)
+	// TS pi-mono: all enabled = clear filter (undefined), otherwise save individual IDs
+	if len(m.scopedModels) == len(m.availableModels) {
+		s.EnabledModels = nil
+	} else {
+		var scopedList []string
+		for _, model := range m.modelOrder {
+			if m.scopedModels[model] {
+				scopedList = append(scopedList, model)
+			}
 		}
-	}
-	// Append any enabled models not in modelOrder
-	inOrder := make(map[string]bool)
-	for _, model := range m.modelOrder {
-		inOrder[model] = true
-	}
-	for model := range m.scopedModels {
-		if !inOrder[model] {
-			scopedList = append(scopedList, model)
+		// Append any enabled models not in modelOrder
+		inOrder := make(map[string]bool)
+		for _, model := range m.modelOrder {
+			inOrder[model] = true
 		}
+		for model := range m.scopedModels {
+			if !inOrder[model] {
+				scopedList = append(scopedList, model)
+			}
+		}
+		s.EnabledModels = scopedList
 	}
-	s.ScopedModels = scopedList
 
 	// Warnings
 	ae := m.anthropicExtraUsage

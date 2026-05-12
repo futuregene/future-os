@@ -372,15 +372,15 @@ func main() {
 		// Use model registry for available models, filtered by settings.EnabledModels if set
 		if eng.ModelRegistry != nil {
 			all := eng.ModelRegistry.GetAll()
-			// If settings has enabled_models, filter registry to only those
+			// If settings has enabledModels, filter using pattern matching (pi: resolveModelScope)
 			if eng.Settings != nil && len(eng.Settings.EnabledModels) > 0 {
-				enabledSet := make(map[string]bool)
-				for _, em := range eng.Settings.EnabledModels {
-					enabledSet[em] = true
-				}
 				for _, m := range all {
-					if enabledSet[m.Provider+"/"+m.ID] || enabledSet[m.ID] {
-						availableModels = append(availableModels, m.Provider+"/"+m.ID)
+					fullID := m.Provider + "/" + m.ID
+					for _, pat := range eng.Settings.EnabledModels {
+						if matchModelPattern(pat, fullID, m.ID) {
+							availableModels = append(availableModels, fullID)
+							break
+						}
 					}
 				}
 			} else {

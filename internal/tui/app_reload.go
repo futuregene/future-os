@@ -116,9 +116,9 @@ func (m *AppModel) reload() {
 		if newSettings.LastChangelogVersion != "" {
 			m.lastChangelogVersion = newSettings.LastChangelogVersion
 		}
-		// Scoped models
-		if len(newSettings.ScopedModels) > 0 {
-			m.applyScopedModels(newSettings.ScopedModels)
+		// Scoped models (pi uses enabledModels in settings.json)
+		if len(newSettings.EnabledModels) > 0 {
+			m.applyScopedModels(newSettings.EnabledModels)
 		}
 		// Theme - reload if changed
 		if newSettings.Theme != "" && m.theme != nil && newSettings.Theme != m.theme.Name {

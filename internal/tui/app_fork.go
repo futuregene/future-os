@@ -243,6 +243,7 @@ func (m *AppModel) showScopedModelSelector() {
 			return true
 		case "ctrl+s":
 			// Save model selection (TS pi-mono: persist to settings)
+			m.saveSettings()
 			m.chat.AppendSystem("Model selection saved to settings")
 			return true
 		case "alt+up":
