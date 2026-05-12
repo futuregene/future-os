@@ -11,6 +11,7 @@ import (
 	"time"
 
 
+	"github.com/huichen/xihu/internal/modelregistry"
 	"github.com/huichen/xihu/internal/session"
 	"github.com/huichen/xihu/internal/tui/components"
 	"github.com/huichen/xihu/pkg/types"
@@ -33,6 +34,17 @@ func (m *AppModel) runAgent(text string, myID int32) {
 	modelName, provider := parseModelString(m.agent.Loop().Model)
 	_ = provider
 	m.footer.SetWorkingMessage("Connecting to " + modelName + "...")
+
+	// Look up model cost and context window for footer stats (TS pi-mono: cost tracking)
+	var modelCost types.Model
+	contextWin := 0
+	for _, mi := range modelregistry.BuiltinModels() {
+		if mi.ID == modelName {
+			modelCost = mi
+			contextWin = mi.ContextWindow
+			break
+		}
+	}
 
 	// Show streaming indicator immediately via footer
 	if m.program != nil {
@@ -131,6 +143,23 @@ func (m *AppModel) runAgent(text string, myID int32) {
 				}
 				if cw, ok := evt.Data["cache_write_tokens"].(int); ok {
 					cacheW += cw
+				}
+				// Send intermediate status with cost and context% (TS pi-mono: live stats)
+				if m.program != nil {
+					totalCost := calcModelCost(tokensIn, tokensOut, cacheR, cacheW, modelCost)
+					ctxPct := 0.0
+					if contextWin > 0 {
+						ctxPct = float64(tokensIn+tokensOut) / float64(contextWin)
+					}
+					m.program.Send(StatusMsg{
+						TokensIn:     tokensIn,
+						TokensOut:    tokensOut,
+						TokensCacheR: cacheR,
+						TokensCacheW: cacheW,
+						TotalCost:    totalCost,
+						ContextUsed:  ctxPct,
+						Streaming:    true,
+					})
 				}
 			case "auto_retry_start":
 				attempt, _ := evt.Data["attempt"].(int)
@@ -234,11 +263,18 @@ func (m *AppModel) runAgent(text string, myID int32) {
 				}
 				// Send final status
 				if m.program != nil {
+					totalCost := calcModelCost(tokensIn, tokensOut, cacheR, cacheW, modelCost)
+					ctxPct := 0.0
+					if contextWin > 0 {
+						ctxPct = float64(tokensIn+tokensOut) / float64(contextWin)
+					}
 					m.program.Send(StatusMsg{
 						TokensIn:     tokensIn,
 						TokensOut:    tokensOut,
 						TokensCacheR: cacheR,
 						TokensCacheW: cacheW,
+						TotalCost:    totalCost,
+						ContextUsed:  ctxPct,
 						Streaming:    false,
 					})
 				}
@@ -362,6 +398,17 @@ func extractBashCommand(argsJSON string) string {
 		return argsJSON
 	}
 	return argsJSON[start : start+end]
+}
+
+// calcModelCost computes the total cost from token counts using model pricing.
+// Model costs are per 1M tokens.
+func calcModelCost(tokensIn, tokensOut, cacheR, cacheW int, mc types.Model) float64 {
+	const scale = 1_000_000.0
+	cost := float64(tokensIn)*mc.Cost.Input/scale +
+		float64(tokensOut)*mc.Cost.Output/scale +
+		float64(cacheR)*mc.Cost.CacheRead/scale +
+		float64(cacheW)*mc.Cost.CacheWrite/scale
+	return cost
 }
 
 // ─── Model Parsing ─────────────────────────────────────────────────────────

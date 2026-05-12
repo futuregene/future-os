@@ -144,6 +144,10 @@ func (f *Footer) Update(tokensIn, tokensOut, cacheR, cacheW int, cost, ctxUsed f
 	f.tokensCacheW = cacheW
 	f.totalCost = cost
 	f.contextUsed = ctxUsed
+	// Sync to contextPercent for display (ctxUsed is 0.0 ~ 1.0)
+	if ctxUsed > 0 {
+		f.contextPercent = ctxUsed * 100
+	}
 	f.streaming = streaming
 }
 
