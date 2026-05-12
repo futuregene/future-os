@@ -10,6 +10,9 @@ import (
 
 // Args holds all parsed CLI arguments.
 type Args struct {
+	// Subcommands
+	Config bool // "xihu config" — open resource config TUI
+
 	// Provider & Model
 	Provider string
 	Model    string
@@ -83,6 +86,12 @@ func parseArgs(raw []string) *Args {
 	a := &Args{
 		UnknownFlags: make(map[string]string),
 		Mode:         "text",
+	}
+
+	// Check for subcommand as first arg
+	if len(raw) > 0 && raw[0] == "config" {
+		a.Config = true
+		return a
 	}
 
 	i := 0
@@ -276,6 +285,9 @@ func printHelp() {
 
 Usage:
   xihu [options] [@files...] [messages...]
+
+Commands:
+  xihu config                    Open TUI to enable/disable skills and resources
 
 Options:
   --provider <name>              Provider name (e.g. openai, anthropic)

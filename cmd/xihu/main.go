@@ -44,6 +44,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	// ── Config subcommand ──────────────────────────────────────────────
+	if args.Config {
+		runConfigCommand(cwd)
+		return
+	}
+
 	// ── Settings ──────────────────────────────────────────────────────────
 	cfg, cfgErr := settings.LoadAll()
 	if cfg == nil {

@@ -66,7 +66,7 @@ func DiscoverSkills(searchDirs []string, source string) ([]Skill, error) {
 				return nil
 			}
 
-			skill, ok := parseSkillFile(path, source)
+			skill, ok := ParseSkillFile(path, source)
 			if ok {
 				skills = append(skills, skill)
 			}
@@ -82,9 +82,9 @@ func DiscoverSkills(searchDirs []string, source string) ([]Skill, error) {
 	return skills, nil
 }
 
-// parseSkillFile reads a SKILL.md file and extracts frontmatter (YAML between --- markers).
+// ParseSkillFile reads a SKILL.md file and extracts frontmatter (YAML between --- markers).
 // Returns the Skill and true if parsing succeeded.
-func parseSkillFile(path, source string) (Skill, bool) {
+func ParseSkillFile(path, source string) (Skill, bool) {
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return Skill{}, false
