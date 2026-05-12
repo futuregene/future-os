@@ -118,10 +118,7 @@ func (m *AppModel) reload() {
 		}
 		// Scoped models
 		if len(newSettings.ScopedModels) > 0 {
-			m.scopedModels = make(map[string]bool)
-			for _, mod := range newSettings.ScopedModels {
-				m.scopedModels[mod] = true
-			}
+			m.applyScopedModels(newSettings.ScopedModels)
 		}
 		// Theme - reload if changed
 		if newSettings.Theme != "" && m.theme != nil && newSettings.Theme != m.theme.Name {

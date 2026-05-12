@@ -224,9 +224,7 @@ func NewAppModel(as *agentsession.AgentSession, sessMgr *session.Manager, sess *
 		}
 		// Scoped models
 		if len(cfg.ScopedModels) > 0 {
-			for _, m := range cfg.ScopedModels {
-				app.scopedModels[m] = true
-			}
+			app.applyScopedModels(cfg.ScopedModels)
 		}
 	}
 

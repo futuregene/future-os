@@ -4,7 +4,8 @@ package tui
 import (
 
 	"fmt"
-
+	"path/filepath"
+	"strings"
 
 	"github.com/huichen/xihu/internal/modelregistry"
 	"github.com/huichen/xihu/internal/tui/components"
@@ -16,6 +17,25 @@ import (
 
 // StreamTextMsg is a chunk of streamed text from the LLM.
 
+// applyScopedModels expands ScopedModels patterns against availableModels
+// and populates the scopedModels map with matching exact model IDs.
+// Patterns like "openai/*" or "anthropic/*" are supported via filepath.Match.
+func (m *AppModel) applyScopedModels(patterns []string) {
+	m.scopedModels = make(map[string]bool)
+	for _, pat := range patterns {
+		// If pattern contains glob characters, expand against available models
+		if strings.ContainsAny(pat, "*?[") {
+			for _, model := range m.availableModels {
+				if matched, _ := filepath.Match(pat, model); matched {
+					m.scopedModels[model] = true
+				}
+			}
+		} else {
+			// Exact model ID
+			m.scopedModels[pat] = true
+		}
+	}
+}
 func supportsThinking(modelID string) bool {
 	for _, m := range modelregistry.BuiltinModels() {
 		if m.ID == modelID {
