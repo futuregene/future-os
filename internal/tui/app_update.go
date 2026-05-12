@@ -64,7 +64,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 			m.customFooter.SetWidth(msg.Width)
 		}
 		footerHeight := m.footerHeight()
-		headerHeight := 3 // spacer + empty + spacer (TS pi-mono headerContainer)
+		headerHeight := 0 // header is now a no-op — welcome text lives in chat viewport
 		if m.customHeader != nil {
 			headerHeight = m.customHeader.Height()
 		}
@@ -147,7 +147,7 @@ func (m AppModel) Update(msg tea.Msg) (outModel tea.Model, outCmd tea.Cmd) {
 			// Recalculate chat size
 			editorHeight := m.editorHeight()
 			footerHeight := m.footerHeight()
-			headerHeight := 3 // spacer + empty + spacer (TS pi-mono headerContainer)
+			headerHeight := 0 // header is now a no-op — welcome text lives in chat viewport
 			if m.customHeader != nil {
 				headerHeight = m.customHeader.Height()
 			}

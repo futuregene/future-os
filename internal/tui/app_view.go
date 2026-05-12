@@ -37,9 +37,12 @@ func (m AppModel) View() string {
 	widgetAboveView := m.widgetsView(m.widgetsAbove)
 	widgetBelowView := m.widgetsView(m.widgetsBelow)
 
-	// Build main layout, skipping empty widget sections
+	// Build main layout, skipping empty sections
 	var mainParts []string
-	mainParts = append(mainParts, headerView, chatView, pendingView, statusView)
+	if headerView != "" {
+		mainParts = append(mainParts, headerView)
+	}
+	mainParts = append(mainParts, chatView, pendingView, statusView)
 	if widgetAboveView != "" {
 		mainParts = append(mainParts, widgetAboveView)
 	}
@@ -57,7 +60,10 @@ func (m AppModel) View() string {
 	if m.autocomplete.Active() {
 		acView := m.autocomplete.View()
 		var acParts []string
-		acParts = append(acParts, headerView, chatView, pendingView, statusView)
+		if headerView != "" {
+			acParts = append(acParts, headerView)
+		}
+		acParts = append(acParts, chatView, pendingView, statusView)
 		if widgetAboveView != "" {
 			acParts = append(acParts, widgetAboveView)
 		}

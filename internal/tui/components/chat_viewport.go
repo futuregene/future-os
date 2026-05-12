@@ -22,6 +22,7 @@ func newGlamourRenderer(style string, wordWrap int) (*glamour.TermRenderer, erro
 func NewChatViewport() ChatViewport {
 	vp := viewport.New(80, 20)
 	vp.Style = lipgloss.NewStyle().PaddingLeft(1)
+	vp.MouseWheelEnabled = true
 
 	renderer, err := newGlamourRenderer("dark", 80)
 	if err != nil {

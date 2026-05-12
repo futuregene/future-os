@@ -147,10 +147,8 @@ func (c *BashExecutionComponent) Render(entry ChatEntry, width int) string {
 			sb.WriteString(" " + strings.Join(statusParts, "\n "))
 		}
 	}
-	// Only add \n before border if no output was shown (TS pi-mono: border follows output directly when no status)
-	if !hadOutput {
-		sb.WriteByte('\n')
-	}
+	// Always add newline before bottom border for spacing
+	sb.WriteByte('\n')
 
 	// DynamicBorder bottom (TS pi-mono: DynamicBorder at full width)
 	sb.WriteString(borderStyle.Render(strings.Repeat("─", width)))

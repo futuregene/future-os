@@ -113,6 +113,8 @@ func (c *ChatViewport) CompleteBash(exitCode int, cancelled bool) {
 	if cancelled {
 		last.BashExitCode = -1
 	}
+	// Ensure viewport scrolls to show completion status
+	c.autoScroll = true
 }
 
 // SetBashTruncation sets truncation info on the last bash entry (TS pi-mono: truncation warning inline in border).

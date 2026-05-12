@@ -67,7 +67,7 @@ func runBubbleTea(
 
 	p := tea.NewProgram(
 		&app,
-		tea.WithAltScreen(),
+		// tea.WithAltScreen(), // disabled: allows scrolling up to pre-launch terminal output
 		tea.WithMouseCellMotion(),
 	)
 

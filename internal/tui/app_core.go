@@ -308,7 +308,7 @@ func NewAppModel(as *agentsession.AgentSession, sessMgr *session.Manager, sess *
 // Init is the first command run when the program starts.
 func (m AppModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{
-		tea.EnterAltScreen,
+		// tea.EnterAltScreen, // disabled: allows scrolling up to pre-launch terminal output
 		m.input.Focus(),
 		func() tea.Msg {
 			return WelcomeMsg{
