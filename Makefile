@@ -104,3 +104,9 @@ help:
 		grep -B1 '^##' | \
 		sed -n 's/^## //p' | \
 		awk 'NR%2{printf "  \033[36m%-20s\033[0m", $$0; next} {print "- "$$0}'
+
+# ─── Code Generation ────────────────────────────────────────────────────────
+
+## Generate built-in model catalog from external APIs (matches pi's generate-models.ts)
+generate-models:
+	cd internal/modelregistry && $(GO) run generate_models.go
