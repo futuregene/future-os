@@ -394,7 +394,12 @@ func main() {
 		fmt.Printf("Model scope: %s \033[2m(Ctrl+P to cycle)\033[0m\n", strings.Join(scopeList, ", "))
 	}
 
-	err := tui.Run(as, sess, "", model, baseURL, resolvedSkills, nil, thinking, availableModels, cfg, eng.ExtensionRunner, promptTemplates, cfPaths, skillCollisions, settingsLoadErr)
+	// Preserve provider prefix in model string so NewAppModel can parse it
+	modelWithProvider := model
+	if provider != "" && !strings.Contains(model, "/") {
+		modelWithProvider = provider + "/" + model
+	}
+	err := tui.Run(as, sess, "", modelWithProvider, baseURL, resolvedSkills, nil, thinking, availableModels, cfg, eng.ExtensionRunner, promptTemplates, cfPaths, skillCollisions, settingsLoadErr)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 			os.Exit(1)

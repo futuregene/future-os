@@ -2,8 +2,9 @@
 package tui
 
 import (
-
+	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -260,7 +261,7 @@ func NewAppModel(as *agentsession.AgentSession, sessMgr *session.Manager, sess *
 	modelName, provider := parseModelString(modelStr)
 	// Use explicit thinkingLevel parameter (not extracted from modelStr)
 	app.footer.SetSession(cwd, gitBranch, sessionName, modelName, thinkingLevel, provider)
-	app.footer.SetHasReasoning(supportsThinking(modelName))
+	app.footer.SetHasReasoning(supportsThinking(modelName) || (thinkingLevel != "" && thinkingLevel != "off"))
 	app.input.SetBorderColor(app.theme.ThinkingBorderColor(thinkingLevel))
 	app.input.SetBashBorderColor("#98c379")  // green (TS pi-mono: bashMode)
 	app.input.SetSlashBorderColor("#61afef") // blue (default)
@@ -303,6 +304,15 @@ func (m AppModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		tea.EnterAltScreen,
 		m.input.Focus(),
+		// Print model scope before welcome (TS pi-mono: console.log before InteractiveMode.run)
+		func() tea.Msg {
+			if len(m.availableModels) > 0 && !m.quietStartup {
+				models := make([]string, len(m.availableModels))
+				copy(models, m.availableModels)
+				tea.Println(fmt.Sprintf("Model scope: %s \033[2m(Ctrl+P to cycle)\033[0m", strings.Join(models, ", ")))
+			}
+			return nil
+		},
 		func() tea.Msg {
 			return WelcomeMsg{
 				ThemeAccent:          m.theme.Accent,

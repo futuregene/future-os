@@ -123,9 +123,7 @@ func (f *Footer) buildLine2(width int) string {
 	rightSide := modelPart
 
 	// Prepend provider only when multiple providers configured (TS pi-mono style)
-	// Also skip if model name already contains provider name.
-	if f.provider != "" && f.availableProviderCount > 1 &&
-		!strings.Contains(strings.ToLower(f.model), strings.ToLower(f.provider)) {
+	if f.provider != "" && f.availableProviderCount > 1 {
 		rightSide = "(" + f.provider + ") " + modelPart
 	}
 
@@ -250,14 +248,14 @@ func (f *Footer) buildExtensionLine(width int) string {
 
 // formatContextBar returns a colored context percentage string like "73.2%/128k (auto)".
 // Uses TS pi-mono color scheme: >90% red, >70% yellow, ≤70% no color.
-// Always shows context% when autoCompact is enabled (TS pi-mono always pushes to statsParts).
+// Always shows context% at startup (TS pi-mono always pushes to statsParts).
 func (f *Footer) formatContextBar() string {
-	// Show "?/max (auto)" at startup when context is unknown
+	// Show "?" at startup when context is unknown (TS pi-mono: always visible)
 	if f.contextPercent <= 0 && f.contextMaxTokens <= 0 {
 		if f.autoCompact {
 			return "? (auto)"
 		}
-		return ""
+		return "?"
 	}
 
 	var text string

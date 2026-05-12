@@ -17,10 +17,9 @@ func (t *Theme) FooterStyle() lipgloss.Style {
 }
 
 // InputStyle returns the lipgloss style for the input area.
+// TS pi-mono: borderless single-line inline prompt
 func (t *Theme) InputStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder(), true).
-		BorderForeground(lipgloss.Color(t.InputBorder)).
 		Padding(0, 1)
 }
 

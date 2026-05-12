@@ -266,12 +266,13 @@ func (m *AppModel) showLoadedResources() {
 	}
 
 	// ── [Context] section (TS: shown first) ──────────────────────────────
+	firstSection := true
 	if len(msg.ContextFiles) > 0 {
 		contextCompact := make([]string, len(msg.ContextFiles))
 		for i, fp := range msg.ContextFiles {
 			contextCompact[i] = formatContextPath(fp)
 		}
-		m.chat.AppendSystem("")
+		if firstSection { m.chat.AppendSystem(""); firstSection = false }
 		m.chat.AppendSystem(sectionHeader("Context"))
 		m.chat.AppendSystem(compactList(contextCompact))
 	}
@@ -282,7 +283,7 @@ func (m *AppModel) showLoadedResources() {
 		for i, s := range msg.Skills {
 			skillNames[i] = s.Name
 		}
-		m.chat.AppendSystem("")
+		if firstSection { m.chat.AppendSystem(""); firstSection = false }
 		m.chat.AppendSystem(sectionHeader("Skills"))
 		m.chat.AppendSystem(compactList(skillNames))
 	}
@@ -298,7 +299,7 @@ func (m *AppModel) showLoadedResources() {
 		extNames = msg.Extensions
 	}
 	if len(extNames) > 0 {
-		m.chat.AppendSystem("")
+		if firstSection { m.chat.AppendSystem(""); firstSection = false }
 		m.chat.AppendSystem(sectionHeader("Extensions"))
 		m.chat.AppendSystem(compactList(extNames))
 	}
@@ -309,7 +310,7 @@ func (m *AppModel) showLoadedResources() {
 		for i, t := range msg.PromptTemplates {
 			templateNames[i] = "/" + t.Name
 		}
-		m.chat.AppendSystem("")
+		if firstSection { m.chat.AppendSystem(""); firstSection = false }
 		m.chat.AppendSystem(sectionHeader("Prompts"))
 		m.chat.AppendSystem(compactList(templateNames))
 	}

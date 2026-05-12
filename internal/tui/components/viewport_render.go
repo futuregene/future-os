@@ -95,6 +95,13 @@ func needsBlankLine(current, next ChatEntry) bool {
 	}
 	if current.Type == "custom_message" || current.Type == "system" ||
 		current.Type == "error" || current.Type == "warning" {
+		// Don't add blank lines between consecutive system/warning/error entries
+		// (TS pi-mono: compact resource sections)
+		if (current.Type == "system" && next.Type == "system") ||
+			(current.Type == "warning" && next.Type == "warning") ||
+			(current.Type == "error" && next.Type == "error") {
+			return false
+		}
 		return true
 	}
 	return false

@@ -63,6 +63,15 @@ func formatDuration(ms int64) string {
 
 // formatContextPath formats a context file path for display (TS pi-mono: formatContextPath).
 func formatContextPath(fp string) string {
+	// Try to make relative to CWD first (TS pi-mono style)
+	cwd, _ := os.Getwd()
+	if cwd != "" {
+		rel, err := filepath.Rel(cwd, fp)
+		if err == nil && !strings.HasPrefix(rel, "..") {
+			return rel
+		}
+	}
+	// Fall back to ~ abbreviation
 	home, _ := os.UserHomeDir()
 	if home != "" && strings.HasPrefix(fp, home) {
 		return "~" + fp[len(home):]

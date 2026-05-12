@@ -123,10 +123,10 @@ func DefaultKeybindingDefs() map[KeybindingID]KeybindingDef {
 		SelectPageUp:   {DefaultKeys: []string{"pgup"}, Description: "Selection page up", Category: "editor"},
 		SelectPageDn:   {DefaultKeys: []string{"pgdown"}, Description: "Selection page down", Category: "editor"},
 		SelectConfirm:  {DefaultKeys: []string{"enter"}, Description: "Confirm selection", Category: "editor"},
-		SelectCancel:   {DefaultKeys: []string{"esc", "ctrl+c"}, Description: "Cancel selection", Category: "editor"},
+		SelectCancel:   {DefaultKeys: []string{"escape", "ctrl+c"}, Description: "Cancel selection", Category: "editor"},
 
 		// Global TUI
-		GlobalInterrupt:      {DefaultKeys: []string{"esc"}, Description: "Interrupt / cancel", Category: "global"},
+		GlobalInterrupt:      {DefaultKeys: []string{"escape"}, Description: "Interrupt / cancel", Category: "global"},
 		GlobalClear:          {DefaultKeys: []string{"ctrl+c"}, Description: "Clear input (double: exit)", Category: "global"},
 		GlobalExit:           {DefaultKeys: []string{"ctrl+d"}, Description: "Exit (on empty line)", Category: "global"},
 		GlobalToggleHeader:   {DefaultKeys: []string{"ctrl+h"}, Description: "Toggle header", Category: "tools"},
