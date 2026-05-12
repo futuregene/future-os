@@ -40,13 +40,13 @@ func (m AppModel) View() string {
 	main := lipgloss.JoinVertical(
 		lipgloss.Top,
 		headerView,
+		footerView,
 		chatView,
 		pendingView,
 		statusView,
 		widgetAboveView,
 		inputView,
 		widgetBelowView,
-		footerView,
 	)
 
 	var result string
@@ -54,7 +54,7 @@ func (m AppModel) View() string {
 	// Show autocomplete popover above the input
 	if m.autocomplete.Active() {
 		acView := m.autocomplete.View()
-		result = lipgloss.JoinVertical(lipgloss.Top, headerView, chatView, pendingView, statusView, acView, inputView, footerView)
+		result = lipgloss.JoinVertical(lipgloss.Top, headerView, footerView, chatView, pendingView, statusView, acView, inputView)
 	} else if m.overlay.Active() {
 		// Show overlay (modal or non-capturing)
 		overlayView := m.overlay.View()

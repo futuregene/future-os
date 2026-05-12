@@ -306,10 +306,15 @@ func DiscoverContextFiles(agentDir, cwd string) []ContextFile {
 	tryDir := func(dir string) {
 		for _, name := range contextFileNames {
 			fp := filepath.Join(dir, name)
-			if seen[fp] {
+			// Resolve to canonical path for dedup (macOS case-insensitive)
+			realFP := strings.ToLower(fp)
+			if resolved, err := filepath.EvalSymlinks(fp); err == nil {
+				realFP = strings.ToLower(resolved)
+			}
+			if seen[realFP] {
 				continue
 			}
-			seen[fp] = true
+			seen[realFP] = true
 			data, err := os.ReadFile(fp)
 			if err == nil {
 				files = append(files, ContextFile{Path: fp, Content: string(data)})

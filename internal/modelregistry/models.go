@@ -145,3 +145,8 @@ var modelsCatalog = []types.Model{
 	{ID: "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8", Name: "Llama 4 Maverick (Together)", Provider: "together", API: "openai-completions", BaseURL: "https://api.together.xyz/v1", ContextWindow: 131072, MaxTokens: 8192, Reasoning: false},
 	{ID: "deepseek-ai/DeepSeek-R1", Name: "DeepSeek R1 (Together)", Provider: "together", API: "openai-completions", BaseURL: "https://api.together.xyz/v1", ContextWindow: 131072, MaxTokens: 32768, Reasoning: true},
 }
+
+// BuiltinModels returns the embedded static model catalog (TS pi-mono: models.generated.ts).
+func BuiltinModels() []types.Model {
+	return modelsCatalog
+}

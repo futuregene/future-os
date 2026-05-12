@@ -255,7 +255,6 @@ func (c *ChatViewport) View() string {
 	c.userMsgComp.base = &c.componentBase
 
 	var sb strings.Builder
-	sb.WriteByte('\n')
 
 	for i, e := range c.entries {
 		switch e.Type {

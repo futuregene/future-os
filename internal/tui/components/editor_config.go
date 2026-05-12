@@ -27,9 +27,11 @@ func (e *Editor) matches(ks, binding string, hardcoded ...string) bool {
 }
 
 // NewEditor creates a new editor component.
+// TS pi-mono: borderless single-line inline prompt, no cursor indicator
 func NewEditor(style lipgloss.Style) Editor {
 	ta := textarea.New()
 	ta.Placeholder = "Message..."
+	ta.Prompt = ""            // no cursor prompt (TS pi-mono style)
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0 // unlimited
 	ta.SetHeight(1)

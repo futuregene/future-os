@@ -12,9 +12,10 @@ import (
 	agentsession "github.com/huichen/xihu/internal/agentsession"
 	"github.com/huichen/xihu/internal/events"
 	"github.com/huichen/xihu/internal/extensions"
+	"github.com/huichen/xihu/internal/modelregistry"
+	"github.com/huichen/xihu/internal/prompt"
 	"github.com/huichen/xihu/internal/session"
 	"github.com/huichen/xihu/internal/settings"
-	"github.com/huichen/xihu/internal/prompt"
 	"github.com/huichen/xihu/internal/skills"
 	"github.com/huichen/xihu/internal/tui/components"
 	"github.com/huichen/xihu/internal/utils"
@@ -271,8 +272,15 @@ func NewAppModel(as *agentsession.AgentSession, sessMgr *session.Manager, sess *
 		app.footer.SetEntryCount(len(sess.Entries))
 	}
 
-	// Show "? (auto)" at startup (TS pi-mono: always shows context% in footer)
-	app.footer.SetContextUsage(0, 0, app.autoCompact)
+	// Look up model context window from registry (TS pi-mono: shows context window in footer)
+	contextWindow := 0
+	for _, mi := range modelregistry.BuiltinModels() {
+		if mi.ID == modelName {
+			contextWindow = mi.ContextWindow
+			break
+		}
+	}
+	app.footer.SetContextUsage(0, contextWindow, app.autoCompact)
 
 	// Track unique providers for footer display (TS pi-mono: only show provider when >1)
 	providers := make(map[string]bool)
