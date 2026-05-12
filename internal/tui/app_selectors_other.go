@@ -134,7 +134,7 @@ func (m *AppModel) showThinkingSelector() {
 		desc := ""
 		switch level {
 		case "off":
-			desc = "No extended reasoning (fastest)"
+			desc = "No reasoning"
 		case "minimal":
 			desc = "Very brief reasoning (~1k tokens)"
 		case "low":

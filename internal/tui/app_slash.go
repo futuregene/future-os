@@ -33,7 +33,7 @@ func (m *AppModel) handleSlashCmd(text string) (string, bool) {
 		return "xihu — AI coding assistant.\n\n" +
 			"Quick start:\n" +
 			"  /model       select model (opens selector UI)\n" +
-			"  /settings    configure app settings\n" +
+			"  /settings    open settings menu\n" +
 			"  /login       configure provider authentication\n" +
 			"  /new         start a new session\n" +
 			"  /hotkeys     all keyboard shortcuts\n" +
@@ -69,21 +69,7 @@ func (m *AppModel) handleSlashCmd(text string) (string, bool) {
 		}
 		m.chat.AppendWarning("Usage: /name <name>")
 			return "", true
-	case "/new":
-		if m.session != nil && m.sessMgr != nil {
-					m.session.ID = session.GenerateID()
-			m.session.Entries = nil
-			m.session.LeafID = ""
-			m.session.Name = ""
-			m.session.CreatedAt = time.Now()
-			m.session.UpdatedAt = time.Now()
-			if err := m.sessMgr.Save(m.session); err == nil {
-				m.footer.SetSession(m.session.CWD, getGitBranch(m.session.CWD), "", "", "", "")
-				return "✓ New session started", true
-			}
-			return "Error creating new session", true
-		}
-		return "No active session", true
+
 	case "/clone":
 		if m.session != nil && m.sessMgr != nil {
 			if len(m.session.Entries) == 0 {
@@ -96,6 +82,21 @@ func (m *AppModel) handleSlashCmd(text string) (string, bool) {
 	case "/sessions":
 		m.showSessionSelector()
 		return "", true
+	case "/new":
+		if m.session != nil && m.sessMgr != nil {
+			m.session.ID = session.GenerateID()
+			m.session.Entries = nil
+			m.session.Name = ""
+			m.session.CreatedAt = time.Now()
+			m.session.UpdatedAt = time.Now()
+			if err := m.sessMgr.Save(m.session); err == nil {
+				m.footer.SetSession(m.session.CWD, getGitBranch(m.session.CWD), "", "", "", "")
+				m.chat.AppendSystem("✓ New session started")
+				return "", true
+			}
+			return "Error creating new session", true
+		}
+		return "No active session", true
 	case "/quit":
 		m.quitting = true
 		return "", true
@@ -362,7 +363,7 @@ func (m *AppModel) handleSlashCmd(text string) (string, bool) {
 			return "", true
 		}
 		m.reload()
-		m.chat.AppendSystem("Reloaded keybindings, extensions, skills, prompts, themes")
+		m.chat.AppendSystem("Reloaded settings, keybindings, and theme")
 		m.showPostReloadDiagnostics()
 		return "", true
 	case result == "QUIT":

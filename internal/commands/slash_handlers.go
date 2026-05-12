@@ -361,28 +361,30 @@ func handleHotkeys() (string, error) {
 
 Slash commands (25 total):
   /help                 Show help about xihu
-  /model [name]         Set or show model
+Slash commands (25 total):
+  /help                 Show help about xihu
+  /model [name]         Select model (opens selector UI)
   /baseurl [url]        Set or show base URL
   /memory               Show memory info
   /clear [id]           Clear/delete session
-  /settings             Show current settings
-  /scoped-models        Show model configuration
-  /export [path]        Export session (HTML or .jsonl)
-  /import <file>        Import session from JSONL
-  /share                Share session as secret gist
+  /settings             Open settings menu
+  /scoped-models        Enable/disable models for Ctrl+P cycling
+  /export [path]        Export session (HTML default, or specify path: .html/.jsonl)
+  /import <file>        Import and resume a session from a JSONL file
+  /share                Share session as a secret GitHub gist
   /copy                 Copy last agent message to clipboard
-  /name [name]          Set or show session name
-  /session              Show session stats
-  /changelog            Show changelog
+  /name [name]          Set session display name
+  /session              Show session info and stats
+  /changelog            Show changelog entries
   /hotkeys              Show this help
-  /fork [entry_id]      Fork session from entry
-  /clone                Clone current session
-  /tree                 Show session tree
-  /login                Show auth instructions
-  /logout               Show logout instructions
-  /new                  Start new session
-  /compact              Manual context compaction
-  /resume <id>          Resume different session
+  /fork [entry_id]      Create a new fork from a previous user message
+  /clone                Duplicate the current session at the current position
+  /tree                 Navigate session tree (switch branches)
+  /login                Configure provider authentication
+  /logout               Remove provider authentication
+  /new                  Start a new session
+  /compact              Manually compact the session context
+  /resume <id>          Resume a different session
   /reload               Reload configuration
-  /quit                 Exit xihu`, nil
+  /quit                 Quit xihu`, nil
 }

@@ -91,12 +91,8 @@ func (m *AppModel) handleShare() {
 		return
 	}
 
-	// Extract gist ID and build preview URL (TS pi-mono: getShareViewerUrl)
-	previewURL := ""
-	if idx := strings.LastIndex(gistURL, "/"); idx >= 0 {
-		gistID := gistURL[idx+1:]
-		previewURL = "https://pi.dev/session/#" + gistID
-	}
+	// Use gist URL as the preview URL
+	previewURL := gistURL
 
 	if m.program != nil {
 		m.program.Send(ShareResultMsg{GistURL: gistURL, PreviewURL: previewURL})
