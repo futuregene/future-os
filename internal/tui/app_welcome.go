@@ -35,9 +35,7 @@ func (m *AppModel) showWelcome(msg WelcomeMsg) {
 		Foreground(lipgloss.Color(m.theme.Dim))
 
 	// ── Logo + instructions (TS pi-mono: builtInHeader ExpandableText) ──────
-	// Logo: "xihu vX.X.X" — bold accent + dim (TS: theme.bold(theme.fg("accent", APP_NAME)) + theme.fg("dim", ` v${version}`))
-	// Prepend a leading spacer entry so the viewport doesn't clip the first line.
-	m.chat.AppendSystem("")
+	// Logo: "xihu vX.X.X" — bold accent + dim
 	m.chat.AppendSystem(accentStyle.Render("xihu") + dimStyle.Render(" v"+utils.Version))
 
 	if m.welcomeExpanded {
