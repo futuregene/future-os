@@ -325,9 +325,6 @@ func (m AppModel) Init() tea.Cmd {
 			}
 		},
 	}
-	if !m.showHardwareCursor {
-		cmds = append(cmds, tea.HideCursor)
-	}
 	// Start git branch watcher (TS pi-mono: footer live branch updates)
 	cmds = append(cmds, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
 		return BranchTickMsg(t)

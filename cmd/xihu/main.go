@@ -391,7 +391,6 @@ func main() {
 		for _, m := range availableModels {
 			scopeList = append(scopeList, m)
 		}
-		fmt.Printf("Model scope: %s \033[2m(Ctrl+P to cycle)\033[0m\n", strings.Join(scopeList, ", "))
 	}
 
 	// Preserve provider prefix in model string so NewAppModel can parse it

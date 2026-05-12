@@ -68,7 +68,7 @@ func runBubbleTea(
 	p := tea.NewProgram(
 		&app,
 		// tea.WithAltScreen(), // disabled: allows scrolling up to pre-launch terminal output
-		tea.WithMouseCellMotion(),
+		// tea.WithMouseCellMotion(), // disabled: in normal screen mode, let terminal handle mouse wheel for scrollback
 	)
 
 	// Set program reference so goroutines can send messages
