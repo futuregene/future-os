@@ -318,6 +318,12 @@ func ResolveModels(cfg *ModelsConfig) []ResolvedModel {
 	return resolveModels(cfg)
 }
 
+// BuiltinModels returns the built-in models as a flat slice (for backward compatibility).
+func BuiltinModels() []ResolvedModel {
+	cfg := BuiltinConfig()
+	return resolveModels(cfg)
+}
+
 // resolveModels flattens the provider-centric config into resolved models.
 // Applies provider defaults and model overrides.
 func resolveModels(cfg *ModelsConfig) []ResolvedModel {
