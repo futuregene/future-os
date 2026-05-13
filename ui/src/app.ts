@@ -402,6 +402,44 @@ export class App {
   // ─── Actions ────────────────────────────────────────────────────────────
 
   private async handleSubmit(value: string): Promise<void> {
+    // Handle slash commands locally (don't send to LLM)
+    if (value.startsWith("/")) {
+      const parts = value.slice(1).split(/\s+/);
+      const cmd = parts[0].toLowerCase();
+      const arg = parts.slice(1).join(" ");
+
+      if (cmd === "model") {
+        if (arg) {
+          // Set model directly
+          try {
+            await this.client.setModel(arg);
+            this.state.model = arg;
+            this.chat.addMessage({
+              id: crypto.randomUUID(),
+              role: "system",
+              content: `Model: ${arg}`,
+            });
+          } catch (err) {
+            this.chat.addMessage({
+              id: crypto.randomUUID(),
+              role: "system",
+              content: `Failed to set model: ${err}`,
+            });
+          }
+        } else {
+          // Show model selector
+          await this.showModelSelector();
+        }
+        return;
+      }
+
+      if (cmd === "sessions") {
+        await this.showSessions();
+        return;
+      }
+    }
+
+    // Regular prompt - send to server
     this.chat.addMessage({
       id: crypto.randomUUID(),
       role: "user",
@@ -519,6 +557,59 @@ export class App {
     } catch {
       this.state.model = "(not connected)";
     }
+  }
+
+  async showModelSelector(): Promise<void> {
+    let models: string[] = [];
+    try {
+      const r = await this.client.getAvailableModels();
+      models = r.models;
+    } catch (err) {
+      this.chat.addMessage({
+        id: crypto.randomUUID(),
+        role: "system",
+        content: `Failed to load models: ${err}`,
+      });
+      return;
+    }
+
+    const items: SelectItem[] = models.map((m) => ({
+      value: m,
+      label: m,
+      description: m === this.state.model ? "current" : "",
+    }));
+
+    const sl = new SelectList({
+      title: "Select Model",
+      items,
+      maxVisible: 15,
+      onSelect: async (item) => {
+        try {
+          await this.client.setModel(item.value);
+          this.state.model = item.value;
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: `Model: ${item.label}`,
+          });
+        } catch (err) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: `Failed to set model: ${err}`,
+          });
+        }
+        this.overlay = null;
+        this.render();
+      },
+      onCancel: () => {
+        this.overlay = null;
+        this.render();
+      },
+    });
+
+    this.overlay = { kind: "select", title: "Select Model", component: sl };
+    this.render();
   }
 
   private async cycleModel(): Promise<void> {

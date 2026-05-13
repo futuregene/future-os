@@ -92,9 +92,16 @@ func (s *Server) handleCommand(cmd RpcCommand) *RpcResponse {
 		})
 
 	case "get_available_models":
-		// Return scoped models or use engine settings
-		models := []string{as.Loop().Model}
-		return success("get_available_models", map[string]interface{}{"models": models})
+		// Return all available models from the model registry
+		if as.Engine().ModelRegistry != nil {
+			allModels := as.Engine().ModelRegistry.GetAll()
+			models := make([]string, 0, len(allModels))
+			for _, m := range allModels {
+				models = append(models, m.ID)
+			}
+			return success("get_available_models", map[string]interface{}{"models": models})
+		}
+		return success("get_available_models", map[string]interface{}{"models": []string{}})
 
 	// =================================================================
 	// Thinking

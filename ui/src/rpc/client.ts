@@ -164,8 +164,8 @@ export class RpcClient {
     return this.call("get_messages", { type: "get_messages" });
   }
 
-  async setModel(provider: string, modelId: string): Promise<void> {
-    await this.call("set_model", { type: "set_model", provider, modelId });
+  async setModel(modelId: string): Promise<void> {
+    await this.call("set_model", { type: "set_model", modelId });
   }
 
   async cycleModel(): Promise<{ model: string; thinkingLevel: string; isScoped: boolean } | null> {
