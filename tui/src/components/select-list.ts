@@ -1,10 +1,11 @@
 /**
  * SelectList - a list selector with filtering and keyboard navigation.
- * Modeled after @earendil-works/pi-tui SelectList.
+ * Modeled after pi's SelectList: Component + handleInput, filtering, scroll indicators.
  */
 
-import type { Theme, Component } from "../tui.js";
-import { DEFAULT_THEME, CSI, RESET, BOLD } from "../tui.js";
+import type { Component } from "../tui.js";
+import { CSI, RESET, BOLD } from "../tui.js";
+import { visibleWidth } from "../utils.js";
 
 export interface SelectItem {
   value: string;
@@ -15,15 +16,29 @@ export interface SelectItem {
 export interface SelectListOptions {
   title: string;
   items: SelectItem[];
-  theme?: Theme;
   maxVisible?: number;
+  theme?: {
+    accent: number;
+    fg: number;
+    dimFg: number;
+    selectedFg: number;
+    selectedBg: number;
+    bg: number;
+  };
   onSelect?: (item: SelectItem) => void;
   onCancel?: () => void;
+  onSelectionChange?: (item: SelectItem) => void;
   onKey?: (key: string) => boolean;
 }
 
-const DESCRIPTION_WIDTH = 40;
-const PRIMARY_WIDTH = 50;
+const DEFAULT_THEME = {
+  accent: 39,
+  fg: 252,
+  dimFg: 245,
+  selectedFg: 255,
+  selectedBg: 38,
+  bg: 235,
+};
 
 export class SelectList implements Component {
   private items: SelectItem[];
@@ -31,26 +46,39 @@ export class SelectList implements Component {
   private selectedIndex = 0;
   private filter = "";
   private maxVisible: number;
-  private theme: Theme;
+  private theme: typeof DEFAULT_THEME;
   private title: string;
   private onSelect?: (item: SelectItem) => void;
   private onCancel?: () => void;
+  private onSelectionChange?: (item: SelectItem) => void;
   private onKey?: (key: string) => boolean;
+  private scrollOffset = 0;
 
   constructor(options: SelectListOptions) {
     this.items = options.items;
     this.filteredItems = options.items;
     this.maxVisible = options.maxVisible ?? 10;
-    this.theme = options.theme ?? DEFAULT_THEME;
+    this.theme = { ...DEFAULT_THEME, ...options.theme };
     this.title = options.title;
     this.onSelect = options.onSelect;
     this.onCancel = options.onCancel;
+    this.onSelectionChange = options.onSelectionChange;
     this.onKey = options.onKey;
   }
 
   getSelectedItem(): SelectItem | null {
     if (this.filteredItems.length === 0) return null;
     return this.filteredItems[this.selectedIndex] ?? null;
+  }
+
+  setSelectedIndex(index: number): void {
+    this.selectedIndex = Math.max(0, Math.min(index, this.filteredItems.length - 1));
+    this.recalcScroll();
+  }
+
+  setFilter(filter: string): void {
+    this.filter = filter;
+    this.applyFilter();
   }
 
   handleInput(data: string): void {
@@ -64,10 +92,18 @@ export class SelectList implements Component {
 
     switch (key) {
       case "up":
-        if (this.selectedIndex > 0) this.selectedIndex--;
+        if (this.selectedIndex > 0) {
+          this.selectedIndex--;
+          this.recalcScroll();
+          this.notifySelectionChange();
+        }
         return true;
       case "down":
-        if (this.selectedIndex < this.filteredItems.length - 1) this.selectedIndex++;
+        if (this.selectedIndex < this.filteredItems.length - 1) {
+          this.selectedIndex++;
+          this.recalcScroll();
+          this.notifySelectionChange();
+        }
         return true;
       case "enter":
         if (this.filteredItems.length > 0) {
@@ -105,40 +141,70 @@ export class SelectList implements Component {
     if (this.selectedIndex >= this.filteredItems.length) {
       this.selectedIndex = Math.max(0, this.filteredItems.length - 1);
     }
+    this.scrollOffset = 0;
+    this.notifySelectionChange();
   }
 
-  getHeight(): number {
-    return Math.min(this.filteredItems.length, this.maxVisible) + 4;
+  private recalcScroll(): void {
+    if (this.selectedIndex < this.scrollOffset) {
+      this.scrollOffset = this.selectedIndex;
+    } else if (this.selectedIndex >= this.scrollOffset + this.maxVisible) {
+      this.scrollOffset = this.selectedIndex - this.maxVisible + 1;
+    }
+  }
+
+  private notifySelectionChange(): void {
+    const item = this.getSelectedItem();
+    if (item) this.onSelectionChange?.(item);
   }
 
   render(width: number): string[] {
     const lines: string[] = [];
+    const innerW = Math.max(20, width);
 
     lines.push(`${CSI}38;5;${this.theme.accent}m${BOLD} ${this.title} ${RESET}`);
     lines.push(`${CSI}2mFilter: ${this.filter}_ ${RESET}`);
 
-    const maxItems = Math.min(this.filteredItems.length, this.maxVisible);
+    const total = this.filteredItems.length;
+    const maxItems = Math.min(total, this.maxVisible);
+
+    // Scroll indicator above
+    if (this.scrollOffset > 0) {
+      lines.push(`${CSI}38;5;${this.theme.dimFg}m↑ ${this.scrollOffset} more${RESET}`);
+    }
+
     for (let i = 0; i < maxItems; i++) {
-      const item = this.filteredItems[i];
-      const selected = i === this.selectedIndex;
-      const primaryText = item.label.slice(0, PRIMARY_WIDTH - 4);
-      const descText = item.description?.slice(0, DESCRIPTION_WIDTH) ?? "";
+      const idx = this.scrollOffset + i;
+      const item = this.filteredItems[idx];
+      if (!item) continue;
+
+      const selected = idx === this.selectedIndex;
+      const labelPart = item.label.slice(0, 40);
+      const descPart = item.description?.slice(0, 30) ?? "";
 
       if (selected) {
-        lines.push(
-          `${CSI}38;5;${this.theme.selectedFg}m${CSI}48;5;${this.theme.selectedBg}m ▶ ${primaryText}${CSI}0m`
-        );
-        if (descText) {
-          lines.push(
-            `${CSI}38;5;${this.theme.selectedFg}m${CSI}48;5;${this.theme.selectedBg}m   ${CSI}2m${descText}${CSI}0m`
-          );
-        }
+        const prefix = `${CSI}38;5;${this.theme.selectedFg}m${CSI}48;5;${this.theme.selectedBg}m ▶ `;
+        const label = `${labelPart}${RESET}`;
+        const suffix = descPart
+          ? `${CSI}38;5;${this.theme.selectedFg}m${CSI}48;5;${this.theme.selectedBg}m ${CSI}2m${descPart}${RESET}`
+          : "";
+        lines.push(prefix + label + suffix);
       } else {
-        lines.push(`  ${primaryText} ${CSI}2m${descText}${RESET}`);
+        const label = `${CSI}38;5;${this.theme.fg}m  ${labelPart}${RESET}`;
+        const suffix = descPart
+          ? ` ${CSI}38;5;${this.theme.dimFg}m${CSI}2m${descPart}${RESET}`
+          : "";
+        lines.push(label + suffix);
       }
     }
 
-    if (this.filteredItems.length === 0) {
+    // Scroll indicator below
+    if (this.scrollOffset + maxItems < total) {
+      const remaining = total - this.scrollOffset - maxItems;
+      lines.push(`${CSI}38;5;${this.theme.dimFg}m↓ ${remaining} more${RESET}`);
+    }
+
+    if (total === 0) {
       lines.push(`${CSI}2mNo matching items${RESET}`);
     }
 
