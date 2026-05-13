@@ -13,6 +13,14 @@ export interface FooterData {
   streaming?: boolean;
   sessionName?: string;
   pending?: number;
+  contextTokens?: number;
+  contextWindow?: number;
+  contextPercent?: number;
+  tokensIn?: number;
+  tokensOut?: number;
+  tokensCacheR?: number;
+  tokensCacheW?: number;
+  totalCost?: number;
 }
 
 export class Footer {
@@ -23,40 +31,60 @@ export class Footer {
   }
 
   render(data: FooterData): string {
-    const segments: string[] = [];
+    // Build left side: [pwd] [model] [thinking] [streaming]
+    const leftParts: string[] = [];
 
-    // PWD (home replaced with ~)
+    // PWD
     if (data.cwd) {
       const home = process.env.HOME || "";
       const pwd = home && data.cwd.startsWith(home)
         ? "~" + data.cwd.slice(home.length)
         : data.cwd;
-      segments.push(dim(pwd));
+      leftParts.push(fg(245, pwd));
     }
 
-    // Model
+    // Model + thinking (e.g., "deepseek-v4-flash • high")
     if (data.model) {
-      segments.push(fg(252, this.shortenModel(data.model)));
+      const modelShort = this.shortenModel(data.model);
+      const thinking = data.thinking && data.thinking !== "off"
+        ? fg(117, ` • ${data.thinking}`)
+        : "";
+      leftParts.push(fg(252, modelShort) + thinking);
     }
 
-    // Streaming indicator
-    if (data.streaming) {
-      segments.push(fg(151, "◐ running"));
+    // Build right side: [stats] [shortcuts]
+    const rightParts: string[] = [];
+
+    // Token stats: ↑Xk ↓Xk R Xk
+    const tokenParts: string[] = [];
+    if (data.tokensIn) tokenParts.push(fg(71, `\u2191${this.fmtTokens(data.tokensIn)}`));
+    if (data.tokensOut) tokenParts.push(fg(71, `\u2193${this.fmtTokens(data.tokensOut)}`));
+    if (data.tokensCacheR) tokenParts.push(fg(71, `R${this.fmtTokens(data.tokensCacheR)}`));
+    if (tokenParts.length > 0) {
+      rightParts.push(fg(245, tokenParts.join(" ")));
     }
 
-    // Pending count
-    if (data.pending && data.pending > 0) {
-      segments.push(dim(`(${data.pending} queued)`));
+    // Cost
+    if (data.totalCost !== undefined && data.totalCost > 0) {
+      rightParts.push(fg(245, `$${data.totalCost.toFixed(3)}`));
     }
 
-    // Session name
-    if (data.sessionName) {
-      segments.push(dim(data.sessionName));
+    // Context usage: X.X%/1.0M (auto)
+    if (data.contextPercent !== undefined && data.contextWindow) {
+      const pct = data.contextPercent.toFixed(1);
+      const win = this.fmtTokens(data.contextWindow);
+      // Color based on usage level
+      const pctColor = data.contextPercent < 70 ? fg(71, pct)   // green < 70%
+        : data.contextPercent < 90 ? fg(226, pct)  // yellow 70-90%
+        : fg(204, pct); // red > 90%
+      rightParts.push(pctColor + fg(245, `%/`) + fg(245, win));
     }
 
-    // Shortcuts (right-aligned)
-    const left = segments.join("  ");
-    const right = dim("  [?] Help  [^C] Interrupt");
+    // Shortcuts
+    rightParts.push(fg(240, "[?] Help  [^C] Interrupt"));
+
+    const left = leftParts.join("  ");
+    const right = rightParts.join("  ");
 
     const leftLen = this.strip(left).length;
     const rightLen = this.strip(right).length;
@@ -79,5 +107,11 @@ export class Footer {
     // Shorten provider/model: "anthropic/claude-sonnet-4" -> "claude-sonnet-4"
     const parts = model.split("/");
     return parts[parts.length - 1] ?? model;
+  }
+
+  private fmtTokens(n: number): string {
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+    if (n >= 1_000) return Math.round(n / 1_000) + "k";
+    return String(n);
   }
 }

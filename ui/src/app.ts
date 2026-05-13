@@ -53,6 +53,9 @@ export class App {
     skills: [] as string[],
     contextFiles: [] as string[],
     extensions: [] as string[],
+    contextTokens: 0,
+    contextWindow: 0,
+    contextPercent: 0,
   };
 
   private running = false;
@@ -495,6 +498,9 @@ export class App {
       this.state.skills = s.skills ?? [];
       this.state.contextFiles = s.contextFiles ?? [];
       this.state.extensions = s.extensions ?? [];
+      this.state.contextTokens = s.contextTokens ?? 0;
+      this.state.contextWindow = s.contextWindow ?? 0;
+      this.state.contextPercent = s.contextPercent ?? 0;
     } catch {
       this.state.model = "(not connected)";
     }
@@ -662,10 +668,14 @@ export class App {
 
     // ── Footer ──
     const footerData: FooterData = {
+      cwd: this.state.cwd,
       model: this.state.model,
       thinking: this.state.thinking,
       streaming: this.state.streaming,
       sessionName: this.state.sessionName,
+      contextTokens: this.state.contextTokens,
+      contextWindow: this.state.contextWindow,
+      contextPercent: this.state.contextPercent,
     };
     out += cursorPos(H, 1) + CLEAR_LINE + this.footer.render(footerData);
 

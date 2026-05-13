@@ -103,6 +103,10 @@ export interface RpcSessionState {
   skills?: string[];
   contextFiles?: string[];
   extensions?: string[];
+  // Context usage
+  contextTokens?: number;
+  contextWindow?: number;
+  contextPercent?: number;
 }
 
 // ============================================================================

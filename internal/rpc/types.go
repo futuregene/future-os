@@ -86,6 +86,10 @@ type RpcSessionState struct {
 	Skills        []string `json:"skills,omitempty"`
 	ContextFiles  []string `json:"contextFiles,omitempty"`
 	Extensions    []string `json:"extensions,omitempty"`
+	// Context usage
+	ContextTokens  int     `json:"contextTokens,omitempty"`
+	ContextWindow  int     `json:"contextWindow,omitempty"`
+	ContextPercent float64  `json:"contextPercent,omitempty"`
 }
 
 // =============================================================================

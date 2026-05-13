@@ -263,6 +263,40 @@ func (s *AgentSession) CWD() string {
 	return s.cwd
 }
 
+// ContextStats holds context usage information.
+type ContextStats struct {
+	Tokens int     // estimated current context size in tokens
+	Window int     // model context window in tokens
+	Percent float64 // usage percentage 0-100
+}
+
+// GetContextStats returns estimated context usage from session messages.
+func (s *AgentSession) GetContextStats() ContextStats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Build context messages from session entries
+	entries := s.engine.Session.Entries
+	messages := session.BuildContext(entries)
+
+	// Estimate token count
+	tokens := compaction.EstimateContextTokens(messages)
+
+	// Get context window from model info
+	window := s.engine.ModelInfo.ContextWindow
+
+	var percent float64
+	if window > 0 {
+		percent = float64(tokens) / float64(window) * 100
+	}
+
+	return ContextStats{
+		Tokens:  tokens,
+		Window:  window,
+		Percent: percent,
+	}
+}
+
 // PendingMessageCount returns the number of pending messages in queues.
 func (s *AgentSession) PendingMessageCount() int {
 	s.mu.RLock()
