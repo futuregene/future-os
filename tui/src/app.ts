@@ -1170,10 +1170,7 @@ export class App extends Container {
       return targetScreenRow - currentScreenRow;
     };
 
-    // Set chat viewport and footer data before render
-    const chatHeight = H - 2; // minus editor + footer
-    this.chat.setViewportHeight(chatHeight);
-
+    // Render editor first to determine its height (multi-line aware)
     const footerData: FooterData = {
       cwd: this.state.cwd,
       model: this.state.model,
@@ -1190,8 +1187,17 @@ export class App extends Container {
     };
     this.footer.setData(footerData);
 
-    // Render base content via Container (chat + editor + footer)
-    let newLines = this.render(W);
+    const footerLines = this.footer.render(W).length;
+    const editorLines = this.editor.render(W);
+    const editorHeight = editorLines.length;
+
+    // Set chat viewport based on remaining space
+    const chatHeight = H - editorHeight - footerLines;
+    this.chat.setViewportHeight(Math.max(1, chatHeight));
+
+    // Build render output: chat + editor + footer
+    const chatLines = this.chat.render(W);
+    let newLines = [...chatLines, ...editorLines, ...this.footer.render(W)];
 
     // Composite overlays into rendered lines (before diff compare, matches pi)
     if (this.overlayStack.length > 0) {
@@ -1202,7 +1208,7 @@ export class App extends Container {
     if (this.autocomplete.isVisible()) {
       const acLines = this.autocomplete.render(W);
       if (acLines.length > 0) {
-        const editorIdx = H - 2;
+        const editorIdx = H - 1 - editorHeight;
         let acTop = editorIdx - acLines.length;
         for (const line of acLines) {
           if (acTop >= 0) newLines[acTop] = line;
