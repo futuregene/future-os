@@ -23,9 +23,13 @@ type Args struct {
 	AppendSystemPrompt []string
 
 	// Mode
-	Mode      string // "text", "json", "rpc"
+	Mode      string // "text", "json", "rpc", "server"
 	Print     bool   // -p: non-interactive, process and exit
 	NoSession bool   // don't save session
+
+	// Server
+	SocketPath string // path for Unix socket (mode=server)
+	Port       string // TCP port (mode=server, overrides socket)
 
 	// Session
 	Continue   bool
@@ -78,7 +82,7 @@ var validThinkingLevels = map[string]bool{
 
 // validModes are the accepted values for --mode.
 var validModes = map[string]bool{
-	"text": true, "json": true, "rpc": true,
+	"text": true, "json": true, "rpc": true, "server": true,
 }
 
 // parseArgs parses os.Args[1:] into an Args struct.
@@ -107,6 +111,16 @@ func parseArgs(raw []string) *Args {
 			i++
 			if i < len(raw) && validModes[raw[i]] {
 				a.Mode = raw[i]
+			}
+		case "--socket":
+			i++
+			if i < len(raw) {
+				a.SocketPath = raw[i]
+			}
+		case "--port":
+			i++
+			if i < len(raw) {
+				a.Port = raw[i]
 			}
 		case "--continue", "-c":
 			a.Continue = true

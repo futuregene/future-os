@@ -378,12 +378,34 @@ func main() {
 	promptParts = append(promptParts, args.Messages...)
 	userPrompt := strings.Join(promptParts, "\n")
 
-	// ── RPC Mode ───────────────────────────────────────────────────────
+	// ── RPC Mode (stdio) ────────────────────────────────────────────
 	if args.Mode == "rpc" {
 		srv := rpc.NewServer(as)
 		err := srv.Run()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "RPC error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// ── Socket Server Mode ─────────────────────────────────────────────
+	if args.Mode == "server" {
+		srv := rpc.NewSocketServer(as)
+		var err error
+		if args.Port != "" {
+			fmt.Fprintf(os.Stderr, "xihu server listening on :%s\n", args.Port)
+			err = srv.ListenAndServeTCP(":" + args.Port)
+		} else {
+			socketPath := args.SocketPath
+			if socketPath == "" {
+				socketPath = filepath.Join(os.TempDir(), "xihu.sock")
+			}
+			fmt.Fprintf(os.Stderr, "xihu server listening on %s\n", socketPath)
+			err = srv.ListenAndServe(socketPath)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
 			os.Exit(1)
 		}
 		return
