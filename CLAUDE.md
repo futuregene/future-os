@@ -40,6 +40,8 @@ cd tui && npm run dev     # Run directly with bun (no pre-build needed)
 cd tui && npm start       # Run compiled JS with bun
 ```
 
+The TUI is aligned with pi-mono's TUI architecture. Reference: `tui/pi-vs-xihu-comparison.md` tracks all differences across 12 categories.
+
 ## Architecture
 
 **xihu** is a Go AI coding assistant CLI (similar to Claude Code). The Go binary is a backend — the TypeScript TUI (`tui/`) provides the terminal interface. Two frontend modes:
@@ -67,7 +69,71 @@ Two entry points:
         default mode               xihu-web binary
 ```
 
-### Core components
+### TUI architecture (`tui/src/`)
+
+The TUI follows pi's `Component`/`Container`/`Focusable` pattern with overlay stack and input pipeline:
+
+**Core framework** (`tui.ts`):
+- `Component` interface: `render(width)`, `handleInput?(data)`, `invalidate()`, `wantsKeyRelease?`
+- `Focusable` interface: `focused: boolean` for IME cursor positioning via `CURSOR_MARKER`
+- `Container` class: `addChild`/`removeChild`/`clear`, cascading `invalidate()`, `App extends Container`
+- `OverlayHandle`: `hide()`, `setHidden()`, `focus()`, `unfocus()` — returned by `showOverlay()`
+- `InputListener` pipeline: chainable input interceptors (consume/modify/pass-through)
+- `NodeTerminal`: raw-mode stdin with `StdinBuffer` (10ms timeout, paste re-wrapping), Kitty CSI-u keyboard protocol detection, bracketed paste, SGR mouse tracking, synchronized output (`\x1b[?2026h/l`)
+
+**Keyboard** (`keys.ts`, `keybindings.ts`):
+- `parseKey()`: unified parser for Kitty CSI-u, xterm modifyOtherKeys, legacy escape sequences
+- `KeyId` type + `Key` const object for compile-time autocomplete on key names
+- `isKeyRelease()` / `isKeyRepeat()` detection
+- `KeybindingManager`: key→action dispatch with context filtering, conflict detection, add/remove
+
+**Rendering pipeline** (`app.ts` `doRender()`):
+- Dual-phase scheduling: `process.nextTick` + `setTimeout` coalescing at ~60fps
+- Differential rendering: computes changed-line ranges, sends minimal ANSI updates
+- Viewport tracking: `previousViewportTop`, `maxLinesRendered`, `cursorRow`, `hardwareCursorRow`
+- Overlay compositing: overlays merged into lines before diff, with anchor/percentage positioning
+- Kitty image lifecycle: image ID tracking, orphan deletion, changed-line expansion for image rows
+- Line resets: `\x1b[0m` appended per-line to prevent ANSI bleed
+
+**Text processing** (`utils.ts`):
+- `visibleWidth()`: Intl.Segmenter-based, emoji detection, CJK/east-asian-width, cache
+- `wrapTextWithAnsi()`: word-boundary wrap preserving ANSI codes with `AnsiCodeTracker` state machine
+- `applyBackgroundToLine()`: full-width background color with ANSI-reset-safe padding
+- `truncateToWidth()`, `sliceByColumn()`: ANSI-aware column-based extraction
+- `graphemeWidth()`: zero-width, emoji (flags/keycap/modifier/extended-pictographic), CJK
+- `normalizeTerminalOutput()`: tab→3 spaces, Thai/Lao AM decomposition
+
+**Components** (15 in `components/`):
+
+| Component | Role |
+|-----------|------|
+| `ChatArea` | Scrollable chat view: user/assistant/tool/system messages, thinking blocks, streaming |
+| `Editor` | Multi-line editor (750 lines): undo/redo, kill ring, word navigation, paste markers, scroll indicators, border, padding, history |
+| `Footer` | Status bar: pwd, model, thinking, token stats, context usage with color thresholds |
+| `MarkdownRenderer` | Full markdown: StrictStrikethroughTokenizer, OSC 8 hyperlinks, style prefix tracking, word wrap, render cache, cell-wrapping tables |
+| `AutocompleteManager` | Provider-based: `SlashCommandProvider` (commands + model/session args), `FilePathProvider` (fs.readdir), debounce + AbortController |
+| `SelectList` | Scrollable selection list with keyboard navigation |
+| `SettingsList` | Settings list with value cycling, search filtering, submenu support |
+| `Image` | Kitty/iTerm2 image rendering with fallback to text placeholder |
+| `Box` | Container with padding + background color for child components |
+| `Text` | Multi-line text with word wrap, padding, background, render cache |
+| `TruncatedText` | Single-line truncated text with ellipsis + padding |
+| `Spacer` | Configurable empty-line vertical spacing |
+| `Loader` | Animated braille spinner, configurable frames/interval, callback-based updates |
+| `CancellableLoader` | Loader + Escape-to-cancel + AbortSignal |
+| `Container` | Generic container with `addChild`/`removeChild` (used by Box and App) |
+
+**Theme** (`theme.ts`):
+- 256-color constants (`C` object) + `Theme` interface with 20+ fields
+- Style functions: `fg()`, `bg()`, `bold()`, `dim()`, `italic()`, `underline()`, `strikethrough()` — each auto-appends RESET
+- Raw variants: `fgRaw()`, `boldRaw()`, etc. — no auto-RESET for composable theme building
+- `style(text, ...fns)` composer: chains multiple style functions, single trailing RESET
+
+**RPC** (`rpc/client.ts`):
+- HTTP + SSE transport to Go backend; Unix socket support via `--socket` flag
+- Methods: `prompt()`, `abort()`, `getState()`, `getAvailableModels()`, `setModel()`, `cycleModel()`, `cycleThinkingLevel()`, `listSessions()`, `switchSession()`, `newSession()`, `compact()`
+
+### Go core components
 
 **`internal/engine/engine.go`** — Unifies provider detection, settings merging, session creation, tool config, and agent loop into a single `Engine` struct. `NewEngine()` auto-detects provider from base URL (Anthropic vs OpenAI-compatible), resolves thinking budgets, and wires auto-compaction as a `TransformContext` hook on the agent loop.
 
@@ -78,8 +144,6 @@ Two entry points:
 **`internal/llm/client.go`** — OpenAI-compatible streaming client using the official `openai-go` SDK. Handles thinking/reasoning content extraction from `ExtraFields` (DeepSeek `reasoning_content`), cache token parsing, tool call accumulation from streaming chunks, and context cancellation for interrupt support.
 
 **`internal/llm/anthropic.go`** — Anthropic-specific client using `anthropic-sdk-go` (parallel to OpenAI client, selected when base URL contains `anthropic.com`).
-
-**`tui/`** — TypeScript terminal UI (`@xihu/tui`). The only terminal UI. Components: ChatArea, Editor, Footer, Autocomplete, SelectList, Markdown renderer. Connects to the Go backend via `tui/src/rpc/client.ts` over Unix socket or HTTP, using the same JSONL RPC protocol as `pkg/rpcclient/`. The Go binary auto-starts in server mode on `/tmp/xihu.sock` when launched without arguments in a TTY.
 
 **`internal/rpc/`** — Headless RPC server using JSONL over stdin/stdout (`--mode rpc`) and Unix socket / TCP (`--mode server`). Commands in (message, new_session, set_model, compact, etc.), responses and AgentSessionEvents out. The socket server (`server_socket.go`) handles multiple concurrent client connections with per-session agent state.
 
