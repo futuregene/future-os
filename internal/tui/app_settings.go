@@ -166,10 +166,10 @@ func (m *AppModel) showSettingsSelector() {
 			} else {
 				m.steeringMode = "one-at-a-time"
 			}
-		m.agent.Loop().SteeringQueue.Mode = m.steeringMode
-		m.saveSettings()
-		go func() { time.Sleep(50 * time.Millisecond); if m.program != nil { m.program.Send(refreshSettingsMsg{}) } }()
-	case "follow_up":
+			m.agent.Loop().SteeringQueue.Mode = m.steeringMode
+			m.saveSettings()
+			go func() { time.Sleep(50 * time.Millisecond); if m.program != nil { m.program.Send(refreshSettingsMsg{}) } }()
+		case "follow_up":
 			if m.followUpMode == "one-at-a-time" {
 				m.followUpMode = "all"
 			} else {
