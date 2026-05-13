@@ -1,63 +1,52 @@
 /**
- * ChatArea - the main scrollable chat view.
- * Manages a viewport into the message history.
+ * ChatArea - scrollable chat view matching pi-mono style.
+ * Renders messages with proper markdown, tool output, and streaming.
  */
 
-import { CSI, RESET, CLEAR_LINE } from "../tui.js";
+import { CSI, RESET } from "../tui.js";
+import { fg, bg, dim, bold, italic } from "../theme.js";
+import type { Theme } from "../theme.js";
+import { MarkdownRenderer } from "./markdown.js";
 
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system" | "tool";
   content: string;
-  name?: string;
-  tool?: string;
+  name?: string;     // tool name
+  tool?: string;     // tool call id
+  toolStatus?: "running" | "complete" | "error";
+  exitCode?: number;
   timestamp?: number;
-  thinking?: string;  // for thinking block
-}
-
-export interface ChatTheme {
-  userPrefix: number;
-  assistantPrefix: number;
-  systemPrefix: number;
-  toolPrefix: number;
-  userText: number;
-  assistantText: number;
-  dimText: number;
-  errorText: number;
-  codeBg: number;
-  codeFg: number;
-  accent: number;
+  thinking?: string;
+  pending?: boolean;  // streaming in progress
 }
 
 export class ChatArea {
   private messages: ChatMessage[] = [];
-  private viewportTop = 0;      // index into renderedLines
-  private viewportHeight = 20;
-  private renderedLineCount = 0;
+  private viewportTop = 0;
   private renderedLines: RenderedLine[] = [];
   private autoScroll = true;
   private width = 80;
 
-  // Prefix icons and colors per role
-  private theme: ChatTheme = {
-    userPrefix: 220,
-    assistantPrefix: 39,
-    systemPrefix: 244,
-    toolPrefix: 200,
-    userText: 252,
-    assistantText: 252,
-    dimText: 245,
-    errorText: 160,
-    codeBg: 236,
-    codeFg: 150,
-    accent: 39,
-  };
+  private md = new MarkdownRenderer();
+  private theme: Theme;
 
-  constructor(private maxWidth = 80) {
-    this.width = maxWidth;
+  constructor(private maxWidth = 80, theme?: Theme) {
+    this.theme = theme ?? {
+      bg: 235, fg: 252, accent: 151, border: 69,
+      selectedBg: 237, selectedFg: 255, dim: 245,
+      error: 204, success: 142,
+      mdHeading: 221, mdLink: 117, mdCode: 151,
+      mdCodeBlock: 142, mdCodeBlockBorder: 244, mdQuote: 244,
+      toolPendingBg: 235, toolSuccessBg: 236, toolErrorBg: 237,
+      toolTitle: 151, toolOutput: 244,
+      thinkingOff: 240, thinkingMinimal: 110, thinkingLow: 68,
+      thinkingMedium: 117, thinkingHigh: 182, thinkingXhigh: 213,
+      userBg: 239, assistantBg: 235,
+    };
   }
 
-  // ─── Public API ─────────────────────────────────────────────────────────
+  // ─── Public API ─────────────────────────────────────────────────
 
   setWidth(w: number): void {
     if (w !== this.width) {
@@ -66,11 +55,10 @@ export class ChatArea {
     }
   }
 
-  setViewportHeight(h: number): void {
-    this.viewportHeight = h;
+  setViewportHeight(_h: number): void {
     // Clamp viewport
-    if (this.viewportTop + this.viewportHeight > this.renderedLineCount) {
-      this.viewportTop = Math.max(0, this.renderedLineCount - this.viewportHeight);
+    if (this.viewportTop + 20 > this.renderedLines.length) {
+      this.viewportTop = Math.max(0, this.renderedLines.length - 20);
     }
   }
 
@@ -90,8 +78,18 @@ export class ChatArea {
     const last = this.messages[this.messages.length - 1];
     if (last.role === "assistant") {
       last.content = content;
+      last.pending = true;
       this.rerender();
       if (this.autoScroll) this.scrollToBottom();
+    }
+  }
+
+  markLastMessageComplete(): void {
+    if (this.messages.length === 0) return;
+    const last = this.messages[this.messages.length - 1];
+    if (last.role === "assistant") {
+      last.pending = false;
+      this.rerender();
     }
   }
 
@@ -100,197 +98,195 @@ export class ChatArea {
     this.rerender();
   }
 
-  scrollUp(lines = 3): void {
+  scrollUp(lines = 5): void {
     this.viewportTop = Math.max(0, this.viewportTop - lines);
+    this.autoScroll = false;
   }
 
-  scrollDown(lines = 3): void {
+  scrollDown(lines = 5): void {
     this.viewportTop = Math.min(
-      Math.max(0, this.renderedLineCount - this.viewportHeight),
+      Math.max(0, this.renderedLines.length - 20),
       this.viewportTop + lines
     );
   }
 
   scrollToBottom(): void {
-    this.viewportTop = Math.max(0, this.renderedLineCount - this.viewportHeight);
+    this.viewportTop = Math.max(0, this.renderedLines.length - 20);
   }
 
-  // ─── Rendering ────────────────────────────────────────────────────────
+  // ─── Rendering ──────────────────────────────────────────────────
 
   getHeight(): number {
-    return Math.min(this.renderedLineCount, this.viewportHeight);
+    return Math.min(this.renderedLines.length, 20);
   }
 
   render(): string[] {
-    const visibleLines = this.renderedLines.slice(
+    const visible = this.renderedLines.slice(
       this.viewportTop,
-      this.viewportTop + this.viewportHeight
+      this.viewportTop + 20
     );
-    return visibleLines.map((rl) => rl.text);
+    return visible.map((rl) => rl.text);
   }
 
   private rerender(): void {
     this.renderedLines = [];
     for (const msg of this.messages) {
       this.renderMessage(msg);
-      // Add separator after each message
-      this.renderedLines.push({ text: "", dim: true });
     }
-    this.renderedLineCount = this.renderedLines.length;
+    this.renderedLines.push({ text: "", dim: true });
   }
 
   private renderMessage(msg: ChatMessage): void {
-    const prefix = this.rolePrefix(msg.role);
-    const color = this.roleColor(msg.role);
-
-    if (msg.role === "user") {
-      // User: compact single-line prefix + first line
-      const firstLine = msg.content.split("\n")[0];
-      const truncated = this.truncate(firstLine, this.width - 3);
-      this.renderedLines.push({
-        text: `${prefix} ${this.color(truncated, color)}`,
-        dim: false,
-      });
-      return;
+    switch (msg.role) {
+      case "user":
+        this.renderUserMessage(msg);
+        break;
+      case "assistant":
+        this.renderAssistantMessage(msg);
+        break;
+      case "tool":
+        this.renderToolMessage(msg);
+        break;
+      case "system":
+        this.renderSystemMessage(msg);
+        break;
     }
+  }
 
-    if (msg.role === "system") {
-      const lines = msg.content.split("\n").slice(0, 2);
-      for (let i = 0; i < lines.length; i++) {
-        this.renderedLines.push({
-          text: `${i === 0 ? prefix + " " : "  "}${this.color(lines[i], this.theme.dimText)}`,
-          dim: true,
-        });
-      }
-      return;
-    }
+  // ─── User message ─────────────────────────────────────────────
 
-    if (msg.role === "assistant" || msg.role === "tool") {
-      // Tool name badge
-      if (msg.tool) {
+  private renderUserMessage(msg: ChatMessage): void {
+    const lines = msg.content.split("\n");
+    // First line with icon
+    const first = lines[0] || "";
+    this.renderedLines.push({
+      text: `${fg(226, "👤")} ${fg(252, this.md.strip(first).length > this.width - 4 ? this.md.strip(first).slice(0, this.width - 7) + "…" : first)}`,
+      dim: false,
+    });
+    // Continuation lines (dimmed)
+    for (const line of lines.slice(1)) {
+      if (line.trim()) {
         this.renderedLines.push({
-          text: `${prefix} ${this.color("[" + msg.tool + "]", this.theme.dimText)}`,
-          dim: false,
-        });
-      } else {
-        this.renderedLines.push({
-          text: `${prefix}`,
-          dim: false,
-        });
-      }
-
-      // Content rendered as markdown
-      const mdLines = this.renderMarkdown(msg.content);
-      for (const line of mdLines) {
-        this.renderedLines.push({ text: `  ${line}`, dim: false });
-      }
-
-      // Thinking block (if any)
-      if (msg.thinking) {
-        this.renderedLines.push({
-          text: `  ${this.color("[thinking]", this.theme.dimText)}`,
+          text: `${fg(244, "  " + line)}`,
           dim: true,
         });
       }
     }
   }
 
-  private renderMarkdown(text: string): string[] {
-    const lines: string[] = [];
-    const rawLines = text.split("\n");
+  // ─── Assistant message ────────────────────────────────────────
 
-    let inCode = false;
-    let codeLang = "";
+  private renderAssistantMessage(msg: ChatMessage): void {
+    // Prefix line with icon
+    const prefix = msg.pending
+      ? `${fg(151, "🤖")} ${fg(245, "◐")}`
+      : `${fg(69, "🤖")}`;
 
-    for (const raw of rawLines) {
-      // Code block fence
-      if (raw.startsWith("```")) {
-        if (inCode) {
-          lines.push(this.dim("-".repeat(Math.min(raw.length, this.width - 2))));
-          inCode = false;
-          codeLang = "";
-        } else {
-          codeLang = raw.slice(3).trim();
-          lines.push(this.color("\u250C" + "-".repeat(Math.min(raw.length - 3, this.width - 4)) + "\u2510", this.theme.codeFg));
-          if (codeLang) lines.push(this.color(` ${codeLang} `, this.theme.codeFg));
-          inCode = true;
+    const lines = msg.content.split("\n");
+    const first = lines[0] || "";
+
+    if (first) {
+      const mdLines = this.md.render(first, this.width - 3);
+      if (mdLines.length > 0) {
+        this.renderedLines.push({ text: `${prefix} ${mdLines[0]}`, dim: false });
+        for (const line of mdLines.slice(1)) {
+          this.renderedLines.push({ text: `  ${line}`, dim: false });
         }
-        continue;
       }
+    } else {
+      this.renderedLines.push({ text: prefix, dim: false });
+    }
 
-      if (inCode) {
-        lines.push(" " + this.color(raw.slice(0, this.width - 2), this.theme.codeFg));
-        continue;
+    // Rest of lines
+    for (const line of lines.slice(1)) {
+      if (line.trim()) {
+        const mdLines = this.md.render(line, this.width - 3);
+        for (const l of mdLines) {
+          this.renderedLines.push({ text: `  ${l}`, dim: false });
+        }
       }
-
-      // Inline code: `code`
-      let processed = this.processInline(raw);
-
-      // Truncate to width
-      processed = this.truncate(processed, this.width - 2);
-
-      lines.push(processed);
     }
 
-    return lines;
-  }
-
-  private processInline(text: string): string {
-    // Inline code
-    text = text.replace(/`([^`]+)`/g, (_, code) =>
-      `${this.colorBg(code, this.theme.codeBg, this.theme.codeFg)}`
-    );
-    // Bold
-    text = text.replace(/\*\*([^*]+)\*\*/g, (_, t) => `${RESET}${CSI}1m${t}${CSI}0m`);
-    // Italic
-    text = text.replace(/\*([^*]+)\*/g, (_, t) => `${CSI}3m${t}${CSI}0m`);
-    // Dim
-    text = text.replace(/`([^`]+)`/g, (_, code) =>
-      `${this.colorBg(code, this.theme.codeBg, this.theme.codeFg)}`
-    );
-    return text;
-  }
-
-  private truncate(text: string, maxWidth: number): string {
-    const stripped = this.stripAnsi(text);
-    if (stripped.length <= maxWidth) return text;
-    return text.slice(0, maxWidth - 1) + "…";
-  }
-
-  private stripAnsi(text: string): string {
-    return text.replace(/\x1b\[[0-9;]*m/g, "");
-  }
-
-  private rolePrefix(role: string): string {
-    switch (role) {
-      case "user": return "👤";
-      case "assistant": return "🤖";
-      case "system": return "⚙️";
-      case "tool": return "🔧";
-      default: return "•";
+    // Streaming cursor
+    if (msg.pending) {
+      this.renderedLines.push({ text: `${fg(151, "  ◐")}`, dim: false });
     }
   }
 
-  private roleColor(role: string): number {
-    switch (role) {
-      case "user": return this.theme.userText;
-      case "assistant": return this.theme.assistantText;
-      case "system": return this.theme.dimText;
-      case "tool": return this.theme.toolPrefix;
-      default: return 252;
+  // ─── Tool message ─────────────────────────────────────────────
+
+  private renderToolMessage(msg: ChatMessage): void {
+    const toolName = msg.name || msg.tool || "tool";
+    const status = msg.toolStatus || "running";
+
+    // Background color based on status
+    const bgColor = status === "error" ? this.theme.toolErrorBg
+      : status === "complete" ? this.theme.toolSuccessBg
+      : this.theme.toolPendingBg;
+
+    const borderColor = fg(244, "─".repeat(Math.min(toolName.length + 4, this.width - 4)));
+    const titleColor = fg(151, bold(`$ ${toolName}`));
+
+    // Top border
+    this.renderedLines.push({
+      text: bg(bgColor, fg(244, "┌" + "─".repeat(Math.min(toolName.length + 4, this.width - 4)) + "┐")),
+      dim: false,
+    });
+
+    // Command line
+    this.renderedLines.push({
+      text: bg(bgColor, ` ${titleColor}`),
+      dim: false,
+    });
+
+    // Output
+    const outputLines = msg.content.split("\n");
+    for (const line of outputLines.slice(0, 30)) {
+      const stripped = this.md.strip(line);
+      if (stripped) {
+        const truncated = stripped.length > this.width - 4
+          ? stripped.slice(0, this.width - 7) + "…"
+          : stripped;
+        this.renderedLines.push({
+          text: bg(bgColor, ` ${fg(244, truncated)}`),
+          dim: true,
+        });
+      }
     }
+
+    if (outputLines.length > 30) {
+      this.renderedLines.push({
+        text: bg(bgColor, fg(244, ` ${"[... ${outputLines.length - 30} more lines]"}`)),
+        dim: true,
+      });
+    }
+
+    // Exit code for completed tools
+    if (status === "complete" && msg.exitCode !== undefined) {
+      const exitColor = msg.exitCode === 0 ? fg(142, `[exit ${msg.exitCode}]`) : fg(204, `[exit ${msg.exitCode}]`);
+      this.renderedLines.push({
+        text: bg(bgColor, ` ${exitColor}`),
+        dim: true,
+      });
+    }
+
+    // Bottom border
+    this.renderedLines.push({
+      text: bg(bgColor, fg(244, "└" + "─".repeat(Math.min(toolName.length + 4, this.width - 4)) + "┘")),
+      dim: false,
+    });
   }
 
-  private color(text: string, c: number): string {
-    return `${CSI}38;5;${c}m${text}${RESET}`;
-  }
+  // ─── System message ──────────────────────────────────────────
 
-  private colorBg(text: string, bg: number, fg: number): string {
-    return `${CSI}38;5;${fg}m${CSI}48;5;${bg}m${text}${RESET}`;
-  }
-
-  private dim(text: string): string {
-    return `${CSI}2m${text}${RESET}`;
+  private renderSystemMessage(msg: ChatMessage): void {
+    const lines = msg.content.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].trim()) continue;
+      const isError = lines[i].toLowerCase().includes("error") || lines[i].toLowerCase().includes("failed");
+      const color = isError ? fg(204, lines[i]) : fg(244, lines[i]);
+      this.renderedLines.push({ text: `${fg(244, "⚙️")} ${color}`, dim: true });
+    }
   }
 }
 

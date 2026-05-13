@@ -1,63 +1,69 @@
 /**
- * Simple markdown renderer for assistant messages.
- * Supports: bold, italic, inline code, code blocks, links.
+ * Markdown renderer matching pi-mono style.
+ * Supports: headings, bold, italic, code, code blocks, links, quotes, lists.
  */
 
-import { CSI, RESET, BOLD, DIM } from "../tui.js";
+import { CSI, RESET } from "../tui.js";
+import { fg, bg, bold, dim, italic } from "../theme.js";
+import type { Theme } from "../theme.js";
 
-export interface MarkdownTheme {
-  codeBg: number;
-  codeFg: number;
+export interface MarkdownThemeColors {
+  heading: number;
   link: number;
+  code: number;
+  codeBlock: number;
+  codeBlockBorder: number;
+  quote: number;
   bold: number;
   italic: number;
-  fg: number;
+  text: number;
+  dim: number;
 }
 
-export class Markdown {
-  private text: string;
-  private theme: MarkdownTheme;
-  private fg: number;
+const DEFAULT_THEME_COLORS: MarkdownThemeColors = {
+  heading: 221,   // gold
+  link: 117,      // light blue
+  code: 151,      // accent (teal)
+  codeBlock: 142,  // green
+  codeBlockBorder: 244,
+  quote: 244,
+  bold: 255,
+  italic: 245,
+  text: 252,
+  dim: 245,
+};
 
-  constructor(text: string, fg = 252, theme?: Partial<MarkdownTheme>) {
-    this.text = text;
-    this.fg = fg;
-    this.theme = {
-      codeBg: 236,
-      codeFg: 150,
-      link: 39,
-      bold: 255,
-      italic: 245,
-      fg,
-      ...theme,
-    };
+export class MarkdownRenderer {
+  private colors: MarkdownThemeColors;
+
+  constructor(colors?: Partial<MarkdownThemeColors>) {
+    this.colors = { ...DEFAULT_THEME_COLORS, ...colors };
   }
 
   /**
    * Render markdown text to ANSI-colored lines wrapped to maxWidth.
    */
-  render(maxWidth: number): string[] {
+  render(text: string, maxWidth: number): string[] {
     const lines: string[] = [];
-    const rawLines = this.text.split("\n");
+    const rawLines = text.split("\n");
 
     let inCodeBlock = false;
-    let inInlineCode = false;
-    let codeBlockLang = "";
+    let codeLang = "";
 
     for (const raw of rawLines) {
       // Code block fence
       if (raw.startsWith("```")) {
         if (inCodeBlock) {
-          // End code block
-          lines.push(`${CSI}2m${"─".repeat(Math.min(raw.length, maxWidth))}${RESET}`);
+          // End code block: bottom border
+          lines.push(this.codeBlockBorder(` ${"─".repeat(Math.min(raw.length, maxWidth - 4))} `));
           inCodeBlock = false;
-          codeBlockLang = "";
+          codeLang = "";
         } else {
-          // Start code block
-          codeBlockLang = raw.slice(3).trim();
-          lines.push(`${CSI}38;5;${this.theme.codeFg}m${"┌" + "─".repeat(Math.min(raw.length - 3, maxWidth - 2)) + "┐"}${RESET}`);
-          if (codeBlockLang) {
-            lines.push(`${CSI}38;5;${this.theme.codeFg}m ${codeBlockLang} ${RESET}`);
+          // Start code block: top border
+          codeLang = raw.slice(3).trim();
+          lines.push(this.codeBlockBorder(` ┌${"─".repeat(Math.min(raw.length, maxWidth - 4))}┐ `));
+          if (codeLang) {
+            lines.push(this.codeBlock(`${"  " + codeLang} `));
           }
           inCodeBlock = true;
         }
@@ -65,160 +71,128 @@ export class Markdown {
       }
 
       if (inCodeBlock) {
-        // Render code line with dim color
-        const trimmed = raw.slice(0, maxWidth - 1);
-        lines.push(`${CSI}38;5;${this.theme.codeFg}m ${trimmed}${RESET}`);
+        // Code block line: green text, dim
+        lines.push(this.dimCode(raw.slice(0, maxWidth - 2)));
         continue;
       }
 
-      // Process inline elements
-      const processed = this.processInline(raw);
-      const wrapped = this.wrapText(processed, maxWidth);
-      lines.push(...wrapped);
+      // Blockquote
+      if (raw.startsWith("> ")) {
+        const content = raw.slice(2);
+        lines.push(this.quote(`▌ ${this.processInline(content, maxWidth - 3)}`));
+        continue;
+      }
+
+      // Heading
+      const headingMatch = raw.match(/^(#{1,6})\s+(.*)/);
+      if (headingMatch) {
+        const level = headingMatch[1].length;
+        const content = headingMatch[2];
+        const prefix = " ".repeat(Math.max(0, 3 - level));
+        lines.push(this.heading(`${prefix}${content}`));
+        continue;
+      }
+
+      // List item
+      const listMatch = raw.match(/^(\s*)[-*]\s+(.*)/);
+      if (listMatch) {
+        const indent = listMatch[1].length;
+        const content = listMatch[2];
+        lines.push(`${"  ".repeat(indent)}  ${this.accentBullet("▸")} ${this.processInline(content, maxWidth - indent - 4)}`);
+        continue;
+      }
+
+      // Regular paragraph
+      const processed = this.processInline(raw, maxWidth - 2);
+      if (processed.trim()) {
+        lines.push(processed);
+      } else {
+        lines.push("");
+      }
     }
 
     return lines;
   }
 
-  private processInline(text: string): string {
-    // Process in order: code > bold > italic > links
+  /**
+   * Process inline markdown: bold, italic, code, links.
+   */
+  private processInline(text: string, maxWidth: number): string {
     let result = text;
 
-    // Inline code: `code`
+    // Inline code: `code` — accent on dark background
     result = result.replace(/`([^`]+)`/g, (_, code) => {
-      return `${CSI}38;5;${this.theme.codeFg}m${CSI}48;5;${this.theme.codeBg}m${code}${CSI}0m`;
+      return bg(236, fg(151, code));
     });
 
-    // Bold: **text**
-    result = result.replace(/\*\*([^*]+)\*\*/g, (_, t) => {
-      return `${CSI}1m${t}${CSI}0m`;
-    });
+    // Bold: **text** or __text__
+    result = result.replace(/\*\*([^*]+)\*\*/g, (_, t) => bold(fg(255, t)));
+    result = result.replace(/__([^_]+)__/g, (_, t) => bold(fg(255, t)));
 
     // Italic: *text* or _text_
-    result = result.replace(/\*([^*]+)\*/g, (_, t) => {
-      return `${CSI}3m${t}${CSI}0m`;
-    });
-    result = result.replace(/_([^_]+)_/g, (_, t) => {
-      return `${CSI}3m${t}${CSI}0m`;
+    result = result.replace(/\*([^*]+)\*/g, (_, t) => italic(fg(245, t)));
+    result = result.replace(/_([^_]+)_/g, (_, t) => italic(fg(245, t)));
+
+    // Strikethrough: ~~text~~
+    result = result.replace(/~~([^~]+)~~/g, (_, t) => `${CSI}9m${t}${RESET}`);
+
+    // Links: [text](url) → text (dimmed url)
+    result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, _url) => {
+      return fg(117, label);
     });
 
     return result;
   }
 
-  private wrapText(text: string, maxWidth: number): string[] {
-    if (!text) return [""];
-    const lines: string[] = [];
-    const stripped = this.stripAnsi(text);
-    if (stripped.length <= maxWidth) return [text];
-
-    // Simple word wrap
-    const words = stripped.split(" ");
-    let currentLine = "";
-    let currentAnsi = "";
-
-    for (const word of words) {
-      if (currentLine.length + word.length + 1 > maxWidth) {
-        if (currentLine) {
-          lines.push(currentLine);
-          currentLine = "";
-        }
-      }
-      if (!currentLine) {
-        currentLine = word;
-      } else {
-        currentLine += " " + word;
-      }
-    }
-    if (currentLine) lines.push(currentLine);
-    return lines.length ? lines : [""];
+  private heading(text: string): string {
+    return fg(221, bold(text));
   }
 
-  private stripAnsi(text: string): string {
+  private accentBullet(text: string): string {
+    return fg(151, text);
+  }
+
+  private quote(text: string): string {
+    return fg(244, italic(text));
+  }
+
+  private codeBlock(text: string): string {
+    return fg(142, dim(text));
+  }
+
+  private codeBlockBorder(text: string): string {
+    return fg(244, dim(text));
+  }
+
+  private dimCode(text: string): string {
+    return fg(142, dim(text));
+  }
+
+  /**
+   * Strip ANSI codes to get plain text length.
+   */
+  strip(text: string): string {
     return text.replace(/\x1b\[[0-9;]*m/g, "");
   }
-}
 
-/**
- * Render a chat message (user, assistant, tool, system) as formatted lines.
- */
-export interface ChatMessageData {
-  role: "user" | "assistant" | "system" | "tool";
-  content?: string;
-  name?: string;
-  tool?: string;
-}
-
-export interface ChatMessageTheme {
-  userPrefix: number;
-  assistantPrefix: number;
-  systemPrefix: number;
-  toolPrefix: number;
-  fg: number;
-  dimFg: number;
-}
-
-export function renderChatMessage(msg: ChatMessageData, maxWidth: number, theme?: Partial<ChatMessageTheme>): string[] {
-  const t: ChatMessageTheme = {
-    userPrefix: 220,    // yellow
-    assistantPrefix: 39, // blue
-    systemPrefix: 244,   // gray
-    toolPrefix: 200,    // red/pink
-    fg: 252,
-    dimFg: 245,
-    ...theme,
-  };
-
-  const prefixMap = {
-    user: "👤",
-    assistant: "🤖",
-    system: "⚙️",
-    tool: "🔧",
-  };
-  const colorMap = {
-    user: t.userPrefix,
-    assistant: t.assistantPrefix,
-    system: t.systemPrefix,
-    tool: t.toolPrefix,
-  };
-
-  const prefix = prefixMap[msg.role];
-  const color = colorMap[msg.role];
-
-  if (!msg.content) return [];
-
-  if (msg.role === "user") {
-    // User messages: simple one-liner for compact display
-    const content = msg.content.split("\n")[0];
-    const truncated = content.length > maxWidth - 3 ? content.slice(0, maxWidth - 6) + "…" : content;
-    return [`${prefix} ${CSI}38;5;${color}m${truncated}${RESET}`];
+  /**
+   * Word-wrap text to maxWidth.
+   */
+  wrap(text: string, maxWidth: number): string[] {
+    if (this.strip(text).length <= maxWidth) return [text];
+    const words = this.strip(text).split(" ");
+    const lines: string[] = [];
+    let line = "";
+    for (const word of words) {
+      const combined = line ? line + " " + word : word;
+      if (combined.length > maxWidth && line) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = combined;
+      }
+    }
+    if (line) lines.push(line);
+    return lines.length ? lines : [""];
   }
-
-  if (msg.role === "system") {
-    const lines = msg.content.split("\n").slice(0, 2);
-    return lines.map((l, i) =>
-      i === 0
-        ? `${CSI}38;5;${color}m${prefix} ${l}${RESET}`
-        : `${CSI}38;5;${t.dimFg}m${l}${RESET}`
-    );
-  }
-
-  // Assistant or tool message: render as markdown
-  const md = new Markdown(msg.content, t.fg);
-  const mdLines = md.render(maxWidth);
-
-  if (msg.role === "assistant") {
-    const first = mdLines[0];
-    const rest = mdLines.slice(1);
-    return [
-      `${CSI}38;5;${color}m${prefix} ${first}${RESET}`,
-      ...rest.map((l) => `  ${l}`),
-    ];
-  }
-
-  // Tool message
-  const toolName = msg.tool ? `[${msg.tool}] ` : "";
-  return [
-    `${CSI}38;5;${color}m${prefix} ${toolName}${RESET}${mdLines[0] || ""}`,
-    ...mdLines.slice(1).map((l) => `  ${l}`),
-  ];
 }

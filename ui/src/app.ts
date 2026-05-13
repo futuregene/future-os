@@ -18,10 +18,9 @@ import {
   CURSOR_HIDE,
   ALT_SCREEN_ON,
   ALT_SCREEN_OFF,
-  DEFAULT_THEME,
   BOLD,
-  type Theme,
 } from "./tui.js";
+import { DARK_THEME, type Theme, fg, dim } from "./theme.js";
 
 type Overlay =
   | { kind: "select"; title: string; component: SelectList }
@@ -57,7 +56,7 @@ export class App {
   constructor(private serverUrl = "http://localhost:7890") {
     this.terminal = new NodeTerminal();
     this.client = new RpcClient(serverUrl);
-    this.theme = DEFAULT_THEME;
+    this.theme = DARK_THEME;
     this.chat = new ChatArea(this.terminal.getWidth());
     this.footer = new Footer(this.terminal.getWidth());
 
@@ -567,15 +566,17 @@ export class App {
   }
 
   private renderHeader(W: number): string {
-    const title = `${CSI}38;5;${this.theme.accent}m${BOLD}xihu${RESET}`;
-    const streaming = this.state.streaming
-      ? `${CSI}38;5;${this.theme.accent}m◐${RESET}`
-      : "";
+    // Model + thinking (e.g. "claude-sonnet-4  medium")
+    const model = fg(252, this.state.model || "(no model)");
+    const thinking = this.state.thinking !== "off"
+      ? fg(117, this.state.thinking)
+      : fg(240, "off");
+    const headerText = `${fg(151, BOLD + "xihu")}  ${model}  ${thinking}`;
 
-    const line = title + "  " + streaming;
-    const sep = "─".repeat(Math.min(W, 60));
-    return cursorPos(1, 1) + CLEAR_LINE + line +
-           cursorPos(2, 1) + CLEAR_LINE +
-           `${CSI}2m${sep}${RESET}`;
+    // Separator line
+    const sep = dim("─".repeat(Math.min(W, 50)));
+
+    return cursorPos(1, 1) + CLEAR_LINE + headerText +
+           cursorPos(2, 1) + CLEAR_LINE + sep;
   }
 }
