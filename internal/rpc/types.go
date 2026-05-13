@@ -42,6 +42,7 @@ type RpcCommand struct {
 
 	// Session
 	SessionPath string `json:"sessionPath,omitempty"`
+	SessionID   string `json:"sessionId,omitempty"`
 	EntryID     string `json:"entryId,omitempty"`
 	Name        string `json:"name,omitempty"`
 	OutputPath  string `json:"outputPath,omitempty"`

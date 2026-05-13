@@ -234,6 +234,25 @@ func (s *Server) handleCommand(cmd RpcCommand) *RpcResponse {
 		return success("set_session_name", nil)
 
 	// =================================================================
+	// Session Management
+	// =================================================================
+	case "list_sessions":
+		summaries, err := as.SessionManager().ListAll()
+		if err != nil {
+			return fail("list_sessions", err.Error())
+		}
+		return success("list_sessions", map[string]interface{}{"sessions": summaries})
+
+	case "delete_session":
+		if cmd.SessionID == "" {
+			return fail("delete_session", "sessionId is required")
+		}
+		if err := as.SessionManager().Delete(cmd.SessionID, as.CWD()); err != nil {
+			return fail("delete_session", err.Error())
+		}
+		return success("delete_session", map[string]bool{"deleted": true})
+
+	// =================================================================
 	// Commands
 	// =================================================================
 	case "get_commands":
