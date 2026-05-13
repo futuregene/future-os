@@ -1,5 +1,6 @@
 import { fg, bold, DARK_THEME } from "../theme.js";
 import type { Component } from "../tui.js";
+import { visibleWidth } from "../utils.js";
 
 export interface AutocompleteItem {
   value: string;
@@ -74,12 +75,12 @@ export class AutocompletePopup implements Component {
       if (isSelected) {
         // Selected: accent color, bold arrow
         const content = fg(151, bold("▶")) + " " + fg(252, label);
-        const pad = popupWidth - 2 - this.stripAnsi(content).length;
+        const pad = popupWidth - 2 - visibleWidth(content);
         lines.push(fg(244, "│") + " " + content + " ".repeat(Math.max(0, pad)) + fg(244, "│"));
       } else {
         // Not selected: dim color
         const content = "  " + label;
-        const pad = popupWidth - 2 - this.stripAnsi(content).length;
+        const pad = popupWidth - 2 - visibleWidth(content);
         lines.push(fg(244, "│") + fg(245, content) + " ".repeat(Math.max(0, pad)) + fg(244, "│"));
       }
     }
@@ -93,9 +94,5 @@ export class AutocompletePopup implements Component {
   height(): number {
     if (!this.visible || this.items.length === 0) return 0;
     return 2 + Math.min(this.items.length, this.maxVisible);
-  }
-
-  private stripAnsi(s: string): string {
-    return s.replace(/\x1b\[[0-9;]*m/g, "");
   }
 }

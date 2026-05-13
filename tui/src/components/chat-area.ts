@@ -8,14 +8,7 @@ import type { Component } from "../tui.js";
 import { fg, bg, bold, italic } from "../theme.js";
 import type { Theme } from "../theme.js";
 import { MarkdownRenderer } from "./markdown.js";
-
-function stripAnsi(s: string): string {
-  return s.replace(/\x1b\[[0-9;]*m/g, "");
-}
-
-function visibleLen(s: string): number {
-  return stripAnsi(s).length;
-}
+import { visibleWidth, applyBackgroundToLine } from "../utils.js";
 
 export interface ChatMessage {
   id: string;
@@ -288,7 +281,7 @@ export class ChatArea implements Component {
     for (const line of rendered) {
       if (line === "") continue;
       const text = ` ${line}`;
-      const pad = Math.max(0, this.width - visibleLen(text));
+      const pad = Math.max(0, this.width - visibleWidth(text));
       const padded = text + " ".repeat(pad);
       this.renderedLines.push({
         text: bg(this.theme.userBg, padded),
@@ -364,10 +357,7 @@ export class ChatArea implements Component {
     // fg()/bold() emit RESET codes that would clear the background, so we
     // re-apply the background after every inner RESET before the final one.
     const text = " " + commandLine;
-    const pad = Math.max(0, this.width - visibleLen(text));
-    const padded = text + " ".repeat(pad);
-    const reBg = `\x1b[0m\x1b[48;5;${bgColor}m`;
-    const bgLine = `\x1b[48;5;${bgColor}m${padded.replace(/\x1b\[0m/g, reBg)}\x1b[0m`;
+    const bgLine = applyBackgroundToLine(text, this.width, bgColor);
     this.renderedLines.push({
       text: bgLine,
       dim: false,
@@ -377,10 +367,7 @@ export class ChatArea implements Component {
     if (status === "complete" && msg.exitCode !== undefined) {
       const exitColor = msg.exitCode === 0 ? this.theme.success : this.theme.error;
       const exitText = ` ${fg(exitColor, `[exit ${msg.exitCode}]`)}`;
-      const exitPad = Math.max(0, this.width - visibleLen(exitText));
-      const exitPadded = exitText + " ".repeat(exitPad);
-      const exitReBg = `\x1b[0m\x1b[48;5;${bgColor}m`;
-      const exitBgLine = `\x1b[48;5;${bgColor}m${exitPadded.replace(/\x1b\[0m/g, exitReBg)}\x1b[0m`;
+      const exitBgLine = applyBackgroundToLine(exitText, this.width, bgColor);
       this.renderedLines.push({
         text: exitBgLine,
         dim: true,
