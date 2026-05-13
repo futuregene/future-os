@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -50,6 +51,8 @@ func NewSocketServer(as *agentsession.AgentSession) *SocketServer {
 
 // ListenAndServe starts the server on a Unix socket.
 func (s *SocketServer) ListenAndServe(socketPath string) error {
+	// Remove any stale socket file from a previous crashed server
+	os.Remove(socketPath)
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return fmt.Errorf("listen on socket %s: %w", socketPath, err)
