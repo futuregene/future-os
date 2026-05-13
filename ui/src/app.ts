@@ -1,11 +1,13 @@
 /**
  * xihu TUI - Main application.
+ * Connects the TypeScript TUI to the Go Agent via JSON-RPC.
  */
 
-import * as readline from "node:readline";
 import * as fs from "node:fs";
 import { RpcClient } from "./rpc/client.js";
 import { SelectList, type SelectItem } from "./components/select-list.js";
+import { Editor } from "./components/editor.js";
+import { renderChatMessage, type ChatMessageData } from "./components/markdown.js";
 import {
   NodeTerminal,
   CSI,
@@ -23,67 +25,77 @@ import {
 } from "./tui.js";
 
 type Overlay =
-  | { kind: "select"; component: SelectList }
-  | { kind: "input"; prompt: string; value: string }
+  | { kind: "select"; title: string; component: SelectList }
+  | { kind: "input"; title: string; value: string }
   | null;
+
+interface KeyEvent {
+  name: string;
+  ctrl: boolean;
+  shift: boolean;
+  alt: boolean;
+}
 
 export class App {
   private terminal: NodeTerminal;
   private client: RpcClient;
   private theme: Theme;
-  private state: {
-    messages: ChatMessage[];
-    model: string;
-    thinkingLevel: string;
-    streaming: boolean;
-    overlay: Overlay;
-    inputValue: string;
-    running: boolean;
-  };
+  private editor: Editor;
+  private messages: ChatMessageData[] = [];
+  private model = "";
+  private thinkingLevel = "off";
+  private streaming = false;
+  private overlay: Overlay = null;
+  private running = false;
+  private escBuf = "";
 
-  constructor(serverUrl = "http://localhost:7890") {
+  constructor(private serverUrl = "http://localhost:7890") {
     this.terminal = new NodeTerminal();
     this.client = new RpcClient(serverUrl);
     this.theme = DEFAULT_THEME;
-    this.state = {
-      messages: [],
-      model: "",
-      thinkingLevel: "off",
-      streaming: false,
-      overlay: null,
-      inputValue: "",
-      running: false,
-    };
+    this.editor = new Editor("❯ ", {
+      prompt: this.theme.accent,
+      text: this.theme.fg,
+      cursor: this.theme.accent,
+      bg: this.theme.bg,
+    }, {
+      onSubmit: (v) => this.handleSubmit(v),
+    });
   }
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────
 
   async start(): Promise<void> {
+    // Enter alternate screen, hide cursor
     this.terminal.enterAlternateScreen();
     this.terminal.hideCursor();
-    this.state.running = true;
 
-    // Enable raw mode on stdin
-    process.stdin.setRawMode!(true);
+    // Raw mode
     process.stdin.resume();
+    process.stdin.setRawMode!(true);
     process.stdin.setEncoding("utf-8");
 
-    // Read keypresses character by character
+    this.running = true;
+
+    // Key input loop
     process.stdin.on("data", (chunk: string) => {
       for (const char of chunk) {
         this.handleChar(char);
       }
     });
 
+    // Initial state load
     await this.refresh();
     this.render();
 
-    // Keep running until stopped
-    await new Promise(() => {});
+    // Keep running
+    await new Promise<void>((resolve) => {
+      process.stdin.on("SIGINT", () => resolve());
+    });
   }
 
   async stop(): Promise<void> {
-    this.state.running = false;
+    this.running = false;
     process.stdin.setRawMode!(false);
     this.terminal.exitAlternateScreen();
     this.terminal.showCursor();
@@ -91,330 +103,348 @@ export class App {
     this.terminal.close();
   }
 
-  // ─── Input Handling ─────────────────────────────────────────────────────
+  // ─── Key Input ──────────────────────────────────────────────────────────
 
   private handleChar(char: string): void {
-    const code = char.charCodeAt(0);
-
-    // Handle special keys via escape sequences
+    // Escape sequence handling
     if (char === "\x1b") {
-      this.escMode = true;
-      this.escBuffer = "\x1b";
+      this.escBuf = "\x1b";
       return;
     }
 
-    if (this.escMode) {
-      this.escBuffer += char;
-      if (this.tryHandleEsc()) {
-        this.escMode = false;
-        this.escBuffer = "";
+    if (this.escBuf.length > 0) {
+      this.escBuf += char;
+      const key = this.parseEscSeq(this.escBuf);
+      if (key) {
+        this.escBuf = "";
+        this.handleKey(key);
+        return;
+      }
+      if (this.escBuf.length > 8) {
+        // Unknown escape, reset
+        this.escBuf = "";
       }
       return;
     }
 
     // Ctrl+C
-    if (code === 3) {
+    if (char.charCodeAt(0) === 3) {
       this.handleInterrupt();
       return;
     }
 
-    const overlay = this.state.overlay;
-    if (overlay?.kind === "input") {
-      if (code === 13) {
-        // Enter
-        this.handleInputSubmit(overlay.value);
-      } else if (code === 127 || code === 8) {
-        // Backspace
-        overlay.value = overlay.value.slice(0, -1);
-        this.render();
-      } else if (code === 27) {
-        // Escape
-        this.state.overlay = null;
-        this.render();
-      } else if (code >= 32) {
-        overlay.value += char;
-        this.render();
-      }
-      return;
-    }
-
-    if (overlay?.kind === "select") {
-      const key = this.charToKey(char, code);
+    // Overlay key handling
+    if (this.overlay?.kind === "select") {
+      const key = this.charToKey(char);
       if (key) {
-        const handled = overlay.component.handleKey(key);
+        const handled = this.overlay.component.handleKey(key.name);
         if (handled) this.render();
       }
       return;
     }
 
-    // Global shortcuts
-    const key = this.charToKey(char, code);
+    if (this.overlay?.kind === "input") {
+      const code = char.charCodeAt(0);
+      if (code === 13) {
+        this.handleOverlayInputSubmit(this.overlay.value);
+      } else if (code === 127) {
+        this.overlay.value = this.overlay.value.slice(0, -1);
+        this.render();
+      } else if (code >= 32) {
+        this.overlay.value += char;
+        this.render();
+      }
+      return;
+    }
+
+    // Editor key handling
+    const key = this.charToKey(char);
     if (key) {
-      this.handleGlobalKey(key);
-    } else if (code >= 32) {
-      // Printable character
-      this.state.inputValue += char;
+      if (key.name === "escape") {
+        if (this.editor.getValue() === "") {
+          // Could close overlay or exit
+        } else {
+          this.editor.setValue("");
+        }
+      } else if (key.name === "ctrl+l") {
+        this.terminal.clear();
+        this.render();
+      } else if (key.name === "ctrl+p") {
+        this.cycleModel();
+      } else if (key.name === "ctrl+s") {
+        this.showSettings();
+      } else if (key.name === "ctrl+r") {
+        this.showSessions();
+      } else {
+        const handled = this.editor.handleKey(key);
+        if (handled) this.render();
+      }
+    } else if (char.charCodeAt(0) >= 32) {
+      this.editor.insertText(char);
+      this.render();
     }
   }
 
-  private escMode = false;
-  private escBuffer = "";
-
-  private tryHandleEsc(): boolean {
-    const buf = this.escBuffer;
-    if (buf === "\x1b[A") { this.handleGlobalKey("up"); return true; }
-    if (buf === "\x1b[B") { this.handleGlobalKey("down"); return true; }
-    if (buf === "\x1b[C") { this.handleGlobalKey("right"); return true; }
-    if (buf === "\x1b[D") { this.handleGlobalKey("left"); return true; }
-    if (buf === "\x1b[H") { this.handleGlobalKey("home"); return true; }
-    if (buf === "\x1b[F") { this.handleGlobalKey("end"); return true; }
-    if (buf === "\x1b[3~") { this.handleGlobalKey("delete"); return true; }
-    if (buf === "\x1b") { this.handleGlobalKey("escape"); return true; }
-    if (buf.length > 3) { return true; } // Unknown escape, ignore
-    return false;
-  }
-
-  private charToKey(char: string, code: number): string | null {
-    if (code === 13) return "enter";
-    if (code === 9) return "tab";
-    if (code === 127 || code === 8) return "backspace";
+  private charToKey(char: string): KeyEvent | null {
+    const code = char.charCodeAt(0);
+    if (code === 13) return { name: "enter", ctrl: false, shift: false, alt: false };
+    if (code === 9)  return { name: "tab", ctrl: false, shift: false, alt: false };
+    if (code === 127 || code === 8) return { name: "backspace", ctrl: false, shift: false, alt: false };
+    if (code === 27)  return { name: "escape", ctrl: false, shift: false, alt: false };
     return null;
   }
 
-  private handleGlobalKey(key: string): void {
-    switch (key) {
-      case "escape":
-        if (this.state.overlay) {
-          this.state.overlay = null;
-          this.render();
-        }
-        break;
-      case "ctrl+p":
-        this.cycleModel();
-        break;
-      case "shift+tab":
-        this.cycleThinking();
-        break;
-      case "ctrl+l":
-        this.terminal.clear();
+  private parseEscSeq(seq: string): KeyEvent | null {
+    switch (seq) {
+      case "\x1b[A": return { name: "up", ctrl: false, shift: false, alt: false };
+      case "\x1b[B": return { name: "down", ctrl: false, shift: false, alt: false };
+      case "\x1b[C": return { name: "right", ctrl: false, shift: false, alt: false };
+      case "\x1b[D": return { name: "left", ctrl: false, shift: false, alt: false };
+      case "\x1b[H": return { name: "home", ctrl: false, shift: false, alt: false };
+      case "\x1b[F": return { name: "end", ctrl: false, shift: false, alt: false };
+      case "\x1b[3~": return { name: "delete", ctrl: false, shift: false, alt: false };
+      case "\x1b[5~": return { name: "pageup", ctrl: false, shift: false, alt: false };
+      case "\x1b[6~": return { name: "pagedown", ctrl: false, shift: false, alt: false };
+      case "\x1b":   return { name: "escape", ctrl: false, shift: false, alt: false };
+      case "\x1b[Z": return { name: "shift+tab", ctrl: false, shift: true, alt: false };
+      default: {
+        // Shift+arrows (TERMINFO-style)
+        if (seq === "\x1b[1;2A") return { name: "shift+up", ctrl: false, shift: true, alt: false };
+        if (seq === "\x1b[1;2B") return { name: "shift+down", ctrl: false, shift: true, alt: false };
+        if (seq === "\x1b[1;2C") return { name: "shift+right", ctrl: false, shift: true, alt: false };
+        if (seq === "\x1b[1;2D") return { name: "shift+left", ctrl: false, shift: true, alt: false };
+        // Ctrl+arrows
+        if (seq === "\x1b[1;5A") return { name: "ctrl+up", ctrl: true, shift: false, alt: false };
+        if (seq === "\x1b[1;5B") return { name: "ctrl+down", ctrl: true, shift: false, alt: false };
+        if (seq === "\x1b[1;5C") return { name: "ctrl+right", ctrl: true, shift: false, alt: false };
+        if (seq === "\x1b[1;5D") return { name: "ctrl+left", ctrl: true, shift: false, alt: false };
+        return null;
+      }
+    }
+  }
+
+  private handleKey(key: KeyEvent): void {
+    // Escape closes overlay
+    if (key.name === "escape") {
+      if (this.overlay) {
+        this.overlay = null;
         this.render();
-        break;
-      case "up":
-      case "down":
-        // Navigate chat history
-        break;
+      }
+      return;
+    }
+
+    if (this.overlay?.kind === "select") {
+      if (key.name === "enter") {
+        const item = this.overlay.component.getSelectedItem();
+        if (item) this.overlay.component.handleKey("enter");
+      } else {
+        this.overlay.component.handleKey(key.name);
+      }
+      this.render();
+      return;
     }
   }
 
   private handleInterrupt(): void {
-    if (this.state.streaming) {
+    if (this.streaming) {
       this.client.abort();
-      this.state.streaming = false;
+      this.streaming = false;
+      this.messages.push({ role: "system", content: "(aborted)" });
+      this.render();
     } else {
       this.stop();
       process.exit(0);
     }
   }
 
-  private async handleInputSubmit(value: string): Promise<void> {
-    this.state.overlay = null;
-    if (value.trim()) {
-      await this.sendPrompt(value);
+  // ─── Submit ─────────────────────────────────────────────────────────────
+
+  private async handleSubmit(value: string): Promise<void> {
+    this.messages.push({ role: "user", content: value });
+    this.streaming = true;
+    this.render();
+
+    try {
+      await this.client.prompt(value);
+      this.messages.push({ role: "assistant", content: "(response complete)" });
+    } catch (err) {
+      this.messages.push({ role: "system", content: `Error: ${err}` });
     }
+
+    this.streaming = false;
+    this.render();
+  }
+
+  private handleOverlayInputSubmit(value: string): void {
+    this.overlay = null;
     this.render();
   }
 
   // ─── Actions ─────────────────────────────────────────────────────────────
 
-  private async sendPrompt(message: string): Promise<void> {
-    this.state.streaming = true;
-    this.state.messages.push({ role: "user", content: message });
-    this.render();
-
+  private async refresh(): Promise<void> {
     try {
-      await this.client.prompt(message);
-      this.state.streaming = false;
-      this.state.messages.push({ role: "assistant", content: "[Response complete]" });
-    } catch (err) {
-      this.state.streaming = false;
-      this.state.messages.push({ role: "system", content: `Error: ${err}` });
+      const state = await this.client.getState();
+      this.model = state.model ?? "(no model)";
+      this.thinkingLevel = state.thinkingLevel;
+    } catch {
+      this.model = "(not connected)";
     }
-
-    this.render();
   }
 
   private async cycleModel(): Promise<void> {
     try {
-      const result = await this.client.cycleModel();
-      if (result) {
-        this.state.model = result.model;
-        this.state.thinkingLevel = result.thinkingLevel;
+      const r = await this.client.cycleModel();
+      if (r) {
+        this.model = r.model;
+        this.thinkingLevel = r.thinkingLevel;
       }
-    } catch {
-      // Ignore
-    }
+    } catch { /* ignore */ }
     this.render();
-  }
-
-  private async cycleThinking(): Promise<void> {
-    try {
-      const result = await this.client.cycleThinkingLevel();
-      if (result) {
-        this.state.thinkingLevel = result.level;
-      }
-    } catch {
-      // Ignore
-    }
-    this.render();
-  }
-
-  private async refresh(): Promise<void> {
-    try {
-      const state = await this.client.getState();
-      this.state.model = state.model ?? "(no model)";
-      this.state.thinkingLevel = state.thinkingLevel;
-    } catch {
-      this.state.model = "(not connected)";
-    }
   }
 
   // ─── Overlays ───────────────────────────────────────────────────────────
 
   async showSessions(): Promise<void> {
-    const { sessions } = await this.client.listSessions();
-    const items: SelectItem[] = sessions.map((s) => ({
-      value: s.id,
-      label: s.name ?? s.id,
-      description: `${s.model} · ${new Date(s.updated_at).toLocaleString()}`,
-    }));
+    try {
+      const { sessions } = await this.client.listSessions();
+      const items: SelectItem[] = sessions.map((s) => ({
+        value: s.id,
+        label: s.name ?? s.id,
+        description: `${s.model} · ${new Date(s.updated_at).toLocaleString()}`,
+      }));
 
-    const sl = new SelectList({
-      title: "Sessions",
-      items,
-      maxVisible: 15,
-      onSelect: async (item) => {
-        await this.client.switchSession(item.value);
-        await this.refresh();
-        this.state.overlay = null;
-        this.render();
-      },
-      onCancel: () => {
-        this.state.overlay = null;
-        this.render();
-      },
-    });
+      const sl = new SelectList({
+        title: "Sessions",
+        items,
+        maxVisible: 15,
+        onSelect: async (item) => {
+          await this.client.switchSession(item.value);
+          await this.refresh();
+          this.overlay = null;
+          this.render();
+        },
+        onCancel: () => {
+          this.overlay = null;
+          this.render();
+        },
+      });
 
-    this.state.overlay = { kind: "select", component: sl };
-    this.render();
+      this.overlay = { kind: "select", title: "Sessions", component: sl };
+      this.render();
+    } catch (err) {
+      this.messages.push({ role: "system", content: `Failed to load sessions: ${err}` });
+      this.render();
+    }
   }
 
   async showSettings(): Promise<void> {
     const items: SelectItem[] = [
-      { value: "theme", label: "Theme", description: "Change UI colors" },
-      { value: "model", label: "Model", description: this.state.model },
-      { value: "thinking", label: "Thinking Level", description: this.state.thinkingLevel },
+      { value: "model", label: "Model", description: this.model },
+      { value: "thinking", label: "Thinking", description: this.thinkingLevel },
+      { value: "sessions", label: "Sessions", description: "Browse sessions" },
+      { value: "reload", label: "Reload", description: "Reload settings" },
     ];
 
     const sl = new SelectList({
       title: "Settings",
       items,
       maxVisible: 10,
-      onSelect: () => {
-        this.state.overlay = null;
+      onSelect: async (item) => {
+        this.overlay = null;
+        if (item.value === "sessions") {
+          await this.showSessions();
+        } else if (item.value === "reload") {
+          await this.refresh();
+          this.messages.push({ role: "system", content: "Settings reloaded" });
+        }
         this.render();
       },
       onCancel: () => {
-        this.state.overlay = null;
+        this.overlay = null;
         this.render();
       },
     });
 
-    this.state.overlay = { kind: "select", component: sl };
+    this.overlay = { kind: "select", title: "Settings", component: sl };
     this.render();
   }
 
   // ─── Rendering ───────────────────────────────────────────────────────────
 
   private render(): void {
-    const width = this.terminal.getWidth();
-    const height = this.terminal.getHeight();
+    const W = this.terminal.getWidth();
+    const H = this.terminal.getHeight();
+    const CHAT_HEIGHT = H - 3; // footer + editor
 
-    let output = CLEAR + cursorPos(1, 1);
+    let out = CLEAR + cursorPos(1, 1);
 
-    // Chat area
-    output += this.renderChat(width);
+    // Chat area (scrollable)
+    out += this.renderChat(W, CHAT_HEIGHT);
 
-    // Overlay
-    if (this.state.overlay?.kind === "select") {
-      const lines = this.state.overlay.component.render(width);
-      const top = Math.floor((height - lines.length) / 2);
+    // Overlay (if any)
+    if (this.overlay?.kind === "select") {
+      const lines = this.overlay.component.render(W);
+      const top = Math.floor((H - lines.length) / 2);
+      const left = Math.floor((W - 70) / 2);
       for (let i = 0; i < lines.length; i++) {
-        output += cursorPos(top + i, 1) + CLEAR_LINE + lines[i];
+        out += cursorPos(top + i, Math.max(1, left)) + CLEAR_LINE + lines[i];
       }
-    } else if (this.state.overlay?.kind === "input") {
-      const inputLine = height - 2;
-      output += cursorPos(inputLine, 1) + CLEAR_LINE;
-      output += `${CSI}38;5;${this.theme.accent}m${this.state.overlay.prompt}: ${RESET}${this.state.overlay.value}_`;
     }
 
-    // Input line (when no overlay)
-    if (!this.state.overlay) {
-      const inputLine = height - 2;
-      output += cursorPos(inputLine, 1) + CLEAR_LINE;
-      const prompt = `${CSI}38;5;${this.theme.accent}m❯ ${RESET}`;
-      output += prompt + this.state.inputValue + "_";
+    // Editor / input line
+    out += cursorPos(H - 1, 1) + CLEAR_LINE;
+    const editorLines = this.editor.render(W);
+    if (editorLines.length > 0) {
+      out += editorLines[0];
     }
 
     // Footer
-    output += this.renderFooter(width, height);
+    out += this.renderFooter(W, H);
 
-    this.terminal.write(output);
+    this.terminal.write(out);
   }
 
-  private renderChat(width: number): string {
+  private renderChat(W: number, maxHeight: number): string {
     const lines: string[] = [];
 
     // Header
     lines.push(
-      `${CSI}38;5;${this.theme.accent}m${BOLD} xihu ${RESET} ${CSI}2m${this.state.model}${RESET}`
+      `${CSI}38;5;${this.theme.accent}m${BOLD} xihu${RESET}` +
+      `  ${CSI}2m${this.model}${RESET}` +
+      `  thinking: ${CSI}2m${this.thinkingLevel}${RESET}`
     );
-    lines.push("─".repeat(Math.min(width, 60)));
+    lines.push("─".repeat(Math.min(W, 60)));
 
-    // Messages
-    const maxLines = this.terminal.getHeight() - 6;
-    const recent = this.state.messages.slice(-maxLines);
-
+    // Messages (most recent last)
+    const recent = this.messages.slice(-(maxHeight - 4));
     for (const msg of recent) {
-      const prefix = msg.role === "user" ? "👤" : msg.role === "assistant" ? "🤖" : "⚙️";
-      const content = (msg.content ?? "").split("\n")[0];
-      const truncated = content.length > width - 4 ? content.slice(0, width - 7) + "…" : content;
-      lines.push(`${prefix} ${CSI}2m${truncated}${RESET}`);
+      const msgLines = renderChatMessage(msg, W - 2);
+      lines.push(...msgLines);
     }
 
-    if (this.state.streaming) {
+    if (this.streaming) {
       lines.push(`${CSI}38;5;${this.theme.accent}m◐ Thinking...${RESET}`);
     }
 
-    let output = "";
-    for (let i = 0; i < lines.length; i++) {
-      output += cursorPos(i + 1, 1) + CLEAR_LINE + lines[i];
+    // Truncate if too tall
+    const displayLines = lines.slice(0, maxHeight);
+    let out = "";
+    for (let i = 0; i < displayLines.length; i++) {
+      out += cursorPos(i + 1, 1) + CLEAR_LINE + displayLines[i];
     }
-    return output;
+    return out;
   }
 
-  private renderFooter(width: number, height: number): string {
-    const model = this.state.model || "(no model)";
-    const thinking = this.state.thinkingLevel;
-    const streaming = this.state.streaming ? "◐" : "";
-    const overlay = this.state.overlay !== null ? "[ESC]" : "";
+  private renderFooter(W: number, H: number): string {
+    const streaming = this.streaming ? "◐" : "";
+    const overlay = this.overlay ? `[ESC] ` : "";
 
-    const footerText = ` ${model} · thinking: ${thinking} ${streaming} ${overlay} `;
-    return cursorPos(height, 1) + CLEAR_LINE +
-      `${CSI}48;5;${this.theme.bg}m${CSI}38;5;${this.theme.dimFg}m${footerText}${RESET}`;
+    const left = ` ${this.model} · ${this.thinkingLevel} ${streaming}`;
+    const right = `${overlay}`;
+    const footer = left + " ".repeat(Math.max(1, W - left.length - right.length - 1)) + right;
+
+    return cursorPos(H, 1) + CLEAR_LINE +
+      `${CSI}48;5;${this.theme.bg}m${CSI}38;5;${this.theme.dimFg}m${footer}${RESET}`;
   }
-}
-
-interface ChatMessage {
-  role: "user" | "assistant" | "system" | "tool";
-  content?: string;
 }
