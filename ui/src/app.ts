@@ -147,6 +147,24 @@ export class App {
         this.state.streaming = true;
         break;
 
+      case "tool_start": {
+        const e = event as { tool_id?: string; tool_name?: string };
+        this.chat.addToolStart(e.tool_id ?? "", e.tool_name ?? "");
+        break;
+      }
+
+      case "tool_delta": {
+        const e = event as { tool_id?: string; text?: string };
+        this.chat.appendToolDelta(e.tool_id ?? "", e.text ?? "");
+        break;
+      }
+
+      case "tool_end": {
+        const e = event as { tool_id?: string; text?: string };
+        this.chat.finishTool(e.tool_id ?? "", e.text);
+        break;
+      }
+
       case "error": {
         this.state.streaming = false;
         const e = event as { error_message?: string };

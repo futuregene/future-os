@@ -123,6 +123,8 @@ export interface SessionSummary {
 
 export type AgentEvent = {
   type: string;
-  text?: string;   // text_chunk, agent_end
+  text?: string;   // text_chunk, agent_end, tool_delta
+  tool_id?: string;
+  tool_name?: string;
   [key: string]: unknown;
 };

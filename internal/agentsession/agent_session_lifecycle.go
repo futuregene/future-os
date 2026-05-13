@@ -102,9 +102,39 @@ func (s *AgentSession) runPrompt(text string, opts *PromptOptions) error {
 
 	// Run the agent loop — convert session messages to internal AgentMessage format.
 	agentMessages := types.ConvertFromLLM(messages)
-	finalText, finalAgentMessages, err := s.engine.Loop.RunStreamingWithMessages(ctx, agentMessages, func(text string) {
-		s.emit(AgentSessionEvent{Type: "text_chunk", Text: text})
-	})
+	finalText, finalAgentMessages, err := s.engine.Loop.RunStreamingWithMessages(
+		ctx, agentMessages,
+		func(text string) {
+			s.emit(AgentSessionEvent{Type: "text_chunk", Text: text})
+		},
+		func(event types.StreamEvent) {
+			// Forward tool call events to SSE subscribers
+			switch event.Type {
+			case "toolcall_start":
+				s.emit(AgentSessionEvent{
+					Type:     "tool_start",
+					ToolID:   event.ToolID,
+					ToolName: event.ToolName,
+				})
+			case "toolcall_delta":
+				s.emit(AgentSessionEvent{
+					Type:     "tool_delta",
+					ToolID:   event.ToolID,
+					ToolName: event.ToolName,
+					Text:     event.Text,
+				})
+			case "tool_call", "toolcall_end":
+				if event.ToolCall != nil {
+					s.emit(AgentSessionEvent{
+						Type:     "tool_end",
+						ToolID:   event.ToolCall.ID,
+						ToolName: event.ToolCall.Function.Name,
+						Text:     string(event.ToolCall.Function.Arguments),
+					})
+				}
+			}
+		},
+	)
 
 	// Emit agent_end with the full assistant response text
 	s.emit(AgentSessionEvent{Type: "agent_end", Text: finalText})

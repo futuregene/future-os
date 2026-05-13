@@ -511,7 +511,7 @@ func main() {
 
 	result, finalMessages, err := eng.Loop.RunStreamingWithMessages(ctx, types.ConvertFromLLM(allMessages), func(text string) {
 		fmt.Print(text)
-	})
+	}, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nError: %v\n", err)
 		os.Exit(1)

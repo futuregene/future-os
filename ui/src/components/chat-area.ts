@@ -31,6 +31,7 @@ export class ChatArea {
 
   private md = new MarkdownRenderer();
   private theme: Theme;
+  private dimGray(text: string): string { return fg(244, text); }
 
   constructor(private maxWidth = 80, theme?: Theme) {
     this.theme = theme ?? {
@@ -91,6 +92,47 @@ export class ChatArea {
     if (last.role === "assistant") {
       last.pending = false;
       this.rerender();
+    }
+  }
+
+  // ─── Tool call management ───────────────────────────────────────
+
+  addToolStart(toolId: string, toolName: string): void {
+    this.messages.push({
+      id: crypto.randomUUID(),
+      role: "tool",
+      content: "",  // holds args delta during streaming
+      name: toolName,
+      tool: toolId,
+      toolStatus: "running",
+    });
+    this.rerender();
+    if (this.autoScroll) this.scrollToBottom();
+  }
+
+  appendToolDelta(toolId: string, text: string): void {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const msg = this.messages[i];
+      if (msg.role === "tool" && msg.tool === toolId) {
+        msg.content += text;
+        this.rerender();
+        if (this.autoScroll) this.scrollToBottom();
+        return;
+      }
+    }
+  }
+
+  finishTool(toolId: string, toolArgs?: string): void {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const msg = this.messages[i];
+      if (msg.role === "tool" && msg.tool === toolId) {
+        msg.toolStatus = "complete";
+        if (toolArgs !== undefined) {
+          (msg as { toolArgs?: string }).toolArgs = toolArgs;
+        }
+        this.rerender();
+        return;
+      }
     }
   }
 
@@ -178,39 +220,45 @@ export class ChatArea {
   // ─── Assistant message ────────────────────────────────────────
 
   private renderAssistantMessage(msg: ChatMessage): void {
-    // Prefix line with icon
     const prefix = msg.pending
       ? `${fg(151, "🤖")} ${fg(245, "◐")}`
       : `${fg(69, "🤖")}`;
 
-    const lines = msg.content.split("\n");
-    const first = lines[0] || "";
+    // Split content into paragraphs (separated by blank lines)
+    const paragraphs = msg.content.split(/\n\n+/);
+    const streaming = msg.pending;
 
-    if (first) {
-      const mdLines = this.md.render(first, this.width - 3);
-      if (mdLines.length > 0) {
-        this.renderedLines.push({ text: `${prefix} ${mdLines[0]}`, dim: false });
-        for (const line of mdLines.slice(1)) {
-          this.renderedLines.push({ text: `  ${line}`, dim: false });
-        }
-      }
-    } else {
-      this.renderedLines.push({ text: prefix, dim: false });
-    }
+    for (let p = 0; p < paragraphs.length; p++) {
+      const para = paragraphs[p];
+      const lines = para.split("\n");
+      const isLastPara = p === paragraphs.length - 1;
 
-    // Rest of lines
-    for (const line of lines.slice(1)) {
-      if (line.trim()) {
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const isLastLine = isLastPara && i === lines.length - 1;
+        const isFirstLine = p === 0 && i === 0;
+
+        if (!line.trim()) continue;
+
         const mdLines = this.md.render(line, this.width - 3);
-        for (const l of mdLines) {
-          this.renderedLines.push({ text: `  ${l}`, dim: false });
+        for (let j = 0; j < mdLines.length; j++) {
+          const isLastMdLine = isLastLine && j === mdLines.length - 1;
+
+          let text: string;
+          if (isFirstLine && j === 0) {
+            text = `${prefix} ${mdLines[j]}`;
+          } else {
+            text = `  ${mdLines[j]}`;
+          }
+
+          // Append streaming cursor to the very last content line
+          if (streaming && isLastMdLine) {
+            text += fg(151, " ◐");
+          }
+
+          this.renderedLines.push({ text, dim: false });
         }
       }
-    }
-
-    // Streaming cursor
-    if (msg.pending) {
-      this.renderedLines.push({ text: `${fg(151, "  ◐")}`, dim: false });
     }
   }
 
@@ -225,39 +273,30 @@ export class ChatArea {
       : status === "complete" ? this.theme.toolSuccessBg
       : this.theme.toolPendingBg;
 
-    const borderColor = fg(244, "─".repeat(Math.min(toolName.length + 4, this.width - 4)));
-    const titleColor = fg(151, bold(`$ ${toolName}`));
+    // Command line: $ toolname args (toolArgs holds the final args after tool_end)
+    const toolArgs = (msg as { toolArgs?: string }).toolArgs;
+    const commandLine = toolArgs !== undefined && toolArgs !== ""
+      ? `${fg(151, bold("$"))} ${fg(151, toolName)} ${this.dimGray(toolArgs)}`
+      : `${fg(151, bold("$"))} ${fg(151, toolName)}`;
 
     // Top border
+    const boxWidth = Math.min(this.width - 4, 76);
+    const borderLine = "─".repeat(boxWidth);
     this.renderedLines.push({
-      text: bg(bgColor, fg(244, "┌" + "─".repeat(Math.min(toolName.length + 4, this.width - 4)) + "┐")),
+      text: bg(bgColor, fg(244, "┌" + borderLine + "┐")),
       dim: false,
     });
 
-    // Command line
+    // Command line with args
     this.renderedLines.push({
-      text: bg(bgColor, ` ${titleColor}`),
+      text: bg(bgColor, ` ${commandLine}`),
       dim: false,
     });
 
-    // Output
-    const outputLines = msg.content.split("\n");
-    for (const line of outputLines.slice(0, 30)) {
-      const stripped = this.md.strip(line);
-      if (stripped) {
-        const truncated = stripped.length > this.width - 4
-          ? stripped.slice(0, this.width - 7) + "…"
-          : stripped;
-        this.renderedLines.push({
-          text: bg(bgColor, ` ${fg(244, truncated)}`),
-          dim: true,
-        });
-      }
-    }
-
-    if (outputLines.length > 30) {
+    // Streaming indicator when running
+    if (status === "running") {
       this.renderedLines.push({
-        text: bg(bgColor, fg(244, ` ${"[... ${outputLines.length - 30} more lines]"}`)),
+        text: bg(bgColor, fg(245, "   ◐")),
         dim: true,
       });
     }
@@ -273,7 +312,7 @@ export class ChatArea {
 
     // Bottom border
     this.renderedLines.push({
-      text: bg(bgColor, fg(244, "└" + "─".repeat(Math.min(toolName.length + 4, this.width - 4)) + "┘")),
+      text: bg(bgColor, fg(244, "└" + borderLine + "┘")),
       dim: false,
     });
   }

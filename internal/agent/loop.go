@@ -77,7 +77,14 @@ func NewLoop(provider types.LLMProvider, model string) *Loop {
 // RunStreamingWithMessages runs the agent loop with pre-existing messages,
 // returning final text and all messages. Uses AgentMessage internally, converting
 // to []types.Message via ConvertToLLM() before each LLM call.
-func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.AgentMessage, onText func(string)) (string, []types.AgentMessage, error) {
+// onText is called for each text chunk. onEvent is called for all stream events
+// (including tool calls), allowing the caller to forward them to SSE subscribers.
+func (l *Loop) RunStreamingWithMessages(
+	ctx context.Context,
+	messages []types.AgentMessage,
+	onText func(string),
+	onEvent func(event types.StreamEvent),
+) (string, []types.AgentMessage, error) {
 	// Validate: last message must not be from assistant (the model responds next)
 	if len(messages) > 0 && messages[len(messages)-1].Role == "assistant" {
 		return "", messages, fmt.Errorf("agent: last message must not be from assistant (the model responds next)")
@@ -270,9 +277,15 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Ag
 				if l.EventBus != nil {
 					l.EventBus.Emit(events.ToolCallStart(event.ToolName, event.ToolID))
 				}
+				if onEvent != nil {
+					onEvent(event)
+				}
 			case "toolcall_delta":
 				if l.EventBus != nil {
 					l.EventBus.Emit(events.ToolCallDelta(event.Text))
+				}
+				if onEvent != nil {
+					onEvent(event)
 				}
 			case "tool_call", "toolcall_end":
 				if event.ToolCall != nil {
@@ -283,6 +296,9 @@ func (l *Loop) RunStreamingWithMessages(ctx context.Context, messages []types.Ag
 							event.ToolCall.ID,
 							string(event.ToolCall.Function.Arguments),
 						))
+					}
+					if onEvent != nil {
+						onEvent(event)
 					}
 				}
 			case "usage":
@@ -397,6 +413,6 @@ func (l *Loop) RunStreaming(ctx context.Context, userPrompt string, onText func(
 		newSystemAgentMessage(l.SystemPrompt),
 		newUserAgentMessage(userPrompt),
 	}
-	result, _, err := l.RunStreamingWithMessages(ctx, messages, onText)
+	result, _, err := l.RunStreamingWithMessages(ctx, messages, onText, nil)
 	return result, err
 }

@@ -57,6 +57,10 @@ type AgentSessionEvent struct {
 
 	// session_info_changed
 	Name string `json:"name,omitempty"`
+
+	// tool_start / tool_delta / tool_end
+	ToolID   string `json:"tool_id,omitempty"`
+	ToolName string `json:"tool_name,omitempty"`
 }
 
 // AgentSessionEventListener is a function that receives events.
