@@ -238,6 +238,13 @@ export class App {
     // Escape sequence start
     if (char === "\x1b") {
       this.escBuf = "\x1b";
+      // Set a timeout - if no more chars arrive, treat as standalone Escape
+      setTimeout(() => {
+        if (this.escBuf === "\x1b") {
+          this.escBuf = "";
+          this.handleKey({ name: "escape", ctrl: false, shift: false, alt: false });
+        }
+      }, 50);
       return;
     }
 
@@ -385,7 +392,7 @@ export class App {
           break;
         default:
           // Pass to editor
-          if (this.editor.handleKey({ name: key.name, ctrl: true, shift: false, alt: false })) {
+          if (this.editor.handleKey(key)) {
             this.render();
           }
           break;
@@ -456,6 +463,12 @@ export class App {
     if (code === 13) return { name: "enter", ctrl: false, shift: false, alt: false };
     if (code === 9)  return { name: "tab", ctrl: false, shift: false, alt: false };
     if (code === 127 || code === 8) return { name: "backspace", ctrl: false, shift: false, alt: false };
+    // Ctrl shortcuts
+    if (code === 1) return { name: "a", ctrl: true, shift: false, alt: false };
+    if (code === 5) return { name: "e", ctrl: true, shift: false, alt: false };
+    if (code === 15) return { name: "o", ctrl: true, shift: false, alt: false };
+    if (code === 21) return { name: "u", ctrl: true, shift: false, alt: false };
+    if (code === 23) return { name: "w", ctrl: true, shift: false, alt: false };
     return null;
   }
 
@@ -972,42 +985,55 @@ export class App {
     const acc = (t: string) => fg(151, t);
     const bold_ = (t: string) => fg(252, bold(t));
 
-    lines.push(dim_("┌" + "─".repeat(50) + "┐"));
-    lines.push(dim_("│" + " ".repeat(50) + "│"));
-    lines.push(dim_("│") + "  " + bold_("xihu") + "  " + dim_("Terminal UI Help") + " ".repeat(20) + dim_("│"));
-    lines.push(dim_("│" + " ".repeat(50) + "│"));
-    lines.push(dim_("├" + "─".repeat(50) + "┤"));
-    lines.push(dim_("│") + "  " + acc("Shortcuts:") + " ".repeat(42) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("ctrl+o  ") + dim_("show this help") + " ".repeat(30) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("ctrl+c  ") + dim_("interrupt") + " ".repeat(35) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("ctrl+d  ") + dim_("clear / exit") + " ".repeat(32) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("ctrl+l  ") + dim_("clear screen") + " ".repeat(33) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("ctrl+p  ") + dim_("cycle model") + " ".repeat(33) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("ctrl+r  ") + dim_("browse sessions") + " ".repeat(30) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("ctrl+t  ") + dim_("cycle thinking level") + " ".repeat(26) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("tab     ") + dim_("autocomplete") + " ".repeat(32) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("↑↓      ") + dim_("scroll chat / navigate autocomplete") + " ".repeat(16) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("enter   ") + dim_("submit / accept autocomplete") + " ".repeat(21) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("escape  ") + dim_("close popup / clear") + " ".repeat(28) + dim_("│"));
-    lines.push(dim_("│" + " ".repeat(50) + "│"));
-    lines.push(dim_("├" + "─".repeat(50) + "┤"));
-    lines.push(dim_("│") + "  " + acc("/commands:") + " ".repeat(41) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("/model [name]  ") + dim_("select model") + " ".repeat(28) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("/sessions   ") + dim_("browse sessions") + " ".repeat(30) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("/new       ") + dim_("new session") + " ".repeat(32) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("/settings  ") + dim_("open settings") + " ".repeat(30) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("/compact   ") + dim_("compact context") + " ".repeat(29) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("/clone     ") + dim_("clone session") + " ".repeat(32) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("/fork      ") + dim_("fork session") + " ".repeat(33) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("/tree      ") + dim_("session tree") + " ".repeat(33) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("/thinking  ") + dim_("toggle thinking level") + " ".repeat(25) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("/name [n] ") + dim_("set session name") + " ".repeat(29) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("/theme [d|l]") + dim_("change theme") + " ".repeat(30) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("/help     ") + dim_("show help") + " ".repeat(34) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("/hotkeys  ") + dim_("show shortcuts") + " ".repeat(30) + dim_("│"));
-    lines.push(dim_("│") + "    " + dim_("/quit     ") + dim_("quit xihu") + " ".repeat(34) + dim_("│"));
-    lines.push(dim_("│" + " ".repeat(50) + "│"));
-    lines.push(dim_("└" + "─".repeat(50) + "┘"));
+    // Two-column layout fitting terminal width W
+    const innerW = W - 4;
+    const leftCol = [
+      acc("Shortcuts:"),
+      dim_("  ctrl+o  show this help"),
+      dim_("  ctrl+c  interrupt"),
+      dim_("  ctrl+d  clear / exit"),
+      dim_("  ctrl+l  clear screen"),
+      dim_("  ctrl+p  cycle model"),
+      dim_("  ctrl+r  browse sessions"),
+      dim_("  ctrl+t  cycle thinking"),
+      dim_("  tab     autocomplete"),
+      dim_("  \u2191\u2193    scroll / navigate"),
+      dim_("  enter   submit / accept"),
+      dim_("  escape  close popup"),
+    ];
+    const rightCol = [
+      acc("/commands:"),
+      dim_("  /model [name]  select model"),
+      dim_("  /sessions   browse sessions"),
+      dim_("  /new       new session"),
+      dim_("  /settings  open settings"),
+      dim_("  /compact   compact context"),
+      dim_("  /clone     clone session"),
+      dim_("  /fork      fork session"),
+      dim_("  /tree      session tree"),
+      dim_("  /thinking  toggle thinking"),
+      dim_("  /name [n]  set session name"),
+      dim_("  /help /hotkeys /quit"),
+    ];
+
+    const colW = Math.floor(innerW / 2);
+    const maxRows = Math.max(leftCol.length, rightCol.length);
+
+    lines.push(dim_("\u250c" + "\u2500".repeat(W - 2) + "\u2510"));
+    lines.push(dim_("\u2502") + "  " + bold_("xihu") + "  " + dim_("Terminal UI Help") + " ".repeat(Math.max(0, W - 24)) + dim_("\u2502"));
+    lines.push(dim_("\u251c" + "\u2500".repeat(W - 2) + "\u2524"));
+
+    for (let i = 0; i < maxRows; i++) {
+      const l = leftCol[i] || "";
+      const r = rightCol[i] || "";
+      const ls = l.replace(/\x1b\[[0-9;]*m/g, "");
+      const rs = r.replace(/\x1b\[[0-9;]*m/g, "");
+      const lPad = colW - ls.length;
+      const rPad = colW - rs.length;
+      lines.push(dim_("\u2502") + "  " + l + " ".repeat(Math.max(1, lPad)) + r + " ".repeat(Math.max(1, rPad)) + dim_("\u2502"));
+    }
+
+    lines.push(dim_("\u2514" + "\u2500".repeat(W - 2) + "\u2518"));
     return lines;
   }
 
