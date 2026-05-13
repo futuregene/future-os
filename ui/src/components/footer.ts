@@ -21,6 +21,7 @@ export interface FooterData {
   tokensCacheR?: number;
   tokensCacheW?: number;
   totalCost?: number;
+  autoCompactionEnabled?: boolean;
 }
 
 export class Footer {
@@ -77,7 +78,11 @@ export class Footer {
       const pctColor = data.contextPercent < 70 ? fg(71, pct)   // green < 70%
         : data.contextPercent < 90 ? fg(226, pct)  // yellow 70-90%
         : fg(204, pct); // red > 90%
-      rightParts.push(pctColor + fg(245, `%/`) + fg(245, win));
+      let usageStr = pctColor + fg(245, `%/`) + fg(245, win);
+      if (data.autoCompactionEnabled) {
+        usageStr += fg(240, ` (auto)`);
+      }
+      rightParts.push(usageStr);
     }
 
     // Shortcuts

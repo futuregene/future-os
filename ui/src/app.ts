@@ -973,6 +973,7 @@ export class App {
       tokensIn: this.state.tokensIn,
       tokensOut: this.state.tokensOut,
       totalCost: this.state.totalCost,
+      autoCompactionEnabled: true,
     };
     out += cursorPos(H, 1) + CLEAR_LINE + this.footer.render(footerData);
 
