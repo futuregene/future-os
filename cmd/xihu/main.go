@@ -392,6 +392,20 @@ func main() {
 	// ── Socket Server Mode ─────────────────────────────────────────────
 	if args.Mode == "server" {
 		srv := rpc.NewSocketServer(as)
+
+		// Build skill name list and ext list for TS TUI welcome screen
+		skillNames := make([]string, len(resolvedSkills))
+		for i, sk := range resolvedSkills {
+			skillNames[i] = sk.Name
+		}
+		var extNames []string
+		if eng != nil && eng.ExtensionRunner != nil {
+			for _, e := range eng.ExtensionRunner.Initialized() {
+				extNames = append(extNames, e.Name())
+			}
+		}
+		srv.SetWelcome(utils.Version, cwd, skillNames, cfPaths, extNames)
+
 		var err error
 		if args.Port != "" {
 			fmt.Fprintf(os.Stderr, "xihu server listening on :%s\n", args.Port)

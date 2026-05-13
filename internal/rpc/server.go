@@ -55,6 +55,13 @@ type Server struct {
 
 	// Unsubscribe from session events
 	unsub func()
+
+	// Welcome info set at startup (skills, context files, etc.)
+	welcomeVersion  string
+	welcomeCWD     string
+	welcomeSkills  []string
+	welcomeContext []string
+	welcomeExts    []string
 }
 
 // NewServer creates a new RPC server with the given AgentSession.
@@ -170,7 +177,21 @@ func (s *Server) getState() RpcSessionState {
 		AutoCompactionEnabled: true,
 		MessageCount:         len(as.GetMessages()),
 		PendingMessageCount:  as.PendingMessageCount(),
+		Version:       s.welcomeVersion,
+		CWD:           s.welcomeCWD,
+		Skills:        s.welcomeSkills,
+		ContextFiles:  s.welcomeContext,
+		Extensions:    s.welcomeExts,
 	}
+}
+
+// SetWelcome sets the startup welcome info (skills, context files, etc.).
+func (s *Server) SetWelcome(version, cwd string, skills, context, extensions []string) {
+	s.welcomeVersion = version
+	s.welcomeCWD = cwd
+	s.welcomeSkills = skills
+	s.welcomeContext = context
+	s.welcomeExts = extensions
 }
 
 func thinkingBudgetToLevel(budget int) string {

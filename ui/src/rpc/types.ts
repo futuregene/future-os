@@ -97,6 +97,12 @@ export interface RpcSessionState {
   autoCompactionEnabled: boolean;
   messageCount: number;
   pendingMessageCount: number;
+  // Welcome info
+  version?: string;
+  cwd?: string;
+  skills?: string[];
+  contextFiles?: string[];
+  extensions?: string[];
 }
 
 // ============================================================================

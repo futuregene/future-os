@@ -19,6 +19,7 @@ export interface ChatMessage {
   timestamp?: number;
   thinking?: string;
   pending?: boolean;  // streaming in progress
+  welcome?: boolean;   // skip prefix/icon for welcome/info messages
 }
 
 export class ChatArea {
@@ -280,6 +281,19 @@ export class ChatArea {
   // ─── System message ──────────────────────────────────────────
 
   private renderSystemMessage(msg: ChatMessage): void {
+    if (msg.welcome) {
+      // Welcome/info messages: no prefix, just colored text
+      const lines = msg.content.split("\n");
+      for (const line of lines) {
+        if (!line.trim()) {
+          this.renderedLines.push({ text: "", dim: true });
+        } else {
+          this.renderedLines.push({ text: line, dim: true });
+        }
+      }
+      return;
+    }
+    // Real system messages: ⚙️ prefix
     const lines = msg.content.split("\n");
     for (let i = 0; i < lines.length; i++) {
       if (!lines[i].trim()) continue;

@@ -20,7 +20,7 @@ import {
   ALT_SCREEN_OFF,
   BOLD,
 } from "./tui.js";
-import { DARK_THEME, type Theme, fg, dim } from "./theme.js";
+import { DARK_THEME, type Theme, fg, dim, bold } from "./theme.js";
 
 type Overlay =
   | { kind: "select"; title: string; component: SelectList }
@@ -49,6 +49,10 @@ export class App {
     streaming: false,
     sessionName: "",
     cwd: "",
+    version: "",
+    skills: [] as string[],
+    contextFiles: [] as string[],
+    extensions: [] as string[],
   };
 
   private running = false;
@@ -94,6 +98,7 @@ export class App {
     });
 
     await this.refresh();
+    this.showWelcome();
     this.render();
 
     await new Promise<void>((resolve) => {
@@ -382,12 +387,96 @@ export class App {
     this.render();
   }
 
+  // Wrap long welcome text to maxWidth characters, applying color to each line.
+  private wrapWelcomeLine(text: string, color: (t: string) => string, maxWidth: number): string[] {
+    const plain = text.replace(/\x1b\[[0-9;]*m/g, "");
+    if (plain.length <= maxWidth) return [color(text)];
+    const words = plain.split(" ");
+    const lines: string[] = [];
+    let line = "";
+    for (const word of words) {
+      const combined = line ? line + " " + word : word;
+      if (combined.length > maxWidth && line) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = combined;
+      }
+    }
+    if (line) lines.push(line);
+    // Apply color to each line
+    return lines.map((l) => color(l));
+  }
+
+  // ─── Welcome Screen ─────────────────────────────────────────────────
+
+  private showWelcome(): void {
+    const dim_ = (t: string) => fg(245, t);
+    const sectionHdr = (t: string) => fg(221, t);
+    const add = (content: string) => {
+      this.chat.addMessage({ id: crypto.randomUUID(), role: "system", welcome: true, content });
+    };
+    const addColored = (content: string, color: (t: string) => string) => {
+      this.chat.addMessage({ id: crypto.randomUUID(), role: "system", welcome: true, content: color(content) });
+    };
+
+    // Banner: "xihu vX.X.X"
+    const version = this.state.version || "0.3.0";
+    addColored(`${fg(151, bold("xihu"))}${fg(245, " v" + version)}`, (t) => t);
+
+    // Shortcuts line
+    addColored("escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more", dim_);
+
+    // Expand hint
+    addColored("Press ctrl+o to show full startup help and loaded resources.", dim_);
+
+    // Onboarding
+    addColored("Xihu can explain its own features and look up its docs. Ask it how to use or extend Xihu.", dim_);
+
+    // Context files
+    if (this.state.contextFiles.length > 0) {
+      add("");
+      addColored("[Context]", sectionHdr);
+      const shortNames = this.state.contextFiles.map((f) => {
+        const parts = f.split("/");
+        return parts[parts.length - 1] ?? f;
+      });
+      addColored(" " + shortNames.join(", "), dim_);
+    }
+
+    // Skills
+    if (this.state.skills.length > 0) {
+      add("");
+      addColored("[Skills]", sectionHdr);
+      for (const line of this.wrapWelcomeLine(" " + this.state.skills.join(", "), dim_, 78)) {
+        addColored(line, dim_);
+      }
+    }
+
+    // Extensions
+    if (this.state.extensions.length > 0) {
+      add("");
+      addColored("[Extensions]", sectionHdr);
+      for (const line of this.wrapWelcomeLine(" " + this.state.extensions.join(", "), dim_, 78)) {
+        addColored(line, dim_);
+      }
+    }
+
+    // Separator line
+    addColored("─".repeat(Math.min(80, 70)), dim_);
+  }
+
   private async refresh(): Promise<void> {
     try {
       const s = await this.client.getState();
       this.state.model = s.model ?? "(no model)";
       this.state.thinking = s.thinkingLevel;
       this.state.sessionName = s.sessionName ?? "";
+      this.state.cwd = s.cwd ?? "";
+      this.state.version = s.version ?? "";
+      this.state.skills = s.skills ?? [];
+      this.state.contextFiles = s.contextFiles ?? [];
+      this.state.extensions = s.extensions ?? [];
     } catch {
       this.state.model = "(not connected)";
     }

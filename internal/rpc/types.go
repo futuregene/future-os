@@ -68,18 +68,24 @@ type RpcResponse struct {
 
 // RpcSessionState is returned by get_state.
 type RpcSessionState struct {
-	Model                string `json:"model,omitempty"`
-	ThinkingLevel        string `json:"thinkingLevel"`
-	IsStreaming          bool   `json:"isStreaming"`
-	IsCompacting         bool   `json:"isCompacting"`
-	SteeringMode         string `json:"steeringMode"`
-	FollowUpMode         string `json:"followUpMode"`
-	SessionFile          string `json:"sessionFile,omitempty"`
-	SessionID            string `json:"sessionId"`
-	SessionName          string `json:"sessionName,omitempty"`
-	AutoCompactionEnabled bool   `json:"autoCompactionEnabled"`
-	MessageCount         int    `json:"messageCount"`
-	PendingMessageCount  int    `json:"pendingMessageCount"`
+	Model                string   `json:"model,omitempty"`
+	ThinkingLevel        string   `json:"thinkingLevel"`
+	IsStreaming          bool     `json:"isStreaming"`
+	IsCompacting         bool     `json:"isCompacting"`
+	SteeringMode         string   `json:"steeringMode"`
+	FollowUpMode         string   `json:"followUpMode"`
+	SessionFile          string   `json:"sessionFile,omitempty"`
+	SessionID            string   `json:"sessionId"`
+	SessionName          string   `json:"sessionName,omitempty"`
+	AutoCompactionEnabled bool     `json:"autoCompactionEnabled"`
+	MessageCount         int      `json:"messageCount"`
+	PendingMessageCount  int      `json:"pendingMessageCount"`
+	// Welcome info (populated in server mode, empty in one-shot mode)
+	Version       string   `json:"version,omitempty"`
+	CWD           string   `json:"cwd,omitempty"`
+	Skills        []string `json:"skills,omitempty"`
+	ContextFiles  []string `json:"contextFiles,omitempty"`
+	Extensions    []string `json:"extensions,omitempty"`
 }
 
 // =============================================================================

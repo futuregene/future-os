@@ -20,6 +20,13 @@ type SocketServer struct {
 	socket  string
 	sseConns map[chan<- []byte]struct{}
 	unsub   func()
+
+	// Welcome info (set via SetWelcome before serving)
+	welcomeVersion  string
+	welcomeCWD     string
+	welcomeSkills  []string
+	welcomeContext []string
+	welcomeExts    []string
 }
 
 // NewSocketServer creates a socket-based RPC server.
@@ -101,6 +108,24 @@ func (s *SocketServer) Close() error {
 // SocketPath returns the Unix socket path if listening on a socket.
 func (s *SocketServer) SocketPath() string {
 	return s.socket
+}
+
+// SetWelcome sets the startup welcome info (called from main.go before serving).
+func (s *SocketServer) SetWelcome(version, cwd string, skills, context, extensions []string) {
+	s.welcomeVersion = version
+	s.welcomeCWD = cwd
+	s.welcomeSkills = skills
+	s.welcomeContext = context
+	s.welcomeExts = extensions
+}
+
+// setWelcomeOn copies welcome data to a Server instance.
+func (s *SocketServer) setWelcomeOn(srv *Server) {
+	srv.welcomeVersion = s.welcomeVersion
+	srv.welcomeCWD = s.welcomeCWD
+	srv.welcomeSkills = s.welcomeSkills
+	srv.welcomeContext = s.welcomeContext
+	srv.welcomeExts = s.welcomeExts
 }
 
 // ─── HTTP Handler ─────────────────────────────────────────────────────────
@@ -204,6 +229,7 @@ func (s *SocketServer) handleRaw(raw json.RawMessage) json.RawMessage {
 	}
 
 	tmp := &Server{session: s.session}
+	s.setWelcomeOn(tmp)
 	resp := tmp.handleCommand(cmd)
 	out, err := json.Marshal(resp)
 	if err != nil {
