@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -49,6 +50,13 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+	// Append git branch to cwd for display
+	if branch, err := exec.Command("git", "branch", "--show-current").Output(); err == nil {
+		branch = []byte(strings.TrimSpace(string(branch)))
+		if len(branch) > 0 {
+			cwd = fmt.Sprintf("%s (%s)", cwd, branch)
+		}
 	}
 
 	// ── Config subcommand ──────────────────────────────────────────────
