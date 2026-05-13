@@ -349,6 +349,22 @@ export class App extends Container {
       return;
     }
 
+    // SGR mouse events: \x1b[<N;X;YM  (M=press, m=release)
+    const mouseMatch = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/);
+    if (mouseMatch) {
+      const eventCode = parseInt(mouseMatch[1]!, 10);
+      if (eventCode === 64) {
+        // Wheel up — scroll chat up
+        this.chat.scrollUp(3);
+        this.requestRender();
+      } else if (eventCode === 65) {
+        // Wheel down — scroll chat down
+        this.chat.scrollDown(3);
+        this.requestRender();
+      }
+      return;
+    }
+
     // Input listener pipeline
     if (this.inputListeners.size > 0) {
       let d: string | undefined = data;

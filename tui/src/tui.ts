@@ -91,8 +91,9 @@ export class NodeTerminal implements Terminal {
     process.stdin.setEncoding("utf8");
     process.stdin.resume();
 
-    // Enable bracketed paste mode
+    // Enable bracketed paste mode + SGR mouse tracking
     process.stdout.write("\x1b[?2004h");
+    process.stdout.write(MOUSE_TRACK_ON);
 
     // Set up resize handler
     process.stdout.on("resize", this.resizeHandler);
@@ -190,8 +191,9 @@ export class NodeTerminal implements Terminal {
       process.stdout.write(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
     }
 
-    // Disable bracketed paste mode
+    // Disable bracketed paste mode + mouse tracking
     process.stdout.write("\x1b[?2004l");
+    process.stdout.write(MOUSE_TRACK_OFF);
 
     // Disable Kitty keyboard protocol
     if (this._kittyProtocolActive) {

@@ -154,6 +154,65 @@ export function reset(text: string): string {
   return `${RESET}${text}${RESET}`;
 }
 
+// ─── Raw style primitives (no auto-RESET, for composable theme building) ──
+
+/** Apply foreground color without trailing RESET. */
+export function fgRaw(c: number, text: string): string {
+  return `${CSI}38;5;${c}m${text}`;
+}
+
+/** Apply background color without trailing RESET. */
+export function bgRaw(c: number, text: string): string {
+  return `${CSI}48;5;${c}m${text}`;
+}
+
+/** Apply bold without trailing RESET. */
+export function boldRaw(text: string): string {
+  return `${CSI}1m${text}`;
+}
+
+/** Apply dim without trailing RESET. */
+export function dimRaw(text: string): string {
+  return `${CSI}2m${text}`;
+}
+
+/** Apply italic without trailing RESET. */
+export function italicRaw(text: string): string {
+  return `${CSI}3m${text}`;
+}
+
+/** Apply underline without trailing RESET. */
+export function underlineRaw(text: string): string {
+  return `${CSI}4m${text}`;
+}
+
+/** Apply strikethrough without trailing RESET. */
+export function strikethroughRaw(text: string): string {
+  return `${CSI}9m${text}`;
+}
+
+/** Reverse video without trailing RESET. */
+export function reverseRaw(text: string): string {
+  return `${CSI}7m${text}`;
+}
+
+/**
+ * Compose multiple style functions into one.
+ * Each fn receives text and returns styled text WITHOUT reset codes —
+ * the caller appends the final reset.
+ *
+ * Example: style("hello", c => fg(151, c), c => bold(c))
+ */
+export function style(text: string, ...fns: ((t: string) => string)[]): string {
+  let result = text;
+  for (const fn of fns) {
+    result = fn(result);
+  }
+  return result + RESET;
+}
+
+// ─── Thinking ────────────────────────────────────────────────────────────
+
 export function thinkingColor(level: string): number {
   switch (level) {
     case "minimal": return C.thinkingMinimal;
