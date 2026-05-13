@@ -29,6 +29,8 @@ type Overlay =
   | { kind: "input"; title: string; value: string }
   | null;
 
+import type { AgentEvent } from "./rpc/types.js";
+
 interface KeyEvent {
   name: string;
   ctrl: boolean;
@@ -61,6 +63,35 @@ export class App {
     }, {
       onSubmit: (v) => this.handleSubmit(v),
     });
+
+    // Subscribe to SSE events for real-time updates
+    this.client.subscribe((event) => {
+      this.handleAgentEvent(event);
+      this.render();
+    });
+  }
+
+  private handleAgentEvent(event: AgentEvent): void {
+    switch (event.type) {
+      case "message": {
+        const msg = event as { message?: { role: string; content?: string } };
+        if (msg.message) {
+          this.messages.push({
+            role: msg.message.role as "user" | "assistant" | "system" | "tool",
+            content: msg.message.content,
+          });
+        }
+        break;
+      }
+      case "thinking_start":
+        this.streaming = true;
+        break;
+      case "thinking_end":
+        this.streaming = false;
+        break;
+      default:
+        break;
+    }
   }
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────
