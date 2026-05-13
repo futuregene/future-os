@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/huichen/xihu/internal/session"
 	"github.com/huichen/xihu/pkg/types"
 )
+
 // listModels prints available models (with optional fuzzy search).
 // Mirrors pi's listModels: uses getAvailable() (auth-filtered), tabular format,
 // sorted by provider then model ID, with human-readable token counts.
@@ -87,8 +87,20 @@ func listModels(query string) {
 			model:    m.ID,
 			context:  formatTokenCount(m.ContextWindow),
 			maxOut:   formatTokenCount(m.MaxTokens),
-			thinking: func() string { if m.Reasoning { return "yes" }; return "no" }(),
-			images:   func() string { for _, t := range m.InputTypes { if t == "image" { return "yes" } }; return "no" }(),
+			thinking: func() string {
+				if m.Reasoning {
+					return "yes"
+				}
+				return "no"
+			}(),
+			images: func() string {
+				for _, t := range m.InputTypes {
+					if t == "image" {
+						return "yes"
+					}
+				}
+				return "no"
+			}(),
 		}
 	}
 
@@ -342,22 +354,6 @@ func saveSession(mgr *session.Manager, sess *session.Session, messages []types.M
 	}
 }
 
-// matchModelPattern checks if a model ID matches a pattern (exact or glob).
-// Pattern can be a full "provider/id" or just "id". Supports *, ?, [ globs.
-func matchModelPattern(pat, fullID, modelID string) bool {
-	// Check exact matches first
-	if pat == fullID || pat == modelID {
-		return true
-	}
-	// Check glob against full ID and model ID
-	if matched, _ := filepath.Match(pat, fullID); matched {
-		return true
-	}
-	if matched, _ := filepath.Match(pat, modelID); matched {
-		return true
-	}
-	return false
-}
 func processSentinel(result string, eng interface{}, mgr *session.Manager, sess *session.Session, ctx interface{}) bool {
 	// Check for sentinel markers in command output
 	if strings.Contains(result, "__XIHU_SENTINEL__") {

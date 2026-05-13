@@ -62,6 +62,9 @@ type Server struct {
 	welcomeSkills  []string
 	welcomeContext []string
 	welcomeExts    []string
+
+	// Whether the session was explicitly specified via --session/--continue/--resume/--fork
+	explicitSession bool
 }
 
 // NewServer creates a new RPC server with the given AgentSession.
@@ -176,6 +179,7 @@ func (s *Server) getState() RpcSessionState {
 		SessionFile:          as.SessionFile(),
 		SessionID:            as.SessionID(),
 		SessionName:          as.SessionName(),
+		ExplicitSession:      s.explicitSession,
 		AutoCompactionEnabled: true,
 		MessageCount:         len(as.GetMessages()),
 		PendingMessageCount:  as.PendingMessageCount(),

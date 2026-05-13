@@ -20,7 +20,6 @@ import (
 	"github.com/huichen/xihu/internal/session"
 	"github.com/huichen/xihu/internal/settings"
 	"github.com/huichen/xihu/internal/skills"
-	"github.com/huichen/xihu/internal/tui"
 	"github.com/huichen/xihu/internal/utils"
 	"github.com/huichen/xihu/pkg/types"
 )
@@ -70,9 +69,8 @@ func main() {
 	if cfg == nil {
 		cfg = &settings.Settings{}
 	}
-	var settingsLoadErr string
 	if cfgErr != nil {
-		settingsLoadErr = cfgErr.Error()
+		fmt.Fprintf(os.Stderr, "Warning: settings load error: %v\n", cfgErr)
 	}
 
 	// ── Auth ──────────────────────────────────────────────────────────────
@@ -220,7 +218,7 @@ func main() {
 	// ── Discover skills ────────────────────────────────────────────────────
 	searchDirs := []string{skills.UserSkillsDir, skills.ProjectSkillsDir, skills.AgentsSkillsDir}
 	allSkills, _ := skills.DiscoverSkills(searchDirs, "user")
-	resolvedSkills, skillCollisions := skills.ResolveCollisionsWithDiagnostics(allSkills)
+	resolvedSkills, _ := skills.ResolveCollisionsWithDiagnostics(allSkills)
 
 	var promptSkills []prompt.Skill
 	for _, s := range resolvedSkills {
@@ -329,9 +327,9 @@ func main() {
 
 	// ── Create AgentSession ─────────────────────────────────────────────
 	as, err := agentsession.New(agentsession.AgentSessionConfig{
-		Engine:       eng,
-		CWD:          cwd,
-		MaxRetries:   3,
+		Engine:     eng,
+		CWD:        cwd,
+		MaxRetries: 3,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "AgentSession error: %v\n", err)
@@ -413,6 +411,7 @@ func main() {
 			}
 		}
 		srv.SetWelcome(utils.Version, cwd, skillNames, cfPaths, extNames)
+		srv.ExplicitSession = args.Session != "" || args.Fork != "" || args.Resume || args.Continue
 
 		var err error
 		if args.Port != "" {
@@ -433,57 +432,26 @@ func main() {
 		return
 	}
 
-	// ── Interactive REPL (no prompt + TTY) ─────────────────────────────────
+	// ── No prompt + TTY → start server mode for TypeScript TUI ────────────
 	if userPrompt == "" && isTerminal() {
-		availableModels := []string(nil)
-		// Use model registry for available models, filtered by settings.EnabledModels if set
-		if eng.ModelRegistry != nil {
-			all := eng.ModelRegistry.GetAll()
-			// If settings has enabledModels, filter using pattern matching (pi: resolveModelScope)
-			if eng.Settings != nil && len(eng.Settings.EnabledModels) > 0 {
-				for _, m := range all {
-					fullID := m.Provider + "/" + m.ID
-					for _, pat := range eng.Settings.EnabledModels {
-						if matchModelPattern(pat, fullID, m.ID) {
-							availableModels = append(availableModels, fullID)
-							break
-						}
-					}
-				}
-			} else {
-				for _, m := range all {
-					availableModels = append(availableModels, m.Provider+"/"+m.ID)
-				}
+		srv := rpc.NewSocketServer(as)
+		skillNames := make([]string, len(resolvedSkills))
+		for i, sk := range resolvedSkills {
+			skillNames[i] = sk.Name
+		}
+		var extNames []string
+		if eng != nil && eng.ExtensionRunner != nil {
+			for _, e := range eng.ExtensionRunner.Initialized() {
+				extNames = append(extNames, e.Name())
 			}
 		}
-		// Parse prompt templates from standard directories
-		var promptTemplates []prompt.PromptTemplate
-		templateDirs := []string{
-			filepath.Join(agentDir, "prompts"),
-			filepath.Join(cwd, ".xihu", "prompts"),
-		}
-		for _, dir := range templateDirs {
-			templates, err := prompt.ParseTemplates(dir)
-			if err == nil {
-				promptTemplates = append(promptTemplates, templates...)
-			}
-		}
-		// Print model scope line before TUI takeover (TS pi-mono: console.log before InteractiveMode.run)
-	if len(availableModels) > 0 && (cfg.QuietStartup == nil || !*cfg.QuietStartup) {
-		var scopeList []string
-		for _, m := range availableModels {
-			scopeList = append(scopeList, m)
-		}
-	}
-
-	// Preserve provider prefix in model string so NewAppModel can parse it
-	modelWithProvider := model
-	if provider != "" && !strings.Contains(model, "/") {
-		modelWithProvider = provider + "/" + model
-	}
-	err := tui.Run(as, sess, "", modelWithProvider, baseURL, resolvedSkills, nil, thinking, availableModels, cfg, eng.ExtensionRunner, promptTemplates, cfPaths, skillCollisions, settingsLoadErr)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
+		srv.SetWelcome(utils.Version, cwd, skillNames, cfPaths, extNames)
+		socketPath := filepath.Join(os.TempDir(), "xihu.sock")
+		srv.ExplicitSession = args.Session != "" || args.Fork != "" || args.Resume || args.Continue
+		fmt.Fprintf(os.Stderr, "xihu server listening on %s\n", socketPath)
+		fmt.Fprintf(os.Stderr, "Connect with: cd tui && bun run src/index.ts --socket %s\n", socketPath)
+		if err := srv.ListenAndServe(socketPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
 			os.Exit(1)
 		}
 		return
@@ -555,4 +523,3 @@ func newUserMsg(content string, images ...types.ImageContent) types.Message {
 	b, _ := json.Marshal(blocks)
 	return types.Message{Role: "user", Content: b}
 }
-

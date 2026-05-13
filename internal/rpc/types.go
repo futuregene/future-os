@@ -77,6 +77,7 @@ type RpcSessionState struct {
 	SessionFile          string   `json:"sessionFile,omitempty"`
 	SessionID            string   `json:"sessionId"`
 	SessionName          string   `json:"sessionName,omitempty"`
+	ExplicitSession      bool     `json:"explicitSession"`
 	AutoCompactionEnabled bool     `json:"autoCompactionEnabled"`
 	MessageCount         int      `json:"messageCount"`
 	PendingMessageCount  int      `json:"pendingMessageCount"`

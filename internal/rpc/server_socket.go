@@ -27,6 +27,9 @@ type SocketServer struct {
 	welcomeSkills  []string
 	welcomeContext []string
 	welcomeExts    []string
+
+	// ExplicitSession is true when --session/--continue/--resume/--fork was used.
+	ExplicitSession bool
 }
 
 // NewSocketServer creates a socket-based RPC server.
@@ -126,6 +129,7 @@ func (s *SocketServer) setWelcomeOn(srv *Server) {
 	srv.welcomeSkills = s.welcomeSkills
 	srv.welcomeContext = s.welcomeContext
 	srv.welcomeExts = s.welcomeExts
+	srv.explicitSession = s.ExplicitSession
 }
 
 // ─── HTTP Handler ─────────────────────────────────────────────────────────

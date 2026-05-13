@@ -39,8 +39,8 @@ type Args struct {
 	SessionDir string
 
 	// Tools
-	NoTools        string // "" | "all" | "builtin"
-	NoBuiltinTools bool   // deprecated alias for --no-tools=builtin
+	NoTools        string   // "" | "all" | "builtin"
+	NoBuiltinTools bool     // deprecated alias for --no-tools=builtin
 	Tools          []string // allowlist
 
 	// Resources
@@ -67,8 +67,8 @@ type Args struct {
 	Version bool
 
 	// Positional
-	Messages  []string
-	FileArgs  []string // from @file
+	Messages    []string
+	FileArgs    []string // from @file
 	Diagnostics []string
 
 	// Unknown/extension flags

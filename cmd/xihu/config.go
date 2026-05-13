@@ -3,10 +3,10 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/huichen/xihu/internal/config"
 	"github.com/huichen/xihu/internal/settings"
-	"github.com/huichen/xihu/internal/tui"
 )
 
 // runConfigCommand handles the "xihu config" subcommand.
@@ -39,9 +39,20 @@ func runConfigCommand(cwd string) {
 		os.Exit(0)
 	}
 
-	// Run the config selector TUI
-	if err := tui.RunConfigSelector(groups, allItems); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+	// Print resources as text (no Go TUI — use TypeScript TUI for interactive config)
+	fmt.Println("Resources:")
+	fmt.Println(strings.Repeat("─", 60))
+	for _, group := range groups {
+		fmt.Printf("\n[%s]\n", group.Label)
+		for _, sg := range group.Subgroups {
+			fmt.Printf("  %s:\n", sg.Label)
+			for _, item := range sg.Items {
+				status := "disabled"
+				if item.Enabled {
+					status = "enabled"
+				}
+				fmt.Printf("    %s (%s) — %s\n", item.Name, status, item.Path)
+			}
+		}
 	}
 }
