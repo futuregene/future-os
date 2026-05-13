@@ -299,6 +299,29 @@ export class App {
       return;
     }
 
+    // Autocomplete navigation takes priority over chat scroll
+    if (this.autocomplete.isVisible()) {
+      if (key.name === "up") {
+        this.autocomplete.selectPrev();
+        this.render();
+        return;
+      }
+      if (key.name === "down") {
+        this.autocomplete.selectNext();
+        this.render();
+        return;
+      }
+      if (key.name === "enter") {
+        const item = this.autocomplete.getSelectedItem();
+        if (item) {
+          this.editor.setValue(item.value);
+          this.autocomplete.hide();
+        }
+        this.render();
+        return;
+      }
+    }
+
     // Navigation
     if (key.name === "pageup") {
       this.chat.scrollUp(10);
@@ -368,7 +391,7 @@ export class App {
         // Accept selected autocomplete
         const item = this.autocomplete.getSelectedItem();
         if (item) {
-          this.editor.setValue(item.value + " ");
+          this.editor.setValue(item.value);
           this.autocomplete.hide();
         }
       } else {
@@ -377,29 +400,6 @@ export class App {
       }
       this.render();
       return;
-    }
-
-    // Arrow keys - navigate autocomplete
-    if (this.autocomplete.isVisible()) {
-      if (key.name === "up") {
-        this.autocomplete.selectPrev();
-        this.render();
-        return;
-      }
-      if (key.name === "down") {
-        this.autocomplete.selectNext();
-        this.render();
-        return;
-      }
-      if (key.name === "enter") {
-        const item = this.autocomplete.getSelectedItem();
-        if (item) {
-          this.editor.setValue(item.value + " ");
-          this.autocomplete.hide();
-        }
-        this.render();
-        return;
-      }
     }
 
     // Enter - submit
@@ -425,7 +425,7 @@ export class App {
         cmd.label.toLowerCase().includes(prefix)
       );
       if (filtered.length > 0) {
-        this.autocomplete.show(filtered, text);
+        this.autocomplete.show(filtered);
       } else {
         this.autocomplete.hide();
       }

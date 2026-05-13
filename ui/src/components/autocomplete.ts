@@ -1,4 +1,4 @@
-import { fg, bg, bold } from "../theme.js";
+import { fg, bold, DARK_THEME } from "../theme.js";
 
 export interface AutocompleteItem {
   value: string;
@@ -9,22 +9,17 @@ export interface AutocompleteItem {
 export class AutocompletePopup {
   private items: AutocompleteItem[] = [];
   private selectedIndex = 0;
-  private prefix = "";
   private visible = false;
   private maxVisible = 10;
 
-  show(items: AutocompleteItem[], prefix = ""): void {
+  show(items: AutocompleteItem[]): void {
     this.items = items;
     this.selectedIndex = 0;
-    this.prefix = prefix;
     this.visible = true;
   }
 
   hide(): void {
     this.visible = false;
-    this.items = [];
-    this.selectedIndex = 0;
-    this.prefix = "";
   }
 
   isVisible(): boolean {
@@ -50,55 +45,49 @@ export class AutocompletePopup {
     this.maxVisible = n;
   }
 
-  // Render the autocomplete popup, returning array of lines
   render(width: number): string[] {
     if (!this.visible || this.items.length === 0) return [];
 
+    const popupWidth = Math.min(width - 4, 48);
     const lines: string[] = [];
 
-    // Header line
-    const title = "Completions";
-    const titleStr = bold(" " + title + " ");
-    const spaces = " ".repeat(Math.max(0, width - title.length - 3));
-    lines.push(bg(235, fg(151, titleStr) + fg(244, spaces)));
+    // Top border: ┌────┐
+    lines.push(fg(244, "┌") + fg(239, "─".repeat(popupWidth)) + fg(244, "┐"));
 
-    // Items
-    const startIndex = Math.max(0, this.selectedIndex - this.maxVisible + 1);
-    const endIndex = Math.min(this.items.length, startIndex + this.maxVisible);
+    // Items (only visible slice)
+    const start = Math.max(0, this.selectedIndex - this.maxVisible + 1);
+    const end = Math.min(this.items.length, start + this.maxVisible);
 
-    for (let i = startIndex; i < endIndex; i++) {
+    for (let i = start; i < end; i++) {
       const item = this.items[i];
       const isSelected = i === this.selectedIndex;
-
-      const label = item.label.length > width - 3
-        ? item.label.slice(0, width - 6) + "..."
-        : item.label;
-
-      const desc = item.description ? `  ${item.description}` : "";
-      const descLen = Math.min(desc.length, width - label.length - 4);
+      const label = item.label.slice(0, popupWidth - 4);
 
       if (isSelected) {
-        const line = fg(0, bg(151, `▶ ${label}`)) + fg(245, desc.slice(0, descLen));
-        lines.push(line);
+        // Selected: accent color, bold arrow
+        const content = fg(151, bold("▶")) + " " + fg(252, label);
+        const pad = popupWidth - 2 - this.stripAnsi(content).length;
+        lines.push(fg(244, "│") + " " + content + " ".repeat(Math.max(0, pad)) + fg(244, "│"));
       } else {
-        const line = fg(245, `  ${label}`) + fg(240, desc.slice(0, descLen));
-        lines.push(line);
+        // Not selected: dim color
+        const content = "  " + label;
+        const pad = popupWidth - 2 - this.stripAnsi(content).length;
+        lines.push(fg(244, "│") + fg(245, content) + " ".repeat(Math.max(0, pad)) + fg(244, "│"));
       }
     }
 
-    // Footer with hint
-    if (this.items.length > this.maxVisible) {
-      const footer = fg(240, `  (${this.selectedIndex + 1}/${this.items.length})`);
-      lines.push(footer);
-    }
+    // Bottom border
+    lines.push(fg(244, "└") + fg(239, "─".repeat(popupWidth)) + fg(244, "┘"));
 
     return lines;
   }
 
-  // Get height of popup
   height(): number {
     if (!this.visible || this.items.length === 0) return 0;
-    const visibleCount = Math.min(this.items.length, this.maxVisible);
-    return 2 + visibleCount + (this.items.length > this.maxVisible ? 1 : 0);
+    return 2 + Math.min(this.items.length, this.maxVisible);
+  }
+
+  private stripAnsi(s: string): string {
+    return s.replace(/\x1b\[[0-9;]*m/g, "");
   }
 }
