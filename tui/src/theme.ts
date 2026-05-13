@@ -142,6 +142,14 @@ export function italic(text: string): string {
   return `${CSI}3m${text}${RESET}`;
 }
 
+export function underline(text: string): string {
+  return `${CSI}4m${text}${RESET}`;
+}
+
+export function strikethrough(text: string): string {
+  return `${CSI}9m${text}${RESET}`;
+}
+
 export function reset(text: string): string {
   return `${RESET}${text}${RESET}`;
 }
