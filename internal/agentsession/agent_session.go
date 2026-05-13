@@ -31,6 +31,9 @@ type AgentSessionEvent struct {
 	// agent_start / agent_end / turn_* / message_* / tool_* / stop / error / usage
 	// (forwarded from agent loop, same as events.EventType)
 
+	// text_chunk — streaming text emitted during prompt/steer/follow_up
+	Text string `json:"text,omitempty"`
+
 	// queue_update
 	Steering []string `json:"steering,omitempty"`
 	FollowUp []string `json:"follow_up,omitempty"`

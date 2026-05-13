@@ -103,11 +103,11 @@ func (s *AgentSession) runPrompt(text string, opts *PromptOptions) error {
 	// Run the agent loop — convert session messages to internal AgentMessage format.
 	agentMessages := types.ConvertFromLLM(messages)
 	finalText, finalAgentMessages, err := s.engine.Loop.RunStreamingWithMessages(ctx, agentMessages, func(text string) {
-		// onText callback — could forward as streaming event
+		s.emit(AgentSessionEvent{Type: "text_chunk", Text: text})
 	})
 
-	// Emit agent_end
-	s.emit(AgentSessionEvent{Type: "agent_end"})
+	// Emit agent_end with the full assistant response text
+	s.emit(AgentSessionEvent{Type: "agent_end", Text: finalText})
 
 	if err != nil {
 		s.emit(AgentSessionEvent{Type: "error", ErrorMessage: err.Error()})

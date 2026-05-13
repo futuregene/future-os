@@ -48,6 +48,11 @@ export class SelectList {
     this.onKey = options.onKey;
   }
 
+  getSelectedItem(): SelectItem | null {
+    if (this.filteredItems.length === 0) return null;
+    return this.filteredItems[this.selectedIndex] ?? null;
+  }
+
   handleKey(key: string): boolean {
     if (this.onKey?.(key)) return true;
 

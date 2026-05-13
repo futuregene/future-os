@@ -71,23 +71,36 @@ export class App {
     });
   }
 
+  private accumulatedText = "";
+  private lastAssistantMsg: ChatMessageData | null = null;
+
   private handleAgentEvent(event: AgentEvent): void {
     switch (event.type) {
-      case "message": {
-        const msg = event as { message?: { role: string; content?: string } };
-        if (msg.message) {
-          this.messages.push({
-            role: msg.message.role as "user" | "assistant" | "system" | "tool",
-            content: msg.message.content,
-          });
+      case "text_chunk":
+        this.streaming = true;
+        this.accumulatedText += event.text ?? "";
+        if (this.lastAssistantMsg && this.lastAssistantMsg.role === "assistant") {
+          this.lastAssistantMsg.content = this.accumulatedText;
+        } else {
+          this.lastAssistantMsg = { role: "assistant", content: this.accumulatedText };
+          this.messages.push(this.lastAssistantMsg);
         }
         break;
-      }
+      case "agent_end":
+        this.streaming = false;
+        if (event.text && this.lastAssistantMsg) {
+          this.lastAssistantMsg.content = event.text;
+        }
+        break;
+      case "agent_start":
+        this.accumulatedText = "";
+        this.lastAssistantMsg = null;
+        this.streaming = true;
+        break;
       case "thinking_start":
         this.streaming = true;
         break;
       case "thinking_end":
-        this.streaming = false;
         break;
       default:
         break;
@@ -297,7 +310,7 @@ export class App {
 
     try {
       await this.client.prompt(value);
-      this.messages.push({ role: "assistant", content: "(response complete)" });
+      // Message content is streamed via SSE text_chunk events
     } catch (err) {
       this.messages.push({ role: "system", content: `Error: ${err}` });
     }
