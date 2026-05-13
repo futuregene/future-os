@@ -907,6 +907,12 @@ export class App {
       out += cursorPos(i + 1, 1) + CLEAR_LINE + chatLines[i];
     }
 
+    // Fill remaining chat area with blank lines to ensure full-screen layout
+    const chatEnd = chatLines.length + 1;
+    for (let i = chatEnd; i < chatHeight; i++) {
+      out += cursorPos(i, 1) + CLEAR_LINE;
+    }
+
     // ── Overlay ──
     if (this.overlay?.kind === "select") {
       const lines = this.overlay.component.render(W);

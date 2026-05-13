@@ -53,6 +53,8 @@ export class NodeTerminal implements Terminal {
   constructor() {
     this.fd = fs.openSync("/dev/tty", "rs+");
     this.updateSize();
+    // Listen for terminal resize
+    process.stdout.on("resize", () => this.updateSize());
   }
 
   write(data: string): void {
@@ -90,6 +92,11 @@ export class NodeTerminal implements Terminal {
       }
     } catch {
       // Use defaults
+    }
+    // Fallback: use process.stdout if ioctl failed or returned 0
+    if (this.height <= 1) {
+      this.height = process.stdout.rows || 24;
+      this.width = process.stdout.columns || 80;
     }
   }
 }
