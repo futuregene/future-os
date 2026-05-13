@@ -198,11 +198,6 @@ func (m *AppModel) cycleModelForward() {
 		return
 	}
 	if len(models) == 1 {
-		msg := "Only one model in scope"
-		if len(m.scopedModels) == 0 {
-			msg = "Only one model available"
-		}
-		m.chat.AppendSystem(msg)
 		return
 	}
 	m.modelIndex = (m.modelIndex + 1) % len(models)
@@ -217,13 +212,6 @@ func (m *AppModel) cycleModelForward() {
 	m.footer.SetHasReasoning(supportsThinking(modelName))
 	m.footer.SetEntryCount(len(m.session.Entries))
 	m.input.SetBorderColor(m.theme.ThinkingBorderColor(m.thinkingLevel))
-	msg := "Switched to " + newModel
-	if m.thinkingLevel != "" && m.thinkingLevel != "off" {
-		msg += " (thinking: " + m.thinkingLevel + ")"
-	}
-	if !m.chat.ReplaceLastSystem(msg) {
-		m.chat.AppendSystem(msg)
-	}
 }
 
 
@@ -233,11 +221,6 @@ func (m *AppModel) cycleModelBackward() {
 		return
 	}
 	if len(models) == 1 {
-		msg := "Only one model in scope"
-		if len(m.scopedModels) == 0 {
-			msg = "Only one model available"
-		}
-		m.chat.AppendSystem(msg)
 		return
 	}
 	m.modelIndex--
@@ -255,13 +238,6 @@ func (m *AppModel) cycleModelBackward() {
 	m.footer.SetHasReasoning(supportsThinking(modelName))
 	m.footer.SetEntryCount(len(m.session.Entries))
 	m.input.SetBorderColor(m.theme.ThinkingBorderColor(m.thinkingLevel))
-	msg := "Switched to " + newModel
-	if m.thinkingLevel != "" && m.thinkingLevel != "off" {
-		msg += " (thinking: " + m.thinkingLevel + ")"
-	}
-	if !m.chat.ReplaceLastSystem(msg) {
-		m.chat.AppendSystem(msg)
-	}
 }
 
 

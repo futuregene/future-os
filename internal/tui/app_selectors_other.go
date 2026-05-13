@@ -55,8 +55,6 @@ func (m *AppModel) cycleThinking() {
 	m.footer.SetHasReasoning(supportsThinking(modelName))
 	m.footer.SetEntryCount(len(m.session.Entries))
 	m.input.SetBorderColor(m.theme.ThinkingBorderColor(next))
-
-	m.chat.AppendSystem("Thinking level: " + next)
 }
 
 // ─── Git Branch Detection ──────────────────────────────────────────────────
