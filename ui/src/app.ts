@@ -20,6 +20,9 @@ import {
   ALT_SCREEN_ON,
   ALT_SCREEN_OFF,
   BOLD,
+  MOUSE_ON,
+  MOUSE_OFF,
+  parseMouseEvent,
 } from "./tui.js";
 import { DARK_THEME, type Theme, fg, dim, bold } from "./theme.js";
 
@@ -113,6 +116,7 @@ export class App {
 
   async start(): Promise<void> {
     this.terminal.enterAlternateScreen();
+    this.terminal.write(MOUSE_ON);
     this.terminal.hideCursor();
 
     process.stdin.resume();
@@ -139,6 +143,7 @@ export class App {
   async stop(): Promise<void> {
     this.running = false;
     process.stdin.setRawMode!(false);
+    this.terminal.write(MOUSE_OFF);
     this.terminal.exitAlternateScreen();
     this.terminal.write(CLEAR + cursorPos(1, 1) + CURSOR_HIDE);
     this.terminal.close();
@@ -251,6 +256,17 @@ export class App {
     // In escape sequence
     if (this.escBuf.length > 0) {
       this.escBuf += char;
+      // Check for mouse event: ESC [ M <btn> <x> <y>
+      if (this.escBuf.startsWith("\x1b[M")) {
+        if (this.escBuf.length >= 6) {
+          const mouse = parseMouseEvent(this.escBuf);
+          this.escBuf = "";
+          if (mouse) this.handleMouseEvent(mouse);
+          return;
+        }
+        if (this.escBuf.length > 10) this.escBuf = "";
+        return;
+      }
       const key = this.parseEscSeq(this.escBuf);
       if (key) {
         this.escBuf = "";
@@ -491,6 +507,17 @@ export class App {
       case "\x1b[1;5C": return { name: "right", ctrl: true, shift: false, alt: false };
       case "\x1b[1;5D": return { name: "left", ctrl: true, shift: false, alt: false };
       default: return null;
+    }
+  }
+
+  private handleMouseEvent(event: { button: number; x: number; y: number }): void {
+    // Wheel up = button 64, wheel down = button 65
+    if (event.button === 64) {
+      this.chat.scrollUp(3);
+      this.render();
+    } else if (event.button === 65) {
+      this.chat.scrollDown(3);
+      this.render();
     }
   }
 
@@ -900,13 +927,10 @@ export class App {
 
     let out = CLEAR + cursorPos(1, 1);
 
-    // ── Header ──
-    out += this.renderHeader(W);
-
     // ── Chat ──
     const chatLines = this.chat.render();
     for (let i = 0; i < chatLines.length; i++) {
-      out += cursorPos(i + 3, 1) + CLEAR_LINE + chatLines[i];
+      out += cursorPos(i + 1, 1) + CLEAR_LINE + chatLines[i];
     }
 
     // ── Overlay ──
@@ -1038,18 +1062,4 @@ export class App {
     return lines;
   }
 
-  private renderHeader(W: number): string {
-    // Model + thinking (e.g. "claude-sonnet-4  medium")
-    const model = fg(252, this.state.model || "(no model)");
-    const thinking = this.state.thinking !== "off"
-      ? fg(117, this.state.thinking)
-      : fg(240, "off");
-    const headerText = `${fg(151, BOLD + "xihu")}  ${model}  ${thinking}`;
-
-    // Separator line
-    const sep = dim("─".repeat(Math.min(W, 50)));
-
-    return cursorPos(1, 1) + CLEAR_LINE + headerText +
-           cursorPos(2, 1) + CLEAR_LINE + sep;
-  }
 }

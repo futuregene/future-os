@@ -86,8 +86,6 @@ export class Footer {
     }
 
     // Shortcuts
-    rightParts.push(fg(240, "[?] Help  [^C] Interrupt"));
-
     const left = leftParts.join("  ");
     const right = rightParts.join("  ");
 
