@@ -863,9 +863,10 @@ export class App {
     if (this.autocomplete.isVisible()) {
       const autocompleteLines = this.autocomplete.render(W);
       if (autocompleteLines.length > 0) {
-        const acTop = editorLine - this.autocomplete.height() - 1;
+        let acTop = editorLine - this.autocomplete.height() - 1;
         for (const line of autocompleteLines) {
           out += cursorPos(acTop, 1) + CLEAR_LINE + line;
+          acTop++;
         }
       }
     }
