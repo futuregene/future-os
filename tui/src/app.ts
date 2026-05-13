@@ -7,7 +7,7 @@ import { RpcClient } from "./rpc/client.js";
 import { ChatArea, type ChatMessage } from "./components/chat-area.js";
 import { Footer, type FooterData } from "./components/footer.js";
 import { SelectList, type SelectItem } from "./components/select-list.js";
-import { AutocompletePopup, type AutocompleteItem } from "./components/autocomplete.js";
+import { AutocompletePopup, type AutocompleteItem, AutocompleteManager, SlashCommandProvider, FilePathProvider, type SlashCommand } from "./components/autocomplete.js";
 import { Editor } from "./components/editor.js";
 import {
   NodeTerminal,
@@ -62,16 +62,17 @@ export class App extends Container {
   private focusedComponent: Component | null = null;
   private inputListeners = new Set<InputListener>();
   private autocomplete = new AutocompletePopup();
+  private acManager = new AutocompleteManager();
   private keybindings = new KeybindingManager();
 
-  // Slash commands for autocomplete
-  private readonly slashCommands: AutocompleteItem[] = [
-    { value: "/model", label: "/model", description: "select model" },
+  // Slash commands for autocomplete (with model/session arg flags)
+  private readonly slashCommands: SlashCommand[] = [
+    { value: "/model", label: "/model", description: "select model", takesModelArg: true },
     { value: "/sessions", label: "/sessions", description: "browse sessions" },
     { value: "/settings", label: "/settings", description: "open settings" },
     { value: "/new", label: "/new", description: "new session" },
-    { value: "/clone", label: "/clone", description: "clone session" },
-    { value: "/fork", label: "/fork", description: "fork session" },
+    { value: "/clone", label: "/clone", description: "clone session", takesSessionArg: true },
+    { value: "/fork", label: "/fork", description: "fork session", takesSessionArg: true },
     { value: "/tree", label: "/tree", description: "session tree" },
     { value: "/thinking", label: "/thinking", description: "toggle thinking level" },
     { value: "/name", label: "/name", description: "set session name" },
@@ -82,6 +83,21 @@ export class App extends Container {
     { value: "/hotkeys", label: "/hotkeys", description: "show shortcuts" },
     { value: "/quit", label: "/quit", description: "quit xihu" },
   ];
+
+  // Autocomplete provider callbacks
+  private getModels = async (): Promise<string[]> => {
+    try {
+      const r = await this.client.getAvailableModels();
+      return r.models;
+    } catch { return []; }
+  };
+
+  private getSessions = async (): Promise<string[]> => {
+    try {
+      const r = await this.client.listSessions();
+      return r.sessions.map((s) => s.name || s.id);
+    } catch { return []; }
+  };
 
   private state = {
     model: "",
@@ -137,8 +153,22 @@ export class App extends Container {
       bg: this.theme.bg,
     }, {
       onSubmit: (v) => this.handleSubmit(v),
-      onChange: (v) => this.triggerAutocomplete(),
+      onChange: (v) => this.acManager.query(v, v.length),
     });
+
+    // Wire autocomplete manager → popup
+    this.acManager.onItems = (items) => {
+      if (items.length > 0) {
+        this.autocomplete.show(items);
+      } else {
+        this.autocomplete.hide();
+      }
+      this.requestRender();
+    };
+
+    // Register autocomplete providers
+    this.acManager.register(new SlashCommandProvider(this.slashCommands, this.getModels, this.getSessions));
+    this.acManager.register(new FilePathProvider(this.state.cwd || process.cwd()));
 
     // Register children with Container (matches pi's TUI extends Container)
     this.addChild(this.chat);
@@ -464,21 +494,7 @@ export class App extends Container {
 
   private triggerAutocomplete(): void {
     const text = this.editor.getValue();
-
-    // Detect slash command prefix
-    if (text.startsWith("/")) {
-      const prefix = text.slice(1).toLowerCase();
-      const filtered = this.slashCommands.filter((cmd) =>
-        cmd.label.toLowerCase().includes(prefix)
-      );
-      if (filtered.length > 0) {
-        this.autocomplete.show(filtered);
-      } else {
-        this.autocomplete.hide();
-      }
-    } else {
-      this.autocomplete.hide();
-    }
+    this.acManager.queryImmediate(text, text.length);
   }
 
   private handleInterrupt(): void {
