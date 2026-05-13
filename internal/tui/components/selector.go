@@ -53,55 +53,114 @@ func NewListSelector(title string, items []SelectorItem) ListSelector {
 		AccentColor: "#89b4fa",
 	}
 }
-// MoveDown moves selection down, wrapping to top at bottom (TS pi-mono).
+// filteredIndex returns the index of the currently selected item in filteredItems,
+// or -1 if the selected item is not in the filtered list.
+func (s *ListSelector) filteredIndex() int {
+	if s.Selected < 0 || s.Selected >= len(s.Items) {
+		return -1
+	}
+	selected := s.Items[s.Selected]
+	filtered := s.filteredItems()
+	for i, item := range filtered {
+		if item.Value == selected.Value {
+			return i
+		}
+	}
+	return -1
+}
+// MoveDown moves selection down in the filtered list, wrapping to top at bottom.
 func (s *ListSelector) MoveDown() {
-	if len(s.Items) == 0 {
+	filtered := s.filteredItems()
+	if len(filtered) == 0 {
 		return
 	}
-	if s.Selected < len(s.Items)-1 {
-		s.Selected++
+	cur := s.filteredIndex()
+	var nextIdx int
+	if cur < 0 || cur >= len(filtered)-1 {
+		nextIdx = 0
 	} else {
-		s.Selected = 0 // wrap to top
+		nextIdx = cur + 1
+	}
+	nextItem := filtered[nextIdx]
+	for i, item := range s.Items {
+		if item.Value == nextItem.Value {
+			s.Selected = i
+			break
+		}
 	}
 	s.notifySelectionChange()
 }
-// MoveUp moves selection up, wrapping to bottom at top (TS pi-mono).
+// MoveUp moves selection up in the filtered list, wrapping to bottom at top.
 func (s *ListSelector) MoveUp() {
-	if len(s.Items) == 0 {
+	filtered := s.filteredItems()
+	if len(filtered) == 0 {
 		return
 	}
-	if s.Selected > 0 {
-		s.Selected--
+	cur := s.filteredIndex()
+	var prevIdx int
+	if cur <= 0 {
+		prevIdx = len(filtered) - 1
 	} else {
-		s.Selected = len(s.Items) - 1 // wrap to bottom
+		prevIdx = cur - 1
+	}
+	prevItem := filtered[prevIdx]
+	for i, item := range s.Items {
+		if item.Value == prevItem.Value {
+			s.Selected = i
+			break
+		}
 	}
 	s.notifySelectionChange()
 }
-// PageDown moves selection down by a half-page (TS pi-mono: select.pageDown).
+// PageDown moves selection down by a half-page in the filtered list.
 func (s *ListSelector) PageDown(pageSize int) {
-	if len(s.Items) == 0 {
+	filtered := s.filteredItems()
+	if len(filtered) == 0 {
 		return
 	}
 	if pageSize < 1 {
 		pageSize = 5
 	}
-	s.Selected += pageSize
-	if s.Selected >= len(s.Items) {
-		s.Selected = len(s.Items) - 1
+	cur := s.filteredIndex()
+	newIdx := cur + pageSize
+	if newIdx >= len(filtered) {
+		newIdx = len(filtered) - 1
+	}
+	if newIdx < 0 {
+		newIdx = 0
+	}
+	target := filtered[newIdx]
+	for i, item := range s.Items {
+		if item.Value == target.Value {
+			s.Selected = i
+			break
+		}
 	}
 	s.notifySelectionChange()
 }
-// PageUp moves selection up by a half-page (TS pi-mono: select.pageUp).
+// PageUp moves selection up by a half-page in the filtered list.
 func (s *ListSelector) PageUp(pageSize int) {
-	if len(s.Items) == 0 {
+	filtered := s.filteredItems()
+	if len(filtered) == 0 {
 		return
 	}
 	if pageSize < 1 {
 		pageSize = 5
 	}
-	s.Selected -= pageSize
-	if s.Selected < 0 {
-		s.Selected = 0
+	cur := s.filteredIndex()
+	newIdx := cur - pageSize
+	if newIdx < 0 {
+		newIdx = 0
+	}
+	if newIdx >= len(filtered) {
+		newIdx = len(filtered) - 1
+	}
+	target := filtered[newIdx]
+	for i, item := range s.Items {
+		if item.Value == target.Value {
+			s.Selected = i
+			break
+		}
 	}
 	s.notifySelectionChange()
 }
@@ -243,7 +302,11 @@ func (s ListSelector) View() string {
 		}
 	}
 	visibleCount := s.Height - 3
-	start := s.Selected - visibleCount/2
+	filteredIdx := s.filteredIndex()
+	if filteredIdx < 0 {
+		filteredIdx = 0
+	}
+	start := filteredIdx - visibleCount/2
 	if start < 0 {
 		start = 0
 	}
@@ -258,7 +321,7 @@ func (s ListSelector) View() string {
 	for i := start; i < end; i++ {
 		item := items[i]
 		prefix := "→ "
-		if i != s.Selected {
+		if i != filteredIdx {
 			prefix = "  "
 		}
 		// Two-column settings layout (TS pi-mono: SettingsList)
@@ -285,7 +348,7 @@ func (s ListSelector) View() string {
 			}
 			valueStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#6c7086")).Render(value)
 			line := prefix + itemStyle.Render(labelPadded) + separator + valueStyled
-			if i == s.Selected {
+			if i == filteredIdx {
 				line = selectedStyle.Render(prefix + labelPadded + separator + value)
 			}
 			sb.WriteString(line)
@@ -310,14 +373,14 @@ func (s ListSelector) View() string {
 			if lipgloss.Width(descText) > remainingWidth {
 				descText = TruncateByWidth(descText, remainingWidth-1) + "..."
 			}
-			if i == s.Selected {
+			if i == filteredIdx {
 				sb.WriteString(selectedStyle.Render(prefix + label + spacing + descStyle.Render(descText)))
 			} else {
 				sb.WriteString(itemStyle.Render(prefix + label + spacing + descStyle.Render(descText)))
 			}
 		} else {
 			line := item.Label
-			if i == s.Selected {
+			if i == filteredIdx {
 				sb.WriteString(selectedStyle.Render(prefix + line))
 			} else {
 				sb.WriteString(itemStyle.Render(prefix + line))
@@ -338,9 +401,9 @@ func (s ListSelector) View() string {
 		sb.WriteByte('\n')
 	}
 	// Selection info line (TS pi-mono: "Model Name: GPT-4o" in model selector)
-	if s.SelectionInfoFunc != nil && len(items) > 0 {
-		selectedItem := items[s.Selected]
-		if info := s.SelectionInfoFunc(s.Selected, selectedItem); info != "" {
+	if s.SelectionInfoFunc != nil && len(items) > 0 && filteredIdx >= 0 && filteredIdx < len(items) {
+		selectedItem := items[filteredIdx]
+		if info := s.SelectionInfoFunc(filteredIdx, selectedItem); info != "" {
 			infoStyle := lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#6c7086")).
 				PaddingLeft(2)
@@ -353,7 +416,11 @@ func (s ListSelector) View() string {
 		scrollStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#5c6370")).
 			PaddingLeft(2)
-		sb.WriteString(scrollStyle.Render(fmt.Sprintf("(%d/%d)", s.Selected+1, total)))
+		displayIdx := filteredIdx + 1
+		if displayIdx < 1 {
+			displayIdx = 1
+		}
+		sb.WriteString(scrollStyle.Render(fmt.Sprintf("(%d/%d)", displayIdx, total)))
 		sb.WriteByte('\n')
 	}
 	// DynamicBorder bottom (TS pi-mono: DynamicBorder)
