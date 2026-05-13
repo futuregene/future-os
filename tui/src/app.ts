@@ -13,13 +13,16 @@ import {
   NodeTerminal,
   SYNC_BEGIN,
   SYNC_END,
+  Container,
+  type Component,
+  type OverlayHandle,
+  type OverlayOptions,
+  type InputListener,
+  type OverlayLayout,
+  resolveOverlayLayout,
+  isFocusable,
 } from "./tui.js";
 import { DARK_THEME, type Theme, fg, dim, bold } from "./theme.js";
-
-type Overlay =
-  | { kind: "select"; title: string; component: SelectList }
-  | { kind: "help" }
-  | null;
 
 interface KeyEvent {
   name: string;
@@ -28,14 +31,17 @@ interface KeyEvent {
   alt: boolean;
 }
 
-export class App {
+export class App extends Container {
   private terminal: NodeTerminal;
   private client: RpcClient;
   private theme: Theme;
   private editor: Editor;
   private chat: ChatArea;
   private footer: Footer;
-  private overlay: Overlay = null;
+  private overlayStack: { component: Component; options?: OverlayOptions; preFocus: Component | null; hidden: boolean; focusOrder: number }[] = [];
+  private focusOrderCounter = 0;
+  private focusedComponent: Component | null = null;
+  private inputListeners = new Set<InputListener>();
   private autocomplete = new AutocompletePopup();
   private escBuf = "";
 
@@ -91,6 +97,7 @@ export class App {
   private previousHeight = 0;
 
   constructor(private serverUrl = "http://localhost:7890") {
+    super();
     this.terminal = new NodeTerminal();
     this.client = new RpcClient(serverUrl);
     this.theme = DARK_THEME;
@@ -106,6 +113,11 @@ export class App {
       onSubmit: (v) => this.handleSubmit(v),
       onChange: (v) => this.triggerAutocomplete(),
     });
+
+    // Register children with Container (matches pi's TUI extends Container)
+    this.addChild(this.chat);
+    this.addChild(this.editor);
+    this.addChild(this.footer);
 
     // Subscribe to SSE events
     this.client.subscribe((event) => {
@@ -305,12 +317,27 @@ export class App {
       return;
     }
 
-    // Overlay mode
-    if (this.overlay?.kind === "select") {
-      const key = this.charToKeyEvent(char);
-      if (key) {
-        this.overlay.component.handleKey(key.name);
-        this.requestRender();
+    // Input listener pipeline
+    if (this.inputListeners.size > 0) {
+      let data: string | undefined = char;
+      for (const listener of this.inputListeners) {
+        if (!data) break;
+        const result = listener(data);
+        if (result?.consume) { data = undefined; break; }
+        if (result?.data !== undefined) data = result.data;
+      }
+      if (!data) return;
+    }
+
+    // Overlay mode — dispatch to top overlay
+    if (this.overlayStack.length > 0) {
+      const top = this.getTopOverlay();
+      if (top?.handleInput) {
+        const key = this.charToKeyEvent(char);
+        if (key) {
+          top.handleInput(key.name);
+          this.requestRender();
+        }
       }
       return;
     }
@@ -326,13 +353,13 @@ export class App {
   }
 
   private handleKey(key: KeyEvent): void {
-    // Escape - close overlay or autocomplete or clear editor
+    // Escape - close autocomplete or overlay or clear editor
     if (key.name === "escape") {
       if (this.autocomplete.isVisible()) {
         this.autocomplete.hide();
         this.requestRender();
-      } else if (this.overlay) {
-        this.overlay = null;
+      } else if (this.overlayStack.length > 0) {
+        this.hideOverlay();
         this.requestRender();
       } else {
         this.editor.setValue("");
@@ -341,13 +368,11 @@ export class App {
       return;
     }
 
-    // Overlay keys
-    if (this.overlay?.kind === "select") {
-      if (key.name === "enter") {
-        const item = this.overlay.component.getSelectedItem();
-        if (item) this.overlay.component.handleKey("enter");
-      } else {
-        this.overlay.component.handleKey(key.name);
+    // Overlay keys — dispatch to top overlay via handleInput
+    if (this.overlayStack.length > 0) {
+      const top = this.getTopOverlay();
+      if (top?.handleInput) {
+        top.handleInput(key.name);
       }
       this.requestRender();
       return;
@@ -398,8 +423,7 @@ export class App {
           this.showSettings();
           break;
         case "o":
-          this.overlay = { kind: "help" };
-          this.requestRender();
+          this.showHelpOverlay();
           break;
         case "t":
           this.cycleThinking();
@@ -564,8 +588,7 @@ export class App {
       }
 
       if (cmd === "help" || cmd === "hotkeys") {
-        this.overlay = { kind: "help" };
-        this.requestRender();
+        this.showHelpOverlay();
         return;
       }
 
@@ -742,17 +765,14 @@ export class App {
             content: `Failed to set model: ${err}`,
           });
         }
-        this.overlay = null;
-        this.requestRender();
+        this.hideOverlay();
       },
       onCancel: () => {
-        this.overlay = null;
-        this.requestRender();
+        this.hideOverlay();
       },
     });
 
-    this.overlay = { kind: "select", title: "Select Model", component: sl };
-    this.requestRender();
+    this.showOverlay(sl);
   }
 
   private async cycleModel(): Promise<void> {
@@ -781,6 +801,169 @@ export class App {
   }
 
   // ─── Overlays ───────────────────────────────────────────────────────────
+
+  private showHelpOverlay(): void {
+    const helpComponent: Component = {
+      render: (width: number) => this.renderHelp(width),
+      invalidate: () => {},
+    };
+    this.showOverlay(helpComponent);
+  }
+
+  showOverlay(component: Component, options?: OverlayOptions): OverlayHandle {
+    const preFocus = this.focusedComponent;
+    const focusOrder = ++this.focusOrderCounter;
+    const entry = { component, options, preFocus, hidden: false, focusOrder };
+    this.overlayStack.push(entry);
+
+    // Auto-focus unless nonCapturing (matches pi)
+    if (!options?.nonCapturing) {
+      this.setFocus(component);
+    }
+    this.requestRender();
+
+    return {
+      hide: () => {
+        entry.hidden = true;
+        if (this.focusedComponent === component) {
+          this.restoreFocus(entry);
+        }
+        this.requestRender();
+      },
+      setHidden: (h: boolean) => {
+        entry.hidden = h;
+        if (h && this.focusedComponent === component) {
+          this.restoreFocus(entry);
+        } else if (!h && !entry.options?.nonCapturing && this.isOverlayVisible(entry, this.terminal.getWidth(), this.terminal.getHeight())) {
+          this.setFocus(component);
+        }
+        this.requestRender();
+      },
+      isHidden: () => entry.hidden,
+      focus: () => {
+        entry.focusOrder = ++this.focusOrderCounter;
+        this.setFocus(component);
+        this.requestRender();
+      },
+      unfocus: () => {
+        if (this.focusedComponent === component) {
+          this.restoreFocus(entry);
+          this.requestRender();
+        }
+      },
+      isFocused: () => this.focusedComponent === component,
+    };
+  }
+
+  private restoreFocus(entry: { preFocus: Component | null }): void {
+    // Try next visible overlay, then preFocus, then editor
+    const top = this.getTopOverlay();
+    if (top) {
+      this.setFocus(top);
+    } else if (entry.preFocus) {
+      this.setFocus(entry.preFocus);
+    } else {
+      this.setFocus(this.editor);
+    }
+  }
+
+  hideOverlay(): void {
+    const entry = this.overlayStack.pop();
+    if (!entry) return;
+    if (this.focusedComponent === entry.component) {
+      this.restoreFocus(entry);
+    }
+    this.requestRender();
+  }
+
+  private getTopOverlay(): Component | null {
+    for (let i = this.overlayStack.length - 1; i >= 0; i--) {
+      if (!this.overlayStack[i].hidden) return this.overlayStack[i].component;
+    }
+    return null;
+  }
+
+  private compositeOverlays(base: string[], termW: number, termH: number): string[] {
+    // Filter visible, sort by focusOrder (ascending = later overlays on top)
+    const visible = this.overlayStack
+      .filter((e) => !e.hidden && this.isOverlayVisible(e, termW, termH))
+      .sort((a, b) => a.focusOrder - b.focusOrder);
+
+    if (visible.length === 0) return base;
+
+    // Pad base to at least termH for stable screen-relative overlay positioning
+    const lines = base.length < termH
+      ? [...base, ...new Array(termH - base.length).fill("")]
+      : base;
+
+    for (const entry of visible) {
+      const overlayLines = entry.component.render(termW);
+      if (overlayLines.length === 0) continue;
+      const layout = resolveOverlayLayout(termW, termH, overlayLines.length, entry.options);
+
+      // Blank out the overlay area first, then composite lines
+      const maxRows = Math.min(overlayLines.length, layout.maxHeight, termH - layout.row);
+      for (let i = 0; i < maxRows; i++) {
+        const targetRow = layout.row + i;
+        if (targetRow >= 0 && targetRow < lines.length) {
+          lines[targetRow] = this.compositeLineAt(
+            lines[targetRow], overlayLines[i], layout.col, layout.width,
+          );
+        }
+      }
+    }
+
+    return lines;
+  }
+
+  private compositeLineAt(base: string, overlay: string, col: number, width: number): string {
+    // Simple compositing: pad overlay to width, place at column position
+    const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+    const overlayClean = stripAnsi(overlay);
+    const baseClean = stripAnsi(base);
+
+    // Build: base up to col + overlay (clipped to width) + base after col+overlay
+    const before = baseClean.slice(0, Math.min(col, baseClean.length));
+    const overlayPart = overlayClean.slice(0, width);
+    const after = baseClean.slice(Math.min(col + overlayPart.length, baseClean.length));
+
+    const padOverlay = overlayPart.length < width ? overlayPart + " ".repeat(width - overlayPart.length) : overlayPart;
+
+    // Preserve ANSI codes by re-applying: base background + overlay content
+    // For simplicity, use the overlay text directly (it carries its own ANSI codes)
+    const beforePadded = before.length < col ? before + " ".repeat(col - before.length) : before;
+
+    return beforePadded + overlay + " ".repeat(Math.max(0, width - overlayClean.length)) + after;
+  }
+
+  private isOverlayVisible(
+    entry: { hidden: boolean; options?: OverlayOptions },
+    termW: number,
+    termH: number,
+  ): boolean {
+    if (entry.hidden) return false;
+    if (entry.options?.visible) return entry.options.visible(termW, termH);
+    return true;
+  }
+
+  private setFocus(component: Component): void {
+    if (this.focusedComponent && isFocusable(this.focusedComponent)) {
+      this.focusedComponent.focused = false;
+    }
+    this.focusedComponent = component;
+    if (isFocusable(component)) {
+      component.focused = true;
+    }
+  }
+
+  addInputListener(listener: InputListener): () => void {
+    this.inputListeners.add(listener);
+    return () => { this.inputListeners.delete(listener); };
+  }
+
+  removeInputListener(listener: InputListener): void {
+    this.inputListeners.delete(listener);
+  }
 
   async showSessions(): Promise<void> {
     let sessions: { id: string; name?: string; model: string; updated_at: string }[] = [];
@@ -822,17 +1005,14 @@ export class App {
             content: `Failed to switch session: ${err}`,
           });
         }
-        this.overlay = null;
-        this.requestRender();
+        this.hideOverlay();
       },
       onCancel: () => {
-        this.overlay = null;
-        this.requestRender();
+        this.hideOverlay();
       },
     });
 
-    this.overlay = { kind: "select", title: "Sessions", component: sl };
-    this.requestRender();
+    this.showOverlay(sl);
   }
 
   async showSettings(): Promise<void> {
@@ -848,7 +1028,7 @@ export class App {
       items,
       maxVisible: 10,
       onSelect: async (item) => {
-        this.overlay = null;
+        this.hideOverlay();
         if (item.value === "sessions") {
           await this.showSessions();
         } else if (item.value === "reload") {
@@ -862,13 +1042,11 @@ export class App {
         this.requestRender();
       },
       onCancel: () => {
-        this.overlay = null;
-        this.requestRender();
+        this.hideOverlay();
       },
     });
 
-    this.overlay = { kind: "select", title: "Settings", component: sl };
-    this.requestRender();
+    this.showOverlay(sl);
   }
 
   // ─── Rendering (pi-style differential with synchronized output) ──────────
@@ -923,71 +1101,9 @@ export class App {
     const firstRender = this.previousLines.length === 0;
 
     // Update dimensions
-    this.chat.setWidth(W);
     this.chat.setViewportHeight(chatHeight);
-    this.footer.setWidth(W);
 
-    // Build new output per line (0-indexed)
-    const next: string[] = new Array(H).fill("");
-
-    // ── Chat ──
-    // Defensive clamp: chat must never overflow into editor/footer area.
-    // scrollToBottom may use a stale viewportHeight between renders during
-    // rapid streaming, causing render() to return more lines than chatHeight.
-    const chatLines = this.chat.render();
-    const numChatLines = Math.min(chatLines.length, chatHeight);
-    for (let i = 0; i < numChatLines; i++) {
-      next[i] = chatLines[i];
-    }
-    for (let i = numChatLines; i < chatHeight; i++) {
-      next[i] = "";
-    }
-
-    // ── Overlay (select) ──
-    if (this.overlay?.kind === "select") {
-      const lines = this.overlay.component.render(W);
-      const overlayH = lines.length + 2;
-      const top = Math.floor((chatHeight - overlayH) / 2) + 2;
-      const left = Math.max(1, Math.floor((W - Math.min(W - 4, 70)) / 2));
-      for (let i = 0; i < overlayH; i++) {
-        next[top + i] = "";
-      }
-      for (let i = 0; i < lines.length; i++) {
-        next[top + 1 + i] = " ".repeat(left - 1) + lines[i];
-      }
-    }
-
-    // ── Overlay (help) ──
-    if (this.overlay?.kind === "help") {
-      const helpLines = this.renderHelp(W);
-      const helpH = helpLines.length + 4;
-      const top = Math.floor((chatHeight - helpH) / 2) + 2;
-      for (let i = 0; i < helpH; i++) {
-        next[top + i] = "";
-      }
-      for (let i = 0; i < helpLines.length; i++) {
-        next[top + 2 + i] = " " + helpLines[i];
-      }
-    }
-
-    // ── Editor (0-indexed H-2) ──
-    const editorIdx = H - 2;
-    const editorText = this.editor.render(W);
-    next[editorIdx] = editorText.length > 0 ? editorText[0] : "";
-
-    // ── Autocomplete popup ──
-    if (this.autocomplete.isVisible()) {
-      const acLines = this.autocomplete.render(W);
-      if (acLines.length > 0) {
-        let acTop = editorIdx - acLines.length;
-        for (const line of acLines) {
-          if (acTop >= 0) next[acTop] = line;
-          acTop++;
-        }
-      }
-    }
-
-    // ── Footer (0-indexed H-1) ──
+    // Set footer data before render (Container.render calls footer.render)
     const footerData: FooterData = {
       cwd: this.state.cwd,
       model: this.state.model,
@@ -1002,7 +1118,36 @@ export class App {
       totalCost: this.state.totalCost,
       autoCompactionEnabled: true,
     };
-    next[H - 1] = this.footer.render(footerData);
+    this.footer.setData(footerData);
+
+    // Base content via Container.render (matches pi: TUI extends Container)
+    // Children are registered in order: chat, editor, footer
+    let next: string[] = this.render(W);
+
+    // Pad or truncate to terminal height
+    if (next.length < H) {
+      const padded = new Array(H).fill("");
+      for (let i = 0; i < next.length; i++) padded[i] = next[i];
+      next = padded;
+    } else if (next.length > H) {
+      next = next.slice(0, H);
+    }
+
+    // ── Composite overlays ──
+    next = this.compositeOverlays(next, W, H);
+
+    // ── Autocomplete popup (positioned above editor, below overlays) ──
+    if (this.autocomplete.isVisible()) {
+      const acLines = this.autocomplete.render(W);
+      if (acLines.length > 0) {
+        const editorIdx = H - 2;
+        let acTop = editorIdx - acLines.length;
+        for (const line of acLines) {
+          if (acTop >= 0) next[acTop] = line;
+          acTop++;
+        }
+      }
+    }
 
     // Full re-render on size change, height change, or first render.
     // Matches pi's fullRender logic exactly:

@@ -3,7 +3,7 @@
  * Modeled after @earendil-works/pi-tui SelectList.
  */
 
-import type { Theme } from "../tui.js";
+import type { Theme, Component } from "../tui.js";
 import { DEFAULT_THEME, CSI, RESET, BOLD } from "../tui.js";
 
 export interface SelectItem {
@@ -25,7 +25,7 @@ export interface SelectListOptions {
 const DESCRIPTION_WIDTH = 40;
 const PRIMARY_WIDTH = 50;
 
-export class SelectList {
+export class SelectList implements Component {
   private items: SelectItem[];
   private filteredItems: SelectItem[];
   private selectedIndex = 0;
@@ -52,6 +52,12 @@ export class SelectList {
     if (this.filteredItems.length === 0) return null;
     return this.filteredItems[this.selectedIndex] ?? null;
   }
+
+  handleInput(data: string): void {
+    this.handleKey(data);
+  }
+
+  invalidate(): void { /* no cache */ }
 
   handleKey(key: string): boolean {
     if (this.onKey?.(key)) return true;

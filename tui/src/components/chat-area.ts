@@ -4,6 +4,7 @@
  */
 
 import { CSI, RESET } from "../tui.js";
+import type { Component } from "../tui.js";
 import { fg, bg, bold, italic } from "../theme.js";
 import type { Theme } from "../theme.js";
 import { MarkdownRenderer } from "./markdown.js";
@@ -30,7 +31,7 @@ export interface ChatMessage {
   welcome?: boolean;   // skip prefix/icon for welcome/info messages
 }
 
-export class ChatArea {
+export class ChatArea implements Component {
   private messages: ChatMessage[] = [];
   private viewportTop = 0;
   private viewportHeight = 20;
@@ -38,6 +39,7 @@ export class ChatArea {
   private autoScroll = true;
   private width = 80;
   private thinkingHidden = false;
+  private lastRenderWidth = -1;
 
   private md = new MarkdownRenderer();
   private theme: Theme;
@@ -230,7 +232,18 @@ export class ChatArea {
     return Math.min(this.renderedLines.length, this.viewportHeight);
   }
 
-  render(): string[] {
+  handleInput(_data: string): void { /* no-op */ }
+
+  invalidate(): void {
+    this.lastRenderWidth = -1;
+  }
+
+  render(width: number): string[] {
+    if (width !== this.lastRenderWidth) {
+      this.lastRenderWidth = width;
+      this.width = width;
+      this.rerender();
+    }
     const visible = this.renderedLines.slice(
       this.viewportTop,
       this.viewportTop + this.viewportHeight
