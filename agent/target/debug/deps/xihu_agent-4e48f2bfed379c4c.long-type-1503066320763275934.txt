@@ -1,0 +1,1 @@
+(dyn for<'a> Fn(&'a str, std::string::String, anyhow::Error) -> (std::string::String, std::option::Option<anyhow::Error>) + std::marker::Send + Sync + 'static)

@@ -370,8 +370,37 @@ export function decodePrintableKey(data: string): string | undefined {
 
 // ─── KeyId Type & Key Helper ──────────────────────────────────────────────
 
-/** All possible normalized key identifiers returned by parseKey(). */
-export type KeyId = string;
+// --- Base key names (without modifiers) ---
+
+type LetterKey = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j"
+  | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v"
+  | "w" | "x" | "y" | "z";
+
+type DigitKey = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9";
+
+type NamedKey = "escape" | "tab" | "enter" | "space" | "backspace"
+  | "delete" | "insert" | "home" | "end" | "pageUp" | "pageDown"
+  | "up" | "down" | "left" | "right" | "clear";
+
+type FunctionKey = "f1" | "f2" | "f3" | "f4" | "f5" | "f6"
+  | "f7" | "f8" | "f9" | "f10" | "f11" | "f12";
+
+type BaseKey = NamedKey | FunctionKey | LetterKey | DigitKey;
+
+// --- Modifiers ---
+
+type Mod1 = "ctrl" | "shift" | "alt" | "super";
+type Mod2 = `${Mod1}+${Mod1}`;
+type Mod3 = `${Mod2}+${Mod1}`;
+
+/** All possible normalized key identifiers returned by parseKey().
+ *  Union type for compile-time autocomplete; fallback to string for
+ *  uncommon combinations generated at runtime. */
+export type KeyId = BaseKey
+  | `${Mod1}+${BaseKey}`
+  | `${Mod2}+${BaseKey}`
+  | `${Mod3}+${BaseKey}`
+  | string; // runtime-generated combinations
 
 function k<T extends string>(s: T): T { return s; }
 
@@ -444,4 +473,315 @@ export function modifiedKey(mod: string, key: string): KeyId {
 /** Build a ctrl+key string: `ctrlKey("c")` → `"ctrl+c"` */
 export function ctrlKey(key: string): KeyId {
   return `ctrl+${key}`;
+}
+
+// ─── Key ID Parsing ───────────────────────────────────────────────────────
+
+function parseKeyId(
+  keyId: string,
+): { key: string; ctrl: boolean; shift: boolean; alt: boolean; super: boolean } | null {
+  const parts = keyId.toLowerCase().split("+");
+  const key = parts[parts.length - 1];
+  if (!key) return null;
+  return {
+    key,
+    ctrl: parts.includes("ctrl"),
+    shift: parts.includes("shift"),
+    alt: parts.includes("alt"),
+    super: parts.includes("super"),
+  };
+}
+
+// ─── Sequence Matching Helpers ─────────────────────────────────────────────
+
+function matchesKittySequence(data: string, expectedCodepoint: number, expectedModifier: number): boolean {
+  const parsed = parseKittySequence(data);
+  if (!parsed) return false;
+  const actualMod = parsed.modifier & ~LOCK_MASK;
+  const expectedMod = expectedModifier & ~LOCK_MASK;
+  if (actualMod !== expectedMod) return false;
+  const normalizedCodepoint = normalizeShiftedLetterIdentityCodepoint(
+    normalizeKittyFunctionalCodepoint(parsed.codepoint), parsed.modifier);
+  const normalizedExpectedCodepoint = normalizeShiftedLetterIdentityCodepoint(
+    normalizeKittyFunctionalCodepoint(expectedCodepoint), expectedModifier);
+  if (normalizedCodepoint === normalizedExpectedCodepoint) return true;
+  if (parsed.baseLayoutKey !== undefined && parsed.baseLayoutKey === expectedCodepoint) {
+    const cp = normalizedCodepoint;
+    const isLatinLetter = cp >= 97 && cp <= 122;
+    const isKnownSymbol = SYMBOL_KEYS.has(String.fromCharCode(cp));
+    if (!isLatinLetter && !isKnownSymbol) return true;
+  }
+  return false;
+}
+
+function matchesModifyOtherKeys(data: string, expectedKeycode: number, expectedModifier: number): boolean {
+  const parsed = parseModifyOtherKeysSequence(data);
+  if (!parsed) return false;
+  return parsed.codepoint === expectedKeycode && parsed.modifier === expectedModifier;
+}
+
+function matchesPrintableModifyOtherKeys(data: string, expectedKeycode: number, expectedModifier: number): boolean {
+  if (expectedModifier === 0) return false;
+  const parsed = parseModifyOtherKeysSequence(data);
+  if (!parsed || parsed.modifier !== expectedModifier) return false;
+  return normalizeShiftedLetterIdentityCodepoint(parsed.codepoint, parsed.modifier)
+    === normalizeShiftedLetterIdentityCodepoint(expectedKeycode, expectedModifier);
+}
+
+function rawCtrlChar(key: string): string | null {
+  const char = key.toLowerCase();
+  const code = char.charCodeAt(0);
+  if ((code >= 97 && code <= 122) || char === "[" || char === "\\"
+    || char === "]" || char === "_" || char === "-") {
+    return String.fromCharCode(char.charCodeAt(0) & 0x1f);
+  }
+  return null;
+}
+
+function matchesRawBackspace(data: string, expectedModifier: number): boolean {
+  if (data === "\x7f") return expectedModifier === 0;
+  if (data !== "\x08") return false;
+  return isWindowsTerminalSession() ? expectedModifier === MODIFIERS.ctrl : expectedModifier === 0;
+}
+
+function matchesLegacySequence(data: string, seqs: string[]): boolean {
+  return seqs.some((s) => data === s);
+}
+
+const LEGACY_KEY_SEQUENCES: Record<string, string[]> = {
+  insert: ["\x1b[2~"],
+  delete: ["\x1b[3~"],
+  clear: ["\x1b[E", "\x1bOE"],
+  home: ["\x1bOH", "\x1b[H"],
+  end: ["\x1bOF", "\x1b[F"],
+  pageUp: ["\x1b[5~", "\x1b[[5~"],
+  pageDown: ["\x1b[6~", "\x1b[[6~"],
+  up: ["\x1b[A", "\x1bOA"],
+  down: ["\x1b[B", "\x1bOB"],
+  left: ["\x1b[D", "\x1bOD"],
+  right: ["\x1b[C", "\x1bOC"],
+  f1: ["\x1bOP", "\x1b[11~", "\x1b[[A"],
+  f2: ["\x1bOQ", "\x1b[12~", "\x1b[[B"],
+  f3: ["\x1bOR", "\x1b[13~", "\x1b[[C"],
+  f4: ["\x1bOS", "\x1b[14~", "\x1b[[D"],
+  f5: ["\x1b[15~", "\x1b[[E"],
+  f6: ["\x1b[17~"],
+  f7: ["\x1b[18~"],
+  f8: ["\x1b[19~"],
+  f9: ["\x1b[20~"],
+  f10: ["\x1b[21~"],
+  f11: ["\x1b[23~"],
+  f12: ["\x1b[24~"],
+};
+
+function matchesLegacyModifierSequence(_data: string, _key: string, _modifier: number): boolean {
+  // Legacy modifier sequences are handled by parseKey() already, so exact
+  // matching via LEGACY_SEQUENCE_KEY_IDS in parseKey is sufficient here.
+  return false;
+}
+
+function isDigitKey(key: string): boolean {
+  return key >= "0" && key <= "9";
+}
+
+// ─── matchesKey() — Match Input Against a Key Identifier ───────────────────
+
+/**
+ * Match raw terminal input against a key identifier.
+ *
+ * Supported identifiers: "escape", "tab", "enter", "backspace", "space",
+ * "delete", "insert", "home", "end", "pageUp", "pageDown",
+ * "up"/"down"/"left"/"right", "f1".."f12",
+ * modifier combos: "ctrl+c", "shift+tab", "alt+enter", "super+k",
+ * "shift+ctrl+p", "ctrl+alt+x".
+ */
+export function matchesKey(data: string, keyId: KeyId): boolean {
+  const parsed = parseKeyId(keyId);
+  if (!parsed) return false;
+
+  const { key, ctrl, shift, alt, super: superModifier } = parsed;
+  let modifier = 0;
+  if (shift) modifier |= MODIFIERS.shift;
+  if (alt) modifier |= MODIFIERS.alt;
+  if (ctrl) modifier |= MODIFIERS.ctrl;
+  if (superModifier) modifier |= MODIFIERS.super;
+
+  switch (key) {
+    case "escape":
+    case "esc":
+      if (modifier !== 0) return false;
+      return data === "\x1b" || matchesKittySequence(data, CODEPOINTS.escape, 0)
+        || matchesModifyOtherKeys(data, CODEPOINTS.escape, 0);
+
+    case "space":
+      if (!_kittyProtocolActive) {
+        if (modifier === MODIFIERS.ctrl && data === "\x00") return true;
+        if (modifier === MODIFIERS.alt && data === "\x1b ") return true;
+      }
+      if (modifier === 0) return data === " "
+        || matchesKittySequence(data, CODEPOINTS.space, 0)
+        || matchesModifyOtherKeys(data, CODEPOINTS.space, 0);
+      return matchesKittySequence(data, CODEPOINTS.space, modifier)
+        || matchesModifyOtherKeys(data, CODEPOINTS.space, modifier);
+
+    case "tab":
+      if (modifier === MODIFIERS.shift) return data === "\x1b[Z"
+        || matchesKittySequence(data, CODEPOINTS.tab, MODIFIERS.shift)
+        || matchesModifyOtherKeys(data, CODEPOINTS.tab, MODIFIERS.shift);
+      if (modifier === 0) return data === "\t" || matchesKittySequence(data, CODEPOINTS.tab, 0);
+      return matchesKittySequence(data, CODEPOINTS.tab, modifier)
+        || matchesModifyOtherKeys(data, CODEPOINTS.tab, modifier);
+
+    case "enter":
+    case "return":
+      if (modifier === MODIFIERS.shift) {
+        if (matchesKittySequence(data, CODEPOINTS.enter, MODIFIERS.shift)
+          || matchesKittySequence(data, CODEPOINTS.kpEnter, MODIFIERS.shift)) return true;
+        if (matchesModifyOtherKeys(data, CODEPOINTS.enter, MODIFIERS.shift)) return true;
+        if (_kittyProtocolActive) return data === "\x1b\r" || data === "\n";
+        return false;
+      }
+      if (modifier === MODIFIERS.alt) {
+        if (matchesKittySequence(data, CODEPOINTS.enter, MODIFIERS.alt)
+          || matchesKittySequence(data, CODEPOINTS.kpEnter, MODIFIERS.alt)) return true;
+        if (matchesModifyOtherKeys(data, CODEPOINTS.enter, MODIFIERS.alt)) return true;
+        if (!_kittyProtocolActive) return data === "\x1b\r";
+        return false;
+      }
+      if (modifier === 0) return data === "\r"
+        || (!_kittyProtocolActive && data === "\n") || data === "\x1bOM"
+        || matchesKittySequence(data, CODEPOINTS.enter, 0)
+        || matchesKittySequence(data, CODEPOINTS.kpEnter, 0);
+      return matchesKittySequence(data, CODEPOINTS.enter, modifier)
+        || matchesKittySequence(data, CODEPOINTS.kpEnter, modifier)
+        || matchesModifyOtherKeys(data, CODEPOINTS.enter, modifier);
+
+    case "backspace":
+      if (modifier === MODIFIERS.alt) {
+        if (data === "\x1b\x7f" || data === "\x1b\b") return true;
+        return matchesKittySequence(data, CODEPOINTS.backspace, MODIFIERS.alt)
+          || matchesModifyOtherKeys(data, CODEPOINTS.backspace, MODIFIERS.alt);
+      }
+      if (modifier === MODIFIERS.ctrl) {
+        if (matchesRawBackspace(data, MODIFIERS.ctrl)) return true;
+        return matchesKittySequence(data, CODEPOINTS.backspace, MODIFIERS.ctrl)
+          || matchesModifyOtherKeys(data, CODEPOINTS.backspace, MODIFIERS.ctrl);
+      }
+      if (modifier === 0) return matchesRawBackspace(data, 0)
+        || matchesKittySequence(data, CODEPOINTS.backspace, 0)
+        || matchesModifyOtherKeys(data, CODEPOINTS.backspace, 0);
+      return matchesKittySequence(data, CODEPOINTS.backspace, modifier)
+        || matchesModifyOtherKeys(data, CODEPOINTS.backspace, modifier);
+
+    case "insert":
+      if (modifier === 0) return matchesLegacySequence(data, LEGACY_KEY_SEQUENCES.insert)
+        || matchesKittySequence(data, FUNCTIONAL_CODEPOINTS.insert, 0);
+      return matchesKittySequence(data, FUNCTIONAL_CODEPOINTS.insert, modifier);
+
+    case "delete":
+      if (modifier === 0) return matchesLegacySequence(data, LEGACY_KEY_SEQUENCES.delete)
+        || matchesKittySequence(data, FUNCTIONAL_CODEPOINTS.delete, 0);
+      return matchesKittySequence(data, FUNCTIONAL_CODEPOINTS.delete, modifier);
+
+    case "clear":
+      if (modifier === 0) return matchesLegacySequence(data, LEGACY_KEY_SEQUENCES.clear);
+      return matchesLegacyModifierSequence(data, "clear", modifier);
+
+    case "home":
+      if (modifier === 0) return matchesLegacySequence(data, LEGACY_KEY_SEQUENCES.home)
+        || matchesKittySequence(data, FUNCTIONAL_CODEPOINTS.home, 0);
+      return matchesKittySequence(data, FUNCTIONAL_CODEPOINTS.home, modifier);
+
+    case "end":
+      if (modifier === 0) return matchesLegacySequence(data, LEGACY_KEY_SEQUENCES.end)
+        || matchesKittySequence(data, FUNCTIONAL_CODEPOINTS.end, 0);
+      return matchesKittySequence(data, FUNCTIONAL_CODEPOINTS.end, modifier);
+
+    case "pageup":
+      if (modifier === 0) return matchesLegacySequence(data, LEGACY_KEY_SEQUENCES.pageUp)
+        || matchesKittySequence(data, FUNCTIONAL_CODEPOINTS.pageUp, 0);
+      return matchesKittySequence(data, FUNCTIONAL_CODEPOINTS.pageUp, modifier);
+
+    case "pagedown":
+      if (modifier === 0) return matchesLegacySequence(data, LEGACY_KEY_SEQUENCES.pageDown)
+        || matchesKittySequence(data, FUNCTIONAL_CODEPOINTS.pageDown, 0);
+      return matchesKittySequence(data, FUNCTIONAL_CODEPOINTS.pageDown, modifier);
+
+    case "up":
+      if (modifier === MODIFIERS.alt) return data === "\x1bp"
+        || matchesKittySequence(data, ARROW_CODEPOINTS.up, MODIFIERS.alt);
+      if (modifier === 0) return matchesLegacySequence(data, LEGACY_KEY_SEQUENCES.up)
+        || matchesKittySequence(data, ARROW_CODEPOINTS.up, 0);
+      return matchesKittySequence(data, ARROW_CODEPOINTS.up, modifier);
+
+    case "down":
+      if (modifier === MODIFIERS.alt) return data === "\x1bn"
+        || matchesKittySequence(data, ARROW_CODEPOINTS.down, MODIFIERS.alt);
+      if (modifier === 0) return matchesLegacySequence(data, LEGACY_KEY_SEQUENCES.down)
+        || matchesKittySequence(data, ARROW_CODEPOINTS.down, 0);
+      return matchesKittySequence(data, ARROW_CODEPOINTS.down, modifier);
+
+    case "left":
+      if (modifier === MODIFIERS.alt) return data === "\x1bb"
+        || data === "\x1b[1;3D"
+        || (!_kittyProtocolActive && (data === "\x1bB" || data === "\x1bb"))
+        || matchesKittySequence(data, ARROW_CODEPOINTS.left, MODIFIERS.alt);
+      if (modifier === MODIFIERS.ctrl) return data === "\x1b[1;5D"
+        || matchesKittySequence(data, ARROW_CODEPOINTS.left, MODIFIERS.ctrl);
+      if (modifier === 0) return matchesLegacySequence(data, LEGACY_KEY_SEQUENCES.left)
+        || matchesKittySequence(data, ARROW_CODEPOINTS.left, 0);
+      return matchesKittySequence(data, ARROW_CODEPOINTS.left, modifier);
+
+    case "right":
+      if (modifier === MODIFIERS.alt) return data === "\x1bf"
+        || data === "\x1b[1;3C"
+        || (!_kittyProtocolActive && (data === "\x1bF" || data === "\x1bf"))
+        || matchesKittySequence(data, ARROW_CODEPOINTS.right, MODIFIERS.alt);
+      if (modifier === MODIFIERS.ctrl) return data === "\x1b[1;5C"
+        || matchesKittySequence(data, ARROW_CODEPOINTS.right, MODIFIERS.ctrl);
+      if (modifier === 0) return matchesLegacySequence(data, LEGACY_KEY_SEQUENCES.right)
+        || matchesKittySequence(data, ARROW_CODEPOINTS.right, 0);
+      return matchesKittySequence(data, ARROW_CODEPOINTS.right, modifier);
+
+    case "f1": case "f2": case "f3": case "f4":
+    case "f5": case "f6": case "f7": case "f8":
+    case "f9": case "f10": case "f11": case "f12":
+      if (modifier !== 0) return false;
+      return matchesLegacySequence(data, LEGACY_KEY_SEQUENCES[key] ?? []);
+  }
+
+  // Handle single letter/digit keys and symbols
+  if (key.length === 1 && ((key >= "a" && key <= "z") || isDigitKey(key) || SYMBOL_KEYS.has(key))) {
+    const codepoint = key.charCodeAt(0);
+    const rawCtrl = rawCtrlChar(key);
+    const isLetter = key >= "a" && key <= "z";
+
+    if (modifier === MODIFIERS.ctrl + MODIFIERS.alt && !_kittyProtocolActive && rawCtrl) {
+      if (data === `\x1b${rawCtrl}`) return true;
+    }
+    if (modifier === MODIFIERS.alt && !_kittyProtocolActive && (isLetter || isDigitKey(key))) {
+      if (data === `\x1b${key}`) return true;
+    }
+    if (modifier === MODIFIERS.ctrl) {
+      if (rawCtrl && data === rawCtrl) return true;
+      return matchesKittySequence(data, codepoint, MODIFIERS.ctrl)
+        || matchesPrintableModifyOtherKeys(data, codepoint, MODIFIERS.ctrl);
+    }
+    if (modifier === MODIFIERS.shift + MODIFIERS.ctrl) {
+      return matchesKittySequence(data, codepoint, MODIFIERS.shift + MODIFIERS.ctrl)
+        || matchesPrintableModifyOtherKeys(data, codepoint, MODIFIERS.shift + MODIFIERS.ctrl);
+    }
+    if (modifier === MODIFIERS.shift) {
+      if (isLetter && data === key.toUpperCase()) return true;
+      return matchesKittySequence(data, codepoint, MODIFIERS.shift)
+        || matchesPrintableModifyOtherKeys(data, codepoint, MODIFIERS.shift);
+    }
+    if (modifier !== 0) {
+      return matchesKittySequence(data, codepoint, modifier)
+        || matchesPrintableModifyOtherKeys(data, codepoint, modifier);
+    }
+    return data === key || matchesKittySequence(data, codepoint, 0);
+  }
+
+  return false;
 }

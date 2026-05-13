@@ -1,0 +1,11 @@
+/Users/geilige/xihu/agent/target/debug/deps/bitflags-1a249613e3bb883f.d: /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/lib.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/iter.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/parser.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/traits.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/public.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/internal.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/external.rs
+
+/Users/geilige/xihu/agent/target/debug/deps/libbitflags-1a249613e3bb883f.rmeta: /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/lib.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/iter.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/parser.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/traits.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/public.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/internal.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/external.rs
+
+/Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/lib.rs:
+/Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/iter.rs:
+/Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/parser.rs:
+/Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/traits.rs:
+/Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/public.rs:
+/Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/internal.rs:
+/Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1/src/external.rs:

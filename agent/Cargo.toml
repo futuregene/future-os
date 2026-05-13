@@ -1,0 +1,47 @@
+[package]
+name = "xihu-agent"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "xihu"
+path = "src/main.rs"
+
+[lib]
+name = "xihu_agent"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_with = "3"
+reqwest = { version = "0.12", features = ["stream", "json", "native-tls"] }
+axum = { version = "0.7", features = ["ws"] }
+futures = "0.3"
+futures-util = "0.3"
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["io", "codec"] }
+anyhow = "1"
+thiserror = "1"
+clap = { version = "4", features = ["derive", "env"] }
+dirs = "5"
+notify = "6"
+walkdir = "2"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+schemars = "0.8"
+rand = "0.8"
+sha2 = "0.10"
+base32 = "0.5"
+fd-lock = "4"
+signal-hook = "0.3"
+atty = "0.2"
+shellexpand = "3"
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio-test = "0.4"

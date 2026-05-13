@@ -1,0 +1,10 @@
+/Users/geilige/xihu/agent/target/debug/deps/walkdir-3c04feede3a48b45.d: /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0/src/lib.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0/src/dent.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0/src/error.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0/src/util.rs
+
+/Users/geilige/xihu/agent/target/debug/deps/libwalkdir-3c04feede3a48b45.rlib: /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0/src/lib.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0/src/dent.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0/src/error.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0/src/util.rs
+
+/Users/geilige/xihu/agent/target/debug/deps/libwalkdir-3c04feede3a48b45.rmeta: /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0/src/lib.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0/src/dent.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0/src/error.rs /Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0/src/util.rs
+
+/Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0/src/lib.rs:
+/Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0/src/dent.rs:
+/Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0/src/error.rs:
+/Users/geilige/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0/src/util.rs:

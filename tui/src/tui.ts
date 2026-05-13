@@ -61,6 +61,9 @@ export interface Terminal {
 
 import { StdinBuffer } from "./stdin-buffer.js";
 import { setKittyProtocolActive } from "./keys.js";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
 
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
@@ -230,6 +233,12 @@ export class NodeTerminal implements Terminal {
   }
 
   write(data: string): void {
+    if (process.env.PI_TUI_WRITE_LOG === "1") {
+      const logDir = path.join(os.homedir(), ".xihu");
+      const logPath = path.join(logDir, "write.log");
+      try { fs.mkdirSync(logDir, { recursive: true }); } catch {}
+      try { fs.appendFileSync(logPath, data.replace(/\x1b/g, "\\x1b")); } catch {}
+    }
     process.stdout.write(data);
   }
 

@@ -1,0 +1,1 @@
+std::option::Option<Box<dyn for<'a, 'b> Fn(&'a str, &'b Value) -> Value + std::marker::Send + Sync>>
