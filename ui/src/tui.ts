@@ -133,23 +133,3 @@ export const DEFAULT_THEME: Theme = {
   success: 76,
 };
 
-// ─── Mouse ─────────────────────────────────────────────────────────────
-
-export const MOUSE_ON = `${CSI}?1000h${CSI}?1002h${CSI}?1015h`;
-export const MOUSE_OFF = `${CSI}?1015l${CSI}?1002l${CSI}?1000l`;
-
-export interface MouseEvent {
-  button: number; // 0=left, 1=middle, 2=right, 64=wheel up, 65=wheel down
-  x: number;
-  y: number;
-}
-
-export function parseMouseEvent(seq: string): MouseEvent | null {
-  // X10: ESC [ M <btn+32> <x+32> <y+32>
-  const m = seq.match(/^\x1b\[M([\s\S])([\s\S])([\s\S])$/);
-  if (!m) return null;
-  const btn = m[1].charCodeAt(0) - 32;
-  const x = m[2].charCodeAt(0) - 32 - 1;
-  const y = m[3].charCodeAt(0) - 32 - 1;
-  return { button: btn, x, y };
-}
