@@ -3,7 +3,8 @@
  * Mimics the pi-tui EditorComponent.
  */
 
-import { CSI, RESET, CURSOR_SHOW, CURSOR_HIDE } from "../tui.js";
+import { CSI, RESET, CURSOR_SHOW, CURSOR_HIDE, CURSOR_MARKER } from "../tui.js";
+import type { Component, Focusable } from "../tui.js";
 
 export interface EditorTheme {
   prompt: number;        // prompt character color
@@ -20,13 +21,13 @@ export interface EditorCallbacks {
   onBlur?: () => void;
 }
 
-export class Editor {
+export class Editor implements Component, Focusable {
   private value = "";
   private cursorPos = 0;
   private inserting = true; // overwrite vs insert mode
   private theme: EditorTheme;
   private callbacks: EditorCallbacks;
-  private focused = true;
+  focused = true;
   private dim = 245;
   private history: string[] = [];
   private historyIndex = -1;
@@ -75,15 +76,19 @@ export class Editor {
     this.prefix = prefix;
   }
 
-  focus(): void {
-    this.focused = true;
-    this.callbacks.onFocus?.();
+  handleInput(data: string): void {
+    // Thin adapter — parse simple key names, delegate to handleKey
+    const isCtrl = data.startsWith("ctrl+");
+    const key: KeyEvent = {
+      name: isCtrl ? data.slice(5) : data,
+      ctrl: isCtrl,
+      shift: false,
+      alt: false,
+    };
+    this.handleKey(key);
   }
 
-  blur(): void {
-    this.focused = false;
-    this.callbacks.onBlur?.();
-  }
+  invalidate(): void { /* no cache */ }
 
   // ─── Key Handling ──────────────────────────────────────────────────────
 
@@ -200,14 +205,14 @@ export class Editor {
     if (this.focused && this.cursorPos === this.value.length) {
       // Cursor at end: prefix + text + cursor
       display += `${CSI}38;5;${this.theme.text}m${textPart}${CSI}0m`;
-      display += `${CSI}38;5;${this.theme.bg}m${CSI}48;5;${this.theme.cursor}m ${CSI}0m`;
+      display += CURSOR_MARKER + `${CSI}38;5;${this.theme.bg}m${CSI}48;5;${this.theme.cursor}m ${CSI}0m`;
     } else if (this.focused) {
       // Cursor in middle
       const before = textPart.slice(0, cursorInPart);
       const char = textPart[cursorInPart] ?? " ";
       const after = textPart.slice(cursorInPart + 1);
       display += `${CSI}38;5;${this.theme.text}m${before}${CSI}0m`;
-      display += `${CSI}38;5;${this.theme.cursorText}m${CSI}48;5;${this.theme.cursor}m${char}${CSI}0m`;
+      display += CURSOR_MARKER + `${CSI}38;5;${this.theme.cursorText}m${CSI}48;5;${this.theme.cursor}m${char}${CSI}0m`;
       display += `${CSI}38;5;${this.theme.text}m${after}${CSI}0m`;
     } else {
       display += `${CSI}38;5;${this.dim}m${textPart}${CSI}0m`;

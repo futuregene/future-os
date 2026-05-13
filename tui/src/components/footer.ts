@@ -4,6 +4,7 @@
  */
 
 import { CSI, RESET } from "../tui.js";
+import type { Component } from "../tui.js";
 import { fg, dim, type Theme } from "../theme.js";
 
 export interface FooterData {
@@ -24,31 +25,41 @@ export interface FooterData {
   autoCompactionEnabled?: boolean;
 }
 
-export class Footer {
+export class Footer implements Component {
+  private data: FooterData = {};
+
   constructor(private width = 80, private theme?: Theme) {}
+
+  setData(data: FooterData): void {
+    this.data = data;
+  }
+
+  handleInput(_data: string): void { /* no-op */ }
+
+  invalidate(): void { /* no cache */ }
 
   setWidth(w: number): void {
     // noop for now
   }
 
-  render(data: FooterData): string {
+  render(width: number): string[] {
     // Build left side: [pwd] [model] [thinking] [streaming]
     const leftParts: string[] = [];
 
     // PWD
-    if (data.cwd) {
+    if (this.data.cwd) {
       const home = process.env.HOME || "";
-      const pwd = home && data.cwd.startsWith(home)
-        ? "~" + data.cwd.slice(home.length)
-        : data.cwd;
+      const pwd = home && this.data.cwd.startsWith(home)
+        ? "~" + this.data.cwd.slice(home.length)
+        : this.data.cwd;
       leftParts.push(fg(245, pwd));
     }
 
     // Model + thinking (e.g., "deepseek-v4-flash • high")
-    if (data.model) {
-      const modelShort = this.shortenModel(data.model);
-      const thinking = data.thinking && data.thinking !== "off"
-        ? fg(117, ` • ${data.thinking}`)
+    if (this.data.model) {
+      const modelShort = this.shortenModel(this.data.model);
+      const thinking = this.data.thinking && this.data.thinking !== "off"
+        ? fg(117, ` • ${this.data.thinking}`)
         : "";
       leftParts.push(fg(252, modelShort) + thinking);
     }
@@ -58,28 +69,28 @@ export class Footer {
 
     // Token stats: ↑Xk ↓Xk R Xk
     const tokenParts: string[] = [];
-    if (data.tokensIn) tokenParts.push(fg(71, `\u2191${this.fmtTokens(data.tokensIn)}`));
-    if (data.tokensOut) tokenParts.push(fg(71, `\u2193${this.fmtTokens(data.tokensOut)}`));
-    if (data.tokensCacheR) tokenParts.push(fg(71, `R${this.fmtTokens(data.tokensCacheR)}`));
+    if (this.data.tokensIn) tokenParts.push(fg(71, `\u2191${this.fmtTokens(this.data.tokensIn)}`));
+    if (this.data.tokensOut) tokenParts.push(fg(71, `\u2193${this.fmtTokens(this.data.tokensOut)}`));
+    if (this.data.tokensCacheR) tokenParts.push(fg(71, `R${this.fmtTokens(this.data.tokensCacheR)}`));
     if (tokenParts.length > 0) {
       rightParts.push(fg(245, tokenParts.join(" ")));
     }
 
     // Cost
-    if (data.totalCost !== undefined && data.totalCost > 0) {
-      rightParts.push(fg(245, `$${data.totalCost.toFixed(3)}`));
+    if (this.data.totalCost !== undefined && this.data.totalCost > 0) {
+      rightParts.push(fg(245, `$${this.data.totalCost.toFixed(3)}`));
     }
 
     // Context usage: X.X%/1.0M (auto)
-    if (data.contextPercent !== undefined && data.contextWindow) {
-      const pct = data.contextPercent.toFixed(1);
-      const win = this.fmtTokens(data.contextWindow);
+    if (this.data.contextPercent !== undefined && this.data.contextWindow) {
+      const pct = this.data.contextPercent.toFixed(1);
+      const win = this.fmtTokens(this.data.contextWindow);
       // Color based on usage level
-      const pctColor = data.contextPercent < 70 ? fg(71, pct)   // green < 70%
-        : data.contextPercent < 90 ? fg(226, pct)  // yellow 70-90%
+      const pctColor = this.data.contextPercent < 70 ? fg(71, pct)   // green < 70%
+        : this.data.contextPercent < 90 ? fg(226, pct)  // yellow 70-90%
         : fg(204, pct); // red > 90%
       let usageStr = pctColor + fg(245, `%/`) + fg(245, win);
-      if (data.autoCompactionEnabled) {
+      if (this.data.autoCompactionEnabled) {
         usageStr += fg(240, ` (auto)`);
       }
       rightParts.push(usageStr);
@@ -91,11 +102,11 @@ export class Footer {
 
     const leftLen = this.strip(left).length;
     const rightLen = this.strip(right).length;
-    const padding = Math.max(1, this.width - leftLen - rightLen - 1);
+    const padding = Math.max(1, width - leftLen - rightLen - 1);
 
     const line = left + " ".repeat(padding) + right;
 
-    return `${CSI}48;5;235m${CSI}38;5;245m${line}${RESET}`;
+    return [`${CSI}48;5;235m${CSI}38;5;245m${line}${RESET}`];
   }
 
   getHeight(): number {

@@ -1,4 +1,5 @@
 import { fg, bold, DARK_THEME } from "../theme.js";
+import type { Component } from "../tui.js";
 
 export interface AutocompleteItem {
   value: string;
@@ -6,7 +7,7 @@ export interface AutocompleteItem {
   description?: string;
 }
 
-export class AutocompletePopup {
+export class AutocompletePopup implements Component {
   private items: AutocompleteItem[] = [];
   private selectedIndex = 0;
   private visible = false;
@@ -25,6 +26,13 @@ export class AutocompletePopup {
   isVisible(): boolean {
     return this.visible;
   }
+
+  handleInput(data: string): void {
+    if (data === "up") this.selectPrev();
+    else if (data === "down") this.selectNext();
+  }
+
+  invalidate(): void { /* no cache */ }
 
   getSelectedItem(): AutocompleteItem | null {
     if (!this.visible || this.items.length === 0) return null;
