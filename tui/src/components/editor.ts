@@ -203,6 +203,9 @@ export class Editor implements Component, Focusable {
   private killRing = new KillRing();
   private lastKillWasAccumulate = false;
 
+  // Jump mode: f{char} forward, F{char} backward
+  private jumpMode: "forward" | "backward" | null = null;
+
   // Paste markers: map of paste-id → full content
   private pasteMarkerId = 0;
   private pasteStorage = new Map<string, string>();
@@ -308,6 +311,15 @@ export class Editor implements Component, Focusable {
   // ─── Key Handling ─────────────────────────────────────────────────────────
 
   handleKey(key: string): boolean {
+    // Jump mode: consume next character to jump to
+    if (this.jumpMode) {
+      if (key.length === 1 && key.charCodeAt(0) >= 32) {
+        return this.doJump(key);
+      }
+      this.jumpMode = null;
+      return false;
+    }
+
     switch (key) {
       // Movement
       case "left": return this.moveLeft();
@@ -349,6 +361,10 @@ export class Editor implements Component, Focusable {
       case "ctrl+a": return this.moveHome();
       case "ctrl+e": return this.moveEnd();
       case "ctrl+u": return this.killToStartOfLine();
+
+      // Jump mode: f{char}
+      case "ctrl+f": this.jumpMode = "forward"; return true;
+      case "ctrl+shift+f": this.jumpMode = "backward"; return true;
 
       // Submit / Newline
       case "enter": return this.submit();
@@ -450,6 +466,28 @@ export class Editor implements Component, Focusable {
   private moveWordRight(): boolean {
     this.cursorPos = findWordRight(this.value, this.cursorPos);
     return true;
+  }
+
+  /** Jump to next/prev occurrence of char. */
+  private doJump(char: string): boolean {
+    const direction = this.jumpMode;
+    this.jumpMode = null;
+    if (char.length === 0) return false;
+
+    if (direction === "forward") {
+      const idx = this.value.indexOf(char, this.cursorPos + 1);
+      if (idx !== -1) {
+        this.cursorPos = idx;
+        return true;
+      }
+    } else if (direction === "backward") {
+      const idx = this.value.lastIndexOf(char, this.cursorPos - 1);
+      if (idx !== -1) {
+        this.cursorPos = idx;
+        return true;
+      }
+    }
+    return false;
   }
 
   // ─── Editing ──────────────────────────────────────────────────────────────

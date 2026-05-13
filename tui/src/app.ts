@@ -7,7 +7,7 @@ import { RpcClient } from "./rpc/client.js";
 import { ChatArea, type ChatMessage } from "./components/chat-area.js";
 import { Footer, type FooterData } from "./components/footer.js";
 import { SelectList, type SelectItem } from "./components/select-list.js";
-import { AutocompletePopup, type AutocompleteItem, AutocompleteManager, SlashCommandProvider, FilePathProvider, type SlashCommand } from "./components/autocomplete.js";
+import { AutocompletePopup, type AutocompleteItem, AutocompleteManager, SlashCommandProvider, FilePathProvider, AttachmentProvider, type SlashCommand } from "./components/autocomplete.js";
 import { Editor } from "./components/editor.js";
 import {
   NodeTerminal,
@@ -27,6 +27,14 @@ import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } fro
 import { parseKey, isKeyRelease, isKeyRepeat, Key } from "./keys.js";
 import { KeybindingManager } from "./keybindings.js";
 import { visibleWidth, stripAnsiCodes } from "./utils.js";
+import * as path from "node:path";
+import * as os from "node:os";
+import * as fs from "node:fs";
+
+// Termux detection: skip full redraw on height changes (keyboard show/hide)
+function isTermuxSession(): boolean {
+  return Boolean(process.env.TERMUX_VERSION);
+}
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
 
@@ -137,6 +145,16 @@ export class App extends Container {
   private previousWidth = 0;
   private previousHeight = 0;
   private previousKittyImageIds = new Set<number>();
+  private fullRedrawCount = 0;
+  public onDebug?: () => void;
+
+  getClearOnShrink(): boolean { return this.clearOnShrink; }
+  setClearOnShrink(enabled: boolean): void { this.clearOnShrink = enabled; }
+
+  getShowHardwareCursor(): boolean { return this.showHardwareCursor; }
+  setShowHardwareCursor(enabled: boolean): void { this.showHardwareCursor = enabled; }
+
+  getFullRedrawCount(): number { return this.fullRedrawCount; }
 
   constructor(private serverUrl = "http://localhost:7890") {
     super();
@@ -169,6 +187,7 @@ export class App extends Container {
     // Register autocomplete providers
     this.acManager.register(new SlashCommandProvider(this.slashCommands, this.getModels, this.getSessions));
     this.acManager.register(new FilePathProvider(this.state.cwd || process.cwd()));
+    this.acManager.register(new AttachmentProvider());
 
     // Register children with Container (matches pi's TUI extends Container)
     this.addChild(this.chat);
@@ -418,6 +437,12 @@ export class App extends Container {
   }
 
   private handleKey(key: string): void {
+    // Shift+Ctrl+D — trigger debug callback (matches pi onDebug pattern)
+    if (key === "shift+ctrl+d" && this.onDebug) {
+      this.onDebug();
+      return;
+    }
+
     // Escape - close autocomplete or overlay or clear editor
     if (key === "escape") {
       if (this.autocomplete.isVisible()) {
@@ -1257,6 +1282,30 @@ export class App extends Container {
 
     // ── Full render helper ──────────────────────────────────────────
     const fullRender = (clear: boolean): void => {
+      // PI_TUI_DEBUG: dump full render state to /tmp/tui/
+      if (process.env.PI_TUI_DEBUG === "1") {
+        try {
+          const debugDir = path.join(os.tmpdir(), "tui");
+          fs.mkdirSync(debugDir, { recursive: true });
+          const ts = Date.now();
+          const renderLines = [...newLines];
+          const debugLines = [
+            `=== RENDER ${ts} ===`,
+            `reason: ${clear ? "clear" : "full"}, W=${W}, H=${H}`,
+            `previousLines.length=${this.previousLines.length}`,
+            `newLines.length=${newLines.length}`,
+            `overlayStack.length=${this.overlayStack.length}`,
+            `cursorPos=${cursorPos ? `${cursorPos.row}:${cursorPos.col}` : "null"}`,
+            "--- lines ---",
+          ];
+          for (const line of renderLines) {
+            debugLines.push(line.replace(/\x1b/g, "\\x1b"));
+          }
+          debugLines.push("--- end ---");
+          fs.writeFileSync(path.join(debugDir, `render-${ts}.log`), debugLines.join("\\n"));
+        } catch {}
+      }
+
       let buf = SYNC_BEGIN;
       if (clear) {
         buf += this.deleteKittyImages(this.previousKittyImageIds);
@@ -1284,26 +1333,46 @@ export class App extends Container {
       this.previousHeight = H;
     };
 
+    // Debug redraw logging (matches pi's PI_DEBUG_REDRAW)
+    const debugRedraw = process.env.PI_DEBUG_REDRAW === "1";
+    const logRedraw = (reason: string): void => {
+      if (!debugRedraw) return;
+      const logPath = path.join(os.homedir(), ".xihu", "debug.log");
+      const msg = `[${new Date().toISOString()}] fullRender: ${reason} (prev=${this.previousLines.length}, new=${newLines.length}, w=${W}, h=${H})\n`;
+      fs.appendFileSync(logPath, msg);
+    };
+
     // First render — output without clearing (assumes clean screen)
     if (this.previousLines.length === 0 && !widthChanged && !heightChanged) {
+      logRedraw("first render");
       fullRender(false);
       return;
     }
 
     // Width changes always need full re-render (wrapping changes)
     if (widthChanged) {
+      logRedraw(`terminal width changed (${this.previousWidth} -> ${W})`);
+      this.fullRedrawCount++;
       fullRender(true);
       return;
     }
 
-    // Height changes normally need full re-render to keep visible viewport aligned
+    // Height changes normally need full re-render to keep visible viewport aligned,
+    // but Termux changes height when the software keyboard shows or hides.
+    // In that environment, a full redraw would be wasteful.
     if (heightChanged) {
-      fullRender(true);
+      if (!isTermuxSession()) {
+        logRedraw(`terminal height changed (${this.previousHeight} -> ${H})`);
+        this.fullRedrawCount++;
+        fullRender(true);
+      }
       return;
     }
 
     // Content shrunk — clear empty rows when clearOnShrink enabled
     if (this.clearOnShrink && newLines.length < this.maxLinesRendered && this.overlayStack.length === 0) {
+      logRedraw(`clearOnShrink (maxLinesRendered=${this.maxLinesRendered})`);
+      this.fullRedrawCount++;
       fullRender(true);
       return;
     }
@@ -1348,6 +1417,7 @@ export class App extends Container {
         const targetRow = Math.max(0, newLines.length - 1);
         // If viewport moved up (content above viewport removed), full render
         if (targetRow < prevViewportTop) {
+          logRedraw(`deleted lines moved viewport up (${targetRow} < ${prevViewportTop})`);
           fullRender(true);
           return;
         }
@@ -1359,6 +1429,7 @@ export class App extends Container {
         const extraLines = this.previousLines.length - newLines.length;
         // If too many lines to clear, full render
         if (extraLines > H) {
+          logRedraw(`too many lines to clear (extraLines=${extraLines} > H=${H})`);
           fullRender(true);
           return;
         }
@@ -1385,6 +1456,7 @@ export class App extends Container {
     // Differential rendering can only touch what was actually visible.
     // If first changed line is above previous viewport, need a full redraw.
     if (firstChanged < prevViewportTop) {
+      logRedraw(`first changed line above viewport (${firstChanged} < ${prevViewportTop})`);
       fullRender(true);
       return;
     }
@@ -1424,9 +1496,28 @@ export class App extends Container {
       let line = newLines[i];
       const isImage = isImageLine(line);
       if (!isImage && visibleWidth(line) > W) {
-        // Width overflow: strip ANSI and truncate (component should fix this, but don't crash)
-        line = stripAnsiCodes(line).slice(0, W);
-        newLines[i] = line;
+        // Log all lines to crash file for debugging (matches pi behavior)
+        const crashLogPath = path.join(os.homedir(), ".xihu", "crash.log");
+        const crashData = [
+          `Crash at ${new Date().toISOString()}`,
+          `Terminal width: ${W}`,
+          `Line ${i} visible width: ${visibleWidth(line)}`,
+          "",
+          "=== All rendered lines ===",
+          ...newLines.map((l, idx) => `[${idx}] (w=${visibleWidth(l)}) ${l}`),
+          "",
+        ].join("\n");
+        fs.mkdirSync(path.dirname(crashLogPath), { recursive: true });
+        fs.writeFileSync(crashLogPath, crashData);
+        const errorMsg = [
+          `Rendered line ${i} exceeds terminal width (${visibleWidth(line)} > ${W}).`,
+          "",
+          "This is likely caused by a custom TUI component not truncating its output.",
+          "Use visibleWidth() to measure and truncateToWidth() to truncate lines.",
+          "",
+          `Debug log written to: ${crashLogPath}`,
+        ].join("\n");
+        throw new Error(errorMsg);
       }
       buf += line;
     }

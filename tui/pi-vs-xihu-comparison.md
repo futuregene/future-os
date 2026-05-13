@@ -198,8 +198,21 @@
 | 光标隐藏 | 启动时 `hideCursor()`，仅在 showHardwareCursor 时显示 | 启动时 `hideCursor()` |
 | 鼠标支持 | Mouse tracking 支持（通过 StdinBuffer 处理） | 有 MOUSE_TRACK_ON/OFF 常量但未启用 |
 | 终端尺寸查询 | 查询 cell size `\x1b[16t`（用于图片渲染） | 不支持 |
-| Termux 适配 | `isTermuxSession()` 检测，Termux 中高度变化不做 full redraw | 无 |
-| 错误处理 | 行宽溢出抛出 Error 并写 crash log | 无检查 |
-| 文件结构 | src/ 下有 components/ 子目录 | 所有文件在 src/components/ 下，扁平结构 |
-| 公开 API | index.ts 重导出所有公共类型和组件 | index.ts 仅创建 App 并启动 |
-| prepublishOnly | ✓ | ✗ |
+| Termux 适配 | `isTermuxSession()` 检测，Termux 中高度变化不做 full redraw | ✅ 已实现 (2026-05-14) |
+| 错误处理 | 行宽溢出抛出 Error 并写 crash log | ✅ 已实现 (2026-05-14)，写 `~/.xihu/crash.log` |
+| debug 日志 | `PI_DEBUG_REDRAW=1` 写 `~/.pi/agent/pi-debug.log` | ✅ 已实现 (2026-05-14)，写 `~/.xihu/debug.log` |
+| onDebug 回调 | Shift+Ctrl+D → onDebug | ✅ 已实现 (2026-05-14) |
+| fullRedrawCount | 追踪 full redraw 次数 | ✅ 已实现 (2026-05-14)，`getFullRedrawCount()` |
+| hardwareCursor getter/setter | `getShowHardwareCursor()`/`setShowHardwareCursor()` | ✅ 已实现 (2026-05-14) |
+| clearOnShrink getter/setter | `getClearOnShrink()`/`setClearOnShrink()` | ✅ 已实现 (2026-05-14) |
+| matchesKey() | 符号化 key matching 函数 | ✅ 已实现 (2026-05-14)，~180 行完整实现 |
+| extractSegments strictAfter | strictAfter + width tracking | ✅ 已实现 (2026-05-14) |
+| normalizeTerminalOutput | NFD 兼容性分解 (Thai/Lao AM) | ✅ 已实现 (2026-05-14) |
+| KeybindingManager 符号 ID | 符号化 keybinding ID + 用户覆盖 | ✅ 已实现 (2026-05-14)，`add()` 返回 Symbol ID，`applyOverrides()` 支持用户覆盖 |
+| KeyId 模板字面量类型 | 编译时类型安全的联合类型 | ✅ 已实现 (2026-05-14)，`BaseKey | Mod+BaseKey | Mod+Mod+BaseKey | Mod+Mod+Mod+BaseKey` |
+| Windows VT Input | koffi kernel32 调用 | Unix only，不适用 |
+| Autocomplete @attachment | @ 触发 fd 模糊文件搜索 | ✅ 已实现 (2026-05-14)，AttachmentProvider 通过 fd 模糊搜索文件 |
+| Editor jump mode | f{char} 字符跳转 | ✅ 已实现 (2026-05-14)，ctrl+f/ctrl+shift+f 触发 jump 模式 |
+| PI_TUI_WRITE_LOG | 记录所有 stdout 输出到文件 | ✅ 已实现 (2026-05-14)，write() 中检查环境变量，写入 ~/.xihu/write.log |
+| PI_TUI_DEBUG dump | dump 渲染状态到 /tmp/tui/ | ✅ 已实现 (2026-05-14)，fullRender 时 dump 状态到 /tmp/tui/render-{ts}.log |
+| tsgo 构建 | 使用 tsgo 替代 tsc | ✅ 已实现 (2026-05-14) |

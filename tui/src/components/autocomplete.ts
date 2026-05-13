@@ -321,7 +321,57 @@ export class FilePathProvider implements AutocompleteProvider {
   }
 }
 
-// ─── Autocomplete Popup (UI component) ────────────────────────────────────
+// ─── Attachment Provider ────────────────────────────────────────────────────
+
+/**
+ * Attachment provider: triggered by "@" for fuzzy file search.
+ * Uses fd (when available) or falls back to find for fast fuzzy matching.
+ */
+export class AttachmentProvider implements AutocompleteProvider {
+  name = "attachment";
+
+  match(text: string, cursorPos: number): AutocompleteContext | null {
+    const prefix = text.slice(0, cursorPos);
+    // Match "@" at word boundary, possibly followed by partial filename
+    const atMatch = prefix.match(/(?:^|\s)@([^\s]*)$/);
+    if (!atMatch) return null;
+    const token = atMatch[1] ?? "";
+    const tokenStart = (atMatch.index ?? 0) + (atMatch[0].indexOf("@") >= 0 ? atMatch[0].indexOf("@") : 0) + 1;
+    return { text, cursorPos, token, tokenStart };
+  }
+
+  async getCompletions(ctx: AutocompleteContext, signal: AbortSignal): Promise<AutocompleteItem[]> {
+    const pattern = ctx.token.toLowerCase();
+    if (pattern.length === 0) return [];
+
+    let results: string[] = [];
+
+    // Try fd first (fast, respects .gitignore)
+    try {
+      const { execFileSync } = await import("child_process");
+      const args = ["--hidden", "--type", "f", "--max-results", "50"];
+      if (pattern.length > 0) args.push(pattern);
+      const output = execFileSync("fd", args, {
+        cwd: process.cwd(),
+        encoding: "utf-8",
+        timeout: 3000,
+        maxBuffer: 1024 * 1024,
+      });
+      results = output.trim().split("\n").filter(Boolean);
+    } catch {
+      // fd not available, fall back to null to indicate no results
+    }
+
+    if (signal.aborted) return [];
+
+    return results.map((filePath) => ({
+      value: `@${filePath}`,
+      label: filePath,
+      description: "",
+    }));
+  }
+}
+
 
 export class AutocompletePopup implements Component {
   private items: AutocompleteItem[] = [];

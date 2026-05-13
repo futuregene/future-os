@@ -217,12 +217,20 @@ export function replaceTabs(s: string, tabWidth = 3): string {
 
 // ─── Normalize Terminal Output ─────────────────────────────────────────────
 
+// Thai/Lao AM (above-main) combining vowels — only the standalone form
+// (U+0E33, U+0EB3) needs decomposition; all other combining marks are zero-width
+// and handled correctly by graphemeWidth/visibleWidth.
+const THAI_LAO_AM_REGEX = /[\u0e33\u0eb3]/;
+const THAI_LAO_AM_GLOBAL_REGEX = /[\u0e33\u0eb3]/g;
+
 export function normalizeTerminalOutput(s: string): string {
-  return replaceTabs(s)
-    // Thai/Lao above-main (AM) vowels → base form for terminal compatibility
-    .replace(/[ิีึืິີຶື]/g, "")
-    // Thai/Lao below-main vowels
-    .replace(/[ฺ຺ุูຸູ]/g, "");
+  s = replaceTabs(s);
+  // Decompose Thai/Lao AM vowels into base + combining marks for
+  // terminal compatibility (matching pi's NFD-based approach).
+  if (!THAI_LAO_AM_REGEX.test(s)) return s;
+  return s.replace(THAI_LAO_AM_GLOBAL_REGEX, (char) =>
+    char === "\u0e33" ? "\u0e4d\u0e32" : "\u0ecd\u0eb2"
+  );
 }
 
 // ─── ANSI Code Extraction ──────────────────────────────────────────────────
@@ -680,57 +688,78 @@ export function sliceByColumn(s: string, start: number, end?: number): string {
 
 // ─── Extract Segments (for overlay compositing) ────────────────────────────
 
-export interface Segments {
-  before: string;
-  after: string;
-  ansiState: string; // ANSI codes active at the split point
-}
+// Pooled tracker instance for extractSegments (avoids allocation per call)
+const pooledStyleTracker = new AnsiCodeTracker();
 
-export function extractSegments(s: string, col: number): Segments {
-  const tracker = new AnsiCodeTracker();
-  let before = "";
-  let after = "";
-  let currentCol = 0;
-  let i = 0;
+/**
+ * Extract "before" and "after" segments from a line in a single pass.
+ * Used for overlay compositing where we need content before and after the overlay region.
+ * Preserves styling from before the overlay that should affect content after it.
+ */
+export function extractSegments(
+  line: string,
+  beforeEnd: number,
+  afterStart: number,
+  afterLen: number,
+  strictAfter = false,
+): { before: string; beforeWidth: number; after: string; afterWidth: number } {
+  let before = "",
+    beforeWidth = 0,
+    after = "",
+    afterWidth = 0;
+  let currentCol = 0,
+    i = 0;
+  let pendingAnsiBefore = "";
+  let afterStarted = false;
+  const afterEnd = afterStart + afterLen;
 
-  // Build "before" segment up to column
-  while (i < s.length && currentCol < col) {
-    const code = extractAnsiCode(s, i);
-    if (code) {
-      tracker.feed(code.code);
-      before += code.code;
-      i += code.length;
+  pooledStyleTracker.reset();
+
+  while (i < line.length) {
+    const ansi = extractAnsiCode(line, i);
+    if (ansi) {
+      pooledStyleTracker.feed(ansi.code);
+      if (currentCol < beforeEnd) {
+        pendingAnsiBefore += ansi.code;
+      } else if (currentCol >= afterStart && currentCol < afterEnd && afterStarted) {
+        after += ansi.code;
+      }
+      i += ansi.length;
       continue;
     }
 
-    const segIter = segmenter.segment(s.slice(i))[Symbol.iterator]();
-    const segResult = segIter.next();
-    if (segResult.done) break;
-    const grapheme = segResult.value.segment;
-    const gw = graphemeWidth(grapheme);
-    if (currentCol + gw > col) break;
+    let textEnd = i;
+    while (textEnd < line.length && !extractAnsiCode(line, textEnd)) textEnd++;
 
-    before += grapheme;
-    currentCol += gw;
-    i += grapheme.length;
-  }
+    for (const { segment } of segmenter.segment(line.slice(i, textEnd))) {
+      const w = graphemeWidth(segment);
 
-  // Build "after" with ANSI context
-  const activeAnsi = tracker.getAnsiCode();
-  const oscOpen = tracker.getOsc8Link();
-  after = oscOpen + activeAnsi;
+      if (currentCol < beforeEnd) {
+        if (pendingAnsiBefore) {
+          before += pendingAnsiBefore;
+          pendingAnsiBefore = "";
+        }
+        before += segment;
+        beforeWidth += w;
+      } else if (currentCol >= afterStart && currentCol < afterEnd) {
+        const fits = !strictAfter || currentCol + w <= afterEnd;
+        if (fits) {
+          if (!afterStarted) {
+            after += pooledStyleTracker.getAnsiCode();
+            afterStarted = true;
+          }
+          after += segment;
+          afterWidth += w;
+        }
+      }
 
-  while (i < s.length) {
-    const code = extractAnsiCode(s, i);
-    if (code) {
-      tracker.feed(code.code);
-      after += code.code;
-      i += code.length;
-    } else {
-      after += s.slice(i);
-      break;
+      currentCol += w;
+      if (afterLen <= 0 ? currentCol >= beforeEnd : currentCol >= afterEnd) break;
     }
+    i = textEnd;
+    if (afterLen <= 0 ? currentCol >= beforeEnd : currentCol >= afterEnd) break;
   }
 
-  return { before, after, ansiState: activeAnsi };
+  return { before, beforeWidth, after, afterWidth };
 }
+
