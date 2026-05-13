@@ -206,6 +206,10 @@ export class Editor implements Component, Focusable {
   // Jump mode: f{char} forward, F{char} backward
   private jumpMode: "forward" | "backward" | null = null;
 
+  // Visual selection mode (Vim-like): ctrl+v toggles, movements extend selection
+  private visualMode = false;
+  private selectionAnchor = 0;  // anchor of selection (start position when visual mode began)
+
   // Paste markers: map of paste-id → full content
   private pasteMarkerId = 0;
   private pasteStorage = new Map<string, string>();
@@ -320,6 +324,16 @@ export class Editor implements Component, Focusable {
       return false;
     }
 
+    // Visual mode: ctrl+v toggles, Escape/ctrl+c exits
+    if (key === "ctrl+v") {
+      this.toggleVisualMode();
+      return true;
+    }
+
+    if (this.visualMode) {
+      return this.handleVisualKey(key);
+    }
+
     switch (key) {
       // Movement
       case "left": return this.moveLeft();
@@ -366,6 +380,10 @@ export class Editor implements Component, Focusable {
       case "ctrl+f": this.jumpMode = "forward"; return true;
       case "ctrl+shift+f": this.jumpMode = "backward"; return true;
 
+      // Line operations (Vim-like: dd, yy)
+      case "ctrl+shift+k": return this.deleteLine();
+      case "ctrl+shift+y": return this.yankLine();
+
       // Submit / Newline
       case "enter": return this.submit();
       case "shift+enter": return this.insertNewline();
@@ -383,6 +401,128 @@ export class Editor implements Component, Focusable {
         }
         return false;
     }
+  }
+
+  // ─── Visual Mode ────────────────────────────────────────────────────────
+
+  private toggleVisualMode(): void {
+    this.visualMode = !this.visualMode;
+    if (this.visualMode) {
+      this.selectionAnchor = this.cursorPos;
+    }
+  }
+
+  private getSelectionRange(): { start: number; end: number } {
+    const start = Math.min(this.selectionAnchor, this.cursorPos);
+    const end = Math.max(this.selectionAnchor, this.cursorPos);
+    return { start, end };
+  }
+
+  private handleVisualKey(key: string): boolean {
+    switch (key) {
+      case "escape":
+      case "ctrl+c":
+        this.visualMode = false;
+        return true;
+
+      // Movement keys extend selection
+      case "left": return this.visualMove(() => this.moveLeft());
+      case "right": return this.visualMove(() => this.moveRight());
+      case "up": return this.visualMove(() => this.moveUp());
+      case "down": return this.visualMove(() => this.moveDown());
+      case "home": return this.visualMove(() => this.moveHome());
+      case "end": return this.visualMove(() => this.moveEnd());
+      case "ctrl+left":
+      case "alt+b": return this.visualMove(() => this.moveWordLeft());
+      case "ctrl+right":
+      case "alt+f": return this.visualMove(() => this.moveWordRight());
+      case "ctrl+a": return this.visualMove(() => this.moveHome());
+      case "ctrl+e": return this.visualMove(() => this.moveEnd());
+      case "ctrl+f": this.jumpMode = "forward"; return true;
+      case "ctrl+shift+f": this.jumpMode = "backward"; return true;
+
+      // Operators on selection
+      case "d": return this.visualDelete();
+      case "y": return this.visualYank();
+      case "c": return this.visualChange();
+      case "x": return this.visualDelete();
+
+      default: return false;
+    }
+  }
+
+  private visualMove(fn: () => boolean): boolean {
+    const prevPos = this.cursorPos;
+    if (!fn()) return false;
+    // If jump mode was activated, move is handled by it
+    if (this.jumpMode) return true;
+    return this.cursorPos !== prevPos;
+  }
+
+  private visualDelete(): boolean {
+    const { start, end } = this.getSelectionRange();
+    if (start === end) return false;
+    this.saveUndo();
+    const deleted = this.value.slice(start, end);
+    this.value = this.value.slice(0, start) + this.value.slice(end);
+    this.cursorPos = start;
+    this.selectionAnchor = start;
+    this.visualMode = false;
+    this.killRing.kill(deleted, false);
+    this.callbacks.onChange?.(this.value);
+    return true;
+  }
+
+  private visualYank(): boolean {
+    const { start, end } = this.getSelectionRange();
+    if (start === end) return false;
+    const text = this.value.slice(start, end);
+    this.killRing.kill(text, false);
+    this.visualMode = false;
+    return true;
+  }
+
+  private visualChange(): boolean {
+    const { start, end } = this.getSelectionRange();
+    if (start === end) return false;
+    this.saveUndo();
+    const deleted = this.value.slice(start, end);
+    this.value = this.value.slice(0, start) + this.value.slice(end);
+    this.cursorPos = start;
+    this.selectionAnchor = start;
+    this.visualMode = false;
+    this.killRing.kill(deleted, false);
+    this.callbacks.onChange?.(this.value);
+    return true;
+  }
+
+  // ─── Line Operations (Vim-like) ────────────────────────────────────────
+
+  private deleteLine(): boolean {
+    this.saveUndo();
+    // Find current line boundaries
+    const lineStart = this.value.lastIndexOf("\n", this.cursorPos - 1);
+    const start = lineStart === -1 ? 0 : lineStart + 1;
+    const lineEnd = this.value.indexOf("\n", this.cursorPos);
+    const end = lineEnd === -1 ? this.value.length : lineEnd + 1;
+    const deleted = this.value.slice(start, end);
+    this.value = this.value.slice(0, start) + this.value.slice(end);
+    this.cursorPos = Math.min(start, this.value.length);
+    this.killRing.kill(deleted, true);
+    this.callbacks.onChange?.(this.value);
+    return true;
+  }
+
+  private yankLine(): boolean {
+    const lineStart = this.value.lastIndexOf("\n", this.cursorPos - 1);
+    const start = lineStart === -1 ? 0 : lineStart + 1;
+    const lineEnd = this.value.indexOf("\n", this.cursorPos);
+    const end = lineEnd === -1 ? this.value.length : lineEnd;
+    const text = this.value.slice(start, end);
+    if (text.length > 0) {
+      this.killRing.kill(text, false);
+    }
+    return true;
   }
 
   // ─── Movement ─────────────────────────────────────────────────────────────
@@ -868,15 +1008,36 @@ export class Editor implements Component, Focusable {
         contentWidth += chunk.width;
       }
 
+      // Visual selection highlighting
+      const selRange = this.visualMode ? this.getSelectionRange() : null;
+      const selInLine = selRange && selRange.start < vl.endOffset && selRange.end > vl.startOffset;
+
       // Pad to fill width
       const pad = Math.max(0, textWidth - contentWidth);
 
       let display = linePrefix + padStr;
-      display += `${CSI}38;5;${this.theme.text}m${content}${RESET}`;
-      display += " ".repeat(pad);
 
-      // Render cursor in this visual line
-      if (this.focused && this.cursorPos >= vl.startOffset && this.cursorPos <= vl.endOffset) {
+      if (selInLine && selRange) {
+        // Build display with selection highlighted
+        const selStartInLine = Math.max(0, selRange.start - vl.startOffset);
+        const selEndInLine = Math.min(content.length, selRange.end - vl.startOffset);
+        const beforeSel = content.slice(0, selStartInLine);
+        const selText = content.slice(selStartInLine, selEndInLine);
+        const afterSel = content.slice(selEndInLine);
+
+        const fgCode = `${CSI}38;5;${this.theme.text}m`;
+        const selCode = `${CSI}48;5;${this.theme.cursor}m${CSI}38;5;${this.theme.cursorText}m`;
+        display += fgCode + beforeSel + RESET;
+        display += selCode + selText + RESET;
+        display += fgCode + afterSel + RESET;
+        display += " ".repeat(pad);
+      } else {
+        display += `${CSI}38;5;${this.theme.text}m${content}${RESET}`;
+        display += " ".repeat(pad);
+      }
+
+      // Render cursor in this visual line (skip in visual mode — selection shows the range)
+      if (!this.visualMode && this.focused && this.cursorPos >= vl.startOffset && this.cursorPos <= vl.endOffset) {
         const posInLine = this.cursorPos - vl.startOffset;
         const beforeCursor = content.slice(0, posInLine);
         const atCursor = content[posInLine] || " ";
@@ -894,9 +1055,14 @@ export class Editor implements Component, Focusable {
         const afterWidth = visibleWidth(afterCursor);
         const remPad = Math.max(0, textWidth - beforeWidth - cursorWidth - afterWidth);
         display += " ".repeat(remPad);
-      } else if (!this.focused) {
+      } else if (!this.focused && !this.visualMode) {
         display = linePrefix + padStr;
         display += `${CSI}38;5;245m${content}${RESET}`;
+        display += " ".repeat(pad);
+      } else if (!this.focused && this.visualMode) {
+        // Visual mode always shows full color even when unfocused
+        display = linePrefix + padStr;
+        display += `${CSI}38;5;${this.theme.text}m${content}${RESET}`;
         display += " ".repeat(pad);
       }
 
