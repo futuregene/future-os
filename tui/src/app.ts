@@ -23,6 +23,37 @@ import {
   isFocusable,
 } from "./tui.js";
 import { DARK_THEME, type Theme, fg, dim, bold } from "./theme.js";
+import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.js";
+
+function visibleWidth(s: string): number {
+  return stripAnsiCodes(s).length;
+}
+
+function stripAnsiCodes(s: string): string {
+  return s.replace(/\x1b\[[0-9;]*m/g, "").replace(/\x1b\]8;[^\x07]*\x07/g, "");
+}
+
+const KITTY_SEQUENCE_PREFIX = "\x1b_G";
+
+function extractKittyImageIds(line: string): number[] {
+  const sequenceStart = line.indexOf(KITTY_SEQUENCE_PREFIX);
+  if (sequenceStart === -1) return [];
+
+  const paramsStart = sequenceStart + KITTY_SEQUENCE_PREFIX.length;
+  const paramsEnd = line.indexOf(";", paramsStart);
+  if (paramsEnd === -1) return [];
+
+  const params = line.slice(paramsStart, paramsEnd);
+  for (const param of params.split(",")) {
+    const [key, value] = param.split("=", 2);
+    if (key !== "i" || value === undefined) continue;
+    const id = Number(value);
+    if (Number.isInteger(id) && id > 0 && id <= 0xffffffff) {
+      return [id];
+    }
+  }
+  return [];
+}
 
 interface KeyEvent {
   name: string;
@@ -43,7 +74,6 @@ export class App extends Container {
   private focusedComponent: Component | null = null;
   private inputListeners = new Set<InputListener>();
   private autocomplete = new AutocompletePopup();
-  private escBuf = "";
 
   // Slash commands for autocomplete
   private readonly slashCommands: AutocompleteItem[] = [
@@ -88,21 +118,28 @@ export class App extends Container {
 
   // Diff-based render state (matches pi's doRender approach)
   private previousLines: string[] = [];
+  private cursorRow = 0;
   private hardwareCursorRow = 0;
+  private maxLinesRendered = 0;
+  private previousViewportTop = 0;
+  private clearOnShrink = process.env.PI_CLEAR_ON_SHRINK === "1";
+  private showHardwareCursor = process.env.PI_HARDWARE_CURSOR === "1";
   private renderRequested = false;
   private renderTimer: ReturnType<typeof setTimeout> | undefined;
   private lastRenderAt = 0;
   private static readonly MIN_RENDER_INTERVAL_MS = 16;
+  private static readonly SEGMENT_RESET = "\x1b[0m";
   private previousWidth = 0;
   private previousHeight = 0;
+  private previousKittyImageIds = new Set<number>();
 
   constructor(private serverUrl = "http://localhost:7890") {
     super();
     this.terminal = new NodeTerminal();
     this.client = new RpcClient(serverUrl);
     this.theme = DARK_THEME;
-    this.chat = new ChatArea(this.terminal.getWidth());
-    this.footer = new Footer(this.terminal.getWidth());
+    this.chat = new ChatArea(this.terminal.columns);
+    this.footer = new Footer(this.terminal.columns);
 
     this.editor = new Editor("❯ ", {
       prompt: this.theme.accent,
@@ -128,30 +165,19 @@ export class App extends Container {
   // ─── Lifecycle ────────────────────────────────────────────────────────────
 
   async start(): Promise<void> {
-    // Hide cursor immediately (clear + render positioning handled by doRender)
     this.terminal.hideCursor();
-
-    process.stdin.resume();
-    process.stdin.setRawMode!(true);
-    process.stdin.setEncoding("utf-8");
-
     this.running = true;
+    this.queryCellSize();
 
-    process.stdin.on("data", (chunk: string) => {
-      for (const char of chunk) {
-        this.handleChar(char);
-      }
-    });
-
-    // Trigger re-render on terminal resize so footer stays at bottom
-    process.stdout.on("resize", () => {
-      this.requestRender();
-    });
+    // Terminal manages stdin, emits complete sequences via onInput callback
+    this.terminal.start(
+      (data: string) => this.handleInput(data),
+      () => this.requestRender(),
+    );
 
     await this.refresh();
 
     // Create a new session if the server auto-generated one (no --session etc).
-    // If the user explicitly requested a session via CLI flags, preserve it.
     if (!this.state.explicitSession) {
       try {
         await this.client.newSession();
@@ -176,7 +202,11 @@ export class App extends Container {
       this.renderTimer = undefined;
     }
     this.renderRequested = false;
-    process.stdin.setRawMode!(false);
+
+    // Drain stdin to prevent key release leaks, then clean up terminal state
+    await this.terminal.drainInput();
+    this.terminal.stop();
+
     // Move cursor to end of content (matches pi's stop())
     if (this.previousLines.length > 0) {
       const targetRow = this.previousLines.length;
@@ -189,7 +219,6 @@ export class App extends Container {
       this.terminal.write("\r\n");
     }
     this.terminal.showCursor();
-    this.terminal.close();
   }
 
   // ─── SSE Events ─────────────────────────────────────────────────────────
@@ -280,74 +309,77 @@ export class App extends Container {
 
   // ─── Input Handling ─────────────────────────────────────────────────────
 
-  private handleChar(char: string): void {
-    const code = char.charCodeAt(0);
-
-    // Escape sequence start
-    if (char === "\x1b") {
-      this.escBuf = "\x1b";
-      // Set a timeout - if no more chars arrive, treat as standalone Escape
-      setTimeout(() => {
-        if (this.escBuf === "\x1b") {
-          this.escBuf = "";
-          this.handleKey({ name: "escape", ctrl: false, shift: false, alt: false });
-        }
-      }, 50);
-      return;
-    }
-
-    // In escape sequence
-    if (this.escBuf.length > 0) {
-      this.escBuf += char;
-      const key = this.parseEscSeq(this.escBuf);
-      if (key) {
-        this.escBuf = "";
-        this.handleKey(key);
-        return;
-      }
-      if (this.escBuf.length > 8) {
-        this.escBuf = "";
-      }
-      return;
-    }
-
-    // Ctrl+C
-    if (code === 3) {
-      this.handleInterrupt();
+  /**
+   * Receives complete sequences from the terminal's StdinBuffer.
+   * No char-by-char buffering needed — escape sequences arrive fully assembled.
+   */
+  private handleInput(data: string): void {
+    // Cell size response
+    if (this.consumeCellSizeResponse(data)) {
+      this.requestRender();
       return;
     }
 
     // Input listener pipeline
     if (this.inputListeners.size > 0) {
-      let data: string | undefined = char;
+      let d: string | undefined = data;
       for (const listener of this.inputListeners) {
-        if (!data) break;
-        const result = listener(data);
-        if (result?.consume) { data = undefined; break; }
-        if (result?.data !== undefined) data = result.data;
+        if (!d) break;
+        const result = listener(d);
+        if (result?.consume) { d = undefined; break; }
+        if (result?.data !== undefined) d = result.data;
       }
-      if (!data) return;
+      if (!d) return;
+      data = d;
     }
 
-    // Overlay mode — dispatch to top overlay
-    if (this.overlayStack.length > 0) {
-      const top = this.getTopOverlay();
-      if (top?.handleInput) {
-        const key = this.charToKeyEvent(char);
-        if (key) {
-          top.handleInput(key.name);
-          this.requestRender();
-        }
+    // Bracketed paste
+    if (data.startsWith("\x1b[200~")) {
+      const endIdx = data.indexOf("\x1b[201~");
+      if (endIdx !== -1) {
+        const content = data.slice(6, endIdx);
+        this.editor.insertText(content);
+        this.requestRender();
       }
       return;
     }
 
-    // Global key
-    const key = this.charToKeyEvent(char);
+    // Ctrl+C (interrupt)
+    if (data === "\x03") {
+      this.handleInterrupt();
+      return;
+    }
+
+    // Try to parse as escape sequence
+    const key = this.parseEscSeq(data);
     if (key) {
       this.handleKey(key);
-    } else if (code >= 32) {
-      this.editor.insertText(char);
+      return;
+    }
+
+    // Regular characters parsed from raw bytes
+    const rawKey = this.charToKeyEvent(data);
+    if (rawKey) {
+      // Overlay mode — dispatch to top overlay
+      if (this.overlayStack.length > 0) {
+        const top = this.getTopOverlay();
+        if (top?.handleInput) {
+          top.handleInput(rawKey.name);
+          this.requestRender();
+        }
+        return;
+      }
+      this.handleKey(rawKey);
+    } else if (data.length === 1 && data.charCodeAt(0) >= 32) {
+      if (this.overlayStack.length > 0) {
+        const top = this.getTopOverlay();
+        if (top?.handleInput) {
+          top.handleInput(data);
+          this.requestRender();
+        }
+        return;
+      }
+      this.editor.insertText(data);
       this.requestRender();
     }
   }
@@ -834,7 +866,7 @@ export class App extends Container {
         entry.hidden = h;
         if (h && this.focusedComponent === component) {
           this.restoreFocus(entry);
-        } else if (!h && !entry.options?.nonCapturing && this.isOverlayVisible(entry, this.terminal.getWidth(), this.terminal.getHeight())) {
+        } else if (!h && !entry.options?.nonCapturing && this.isOverlayVisible(entry, this.terminal.columns, this.terminal.rows)) {
           this.setFocus(component);
         }
         this.requestRender();
@@ -917,6 +949,7 @@ export class App extends Container {
   }
 
   private compositeLineAt(base: string, overlay: string, col: number, width: number): string {
+    if (isImageLine(base)) return base;
     // Simple compositing: pad overlay to width, place at column position
     const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
     const overlayClean = stripAnsi(overlay);
@@ -1055,55 +1088,176 @@ export class App extends Container {
    * Request a render. If called rapidly, calls are coalesced so doRender()
    * fires at most every MIN_RENDER_INTERVAL_MS (16ms ≈ 60fps).
    */
+  /**
+   * Request a render. Uses dual-phase scheduling (matches pi):
+   * - force: process.nextTick for immediate full redraw
+   * - ambient: setTimeout-based coalescing at ~60fps
+   */
   private requestRender(force = false): void {
     if (force) {
       this.previousLines = [];
+      this.previousWidth = -1;  // triggers widthChanged in doRender
+      this.previousHeight = -1; // triggers heightChanged in doRender
+      this.cursorRow = 0;
       this.hardwareCursorRow = 0;
-      this.previousWidth = 0;
-      this.previousHeight = 0;
+      this.maxLinesRendered = 0;
+      this.previousViewportTop = 0;
       if (this.renderTimer) {
         clearTimeout(this.renderTimer);
         this.renderTimer = undefined;
       }
       this.renderRequested = true;
-      setTimeout(() => this.flushRender(), 0);
+      process.nextTick(() => {
+        if (!this.running || !this.renderRequested) return;
+        this.renderRequested = false;
+        this.lastRenderAt = performance.now();
+        this.doRender();
+      });
       return;
     }
     if (this.renderRequested) return;
     this.renderRequested = true;
+    process.nextTick(() => this.scheduleRender());
+  }
+
+  private scheduleRender(): void {
+    if (!this.running || this.renderTimer || !this.renderRequested) return;
     const elapsed = performance.now() - this.lastRenderAt;
     const delay = Math.max(0, App.MIN_RENDER_INTERVAL_MS - elapsed);
-    if (delay === 0) {
-      setTimeout(() => this.flushRender(), 0);
-    } else {
-      this.renderTimer = setTimeout(() => {
-        this.renderTimer = undefined;
-        this.flushRender();
-      }, delay);
+    this.renderTimer = setTimeout(() => {
+      this.renderTimer = undefined;
+      if (!this.running || !this.renderRequested) return;
+      this.renderRequested = false;
+      this.lastRenderAt = performance.now();
+      this.doRender();
+      if (this.renderRequested) this.scheduleRender();
+    }, delay);
+  }
+
+  // ─── Line resets / cursor extraction ───────────────────────────────
+
+  private applyLineResets(lines: string[]): string[] {
+    const reset = App.SEGMENT_RESET;
+    for (let i = 0; i < lines.length; i++) {
+      if (!isImageLine(lines[i])) {
+        lines[i] = lines[i] + reset;
+      }
+    }
+    return lines;
+  }
+
+  private extractCursorPosition(lines: string[], height: number): { row: number; col: number } | null {
+    const viewportTop = Math.max(0, lines.length - height);
+    for (let row = lines.length - 1; row >= viewportTop; row--) {
+      const line = lines[row];
+      const markerIndex = line.indexOf("\x1b_pi:c\x07");
+      if (markerIndex !== -1) {
+        const beforeMarker = line.slice(0, markerIndex);
+        const col = (beforeMarker.replace(/\x1b\[[0-9;]*m/g, "")).length;
+        lines[row] = line.slice(0, markerIndex) + line.slice(markerIndex + 7);
+        return { row, col };
+      }
+    }
+    return null;
+  }
+
+  private positionHardwareCursor(cursorPos: { row: number; col: number } | null, totalLines: number): void {
+    if (!cursorPos || totalLines <= 0) return;
+    const targetRow = Math.min(cursorPos.row, totalLines - 1);
+    const currentRow = this.hardwareCursorRow;
+    if (targetRow > currentRow) {
+      this.terminal.write(`\x1b[${targetRow - currentRow}B`);
+    } else if (targetRow < currentRow) {
+      this.terminal.write(`\x1b[${currentRow - targetRow}A`);
+    }
+    this.terminal.write(`\x1b[${cursorPos.col}G`);
+    this.hardwareCursorRow = targetRow;
+    if (this.showHardwareCursor) {
+      this.terminal.write("\x1b[?25h");
     }
   }
 
-  private flushRender(): void {
-    if (!this.running || !this.renderRequested) return;
-    this.renderRequested = false;
-    this.lastRenderAt = performance.now();
-    this.doRender();
+  private queryCellSize(): void {
+    if (!getCapabilities().images) return;
+    this.terminal.write("\x1b[16t");
   }
 
+  private consumeCellSizeResponse(data: string): boolean {
+    const match = data.match(/^\x1b\[6;(\d+);(\d+)t$/);
+    if (!match) return false;
+    const heightPx = parseInt(match[1], 10);
+    const widthPx = parseInt(match[2], 10);
+    if (heightPx <= 0 || widthPx <= 0) return true;
+    setCellDimensions({ widthPx, heightPx });
+    this.invalidate();
+    this.requestRender();
+    return true;
+  }
+
+  private collectKittyImageIds(lines: string[]): Set<number> {
+    const ids = new Set<number>();
+    for (const line of lines) {
+      for (const id of extractKittyImageIds(line)) {
+        ids.add(id);
+      }
+    }
+    return ids;
+  }
+
+  private deleteKittyImages(ids: Iterable<number>): string {
+    let buffer = "";
+    for (const id of ids) {
+      buffer += deleteKittyImage(id);
+    }
+    return buffer;
+  }
+
+  private expandLastChangedForKittyImages(firstChanged: number, lastChanged: number): number {
+    let expandedLastChanged = lastChanged;
+    for (let i = firstChanged; i < this.previousLines.length; i++) {
+      if (extractKittyImageIds(this.previousLines[i]).length > 0) {
+        expandedLastChanged = Math.max(expandedLastChanged, i);
+      }
+    }
+    return expandedLastChanged;
+  }
+
+  private deleteChangedKittyImages(firstChanged: number, lastChanged: number): string {
+    if (firstChanged < 0 || lastChanged < firstChanged) return "";
+
+    const ids = new Set<number>();
+    const maxLine = Math.min(lastChanged, this.previousLines.length - 1);
+    for (let i = firstChanged; i <= maxLine; i++) {
+      for (const id of extractKittyImageIds(this.previousLines[i] ?? "")) {
+        ids.add(id);
+      }
+    }
+
+    return this.deleteKittyImages(ids);
+  }
+
+  // ─── Main Render Pipeline ──────────────────────────────────────────
+
   private doRender(): void {
-    const W = this.terminal.getWidth();
-    const H = this.terminal.getHeight();
-    const footerHeight = 1;
-    const editorHeight = 1;
-    const chatHeight = H - footerHeight - editorHeight;
+    if (!this.running) return;
+    const W = this.terminal.columns;
+    const H = this.terminal.rows;
     const widthChanged = this.previousWidth !== 0 && this.previousWidth !== W;
     const heightChanged = this.previousHeight !== 0 && this.previousHeight !== H;
-    const firstRender = this.previousLines.length === 0;
+    const previousBufferLength = this.previousHeight > 0 ? this.previousViewportTop + this.previousHeight : H;
+    let prevViewportTop = heightChanged ? Math.max(0, previousBufferLength - H) : this.previousViewportTop;
+    let viewportTop = prevViewportTop;
+    let hardwareCursorRow = this.hardwareCursorRow;
+    const computeLineDiff = (targetRow: number): number => {
+      const currentScreenRow = hardwareCursorRow - prevViewportTop;
+      const targetScreenRow = targetRow - viewportTop;
+      return targetScreenRow - currentScreenRow;
+    };
 
-    // Update dimensions
+    // Set chat viewport and footer data before render
+    const chatHeight = H - 2; // minus editor + footer
     this.chat.setViewportHeight(chatHeight);
 
-    // Set footer data before render (Container.render calls footer.render)
     const footerData: FooterData = {
       cwd: this.state.cwd,
       model: this.state.model,
@@ -1120,96 +1274,237 @@ export class App extends Container {
     };
     this.footer.setData(footerData);
 
-    // Base content via Container.render (matches pi: TUI extends Container)
-    // Children are registered in order: chat, editor, footer
-    let next: string[] = this.render(W);
+    // Render base content via Container (chat + editor + footer)
+    let newLines = this.render(W);
 
-    // Pad or truncate to terminal height
-    if (next.length < H) {
-      const padded = new Array(H).fill("");
-      for (let i = 0; i < next.length; i++) padded[i] = next[i];
-      next = padded;
-    } else if (next.length > H) {
-      next = next.slice(0, H);
+    // Composite overlays into rendered lines (before diff compare, matches pi)
+    if (this.overlayStack.length > 0) {
+      newLines = this.compositeOverlays(newLines, W, H);
     }
 
-    // ── Composite overlays ──
-    next = this.compositeOverlays(next, W, H);
-
-    // ── Autocomplete popup (positioned above editor, below overlays) ──
+    // Autocomplete popup (positioned above editor)
     if (this.autocomplete.isVisible()) {
       const acLines = this.autocomplete.render(W);
       if (acLines.length > 0) {
         const editorIdx = H - 2;
         let acTop = editorIdx - acLines.length;
         for (const line of acLines) {
-          if (acTop >= 0) next[acTop] = line;
+          if (acTop >= 0) newLines[acTop] = line;
           acTop++;
         }
       }
     }
 
-    // Full re-render on size change, height change, or first render.
-    // Matches pi's fullRender logic exactly:
-    //   - First render: write without clearing (assumes clean screen)
-    //   - Width/height change: clear screen + scrollback
-    if (widthChanged || heightChanged || firstRender) {
-      const clear = widthChanged || heightChanged;
+    // Extract cursor position before line resets (marker must be found first)
+    const cursorPos = this.extractCursorPosition(newLines, H);
+
+    // Apply line resets (prevents ANSI style bleed between lines)
+    newLines = this.applyLineResets(newLines);
+
+    // ── Full render helper ──────────────────────────────────────────
+    const fullRender = (clear: boolean): void => {
       let buf = SYNC_BEGIN;
       if (clear) {
-        buf += "\x1b[2J\x1b[H"; // no \x1b[3J to preserve scrollback
+        buf += this.deleteKittyImages(this.previousKittyImageIds);
+        buf += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, clear scrollback
       }
-      for (let i = 0; i < H; i++) {
+      for (let i = 0; i < newLines.length; i++) {
         if (i > 0) buf += "\r\n";
-        buf += next[i];
+        buf += newLines[i];
       }
       buf += SYNC_END;
       this.terminal.write(buf);
-      this.hardwareCursorRow = H - 1;
-      this.previousLines = next;
+      this.cursorRow = Math.max(0, newLines.length - 1);
+      this.hardwareCursorRow = this.cursorRow;
+      if (clear) {
+        this.maxLinesRendered = newLines.length;
+      } else {
+        this.maxLinesRendered = Math.max(this.maxLinesRendered, newLines.length);
+      }
+      const bufferLength = Math.max(H, newLines.length);
+      this.previousViewportTop = Math.max(0, bufferLength - H);
+      this.positionHardwareCursor(cursorPos, newLines.length);
+      this.previousLines = newLines;
+      this.previousKittyImageIds = this.collectKittyImageIds(newLines);
       this.previousWidth = W;
       this.previousHeight = H;
+    };
+
+    // First render — output without clearing (assumes clean screen)
+    if (this.previousLines.length === 0 && !widthChanged && !heightChanged) {
+      fullRender(false);
       return;
     }
 
-    // Find first and last changed lines
+    // Width changes always need full re-render (wrapping changes)
+    if (widthChanged) {
+      fullRender(true);
+      return;
+    }
+
+    // Height changes normally need full re-render to keep visible viewport aligned
+    if (heightChanged) {
+      fullRender(true);
+      return;
+    }
+
+    // Content shrunk — clear empty rows when clearOnShrink enabled
+    if (this.clearOnShrink && newLines.length < this.maxLinesRendered && this.overlayStack.length === 0) {
+      fullRender(true);
+      return;
+    }
+
+    // ── Diff: find changed lines ────────────────────────────────────
     let firstChanged = -1;
     let lastChanged = -1;
-    for (let i = 0; i < H; i++) {
-      if (this.previousLines[i] !== next[i]) {
+    const maxLines = Math.max(newLines.length, this.previousLines.length);
+    for (let i = 0; i < maxLines; i++) {
+      const oldLine = i < this.previousLines.length ? this.previousLines[i] : "";
+      const newLine = i < newLines.length ? newLines[i] : "";
+      if (oldLine !== newLine) {
         if (firstChanged === -1) firstChanged = i;
         lastChanged = i;
       }
     }
 
+    // Appended lines detection (streaming optimization)
+    const appendedLines = newLines.length > this.previousLines.length;
+    if (appendedLines) {
+      if (firstChanged === -1) firstChanged = this.previousLines.length;
+      lastChanged = newLines.length - 1;
+    }
+    if (firstChanged !== -1) {
+      lastChanged = this.expandLastChangedForKittyImages(firstChanged, lastChanged);
+    }
+    const appendStart = appendedLines && firstChanged === this.previousLines.length && firstChanged > 0;
+
+    // No changes — but still need to update hardware cursor position
     if (firstChanged === -1) {
-      this.previousWidth = W;
+      this.positionHardwareCursor(cursorPos, newLines.length);
+      this.previousViewportTop = prevViewportTop;
       this.previousHeight = H;
       return;
     }
 
-    // Differential render: move cursor to first changed line, then rewrite
-    let buf = SYNC_BEGIN;
+    // ── All changes in deleted lines (content shrunk) ─────────────────
+    if (firstChanged >= newLines.length) {
+      if (this.previousLines.length > newLines.length) {
+        let buf = SYNC_BEGIN;
+        buf += this.deleteChangedKittyImages(firstChanged, lastChanged);
+        const targetRow = Math.max(0, newLines.length - 1);
+        // If viewport moved up (content above viewport removed), full render
+        if (targetRow < prevViewportTop) {
+          fullRender(true);
+          return;
+        }
+        const lineDiff = computeLineDiff(targetRow);
+        if (lineDiff > 0) buf += `\x1b[${lineDiff}B`;
+        else if (lineDiff < 0) buf += `\x1b[${-lineDiff}A`;
+        buf += "\r";
 
-    const lineDiff = firstChanged - this.hardwareCursorRow;
+        const extraLines = this.previousLines.length - newLines.length;
+        // If too many lines to clear, full render
+        if (extraLines > H) {
+          fullRender(true);
+          return;
+        }
+        if (extraLines > 0) buf += "\x1b[1B";
+        for (let i = 0; i < extraLines; i++) {
+          buf += "\r\x1b[2K";
+          if (i < extraLines - 1) buf += "\x1b[1B";
+        }
+        if (extraLines > 0) buf += `\x1b[${extraLines}A`;
+        buf += SYNC_END;
+        this.terminal.write(buf);
+        this.cursorRow = targetRow;
+        this.hardwareCursorRow = targetRow;
+      }
+      this.positionHardwareCursor(cursorPos, newLines.length);
+      this.previousLines = newLines;
+      this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+      this.previousWidth = W;
+      this.previousHeight = H;
+      this.previousViewportTop = prevViewportTop;
+      return;
+    }
+
+    // Differential rendering can only touch what was actually visible.
+    // If first changed line is above previous viewport, need a full redraw.
+    if (firstChanged < prevViewportTop) {
+      fullRender(true);
+      return;
+    }
+
+    // ── Differential render ──────────────────────────────────────────
+    let buf = SYNC_BEGIN;
+    buf += this.deleteChangedKittyImages(firstChanged, lastChanged);
+    const prevViewportBottom = prevViewportTop + H - 1;
+    const moveTargetRow = appendStart ? firstChanged - 1 : firstChanged;
+    if (moveTargetRow > prevViewportBottom) {
+      const currentScreenRow = Math.max(0, Math.min(H - 1, hardwareCursorRow - prevViewportTop));
+      const moveToBottom = H - 1 - currentScreenRow;
+      if (moveToBottom > 0) {
+        buf += `\x1b[${moveToBottom}B`;
+      }
+      const scroll = moveTargetRow - prevViewportBottom;
+      buf += "\r\n".repeat(scroll);
+      prevViewportTop += scroll;
+      viewportTop += scroll;
+      hardwareCursorRow = moveTargetRow;
+    }
+
+    // Move cursor to first changed line
+    const lineDiff = computeLineDiff(moveTargetRow);
     if (lineDiff > 0) {
       buf += `\x1b[${lineDiff}B`;
     } else if (lineDiff < 0) {
       buf += `\x1b[${-lineDiff}A`;
     }
 
-    // Carriage return ensures we start at column 0 (relative moves preserve column)
-    buf += "\r";
+    buf += appendStart ? "\r\n" : "\r";
 
-    for (let i = firstChanged; i <= lastChanged!; i++) {
+    const renderEnd = Math.min(lastChanged, newLines.length - 1);
+    for (let i = firstChanged; i <= renderEnd; i++) {
       if (i > firstChanged) buf += "\r\n";
-      buf += "\x1b[2K" + next[i];
+      buf += "\x1b[2K";
+      let line = newLines[i];
+      const isImage = isImageLine(line);
+      if (!isImage && visibleWidth(line) > W) {
+        // Width overflow: strip ANSI and truncate (component should fix this, but don't crash)
+        line = stripAnsiCodes(line).slice(0, W);
+        newLines[i] = line;
+      }
+      buf += line;
+    }
+
+    let finalCursorRow = renderEnd;
+
+    // Clear extra lines when content shrunk
+    if (this.previousLines.length > newLines.length) {
+      if (renderEnd < newLines.length - 1) {
+        const moveDown = newLines.length - 1 - renderEnd;
+        buf += `\x1b[${moveDown}B`;
+        finalCursorRow = newLines.length - 1;
+      }
+      const extraLines = this.previousLines.length - newLines.length;
+      for (let i = newLines.length; i < this.previousLines.length; i++) {
+        buf += "\r\n\x1b[2K";
+      }
+      buf += `\x1b[${extraLines}A`;
     }
 
     buf += SYNC_END;
     this.terminal.write(buf);
-    this.hardwareCursorRow = lastChanged!;
-    this.previousLines = next;
+
+    this.cursorRow = Math.max(0, newLines.length - 1);
+    this.hardwareCursorRow = finalCursorRow;
+    this.maxLinesRendered = Math.max(this.maxLinesRendered, newLines.length);
+    this.previousViewportTop = Math.max(prevViewportTop, finalCursorRow - H + 1);
+
+    this.positionHardwareCursor(cursorPos, newLines.length);
+
+    this.previousLines = newLines;
+    this.previousKittyImageIds = this.collectKittyImageIds(newLines);
     this.previousWidth = W;
     this.previousHeight = H;
   }
