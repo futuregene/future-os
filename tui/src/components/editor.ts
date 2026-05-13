@@ -77,23 +77,16 @@ export class Editor implements Component, Focusable {
   }
 
   handleInput(data: string): void {
-    // Thin adapter — parse simple key names, delegate to handleKey
-    const isCtrl = data.startsWith("ctrl+");
-    const key: KeyEvent = {
-      name: isCtrl ? data.slice(5) : data,
-      ctrl: isCtrl,
-      shift: false,
-      alt: false,
-    };
-    this.handleKey(key);
+    // parseKey already produces normalized names like "ctrl+a", "up", "a"
+    this.handleKey(data);
   }
 
   invalidate(): void { /* no cache */ }
 
   // ─── Key Handling ──────────────────────────────────────────────────────
 
-  handleKey(key: KeyEvent): boolean {
-    switch (key.name) {
+  handleKey(key: string): boolean {
+    switch (key) {
       case "left":
         if (this.cursorPos > 0) this.cursorPos--;
         return true;
@@ -172,12 +165,12 @@ export class Editor implements Component, Focusable {
         }
         return true;
       default:
-        if (key.name.length === 1 && key.name.charCodeAt(0) >= 32) {
+        if (key.length === 1 && key.charCodeAt(0) >= 32) {
           // Insert character
           if (this.cursorPos === this.value.length) {
-            this.value += key.name;
+            this.value += key;
           } else {
-            this.value = this.value.slice(0, this.cursorPos) + key.name + this.value.slice(this.cursorPos);
+            this.value = this.value.slice(0, this.cursorPos) + key + this.value.slice(this.cursorPos);
           }
           this.cursorPos++;
           this.callbacks.onChange?.(this.value);
@@ -220,11 +213,4 @@ export class Editor implements Component, Focusable {
 
     return [display];
   }
-}
-
-export interface KeyEvent {
-  name: string;
-  ctrl: boolean;
-  shift: boolean;
-  alt: boolean;
 }

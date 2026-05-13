@@ -60,6 +60,7 @@ export interface Terminal {
 }
 
 import { StdinBuffer } from "./stdin-buffer.js";
+import { setKittyProtocolActive } from "./keys.js";
 
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
@@ -116,6 +117,7 @@ export class NodeTerminal implements Terminal {
         const match = sequence.match(kittyResponsePattern);
         if (match) {
           this._kittyProtocolActive = true;
+          setKittyProtocolActive(true);
           process.stdout.write("\x1b[>7u");
           return;
         }
@@ -153,6 +155,7 @@ export class NodeTerminal implements Terminal {
     if (this._kittyProtocolActive) {
       process.stdout.write("\x1b[<u");
       this._kittyProtocolActive = false;
+      setKittyProtocolActive(false);
     }
     if (this._modifyOtherKeysActive) {
       process.stdout.write("\x1b[>4;0m");
@@ -194,6 +197,7 @@ export class NodeTerminal implements Terminal {
     if (this._kittyProtocolActive) {
       process.stdout.write("\x1b[<u");
       this._kittyProtocolActive = false;
+      setKittyProtocolActive(false);
     }
     if (this._modifyOtherKeysActive) {
       process.stdout.write("\x1b[>4;0m");
