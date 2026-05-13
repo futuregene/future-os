@@ -26,14 +26,7 @@ import { DARK_THEME, type Theme, fg, dim, bold } from "./theme.js";
 import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.js";
 import { parseKey, isKeyRelease, isKeyRepeat, Key } from "./keys.js";
 import { KeybindingManager } from "./keybindings.js";
-
-function visibleWidth(s: string): number {
-  return stripAnsiCodes(s).length;
-}
-
-function stripAnsiCodes(s: string): string {
-  return s.replace(/\x1b\[[0-9;]*m/g, "").replace(/\x1b\]8;[^\x07]*\x07/g, "");
-}
+import { visibleWidth, stripAnsiCodes } from "./utils.js";
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
 
@@ -875,9 +868,8 @@ export class App extends Container {
   private compositeLineAt(base: string, overlay: string, col: number, width: number): string {
     if (isImageLine(base)) return base;
     // Simple compositing: pad overlay to width, place at column position
-    const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
-    const overlayClean = stripAnsi(overlay);
-    const baseClean = stripAnsi(base);
+    const overlayClean = stripAnsiCodes(overlay);
+    const baseClean = stripAnsiCodes(base);
 
     // Build: base up to col + overlay (clipped to width) + base after col+overlay
     const before = baseClean.slice(0, Math.min(col, baseClean.length));
@@ -1077,7 +1069,7 @@ export class App extends Container {
       const markerIndex = line.indexOf("\x1b_pi:c\x07");
       if (markerIndex !== -1) {
         const beforeMarker = line.slice(0, markerIndex);
-        const col = (beforeMarker.replace(/\x1b\[[0-9;]*m/g, "")).length;
+        const col = visibleWidth(beforeMarker);
         lines[row] = line.slice(0, markerIndex) + line.slice(markerIndex + 7);
         return { row, col };
       }
@@ -1480,10 +1472,8 @@ export class App extends Container {
     for (let i = 0; i < maxRows; i++) {
       const l = leftCol[i] || "";
       const r = rightCol[i] || "";
-      const ls = l.replace(/\x1b\[[0-9;]*m/g, "");
-      const rs = r.replace(/\x1b\[[0-9;]*m/g, "");
-      const lPad = colW - ls.length;
-      const rPad = colW - rs.length;
+      const lPad = colW - visibleWidth(l);
+      const rPad = colW - visibleWidth(r);
       lines.push(dim_("\u2502") + "  " + l + " ".repeat(Math.max(1, lPad)) + r + " ".repeat(Math.max(1, rPad)) + dim_("\u2502"));
     }
 

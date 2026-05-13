@@ -4,6 +4,7 @@
  */
 
 import { CSI, RESET } from "../tui.js";
+import { visibleWidth } from "../utils.js";
 import type { Component } from "../tui.js";
 import { fg, dim, type Theme } from "../theme.js";
 
@@ -100,8 +101,8 @@ export class Footer implements Component {
     const left = leftParts.join("  ");
     const right = rightParts.join("  ");
 
-    const leftLen = this.strip(left).length;
-    const rightLen = this.strip(right).length;
+    const leftLen = visibleWidth(left);
+    const rightLen = visibleWidth(right);
     const padding = Math.max(1, width - leftLen - rightLen - 1);
 
     const line = left + " ".repeat(padding) + right;
@@ -111,10 +112,6 @@ export class Footer implements Component {
 
   getHeight(): number {
     return 1;
-  }
-
-  private strip(text: string): string {
-    return text.replace(/\x1b\[[0-9;]*m/g, "");
   }
 
   private shortenModel(model: string): string {

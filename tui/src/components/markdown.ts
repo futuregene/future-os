@@ -6,6 +6,7 @@
 import { Marked, type Token, type Tokens } from "marked";
 import { fg, bold, dim, italic } from "../theme.js";
 import type { Theme } from "../theme.js";
+import { visibleWidth } from "../utils.js";
 
 export interface MarkdownTheme {
   heading: (text: string) => string;
@@ -19,10 +20,6 @@ export interface MarkdownTheme {
 }
 
 const markdownParser = new Marked();
-
-function stripAnsi(s: string): string {
-  return s.replace(/\x1b\[[0-9;]*m/g, "");
-}
 
 export class MarkdownRenderer {
   private theme: MarkdownTheme;
@@ -224,9 +221,9 @@ export class MarkdownRenderer {
     // Calculate column widths
     const colWidths: number[] = new Array(ncols).fill(3);
     for (let i = 0; i < ncols; i++) {
-      colWidths[i] = Math.max(colWidths[i], stripAnsi(headerCells[i]).length);
+      colWidths[i] = Math.max(colWidths[i], visibleWidth(headerCells[i]));
       for (const row of rowCells) {
-        colWidths[i] = Math.max(colWidths[i], stripAnsi(row[i]).length);
+        colWidths[i] = Math.max(colWidths[i], visibleWidth(row[i]));
       }
     }
 
@@ -242,7 +239,7 @@ export class MarkdownRenderer {
     }
 
     const pad = (text: string, w: number) =>
-      text + " ".repeat(Math.max(0, w - stripAnsi(text).length));
+      text + " ".repeat(Math.max(0, w - visibleWidth(text)));
 
     // Top border
     lines.push("┌─" + colWidths.map((w) => "─".repeat(w)).join("─┬─") + "─┐");
