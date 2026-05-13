@@ -24,6 +24,8 @@ import {
 } from "./tui.js";
 import { DARK_THEME, type Theme, fg, dim, bold } from "./theme.js";
 import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.js";
+import { parseKey, isKeyRelease, isKeyRepeat, Key } from "./keys.js";
+import { KeybindingManager } from "./keybindings.js";
 
 function visibleWidth(s: string): number {
   return stripAnsiCodes(s).length;
@@ -55,13 +57,6 @@ function extractKittyImageIds(line: string): number[] {
   return [];
 }
 
-interface KeyEvent {
-  name: string;
-  ctrl: boolean;
-  shift: boolean;
-  alt: boolean;
-}
-
 export class App extends Container {
   private terminal: NodeTerminal;
   private client: RpcClient;
@@ -74,6 +69,7 @@ export class App extends Container {
   private focusedComponent: Component | null = null;
   private inputListeners = new Set<InputListener>();
   private autocomplete = new AutocompletePopup();
+  private keybindings = new KeybindingManager();
 
   // Slash commands for autocomplete
   private readonly slashCommands: AutocompleteItem[] = [
@@ -155,6 +151,16 @@ export class App extends Container {
     this.addChild(this.chat);
     this.addChild(this.editor);
     this.addChild(this.footer);
+
+    // Register global keybindings
+    this.keybindings.add(Key.ctrl_c, () => { this.handleInterrupt(); return true; }, "Interrupt / exit");
+    this.keybindings.add(Key.ctrl_l, () => { this.chat.clearMessages(); this.requestRender(); return true; }, "Clear chat");
+    this.keybindings.add(Key.ctrl_p, () => { this.cycleModel(); return true; }, "Cycle model");
+    this.keybindings.add(Key.ctrl_r, () => { this.showSessions(); return true; }, "Browse sessions");
+    this.keybindings.add(Key.ctrl_s, () => { this.showSettings(); return true; }, "Open settings");
+    this.keybindings.add(Key.ctrl_o, () => { this.showHelpOverlay(); return true; }, "Show help");
+    this.keybindings.add(Key.ctrl_t, () => { this.cycleThinking(); return true; }, "Cycle thinking");
+    this.keybindings.add(Key.shift_tab, () => { this.cycleThinking(); return true; }, "Cycle thinking");
 
     // Subscribe to SSE events
     this.client.subscribe((event) => {
@@ -344,33 +350,21 @@ export class App extends Container {
       return;
     }
 
-    // Ctrl+C (interrupt)
+    // Ctrl+C (interrupt) — check raw byte before parseKey for responsiveness
     if (data === "\x03") {
       this.handleInterrupt();
       return;
     }
 
-    // Try to parse as escape sequence
-    const key = this.parseEscSeq(data);
-    if (key) {
-      this.handleKey(key);
+    // Parse key through unified parser (Kitty CSI-u, modifyOtherKeys, legacy)
+    const keyName = parseKey(data);
+    if (keyName) {
+      this.handleKey(keyName);
       return;
     }
 
-    // Regular characters parsed from raw bytes
-    const rawKey = this.charToKeyEvent(data);
-    if (rawKey) {
-      // Overlay mode — dispatch to top overlay
-      if (this.overlayStack.length > 0) {
-        const top = this.getTopOverlay();
-        if (top?.handleInput) {
-          top.handleInput(rawKey.name);
-          this.requestRender();
-        }
-        return;
-      }
-      this.handleKey(rawKey);
-    } else if (data.length === 1 && data.charCodeAt(0) >= 32) {
+    // Fallback: printable character not covered by parseKey
+    if (data.length === 1 && data.charCodeAt(0) >= 32) {
       if (this.overlayStack.length > 0) {
         const top = this.getTopOverlay();
         if (top?.handleInput) {
@@ -384,9 +378,9 @@ export class App extends Container {
     }
   }
 
-  private handleKey(key: KeyEvent): void {
+  private handleKey(key: string): void {
     // Escape - close autocomplete or overlay or clear editor
-    if (key.name === "escape") {
+    if (key === "escape") {
       if (this.autocomplete.isVisible()) {
         this.autocomplete.hide();
         this.requestRender();
@@ -400,11 +394,11 @@ export class App extends Container {
       return;
     }
 
-    // Overlay keys — dispatch to top overlay via handleInput
+    // Overlay mode — dispatch to top overlay via handleInput
     if (this.overlayStack.length > 0) {
       const top = this.getTopOverlay();
       if (top?.handleInput) {
-        top.handleInput(key.name);
+        top.handleInput(key);
       }
       this.requestRender();
       return;
@@ -412,97 +406,63 @@ export class App extends Container {
 
     // Autocomplete navigation takes priority over chat scroll
     if (this.autocomplete.isVisible()) {
-      if (key.name === "up") {
+      if (key === "up") {
         this.autocomplete.selectPrev();
         this.requestRender();
         return;
       }
-      if (key.name === "down") {
+      if (key === "down") {
         this.autocomplete.selectNext();
         this.requestRender();
         return;
       }
-      if (key.name === "enter") {
+      if (key === "enter") {
         const item = this.autocomplete.getSelectedItem();
         if (item) {
           this.editor.setValue(item.value);
           this.autocomplete.hide();
           this.requestRender();
-          // Submit the command (don't await - let it run async)
           this.handleSubmit(item.value);
         }
         return;
       }
     }
 
-    // Ctrl shortcuts
-    if (key.ctrl) {
-      switch (key.name) {
-        case "c":
-          this.handleInterrupt();
-          break;
-        case "l":
-          this.chat.clearMessages();
-          this.requestRender();
-          break;
-        case "p":
-          this.cycleModel();
-          break;
-        case "r":
-          this.showSessions();
-          break;
-        case "s":
-          this.showSettings();
-          break;
-        case "o":
-          this.showHelpOverlay();
-          break;
-        case "t":
-          this.cycleThinking();
-          break;
-        default:
-          // Pass to editor
-          if (this.editor.handleKey(key)) {
-            this.requestRender();
-          }
-          break;
-      }
+    // Dispatch through keybinding manager (ctrl shortcuts, shift+tab, etc.)
+    if (this.keybindings.dispatch(key)) {
+      this.requestRender();
       return;
     }
 
-    // Shift+Tab - cycle thinking
-    if (key.name === "shift+tab") {
-      this.cycleThinking();
+    // Other ctrl+key combos — pass to editor
+    if (key.startsWith("ctrl+")) {
+      if (this.editor.handleKey(key)) {
+        this.requestRender();
+      }
       return;
     }
 
     // Tab - autocomplete
-    if (key.name === "tab") {
+    if (key === "tab") {
       if (this.autocomplete.isVisible()) {
-        // Accept selected autocomplete
         const item = this.autocomplete.getSelectedItem();
         if (item) {
           this.editor.setValue(item.value);
           this.autocomplete.hide();
           this.requestRender();
-          // Submit the command
           this.handleSubmit(item.value);
         }
         return;
       } else {
-        // Trigger autocomplete for slash commands
         this.triggerAutocomplete();
       }
       return;
     }
 
-    // Enter - submit
-    if (key.name === "enter") {
-      // handled by editor
-    }
+    // Enter - handled by editor (falls through)
 
     // Editor handles the rest
-    if (this.editor.handleKey({ name: key.name, ctrl: key.ctrl, shift: key.shift, alt: key.alt })) {
+    if (this.editor.handleKey(key)) {
       this.requestRender();
     }
   }
@@ -525,42 +485,6 @@ export class App extends Container {
       }
     } else {
       this.autocomplete.hide();
-    }
-  }
-
-  private charToKeyEvent(char: string): KeyEvent | null {
-    const code = char.charCodeAt(0);
-    if (code === 13) return { name: "enter", ctrl: false, shift: false, alt: false };
-    if (code === 9)  return { name: "tab", ctrl: false, shift: false, alt: false };
-    if (code === 127 || code === 8) return { name: "backspace", ctrl: false, shift: false, alt: false };
-    // Ctrl shortcuts
-    if (code === 1) return { name: "a", ctrl: true, shift: false, alt: false };
-    if (code === 5) return { name: "e", ctrl: true, shift: false, alt: false };
-    if (code === 15) return { name: "o", ctrl: true, shift: false, alt: false };
-    if (code === 21) return { name: "u", ctrl: true, shift: false, alt: false };
-    if (code === 23) return { name: "w", ctrl: true, shift: false, alt: false };
-    return null;
-  }
-
-  private parseEscSeq(seq: string): KeyEvent | null {
-    switch (seq) {
-      case "\x1b[A": return { name: "up", ctrl: false, shift: false, alt: false };
-      case "\x1b[B": return { name: "down", ctrl: false, shift: false, alt: false };
-      case "\x1b[C": return { name: "right", ctrl: false, shift: false, alt: false };
-      case "\x1b[D": return { name: "left", ctrl: false, shift: false, alt: false };
-      case "\x1b[H": return { name: "home", ctrl: false, shift: false, alt: false };
-      case "\x1b[F": return { name: "end", ctrl: false, shift: false, alt: false };
-      case "\x1b[3~": return { name: "delete", ctrl: false, shift: false, alt: false };
-      case "\x1b[5~": return { name: "pageup", ctrl: false, shift: false, alt: false };
-      case "\x1b[6~": return { name: "pagedown", ctrl: false, shift: false, alt: false };
-      case "\x1b":   return { name: "escape", ctrl: false, shift: false, alt: false };
-      case "\x1b[Z": return { name: "shift+tab", ctrl: false, shift: true, alt: false };
-      // Ctrl+arrows
-      case "\x1b[1;5A": return { name: "up", ctrl: true, shift: false, alt: false };
-      case "\x1b[1;5B": return { name: "down", ctrl: true, shift: false, alt: false };
-      case "\x1b[1;5C": return { name: "right", ctrl: true, shift: false, alt: false };
-      case "\x1b[1;5D": return { name: "left", ctrl: true, shift: false, alt: false };
-      default: return null;
     }
   }
 
