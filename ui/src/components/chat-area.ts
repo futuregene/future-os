@@ -25,6 +25,7 @@ export interface ChatMessage {
 export class ChatArea {
   private messages: ChatMessage[] = [];
   private viewportTop = 0;
+  private viewportHeight = 20;
   private renderedLines: RenderedLine[] = [];
   private autoScroll = true;
   private width = 80;
@@ -58,10 +59,11 @@ export class ChatArea {
     }
   }
 
-  setViewportHeight(_h: number): void {
+  setViewportHeight(h: number): void {
+    this.viewportHeight = h;
     // Clamp viewport
-    if (this.viewportTop + 20 > this.renderedLines.length) {
-      this.viewportTop = Math.max(0, this.renderedLines.length - 20);
+    if (this.viewportTop + this.viewportHeight > this.renderedLines.length) {
+      this.viewportTop = Math.max(0, this.renderedLines.length - this.viewportHeight);
     }
   }
 
@@ -199,25 +201,25 @@ export class ChatArea {
 
   scrollDown(lines = 5): void {
     this.viewportTop = Math.min(
-      Math.max(0, this.renderedLines.length - 20),
+      Math.max(0, this.renderedLines.length - this.viewportHeight),
       this.viewportTop + lines
     );
   }
 
   scrollToBottom(): void {
-    this.viewportTop = Math.max(0, this.renderedLines.length - 20);
+    this.viewportTop = Math.max(0, this.renderedLines.length - this.viewportHeight);
   }
 
   // ─── Rendering ──────────────────────────────────────────────────
 
   getHeight(): number {
-    return Math.min(this.renderedLines.length, 20);
+    return Math.min(this.renderedLines.length, this.viewportHeight);
   }
 
   render(): string[] {
     const visible = this.renderedLines.slice(
       this.viewportTop,
-      this.viewportTop + 20
+      this.viewportTop + this.viewportHeight
     );
     return visible.map((rl) => rl.text);
   }
@@ -275,6 +277,26 @@ export class ChatArea {
       ? `${fg(151, "🤖")} ${fg(245, "◐")}`
       : `${fg(69, "🤖")}`;
 
+    // Render thinking block FIRST (before content)
+    if (msg.thinking && msg.thinking.trim()) {
+      if (this.thinkingHidden) {
+        this.renderedLines.push({
+          text: fg(244, italic("  [thinking]")),
+          dim: true,
+        });
+      } else {
+        const lines = msg.thinking.split("\n");
+        for (const line of lines) {
+          if (line.trim()) {
+            this.renderedLines.push({
+              text: fg(245, italic(`  ${line}`)),
+              dim: true,
+            });
+          }
+        }
+      }
+    }
+
     // Split content into paragraphs (separated by blank lines)
     const paragraphs = msg.content.split(/\n\n+/);
     const streaming = msg.pending;
@@ -308,28 +330,6 @@ export class ChatArea {
           }
 
           this.renderedLines.push({ text, dim: false });
-        }
-      }
-    }
-
-    // Render thinking block (if any)
-    if (msg.thinking && msg.thinking.trim()) {
-      if (this.thinkingHidden) {
-        // Show collapsed label
-        this.renderedLines.push({
-          text: fg(244, italic("  [thinking]")),
-          dim: true,
-        });
-      } else {
-        // Show thinking content in dim gray italic
-        const lines = msg.thinking.split("\n");
-        for (const line of lines) {
-          if (line.trim()) {
-            this.renderedLines.push({
-              text: fg(245, italic(`  ${line}`)),
-              dim: true,
-            });
-          }
         }
       }
     }
