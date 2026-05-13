@@ -107,7 +107,7 @@ func runCLI(as *agentsession.AgentSession, sess *session.Session, initialPrompt 
 	ctx := context.Background()
 	result, _, err := as.Loop().RunStreamingWithMessages(ctx, types.ConvertFromLLM(messages), func(text string) {
 		fmt.Print(text)
-	})
+	}, nil)
 	if err != nil {
 		return err
 	}

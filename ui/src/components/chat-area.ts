@@ -28,6 +28,7 @@ export class ChatArea {
   private renderedLines: RenderedLine[] = [];
   private autoScroll = true;
   private width = 80;
+  private thinkingHidden = false;
 
   private md = new MarkdownRenderer();
   private theme: Theme;
@@ -133,6 +134,56 @@ export class ChatArea {
         this.rerender();
         return;
       }
+    }
+  }
+
+  // ─── Thinking management ────────────────────────────────────────
+
+  private newId(): string {
+    return Math.random().toString(36).slice(2, 10);
+  }
+
+  startThinking(): void {
+    // Ensure there's an assistant message to hold thinking
+    if (this.messages.length === 0) {
+      // Create a placeholder assistant message
+      this.messages.push({ id: this.newId(), role: "assistant", content: "", thinking: "" });
+      this.rerender();
+      return;
+    }
+    const last = this.messages[this.messages.length - 1];
+    if (last.role === "assistant") {
+      last.thinking = "";
+      this.rerender();
+    } else {
+      // Last message is not assistant (e.g., user message) - create placeholder
+      this.messages.push({ id: this.newId(), role: "assistant", content: "", thinking: "" });
+      this.rerender();
+    }
+  }
+
+  appendThinkingDelta(text: string): void {
+    if (this.messages.length === 0) return;
+    const last = this.messages[this.messages.length - 1];
+    if (last.role === "assistant" && last.thinking !== undefined) {
+      last.thinking += text;
+      this.rerender();
+    }
+  }
+
+  endThinking(): void {
+    if (this.messages.length === 0) return;
+    const last = this.messages[this.messages.length - 1];
+    if (last.role === "assistant" && last.thinking !== undefined) {
+      // thinking is complete, keep it
+      this.rerender();
+    }
+  }
+
+  setThinkingHidden(hidden: boolean): void {
+    if (this.thinkingHidden !== hidden) {
+      this.thinkingHidden = hidden;
+      this.rerender();
     }
   }
 
@@ -257,6 +308,28 @@ export class ChatArea {
           }
 
           this.renderedLines.push({ text, dim: false });
+        }
+      }
+    }
+
+    // Render thinking block (if any)
+    if (msg.thinking && msg.thinking.trim()) {
+      if (this.thinkingHidden) {
+        // Show collapsed label
+        this.renderedLines.push({
+          text: fg(244, italic("  [thinking]")),
+          dim: true,
+        });
+      } else {
+        // Show thinking content in dim gray italic
+        const lines = msg.thinking.split("\n");
+        for (const line of lines) {
+          if (line.trim()) {
+            this.renderedLines.push({
+              text: fg(245, italic(`  ${line}`)),
+              dim: true,
+            });
+          }
         }
       }
     }

@@ -246,6 +246,9 @@ func (l *Loop) RunStreamingWithMessages(
 				if l.EventBus != nil {
 					l.EventBus.Emit(events.ThinkingStart())
 				}
+				if onEvent != nil {
+					onEvent(event)
+				}
 			case "thinking_delta":
 				reasoningText += event.Text
 				if l.Verbose {
@@ -254,12 +257,18 @@ func (l *Loop) RunStreamingWithMessages(
 				if l.EventBus != nil {
 					l.EventBus.Emit(events.ThinkingDelta(event.Text))
 				}
+				if onEvent != nil {
+					onEvent(event)
+				}
 			case "thinking_end":
 				if l.Verbose {
 					fmt.Fprintln(os.Stderr)
 				}
 				if l.EventBus != nil {
 					l.EventBus.Emit(events.ThinkingEnd())
+				}
+				if onEvent != nil {
+					onEvent(event)
 				}
 			case "text", "text_delta":
 				fullText += event.Text

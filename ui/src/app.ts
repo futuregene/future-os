@@ -56,6 +56,7 @@ export class App {
     contextTokens: 0,
     contextWindow: 0,
     contextPercent: 0,
+    thinkingHidden: false,  // true = show "Thinking..." instead of actual thinking
   };
 
   private running = false;
@@ -148,6 +149,17 @@ export class App {
 
       case "thinking_start":
         this.state.streaming = true;
+        this.chat.startThinking();
+        break;
+
+      case "thinking_delta": {
+        const e = event as { text?: string };
+        this.chat.appendThinkingDelta(e.text ?? "");
+        break;
+      }
+
+      case "thinking_end":
+        this.chat.endThinking();
         break;
 
       case "tool_start": {
@@ -305,6 +317,9 @@ export class App {
           break;
         case "t":
           this.cycleThinking();
+          break;
+        case "o":
+          this.toggleThinking();
           break;
         default:
           // Pass to editor
@@ -514,6 +529,12 @@ export class App {
         this.state.thinking = r.thinkingLevel;
       }
     } catch { /* ignore */ }
+    this.render();
+  }
+
+  private toggleThinking(): void {
+    this.state.thinkingHidden = !this.state.thinkingHidden;
+    this.chat.setThinkingHidden(this.state.thinkingHidden);
     this.render();
   }
 

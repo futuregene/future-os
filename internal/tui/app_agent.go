@@ -293,7 +293,7 @@ func (m *AppModel) runAgent(text string, myID int32) {
 		if m.program != nil && atomic.LoadInt32(&m.streamID) == myID {
 			m.program.Send(StreamTextMsg(chunk))
 		}
-	})
+	}, nil)
 
 	// Save assistant and tool messages as session entries (TS pi-mono: appendMessage for each event.message)
 	if m.session != nil && m.sessMgr != nil && len(finalMessages) > initialMsgCount {

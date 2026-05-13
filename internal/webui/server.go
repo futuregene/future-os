@@ -222,7 +222,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		data, _ := json.Marshal(map[string]string{"type": "text", "content": text})
 		fmt.Fprintf(w, "data: %s\n\n", data)
 		flusher.Flush()
-	})
+	}, nil)
 
 	if err != nil {
 		data, _ := json.Marshal(map[string]string{"type": "error", "content": err.Error()})

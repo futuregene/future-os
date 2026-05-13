@@ -108,7 +108,7 @@ func (s *AgentSession) runPrompt(text string, opts *PromptOptions) error {
 			s.emit(AgentSessionEvent{Type: "text_chunk", Text: text})
 		},
 		func(event types.StreamEvent) {
-			// Forward tool call events to SSE subscribers
+			// Forward tool call and thinking events to SSE subscribers
 			switch event.Type {
 			case "toolcall_start":
 				s.emit(AgentSessionEvent{
@@ -132,6 +132,12 @@ func (s *AgentSession) runPrompt(text string, opts *PromptOptions) error {
 						Text:     string(event.ToolCall.Function.Arguments),
 					})
 				}
+			case "thinking_start":
+				s.emit(AgentSessionEvent{Type: "thinking_start"})
+			case "thinking_delta":
+				s.emit(AgentSessionEvent{Type: "thinking_delta", Text: event.Text})
+			case "thinking_end":
+				s.emit(AgentSessionEvent{Type: "thinking_end"})
 			}
 		},
 	)
