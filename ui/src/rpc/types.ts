@@ -107,6 +107,10 @@ export interface RpcSessionState {
   contextTokens?: number;
   contextWindow?: number;
   contextPercent?: number;
+  // Token usage (cumulative for session)
+  tokensIn?: number;
+  tokensOut?: number;
+  totalCost?: number;
 }
 
 // ============================================================================

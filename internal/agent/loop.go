@@ -321,6 +321,10 @@ func (l *Loop) RunStreamingWithMessages(
 							event.Usage.CacheWriteTokens,
 						))
 					}
+					// Forward usage to SSE subscribers (onEvent may be nil)
+					if onEvent != nil {
+						onEvent(event)
+					}
 				}
 				if event.StopReason != "" {
 					lastStopReason = event.StopReason

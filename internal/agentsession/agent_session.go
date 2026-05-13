@@ -61,6 +61,12 @@ type AgentSessionEvent struct {
 	// tool_start / tool_delta / tool_end
 	ToolID   string `json:"tool_id,omitempty"`
 	ToolName string `json:"tool_name,omitempty"`
+
+	// usage event
+	InputTokens        int `json:"input_tokens,omitempty"`
+	OutputTokens      int `json:"output_tokens,omitempty"`
+	CacheReadTokens   int `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens  int `json:"cache_write_tokens,omitempty"`
 }
 
 // AgentSessionEventListener is a function that receives events.
@@ -302,6 +308,13 @@ func (s *AgentSession) PendingMessageCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.steeringMessages) + len(s.followUpMessages)
+}
+
+// TokenStats returns cumulative token usage for the session.
+func (s *AgentSession) TokenStats() (tokensIn, tokensOut, totalCost float64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return float64(s.totalInputTokens), float64(s.totalOutputTokens), s.totalCost
 }
 
 // =============================================================================

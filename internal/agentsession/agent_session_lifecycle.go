@@ -138,6 +138,20 @@ func (s *AgentSession) runPrompt(text string, opts *PromptOptions) error {
 				s.emit(AgentSessionEvent{Type: "thinking_delta", Text: event.Text})
 			case "thinking_end":
 				s.emit(AgentSessionEvent{Type: "thinking_end"})
+			case "usage":
+				if event.Usage != nil {
+					s.totalInputTokens += event.Usage.PromptTokens
+					s.totalOutputTokens += event.Usage.CompletionTokens
+					// Estimate cost: $0.01 per K input + $0.04 per K output (approx for most providers)
+					s.totalCost += float64(event.Usage.PromptTokens)/1000*0.01 + float64(event.Usage.CompletionTokens)/1000*0.04
+					s.emit(AgentSessionEvent{
+						Type:             "usage",
+						InputTokens:      event.Usage.PromptTokens,
+						OutputTokens:     event.Usage.CompletionTokens,
+						CacheReadTokens:  event.Usage.CacheReadTokens,
+						CacheWriteTokens: event.Usage.CacheWriteTokens,
+					})
+				}
 			}
 		},
 	)

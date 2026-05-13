@@ -78,6 +78,9 @@ export class App {
     contextTokens: 0,
     contextWindow: 0,
     contextPercent: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    totalCost: 0,
     thinkingHidden: false,  // true = show "Thinking..." instead of actual thinking
   };
 
@@ -211,6 +214,13 @@ export class App {
           role: "system",
           content: `Error: ${e.error_message ?? "unknown"}`,
         });
+        break;
+      }
+
+      case "usage": {
+        const e = event as { input_tokens?: number; output_tokens?: number };
+        if (e.input_tokens !== undefined) this.state.tokensIn += e.input_tokens;
+        if (e.output_tokens !== undefined) this.state.tokensOut += e.output_tokens;
         break;
       }
 
@@ -684,6 +694,9 @@ export class App {
       this.state.contextTokens = s.contextTokens ?? 0;
       this.state.contextWindow = s.contextWindow ?? 0;
       this.state.contextPercent = s.contextPercent ?? 0;
+      this.state.tokensIn = s.tokensIn ?? 0;
+      this.state.tokensOut = s.tokensOut ?? 0;
+      this.state.totalCost = s.totalCost ?? 0;
     } catch {
       this.state.model = "(not connected)";
     }
@@ -944,6 +957,9 @@ export class App {
       contextTokens: this.state.contextTokens,
       contextWindow: this.state.contextWindow,
       contextPercent: this.state.contextPercent,
+      tokensIn: this.state.tokensIn,
+      tokensOut: this.state.tokensOut,
+      totalCost: this.state.totalCost,
     };
     out += cursorPos(H, 1) + CLEAR_LINE + this.footer.render(footerData);
 

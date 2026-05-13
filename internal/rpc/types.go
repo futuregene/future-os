@@ -90,6 +90,10 @@ type RpcSessionState struct {
 	ContextTokens  int     `json:"contextTokens,omitempty"`
 	ContextWindow  int     `json:"contextWindow,omitempty"`
 	ContextPercent float64  `json:"contextPercent,omitempty"`
+	// Token usage (cumulative for session)
+	TokensIn    int     `json:"tokensIn,omitempty"`
+	TokensOut   int     `json:"tokensOut,omitempty"`
+	TotalCost   float64 `json:"totalCost,omitempty"`
 }
 
 // =============================================================================

@@ -165,6 +165,7 @@ func (s *Server) shutdownRPC() {
 func (s *Server) getState() RpcSessionState {
 	as := s.session
 	ctx := as.GetContextStats()
+	tokensIn, tokensOut, totalCost := as.TokenStats()
 	return RpcSessionState{
 		Model:                as.Model(),
 		ThinkingLevel:        thinkingBudgetToLevel(as.Loop().Config.ThinkingBudget),
@@ -186,6 +187,9 @@ func (s *Server) getState() RpcSessionState {
 		ContextTokens:  ctx.Tokens,
 		ContextWindow:  ctx.Window,
 		ContextPercent: ctx.Percent,
+		TokensIn:   int(tokensIn),
+		TokensOut:  int(tokensOut),
+		TotalCost:  totalCost,
 	}
 }
 
