@@ -7,6 +7,7 @@ import { RpcClient } from "./rpc/client.js";
 import { ChatArea, type ChatMessage } from "./components/chat-area.js";
 import { Footer, type FooterData } from "./components/footer.js";
 import { SelectList, type SelectItem } from "./components/select-list.js";
+import { AutocompletePopup, type AutocompleteItem } from "./components/autocomplete.js";
 import { Editor } from "./components/editor.js";
 import {
   NodeTerminal,
@@ -41,7 +42,27 @@ export class App {
   private chat: ChatArea;
   private footer: Footer;
   private overlay: Overlay = null;
+  private autocomplete = new AutocompletePopup();
   private escBuf = "";
+
+  // Slash commands for autocomplete
+  private readonly slashCommands: AutocompleteItem[] = [
+    { value: "/model", label: "/model", description: "select model" },
+    { value: "/sessions", label: "/sessions", description: "browse sessions" },
+    { value: "/settings", label: "/settings", description: "open settings" },
+    { value: "/new", label: "/new", description: "new session" },
+    { value: "/clone", label: "/clone", description: "clone session" },
+    { value: "/fork", label: "/fork", description: "fork session" },
+    { value: "/tree", label: "/tree", description: "session tree" },
+    { value: "/thinking", label: "/thinking", description: "toggle thinking level" },
+    { value: "/name", label: "/name", description: "set session name" },
+    { value: "/scoped-models", label: "/scoped-models", description: "manage scoped models" },
+    { value: "/theme", label: "/theme", description: "change theme" },
+    { value: "/changelog", label: "/changelog", description: "show changelog" },
+    { value: "/help", label: "/help", description: "show help" },
+    { value: "/hotkeys", label: "/hotkeys", description: "show shortcuts" },
+    { value: "/quit", label: "/quit", description: "quit xihu" },
+  ];
 
   private state = {
     model: "",
@@ -75,6 +96,7 @@ export class App {
       bg: this.theme.bg,
     }, {
       onSubmit: (v) => this.handleSubmit(v),
+      onChange: (v) => this.triggerAutocomplete(),
     });
 
     // Subscribe to SSE events
@@ -250,9 +272,12 @@ export class App {
   }
 
   private handleKey(key: KeyEvent): void {
-    // Escape - close overlay or clear editor
+    // Escape - close overlay or autocomplete or clear editor
     if (key.name === "escape") {
-      if (this.overlay) {
+      if (this.autocomplete.isVisible()) {
+        this.autocomplete.hide();
+        this.render();
+      } else if (this.overlay) {
         this.overlay = null;
         this.render();
       } else {
@@ -337,9 +362,44 @@ export class App {
       return;
     }
 
-    // Tab - autocomplete (future)
+    // Tab - autocomplete
     if (key.name === "tab") {
+      if (this.autocomplete.isVisible()) {
+        // Accept selected autocomplete
+        const item = this.autocomplete.getSelectedItem();
+        if (item) {
+          this.editor.setValue(item.value + " ");
+          this.autocomplete.hide();
+        }
+      } else {
+        // Trigger autocomplete for slash commands
+        this.triggerAutocomplete();
+      }
+      this.render();
       return;
+    }
+
+    // Arrow keys - navigate autocomplete
+    if (this.autocomplete.isVisible()) {
+      if (key.name === "up") {
+        this.autocomplete.selectPrev();
+        this.render();
+        return;
+      }
+      if (key.name === "down") {
+        this.autocomplete.selectNext();
+        this.render();
+        return;
+      }
+      if (key.name === "enter") {
+        const item = this.autocomplete.getSelectedItem();
+        if (item) {
+          this.editor.setValue(item.value + " ");
+          this.autocomplete.hide();
+        }
+        this.render();
+        return;
+      }
     }
 
     // Enter - submit
@@ -350,6 +410,27 @@ export class App {
     // Editor handles the rest
     if (this.editor.handleKey({ name: key.name, ctrl: key.ctrl, shift: key.shift, alt: key.alt })) {
       this.render();
+    }
+  }
+
+  // ─── Autocomplete ───────────────────────────────────────────────
+
+  private triggerAutocomplete(): void {
+    const text = this.editor.getValue();
+
+    // Detect slash command prefix
+    if (text.startsWith("/")) {
+      const prefix = text.slice(1).toLowerCase();
+      const filtered = this.slashCommands.filter((cmd) =>
+        cmd.label.toLowerCase().includes(prefix)
+      );
+      if (filtered.length > 0) {
+        this.autocomplete.show(filtered, text);
+      } else {
+        this.autocomplete.hide();
+      }
+    } else {
+      this.autocomplete.hide();
     }
   }
 
@@ -776,6 +857,17 @@ export class App {
     const editorText = this.editor.render(W);
     if (editorText.length > 0) {
       out += editorText[0];
+    }
+
+    // ── Autocomplete popup ──
+    if (this.autocomplete.isVisible()) {
+      const autocompleteLines = this.autocomplete.render(W);
+      if (autocompleteLines.length > 0) {
+        const acTop = editorLine - this.autocomplete.height() - 1;
+        for (const line of autocompleteLines) {
+          out += cursorPos(acTop, 1) + CLEAR_LINE + line;
+        }
+      }
     }
 
     // ── Footer ──
