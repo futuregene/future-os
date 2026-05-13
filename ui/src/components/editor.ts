@@ -142,7 +142,29 @@ export class Editor {
         }
         return true;
       case "tab":
-        // Could implement autocomplete here
+        // Autocomplete handled by App
+        return true;
+      case "ctrl+a":
+        this.cursorPos = 0;
+        return true;
+      case "ctrl+e":
+        this.cursorPos = this.value.length;
+        return true;
+      case "ctrl+u":
+        this.value = this.value.slice(this.cursorPos);
+        this.cursorPos = 0;
+        this.callbacks.onChange?.(this.value);
+        return true;
+      case "ctrl+w":
+        if (this.cursorPos > 0) {
+          const before = this.value.slice(0, this.cursorPos);
+          const after = this.value.slice(this.cursorPos);
+          const lastSpace = before.trimEnd().lastIndexOf(' ');
+          const deleteTo = lastSpace < 0 ? 0 : lastSpace + 1;
+          this.value = before.slice(0, deleteTo) + after;
+          this.cursorPos = deleteTo;
+          this.callbacks.onChange?.(this.value);
+        }
         return true;
       default:
         if (key.name.length === 1 && key.name.charCodeAt(0) >= 32) {

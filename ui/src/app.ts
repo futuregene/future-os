@@ -25,6 +25,7 @@ import { DARK_THEME, type Theme, fg, dim, bold } from "./theme.js";
 
 type Overlay =
   | { kind: "select"; title: string; component: SelectList }
+  | { kind: "help" }
   | null;
 
 interface KeyEvent {
@@ -316,8 +317,10 @@ export class App {
         if (item) {
           this.editor.setValue(item.value);
           this.autocomplete.hide();
+          this.render();
+          // Submit the command (don't await - let it run async)
+          this.handleSubmit(item.value);
         }
-        this.render();
         return;
       }
     }
@@ -363,11 +366,12 @@ export class App {
         case "s":
           this.showSettings();
           break;
+        case "o":
+          this.overlay = { kind: "help" };
+          this.render();
+          break;
         case "t":
           this.cycleThinking();
-          break;
-        case "o":
-          this.toggleThinking();
           break;
         default:
           // Pass to editor
@@ -393,12 +397,15 @@ export class App {
         if (item) {
           this.editor.setValue(item.value);
           this.autocomplete.hide();
+          this.render();
+          // Submit the command
+          this.handleSubmit(item.value);
         }
+        return;
       } else {
         // Trigger autocomplete for slash commands
         this.triggerAutocomplete();
       }
-      this.render();
       return;
     }
 
@@ -516,6 +523,48 @@ export class App {
 
       if (cmd === "sessions") {
         await this.showSessions();
+        return;
+      }
+
+      if (cmd === "help" || cmd === "hotkeys") {
+        this.overlay = { kind: "help" };
+        this.render();
+        return;
+      }
+
+      if (cmd === "compact") {
+        try {
+          await this.client.compact();
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: "Context compacted",
+          });
+        } catch (err) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: "Compact failed: " + err,
+          });
+        }
+        return;
+      }
+
+      if (cmd === "export") {
+        this.chat.addMessage({
+          id: crypto.randomUUID(),
+          role: "system",
+          content: "Export: use /settings or Ctrl+E to export session",
+        });
+        return;
+      }
+
+      if (cmd === "import") {
+        this.chat.addMessage({
+          id: crypto.randomUUID(),
+          role: "system",
+          content: "Import: use /settings or Ctrl+I to import session",
+        });
         return;
       }
     }
@@ -851,6 +900,20 @@ export class App {
       }
     }
 
+    // Help overlay
+    if (this.overlay?.kind === "help") {
+      const helpLines = this.renderHelp(W);
+      const helpH = helpLines.length + 4;
+      const top = Math.floor((chatHeight - helpH) / 2) + 2;
+
+      for (let i = 0; i < helpH; i++) {
+        out += cursorPos(top + i, 1) + CLEAR_LINE;
+      }
+      for (let i = 0; i < helpLines.length; i++) {
+        out += cursorPos(top + 2 + i, 2) + helpLines[i];
+      }
+    }
+
     // ── Editor ──
     const editorLine = H - 1;
     out += cursorPos(editorLine, 1) + CLEAR_LINE;
@@ -885,6 +948,51 @@ export class App {
     out += cursorPos(H, 1) + CLEAR_LINE + this.footer.render(footerData);
 
     this.terminal.write(out);
+  }
+
+  private renderHelp(W: number): string[] {
+    const lines: string[] = [];
+    const dim_ = (t: string) => fg(245, t);
+    const acc = (t: string) => fg(151, t);
+    const bold_ = (t: string) => fg(252, bold(t));
+
+    lines.push(dim_("┌" + "─".repeat(50) + "┐"));
+    lines.push(dim_("│" + " ".repeat(50) + "│"));
+    lines.push(dim_("│") + "  " + bold_("xihu") + "  " + dim_("Terminal UI Help") + " ".repeat(20) + dim_("│"));
+    lines.push(dim_("│" + " ".repeat(50) + "│"));
+    lines.push(dim_("├" + "─".repeat(50) + "┤"));
+    lines.push(dim_("│") + "  " + acc("Shortcuts:") + " ".repeat(42) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("ctrl+o  ") + dim_("show this help") + " ".repeat(30) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("ctrl+c  ") + dim_("interrupt") + " ".repeat(35) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("ctrl+d  ") + dim_("clear / exit") + " ".repeat(32) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("ctrl+l  ") + dim_("clear screen") + " ".repeat(33) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("ctrl+p  ") + dim_("cycle model") + " ".repeat(33) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("ctrl+r  ") + dim_("browse sessions") + " ".repeat(30) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("ctrl+t  ") + dim_("cycle thinking level") + " ".repeat(26) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("tab     ") + dim_("autocomplete") + " ".repeat(32) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("↑↓      ") + dim_("scroll chat / navigate autocomplete") + " ".repeat(16) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("enter   ") + dim_("submit / accept autocomplete") + " ".repeat(21) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("escape  ") + dim_("close popup / clear") + " ".repeat(28) + dim_("│"));
+    lines.push(dim_("│" + " ".repeat(50) + "│"));
+    lines.push(dim_("├" + "─".repeat(50) + "┤"));
+    lines.push(dim_("│") + "  " + acc("/commands:") + " ".repeat(41) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("/model [name]  ") + dim_("select model") + " ".repeat(28) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("/sessions   ") + dim_("browse sessions") + " ".repeat(30) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("/new       ") + dim_("new session") + " ".repeat(32) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("/settings  ") + dim_("open settings") + " ".repeat(30) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("/compact   ") + dim_("compact context") + " ".repeat(29) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("/clone     ") + dim_("clone session") + " ".repeat(32) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("/fork      ") + dim_("fork session") + " ".repeat(33) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("/tree      ") + dim_("session tree") + " ".repeat(33) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("/thinking  ") + dim_("toggle thinking level") + " ".repeat(25) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("/name [n] ") + dim_("set session name") + " ".repeat(29) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("/theme [d|l]") + dim_("change theme") + " ".repeat(30) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("/help     ") + dim_("show help") + " ".repeat(34) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("/hotkeys  ") + dim_("show shortcuts") + " ".repeat(30) + dim_("│"));
+    lines.push(dim_("│") + "    " + dim_("/quit     ") + dim_("quit xihu") + " ".repeat(34) + dim_("│"));
+    lines.push(dim_("│" + " ".repeat(50) + "│"));
+    lines.push(dim_("└" + "─".repeat(50) + "┘"));
+    return lines;
   }
 
   private renderHeader(W: number): string {
