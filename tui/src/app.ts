@@ -26,7 +26,7 @@ import { DARK_THEME, type Theme, fg, dim, bold } from "./theme.js";
 import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.js";
 import { parseKey, isKeyRelease, isKeyRepeat, Key } from "./keys.js";
 import { KeybindingManager } from "./keybindings.js";
-import { visibleWidth, stripAnsiCodes, normalizeTerminalOutput, sliceByColumn } from "./utils.js";
+import { visibleWidth, stripAnsiCodes, normalizeTerminalOutput, sliceByColumn, truncateToWidth } from "./utils.js";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
@@ -698,14 +698,17 @@ export class App extends Container {
     const version = this.state.version || "0.3.0";
     addColored(`${fg(151, bold("xihu"))}${fg(245, " v" + version)}`, (t) => t);
 
-    // Shortcuts line
-    addColored("escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more", dim_);
+    // Shortcuts line (truncate to fit terminal width)
+    const termW = this.terminal.columns;
+    const shortcuts = truncateToWidth("escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more", termW - 4);
+    addColored(shortcuts, dim_);
 
     // Expand hint
     addColored("Press ctrl+o to show full startup help and loaded resources.", dim_);
 
-    // Onboarding
-    addColored("Xihu can explain its own features and look up its docs. Ask it how to use or extend Xihu.", dim_);
+    // Onboarding (truncate to fit terminal width)
+    const onboarding = truncateToWidth("Xihu can explain its own features and look up its docs. Ask it how to use or extend Xihu.", termW - 4);
+    addColored(onboarding, dim_);
 
     // Context files
     if (this.state.contextFiles.length > 0) {
@@ -718,18 +721,20 @@ export class App extends Container {
       addColored(" " + shortNames.join(", "), dim_);
     }
 
-    // Skills
+    // Skills (truncate to fit terminal width)
     if (this.state.skills.length > 0) {
       add("");
       addColored("[Skills]", sectionHdr);
-      addColored(" " + this.state.skills.join(", "), dim_);
+      const skillsList = truncateToWidth(" " + this.state.skills.join(", "), termW - 4);
+      addColored(skillsList, dim_);
     }
 
-    // Extensions
+    // Extensions (truncate to fit terminal width)
     if (this.state.extensions.length > 0) {
       add("");
       addColored("[Extensions]", sectionHdr);
-      addColored(" " + this.state.extensions.join(", "), dim_);
+      const extList = truncateToWidth(" " + this.state.extensions.join(", "), termW - 4);
+      addColored(extList, dim_);
     }
   }
 
