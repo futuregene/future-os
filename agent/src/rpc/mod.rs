@@ -461,6 +461,22 @@ impl ServerSession {
         self.agent_loop.try_write().unwrap().tools = vec![];
     }
 
+    pub fn disable_builtin_tools(&mut self) {
+        // For now, same as disable_tools - all tools disabled
+        // TODO: distinguish built-in vs extension tools
+        self.agent_loop.try_write().unwrap().tools = vec![];
+    }
+
+    pub fn append_system_prompt(&mut self, append: &str) {
+        let current = self.agent_loop.try_read().unwrap().system_prompt.clone();
+        let new_prompt = if current.is_empty() {
+            append.to_string()
+        } else {
+            format!("{}\n{}", current, append)
+        };
+        self.agent_loop.try_write().unwrap().system_prompt = new_prompt;
+    }
+
     pub fn set_ephemeral(&mut self, ephemeral: bool) {
         self.ephemeral = ephemeral;
     }
@@ -691,6 +707,14 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "disable_tools" => {
             session.write().unwrap().disable_tools();
             RpcResponse::ok(id, "disable_tools", serde_json::json!({}))
+        }
+        "disable_builtin_tools" => {
+            session.write().unwrap().disable_builtin_tools();
+            RpcResponse::ok(id, "disable_builtin_tools", serde_json::json!({}))
+        }
+        "append_system_prompt" => {
+            session.write().unwrap().append_system_prompt(&cmd.system_prompt);
+            RpcResponse::ok(id, "append_system_prompt", serde_json::json!({}))
         }
         "set_ephemeral" => {
             session.write().unwrap().set_ephemeral(cmd.ephemeral);
