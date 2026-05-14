@@ -2,7 +2,6 @@
 
 use crate::skills::Skill;
 use crate::types::AgentTool;
-use std::collections::HashSet;
 
 /// BuildPrompt produces a fully assembled system prompt from the given options.
 pub fn build_prompt(opts: &PromptOptions) -> String {

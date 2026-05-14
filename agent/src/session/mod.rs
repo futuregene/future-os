@@ -1,12 +1,12 @@
 //! Session management — 1:1 compatible with Go internal/session/
 
-use crate::types::{AgentMessage, ConvertFromLLM, ConvertToLLM, Message, ToolCall};
+use crate::types::{Message, ToolCall};
 use crate::utils::{default_session_dir, encode_cwd, generate_entry_id, generate_id};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use chrono::{DateTime, Local};
 
 pub const CURRENT_SESSION_VERSION: i32 = 3;
@@ -110,7 +110,7 @@ impl SessionEntry {
         }
     }
 
-    pub fn new_tool(call_id: &str, content: &str) -> Self {
+    pub fn new_tool(_call_id: &str, content: &str) -> Self {
         Self {
             id: generate_entry_id(),
             parent_id: String::new(),

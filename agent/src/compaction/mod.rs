@@ -1,6 +1,5 @@
 //! Compaction — 1:1 compatible with Go internal/compaction/
 
-use crate::session::SessionEntry;
 use crate::types::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

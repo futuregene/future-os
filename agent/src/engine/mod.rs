@@ -1,11 +1,12 @@
 //! Engine — 1:1 compatible with Go internal/engine/
 
 use crate::agent::{Loop, DEFAULT_MAX_TURNS};
+use crate::compaction;
 use crate::config::Settings;
 use crate::llm::Client as LLMClient;
 use crate::session::Manager;
 use crate::tools;
-use crate::types::{LLMProvider};
+use crate::types::{LLMProvider, Message};
 use anyhow::Result;
 use std::sync::Arc;
 
@@ -44,7 +45,7 @@ impl Engine {
     ) -> Result<Self> {
         let client: Arc<dyn LLMProvider> = Arc::new(LLMClient::new(base_url, api_key));
         let cwd = config.cwd.clone();
-        let max_turns = config.max_turns;
+        let _max_turns = config.max_turns;
         let agent_loop = Loop::new(client.clone(), model);
 
         let mut engine = Self {
@@ -87,7 +88,7 @@ impl Engine {
         if config.max_turns > 0 {
             self.agent_loop.config.max_turns = config.max_turns;
         }
-        self.config = config;
+        self.config = config.clone();
         self
     }
 }
