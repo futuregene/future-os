@@ -1,60 +1,41 @@
 /**
  * xihu TypeScript TUI entry point.
- * Usage: node dist/index.js --grpc-addr <addr> [options]
+ *
+ * Usage:
+ *   node dist/index.js [options] [@files...] [messages...]
  *
  * Options:
  *   --grpc-addr <addr>     gRPC server address (default: localhost:50051)
- *   --session <id>        Connect to specific session
+ *   --session <id>         Connect to specific session
  *   --continue, -c         Continue most recent session
- *   --resume, -r          Resume a session (show picker)
- *   --fork <id>           Fork from a session
+ *   --resume, -r           Resume a session (show picker)
+ *   --fork <id>            Fork from a session
+ *   --print, -p            Non-interactive mode: process prompt and exit
+ *   --help, -h             Show this help
  *
  * Examples:
- *   node dist/index.js --grpc-addr localhost:50051
- *   node dist/index.js --grpc-addr localhost:50051 --session 20260514-140838-1a064f
- *   node dist/index.js --continue
- *   node dist/index.js --fork 20260514-140838-1a064f
+ *   # Interactive mode
+ *   node dist/index.js
+ *
+ *   # Interactive mode with initial prompt
+ *   node dist/index.js "List all .ts files in src/"
+ *
+ *   # Include files in initial message
+ *   node dist/index.js @prompt.md "What does this do?"
+ *
+ *   # Non-interactive mode (process and exit)
+ *   node dist/index.js -p "List all .ts files in src/"
+ *
+ *   # With session
+ *   node dist/index.js --session 20260514-140838-1a064f
  */
 
-// ─── Public API re-exports ────────────────────────────────────────────────
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { App } from "./app.js";
+import { GrpcClient } from "./rpc/grpc-client.js";
 
-// Core types
-export { type Component, type Focusable, type OverlayHandle, type OverlayOptions, type OverlayLayout, type InputListener, Container, resolveOverlayLayout, isFocusable, CURSOR_MARKER } from "./tui.js";
-
-// Components
-export { App } from "./app.js";
-export { ChatArea, type ChatMessage } from "./components/chat-area.js";
-export { Editor } from "./components/editor.js";
-export { Footer, type FooterData } from "./components/footer.js";
-export { SelectList, type SelectItem } from "./components/select-list.js";
-export { AutocompletePopup, type AutocompleteItem, AutocompleteManager, SlashCommandProvider, FilePathProvider, type SlashCommand, type AutocompleteProvider, type AutocompleteContext } from "./components/autocomplete.js";
-export { MarkdownRenderer, type MarkdownTheme, type DefaultTextStyle } from "./components/markdown.js";
-export { Image, type ImageOptions, type ImageTheme } from "./components/image.js";
-export { Box } from "./components/box.js";
-export { Text } from "./components/text.js";
-export { TruncatedText } from "./components/truncated-text.js";
-export { Spacer } from "./components/spacer.js";
-export { Loader, type LoaderIndicatorOptions } from "./components/loader.js";
-export { CancellableLoader } from "./components/cancellable-loader.js";
-export { SettingsList, type SettingItem, type SettingsListTheme, type SettingsListOptions } from "./components/settings-list.js";
-
-// Theme
-export { C, DARK_THEME, type Theme, fg, bg, bold, dim, italic, underline, strikethrough, reset, fgRaw, bgRaw, boldRaw, dimRaw, italicRaw, underlineRaw, strikethroughRaw, reverseRaw, style, thinkingColor } from "./theme.js";
-
-// Key handling
-export { parseKey, isKeyRelease, isKeyRepeat, decodePrintableKey, Key, type KeyId, modifiedKey, ctrlKey } from "./keys.js";
-export { KeybindingManager, type KeybindingContext, type KeybindingEntry } from "./keybindings.js";
-
-// Utilities
-export { visibleWidth, wrapTextWithAnsi, applyBackgroundToLine, truncateToWidth, sliceByColumn, stripAnsiCodes, extractAnsiCode, AnsiCodeTracker, normalizeTerminalOutput } from "./utils.js";
-
-// Terminal
-export { NodeTerminal, SYNC_BEGIN, SYNC_END, MOUSE_TRACK_ON, MOUSE_TRACK_OFF } from "./tui.js";
-
-// RPC
-export { GrpcClient } from "./rpc/grpc-client.js";
-
-// ─── CLI Arguments ─────────────────────────────────────────────────────────
+// ─── CLI Types ─────────────────────────────────────────────────────
 
 interface CliArgs {
   grpcAddr: string;
@@ -62,7 +43,12 @@ interface CliArgs {
   continue: boolean;
   resume: boolean;
   fork: string | null;
+  print: boolean;
+  fileArgs: string[];
+  messages: string[];
 }
+
+// ─── CLI Parsing ─────────────────────────────────────────────────
 
 function parseArgs(args: string[]): CliArgs {
   const result: CliArgs = {
@@ -71,6 +57,9 @@ function parseArgs(args: string[]): CliArgs {
     continue: false,
     resume: false,
     fork: null,
+    print: false,
+    fileArgs: [],
+    messages: [],
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -99,21 +88,29 @@ function parseArgs(args: string[]): CliArgs {
           result.fork = args[++i];
         }
         break;
+      case "--print":
+      case "-p":
+        result.print = true;
+        // Check if next arg is a message (not a flag or file arg)
+        if (i + 1 < args.length && !args[i + 1].startsWith("@") && !args[i + 1].startsWith("-")) {
+          result.messages.push(args[++i]);
+        }
+        break;
       case "--help":
       case "-h":
-        console.log(`xihu TUI
-
-Usage: node dist/index.js [options]
-
-Options:
-  --grpc-addr <addr>   gRPC server address (default: localhost:50051)
-  --session <id>       Connect to specific session
-  --continue, -c       Continue most recent session
-  --resume, -r         Resume a session (show picker)
-  --fork <id>           Fork from a session
-  --help, -h            Show this help
-`);
+        printHelp();
         process.exit(0);
+        break;
+      default:
+        if (arg.startsWith("@")) {
+          // File argument: @filename
+          result.fileArgs.push(arg.slice(1));
+        } else if (arg.startsWith("-")) {
+          console.error(`Unknown option: ${arg}`);
+          process.exit(1);
+        } else {
+          result.messages.push(arg);
+        }
         break;
     }
   }
@@ -121,32 +118,171 @@ Options:
   return result;
 }
 
-// ─── Main entry point ──────────────────────────────────────────────────────
+function printHelp(): void {
+  console.log(`xihu TUI
 
-import { App } from "./app.js";
+Usage: node dist/index.js [options] [@files...] [messages...]
+
+Options:
+  --grpc-addr <addr>   gRPC server address (default: localhost:50051)
+  --session <id>       Connect to specific session
+  --continue, -c       Continue most recent session
+  --resume, -r         Resume a session (show picker)
+  --fork <id>           Fork from a session
+  --print, -p           Non-interactive mode: process prompt and exit
+  --help, -h            Show this help
+
+Examples:
+  # Interactive mode
+  node dist/index.js
+
+  # Interactive mode with initial prompt
+  node dist/index.js "List all .ts files in src/"
+
+  # Include files in initial message
+  node dist/index.js @prompt.md "What does this do?"
+
+  # Non-interactive mode (process and exit)
+  node dist/index.js -p "List all .ts files in src/"
+`);
+}
+
+// ─── Print Mode (Non-Interactive) ─────────────────────────────────
+
+async function runPrintMode(
+  grpcAddr: string,
+  fileArgs: string[],
+  messages: string[],
+): Promise<void> {
+  // Build the prompt: file contents + messages
+  const promptParts: string[] = [];
+
+  // Include files
+  for (const filePath of fileArgs) {
+    try {
+      const absPath = path.resolve(filePath);
+      const content = fs.readFileSync(absPath, "utf-8");
+      promptParts.push(`<file name="${absPath}">\n${content}\n</file>`);
+    } catch (e) {
+      console.error(`Failed to read file: ${filePath}`);
+      process.exit(1);
+    }
+  }
+
+  // Add messages
+  promptParts.push(...messages);
+
+  const prompt = promptParts.join("\n");
+
+  // Connect to gRPC server
+  const client = new GrpcClient(grpcAddr);
+
+  // Get initial state to get session ID
+  const state = await new Promise<any>((resolve, reject) => {
+    const request = { id: String(Date.now()), type: "get_state", sessionId: "" };
+    (client as any).client.ExecuteCommand(request, (err: Error | null, response: any) => {
+      if (err || !response.success) {
+        reject(new Error(response?.error || err?.message || "get_state failed"));
+      } else {
+        resolve(JSON.parse(response.data));
+      }
+    });
+  });
+
+  const sessionId = state.sessionId;
+  console.error(`Connected to session: ${sessionId}`);
+
+  // Subscribe to events BEFORE sending prompt
+  const stream = (client as any).client.StreamEvents({ session_id: sessionId });
+
+  let text = "";
+  let done = false;
+
+  // Wait for agent_end event
+  const eventPromise = new Promise<void>((resolve, reject) => {
+    stream.on("data", (response: any) => {
+      if (response.type === "text_chunk") {
+        const data = JSON.parse(response.data);
+        text += data.text ?? "";
+        process.stdout.write(data.text ?? "");
+      } else if (response.type === "agent_end") {
+        done = true;
+        stream.cancel();
+        resolve();
+      }
+    });
+
+    stream.on("error", (err: Error) => {
+      if (!done) {
+        reject(err);
+      }
+    });
+  });
+
+  // Send prompt
+  await new Promise<void>((resolve, reject) => {
+    const request = {
+      id: String(Date.now()),
+      type: "prompt",
+      sessionId,
+      message: prompt,
+    };
+    (client as any).client.ExecuteCommand(request, (err: Error | null, response: any) => {
+      if (err || !response.success) {
+        stream.cancel();
+        reject(new Error(response?.error || err?.message || "prompt failed"));
+      } else {
+        resolve();
+      }
+    });
+  });
+
+  // Wait for response to complete
+  await eventPromise;
+}
+
+// ─── Main ────────────────────────────────────────────────────────
 
 const args = parseArgs(process.argv.slice(2));
 
-console.log(`Connecting to gRPC server at ${args.grpcAddr}`);
+// Print mode: non-interactive
+if (args.print) {
+  if (args.messages.length === 0 && args.fileArgs.length === 0) {
+    console.error("No prompt provided. Usage: xihu -p \"message\"");
+    process.exit(1);
+  }
+  console.error(`Connecting to gRPC server at ${args.grpcAddr}`);
+  runPrintMode(args.grpcAddr, args.fileArgs, args.messages)
+    .then(() => {
+      process.exit(0);
+    })
+    .catch((err) => {
+      console.error("Error:", err.message);
+      process.exit(1);
+    });
+} else {
+  // Interactive mode (TUI)
+  console.error(`Connecting to gRPC server at ${args.grpcAddr}`);
 
-const app = new App(args.grpcAddr, {
-  session: args.session,
-  continue: args.continue,
-  resume: args.resume,
-  fork: args.fork,
-});
+  const app = new App(args.grpcAddr, {
+    session: args.session,
+    continue: args.continue,
+    resume: args.resume,
+    fork: args.fork,
+  });
 
-process.on("SIGINT", async () => {
-  await app.stop();
-  process.exit(0);
-});
+  process.on("SIGINT", async () => {
+    await app.stop();
+    process.exit(0);
+  });
 
-process.on("SIGTERM", async () => {
-  await app.stop();
-  process.exit(0);
-});
+  process.on("SIGTERM", async () => {
+    await app.stop();
+    process.exit(0);
+  });
 
-app.start().catch((err) => {
-  console.error("Fatal error:", err);
-  process.exit(1);
-});
+  app.start().catch((err) => {
+    console.error("Fatal error:", err);
+    process.exit(1);
+  });
+}
