@@ -93,7 +93,7 @@ pub fn settings_path() -> String {
     home.to_string_lossy().to_string()
 }
 
-/// Settings represents the xihu_agent settings.json format.
+/// Settings represents the FutureAgent settings.json format.
 #[derive(Debug, Deserialize)]
 struct Settings {
     #[serde(rename = "defaultProvider", default)]

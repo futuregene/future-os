@@ -1,12 +1,12 @@
-//! gRPC Server for xihu_agent agent
-//! 
-//! This module implements the xihu_agent gRPC service using tonic.
+//! gRPC Server for FutureAgent
+//!
+//! This module implements the FutureAgent gRPC service using tonic.
 //! The proto definition is in the ../proto/ directory.
 //!
 //! HTTP endpoints:
 //! - POST / - RPC commands (JSON)
 //! - GET /events - SSE event stream
-//! 
+//!
 //! gRPC service: proto.FutureAgent (on grpc_port)
 
 use crate::rpc::{AppState, handle_command_internal};

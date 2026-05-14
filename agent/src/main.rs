@@ -1,17 +1,17 @@
-//! xihu_agent — Rust agent backend (CLI entry point)
+//! future-agent — Rust agent backend (CLI entry point)
 
 use anyhow::Result;
 use clap::Parser;
 use std::env;
 use std::sync::Arc;
-use xihu_agent_agent::{
+use future_agent::{
     Engine, EngineConfig, Manager, ModelRegistry, ServerSession,
     USER_SKILLS_DIR, PROJECT_SKILLS_DIR, AGENTS_SKILLS_DIR,
 };
 
 #[derive(Parser)]
-#[command(name = "xihu_agent")]
-#[command(version = xihu_agent_agent::utils::VERSION)]
+#[command(name = "future-agent")]
+#[command(version = future_agent::utils::VERSION)]
 struct Cli {
     /// Base URL for LLM API
     #[arg(long, env = "LLM_BASE_URL")]
@@ -54,8 +54,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     if cli.offline {
-        env::set_var("XIHU_OFFLINE", "1");
-        env::set_var("XIHU_SKIP_VERSION_CHECK", "1");
+        env::set_var("FUTURE_OFFLINE", "1");
+        env::set_var("FUTURE_SKIP_VERSION_CHECK", "1");
     }
 
     // Determine workspace - prefer ~/.openclaw/workspace if it exists
@@ -65,7 +65,7 @@ async fn main() -> Result<()> {
             workspace.to_string_lossy().to_string()
         } else {
             env::current_dir()
-                .unwrap_or_else(|_| home.join("xihu_agent/agent"))
+                .unwrap_or_else(|_| home.join("future-agent/agent"))
                 .to_string_lossy()
                 .to_string()
         }
@@ -83,7 +83,7 @@ async fn main() -> Result<()> {
     let resolved_model = cli
         .model
         .or_else(|| env::var("LLM_MODEL").ok())
-        .or_else(|| xihu_agent_agent::models::get_default_model())
+        .or_else(|| future_agent::models::get_default_model())
         .or_else(|| {
             // Try to find a user-configured model from models.json
             all_models.iter().find(|m| {
@@ -104,7 +104,7 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
     // Load auth store for API keys
-    let auth_store = xihu_agent_agent::AuthStore::load();
+    let auth_store = future_agent::AuthStore::load();
     
     // Resolve API key: CLI arg > env > auth.json > model config
     let api_key = cli
@@ -145,10 +145,10 @@ async fn main() -> Result<()> {
 
     // Build engine
     let engine = Engine::new(&base_url, &api_key, &resolved_model, config)?
-        .with_tools(xihu_agent_agent::all_tools());
+        .with_tools(future_agent::all_tools());
     
     // Create event bus for server mode
-    let event_bus = Arc::new(xihu_agent_agent::EventBus::new());
+    let event_bus = Arc::new(future_agent::EventBus::new());
 
     if cli.verbose {
         eprintln!("\x1b[33m[model]\x1b[0m {}", resolved_model);
@@ -181,13 +181,13 @@ async fn main() -> Result<()> {
             format!("{}/{}", cwd, PROJECT_SKILLS_DIR),
             AGENTS_SKILLS_DIR.to_string(),
         ];
-        let skills = xihu_agent_agent::discover_skills(&skill_dirs).unwrap_or_default();
+        let skills = future_agent::discover_skills(&skill_dirs).unwrap_or_default();
         let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
 
         let manager = Arc::new(Manager::default_for(&cwd));
-        let broadcaster: Arc<xihu_agent_agent::rpc::SseBroadcaster> = Arc::new(xihu_agent_agent::rpc::SseBroadcaster::new());
+        let broadcaster: Arc<future_agent::rpc::SseBroadcaster> = Arc::new(future_agent::rpc::SseBroadcaster::new());
         let mut server_session = ServerSession::new(
-            xihu_agent_agent::utils::generate_id(),
+            future_agent::utils::generate_id(),
             Arc::new(tokio::sync::RwLock::new(engine.agent_loop)),
             manager,
             &cwd,
@@ -198,11 +198,11 @@ async fn main() -> Result<()> {
         let session = Arc::new(std::sync::RwLock::new(server_session));
         
         // Build AppState for gRPC server
-        let app_state = xihu_agent_agent::rpc::AppState {
+        let app_state = future_agent::rpc::AppState {
             session: session.clone(),
             sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             active_session_id: Arc::new(std::sync::RwLock::new(String::new())),
-            welcome_version: xihu_agent_agent::utils::VERSION.to_string(),
+            welcome_version: future_agent::utils::VERSION.to_string(),
             welcome_cwd: cwd.clone(),
             welcome_skills: skill_names.clone(),
             welcome_context: vec![],
@@ -213,20 +213,20 @@ async fn main() -> Result<()> {
         };
         
         // Run gRPC server (no HTTP)
-        xihu_agent_agent::grpc::serve(app_state, grpc_host, grpc_port).await?;
+        future_agent::grpc::serve(app_state, grpc_host, grpc_port).await?;
         return Ok(());
     }
 
     // Non-server mode: run prompt
     if cli.messages.is_empty() {
-        eprintln!("Usage: xihu_agent [options] [messages...]");
+        eprintln!("Usage: future-agent [options] [messages...]");
         std::process::exit(1);
     }
 
     let msg = cli.messages.join(" ");
 
     // Build initial message
-    let messages = vec![xihu_agent_agent::AgentMessage::new_user(
+    let messages = vec![future_agent::AgentMessage::new_user(
         "user",
         serde_json::json!([{"type": "text", "text": msg}]),
     )];

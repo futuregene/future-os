@@ -1,5 +1,5 @@
 /**
- * JSON-RPC client for xihu_tui Agent.
+ * JSON-RPC client for FutureAgent.
  * Supports both TCP (http://host:port) and Unix socket.
  * Also handles SSE event streaming.
  */
@@ -41,7 +41,7 @@ export class RpcClient {
     this.port = parseInt(url.port) || (url.protocol === "https:" ? 443 : 80);
     this.path = url.pathname;
     this.useTLS = url.protocol === "https:";
-    this.socketPath = process.env.XIHU_SOCKET ?? null;
+    this.socketPath = process.env.FUTURE_SOCKET ?? null;
   }
 
   // ─── SSE Events ──────────────────────────────────────────────────────
@@ -265,7 +265,7 @@ export class RpcClient {
 
 /**
  * Server-Sent Events client using Node.js HTTP.
- * Connects to GET /events on the xihu_tui server and parses SSE data.
+ * Connects to GET /events on the FutureAgent server and parses SSE data.
  */
 class SSEConnection {
   private req: http.ClientRequest | null = null;

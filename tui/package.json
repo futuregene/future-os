@@ -1,8 +1,8 @@
 {
-  "name": "@xihu-tui/tui",
+  "name": "@future-tui/tui",
   "version": "0.1.0",
   "type": "module",
-  "description": "TypeScript TUI for xihu-tui",
+  "description": "TypeScript TUI for future-tui",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

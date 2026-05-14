@@ -1,5 +1,5 @@
 /**
- * RPC exports for xihu_tui Agent.
+ * RPC exports for FutureAgent.
  * Only exports gRPC client (JSON-RPC and Unix socket removed).
  */
 

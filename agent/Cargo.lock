@@ -577,6 +577,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "future-agent"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "atty",
+ "base32",
+ "chrono",
+ "clap",
+ "dirs",
+ "fd-lock",
+ "futures",
+ "futures-util",
+ "notify",
+ "prost",
+ "prost-build",
+ "prost-types",
+ "rand",
+ "regex",
+ "reqwest",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "sha2",
+ "shellexpand",
+ "signal-hook",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tokio-test",
+ "tonic",
+ "tonic-build",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
 name = "futures"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3064,48 +3106,6 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
-
-[[package]]
-name = "xihu_agent-agent"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "async-stream",
- "async-trait",
- "atty",
- "base32",
- "chrono",
- "clap",
- "dirs",
- "fd-lock",
- "futures",
- "futures-util",
- "notify",
- "prost",
- "prost-build",
- "prost-types",
- "rand",
- "regex",
- "reqwest",
- "schemars 0.8.22",
- "serde",
- "serde_json",
- "serde_with",
- "sha2",
- "shellexpand",
- "signal-hook",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tokio-test",
- "tonic",
- "tonic-build",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "walkdir",
-]
 
 [[package]]
 name = "yoke"

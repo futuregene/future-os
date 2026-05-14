@@ -975,7 +975,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             let html = generate_session_html(&session_id, &model, &cwd, &messages);
             
             // Write to file
-            let output_path = format!("/tmp/xihu_agent_export_{}.html", session_id);
+            let output_path = format!("/tmp/future_agent_export_{}.html", session_id);
             if let Err(e) = std::fs::write(&output_path, html) {
                 return RpcResponse::build_fail(id, "export_html", &format!("failed to write file: {}", e));
             }
@@ -1039,7 +1039,7 @@ fn generate_session_html(session_id: &str, model: &str, cwd: &str, messages: &[c
     let mut html = String::new();
     
     html.push_str("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">");
-    html.push_str(&format!("<title>xihu_agent session {}</title>", session_id));
+    html.push_str(&format!("<title>FutureAgent session {}</title>", session_id));
     html.push_str("<style>");
     html.push_str("body{font-family:system-ui;max-width:800px;margin:auto;padding:20px;background:#1a1a2e;color:#e0e0e0}");
     html.push_str(".user{background:#16213e;padding:10px;margin:5px 0;border-radius:8px}");
@@ -1047,7 +1047,7 @@ fn generate_session_html(session_id: &str, model: &str, cwd: &str, messages: &[c
     html.push_str(".tool{background:#1a1a1a;padding:10px;margin:5px 0;border-radius:8px;font-size:0.9em}");
     html.push_str("pre{white-space:pre-wrap;word-wrap:break-word}");
     html.push_str("</style></head><body>\n");
-    html.push_str(&format!("<h1>xihu_agent Session: {}</h1>\n", session_id));
+    html.push_str(&format!("<h1>FutureAgent Session: {}</h1>\n", session_id));
     html.push_str(&format!("<p>Model: {} | CWD: {}</p>\n", model, cwd));
     
     for msg in messages {

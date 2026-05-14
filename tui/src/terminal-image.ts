@@ -1,6 +1,6 @@
 /**
  * Terminal image protocol support (Kitty, iTerm2).
- * Ported from pi-mono for xihu_tui TUI.
+ * Ported from pi-mono for future-tui TUI.
  */
 
 export type ImageProtocol = "kitty" | "iterm2" | null;

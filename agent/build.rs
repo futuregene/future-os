@@ -1,4 +1,4 @@
-// build.rs - Compile proto files for xihu agent
+// build.rs - Compile proto files for FutureAgent
 //
 // This build script compiles the proto files from the proto/ directory.
 // The proto files are in a separate repository at ../proto/
