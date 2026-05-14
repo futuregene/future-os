@@ -83,8 +83,9 @@ pub struct RpcResponse {
     pub command: ::prost::alloc::string::String,
     #[prost(bool, tag = "4")]
     pub success: bool,
-    #[prost(message, optional, tag = "5")]
-    pub data: ::core::option::Option<::prost_types::Any>,
+    /// JSON string representation of response data
+    #[prost(string, tag = "5")]
+    pub data: ::prost::alloc::string::String,
     #[prost(string, tag = "6")]
     pub error: ::prost::alloc::string::String,
 }
