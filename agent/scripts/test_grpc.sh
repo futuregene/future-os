@@ -1,5 +1,5 @@
 #!/bin/bash
-# Test gRPC streaming for xihu agent
+# Test gRPC streaming for FutureAgent
 
 set -e
 
@@ -7,7 +7,7 @@ HOST="${1:-localhost}"
 GRPC_PORT="${2:-50051}"
 HTTP_PORT="${3:-8080}"
 
-echo "=== Testing xihu agent gRPC ==="
+echo "=== Testing FutureAgent gRPC ==="
 echo "Host: $HOST"
 echo "gRPC port: $GRPC_PORT"
 echo "HTTP port: $HTTP_PORT"
@@ -24,21 +24,21 @@ echo "=== Test 1: List gRPC services ==="
 grpcurl -plaintext ${HOST}:${GRPC_PORT} list 2>/dev/null || echo "grpcurl failed, trying reflection..."
 
 # Test 2: Describe service
-echo -e "\n=== Test 2: Describe XihuAgent service ==="
-grpcurl -plaintext ${HOST}:${GRPC_PORT} describe proto.XihuAgent 2>/dev/null || echo "Service description failed"
+echo -e "\n=== Test 2: Describe FutureAgent service ==="
+grpcurl -plaintext ${HOST}:${GRPC_PORT} describe proto.FutureAgent 2>/dev/null || echo "Service description failed"
 
 # Test 3: Call get_state via gRPC
 echo -e "\n=== Test 3: get_state via gRPC ==="
-grpcurl -plaintext -d '{"id": "test-1", "type": "get_state"}' ${HOST}:${GRPC_PORT} proto.XihuAgent/ExecuteCommand 2>/dev/null || echo "get_state failed"
+grpcurl -plaintext -d '{"id": "test-1", "type": "get_state"}' ${HOST}:${GRPC_PORT} proto.FutureAgent/ExecuteCommand 2>/dev/null || echo "get_state failed"
 
 # Test 4: Call get_available_models via gRPC
 echo -e "\n=== Test 4: get_available_models via gRPC ==="
-grpcurl -plaintext -d '{"id": "test-2", "type": "get_available_models"}' ${HOST}:${GRPC_PORT} proto.XihuAgent/ExecuteCommand 2>/dev/null || echo "get_available_models failed"
+grpcurl -plaintext -d '{"id": "test-2", "type": "get_available_models"}' ${HOST}:${GRPC_PORT} proto.FutureAgent/ExecuteCommand 2>/dev/null || echo "get_available_models failed"
 
 # Test 5: Stream events via gRPC
 echo -e "\n=== Test 5: StreamEvents (SSE-like) via gRPC ==="
 echo "Starting stream (will receive initial ping)..."
-timeout 5 grpcurl -plaintext -d '{}' ${HOST}:${GRPC_PORT} proto.XihuAgent/StreamEvents 2>/dev/null || echo "(timeout expected)"
+timeout 5 grpcurl -plaintext -d '{}' ${HOST}:${GRPC_PORT} proto.FutureAgent/StreamEvents 2>/dev/null || echo "(timeout expected)"
 
 # Test 6: HTTP endpoint still works
 echo -e "\n=== Test 6: HTTP endpoint ==="

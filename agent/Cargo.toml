@@ -1,14 +1,14 @@
 [package]
-name = "xihu_agent-agent"
+name = "future-agent"
 version = "0.3.0"
 edition = "2021"
 
 [[bin]]
-name = "xihu_agent"
+name = "future-agent"
 path = "src/main.rs"
 
 [lib]
-name = "xihu_agent_agent"
+name = "future_agent"
 path = "src/lib.rs"
 
 [dependencies]

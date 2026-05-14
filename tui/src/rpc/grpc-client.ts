@@ -1,11 +1,13 @@
 /**
- * gRPC client for xihu_tui Agent.
+ * gRPC client for FutureAgent.
  * Uses @grpc/grpc-js with proto descriptor.
  * Only supports gRPC (no JSON-RPC or Unix socket).
  */
 
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import type {
   RpcCommand,
   RpcSessionState,
@@ -15,8 +17,11 @@ import type {
 
 export type EventListener = (event: AgentEvent) => void;
 
-// Load proto descriptor
-const PROTO_PATH = process.env.XIHU_PROTO_PATH ?? "/Users/geilige/xihu_tui/proto/proto/xihu_tui.proto";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Load proto descriptor — relative to repo root, overridable via env
+const PROTO_PATH = process.env.FUTURE_PROTO_PATH ?? join(__dirname, "..", "..", "..", "proto", "proto", "future.proto");
 
 // ─── Proto Setup ─────────────────────────────────────────────────────────
 
@@ -43,7 +48,7 @@ export class GrpcClient {
 
   constructor(address = "localhost:50051") {
     const credentials = grpc.credentials.createInsecure();
-    this.client = new proto.XihuAgent(address, credentials);
+    this.client = new proto.FutureAgent(address, credentials);
   }
 
   // ─── Session Management ───────────────────────────────────────────────

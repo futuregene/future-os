@@ -241,7 +241,7 @@ export class NodeTerminal implements Terminal {
 
   write(data: string): void {
     if (process.env.PI_TUI_WRITE_LOG === "1") {
-      const logDir = path.join(os.homedir(), ".xihu_tui");
+      const logDir = path.join(os.homedir(), ".future_tui");
       const logPath = path.join(logDir, "write.log");
       try { fs.mkdirSync(logDir, { recursive: true }); } catch {}
       try { fs.appendFileSync(logPath, data, { encoding: "utf8" }); } catch {}

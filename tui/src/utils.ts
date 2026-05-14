@@ -441,7 +441,7 @@ export class AnsiCodeTracker {
   /** Get OSC 8 hyperlink open sequence if a link is active. */
   getOsc8Link(): string {
     if (this.state.link) {
-      return `\x1b]8;id=xihu_tui;${this.state.link}\x07`;
+      return `\x1b]8;id=future_tui;${this.state.link}\x07`;
     }
     return "";
   }

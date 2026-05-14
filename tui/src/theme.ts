@@ -1,5 +1,5 @@
 /**
- * xihu_tui dark theme — matches pi-mono dark theme colors.
+ * future-tui dark theme — matches pi-mono dark theme colors.
  */
 
 import { CSI, RESET } from "./tui.js";

@@ -1,5 +1,5 @@
 /**
- * xihu_tui TypeScript TUI entry point.
+ * future-tui TypeScript TUI entry point.
  *
  * Usage:
  *   node dist/index.js [options] [@files...] [messages...]
@@ -82,7 +82,7 @@ interface CliArgs {
 
 function parseArgs(args: string[]): CliArgs {
   const result: CliArgs = {
-    grpcAddr: process.env.XIHU_GRPC_ADDR ?? "localhost:50051",
+    grpcAddr: process.env.FUTURE_GRPC_ADDR ?? "localhost:50051",
     session: null,
     continue: false,
     resume: false,
@@ -292,7 +292,7 @@ function parseArgs(args: string[]): CliArgs {
 }
 
 function printHelp(): void {
-  console.log(`xihu_tui TUI
+  console.log(`future-tui TUI
 
 Usage: node dist/index.js [options] [@files...] [messages...]
 
@@ -643,7 +643,7 @@ const args = parseArgs(process.argv.slice(2));
 
 // Handle --version
 if (args.version) {
-  console.log("xihu_tui TUI v0.3.0");
+  console.log("future-tui TUI v0.3.0");
   process.exit(0);
 }
 
@@ -662,7 +662,7 @@ if (args.listModels) {
 if (args.print) {
   if (args.messages.length === 0 && args.fileArgs.length === 0) {
     if (args.mode !== "json") {
-      console.error("No prompt provided. Usage: xihu_tui -p \"message\"");
+      console.error('No prompt provided. Usage: future-tui -p "message"');
     }
     process.exit(1);
   }

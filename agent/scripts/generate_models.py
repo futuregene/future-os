@@ -54,7 +54,7 @@ PROVIDER_APIS = {
 def fetch_json(url: str, timeout: int = 30) -> Optional[Dict]:
     """Fetch JSON from URL with timeout."""
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "xihu/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "future-agent/1.0"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
     except Exception as e:

@@ -1,6 +1,6 @@
 /**
- * xihu_tui TUI - Main application.
- * Complete terminal UI for xihu_tui agent.
+ * future-tui TUI - Main application.
+ * Complete terminal UI for FutureAgent.
  */
 
 import { GrpcClient } from "./rpc/index.js";
@@ -90,7 +90,7 @@ export class App extends Container {
     { value: "/changelog", label: "/changelog", description: "show changelog" },
     { value: "/help", label: "/help", description: "show help" },
     { value: "/hotkeys", label: "/hotkeys", description: "show shortcuts" },
-    { value: "/quit", label: "/quit", description: "quit xihu_tui" },
+    { value: "/quit", label: "/quit", description: "quit future-tui" },
   ];
 
   // Autocomplete provider callbacks
@@ -761,9 +761,9 @@ export class App extends Container {
       this.chat.addMessage({ id: crypto.randomUUID(), role: "system", welcome: true, content: color(content) });
     };
 
-    // Banner: "xihu_tui vX.X.X"
+    // Banner: "future-tui vX.X.X"
     const version = this.state.version || "0.3.0";
-    addColored(`${fg(151, bold("xihu_tui"))}${fg(245, " v" + version)}`, (t) => t);
+    addColored(`${fg(151, bold("future-tui"))}${fg(245, " v" + version)}`, (t) => t);
 
     // Shortcuts line (truncate to fit terminal width)
     const termW = this.terminal.columns;
@@ -774,7 +774,7 @@ export class App extends Container {
     addColored("Press ctrl+o to show full startup help and loaded resources.", dim_);
 
     // Onboarding (truncate to fit terminal width)
-    const onboarding = truncateToWidth("Xihu can explain its own features and look up its docs. Ask it how to use or extend Xihu.", termW - 4);
+    const onboarding = truncateToWidth("FutureAgent can explain its own features and look up its docs. Ask it how to use or extend FutureAgent.", termW - 4);
     addColored(onboarding, dim_);
 
     // Context files
@@ -1457,7 +1457,7 @@ export class App extends Container {
     const debugRedraw = process.env.PI_DEBUG_REDRAW === "1";
     const logRedraw = (reason: string): void => {
       if (!debugRedraw) return;
-      const logPath = path.join(os.homedir(), ".xihu_tui", "debug.log");
+      const logPath = path.join(os.homedir(), ".future_tui", "debug.log");
       const msg = `[${new Date().toISOString()}] fullRender: ${reason} (prev=${this.previousLines.length}, new=${newLines.length}, w=${W}, h=${H})\n`;
       fs.appendFileSync(logPath, msg);
     };
@@ -1617,7 +1617,7 @@ export class App extends Container {
       const isImage = isImageLine(line);
       if (!isImage && visibleWidth(line) > W) {
         // Log all lines to crash file for debugging (matches pi behavior)
-        const crashLogPath = path.join(os.homedir(), ".xihu_tui", "crash.log");
+        const crashLogPath = path.join(os.homedir(), ".future_tui", "crash.log");
         const crashData = [
           `Crash at ${new Date().toISOString()}`,
           `Terminal width: ${W}`,
@@ -1715,7 +1715,7 @@ export class App extends Container {
     const maxRows = Math.max(leftCol.length, rightCol.length);
 
     lines.push(dim_("\u250c" + "\u2500".repeat(W - 2) + "\u2510"));
-    lines.push(dim_("\u2502") + "  " + bold_("xihu_tui") + "  " + dim_("Terminal UI Help") + " ".repeat(Math.max(0, W - 24)) + dim_("\u2502"));
+    lines.push(dim_("\u2502") + "  " + bold_("future-tui") + "  " + dim_("Terminal UI Help") + " ".repeat(Math.max(0, W - 24)) + dim_("\u2502"));
     lines.push(dim_("\u251c" + "\u2500".repeat(W - 2) + "\u2524"));
 
     for (let i = 0; i < maxRows; i++) {

@@ -66,7 +66,7 @@ pub struct PromptOptions {
 fn build_identity_section(_opts: &PromptOptions) -> String {
     // Base identity + behavioral guidelines
     // In Go: buildIdentitySection()
-    r#"You are xihu_agent, a highly capable AI coding assistant."#.to_string()
+    r#"You are FutureAgent, a highly capable AI coding assistant."#.to_string()
 }
 
 fn format_skills_section(skills: &[&Skill]) -> String {

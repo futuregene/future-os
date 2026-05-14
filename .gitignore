@@ -13,10 +13,13 @@ vendor/
 # Rust
 agent/target/
 
+# Node
+tui/node_modules/
+tui/dist/
+
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
 bin/
-/xihu

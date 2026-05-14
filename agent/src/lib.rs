@@ -1,4 +1,4 @@
-//! xihu_agent-agent — Rust implementation of the xihu_agent agent backend
+//! future-agent — Rust implementation of the FutureAgent agent backend
 
 pub mod agent;
 pub mod auth;

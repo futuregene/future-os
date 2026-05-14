@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test gRPC streaming for xihu agent"""
+"""Test gRPC streaming for FutureAgent"""
 
 import subprocess
 import time
@@ -12,13 +12,13 @@ def run(cmd):
     return result.stdout + result.stderr
 
 def main():
-    print("=== Testing xihu agent gRPC ===\n")
+    print("=== Testing FutureAgent gRPC ===\n")
     
     # Start server
     print("Starting server...")
     subprocess.Popen(
-        ["../target/release/xihu", "--server", "--grpc-port", "50051", "--port", "8080"],
-        cwd="/Users/geilige/xihu/agent",
+        ["../target/release/future-agent", "--server", "--grpc-port", "50051", "--port", "8080"],
+        cwd="/Users/geilige/future-os/agent",
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
@@ -47,7 +47,7 @@ def main():
     print(f"  gRPC (50051): {grpc_ok}")
     
     # Cleanup
-    run("pkill -f 'xihu.*50051' 2>/dev/null || true")
+    run("pkill -f 'future-agent.*50051' 2>/dev/null || true")
     
     print("\n=== Tests completed ===")
 

@@ -8,7 +8,7 @@ const grpc = require('@grpc/grpc-js');
 const protoLoader = require('@grpc/proto-loader');
 const path = require('path');
 
-const PROTO_PATH = path.join(__dirname, '../proto/proto/xihu.proto');
+const PROTO_PATH = path.join(__dirname, '../proto/proto/future.proto');
 
 const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
   keepCase: false,
@@ -23,7 +23,7 @@ const proto = protoDescriptor.proto;
 
 // Create gRPC client
 function createClient(addr = 'localhost:50051') {
-  const client = new proto.XihuAgent(addr, grpc.credentials.createInsecure());
+  const client = new proto.FutureAgent(addr, grpc.credentials.createInsecure());
   return client;
 }
 

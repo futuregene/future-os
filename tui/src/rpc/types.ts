@@ -1,6 +1,6 @@
 /**
- * JSON-RPC types for xihu_tui Agent communication.
- * Mirrors internal/rpc/types.go on the Go server side.
+ * RPC types for FutureAgent communication.
+ * Mirrors the Rust rpc module on the server side.
  */
 
 // ============================================================================
