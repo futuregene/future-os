@@ -82,7 +82,7 @@ impl Loop {
         self
     }
 
-    pub fn with_transform_context(mut self, f: Box<dyn Fn(Vec<Message>, String) -> Vec<Message> + Send + Sync>) -> Self {
+    pub fn with_transform_context(mut self, f: Arc<dyn Fn(Vec<Message>, String) -> Vec<Message> + Send + Sync>) -> Self {
         self.config.transform_context = Some(f);
         self
     }
