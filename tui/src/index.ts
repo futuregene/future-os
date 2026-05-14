@@ -54,11 +54,14 @@ interface CliArgs {
   messages: string[];
   model: string | null;
   provider: string | null;
+  apiKey: string | null;
   listModels: string | boolean;
   thinking: string | null;
   systemPrompt: string | null;
+  appendSystemPrompt: string[] | null;
   tools: string[] | null;
   noTools: boolean;
+  noBuiltinTools: boolean;
   noSession: boolean;
   // New options
   mode: string | null;
@@ -68,6 +71,7 @@ interface CliArgs {
   noPromptTemplates: boolean;
   noContextFiles: boolean;
   offline: boolean;
+  verbose: boolean;
   skill: string[] | null;
   noSkills: boolean;
   version: boolean;
@@ -87,11 +91,14 @@ function parseArgs(args: string[]): CliArgs {
     messages: [],
     model: null,
     provider: null,
+    apiKey: null,
     listModels: false,
     thinking: null,
     systemPrompt: null,
+    appendSystemPrompt: null,
     tools: null,
     noTools: false,
+    noBuiltinTools: false,
     noSession: false,
     mode: null,
     theme: null,
@@ -100,6 +107,7 @@ function parseArgs(args: string[]): CliArgs {
     noPromptTemplates: false,
     noContextFiles: false,
     offline: false,
+    verbose: false,
     skill: null,
     noSkills: false,
     version: false,
@@ -164,6 +172,17 @@ function parseArgs(args: string[]): CliArgs {
           result.provider = args[++i];
         }
         break;
+      case "--api-key":
+        if (i + 1 < args.length) {
+          result.apiKey = args[++i];
+        }
+        break;
+      case "--append-system-prompt":
+        result.appendSystemPrompt = result.appendSystemPrompt ?? [];
+        if (i + 1 < args.length) {
+          result.appendSystemPrompt.push(args[++i]);
+        }
+        break;
       case "--list-models":
         result.listModels = true;
         if (i + 1 < args.length && !args[i + 1].startsWith("-") && !args[i + 1].startsWith("@")) {
@@ -189,6 +208,10 @@ function parseArgs(args: string[]): CliArgs {
       case "--no-tools":
       case "-nt":
         result.noTools = true;
+        break;
+      case "--no-builtin-tools":
+      case "-nbt":
+        result.noBuiltinTools = true;
         break;
       case "--no-session":
         result.noSession = true;
@@ -222,6 +245,9 @@ function parseArgs(args: string[]): CliArgs {
         break;
       case "--offline":
         result.offline = true;
+        break;
+      case "--verbose":
+        result.verbose = true;
         break;
       case "--skill":
         result.skill = result.skill ?? [];
@@ -272,11 +298,14 @@ Options:
   --print, -p           Non-interactive mode: process prompt and exit
   --model <model>       Model to use (supports model:thinking format)
   --provider <provider>  Provider to use
+  --api-key <key>       API key (overrides env vars)
   --list-models [search] List available models (with optional search)
   --thinking <level>    Thinking level: off, minimal, low, medium, high, xhigh
   --system-prompt <text> Set system prompt
+  --append-system-prompt <text> Append to system prompt
   --tools, -t <tools>  Comma-separated tool names to enable
   --no-tools, -nt       Disable all tools
+  --no-builtin-tools, -nbt Disable built-in tools (keep extensions)
   --no-session          Ephemeral mode (don't save session)
   --mode <mode>        Output mode: text, json (default: text)
   --theme <path>       Load a theme file
@@ -285,6 +314,7 @@ Options:
   --no-prompt-templates, -np Disable prompt templates
   --no-context-files, -nc  Disable AGENTS.md and CLAUDE.md discovery
   --offline             Disable startup network operations
+  --verbose             Show detailed startup information
   --skill <path>        Load a skill file or directory
   --no-skills, -ns      Disable skills discovery
   --version, -v         Show version number
@@ -418,6 +448,33 @@ async function applyCliOptions(
     await new Promise<void>((resolve, reject) => {
       client.ExecuteCommand(
         { id: "cfg6", type: "set_ephemeral", ephemeral: true, sessionId },
+        (err: Error | null, response: any) => {
+          if (err || !response.success) reject(new Error(response?.error || err?.message));
+          else resolve();
+        }
+      );
+    });
+  }
+
+  // Disable built-in tools (keep extensions)
+  if (args.noBuiltinTools) {
+    await new Promise<void>((resolve, reject) => {
+      client.ExecuteCommand(
+        { id: "cfg7", type: "disable_builtin_tools", sessionId },
+        (err: Error | null, response: any) => {
+          if (err || !response.success) reject(new Error(response?.error || err?.message));
+          else resolve();
+        }
+      );
+    });
+  }
+
+  // Append system prompt
+  if (args.appendSystemPrompt && args.appendSystemPrompt.length > 0) {
+    const prompt = args.appendSystemPrompt.join("\n");
+    await new Promise<void>((resolve, reject) => {
+      client.ExecuteCommand(
+        { id: "cfg8", type: "append_system_prompt", systemPrompt: prompt, sessionId },
         (err: Error | null, response: any) => {
           if (err || !response.success) reject(new Error(response?.error || err?.message));
           else resolve();
