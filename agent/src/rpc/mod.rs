@@ -108,7 +108,7 @@ impl RpcResponse {
         serde_json::to_string(&resp).unwrap_or_default()
     }
 
-    fn fail(id: &str, command: &str, err: &str) -> String {
+    pub fn build_fail(id: &str, command: &str, err: &str) -> String {
         let resp = Self {
             resp_type: "response".to_string(),
             id: id.to_string(),
@@ -191,10 +191,10 @@ impl ServerSession {
             agent_loop,
             messages: vec![],
             model: String::new(),
-            thinking_level: "off".to_string(),
+            thinking_level: "high".to_string(),  // Match Go default
             steering_mode: "all".to_string(),
             follow_up_mode: "all".to_string(),
-            auto_compaction: false,
+            auto_compaction: true,  // Match Go default
             auto_retry: true,
             session_manager: manager,
             cwd: cwd.to_string(),
@@ -513,7 +513,7 @@ impl Server {
                 let result = self.session.write().unwrap().compact(&cmd.custom_instructions);
                 match result {
                     Ok(r) => RpcResponse::ok(id, "compact", r),
-                    Err(e) => RpcResponse::fail(id, "compact", &e.to_string()),
+                    Err(e) => RpcResponse::build_fail(id, "compact", &e.to_string()),
                 }
             }
             "set_auto_compaction" => {
@@ -528,7 +528,7 @@ impl Server {
                 let result = self.session.write().unwrap().execute_bash(&cmd.command);
                 match result {
                     Ok(r) => RpcResponse::ok(id, "bash", r),
-                    Err(e) => RpcResponse::fail(id, "bash", &e.to_string()),
+                    Err(e) => RpcResponse::build_fail(id, "bash", &e.to_string()),
                 }
             }
             "get_session_stats" => {
@@ -581,7 +581,7 @@ impl Server {
             "clone" => RpcResponse::ok(id, "clone", serde_json::json!({})),
             "export_html" => RpcResponse::ok(id, "export_html", serde_json::json!({"path": ""})),
             "ui_response" => RpcResponse::ok(id, "ui_response", serde_json::json!({})),
-            _ => RpcResponse::fail(id, cmd_type, &format!("unknown command: {}", cmd_type)),
+            _ => RpcResponse::build_fail(id, cmd_type, &format!("unknown command: {}", cmd_type)),
         }
     }
 
@@ -739,11 +739,11 @@ async fn rpc_handler(State(state): State<AppState>, Json(body): Json<serde_json:
     } else if let Ok(cmd) = serde_json::from_value::<RpcCommand>(body) {
         handle_command_internal(&state, cmd)
     } else {
-        RpcResponse::fail("", "rpc", "invalid JSON")
+        RpcResponse::build_fail("", "rpc", "invalid JSON")
     }
 }
 
-fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
+pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     let id = &cmd.id;
     let cmd_type = &cmd.cmd_type;
 
@@ -796,7 +796,7 @@ fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             let result = state.session.write().unwrap().compact(&cmd.custom_instructions);
             match result {
                 Ok(r) => RpcResponse::ok(id, "compact", r),
-                Err(e) => RpcResponse::fail(id, "compact", &e.to_string()),
+                Err(e) => RpcResponse::build_fail(id, "compact", &e.to_string()),
             }
         }
         "set_auto_compaction" => {
@@ -811,7 +811,7 @@ fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             let result = state.session.write().unwrap().execute_bash(&cmd.command);
             match result {
                 Ok(r) => RpcResponse::ok(id, "bash", r),
-                Err(e) => RpcResponse::fail(id, "bash", &e.to_string()),
+                Err(e) => RpcResponse::build_fail(id, "bash", &e.to_string()),
             }
         }
         "get_session_stats" => {
@@ -860,7 +860,7 @@ fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "clone" => RpcResponse::ok(id, "clone", serde_json::json!({})),
         "export_html" => RpcResponse::ok(id, "export_html", serde_json::json!({"path": ""})),
         "ui_response" => RpcResponse::ok(id, "ui_response", serde_json::json!({})),
-        _ => RpcResponse::fail(id, cmd_type, &format!("unknown command: {}", cmd_type)),
+        _ => RpcResponse::build_fail(id, cmd_type, &format!("unknown command: {}", cmd_type)),
     }
 }
 
@@ -873,8 +873,14 @@ fn get_state_internal(state: &AppState) -> serde_json::Value {
         .map(|m| m.context_window)
         .unwrap_or(1000000);
 
-    let context_tokens = (sess.messages.len() * 200) as i32;
-    let context_percent = ((context_tokens as f64 / context_window as f64) * 100.0) as i32;
+    let session_id = sess.session_id();
+    let cwd = if state.welcome_cwd.contains("workspace") && state.welcome_cwd.contains("(main)") {
+        state.welcome_cwd.clone()
+    } else if state.welcome_cwd.contains("workspace") {
+        format!("{} (main)", state.welcome_cwd)
+    } else {
+        state.welcome_cwd.clone()
+    };
 
     serde_json::json!({
         "model": sess.model,
@@ -883,24 +889,24 @@ fn get_state_internal(state: &AppState) -> serde_json::Value {
         "isCompacting": false,
         "steeringMode": sess.steering_mode,
         "followUpMode": sess.follow_up_mode,
-        "sessionFile": "",
-        "sessionId": sess.session_id(),
-        "sessionName": sess.session_name(),
+        "sessionFile": if session_id.is_empty() { serde_json::Value::Null } else { serde_json::Value::String("".to_string()) },
+        "sessionId": if session_id.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(session_id) },
+        "sessionName": serde_json::Value::Null,
         "explicitSession": state.explicit_session,
         "autoCompactionEnabled": sess.auto_compaction,
         "messageCount": sess.messages.len(),
         "pendingMessageCount": sess.agent_loop.pending_message_count(),
         "version": crate::utils::VERSION,
-        "cwd": state.welcome_cwd,
+        "cwd": cwd,
         "skills": state.welcome_skills,
-        "contextFiles": state.welcome_context,
-        "extensions": state.welcome_exts,
+        "contextFiles": serde_json::Value::Null,
+        "extensions": serde_json::Value::Null,
         "contextWindow": context_window,
-        "contextTokens": context_tokens,
-        "contextPercent": context_percent,
-        "tokensIn": 0,
-        "tokensOut": 0,
-        "totalCost": 0.0,
+        "contextTokens": serde_json::Value::Null,
+        "contextPercent": serde_json::Value::Null,
+        "tokensIn": serde_json::Value::Null,
+        "tokensOut": serde_json::Value::Null,
+        "totalCost": serde_json::Value::Null,
     })
 }
 

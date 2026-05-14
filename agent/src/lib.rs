@@ -5,6 +5,7 @@ pub mod compaction;
 pub mod config;
 pub mod engine;
 pub mod events;
+pub mod grpc;
 pub mod llm;
 pub mod models;
 pub mod prompt;

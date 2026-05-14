@@ -5,7 +5,7 @@
   "description": "TypeScript TUI for xihu",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsgo -config tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json",
     "dev": "bun run src/index.ts",
     "start": "bun run dist/index.js",
     "prepublishOnly": "npm run build"
