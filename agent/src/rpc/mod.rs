@@ -763,7 +763,25 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             session.write().unwrap().set_session_name(&cmd.name);
             RpcResponse::ok(id, "set_session_name", serde_json::json!({}))
         }
-        "get_commands" => RpcResponse::ok(id, "get_commands", serde_json::json!({"commands": []})),
+        "get_commands" => {
+            // Return commands from skills (similar to Go's extensions + prompts)
+            let skill_dirs = vec![
+                crate::skills::USER_SKILLS_DIR.to_string(),
+                crate::skills::PROJECT_SKILLS_DIR.to_string(),
+                crate::skills::AGENTS_SKILLS_DIR.to_string(),
+            ];
+            let skills = crate::skills::discover_skills(&skill_dirs).unwrap_or_default();
+            
+            let commands: Vec<serde_json::Value> = skills.into_iter().map(|s| {
+                serde_json::json!({
+                    "name": s.name,
+                    "description": s.description,
+                    "source": "skill"
+                })
+            }).collect();
+            
+            RpcResponse::ok(id, "get_commands", serde_json::json!({"commands": commands}))
+        }
         "abort_retry" => {
             if let Ok(mut sess) = session.try_write() {
                 sess.abort();
@@ -870,8 +888,24 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "clone", serde_json::json!({"cancelled": false}))
         }
         "export_html" => {
-            // TODO: implement HTML export
-            RpcResponse::ok(id, "export_html", serde_json::json!({"path": ""}))
+            // Export session to HTML file
+            let sess = session.read().unwrap();
+            let session_id = sess.session_id();
+            let model = sess.model.clone();
+            let cwd = sess.cwd.clone();
+            let messages = sess.get_messages();
+            drop(sess);
+            
+            // Generate HTML
+            let html = generate_session_html(&session_id, &model, &cwd, &messages);
+            
+            // Write to file
+            let output_path = format!("/tmp/xihu_export_{}.html", session_id);
+            if let Err(e) = std::fs::write(&output_path, html) {
+                return RpcResponse::build_fail(id, "export_html", &format!("failed to write file: {}", e));
+            }
+            
+            RpcResponse::ok(id, "export_html", serde_json::json!({"path": output_path}))
         }
         "ui_response" => RpcResponse::ok(id, "ui_response", serde_json::json!({})),
         _ => RpcResponse::build_fail(id, cmd_type, &format!("unknown command: {}", cmd_type)),
@@ -923,5 +957,52 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
         "tokensOut": serde_json::Value::Null,
         "totalCost": serde_json::Value::Null,
     })
+}
+
+/// Generate HTML representation of a session (matches Go exportSessionToHTML)
+fn generate_session_html(session_id: &str, model: &str, cwd: &str, messages: &[crate::types::Message]) -> String {
+    let mut html = String::new();
+    
+    html.push_str("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">");
+    html.push_str(&format!("<title>xihu session {}</title>", session_id));
+    html.push_str("<style>");
+    html.push_str("body{font-family:system-ui;max-width:800px;margin:auto;padding:20px;background:#1a1a2e;color:#e0e0e0}");
+    html.push_str(".user{background:#16213e;padding:10px;margin:5px 0;border-radius:8px}");
+    html.push_str(".assistant{background:#0f3460;padding:10px;margin:5px 0;border-radius:8px}");
+    html.push_str(".tool{background:#1a1a1a;padding:10px;margin:5px 0;border-radius:8px;font-size:0.9em}");
+    html.push_str("pre{white-space:pre-wrap;word-wrap:break-word}");
+    html.push_str("</style></head><body>\n");
+    html.push_str(&format!("<h1>xihu Session: {}</h1>\n", session_id));
+    html.push_str(&format!("<p>Model: {} | CWD: {}</p>\n", model, cwd));
+    
+    for msg in messages {
+        let cls = match msg.role.as_str() {
+            "assistant" => "assistant",
+            "tool" => "tool",
+            _ => "user",
+        };
+        let content = match &msg.content {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(v) => v.to_string(),
+            None => String::new(),
+        };
+        html.push_str(&format!(
+            "<div class=\"{}\"><strong>{}</strong><pre>{}</pre></div>\n",
+            cls,
+            escape_html(&msg.role),
+            escape_html(&content)
+        ));
+    }
+    
+    html.push_str("</body></html>");
+    html
+}
+
+/// Escape HTML special characters
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
