@@ -283,6 +283,17 @@ impl ServerSession {
                                 "thinking_end" => ("thinking_end".to_string(), serde_json::json!({})),
                                 "text_start" => ("text_start".to_string(), serde_json::json!({})),
                                 "text_end" => ("text_end".to_string(), serde_json::json!({})),
+                                // toolcall_start/delta/end are from LLM streaming, map to tool_start/end for TUI
+                                "toolcall_start" => {
+                                    ("tool_start".to_string(), serde_json::json!({"tool_name": event.tool_name, "tool_id": event.tool_id}))
+                                }
+                                "toolcall_delta" => {
+                                    ("tool_delta".to_string(), serde_json::json!({"tool_name": event.tool_name, "tool_id": event.tool_id, "text": event.text}))
+                                }
+                                "toolcall_end" => {
+                                    ("tool_end".to_string(), serde_json::json!({"tool_name": event.tool_name, "tool_id": event.tool_id}))
+                                }
+                                // tool_start/end are from actual tool execution
                                 "tool_start" => {
                                     ("tool_start".to_string(), serde_json::json!({"tool_name": event.tool_name, "tool_id": event.tool_id}))
                                 }
