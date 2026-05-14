@@ -3,7 +3,8 @@
  * Complete terminal UI for xihu agent.
  */
 
-import { RpcClient, GrpcClient, createClient } from "./rpc/index.js";
+import { GrpcClient } from "./rpc/index.js";
+import type { SessionSummary } from "./rpc/types.js";
 import { ChatArea, type ChatMessage } from "./components/chat-area.js";
 import { Footer, type FooterData } from "./components/footer.js";
 import { SelectList, type SelectItem } from "./components/select-list.js";
@@ -60,7 +61,7 @@ function extractKittyImageIds(line: string): number[] {
 
 export class App extends Container {
   private terminal: NodeTerminal;
-  private client: RpcClient | GrpcClient;
+  private client: GrpcClient;
   private theme: Theme;
   private editor: Editor;
   private chat: ChatArea;
@@ -111,6 +112,7 @@ export class App extends Container {
     model: "",
     thinking: "off",
     streaming: false,
+    sessionId: "",  // Current session ID
     sessionName: "",
     cwd: "",
     version: "",
@@ -799,6 +801,7 @@ export class App extends Container {
       const s = await this.client.getState();
       this.state.model = s.model ?? "(no model)";
       this.state.thinking = s.thinkingLevel;
+      this.state.sessionId = s.sessionId ?? this.state.sessionId;
       this.state.sessionName = s.sessionName ?? "";
       this.state.cwd = s.cwd ?? "";
       this.state.version = s.version ?? "";
@@ -812,6 +815,11 @@ export class App extends Container {
       this.state.tokensOut = s.tokensOut ?? 0;
       this.state.totalCost = s.totalCost ?? 0;
       this.state.explicitSession = s.explicitSession ?? false;
+      
+      // Update client's session ID if server returned one
+      if (s.sessionId && s.sessionId !== this.state.sessionId) {
+        (this.client as any).currentSessionId = s.sessionId;
+      }
     } catch {
       this.state.model = "(not connected)";
     }
