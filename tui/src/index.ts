@@ -60,6 +60,16 @@ interface CliArgs {
   tools: string[] | null;
   noTools: boolean;
   noSession: boolean;
+  // New options
+  mode: string | null;
+  theme: string | null;
+  noThemes: boolean;
+  promptTemplate: string[] | null;
+  noPromptTemplates: boolean;
+  noContextFiles: boolean;
+  offline: boolean;
+  skill: string[] | null;
+  noSkills: boolean;
   version: boolean;
 }
 
@@ -83,6 +93,15 @@ function parseArgs(args: string[]): CliArgs {
     tools: null,
     noTools: false,
     noSession: false,
+    mode: null,
+    theme: null,
+    noThemes: false,
+    promptTemplate: null,
+    noPromptTemplates: false,
+    noContextFiles: false,
+    offline: false,
+    skill: null,
+    noSkills: false,
     version: false,
   };
 
@@ -122,7 +141,22 @@ function parseArgs(args: string[]): CliArgs {
         break;
       case "--model":
         if (i + 1 < args.length) {
-          result.model = args[++i];
+          const modelArg = args[++i];
+          // Support model:thinking format (e.g., sonnet:high, haiku:medium)
+          const colonIndex = modelArg.lastIndexOf(":");
+          if (colonIndex > 0) {
+            const potentialThinking = modelArg.slice(colonIndex + 1);
+            // Check if it looks like a thinking level
+            const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh"];
+            if (thinkingLevels.includes(potentialThinking)) {
+              result.model = modelArg.slice(0, colonIndex);
+              result.thinking = potentialThinking;
+            } else {
+              result.model = modelArg;
+            }
+          } else {
+            result.model = modelArg;
+          }
         }
         break;
       case "--provider":
@@ -158,6 +192,46 @@ function parseArgs(args: string[]): CliArgs {
         break;
       case "--no-session":
         result.noSession = true;
+        break;
+      case "--mode":
+        if (i + 1 < args.length) {
+          result.mode = args[++i];
+        }
+        break;
+      case "--theme":
+        if (i + 1 < args.length) {
+          result.theme = args[++i];
+        }
+        break;
+      case "--no-themes":
+        result.noThemes = true;
+        break;
+      case "--prompt-template":
+        result.promptTemplate = result.promptTemplate ?? [];
+        if (i + 1 < args.length) {
+          result.promptTemplate.push(args[++i]);
+        }
+        break;
+      case "--no-prompt-templates":
+      case "-np":
+        result.noPromptTemplates = true;
+        break;
+      case "--no-context-files":
+      case "-nc":
+        result.noContextFiles = true;
+        break;
+      case "--offline":
+        result.offline = true;
+        break;
+      case "--skill":
+        result.skill = result.skill ?? [];
+        if (i + 1 < args.length) {
+          result.skill.push(args[++i]);
+        }
+        break;
+      case "--no-skills":
+      case "-ns":
+        result.noSkills = true;
         break;
       case "--version":
       case "-v":
@@ -196,7 +270,7 @@ Options:
   --resume, -r          Resume a session (show picker)
   --fork <id>           Fork from a session
   --print, -p           Non-interactive mode: process prompt and exit
-  --model <model>       Model to use
+  --model <model>       Model to use (supports model:thinking format)
   --provider <provider>  Provider to use
   --list-models [search] List available models (with optional search)
   --thinking <level>    Thinking level: off, minimal, low, medium, high, xhigh
@@ -204,6 +278,15 @@ Options:
   --tools, -t <tools>  Comma-separated tool names to enable
   --no-tools, -nt       Disable all tools
   --no-session          Ephemeral mode (don't save session)
+  --mode <mode>        Output mode: text, json (default: text)
+  --theme <path>       Load a theme file
+  --no-themes          Disable themes
+  --prompt-template <path> Load a prompt template file
+  --no-prompt-templates, -np Disable prompt templates
+  --no-context-files, -nc  Disable AGENTS.md and CLAUDE.md discovery
+  --offline             Disable startup network operations
+  --skill <path>        Load a skill file or directory
+  --no-skills, -ns      Disable skills discovery
   --version, -v         Show version number
   --help, -h            Show this help
 
@@ -213,6 +296,9 @@ Examples:
 
   # With specific model
   node dist/index.js --model deepseek-v4-flash
+
+  # Model with thinking level (model:thinking format)
+  node dist/index.js --model sonnet:high
 
   # List models
   node dist/index.js --list-models
@@ -225,6 +311,9 @@ Examples:
 
   # Enable only read and bash tools
   node dist/index.js --tools read,bash -p "Review this code"
+
+  # JSON output mode
+  node dist/index.js --mode json -p "What is 2+2?"
 `);
 }
 
@@ -368,10 +457,16 @@ async function runPrintMode(
   });
 
   const sessionId = state.sessionId;
-  console.error(`Connected to session: ${sessionId}`);
+  const isJsonMode = args.mode === "json";
+  if (!isJsonMode) {
+    console.error(`Connected to session: ${sessionId}`);
+  }
 
   // Apply CLI options
   await applyCliOptions((client as any).client, sessionId, args);
+
+  // JSON mode response accumulator
+  const jsonMessages: any[] = [];
 
   // Subscribe to events BEFORE sending prompt
   const stream = (client as any).client.StreamEvents({ session_id: sessionId });
@@ -382,14 +477,25 @@ async function runPrintMode(
   // Wait for agent_end event
   const eventPromise = new Promise<void>((resolve, reject) => {
     stream.on("data", (response: any) => {
-      if (response.type === "text_chunk") {
-        const data = JSON.parse(response.data);
-        text += data.text ?? "";
-        process.stdout.write(data.text ?? "");
-      } else if (response.type === "agent_end") {
-        done = true;
-        stream.cancel();
-        resolve();
+      if (isJsonMode) {
+        // JSON mode: accumulate all events
+        jsonMessages.push(JSON.parse(response.data));
+        if (response.type === "agent_end") {
+          done = true;
+          stream.cancel();
+          resolve();
+        }
+      } else {
+        // Text mode: stream output
+        if (response.type === "text_chunk") {
+          const data = JSON.parse(response.data);
+          text += data.text ?? "";
+          process.stdout.write(data.text ?? "");
+        } else if (response.type === "agent_end") {
+          done = true;
+          stream.cancel();
+          resolve();
+        }
       }
     });
 
@@ -420,6 +526,16 @@ async function runPrintMode(
 
   // Wait for response to complete
   await eventPromise;
+
+  // Output in JSON mode
+  if (isJsonMode) {
+    const result = {
+      sessionId,
+      messages: jsonMessages,
+      text: text,
+    };
+    console.log(JSON.stringify(result, null, 2));
+  }
 }
 
 // ─── List Models ─────────────────────────────────────────────────
@@ -479,19 +595,25 @@ if (args.listModels) {
 // Print mode: non-interactive
 if (args.print) {
   if (args.messages.length === 0 && args.fileArgs.length === 0) {
-    console.error("No prompt provided. Usage: xihu -p \"message\"");
+    if (args.mode !== "json") {
+      console.error("No prompt provided. Usage: xihu -p \"message\"");
+    }
     process.exit(1);
   }
-  console.error(`Connecting to gRPC server at ${args.grpcAddr}`);
+  if (args.mode !== "json") {
+    console.error(`Connecting to gRPC server at ${args.grpcAddr}`);
+  }
   runPrintMode(args.grpcAddr, args.fileArgs, args.messages, args)
     .then(() => {
       process.exit(0);
     })
     .catch((err) => {
-      console.error("Error:", err.message);
+      if (args.mode !== "json") {
+        console.error("Error:", err.message);
+      }
       process.exit(1);
     });
-}
+} else {
 
 // Interactive mode (TUI)
 console.error(`Connecting to gRPC server at ${args.grpcAddr}`);
@@ -521,3 +643,4 @@ app.start().then(() => {
   console.error("Fatal error:", err);
   process.exit(1);
 });
+}
