@@ -155,7 +155,7 @@ async fn main() -> Result<()> {
     }
 
     // Server mode (gRPC only)
-    if true {  // Always run in server mode when invoked
+    if cli.messages.is_empty() {  // No messages → start server mode for TUI
         // Parse grpc_addr (host:port or just port)
         let (grpc_host, grpc_port) = if cli.grpc_addr.starts_with(':') {
             // Just port: :50051
