@@ -33,6 +33,7 @@ export class ChatArea implements Component {
   private width = 80;
   private thinkingHidden = false;
   private lastRenderWidth = -1;
+  private dirty = false;  // true when messages changed but render() not yet called
 
   private md = new MarkdownRenderer();
   private theme: Theme;
@@ -232,9 +233,10 @@ export class ChatArea implements Component {
   }
 
   render(width: number): string[] {
-    if (width !== this.lastRenderWidth) {
+    if (width !== this.lastRenderWidth || this.dirty) {
       this.lastRenderWidth = width;
       this.width = width;
+      this.dirty = false;
       this.rerender();
     }
     const visible = this.renderedLines.slice(
@@ -245,6 +247,13 @@ export class ChatArea implements Component {
   }
 
   private rerender(): void {
+    // Defer until first render() has set the correct terminal width.
+    if (this.lastRenderWidth === -1) {
+      this.dirty = true;
+      return;
+    }
+    this.dirty = false;
+
     this.renderedLines = [];
     for (let i = 0; i < this.messages.length; i++) {
       if (i > 0) {
@@ -372,6 +381,23 @@ export class ChatArea implements Component {
         text: exitBgLine,
         dim: true,
       });
+    }
+
+    // Tool output content (the actual stdout / result)
+    if (msg.content && msg.content.trim()) {
+      const outputLines = msg.content.split("\n");
+      for (const ol of outputLines) {
+        if (!ol.trim()) {
+          this.renderedLines.push({
+            text: applyBackgroundToLine("", this.width, bgColor),
+            dim: true,
+          });
+          continue;
+        }
+        const text = ` ${fg(this.theme.toolOutput, ol)}`;
+        const bgLine = applyBackgroundToLine(text, this.width, bgColor);
+        this.renderedLines.push({ text: bgLine, dim: true });
+      }
     }
   }
 
