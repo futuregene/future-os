@@ -291,45 +291,30 @@ impl ServerSession {
                             });
                         },
                         move |event| {
-                            let (event_type, data) = match event.event_type.as_str() {
-                                "agent_start" => ("agent_start".to_string(), serde_json::json!({})),
-                                "agent_end" => ("agent_end".to_string(), serde_json::json!({})),
-                                "turn_start" => ("turn_start".to_string(), serde_json::json!({})),
-                                "message_start" => ("message_start".to_string(), serde_json::json!({})),
-                                "thinking_start" => ("thinking_start".to_string(), serde_json::json!({})),
-                                "thinking_end" => ("thinking_end".to_string(), serde_json::json!({})),
-                                "text_start" => ("text_start".to_string(), serde_json::json!({})),
-                                "text_end" => ("text_end".to_string(), serde_json::json!({})),
-                                // toolcall_start/delta/end are from LLM streaming, map to tool_start/end for TUI
-                                "toolcall_start" => {
-                                    ("tool_start".to_string(), serde_json::json!({"tool_name": event.tool_name, "tool_id": event.tool_id}))
-                                }
-                                "toolcall_delta" => {
-                                    ("tool_delta".to_string(), serde_json::json!({"tool_name": event.tool_name, "tool_id": event.tool_id, "text": event.text}))
-                                }
-                                "toolcall_end" => {
-                                    ("tool_end".to_string(), serde_json::json!({"tool_name": event.tool_name, "tool_id": event.tool_id}))
-                                }
-                                // tool_start/end are from actual tool execution
-                                "tool_start" => {
-                                    ("tool_start".to_string(), serde_json::json!({"tool_name": event.tool_name, "tool_id": event.tool_id}))
-                                }
-                                "tool_end" => {
-                                    ("tool_end".to_string(), serde_json::json!({"tool_name": event.tool_name, "tool_id": event.tool_id}))
-                                }
-                                "error" => {
-                                    ("error".to_string(), serde_json::json!({"error": event.error_text}))
-                                }
-                                _ => (event.event_type.clone(), serde_json::json!({
-                                    "text": event.text,
-                                    "tool_name": event.tool_name,
-                                    "tool_id": event.tool_id,
-                                    "error": event.error_text,
-                                })),
-                            };
+                            // Build full event data matching pi's format
+                            let mut data = serde_json::Map::new();
+                            data.insert("type".to_string(), serde_json::json!(&event.event_type));
+                            if !event.text.is_empty() {
+                                data.insert("delta".to_string(), serde_json::json!(&event.text));
+                            }
+                            if !event.tool_name.is_empty() {
+                                data.insert("tool_name".to_string(), serde_json::json!(&event.tool_name));
+                            }
+                            if !event.tool_id.is_empty() {
+                                data.insert("tool_id".to_string(), serde_json::json!(&event.tool_id));
+                            }
+                            if !event.error_text.is_empty() {
+                                data.insert("error".to_string(), serde_json::json!(&event.error_text));
+                            }
+                            if !event.stop_reason.is_empty() {
+                                data.insert("stopReason".to_string(), serde_json::json!(&event.stop_reason));
+                            }
+                            if let Some(usage) = &event.usage {
+                                data.insert("usage".to_string(), serde_json::json!(usage));
+                            }
                             broadcaster_event.broadcast(crate::rpc::SseEvent {
-                                event_type,
-                                data: data.to_string(),
+                                event_type: event.event_type.clone(),
+                                data: serde_json::to_string(&data).unwrap_or_default(),
                             });
                         },
                     ).await
