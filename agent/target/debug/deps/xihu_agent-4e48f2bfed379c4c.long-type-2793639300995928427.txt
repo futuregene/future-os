@@ -1,4 +1,0 @@
-dyn for<'a> Fn(&'a str, std::string::String, anyhow::Error) -> (std::string::String, std::option::Option<anyhow::Error>) + std::marker::Send + Sync
-dyn for<'a> Fn(&'a str, std::string::String, anyhow::Error) -> (std::string::String, std::option::Option<anyhow::Error>) + std::marker::Send + Sync: Clone
-Box<dyn for<'a> Fn(&'a str, std::string::String, anyhow::Error) -> (std::string::String, std::option::Option<anyhow::Error>) + std::marker::Send + Sync>
-std::option::Option<Box<dyn for<'a> Fn(&'a str, std::string::String, anyhow::Error) -> (std::string::String, std::option::Option<anyhow::Error>) + std::marker::Send + Sync>>

@@ -1,4 +1,0 @@
-dyn for<'a, 'b, 'c> Fn(&'a str, &'b str, &'c Value) -> std::option::Option<ToolCallResult> + std::marker::Send + Sync
-dyn for<'a, 'b, 'c> Fn(&'a str, &'b str, &'c Value) -> std::option::Option<ToolCallResult> + std::marker::Send + Sync: Clone
-Box<dyn for<'a, 'b, 'c> Fn(&'a str, &'b str, &'c Value) -> std::option::Option<ToolCallResult> + std::marker::Send + Sync>
-std::option::Option<Box<dyn for<'a, 'b, 'c> Fn(&'a str, &'b str, &'c Value) -> std::option::Option<ToolCallResult> + std::marker::Send + Sync>>

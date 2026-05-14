@@ -1,1 +1,0 @@
-(dyn for<'a, 'b, 'c> Fn(&'a str, &'b str, &'c Value, std::string::String, anyhow::Error) -> std::option::Option<ToolCallResult> + std::marker::Send + Sync + 'static)

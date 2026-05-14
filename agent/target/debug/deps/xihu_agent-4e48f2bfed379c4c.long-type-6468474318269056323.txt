@@ -1,1 +1,0 @@
-std::option::Option<Box<dyn Fn(Vec<Message>, std::string::String) -> Vec<Message> + std::marker::Send + Sync>>

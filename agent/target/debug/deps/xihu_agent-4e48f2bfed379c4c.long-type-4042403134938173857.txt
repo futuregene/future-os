@@ -1,1 +1,0 @@
-std::sync::RwLockWriteGuard<'_, Box<(dyn tokio::io::AsyncWrite + std::marker::Send + Unpin + 'static)>>
