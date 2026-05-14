@@ -539,8 +539,9 @@ impl AppState {
     }
     
     /// Create a new session and return its ID
+    /// Uses the session's own session_id as the key
     pub fn create_session(&self, session: ServerSession) -> String {
-        let id = crate::utils::generate_id();
+        let id = session.session_id.clone();
         if let Ok(mut sessions) = self.sessions.try_write() {
             sessions.insert(id.clone(), Arc::new(RwLock::new(session)));
         }
