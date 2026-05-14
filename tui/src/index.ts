@@ -53,6 +53,7 @@ interface CliArgs {
   fileArgs: string[];
   messages: string[];
   model: string | null;
+  models: string[] | null;
   provider: string | null;
   apiKey: string | null;
   listModels: string | boolean;
@@ -90,6 +91,7 @@ function parseArgs(args: string[]): CliArgs {
     fileArgs: [],
     messages: [],
     model: null,
+    models: null,
     provider: null,
     apiKey: null,
     listModels: false,
@@ -165,6 +167,11 @@ function parseArgs(args: string[]): CliArgs {
           } else {
             result.model = modelArg;
           }
+        }
+        break;
+      case "--models":
+        if (i + 1 < args.length) {
+          result.models = args[++i].split(",").map((s) => s.trim());
         }
         break;
       case "--provider":
@@ -297,6 +304,7 @@ Options:
   --fork <id>           Fork from a session
   --print, -p           Non-interactive mode: process prompt and exit
   --model <model>       Model to use (supports model:thinking format)
+  --models <patterns>   Model patterns for Ctrl+P cycling (comma-separated, supports globs)
   --provider <provider>  Provider to use
   --api-key <key>       API key (overrides env vars)
   --list-models [search] List available models (with optional search)
