@@ -147,6 +147,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
   private readonly timeoutMs: number;
   private pasteMode = false;
   private pasteBuffer = "";
+  private pendingKittyPrintableCodepoint: number | undefined;
 
   constructor(options: StdinBufferOptions = {}) {
     super();
@@ -172,7 +173,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
     }
 
     if (str.length === 0 && this.buffer.length === 0) {
-      this.emit("data", "");
+      this.emitDataSequence("");
       return;
     }
 
@@ -185,10 +186,11 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
       if (endIndex !== -1) {
         const pastedContent = this.pasteBuffer.slice(0, endIndex);
         const remaining = this.pasteBuffer.slice(endIndex + BRACKETED_PASTE_END.length);
-        this.pasteMode = false;
-        this.pasteBuffer = "";
-        this.emit("paste", pastedContent);
-        if (remaining.length > 0) this.process(remaining);
+                this.pasteMode = false;
+                this.pasteBuffer = "";
+                this.pendingKittyPrintableCodepoint = undefined;
+                this.emit("paste", pastedContent);
+                if (remaining.length > 0) this.process(remaining);
       }
       return;
     }
@@ -199,22 +201,24 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
         const beforePaste = this.buffer.slice(0, startIndex);
         const result = extractCompleteSequences(beforePaste);
         for (const sequence of result.sequences) {
-          this.emit("data", sequence);
+          this.emitDataSequence(sequence);
         }
       }
       this.buffer = this.buffer.slice(startIndex + BRACKETED_PASTE_START.length);
       this.pasteMode = true;
       this.pasteBuffer = this.buffer;
       this.buffer = "";
+      this.pendingKittyPrintableCodepoint = undefined;  // matches pi
 
       const endIndex = this.pasteBuffer.indexOf(BRACKETED_PASTE_END);
       if (endIndex !== -1) {
         const pastedContent = this.pasteBuffer.slice(0, endIndex);
         const remaining = this.pasteBuffer.slice(endIndex + BRACKETED_PASTE_END.length);
-        this.pasteMode = false;
-        this.pasteBuffer = "";
-        this.emit("paste", pastedContent);
-        if (remaining.length > 0) this.process(remaining);
+                this.pasteMode = false;
+                this.pasteBuffer = "";
+                this.pendingKittyPrintableCodepoint = undefined;
+                this.emit("paste", pastedContent);
+                if (remaining.length > 0) this.process(remaining);
       }
       return;
     }
@@ -223,14 +227,14 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
     this.buffer = result.remainder;
 
     for (const sequence of result.sequences) {
-      this.emit("data", sequence);
+      this.emitDataSequence(sequence);
     }
 
     if (this.buffer.length > 0) {
       this.timeout = setTimeout(() => {
         const flushed = this.flush();
         for (const sequence of flushed) {
-          this.emit("data", sequence);
+          this.emitDataSequence(sequence);
         }
       }, this.timeoutMs);
     }
@@ -244,7 +248,26 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
     if (this.buffer.length === 0) return [];
     const sequences = [this.buffer];
     this.buffer = "";
+    this.pendingKittyPrintableCodepoint = undefined;
     return sequences;
+  }
+
+  /** Kitty prints unmodified printable keys alongside modified ones — suppress the duplicate. */
+  private parseUnmodifiedKittyPrintableCodepoint(sequence: string): number | undefined {
+    const match = sequence.match(/^\x1b\[(\d+)(?::\d*)?(?::\d+)?u$/);
+    if (!match) return undefined;
+    const codepoint = parseInt(match[1]!, 10);
+    return codepoint >= 32 ? codepoint : undefined;
+  }
+
+  private emitDataSequence(sequence: string): void {
+    const rawCodepoint = sequence.length === 1 ? sequence.codePointAt(0) : undefined;
+    if (rawCodepoint !== undefined && rawCodepoint === this.pendingKittyPrintableCodepoint) {
+      this.pendingKittyPrintableCodepoint = undefined;
+      return;  // Suppress duplicate: Kitty sent both CSI-u and raw form
+    }
+    this.pendingKittyPrintableCodepoint = this.parseUnmodifiedKittyPrintableCodepoint(sequence);
+    this.emit("data", sequence);
   }
 
   clear(): void {
