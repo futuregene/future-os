@@ -15,8 +15,8 @@ pub struct Skill {
 }
 
 /// Predefined skill directories (matching Go internal/skills/skills.go)
-pub const USER_SKILLS_DIR: &str = "~/.xihu_agent/skills/";
-pub const PROJECT_SKILLS_DIR: &str = ".xihu_agent/skills/";
+pub const USER_SKILLS_DIR: &str = "~/.future/agent/skills/";
+pub const PROJECT_SKILLS_DIR: &str = ".future/agent/skills/";
 pub const AGENTS_SKILLS_DIR: &str = "~/.agents/skills/";
 
 /// DiscoverSkills finds all skills in the given directories.

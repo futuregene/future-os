@@ -7,7 +7,7 @@
 //! - POST / - RPC commands (JSON)
 //! - GET /events - SSE event stream
 //! 
-//! gRPC service: proto.XihuAgent (on grpc_port)
+//! gRPC service: proto.FutureAgent (on grpc_port)
 
 use crate::rpc::{AppState, handle_command_internal};
 use anyhow::Result;
@@ -31,13 +31,13 @@ pub async fn serve(
     eprintln!("gRPC server listening on {}:{}", host, port);
     
     // Build gRPC service
-    let grpc_service = XihuAgentService { state };
+    let grpc_service = FutureAgentService { state };
     
     // Start gRPC server
     let grpc_addr: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
     
     tonic::transport::Server::builder()
-        .add_service(proto::xihu_agent_server::XihuAgentServer::new(grpc_service))
+        .add_service(proto::future_agent_server::FutureAgentServer::new(grpc_service))
         .serve(grpc_addr)
         .await?;
     
@@ -45,12 +45,12 @@ pub async fn serve(
 }
 
 #[derive(Clone)]
-struct XihuAgentService {
+struct FutureAgentService {
     state: AppState,
 }
 
 #[tonic::async_trait]
-impl proto::xihu_agent_server::XihuAgent for XihuAgentService {
+impl proto::future_agent_server::FutureAgent for FutureAgentService {
     type StreamEventsStream = Pin<Box<dyn tokio_stream::Stream<Item = Result<proto::StreamEvent, tonic::Status>> + Send>>;
     type ExtensionUIStream = Pin<Box<dyn tokio_stream::Stream<Item = Result<proto::ExtensionUiResponse, tonic::Status>> + Send>>;
     async fn execute_command(

@@ -73,19 +73,19 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Default session directory for a given CWD
 pub fn default_session_dir(cwd: &str) -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    home.join(".xihu_agent").join("sessions").join(encode_cwd(cwd))
+    home.join(".future/agent").join("sessions").join(encode_cwd(cwd))
 }
 
 /// Default config directory
 pub fn default_config_dir() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    home.join(".xihu_agent")
+    home.join(".future/agent")
 }
 
 /// Get default settings paths (global and project-level)
 pub fn default_settings_paths() -> (PathBuf, PathBuf) {
     let home = default_config_dir();
-    (home.join("settings.json"), PathBuf::from(".xihu_agent/settings.json"))
+    (home.join("settings.json"), PathBuf::from(".future/agent/settings.json"))
 }
 
 /// Canonical path (resolve symlinks, absolute)

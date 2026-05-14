@@ -346,7 +346,7 @@ pub struct StreamEvent {
     pub data: ::prost::alloc::string::String,
 }
 /// Generated server implementations.
-pub mod xihu_agent_server {
+pub mod future_agent_server {
     #![allow(
         unused_variables,
         dead_code,
@@ -355,9 +355,9 @@ pub mod xihu_agent_server {
         clippy::let_unit_value,
     )]
     use tonic::codegen::*;
-    /// Generated trait containing gRPC methods that should be implemented for use with XihuAgentServer.
+    /// Generated trait containing gRPC methods that should be implemented for use with FutureAgentServer.
     #[async_trait]
-    pub trait XihuAgent: std::marker::Send + std::marker::Sync + 'static {
+    pub trait FutureAgent: std::marker::Send + std::marker::Sync + 'static {
         /// Unary RPC - send command, get response
         async fn execute_command(
             &self,
@@ -393,14 +393,14 @@ pub mod xihu_agent_server {
         >;
     }
     #[derive(Debug)]
-    pub struct XihuAgentServer<T> {
+    pub struct FutureAgentServer<T> {
         inner: Arc<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
         max_decoding_message_size: Option<usize>,
         max_encoding_message_size: Option<usize>,
     }
-    impl<T> XihuAgentServer<T> {
+    impl<T> FutureAgentServer<T> {
         pub fn new(inner: T) -> Self {
             Self::from_arc(Arc::new(inner))
         }
@@ -451,9 +451,9 @@ pub mod xihu_agent_server {
             self
         }
     }
-    impl<T, B> tonic::codegen::Service<http::Request<B>> for XihuAgentServer<T>
+    impl<T, B> tonic::codegen::Service<http::Request<B>> for FutureAgentServer<T>
     where
-        T: XihuAgent,
+        T: FutureAgent,
         B: Body + std::marker::Send + 'static,
         B::Error: Into<StdError> + std::marker::Send + 'static,
     {
@@ -468,10 +468,10 @@ pub mod xihu_agent_server {
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             match req.uri().path() {
-                "/proto.XihuAgent/ExecuteCommand" => {
+                "/proto.FutureAgent/ExecuteCommand" => {
                     #[allow(non_camel_case_types)]
-                    struct ExecuteCommandSvc<T: XihuAgent>(pub Arc<T>);
-                    impl<T: XihuAgent> tonic::server::UnaryService<super::RpcCommand>
+                    struct ExecuteCommandSvc<T: FutureAgent>(pub Arc<T>);
+                    impl<T: FutureAgent> tonic::server::UnaryService<super::RpcCommand>
                     for ExecuteCommandSvc<T> {
                         type Response = super::RpcResponse;
                         type Future = BoxFuture<
@@ -484,7 +484,7 @@ pub mod xihu_agent_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as XihuAgent>::execute_command(&inner, request).await
+                                <T as FutureAgent>::execute_command(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -511,11 +511,11 @@ pub mod xihu_agent_server {
                     };
                     Box::pin(fut)
                 }
-                "/proto.XihuAgent/StreamEvents" => {
+                "/proto.FutureAgent/StreamEvents" => {
                     #[allow(non_camel_case_types)]
-                    struct StreamEventsSvc<T: XihuAgent>(pub Arc<T>);
+                    struct StreamEventsSvc<T: FutureAgent>(pub Arc<T>);
                     impl<
-                        T: XihuAgent,
+                        T: FutureAgent,
                     > tonic::server::ServerStreamingService<super::StreamRequest>
                     for StreamEventsSvc<T> {
                         type Response = super::StreamEvent;
@@ -530,7 +530,7 @@ pub mod xihu_agent_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as XihuAgent>::stream_events(&inner, request).await
+                                <T as FutureAgent>::stream_events(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -557,11 +557,11 @@ pub mod xihu_agent_server {
                     };
                     Box::pin(fut)
                 }
-                "/proto.XihuAgent/ExtensionUI" => {
+                "/proto.FutureAgent/ExtensionUI" => {
                     #[allow(non_camel_case_types)]
-                    struct ExtensionUISvc<T: XihuAgent>(pub Arc<T>);
+                    struct ExtensionUISvc<T: FutureAgent>(pub Arc<T>);
                     impl<
-                        T: XihuAgent,
+                        T: FutureAgent,
                     > tonic::server::StreamingService<super::ExtensionUiRequest>
                     for ExtensionUISvc<T> {
                         type Response = super::ExtensionUiResponse;
@@ -578,7 +578,7 @@ pub mod xihu_agent_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as XihuAgent>::extension_ui(&inner, request).await
+                                <T as FutureAgent>::extension_ui(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -625,7 +625,7 @@ pub mod xihu_agent_server {
             }
         }
     }
-    impl<T> Clone for XihuAgentServer<T> {
+    impl<T> Clone for FutureAgentServer<T> {
         fn clone(&self) -> Self {
             let inner = self.inner.clone();
             Self {
@@ -638,8 +638,8 @@ pub mod xihu_agent_server {
         }
     }
     /// Generated gRPC service name
-    pub const SERVICE_NAME: &str = "proto.XihuAgent";
-    impl<T> tonic::server::NamedService for XihuAgentServer<T> {
+    pub const SERVICE_NAME: &str = "proto.FutureAgent";
+    impl<T> tonic::server::NamedService for FutureAgentServer<T> {
         const NAME: &'static str = SERVICE_NAME;
     }
 }

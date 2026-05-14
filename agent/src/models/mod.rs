@@ -77,19 +77,19 @@ pub fn builtin_models() -> Vec<Model> {
         .collect()
 }
 
-/// UserModelsPath returns ~/.xihu_agent/models.json.
+/// UserModelsPath returns ~/.future/agent/models.json.
 pub fn user_models_path() -> String {
     let home = dirs::home_dir()
-        .map(|h| h.join(".xihu_agent/models.json"))
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/.xihu_agent/models.json"));
+        .map(|h| h.join(".future/agent/models.json"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/.future/agent/models.json"));
     home.to_string_lossy().to_string()
 }
 
-/// SettingsPath returns ~/.xihu_agent/settings.json.
+/// SettingsPath returns ~/.future/agent/settings.json.
 pub fn settings_path() -> String {
     let home = dirs::home_dir()
-        .map(|h| h.join(".xihu_agent/settings.json"))
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/.xihu_agent/settings.json"));
+        .map(|h| h.join(".future/agent/settings.json"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/.future/agent/settings.json"));
     home.to_string_lossy().to_string()
 }
 
@@ -106,7 +106,7 @@ struct Settings {
     enabled_models: Option<Vec<String>>,
 }
 
-/// LoadSettings reads ~/.xihu_agent/settings.json.
+/// LoadSettings reads ~/.future/agent/settings.json.
 pub fn load_settings(path: &str) -> Result<Settings, String> {
     let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     serde_json::from_str(&data).map_err(|e| e.to_string())
