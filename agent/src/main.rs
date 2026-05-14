@@ -187,6 +187,7 @@ async fn main() -> Result<()> {
         let manager = Arc::new(Manager::default_for(&cwd));
         let broadcaster: Arc<xihu_agent::rpc::SseBroadcaster> = Arc::new(xihu_agent::rpc::SseBroadcaster::new());
         let mut server_session = ServerSession::new(
+            xihu_agent::utils::generate_id(),
             Arc::new(tokio::sync::RwLock::new(engine.agent_loop)),
             manager,
             &cwd,
@@ -199,6 +200,8 @@ async fn main() -> Result<()> {
         // Build AppState for gRPC server
         let app_state = xihu_agent::rpc::AppState {
             session: session.clone(),
+            sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            active_session_id: Arc::new(std::sync::RwLock::new(String::new())),
             welcome_version: xihu_agent::utils::VERSION.to_string(),
             welcome_cwd: cwd.clone(),
             welcome_skills: skill_names.clone(),
