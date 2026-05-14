@@ -152,7 +152,12 @@ export class App extends Container {
   setClearOnShrink(enabled: boolean): void { this.clearOnShrink = enabled; }
 
   getShowHardwareCursor(): boolean { return this.showHardwareCursor; }
-  setShowHardwareCursor(enabled: boolean): void { this.showHardwareCursor = enabled; }
+  setShowHardwareCursor(enabled: boolean): void {
+    if (this.showHardwareCursor === enabled) return;
+    this.showHardwareCursor = enabled;
+    if (!enabled) this.terminal.hideCursor();
+    this.requestRender();
+  }
 
   getFullRedrawCount(): number { return this.fullRedrawCount; }
 
@@ -368,6 +373,12 @@ export class App extends Container {
       return;
     }
 
+    // Filter key release events unless focused component explicitly wants them (matches pi)
+    if (isKeyRelease(data)) {
+      const focused = this.focusedComponent;
+      if (!focused?.wantsKeyRelease) return;
+    }
+
     // SGR mouse events: \x1b[<N;X;YM  (M=press, m=release)
     const mouseMatch = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/);
     if (mouseMatch) {
@@ -417,6 +428,16 @@ export class App extends Container {
     // Parse key through unified parser (Kitty CSI-u, modifyOtherKeys, legacy)
     const keyName = parseKey(data);
     if (keyName) {
+      // If focused component is a now-invisible overlay, redirect focus (matches pi)
+      const focusedOverlay = this.overlayStack.find((o) => o.component === this.focusedComponent);
+      if (focusedOverlay && !this.isOverlayVisible(focusedOverlay, this.terminal.columns, this.terminal.rows)) {
+        const top = this.getTopOverlay();
+        if (top) {
+          this.setFocus(top);
+        } else {
+          this.setFocus(this.editor);
+        }
+      }
       this.handleKey(keyName);
       return;
     }
@@ -826,21 +847,35 @@ export class App extends Container {
     if (!options?.nonCapturing) {
       this.setFocus(component);
     }
+    this.terminal.hideCursor();
     this.requestRender();
 
     return {
       hide: () => {
-        entry.hidden = true;
-        if (this.focusedComponent === component) {
-          this.restoreFocus(entry);
+        const index = this.overlayStack.indexOf(entry);
+        if (index !== -1) {
+          this.overlayStack.splice(index, 1);
+          if (this.focusedComponent === component) {
+            this.restoreFocus(entry);
+          }
+          if (this.overlayStack.length === 0) this.terminal.hideCursor();
+          this.requestRender();
         }
-        this.requestRender();
       },
       setHidden: (h: boolean) => {
+        if (entry.hidden === h) return;
         entry.hidden = h;
         if (h && this.focusedComponent === component) {
-          this.restoreFocus(entry);
+          // If hiding this overlay, move focus to next visible overlay
+          const top = this.getTopOverlay();
+          if (top) {
+            this.setFocus(top);
+          } else {
+            this.restoreFocus(entry);
+          }
+          this.terminal.hideCursor();
         } else if (!h && !entry.options?.nonCapturing && this.isOverlayVisible(entry, this.terminal.columns, this.terminal.rows)) {
+          entry.focusOrder = ++this.focusOrderCounter;
           this.setFocus(component);
         }
         this.requestRender();
