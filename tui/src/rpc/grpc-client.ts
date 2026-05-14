@@ -62,7 +62,7 @@ export class GrpcClient {
     if (this.streamCall) return;
 
     this.streamCall = this.client.StreamEvents({
-      sessionId: this.currentSessionId,
+      session_id: this.currentSessionId,
     });
     
     this.streamCall.on("data", (response: any) => {
