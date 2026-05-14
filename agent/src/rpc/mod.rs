@@ -68,6 +68,20 @@ pub struct RpcCommand {
     pub name: String,
     #[serde(default)]
     pub output_path: String,
+
+    // set_system_prompt
+    #[serde(default)]
+    pub system_prompt: String,
+
+    // set_tools / disable_tools
+    #[serde(default)]
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub no_tools: bool,
+
+    // set_ephemeral
+    #[serde(default)]
+    pub ephemeral: bool,
 }
 
 // ─── RPC Response (stdout) ───────────────────────────────────────────────
@@ -179,6 +193,7 @@ pub struct ServerSession {
     pub session_name: String,
     pub event_bus: Arc<EventBus>,
     pub broadcaster: Arc<SseBroadcaster>,
+    pub ephemeral: bool,
 }
 
 impl ServerSession {
@@ -199,6 +214,7 @@ impl ServerSession {
             session_name: String::new(),
             event_bus,
             broadcaster,
+            ephemeral: false,
         }
     }
     
@@ -226,6 +242,7 @@ impl ServerSession {
             session_name: String::new(),
             event_bus,
             broadcaster,
+            ephemeral: false,
         }
     }
 
@@ -439,6 +456,28 @@ impl ServerSession {
     pub fn set_auto_retry(&mut self, enabled: bool) {
         self.auto_retry = enabled;
         self.agent_loop.try_write().unwrap().config.max_retries = if enabled { 3 } else { 0 };
+    }
+
+    pub fn set_system_prompt(&mut self, prompt: &str) {
+        let mut loop_ = self.agent_loop.try_write().unwrap();
+        loop_.system_prompt = prompt.to_string();
+        loop_.config.system_prompt = prompt.to_string();
+    }
+
+    pub fn set_tools(&mut self, tool_names: &[String]) {
+        let all_tools = crate::tools::all_tools();
+        let selected: Vec<_> = all_tools.into_iter()
+            .filter(|t| tool_names.contains(&t.def.function.name))
+            .collect();
+        self.agent_loop.try_write().unwrap().tools = selected;
+    }
+
+    pub fn disable_tools(&mut self) {
+        self.agent_loop.try_write().unwrap().tools = vec![];
+    }
+
+    pub fn set_ephemeral(&mut self, ephemeral: bool) {
+        self.ephemeral = ephemeral;
     }
 
     pub fn execute_bash(&self, command: &str) -> Result<serde_json::Value> {
@@ -655,6 +694,22 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "set_auto_retry" => {
             session.write().unwrap().set_auto_retry(cmd.enabled);
             RpcResponse::ok(id, "set_auto_retry", serde_json::json!({}))
+        }
+        "set_system_prompt" => {
+            session.write().unwrap().set_system_prompt(&cmd.system_prompt);
+            RpcResponse::ok(id, "set_system_prompt", serde_json::json!({}))
+        }
+        "set_tools" => {
+            session.write().unwrap().set_tools(&cmd.tools);
+            RpcResponse::ok(id, "set_tools", serde_json::json!({"tools": cmd.tools}))
+        }
+        "disable_tools" => {
+            session.write().unwrap().disable_tools();
+            RpcResponse::ok(id, "disable_tools", serde_json::json!({}))
+        }
+        "set_ephemeral" => {
+            session.write().unwrap().set_ephemeral(cmd.ephemeral);
+            RpcResponse::ok(id, "set_ephemeral", serde_json::json!({"ephemeral": cmd.ephemeral}))
         }
         "bash" => {
             let result = session.write().unwrap().execute_bash(&cmd.command);

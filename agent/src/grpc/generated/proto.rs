@@ -52,6 +52,17 @@ pub struct RpcCommand {
     pub name: ::prost::alloc::string::String,
     #[prost(string, tag = "94")]
     pub output_path: ::prost::alloc::string::String,
+    /// set_system_prompt
+    #[prost(string, tag = "100")]
+    pub system_prompt: ::prost::alloc::string::String,
+    /// set_tools / disable_tools
+    #[prost(string, repeated, tag = "110")]
+    pub tools: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(bool, tag = "111")]
+    pub no_tools: bool,
+    /// set_ephemeral
+    #[prost(bool, tag = "120")]
+    pub ephemeral: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ImageContent {
