@@ -307,9 +307,9 @@ impl Manager {
                     continue;
                 }
                 let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                let cwd = cwd_entry.file_name().to_str().unwrap_or("");
+                let cwd = cwd_entry.file_name().to_str().unwrap_or("").to_string();
                 
-                if let Ok(sess) = self.load(id, cwd) {
+                if let Ok(sess) = self.load(id, &cwd) {
                     summaries.push(SessionSummary {
                         id: sess.id,
                         cwd: sess.cwd,
