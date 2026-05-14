@@ -346,7 +346,9 @@ impl ServerSession {
     }
 
     pub fn abort(&self) {
-        self.agent_loop.try_write().unwrap().abort();
+        if let Ok(loop_) = self.agent_loop.try_write() {
+            loop_.abort();
+        }
     }
 
     pub fn new_session(&mut self) -> Result<()> {
@@ -578,7 +580,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "follow_up", serde_json::json!({}))
         }
         "abort" => {
-            session.write().unwrap().abort();
+            // Try to abort, but don't fail if lock is busy
+            if let Ok(mut sess) = session.try_write() {
+                sess.abort();
+            }
             RpcResponse::ok(id, "abort", serde_json::json!({}))
         }
         "new_session" => {
@@ -760,7 +765,9 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         }
         "get_commands" => RpcResponse::ok(id, "get_commands", serde_json::json!({"commands": []})),
         "abort_retry" => {
-            session.write().unwrap().abort();
+            if let Ok(mut sess) = session.try_write() {
+                sess.abort();
+            }
             RpcResponse::ok(id, "abort_retry", serde_json::json!({}))
         }
         "abort_bash" => {
