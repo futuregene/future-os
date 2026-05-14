@@ -458,9 +458,6 @@ async function runPrintMode(
 
   const sessionId = state.sessionId;
   const isJsonMode = args.mode === "json";
-  if (!isJsonMode) {
-    console.error(`Connected to session: ${sessionId}`);
-  }
 
   // Apply CLI options
   await applyCliOptions((client as any).client, sessionId, args);
@@ -486,11 +483,10 @@ async function runPrintMode(
           resolve();
         }
       } else {
-        // Text mode: stream output
+        // Text mode: accumulate, output only at end
         if (response.type === "text_chunk") {
           const data = JSON.parse(response.data);
           text += data.text ?? "";
-          process.stdout.write(data.text ?? "");
         } else if (response.type === "agent_end") {
           done = true;
           stream.cancel();
@@ -527,14 +523,19 @@ async function runPrintMode(
   // Wait for response to complete
   await eventPromise;
 
-  // Output in JSON mode
+  // Output result
   if (isJsonMode) {
+    // JSON mode: output all events
     const result = {
       sessionId,
       messages: jsonMessages,
-      text: text,
     };
     console.log(JSON.stringify(result, null, 2));
+  } else {
+    // Text mode: output final text
+    if (text) {
+      console.log(text);
+    }
   }
 }
 
@@ -599,9 +600,6 @@ if (args.print) {
       console.error("No prompt provided. Usage: xihu -p \"message\"");
     }
     process.exit(1);
-  }
-  if (args.mode !== "json") {
-    console.error(`Connecting to gRPC server at ${args.grpcAddr}`);
   }
   runPrintMode(args.grpcAddr, args.fileArgs, args.messages, args)
     .then(() => {
