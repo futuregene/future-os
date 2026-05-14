@@ -1,6 +1,7 @@
 /**
  * gRPC client for xihu Agent.
  * Uses @grpc/grpc-js with proto descriptor.
+ * Only supports gRPC (no JSON-RPC or Unix socket).
  */
 
 import * as grpc from "@grpc/grpc-js";
@@ -38,10 +39,21 @@ export class GrpcClient {
   private eventListeners: EventListener[] = [];
   private streamCall: any = null;
   private connected = false;
+  private currentSessionId: string = "";
 
   constructor(address = "localhost:50051") {
     const credentials = grpc.credentials.createInsecure();
     this.client = new proto.XihuAgent(address, credentials);
+  }
+
+  // ─── Session Management ───────────────────────────────────────────────
+
+  getCurrentSessionId(): string {
+    return this.currentSessionId;
+  }
+
+  setCurrentSessionId(sessionId: string): void {
+    this.currentSessionId = sessionId;
   }
 
   // ─── Event Streaming ─────────────────────────────────────────────────
@@ -49,15 +61,14 @@ export class GrpcClient {
   connectEvents(): void {
     if (this.streamCall) return;
 
-    this.streamCall = this.client.StreamEvents({});
+    this.streamCall = this.client.StreamEvents({
+      sessionId: this.currentSessionId,
+    });
     
     this.streamCall.on("data", (response: any) => {
-      // Parse the StreamEvent
       try {
-        // The response has 'type' and 'data' fields as strings
         const event: AgentEvent = {
           type: response.type || "message",
-          // Data is already a stringified JSON
           ...(typeof response.data === "string" ? JSON.parse(response.data) : response.data),
         };
         
@@ -104,13 +115,14 @@ export class GrpcClient {
     this.streamCall = null;
   }
 
-  // ─── RPC Methods ────────────────────────────────────────────────────
+  // ─── RPC Call Helper ─────────────────────────────────────────────────
 
   private async call(type: string, cmd: Partial<RpcCommand>): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const request = {
         id: String(Date.now()),
         type,
+        sessionId: this.currentSessionId || undefined,
         ...cmd,
       };
 
@@ -123,7 +135,6 @@ export class GrpcClient {
           reject(new Error(response.error || "unknown error"));
           return;
         }
-        // Parse the data field if it's a JSON string
         if (response.data && typeof response.data === "string") {
           try {
             resolve(JSON.parse(response.data));
@@ -136,6 +147,62 @@ export class GrpcClient {
       });
     });
   }
+
+  // ─── Session Management RPC Methods ──────────────────────────────────
+
+  async newSession(): Promise<{ sessionId?: string; cancelled: boolean }> {
+    const result = await this.call("new_session", {}) as any;
+    if (result?.sessionId) {
+      this.currentSessionId = result.sessionId;
+    }
+    return result || { cancelled: false };
+  }
+
+  async switchSession(sessionId: string): Promise<{ cancelled: boolean }> {
+    const result = await this.call("switch_session", { sessionId }) as any;
+    if (result && !result.cancelled) {
+      this.currentSessionId = sessionId;
+    }
+    return result || { cancelled: false };
+  }
+
+  async fork(entryId: string): Promise<{ text: string; cancelled: boolean }> {
+    const result = await this.call("fork", { entryId }) as any;
+    if (result?.sessionId) {
+      this.currentSessionId = result.sessionId;
+    }
+    return result || { text: "", cancelled: true };
+  }
+
+  async clone(): Promise<{ cancelled: boolean }> {
+    const result = await this.call("clone", {}) as any;
+    if (result?.sessionId) {
+      this.currentSessionId = result.sessionId;
+    }
+    return result || { cancelled: true };
+  }
+
+  async getForkMessages(): Promise<{ messages: unknown[] }> {
+    return this.call("get_fork_messages", {}) as Promise<{ messages: unknown[] }>;
+  }
+
+  async getLastAssistantText(): Promise<{ text: string | null }> {
+    return this.call("get_last_assistant_text", {}) as Promise<{ text: string | null }>;
+  }
+
+  async setSessionName(name: string): Promise<void> {
+    await this.call("set_session_name", { name });
+  }
+
+  async listSessions(): Promise<{ sessions: SessionSummary[] }> {
+    return this.call("list_sessions", {}) as Promise<{ sessions: SessionSummary[] }>;
+  }
+
+  async deleteSession(sessionId: string): Promise<{ deleted: boolean }> {
+    return this.call("delete_session", { sessionId }) as Promise<{ deleted: boolean }>;
+  }
+
+  // ─── Core RPC Methods ────────────────────────────────────────────────
 
   async prompt(message: string, images?: RpcCommand["images"], streamingBehavior?: "steer" | "followUp"): Promise<void> {
     await this.call("prompt", { message, images, streamingBehavior });
@@ -151,10 +218,6 @@ export class GrpcClient {
 
   async abort(): Promise<void> {
     await this.call("abort", {});
-  }
-
-  async newSession(): Promise<{ cancelled: boolean }> {
-    return this.call("new_session", {}) as Promise<{ cancelled: boolean }>;
   }
 
   async getState(): Promise<RpcSessionState> {
@@ -223,38 +286,6 @@ export class GrpcClient {
 
   async exportHtml(outputPath?: string): Promise<{ path: string }> {
     return this.call("export_html", { outputPath }) as Promise<{ path: string }>;
-  }
-
-  async switchSession(sessionPath: string): Promise<{ cancelled: boolean }> {
-    return this.call("switch_session", { sessionPath }) as Promise<{ cancelled: boolean }>;
-  }
-
-  async fork(entryId: string): Promise<{ text: string; cancelled: boolean }> {
-    return this.call("fork", { entryId }) as Promise<{ text: string; cancelled: boolean }>;
-  }
-
-  async clone(): Promise<{ cancelled: boolean }> {
-    return this.call("clone", {}) as Promise<{ cancelled: boolean }>;
-  }
-
-  async getForkMessages(): Promise<{ messages: unknown[] }> {
-    return this.call("get_fork_messages", {}) as Promise<{ messages: unknown[] }>;
-  }
-
-  async getLastAssistantText(): Promise<{ text: string | null }> {
-    return this.call("get_last_assistant_text", {}) as Promise<{ text: string | null }>;
-  }
-
-  async setSessionName(name: string): Promise<void> {
-    await this.call("set_session_name", { name });
-  }
-
-  async listSessions(): Promise<{ sessions: SessionSummary[] }> {
-    return this.call("list_sessions", {}) as Promise<{ sessions: SessionSummary[] }>;
-  }
-
-  async deleteSession(sessionId: string): Promise<{ deleted: boolean }> {
-    return this.call("delete_session", { sessionId }) as Promise<{ deleted: boolean }>;
   }
 
   async getCommands(): Promise<{ commands: unknown[] }> {

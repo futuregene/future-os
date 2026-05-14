@@ -161,7 +161,12 @@ export class App extends Container {
 
   getFullRedrawCount(): number { return this.fullRedrawCount; }
 
-  constructor(private grpcAddr = "localhost:50051") {
+  constructor(private grpcAddr = "localhost:50051", private cliOptions: {
+    session?: string | null;
+    continue?: boolean;
+    resume?: boolean;
+    fork?: string | null;
+  } = {}) {
     super();
     this.terminal = new NodeTerminal();
     // Always use gRPC
@@ -229,15 +234,69 @@ export class App extends Container {
       () => this.requestRender(),
     );
 
-    await this.refresh();
-
-    // Create a new session if the server auto-generated one (no --session etc).
-    if (!this.state.explicitSession) {
+    // Handle CLI session options
+    if (this.cliOptions.session) {
+      // --session: switch to specific session
+      this.state.explicitSession = true;
       try {
-        await this.client.newSession();
+        await this.client.switchSession(this.cliOptions.session);
         await this.refresh();
-      } catch {
-        // Server may not support new_session — continue with current session
+      } catch (err) {
+        this.chat.addMessage({
+          id: crypto.randomUUID(),
+          role: "system",
+          content: `Failed to switch to session ${this.cliOptions.session}: ${err}`,
+        });
+      }
+    } else if (this.cliOptions.continue) {
+      // --continue: find most recent session and continue
+      this.state.explicitSession = true;
+      try {
+        const { sessions } = await this.client.listSessions();
+        if (sessions.length > 0) {
+          // Sort by updated_at descending
+          sessions.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+          await this.client.switchSession(sessions[0].id);
+          await this.refresh();
+        }
+      } catch (err) {
+        this.chat.addMessage({
+          id: crypto.randomUUID(),
+          role: "system",
+          content: `Failed to continue session: ${err}`,
+        });
+      }
+    } else if (this.cliOptions.fork) {
+      // --fork: fork from specific session
+      this.state.explicitSession = true;
+      try {
+        await this.client.fork(this.cliOptions.fork);
+        await this.refresh();
+      } catch (err) {
+        this.chat.addMessage({
+          id: crypto.randomUUID(),
+          role: "system",
+          content: `Failed to fork session ${this.cliOptions.fork}: ${err}`,
+        });
+      }
+    } else if (this.cliOptions.resume) {
+      // --resume: show session picker (handled by showSessions)
+      this.state.explicitSession = true;
+      await this.refresh();
+      this.showSessions();
+    } else {
+      // No explicit session option, create new session
+      await this.refresh();
+      if (!this.state.explicitSession) {
+        try {
+          const result = await this.client.newSession();
+          if (result.sessionId) {
+            // Server created a new session with an ID, use it
+            await this.refresh();
+          }
+        } catch {
+          // Server may not support new_session — continue with current session
+        }
       }
     }
 

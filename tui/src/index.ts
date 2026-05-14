@@ -1,10 +1,19 @@
 /**
  * xihu TypeScript TUI entry point.
- * Usage: node dist/index.js [--socket <path>] [--port <port>] [--url <url>]
+ * Usage: node dist/index.js --grpc-addr <addr> [options]
+ *
+ * Options:
+ *   --grpc-addr <addr>     gRPC server address (default: localhost:50051)
+ *   --session <id>        Connect to specific session
+ *   --continue, -c         Continue most recent session
+ *   --resume, -r          Resume a session (show picker)
+ *   --fork <id>           Fork from a session
  *
  * Examples:
- *   node dist/index.js --socket /tmp/xihu.sock
- *   node dist/index.js --port 7890
+ *   node dist/index.js --grpc-addr localhost:50051
+ *   node dist/index.js --grpc-addr localhost:50051 --session 20260514-140838-1a064f
+ *   node dist/index.js --continue
+ *   node dist/index.js --fork 20260514-140838-1a064f
  */
 
 // ─── Public API re-exports ────────────────────────────────────────────────
@@ -43,23 +52,89 @@ export { visibleWidth, wrapTextWithAnsi, applyBackgroundToLine, truncateToWidth,
 export { NodeTerminal, SYNC_BEGIN, SYNC_END, MOUSE_TRACK_ON, MOUSE_TRACK_OFF } from "./tui.js";
 
 // RPC
-export { RpcClient } from "./rpc/client.js";
+export { GrpcClient } from "./rpc/grpc-client.js";
 
-// ─── Main entry point ────────────────────────────────────────────────────
+// ─── CLI Arguments ─────────────────────────────────────────────────────────
+
+interface CliArgs {
+  grpcAddr: string;
+  session: string | null;
+  continue: boolean;
+  resume: boolean;
+  fork: string | null;
+}
+
+function parseArgs(args: string[]): CliArgs {
+  const result: CliArgs = {
+    grpcAddr: process.env.XIHU_GRPC_ADDR ?? "localhost:50051",
+    session: null,
+    continue: false,
+    resume: false,
+    fork: null,
+  };
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    switch (arg) {
+      case "--grpc-addr":
+        if (i + 1 < args.length) {
+          result.grpcAddr = args[++i];
+        }
+        break;
+      case "--session":
+        if (i + 1 < args.length) {
+          result.session = args[++i];
+        }
+        break;
+      case "--continue":
+      case "-c":
+        result.continue = true;
+        break;
+      case "--resume":
+      case "-r":
+        result.resume = true;
+        break;
+      case "--fork":
+        if (i + 1 < args.length) {
+          result.fork = args[++i];
+        }
+        break;
+      case "--help":
+      case "-h":
+        console.log(`xihu TUI
+
+Usage: node dist/index.js [options]
+
+Options:
+  --grpc-addr <addr>   gRPC server address (default: localhost:50051)
+  --session <id>       Connect to specific session
+  --continue, -c       Continue most recent session
+  --resume, -r         Resume a session (show picker)
+  --fork <id>           Fork from a session
+  --help, -h            Show this help
+`);
+        process.exit(0);
+        break;
+    }
+  }
+
+  return result;
+}
+
+// ─── Main entry point ──────────────────────────────────────────────────────
 
 import { App } from "./app.js";
 
-const args = process.argv.slice(2);
-let grpcAddr = "localhost:50051";
+const args = parseArgs(process.argv.slice(2));
 
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === "--grpc-addr" && i + 1 < args.length) {
-    grpcAddr = args[i + 1];
-    i++;
-  }
-}
+console.log(`Connecting to gRPC server at ${args.grpcAddr}`);
 
-const app = new App(grpcAddr);
+const app = new App(args.grpcAddr, {
+  session: args.session,
+  continue: args.continue,
+  resume: args.resume,
+  fork: args.fork,
+});
 
 process.on("SIGINT", async () => {
   await app.stop();
