@@ -874,7 +874,7 @@ export class Editor implements Component, Focusable {
     if (availableWidth <= 0) return;
 
     const prefixWidth = visibleWidth(this.prefix);
-    const borderPad = this.borderColor !== undefined ? 1 : 0;
+    const borderPad = this.borderColor !== undefined ? 2 : 0;
     const firstLineWidth = availableWidth - prefixWidth - this.paddingX - borderPad;
     const continuationWidth = availableWidth - this.paddingX - borderPad;
 
@@ -1003,7 +1003,7 @@ export class Editor implements Component, Focusable {
       ? `${CSI}38;5;${this.borderColor}m│${RESET}`
       : "";
     const padStr = " ".repeat(this.paddingX);
-    const borderPad = this.borderColor !== undefined ? 1 : 0;
+    const borderPad = this.borderColor !== undefined ? 2 : 0;
 
     const prefixStr = `${CSI}38;5;${this.theme.prompt}m${this.prefix}${RESET}`;
     const prefixWidth = visibleWidth(this.prefix);

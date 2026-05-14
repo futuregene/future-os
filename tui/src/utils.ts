@@ -82,7 +82,7 @@ function isExtendedPictographic(code: number): boolean {
     (code >= 0x25AA && code <= 0x25AB) || // squares
     code === 0x25B6 || code === 0x25C0 || // triangles
     (code >= 0x25FB && code <= 0x25FE) || // squares
-    (code >= 0x2600 && code <= 0x27BF) || // many symbols
+    (code >= 0x2600 && code <= 0x2604) || // ☀☁☂☃☄ (emoji-presentation only)
     (code >= 0x2934 && code <= 0x2935) || // arrows
     (code >= 0x2B05 && code <= 0x2B07) || // arrows
     (code >= 0x2B1B && code <= 0x2B1C) || // squares
@@ -193,8 +193,12 @@ export function visibleWidth(s: string): number {
   const cached = visibleWidthCache.get(s);
   if (cached !== undefined) return cached;
 
+  // Strip ANSI codes before computing visible width — escape sequences
+  // have zero visible width but individual bytes would be counted as width 1.
+  const clean = s.includes("\x1b") ? stripAnsiCodes(s) : s;
+
   let width = 0;
-  for (const { segment } of segmenter.segment(s)) {
+  for (const { segment } of segmenter.segment(clean)) {
     width += graphemeWidth(segment);
   }
 

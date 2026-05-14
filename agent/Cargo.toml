@@ -44,5 +44,16 @@ shellexpand = "3"
 async-trait = "0.1"
 async-stream = "0.3"
 
+# gRPC
+tonic = "0.12"
+prost = "0.13"
+prost-types = "0.13"
+tower-http = { version = "0.6", features = ["cors"] }
+
+# Proto codegen (for building .proto files)
+[build-dependencies]
+prost-build = "0.13"
+tonic-build = "0.12"
+
 [dev-dependencies]
 tokio-test = "0.4"

@@ -53,6 +53,10 @@ struct Cli {
     #[arg(long)]
     socket: Option<String>,
 
+    /// gRPC port for server mode (default: disabled)
+    #[arg(long)]
+    grpc_port: Option<u16>,
+
     /// Message arguments
     messages: Vec<String>,
 }
@@ -152,8 +156,34 @@ async fn main() -> Result<()> {
 
         let manager = Arc::new(Manager::default_for(&cwd));
         let mut server_session = ServerSession::new(engine.agent_loop, manager, &cwd);
-        server_session.model = resolved_model;
+        server_session.model = resolved_model.clone();
         let session = Arc::new(std::sync::RwLock::new(server_session));
+        
+        if let Some(ref grpc_port) = cli.grpc_port {
+            // Combined HTTP + gRPC mode (doesn't use Server HTTP interface)
+            let http_port = cli.port
+                .as_ref()
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(8080);
+            
+            // Build AppState directly
+            let broadcaster = xihu_agent::rpc::SseBroadcaster::new();
+            let app_state = xihu_agent::rpc::AppState {
+                session: session.clone(),
+                welcome_version: xihu_agent::utils::VERSION.to_string(),
+                welcome_cwd: cwd.clone(),
+                welcome_skills: skill_names.clone(),
+                welcome_context: vec![],
+                welcome_exts: vec![],
+                explicit_session: false,
+                broadcaster,
+            };
+            
+            xihu_agent::grpc::serve_combined(app_state, http_port, *grpc_port).await?;
+            return Ok(());
+        }
+        
+        // HTTP server mode
         let mut server = Server::new(session);
         server.set_welcome(
             xihu_agent::utils::VERSION,
