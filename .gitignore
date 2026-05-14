@@ -10,6 +10,9 @@
 *.out
 vendor/
 
+# Rust
+agent/target/
+
 # IDE
 .idea/
 .vscode/
