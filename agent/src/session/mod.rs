@@ -153,6 +153,18 @@ pub struct Session {
     pub updated_at: DateTime<Local>,
 }
 
+/// Summary of a session for listing (matches Go SessionSummary)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSummary {
+    pub id: String,
+    pub cwd: String,
+    #[serde(rename = "updated_at")]
+    pub updated_at: DateTime<Local>,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 impl Session {
     pub fn new(cwd: &str, model: &str, base_url: &str) -> Self {
         let now = Local::now();
@@ -273,6 +285,50 @@ impl Manager {
         }
         sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(sessions)
+    }
+    
+    /// List all sessions across all CWD directories
+    pub fn list_all(&self) -> Result<Vec<SessionSummary>> {
+        if !self.dir.exists() {
+            return Ok(vec![]);
+        }
+        let mut summaries = vec![];
+        
+        for cwd_entry in fs::read_dir(&self.dir)? {
+            let cwd_entry = cwd_entry?;
+            if !cwd_entry.file_type()?.is_dir() {
+                continue;
+            }
+            
+            for entry in fs::read_dir(cwd_entry.path())? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                let cwd = cwd_entry.file_name().to_str().unwrap_or("");
+                
+                if let Ok(sess) = self.load(id, cwd) {
+                    summaries.push(SessionSummary {
+                        id: sess.id,
+                        cwd: sess.cwd,
+                        updated_at: sess.updated_at,
+                        model: sess.model,
+                        name: if sess.name.is_empty() { None } else { Some(sess.name) },
+                    });
+                }
+            }
+        }
+        
+        summaries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(summaries)
+    }
+    
+    /// Delete a session file
+    pub fn delete(&self, id: &str, cwd: &str) -> Result<()> {
+        let path = self.session_path(cwd, id);
+        fs::remove_file(path).map_err(|e| anyhow!("failed to delete session: {}", e))
     }
 }
 

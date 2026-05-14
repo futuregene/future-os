@@ -652,22 +652,100 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "get_session_stats", stats)
         }
         "list_sessions" => {
-            let sessions = session.read().unwrap().list_sessions().unwrap_or_default();
+            // Use session_manager.list_all() to get all sessions from disk
+            let summaries = session.read().unwrap().session_manager.list_all().unwrap_or_default();
+            // Convert to the format expected by TUI
+            let sessions: Vec<serde_json::Value> = summaries.into_iter().map(|s| {
+                serde_json::json!({
+                    "id": s.id,
+                    "name": s.name,
+                    "model": s.model,
+                    "cwd": s.cwd,
+                    "updated_at": s.updated_at.format("%Y-%m-%d %H:%M:%S").to_string()
+                })
+            }).collect();
             RpcResponse::ok(id, "list_sessions", serde_json::json!({"sessions": sessions}))
         }
         "switch_session" => {
-            let _ = session.write().unwrap().switch_session(&cmd.session_path, &cmd.session_id);
+            // Switch to the session specified by session_id
+            if cmd.session_id.is_empty() {
+                return RpcResponse::build_fail(id, "switch_session", "session_id is required");
+            }
+            // Update active_session_id
+            if let Ok(mut active_id) = state.active_session_id.try_write() {
+                *active_id = cmd.session_id.clone();
+            }
             RpcResponse::ok(id, "switch_session", serde_json::json!({"cancelled": false}))
         }
         "delete_session" => {
-            let _ = session.write().unwrap().delete_session(&cmd.session_id);
-            RpcResponse::ok(id, "delete_session", serde_json::json!({}))
+            if cmd.session_id.is_empty() {
+                return RpcResponse::build_fail(id, "delete_session", "session_id is required");
+            }
+            // Get cwd before deleting
+            let cwd = session.read().unwrap().cwd.clone();
+            // Delete from disk
+            if let Err(e) = session.read().unwrap().session_manager.delete(&cmd.session_id, &cwd) {
+                return RpcResponse::build_fail(id, "delete_session", &e.to_string());
+            }
+            // Remove from memory if present
+            if let Ok(mut sessions) = state.sessions.try_write() {
+                sessions.remove(&cmd.session_id);
+            }
+            RpcResponse::ok(id, "delete_session", serde_json::json!({"deleted": true}))
         }
         "fork" => {
-            let _ = session.write().unwrap().fork(&cmd.entry_id);
-            RpcResponse::ok(id, "fork", serde_json::json!({}))
+            let entry_id = &cmd.entry_id;
+            if entry_id.is_empty() {
+                return RpcResponse::build_fail(id, "fork", "entry_id is required");
+            }
+            
+            // Extract needed data from session
+            let (agent_loop, session_manager, event_bus, broadcaster, cwd, session_id) = {
+                let sess = session.read().unwrap();
+                (
+                    sess.agent_loop.clone(),
+                    sess.session_manager.clone(),
+                    sess.event_bus.clone(),
+                    sess.broadcaster.clone(),
+                    sess.cwd.clone(),
+                    sess.session_id.clone(),
+                )
+            };
+            
+            // Get parent session from manager
+            let parent = match session_manager.load(&cwd, &session_id) {
+                Ok(s) => s,
+                Err(_) => {
+                    return RpcResponse::build_fail(id, "fork", "parent session not found");
+                }
+            };
+            
+            // Fork a new session
+            let forked = crate::session::fork_session(&parent, entry_id);
+            let forked_id = forked.id.clone();
+            
+            // Save the forked session
+            if let Err(e) = session_manager.save(&forked) {
+                return RpcResponse::build_fail(id, "fork", &format!("failed to save forked session: {}", e));
+            }
+            
+            // Add to sessions map
+            let new_sess = ServerSession::new_with_shared_loop(
+                forked_id.clone(),
+                agent_loop,
+                session_manager,
+                &forked.cwd,
+                event_bus,
+                broadcaster,
+            );
+            state.create_session(new_sess);
+            
+            RpcResponse::ok(id, "fork", serde_json::json!({"cancelled": false}))
         }
-        "get_fork_messages" => RpcResponse::ok(id, "get_fork_messages", serde_json::json!({"messages": []})),
+        "get_fork_messages" => {
+            let msgs = session.read().unwrap().get_messages();
+            RpcResponse::ok(id, "get_fork_messages", serde_json::json!({"messages": msgs}))
+        }
         "get_last_assistant_text" => {
             let text = session.read().unwrap().get_last_assistant_text();
             RpcResponse::ok(
@@ -681,17 +759,113 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "set_session_name", serde_json::json!({}))
         }
         "get_commands" => RpcResponse::ok(id, "get_commands", serde_json::json!({"commands": []})),
-        "abort_retry" => RpcResponse::ok(id, "abort_retry", serde_json::json!({})),
-        "abort_bash" => RpcResponse::ok(id, "abort_bash", serde_json::json!({})),
-        "cycle_model" => RpcResponse::ok(id, "cycle_model", serde_json::json!({"model": ""})),
-        "cycle_thinking_level" => RpcResponse::ok(id, "cycle_thinking_level", serde_json::json!({"level": ""})),
+        "abort_retry" => {
+            session.write().unwrap().abort();
+            RpcResponse::ok(id, "abort_retry", serde_json::json!({}))
+        }
+        "abort_bash" => {
+            // Bash abort is handled by the agent loop
+            RpcResponse::ok(id, "abort_bash", serde_json::json!({}))
+        }
+        "cycle_model" => {
+            // Cycle to next model
+            let models: Vec<String> = crate::models::Registry::new()
+                .all_models()
+                .into_iter()
+                .map(|m| m.id)
+                .collect();
+            if models.is_empty() {
+                return RpcResponse::ok(id, "cycle_model", serde_json::json!({"model": "", "thinkingLevel": "", "isScoped": false}));
+            }
+            let current = session.read().unwrap().model.clone();
+            let idx = models.iter().position(|m| m == &current).unwrap_or(0);
+            let next_idx = (idx + 1) % models.len();
+            let next_model = &models[next_idx];
+            
+            // Update session model
+            session.write().unwrap().model = next_model.clone();
+            
+            RpcResponse::ok(id, "cycle_model", serde_json::json!({
+                "model": next_model,
+                "thinkingLevel": session.read().unwrap().thinking_level.clone(),
+                "isScoped": false
+            }))
+        }
+        "cycle_thinking_level" => {
+            // Cycle thinking level: off -> minimal -> low -> medium -> high -> xhigh -> off
+            let levels = ["off", "minimal", "low", "medium", "high", "xhigh"];
+            let current = session.read().unwrap().thinking_level.clone();
+            let idx = levels.iter().position(|l| *l == current).unwrap_or(0);
+            let next_idx = (idx + 1) % levels.len();
+            let next_level = levels[next_idx];
+            
+            // Update session thinking level
+            session.write().unwrap().thinking_level = next_level.to_string();
+            
+            RpcResponse::ok(id, "cycle_thinking_level", serde_json::json!({"level": next_level}))
+        }
         "get_available_models" => {
             let registry = crate::models::Registry::new();
             let models = registry.all_models().into_iter().map(|m| m.id).collect::<Vec<_>>();
             RpcResponse::ok(id, "get_available_models", serde_json::json!({"models": models}))
         }
-        "clone" => RpcResponse::ok(id, "clone", serde_json::json!({})),
-        "export_html" => RpcResponse::ok(id, "export_html", serde_json::json!({"path": ""})),
+        "clone" => {
+            // Extract needed data from session
+            let (agent_loop, session_manager, event_bus, broadcaster, cwd, session_id) = {
+                let sess = session.read().unwrap();
+                let entries = &sess.messages;
+                if entries.is_empty() {
+                    return RpcResponse::build_fail(id, "clone", "no entries to clone");
+                }
+                (
+                    sess.agent_loop.clone(),
+                    sess.session_manager.clone(),
+                    sess.event_bus.clone(),
+                    sess.broadcaster.clone(),
+                    sess.cwd.clone(),
+                    sess.session_id.clone(),
+                )
+            };
+            
+            // Get parent session from manager
+            let parent = match session_manager.load(&cwd, &session_id) {
+                Ok(s) => s,
+                Err(_) => {
+                    return RpcResponse::build_fail(id, "clone", "parent session not found");
+                }
+            };
+            
+            let leaf_id = parent.entries.last().map(|e| e.id.clone()).unwrap_or_default();
+            if leaf_id.is_empty() {
+                return RpcResponse::build_fail(id, "clone", "no entries to clone");
+            }
+            
+            // Fork from leaf
+            let forked = crate::session::fork_session(&parent, &leaf_id);
+            let forked_id = forked.id.clone();
+            
+            // Save the forked session
+            if let Err(e) = session_manager.save(&forked) {
+                return RpcResponse::build_fail(id, "clone", &format!("failed to save cloned session: {}", e));
+            }
+            
+            // Add to sessions map
+            let new_sess = ServerSession::new_with_shared_loop(
+                forked_id.clone(),
+                agent_loop,
+                session_manager,
+                &forked.cwd,
+                event_bus,
+                broadcaster,
+            );
+            state.create_session(new_sess);
+            
+            RpcResponse::ok(id, "clone", serde_json::json!({"cancelled": false}))
+        }
+        "export_html" => {
+            // TODO: implement HTML export
+            RpcResponse::ok(id, "export_html", serde_json::json!({"path": ""}))
+        }
         "ui_response" => RpcResponse::ok(id, "ui_response", serde_json::json!({})),
         _ => RpcResponse::build_fail(id, cmd_type, &format!("unknown command: {}", cmd_type)),
     }
