@@ -34,7 +34,7 @@ export interface AutocompleteProvider {
 
 // ─── Autocomplete Manager ──────────────────────────────────────────────────
 
-const DEBOUNCE_MS = 150;
+const DEBOUNCE_MS = 20;  // matches pi's autocomplete debounce
 
 export class AutocompleteManager {
   private providers: AutocompleteProvider[] = [];

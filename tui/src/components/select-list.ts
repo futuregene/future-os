@@ -92,18 +92,24 @@ export class SelectList implements Component {
 
     switch (key) {
       case "up":
+        // Wrap to bottom when at top (matches pi)
         if (this.selectedIndex > 0) {
           this.selectedIndex--;
-          this.recalcScroll();
-          this.notifySelectionChange();
+        } else {
+          this.selectedIndex = this.filteredItems.length - 1;
         }
+        this.recalcScroll();
+        this.notifySelectionChange();
         return true;
       case "down":
+        // Wrap to top when at bottom (matches pi)
         if (this.selectedIndex < this.filteredItems.length - 1) {
           this.selectedIndex++;
-          this.recalcScroll();
-          this.notifySelectionChange();
+        } else {
+          this.selectedIndex = 0;
         }
+        this.recalcScroll();
+        this.notifySelectionChange();
         return true;
       case "enter":
         if (this.filteredItems.length > 0) {
@@ -133,9 +139,7 @@ export class SelectList implements Component {
     } else {
       const q = this.filter.toLowerCase();
       this.filteredItems = this.items.filter(
-        (item) =>
-          item.label.toLowerCase().includes(q) ||
-          (item.description?.toLowerCase().includes(q) ?? false)
+        (item) => item.value.toLowerCase().startsWith(q)
       );
     }
     if (this.selectedIndex >= this.filteredItems.length) {

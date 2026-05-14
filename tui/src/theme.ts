@@ -87,9 +87,9 @@ export interface Theme {
 export const DARK_THEME: Theme = {
   bg: 235,
   fg: 252,
-  accent: C.accent,
-  border: C.blue,
-  selectedBg: C.selectedBg,
+  accent: 39,          // matches pi DEFAULT_THEME accent
+  border: 240,         // matches pi DEFAULT_THEME border
+  selectedBg: 38,      // matches pi DEFAULT_THEME selectedBg
   selectedFg: 255,
   dim: C.dim,
   error: C.red,
