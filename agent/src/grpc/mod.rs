@@ -105,6 +105,10 @@ impl proto::xihu_agent_server::XihuAgent for XihuAgentService {
             entry_id: cmd.entry_id,
             name: cmd.name,
             output_path: cmd.output_path,
+            system_prompt: cmd.system_prompt,
+            tools: cmd.tools,
+            no_tools: cmd.no_tools,
+            ephemeral: cmd.ephemeral,
         };
         
         // Handle the command
