@@ -5,7 +5,7 @@
 
 import { CSI, RESET, CURSOR_MARKER } from "../tui.js";
 import type { Component, Focusable } from "../tui.js";
-import { visibleWidth, stripAnsiCodes } from "../utils.js";
+import { visibleWidth, stripAnsiCodes, sliceWithWidth } from "../utils.js";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -179,6 +179,28 @@ function segmentWithMarkers(text: string): { text: string; isMarker: boolean }[]
   return segments.length > 0 ? segments : [{ text: "", isMarker: false }];
 }
 
+// ─── Auto-Dedent ────────────────────────────────────────────────────────────
+
+/** Strip common leading whitespace from all lines in a multi-line text. */
+function autoDedent(text: string): string {
+  const lines = text.split("\n");
+  // Don't dedent single-line text
+  if (lines.length <= 1) return text;
+  // Find minimum leading whitespace among non-empty lines
+  let minIndent = Infinity;
+  for (const line of lines) {
+    if (line.trim().length === 0) continue;
+    const match = line.match(/^[ \t]*/);
+    if (match) minIndent = Math.min(minIndent, match[0].length);
+  }
+  if (minIndent === 0 || minIndent === Infinity) return text;
+  // Strip the common prefix
+  return lines.map(line => {
+    if (line.length < minIndent) return line;
+    return line.slice(minIndent);
+  }).join("\n");
+}
+
 // ─── Editor ────────────────────────────────────────────────────────────────
 
 export class Editor implements Component, Focusable {
@@ -202,6 +224,9 @@ export class Editor implements Component, Focusable {
   private undoStack = new UndoStack<EditorState>(100);
   private killRing = new KillRing();
   private lastKillWasAccumulate = false;
+  // Track last yank position to support yank-pop text replacement
+  private yankStartPos = -1;
+  private yankLength = 0;
 
   // Jump mode: f{char} forward, F{char} backward
   private jumpMode: "forward" | "backward" | null = null;
@@ -249,16 +274,18 @@ export class Editor implements Component, Focusable {
 
   insertText(text: string): void {
     this.saveUndo();
+    // Auto-dedent: strip common leading whitespace from multi-line pastes
+    const dedented = autoDedent(text);
     // Fold large pastes into collapse markers to avoid rendering issues
-    const lineCount = (text.match(/\n/g) || []).length + 1;
-    if (lineCount > 10 || text.length > 1000) {
+    const lineCount = (dedented.match(/\n/g) || []).length + 1;
+    if (lineCount > 10 || dedented.length > 1000) {
       const id = `paste_${++this.pasteMarkerId}`;
-      this.pasteStorage.set(id, text);
+      this.pasteStorage.set(id, dedented);
       this.pasteMarkersInValue.add(id);
-      const marker = `${PASTE_MARKER_START}${id}${PASTE_MARKER_END}[Paste: ${lineCount} lines, ${text.length} chars]`;
+      const marker = `${PASTE_MARKER_START}${id}${PASTE_MARKER_END}[Paste: ${lineCount} lines, ${dedented.length} chars]`;
       this.insertAtCursor(marker);
     } else {
-      this.insertAtCursor(text);
+      this.insertAtCursor(dedented);
     }
     this.killRing.breakAccumulate();
     this.callbacks.onChange?.(this.value);
@@ -315,6 +342,12 @@ export class Editor implements Component, Focusable {
   // ─── Key Handling ─────────────────────────────────────────────────────────
 
   handleKey(key: string): boolean {
+    // Clear yank tracking on any non-yank-pop operation
+    if (key !== "alt+y") {
+      this.yankStartPos = -1;
+      this.yankLength = 0;
+    }
+
     // Jump mode: consume next character to jump to
     if (this.jumpMode) {
       if (key.length === 1 && key.charCodeAt(0) >= 32) {
@@ -726,17 +759,23 @@ export class Editor implements Component, Focusable {
     const text = this.killRing.yank();
     if (!text) return false;
     this.saveUndo();
+    this.yankStartPos = this.cursorPos;
     this.insertAtCursor(text);
+    this.yankLength = text.length;
     this.callbacks.onChange?.(this.value);
     return true;
   }
 
   private yankPop(): boolean {
-    this.saveUndo();
-    // Replace last yanked text
-    const prevYank = this.killRing.yankPop();
-    this.killRing.resetYank();
-    this.insertAtCursor(prevYank);
+    if (this.yankStartPos < 0 || this.yankStartPos > this.value.length) return false;
+    // Remove previously yanked text
+    this.value = this.value.slice(0, this.yankStartPos) + this.value.slice(this.yankStartPos + this.yankLength);
+    this.cursorPos = this.yankStartPos;
+    // Get next entry from kill ring (don't reset — allow multiple rotations)
+    const text = this.killRing.yankPop();
+    if (!text) return false;
+    this.insertAtCursor(text);
+    this.yankLength = text.length;
     this.callbacks.onChange?.(this.value);
     return true;
   }
@@ -1096,43 +1135,4 @@ export class Editor implements Component, Focusable {
 
     return lines;
   }
-}
-
-// ─── Slice With Width Helper ───────────────────────────────────────────────
-
-function sliceWithWidth(s: string, maxWidth: number): { text: string; width: number } {
-  if (maxWidth <= 0) return { text: "", width: 0 };
-  const segmenter = new Intl.Segmenter("en", { granularity: "grapheme" });
-  let result = "";
-  let width = 0;
-  for (const { segment } of segmenter.segment(s)) {
-    const w = graphemeWidthForSlice(segment);
-    if (width + w > maxWidth) break;
-    result += segment;
-    width += w;
-  }
-  return { text: result, width };
-}
-
-function graphemeWidthForSlice(g: string): number {
-  const code = g.codePointAt(0);
-  if (code === undefined) return 0;
-  // Zero-width
-  if (
-    code === 0x200B || code === 0x200C || code === 0x200D || code === 0xFEFF ||
-    (code >= 0x0300 && code <= 0x036F) || (code >= 0x20D0 && code <= 0x20FF)
-  ) return 0;
-  // CJK
-  if (
-    (code >= 0x1100 && code <= 0x115F) ||
-    (code >= 0x2E80 && code <= 0xA4CF) ||
-    (code >= 0xAC00 && code <= 0xD7A3) ||
-    (code >= 0xF900 && code <= 0xFAFF) ||
-    (code >= 0xFE30 && code <= 0xFE6F) ||
-    (code >= 0xFF01 && code <= 0xFF60) ||
-    (code >= 0xFFE0 && code <= 0xFFE6) ||
-    (code >= 0x1F300 && code <= 0x1F9FF) ||
-    (code >= 0x20000 && code <= 0x2FFFF)
-  ) return 2;
-  return 1;
 }

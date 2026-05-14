@@ -216,3 +216,15 @@
 | PI_TUI_WRITE_LOG | 记录所有 stdout 输出到文件 | ✅ 已实现 (2026-05-14)，write() 中检查环境变量，写入 ~/.xihu/write.log |
 | PI_TUI_DEBUG dump | dump 渲染状态到 /tmp/tui/ | ✅ 已实现 (2026-05-14)，fullRender 时 dump 状态到 /tmp/tui/render-{ts}.log |
 | tsgo 构建 | 使用 tsgo 替代 tsc | ✅ 已实现 (2026-05-14) |
+| Editor KillRing yankPop | `alt+y` 替换上次 yanked 文本并旋转 kill ring，支持连续旋转 | ✅ 已实现 (2026-05-14)，track yankStartPos/yankLength，yankPop 替换文本而非追加 |
+| Editor auto-dedent | 多行粘贴时自动去除公共缩进 | ✅ 已实现 (2026-05-14)，`autoDedent()` 函数 |
+| Editor sliceWithWidth | 使用 utils.ts 的完整实现（含完整 CJK/emoji 范围） | ✅ 已实现 (2026-05-14)，删除本地重复实现 |
+| Overlay compositeLineAt | `sliceByColumn` 保留基行 ANSI 样式 | ✅ 已实现 (2026-05-14)，不再 strip 基行 ANSI |
+| SelectList truncation | `truncateToWidth()` (ANSI/CJK/emoji 安全) 替代 `.slice()` | ✅ 已实现 (2026-05-14) |
+| SelectList description | 多行描述 `\r\n` 替换为空格 | ✅ 已实现 (2026-05-14) |
+| SelectList setFilter | 过滤器变更时 `selectedIndex` 重置为 0 | ✅ 已实现 (2026-05-14) |
+| Autocomplete fd | `execFileSync` 改为异步 `execFile`（Promise 包装），不阻塞 event loop | ✅ 已实现 (2026-05-14) |
+| Markdown link underline | 链接显式应用 `theme.underline()` 后跟 `theme.link()` | ✅ 已实现 (2026-05-14) |
+| Markdown blockquote style | 嵌套渲染保留父级 `InlineStyleContext` 样式 | ✅ 已实现 (2026-05-14) |
+| Markdown hyperlink | 始终输出 OSC 8 链接，无需 capability 检查 | ✅ 已实现 (2026-05-14) |
+| TUI drainInput | Kitty response 检测在 drain 期间被抑制，防止重新启用 | ✅ 已实现 (2026-05-14) |

@@ -348,16 +348,21 @@ export class AttachmentProvider implements AutocompleteProvider {
 
     // Try fd first (fast, respects .gitignore)
     try {
-      const { execFileSync } = await import("child_process");
+      const cp = await import("node:child_process");
       const args = ["--hidden", "--type", "f", "--max-results", "50"];
       if (pattern.length > 0) args.push(pattern);
-      const output = execFileSync("fd", args, {
-        cwd: process.cwd(),
-        encoding: "utf-8",
-        timeout: 3000,
-        maxBuffer: 1024 * 1024,
+      const stdout = await new Promise<string>((resolve, reject) => {
+        cp.execFile("fd", args, {
+          cwd: process.cwd(),
+          encoding: "utf-8",
+          timeout: 3000,
+          maxBuffer: 1024 * 1024,
+        }, (err, stdout) => {
+          if (err) reject(err);
+          else resolve(stdout);
+        });
       });
-      results = output.trim().split("\n").filter(Boolean);
+      results = stdout.trim().split("\n").filter(Boolean);
     } catch {
       // fd not available, fall back to null to indicate no results
     }
