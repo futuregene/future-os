@@ -1,7 +1,7 @@
 //! Core type definitions — 1:1 compatible with Go pkg/types/types.go
 
 use serde::ser::{SerializeStruct, Serializer};
-use serde::{Deserialize, Deserializer, Serialize, de, de::MapAccess, de::SeqAccess, de::VariantAccess};
+use serde::{Deserialize, Deserializer, Serialize, de, de::MapAccess, de::SeqAccess};
 
 // ─── ContentBlock (polymorphic) ───────────────────────────────────────────────
 

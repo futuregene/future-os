@@ -1,6 +1,6 @@
 [package]
 name = "xihu-agent"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 
 [[bin]]
@@ -42,6 +42,7 @@ signal-hook = "0.3"
 atty = "0.2"
 shellexpand = "3"
 async-trait = "0.1"
+async-stream = "0.3"
 
 [dev-dependencies]
 tokio-test = "0.4"

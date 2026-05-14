@@ -3,7 +3,11 @@
 use anyhow::Result;
 use clap::Parser;
 use std::env;
-use xihu_agent::{Engine, EngineConfig, LLMClient, LLMProvider, Manager, Session};
+use std::sync::Arc;
+use xihu_agent::{
+    Engine, EngineConfig, LLMClient, LLMProvider, Manager, ModelRegistry, Server, ServerSession,
+    USER_SKILLS_DIR, PROJECT_SKILLS_DIR, AGENTS_SKILLS_DIR,
+};
 
 #[derive(Parser)]
 #[command(name = "xihu")]
@@ -37,6 +41,18 @@ struct Cli {
     #[arg(short, long)]
     verbose: bool,
 
+    /// Run as RPC server (HTTP mode)
+    #[arg(long)]
+    server: bool,
+
+    /// TCP port for server mode
+    #[arg(long)]
+    port: Option<String>,
+
+    /// Unix socket path for server mode
+    #[arg(long)]
+    socket: Option<String>,
+
     /// Message arguments
     messages: Vec<String>,
 }
@@ -50,25 +66,64 @@ async fn main() -> Result<()> {
         env::set_var("XIHU_SKIP_VERSION_CHECK", "1");
     }
 
-    let cwd = env::current_dir()?.to_string_lossy().to_string();
+    // Determine workspace - prefer ~/.openclaw/workspace if it exists
+    let cwd = if let Some(home) = dirs::home_dir() {
+        let workspace = home.join(".openclaw/workspace");
+        if workspace.exists() {
+            workspace.to_string_lossy().to_string()
+        } else {
+            env::current_dir()
+                .unwrap_or_else(|_| home.join("xihu/agent"))
+                .to_string_lossy()
+                .to_string()
+        }
+    } else {
+        env::current_dir()?
+            .to_string_lossy()
+            .to_string()
+    };
 
-    let base_url = cli.base_url
+    // Initialize model registry
+    let model_registry = ModelRegistry::new();
+    let all_models = model_registry.all_models();
+    
+    // Resolve model: CLI arg > env > settings.json default > user models.json > builtin default
+    let resolved_model = cli
+        .model
+        .or_else(|| env::var("LLM_MODEL").ok())
+        .or_else(|| xihu_agent::models::get_default_model())
+        .or_else(|| {
+            // Try to find a user-configured model from models.json
+            all_models.iter().find(|m| {
+                m.api_key.is_empty() == false
+            }).map(|m| m.id.clone())
+        })
+        .unwrap_or_else(|| "gpt-4o".to_string());
+
+    // Resolve model config
+    let model_config = model_registry.resolve(&resolved_model);
+    
+    let base_url = cli
+        .base_url
         .or_else(|| env::var("LLM_BASE_URL").ok())
-        .unwrap_or_else(|| "https://api.openai.com".to_string());
+        .or_else(|| {
+            model_config.as_ref().map(|m| m.base_url.clone())
+        })
+        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
-    let api_key = cli.api_key
+    let api_key = cli
+        .api_key
         .or_else(|| env::var("LLM_API_KEY").ok())
         .or_else(|| env::var("ANTHROPIC_API_KEY").ok())
         .or_else(|| env::var("OPENAI_API_KEY").ok())
+        .or_else(|| {
+            model_config.as_ref().map(|m| m.api_key.clone())
+        })
         .unwrap_or_default();
-
-    let model = cli.model
-        .or_else(|| env::var("LLM_MODEL").ok())
-        .unwrap_or_else(|| "gpt-4o".to_string());
 
     let thinking = cli.thinking.or_else(|| env::var("LLM_THINKING").ok());
 
-    // Build engine
+    // Build engine config
     let config = EngineConfig {
         cwd: cwd.clone(),
         max_turns: 50,
@@ -76,14 +131,50 @@ async fn main() -> Result<()> {
         ..Default::default()
     };
 
-    let provider: std::sync::Arc<dyn LLMProvider> = std::sync::Arc::new(LLMClient::new(&base_url, &api_key));
-    let engine = Engine::new(&base_url, &api_key, &model, config)?
+    // Build engine
+    let engine = Engine::new(&base_url, &api_key, &resolved_model, config)?
         .with_tools(xihu_agent::all_tools());
 
     if cli.verbose {
-        eprintln!("\x1b[33m[model]\x1b[0m {}", model);
+        eprintln!("\x1b[33m[model]\x1b[0m {}", resolved_model);
     }
 
+    // Server mode
+    if cli.server || cli.port.is_some() || cli.socket.is_some() {
+        // Discover skills (matching Go's paths)
+        let skill_dirs = vec![
+            USER_SKILLS_DIR.to_string(),
+            format!("{}/{}", cwd, PROJECT_SKILLS_DIR),
+            AGENTS_SKILLS_DIR.to_string(),
+        ];
+        let skills = xihu_agent::discover_skills(&skill_dirs).unwrap_or_default();
+        let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
+
+        let manager = Arc::new(Manager::default_for(&cwd));
+        let mut server_session = ServerSession::new(engine.agent_loop, manager, &cwd);
+        server_session.model = resolved_model;
+        let session = Arc::new(std::sync::RwLock::new(server_session));
+        let mut server = Server::new(session);
+        server.set_welcome(
+            xihu_agent::utils::VERSION,
+            &cwd,
+            skill_names,
+            vec![],      // context files
+            vec![],      // extensions
+        );
+
+        if let Some(ref port) = cli.port {
+            server.run_tcp(port).await?;
+        } else if let Some(ref path) = cli.socket {
+            server.run_unix(path).await?;
+        } else {
+            // Default: run with stdio
+            server.run_stdio()?;
+        }
+        return Ok(());
+    }
+
+    // Non-server mode: run prompt
     if cli.messages.is_empty() {
         eprintln!("Usage: xihu [options] [messages...]");
         std::process::exit(1);
@@ -92,14 +183,17 @@ async fn main() -> Result<()> {
     let msg = cli.messages.join(" ");
 
     // Build initial message
-    let messages = vec![xihu_agent::AgentMessage::new_user("user", serde_json::json!([{"type": "text", "text": msg}]))];
+    let messages = vec![xihu_agent::AgentMessage::new_user(
+        "user",
+        serde_json::json!([{"type": "text", "text": msg}]),
+    )];
 
     // Run agent
     let agent_loop = engine.agent_loop;
 
-    let (result, _final_messages) = agent_loop.run_streaming(messages, |text| {
-        print!("{}", text);
-    }, |_event| {}).await?;
+    let (_result, _final_messages) = agent_loop
+        .run_streaming_with_messages(messages, |text| print!("{}", text), |_event| {})
+        .await?;
 
     println!();
 

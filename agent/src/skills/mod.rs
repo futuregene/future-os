@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,9 +14,10 @@ pub struct Skill {
     pub disable_model_invocation: bool,
 }
 
-pub const USER_SKILLS_DIR: &str = "~/.openclaw/skills";
-pub const PROJECT_SKILLS_DIR: &str = ".openclaw/skills";
-pub const AGENTS_SKILLS_DIR: &str = "~/.agents/skills";
+/// Predefined skill directories (matching Go internal/skills/skills.go)
+pub const USER_SKILLS_DIR: &str = "~/.xihu/skills/";
+pub const PROJECT_SKILLS_DIR: &str = ".xihu/skills/";
+pub const AGENTS_SKILLS_DIR: &str = "~/.agents/skills/";
 
 /// DiscoverSkills finds all skills in the given directories.
 pub fn discover_skills(dirs: &[String]) -> Result<Vec<Skill>> {
@@ -58,37 +59,86 @@ fn parse_skill(skill_md: &Path) -> Result<Option<Skill>> {
 }
 
 fn extract_name(content: &str, path: &Path) -> Result<String> {
-    // First non-empty line that looks like a name
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+    // Parse YAML frontmatter between --- markers (matching Go parseFrontmatter)
+    let trimmed = content.trim_start_matches(|c| c == '\r' || c == '\n');
+    if !trimmed.starts_with("---") {
+        // No frontmatter, use filename
+        return Ok(path.file_stem().unwrap_or_default().to_string_lossy().to_string());
+    }
+    
+    let rest = &trimmed[3..]; // skip opening ---
+    let end_idx = rest.find("\n---").or_else(|| rest.find("---"));
+    if end_idx.is_none() {
+        return Ok(path.file_stem().unwrap_or_default().to_string_lossy().to_string());
+    }
+    
+    let frontmatter = &rest[..end_idx.unwrap()];
+    
+    for line in frontmatter.lines() {
+        let trimmed_line = line.trim();
+        if trimmed_line.is_empty() || trimmed_line.starts_with('#') {
             continue;
         }
-        return Ok(trimmed.to_string());
+        
+        // Match "name: value" pattern
+        if let Some(val) = extract_yaml_value(trimmed_line, "name") {
+            return Ok(val);
+        }
     }
+    
+    // Fallback to filename
     Ok(path.file_stem().unwrap_or_default().to_string_lossy().to_string())
 }
 
+fn extract_yaml_value(line: &str, key: &str) -> Option<String> {
+    let prefix = format!("{}:", key);
+    if !line.starts_with(&prefix) && !line.trim_start().starts_with(&prefix) {
+        return None;
+    }
+    
+    // Find the colon
+    let colon_idx = line.find(':')?;
+    let value = line[colon_idx + 1..].trim();
+    
+    // Handle quoted values
+    if value.starts_with('"') && value.ends_with('"') && value.len() >= 2 {
+        return Some(value[1..value.len() - 1].to_string());
+    }
+    if value.starts_with('\'') && value.ends_with('\'') && value.len() >= 2 {
+        return Some(value[1..value.len() - 1].to_string());
+    }
+    
+    // Unquoted value
+    Some(value.to_string())
+}
+
 fn extract_description(content: &str) -> String {
-    let mut found_first_line = false;
-    let mut lines = vec![];
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+    // Parse YAML frontmatter to extract description (matching Go parseFrontmatter)
+    let trimmed = content.trim_start_matches(|c| c == '\r' || c == '\n');
+    if !trimmed.starts_with("---") {
+        return String::new();
+    }
+    
+    let rest = &trimmed[3..];
+    let end_idx = rest.find("\n---").or_else(|| rest.find("---"));
+    if end_idx.is_none() {
+        return String::new();
+    }
+    
+    let frontmatter = &rest[..end_idx.unwrap()];
+    
+    for line in frontmatter.lines() {
+        let trimmed_line = line.trim();
+        if trimmed_line.is_empty() || trimmed_line.starts_with('#') {
             continue;
         }
-        if trimmed.starts_with('#') {
-            if found_first_line {
-                break; // Stop at second heading
-            }
-            found_first_line = true;
-            continue;
-        }
-        if found_first_line && lines.len() < 3 {
-            lines.push(trimmed.to_string());
+        
+        if let Some(val) = extract_yaml_value(trimmed_line, "description") {
+            return val;
         }
     }
-    lines.join(" ").trim().to_string()
+    
+    String::new()
 }
 
 /// ResolveCollisionsWithDiagnostics resolves skill name collisions.

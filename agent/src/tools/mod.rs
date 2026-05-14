@@ -2,7 +2,6 @@
 
 use anyhow::{anyhow, Result};
 use std::path::Path;
-use std::process::Stdio;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
@@ -248,7 +247,7 @@ pub fn all_tools() -> Vec<AgentTool> {
 
 // ─── Tool runners ─────────────────────────────────────────────────────────
 
-async fn run_bash(command: &str, timeout_secs: u64) -> Result<String> {
+async fn run_bash(command: &str, _timeout_secs: u64) -> Result<String> {
     let output = Command::new("bash")
         .args(["-c", command])
         .output()

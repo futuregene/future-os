@@ -1,9 +1,9 @@
 //! Settings management — 1:1 compatible with Go internal/settings/
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Thinking budgets per level
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

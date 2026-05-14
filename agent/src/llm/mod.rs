@@ -2,14 +2,12 @@
 //!
 //! Uses reqwest for HTTP + SSE streaming, matching Go's OpenAI SDK behavior.
 
-use crate::events::{self, AgentEvent, EventBus};
 use crate::types::{
-    AgentMessage, ConvertFromLLM, ConvertToLLM, Message, StreamEvent, ToolCall, ToolDef, Usage,
+    Message, StreamEvent, ToolCall, ToolDef, Usage,
 };
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use reqwest::Client as HttpClient;
-use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -173,7 +171,7 @@ impl crate::types::LLMProvider for Client {
 
         tokio::spawn(async move {
             let mut stream = stream;
-            let mut tx = tx;
+            let tx = tx;
 
             while let Some(chunk_result) = stream.next().await {
                 match chunk_result {
@@ -420,7 +418,7 @@ impl Client {
         // Tool calls
         if let Some(tcs) = delta.get("tool_calls").and_then(|tc| tc.as_array()) {
             for tc in tcs {
-                let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                let _idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
                 if let (Some(id), Some(name)) = (
                     tc.get("id").and_then(|v| v.as_str()),
                     tc.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()),

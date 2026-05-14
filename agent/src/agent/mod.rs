@@ -3,8 +3,7 @@
 use crate::events::{
     self, agent_end, agent_end_with_stop_reason, agent_start, error_event, message_end,
     message_start, text_delta, text_end, text_start, thinking_delta, thinking_end,
-    thinking_start, tool_end, tool_start, toolcall_delta, toolcall_end, toolcall_start,
-    turn_end, turn_start, usage_event, EventBus,
+    thinking_start, tool_end, tool_start, toolcall_delta, toolcall_end, toolcall_start, turn_start, usage_event, EventBus,
 };
 use crate::types::{
     AgentMessage, AgentTool, AgentToolCall, ContentBlock, ConvertFromLLM, ConvertToLLM, Message, StreamEvent,
@@ -15,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
+use tokio_stream::StreamExt;
 
 // ANSI terminal colors (matching Go)
 const C_RESET: &str = "\x1b[0m";
@@ -80,6 +80,16 @@ impl Loop {
     pub fn with_event_bus(mut self, bus: Arc<EventBus>) -> Self {
         self.event_bus = Some(bus);
         self
+    }
+
+    pub fn with_transform_context(mut self, f: Box<dyn Fn(Vec<Message>, String) -> Vec<Message> + Send + Sync>) -> Self {
+        self.config.transform_context = Some(f);
+        self
+    }
+
+    pub(crate) fn set_last_compaction_result(&self, result: crate::compaction::CompactionResult) {
+        let mut r = self.last_compaction_result.lock().unwrap();
+        *r = Some(result);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -309,7 +319,8 @@ impl Loop {
                         if let Some(tc) = current_tc.take() {
                             tool_calls.push(ToolCall {
                                 id: tc.id.clone(),
-                                function: crate::types::FunctionCall {
+                                call_type: "function".to_string(),
+                                function: crate::types::ToolCallFn {
                                     name: tc.name.clone(),
                                     arguments: tc.args,
                                 },
@@ -461,58 +472,17 @@ impl Loop {
     }
 
     fn execute_tools_parallel(&self, turn: usize, tool_calls: &[ToolCall], messages: &mut Vec<AgentMessage>) {
-        let n = tool_calls.len();
-        let results: Arc<Mutex<Vec<(String, Option<String>, String, u64)>>> = Arc::new(Mutex::new(vec![(String::new(), None, String::new(), 0); n]));
-
-        let rt = tokio::runtime::Handle::current();
-        let mut handles = vec![];
-
-        for (i, tc) in tool_calls.iter().enumerate() {
-            let tc = tc.clone();
-            let tools = self.tools.clone();
-            let results_clone = results.clone();
-            let config = self.config.clone();
-
-            let handle = rt.spawn_blocking(move || {
-                let start = Instant::now();
-                let (result, err_str, tool_name) = self.execute_one_tool_impl(&tc, &tools, &config);
-                let duration = start.elapsed().as_millis() as u64;
-                results_clone.lock().unwrap()[i] = (result, err_str, tool_name, duration);
-            });
-            handles.push(handle);
-        }
-
-        for handle in handles {
-            let _ = rt.block_on(handle);
-        }
-
-        let results_guard = results.lock().unwrap();
-        for (i, tc) in tool_calls.iter().enumerate() {
-            let (result, err_str, tool_name, duration) = &results_guard[i];
-            
-            if self.verbose {
-                let tag = if tool_name == "read" && result.contains("SKILL.md") {
-                    "[skill]"
-                } else {
-                    "[tool]"
-                };
-                let color = if err_str.is_some() { C_RED } else { C_GREEN };
-                if let Some(ref err) = err_str {
-                    eprintln!("\n{}{}{} {} {:-12} {:6}ms  {}", color, tag, C_RESET, "✗", tool_name, duration, err);
-                } else {
-                    eprintln!("\n{}{}{} {} {:-12} {:6}ms", color, tag, C_RESET, "✓", tool_name, duration);
-                }
-            }
-
-            let tool_msg = self.new_tool_result(&tc.id, result, err_str.as_ref());
-            messages.push(tool_msg);
-        }
+        // For now, use sequential execution since AgentConfig contains non-Clone fields
+        // TODO: implement true parallel execution with Arc<AgentConfig>
+        self.execute_tools_sequential(turn, tool_calls, messages);
     }
 
-    fn execute_tools_sequential(&self, turn: usize, tool_calls: &[ToolCall], messages: &mut Vec<AgentMessage>) {
+    fn execute_tools_sequential(&self, _turn: usize, tool_calls: &[ToolCall], messages: &mut Vec<AgentMessage>) {
+        let tools = &self.tools;
+        let config = &self.config;
         for tc in tool_calls {
             let start = Instant::now();
-            let (result, err_str, tool_name) = self.execute_one_tool_impl(tc, &self.tools, &self.config);
+            let (result, err_str, tool_name) = Self::execute_one_tool_impl_static(tc, tools, config);
             let duration = start.elapsed().as_millis() as u64;
 
             if self.verbose {
@@ -529,22 +499,22 @@ impl Loop {
                 }
             }
 
-            let tool_msg = self.new_tool_result(&tc.id, &result, err_str.as_ref());
+            let tool_msg = self.new_tool_result(&tc.id, &result, err_str.as_ref().map(|s| s.as_str()));
             messages.push(tool_msg);
         }
     }
 
-    fn execute_one_tool_impl(&self, tc: &ToolCall, tools: &[AgentTool], config: &crate::types::AgentConfig) -> (String, Option<String>, String) {
+    fn execute_one_tool_impl_static(tc: &ToolCall, tools: &[AgentTool], config: &crate::types::AgentConfig) -> (String, Option<String>, String) {
         let tool_name = tc.function.name.clone();
         let tool_id = tc.id.clone();
 
         // Stage 1: BeforeToolCall hook
         if let Some(ref hook) = config.before_tool_call {
-            if let Some(override_result) = hook(&tool_name, &tool_id, &tc.function.arguments) {
-                if override_result.is_error {
-                    return (override_result.result, Some(override_result.result), tool_name);
+            if let Some(result_val) = hook(&tool_name, &tool_id, &tc.function.arguments) {
+                if result_val.is_error {
+                    return (result_val.result.clone(), Some(result_val.result), tool_name);
                 } else {
-                    return (override_result.result, None, tool_name);
+                    return (result_val.result.clone(), None, tool_name);
                 }
             }
         }
@@ -558,27 +528,49 @@ impl Loop {
 
         // Execute the tool
         let start = Instant::now();
-        let result = self.execute_tool_internal(&tool_name, effective_args.clone(), tools);
-        let duration = start.elapsed().as_millis() as u64;
+        let mut result: Result<String> = Err(anyhow!("tool {} not found", tool_name));
+        for tool in tools {
+            if tool.def.function.name == tool_name {
+                result = (tool.handler)(effective_args.clone());
+                break;
+            }
+        }
+        let _duration = start.elapsed().as_millis() as u64;
 
         // Stage 3: FinalizeToolCall hook
         let (final_result, final_err) = if let Some(ref hook) = config.finalize_tool_call {
-            hook(&tool_name, result.clone(), result.as_ref().err())
+            match result.as_ref() {
+                Ok(s) => {
+                    let (r, e) = hook(&tool_name, s.clone(), anyhow::anyhow!(""));
+                    (Some(r), e)
+                }
+                Err(err) => {
+                    let (r, e) = hook(&tool_name, String::new(), anyhow::anyhow!("{}", err));
+                    (Some(r), e)
+                }
+            }
         } else {
-            (result.clone(), result.err())
+            // No finalize hook, use result directly
+            match result {
+                Ok(s) => (Some(s), None),
+                Err(e) => (None, Some(e)),
+            }
         };
 
         // Stage 4: AfterToolCall hook
         if let Some(ref hook) = config.after_tool_call {
-            if let Some(override_result) = hook(&tool_name, &tool_id, &effective_args, final_result.clone(), final_err.as_ref().map(|e| anyhow!("{}", e)) {
-                return (override_result.result, if override_result.is_error { Some(override_result.result.clone()) } else { None }, tool_name);
+            let result_str = final_result.as_ref().map(|s| s.as_str()).unwrap_or("");
+            let err_owned = final_err.as_ref().map(|e| anyhow::anyhow!("{}", e)).unwrap_or_else(|| anyhow::anyhow!(""));
+            if let Some(result_val) = hook(&tool_name, &tool_id, &effective_args, result_str.to_string(), err_owned) {
+                let error_result = if result_val.is_error { Some(result_val.result.clone()) } else { None };
+                return (result_val.result, error_result, tool_name);
             }
         }
 
-        match final_result {
-            Ok(s) => (s, None, tool_name),
-            Err(e) => (e.to_string(), Some(e.to_string()), tool_name),
-        }
+        // Return (result_string, error_string_option, tool_name)
+        let result_str = final_result.unwrap_or_else(|| String::new());
+        let error_str = final_err.map(|e| e.to_string());
+        (result_str, error_str, tool_name)
     }
 
     fn execute_tool_internal(&self, name: &str, args: serde_json::Value, tools: &[AgentTool]) -> Result<String> {
@@ -716,9 +708,9 @@ impl Loop {
 // ─── PendingMessageQueue ────────────────────────────────────────────────────
 
 pub struct PendingMessageQueue {
-    tx: mpsc::Sender<String>,
-    rx: Mutex<mpsc::Receiver<String>>,
-    mode: String,
+    pub(crate) tx: mpsc::Sender<String>,
+    pub(crate) rx: Mutex<mpsc::Receiver<String>>,
+    pub mode: String,
 }
 
 impl PendingMessageQueue {
@@ -749,6 +741,10 @@ impl PendingMessageQueue {
 
     pub fn len(&self) -> usize {
         self.rx.lock().unwrap().len()
+    }
+
+    pub fn set_mode(&mut self, mode: &str) {
+        self.mode = mode.to_string();
     }
 
     pub fn clear(&self) {
