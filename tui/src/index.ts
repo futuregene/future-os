@@ -147,17 +147,16 @@ Examples:
 `);
 }
 
-// ─── Print Mode (Non-Interactive) ─────────────────────────────────
+// ─── Build Initial Prompt ─────────────────────────────────────────────
 
-async function runPrintMode(
-  grpcAddr: string,
+async function buildInitialPrompt(
   fileArgs: string[],
   messages: string[],
-): Promise<void> {
-  // Build the prompt: file contents + messages
+): Promise<string | undefined> {
+  if (fileArgs.length === 0 && messages.length === 0) {
+    return undefined;
+  }
   const promptParts: string[] = [];
-
-  // Include files
   for (const filePath of fileArgs) {
     try {
       const absPath = path.resolve(filePath);
@@ -165,14 +164,25 @@ async function runPrintMode(
       promptParts.push(`<file name="${absPath}">\n${content}\n</file>`);
     } catch (e) {
       console.error(`Failed to read file: ${filePath}`);
-      process.exit(1);
+      return undefined;
     }
   }
-
-  // Add messages
   promptParts.push(...messages);
+  return promptParts.join("\n");
+}
 
-  const prompt = promptParts.join("\n");
+// ─── Print Mode (Non-Interactive) ─────────────────────────────────
+
+async function runPrintMode(
+  grpcAddr: string,
+  fileArgs: string[],
+  messages: string[],
+): Promise<void> {
+  const prompt = await buildInitialPrompt(fileArgs, messages);
+  if (!prompt) {
+    console.error("No prompt provided");
+    process.exit(1);
+  }
 
   // Connect to gRPC server
   const client = new GrpcClient(grpcAddr);
@@ -269,6 +279,10 @@ if (args.print) {
     continue: args.continue,
     resume: args.resume,
     fork: args.fork,
+    // Support initial prompt: if args.messages or args.fileArgs provided, handle them after app starts
+    initialPrompt: args.messages.length > 0 || args.fileArgs.length > 0
+      ? await buildInitialPrompt(args.fileArgs, args.messages)
+      : undefined,
   });
 
   process.on("SIGINT", async () => {

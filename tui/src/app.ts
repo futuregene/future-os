@@ -168,6 +168,7 @@ export class App extends Container {
     continue?: boolean;
     resume?: boolean;
     fork?: string | null;
+    initialPrompt?: string;
   } = {}) {
     super();
     this.terminal = new NodeTerminal();
@@ -300,6 +301,14 @@ export class App extends Container {
           // Server may not support new_session — continue with current session
         }
       }
+    }
+
+    // Handle initial prompt (non-empty messages from CLI without -p flag)
+    if (this.cliOptions.initialPrompt) {
+      // Wait a bit for the TUI to render, then send the prompt
+      setTimeout(() => {
+        this.client.prompt(this.cliOptions.initialPrompt!);
+      }, 100);
     }
 
     this.showWelcome();
