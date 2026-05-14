@@ -2,10 +2,17 @@
 
 use std::path::{Path, PathBuf};
 
-/// GenerateID creates a session ID from the current timestamp.
-/// Matches Go: `time.Now().Format("20060102-150405")`
+/// GenerateID creates a unique session ID with timestamp and random hex.
+/// Format: "20260508-090513-a1b2c3" (time-6randomhex for uniqueness)
 pub fn generate_id() -> String {
-    chrono::Local::now().format("%Y%m%d-%H%M%S").to_string()
+    use rand::RngCore;
+    let now = chrono::Local::now();
+    let ts = now.format("%Y%m%d-%H%M%S").to_string();
+    let mut rng = rand::thread_rng();
+    let mut buf = [0u8; 3];
+    rng.fill_bytes(&mut buf);
+    let hex: String = buf.iter().map(|b| format!("{:02x}", b)).collect();
+    format!("{}-{}", ts, hex)
 }
 
 /// GenerateEntryID creates a time-sortable entry ID.

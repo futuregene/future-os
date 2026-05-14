@@ -4,6 +4,7 @@ use crate::session::Manager;
 use crate::types::ConvertToLLM;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 use crate::events::EventBus;
@@ -163,6 +164,7 @@ impl SseEvent {
 // ─── ServerSession ────────────────────────────────────────────────────────
 
 pub struct ServerSession {
+    pub session_id: String,
     pub agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>,
     pub messages: Vec<crate::types::AgentMessage>,
     pub model: String,
@@ -180,8 +182,9 @@ pub struct ServerSession {
 }
 
 impl ServerSession {
-    pub fn new(agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>, manager: Arc<Manager>, cwd: &str, event_bus: Arc<EventBus>, broadcaster: Arc<SseBroadcaster>) -> Self {
+    pub fn new(session_id: String, agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>, manager: Arc<Manager>, cwd: &str, event_bus: Arc<EventBus>, broadcaster: Arc<SseBroadcaster>) -> Self {
         Self {
+            session_id: session_id.clone(),
             agent_loop,
             messages: vec![],
             model: String::new(),
@@ -198,13 +201,36 @@ impl ServerSession {
             broadcaster,
         }
     }
+    
+    /// Create a new session with the same agent_loop but cleared state
+    pub fn new_with_shared_loop(session_id: String,
+        agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>,
+        manager: Arc<Manager>,
+        cwd: &str,
+        event_bus: Arc<EventBus>,
+        broadcaster: Arc<SseBroadcaster>,
+    ) -> Self {
+        Self {
+            session_id: session_id.clone(),
+            agent_loop,
+            messages: vec![],
+            model: String::new(),
+            thinking_level: "high".to_string(),
+            steering_mode: "all".to_string(),
+            follow_up_mode: "all".to_string(),
+            auto_compaction: true,
+            auto_retry: true,
+            session_manager: manager,
+            cwd: cwd.to_string(),
+            is_streaming: false,
+            session_name: String::new(),
+            event_bus,
+            broadcaster,
+        }
+    }
 
     pub fn session_id(&self) -> String {
-        self.session_manager
-            .list(&self.cwd)
-            .ok()
-            .and_then(|v| v.first().map(|s| s.id.clone()))
-            .unwrap_or_default()
+        self.session_id.clone()
     }
 
     pub fn session_name(&self) -> String {
@@ -482,7 +508,12 @@ impl ServerSession {
 
 #[derive(Clone)]
 pub struct AppState {
+    /// Default session (used when no session_id specified)
     pub session: Arc<RwLock<ServerSession>>,
+    /// Additional sessions keyed by session_id
+    pub sessions: Arc<RwLock<HashMap<String, Arc<RwLock<ServerSession>>>>>,
+    /// Active session ID (for get_state display)
+    pub active_session_id: Arc<RwLock<String>>,
     pub welcome_version: String,
     pub welcome_cwd: String,
     pub welcome_skills: Vec<String>,
@@ -493,100 +524,151 @@ pub struct AppState {
     pub event_bus: Arc<EventBus>,
 }
 
+impl AppState {
+    /// Get session by ID, or return default session if id is empty/None
+    pub fn get_session(&self, session_id: &str) -> Arc<RwLock<ServerSession>> {
+        if session_id.is_empty() {
+            return self.session.clone();
+        }
+        if let Ok(sessions) = &self.sessions.try_read() {
+            if let Some(sess) = sessions.get(session_id) {
+                return sess.clone();
+            }
+        }
+        self.session.clone()
+    }
+    
+    /// Create a new session and return its ID
+    pub fn create_session(&self, session: ServerSession) -> String {
+        let id = crate::utils::generate_id();
+        if let Ok(mut sessions) = self.sessions.try_write() {
+            sessions.insert(id.clone(), Arc::new(RwLock::new(session)));
+        }
+        if let Ok(mut active_id) = self.active_session_id.try_write() {
+            *active_id = id.clone();
+        }
+        id
+    }
+    
+    /// Get active session ID
+    pub fn get_active_session_id(&self) -> String {
+        self.active_session_id.read().unwrap().clone()
+    }
+}
+
 pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     let id = &cmd.id;
     let cmd_type = &cmd.cmd_type;
-
+    
+    // Get the target session based on session_id, or use default
+    let session = state.get_session(&cmd.session_id);
+    
     match cmd_type.as_str() {
         "prompt" => {
-            let _ = state.session.write().unwrap().prompt(&cmd.message, &cmd.images, &cmd.streaming_behavior);
+            let _ = session.write().unwrap().prompt(&cmd.message, &cmd.images, &cmd.streaming_behavior);
             RpcResponse::ok(id, "prompt", serde_json::json!({}))
         }
         "steer" => {
-            let _ = state.session.write().unwrap().steer(&cmd.message);
+            let _ = session.write().unwrap().steer(&cmd.message);
             RpcResponse::ok(id, "steer", serde_json::json!({}))
         }
         "follow_up" => {
-            let _ = state.session.write().unwrap().follow_up(&cmd.message);
+            let _ = session.write().unwrap().follow_up(&cmd.message);
             RpcResponse::ok(id, "follow_up", serde_json::json!({}))
         }
         "abort" => {
-            state.session.write().unwrap().abort();
+            session.write().unwrap().abort();
             RpcResponse::ok(id, "abort", serde_json::json!({}))
         }
         "new_session" => {
-            let _ = state.session.write().unwrap().new_session();
-            RpcResponse::ok(id, "new_session", serde_json::json!({"cancelled": false}))
+            // Create a new session with shared agent_loop
+            let active_id = state.get_active_session_id();
+            let session = state.get_session(&active_id);
+            let sess = session.read().unwrap();
+            let new_sess = ServerSession::new_with_shared_loop(
+                crate::utils::generate_id(),
+                sess.agent_loop.clone(),
+                sess.session_manager.clone(),
+                &sess.cwd,
+                sess.event_bus.clone(),
+                sess.broadcaster.clone(),
+            );
+            drop(sess);
+            
+            // Add to sessions map
+            let new_id = state.create_session(new_sess);
+            
+            RpcResponse::ok(id, "new_session", serde_json::json!({"sessionId": new_id}))
         }
         "get_state" => {
-            let state_val = get_state_internal(state);
+            let state_val = get_state_internal(state, &cmd.session_id);
             RpcResponse::ok(id, "get_state", state_val)
         }
         "get_messages" => {
-            let msgs = state.session.read().unwrap().get_messages();
+            let msgs = session.read().unwrap().get_messages();
             RpcResponse::ok(id, "get_messages", serde_json::json!({"messages": msgs}))
         }
         "set_model" => {
-            let _ = state.session.write().unwrap().set_model(&cmd.model_id);
+            let _ = session.write().unwrap().set_model(&cmd.model_id);
             RpcResponse::ok(id, "set_model", serde_json::json!({"model": cmd.model_id}))
         }
         "set_thinking_level" => {
-            state.session.write().unwrap().set_thinking_level(&cmd.level);
+            session.write().unwrap().set_thinking_level(&cmd.level);
             RpcResponse::ok(id, "set_thinking_level", serde_json::json!({}))
         }
         "set_steering_mode" => {
-            state.session.write().unwrap().set_steering_mode(&cmd.mode);
+            session.write().unwrap().set_steering_mode(&cmd.mode);
             RpcResponse::ok(id, "set_steering_mode", serde_json::json!({}))
         }
         "set_follow_up_mode" => {
-            state.session.write().unwrap().set_follow_up_mode(&cmd.mode);
+            session.write().unwrap().set_follow_up_mode(&cmd.mode);
             RpcResponse::ok(id, "set_follow_up_mode", serde_json::json!({}))
         }
         "compact" => {
-            let result = state.session.write().unwrap().compact(&cmd.custom_instructions);
+            let result = session.write().unwrap().compact(&cmd.custom_instructions);
             match result {
                 Ok(r) => RpcResponse::ok(id, "compact", r),
                 Err(e) => RpcResponse::build_fail(id, "compact", &e.to_string()),
             }
         }
         "set_auto_compaction" => {
-            state.session.write().unwrap().set_auto_compaction(cmd.enabled);
+            session.write().unwrap().set_auto_compaction(cmd.enabled);
             RpcResponse::ok(id, "set_auto_compaction", serde_json::json!({}))
         }
         "set_auto_retry" => {
-            state.session.write().unwrap().set_auto_retry(cmd.enabled);
+            session.write().unwrap().set_auto_retry(cmd.enabled);
             RpcResponse::ok(id, "set_auto_retry", serde_json::json!({}))
         }
         "bash" => {
-            let result = state.session.write().unwrap().execute_bash(&cmd.command);
+            let result = session.write().unwrap().execute_bash(&cmd.command);
             match result {
                 Ok(r) => RpcResponse::ok(id, "bash", r),
                 Err(e) => RpcResponse::build_fail(id, "bash", &e.to_string()),
             }
         }
         "get_session_stats" => {
-            let stats = state.session.read().unwrap().get_session_stats();
+            let stats = session.read().unwrap().get_session_stats();
             RpcResponse::ok(id, "get_session_stats", stats)
         }
         "list_sessions" => {
-            let sessions = state.session.read().unwrap().list_sessions().unwrap_or_default();
+            let sessions = session.read().unwrap().list_sessions().unwrap_or_default();
             RpcResponse::ok(id, "list_sessions", serde_json::json!({"sessions": sessions}))
         }
         "switch_session" => {
-            let _ = state.session.write().unwrap().switch_session(&cmd.session_path, &cmd.session_id);
+            let _ = session.write().unwrap().switch_session(&cmd.session_path, &cmd.session_id);
             RpcResponse::ok(id, "switch_session", serde_json::json!({"cancelled": false}))
         }
         "delete_session" => {
-            let _ = state.session.write().unwrap().delete_session(&cmd.session_id);
+            let _ = session.write().unwrap().delete_session(&cmd.session_id);
             RpcResponse::ok(id, "delete_session", serde_json::json!({}))
         }
         "fork" => {
-            let _ = state.session.write().unwrap().fork(&cmd.entry_id);
+            let _ = session.write().unwrap().fork(&cmd.entry_id);
             RpcResponse::ok(id, "fork", serde_json::json!({}))
         }
         "get_fork_messages" => RpcResponse::ok(id, "get_fork_messages", serde_json::json!({"messages": []})),
         "get_last_assistant_text" => {
-            let text = state.session.read().unwrap().get_last_assistant_text();
+            let text = session.read().unwrap().get_last_assistant_text();
             RpcResponse::ok(
                 id,
                 "get_last_assistant_text",
@@ -594,7 +676,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             )
         }
         "set_session_name" => {
-            state.session.write().unwrap().set_session_name(&cmd.name);
+            session.write().unwrap().set_session_name(&cmd.name);
             RpcResponse::ok(id, "set_session_name", serde_json::json!({}))
         }
         "get_commands" => RpcResponse::ok(id, "get_commands", serde_json::json!({"commands": []})),
@@ -614,8 +696,9 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     }
 }
 
-fn get_state_internal(state: &AppState) -> serde_json::Value {
-    let sess = state.session.read().unwrap();
+fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
+    let session = state.get_session(session_id);
+    let sess = session.read().unwrap();
 
     let context_window = crate::models::builtin_models()
         .into_iter()
