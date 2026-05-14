@@ -1,11 +1,11 @@
 .PHONY: build build-cli build-web test test-verbose clean lint run run-web install
 
 # Binary names
-CLI_BIN   = xihu
-WEB_BIN   = xihu-web
+CLI_BIN   = future_agent
+WEB_BIN   = future_agent-web
 
 # Go module
-MODULE    = github.com/huichen/xihu
+MODULE    = github.com/huichen/future_agent
 GO        = go
 GOFLAGS   = -mod=mod
 
@@ -23,12 +23,12 @@ build: build-cli build-web
 ## Build CLI binary
 build-cli:
 	@mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BUILD_DIR)/$(CLI_BIN) ./cmd/xihu/
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BUILD_DIR)/$(CLI_BIN) ./cmd/future_agent/
 
 ## Build web binary
 build-web:
 	@mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BUILD_DIR)/$(WEB_BIN) ./cmd/xihu-web/
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BUILD_DIR)/$(WEB_BIN) ./cmd/future_agent-web/
 
 # ─── Test ───────────────────────────────────────────────────────────────────
 
@@ -82,8 +82,8 @@ run-web: build-web
 
 ## Install binaries to GOPATH/bin or /usr/local/bin
 install: build
-	$(GO) install $(GOFLAGS) ./cmd/xihu/
-	$(GO) install $(GOFLAGS) ./cmd/xihu-web/
+	$(GO) install $(GOFLAGS) ./cmd/future_agent/
+	$(GO) install $(GOFLAGS) ./cmd/future_agent-web/
 
 # ─── Clean ──────────────────────────────────────────────────────────────────
 
