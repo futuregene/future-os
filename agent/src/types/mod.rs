@@ -1,8 +1,8 @@
 //! Core type definitions — 1:1 compatible with Go pkg/types/types.go
 
-use std::sync::Arc;
 use serde::ser::{SerializeStruct, Serializer};
-use serde::{Deserialize, Deserializer, Serialize, de, de::MapAccess, de::SeqAccess};
+use serde::{de, de::MapAccess, de::SeqAccess, Deserialize, Deserializer, Serialize};
+use std::sync::Arc;
 
 // ─── ContentBlock (polymorphic) ───────────────────────────────────────────────
 
@@ -13,9 +13,17 @@ use serde::{Deserialize, Deserializer, Serialize, de, de::MapAccess, de::SeqAcce
 /// - ToolResultBlock: `{"type":"tool_result","tool_call_id":"...","content":"..."}`
 #[derive(Debug, Clone)]
 pub enum ContentBlock {
-    Text { text: String },
-    Image { image_url: ImageUrlData },
-    ToolResult { tool_call_id: String, content: String, is_error: bool },
+    Text {
+        text: String,
+    },
+    Image {
+        image_url: ImageUrlData,
+    },
+    ToolResult {
+        tool_call_id: String,
+        content: String,
+        is_error: bool,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -62,10 +70,22 @@ impl ContentBlock {
         ContentBlock::Text { text: text.into() }
     }
     pub fn image(url: impl Into<String>) -> Self {
-        ContentBlock::Image { image_url: ImageUrlData { url: Some(url.into()) } }
+        ContentBlock::Image {
+            image_url: ImageUrlData {
+                url: Some(url.into()),
+            },
+        }
     }
-    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>, is_error: bool) -> Self {
-        ContentBlock::ToolResult { tool_call_id: tool_call_id.into(), content: content.into(), is_error }
+    pub fn tool_result(
+        tool_call_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
+        ContentBlock::ToolResult {
+            tool_call_id: tool_call_id.into(),
+            content: content.into(),
+            is_error,
+        }
     }
 }
 
@@ -74,7 +94,14 @@ impl<'de> Deserialize<'de> for ContentBlock {
     where
         D: Deserializer<'de>,
     {
-        const FIELDS: &[&str] = &["type", "text", "image_url", "tool_call_id", "content", "is_error"];
+        const FIELDS: &[&str] = &[
+            "type",
+            "text",
+            "image_url",
+            "tool_call_id",
+            "content",
+            "is_error",
+        ];
         deserializer.deserialize_struct("ContentBlock", FIELDS, ContentBlockVisitor)
     }
 }
@@ -99,13 +126,27 @@ impl<'de> de::Visitor<'de> for ContentBlockVisitor {
 
         while let Some(k) = map.next_key::<String>()? {
             match k.as_str() {
-                "type" => { typ = Some(map.next_value()?); }
-                "text" => { text = Some(map.next_value()?); }
-                "image_url" => { image_url = Some(map.next_value()?); }
-                "tool_call_id" => { tool_call_id = Some(map.next_value()?); }
-                "content" => { content = Some(map.next_value()?); }
-                "is_error" => { is_error = Some(map.next_value()?); }
-                _ => { let _: serde_json::Value = map.next_value()?; }
+                "type" => {
+                    typ = Some(map.next_value()?);
+                }
+                "text" => {
+                    text = Some(map.next_value()?);
+                }
+                "image_url" => {
+                    image_url = Some(map.next_value()?);
+                }
+                "tool_call_id" => {
+                    tool_call_id = Some(map.next_value()?);
+                }
+                "content" => {
+                    content = Some(map.next_value()?);
+                }
+                "is_error" => {
+                    is_error = Some(map.next_value()?);
+                }
+                _ => {
+                    let _: serde_json::Value = map.next_value()?;
+                }
             }
         }
 
@@ -114,16 +155,14 @@ impl<'de> de::Visitor<'de> for ContentBlockVisitor {
                 let t = text.unwrap_or_default();
                 Ok(ContentBlock::Text { text: t })
             }
-            "image_url" => {
-                Ok(ContentBlock::Image { image_url: image_url.unwrap_or_default() })
-            }
-            "tool_result" => {
-                Ok(ContentBlock::ToolResult {
-                    tool_call_id: tool_call_id.unwrap_or_default(),
-                    content: content.unwrap_or_default(),
-                    is_error: is_error.unwrap_or(false),
-                })
-            }
+            "image_url" => Ok(ContentBlock::Image {
+                image_url: image_url.unwrap_or_default(),
+            }),
+            "tool_result" => Ok(ContentBlock::ToolResult {
+                tool_call_id: tool_call_id.unwrap_or_default(),
+                content: content.unwrap_or_default(),
+                is_error: is_error.unwrap_or(false),
+            }),
             _ => {
                 // Fallback: treat as text
                 let t = text.unwrap_or_default();
@@ -158,7 +197,11 @@ impl Serialize for ContentBlock {
                 s.serialize_field("image_url", image_url)?;
                 s.end()
             }
-            ContentBlock::ToolResult { tool_call_id, content, is_error } => {
+            ContentBlock::ToolResult {
+                tool_call_id,
+                content,
+                is_error,
+            } => {
                 let mut s = serializer.serialize_struct("ContentBlock", 4)?;
                 s.serialize_field("type", "tool_result")?;
                 s.serialize_field("tool_call_id", tool_call_id)?;
@@ -185,7 +228,11 @@ pub struct AgentMessage {
     pub thinking: String,
     #[serde(rename = "tool_calls", default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<AgentToolCall>,
-    #[serde(rename = "tool_call_id", default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "tool_call_id",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
     pub tool_call_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
@@ -193,9 +240,14 @@ pub struct AgentMessage {
 
 impl AgentMessage {
     pub fn text(&self) -> String {
-        self.content.iter()
-            .filter_map(|b| match b { ContentBlock::Text { text } => Some(text.clone()), _ => None })
-            .collect::<Vec<_>>().join("")
+        self.content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
     }
     pub fn add_text(&mut self, text: impl Into<String>) {
         self.content.push(ContentBlock::text(text));
@@ -208,32 +260,45 @@ impl AgentMessage {
         Self {
             role: role.to_string(),
             content: match content {
-                serde_json::Value::Array(arr) => arr.into_iter().filter_map(|v| match v {
-                    serde_json::Value::Object(mut obj) => {
-                        let typ = obj.remove("type").map(|t| t.as_str().unwrap_or("text").to_string()).unwrap_or_else(|| "text".to_string());
-                        match typ.as_str() {
-                            "text" => {
-                                let text = obj.remove("text").map(|t| t.as_str().unwrap_or("").to_string()).unwrap_or_default();
-                                Some(ContentBlock::Text { text })
-                            }
-                            "image_url" => {
-                                let url_val = obj.remove("image_url");
-                                let url = if let Some(url_obj) = url_val {
-                                    if let Some(url_str) = url_obj.get("url") {
-                                        url_str.as_str().unwrap_or("").to_string()
+                serde_json::Value::Array(arr) => arr
+                    .into_iter()
+                    .filter_map(|v| match v {
+                        serde_json::Value::Object(mut obj) => {
+                            let typ = obj
+                                .remove("type")
+                                .map(|t| t.as_str().unwrap_or("text").to_string())
+                                .unwrap_or_else(|| "text".to_string());
+                            match typ.as_str() {
+                                "text" => {
+                                    let text = obj
+                                        .remove("text")
+                                        .map(|t| t.as_str().unwrap_or("").to_string())
+                                        .unwrap_or_default();
+                                    Some(ContentBlock::Text { text })
+                                }
+                                "image_url" => {
+                                    let url_val = obj.remove("image_url");
+                                    let url = if let Some(url_obj) = url_val {
+                                        if let Some(url_str) = url_obj.get("url") {
+                                            url_str.as_str().unwrap_or("").to_string()
+                                        } else {
+                                            String::new()
+                                        }
                                     } else {
                                         String::new()
-                                    }
-                                } else {
-                                    String::new()
-                                };
-                                Some(ContentBlock::Image { image_url: crate::types::ImageUrlData { url: Some(url) } })
+                                    };
+                                    Some(ContentBlock::Image {
+                                        image_url: crate::types::ImageUrlData { url: Some(url) },
+                                    })
+                                }
+                                _ => Some(ContentBlock::Text {
+                                    text: serde_json::to_string(&obj).unwrap_or_default(),
+                                }),
                             }
-                            _ => Some(ContentBlock::Text { text: serde_json::to_string(&obj).unwrap_or_default() }),
                         }
-                    }
-                    _ => None,
-                }).collect(),
+                        _ => None,
+                    })
+                    .collect(),
                 serde_json::Value::String(s) => vec![ContentBlock::text(s)],
                 _ => vec![],
             },
@@ -265,13 +330,25 @@ pub struct Message {
     /// content is None when absent (Go: null), Some(vec) when array.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<serde_json::Value>,
-    #[serde(rename = "tool_calls", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "tool_calls",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub tool_calls: Option<Vec<ToolCall>>,
-    #[serde(rename = "tool_call_id", default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "tool_call_id",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
     pub tool_call_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
-    #[serde(rename = "reasoning_content", default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "reasoning_content",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
     pub reasoning_content: String,
 }
 
@@ -327,9 +404,17 @@ pub struct Usage {
     pub completion_tokens: i64,
     #[serde(rename = "total_tokens")]
     pub total_tokens: i64,
-    #[serde(rename = "cache_read_tokens", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "cache_read_tokens",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cache_read_tokens: Option<i64>,
-    #[serde(rename = "cache_write_tokens", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "cache_write_tokens",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cache_write_tokens: Option<i64>,
 }
 
@@ -351,9 +436,17 @@ pub struct StreamEvent {
     pub tool_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
-    #[serde(rename = "stopReason", default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "stopReason",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
     pub stop_reason: String,
-    #[serde(rename = "errorText", default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "errorText",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
     pub error_text: String,
 }
 
@@ -393,6 +486,7 @@ pub struct ToolCallResult {
 // ─── AgentConfig ───────────────────────────────────────────────────────────
 
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 pub struct AgentConfig {
     pub system_prompt: String,
     pub max_turns: i32,
@@ -400,10 +494,20 @@ pub struct AgentConfig {
     pub max_retries: i32,
     pub transform_context: Option<Arc<dyn Fn(Vec<Message>, String) -> Vec<Message> + Send + Sync>>,
     pub stop_condition: Option<Arc<dyn Fn(Vec<Message>, &str) -> bool + Send + Sync>>,
-    pub before_tool_call: Option<Arc<dyn Fn(&str, &str, &serde_json::Value) -> Option<ToolCallResult> + Send + Sync>>,
-    pub prepare_tool_call: Option<Arc<dyn Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync>>,
-    pub finalize_tool_call: Option<Arc<dyn Fn(&str, String, anyhow::Error) -> (String, Option<anyhow::Error>) + Send + Sync>>,
-    pub after_tool_call: Option<Arc<dyn Fn(&str, &str, &serde_json::Value, String, anyhow::Error) -> Option<ToolCallResult> + Send + Sync>>,
+    pub before_tool_call:
+        Option<Arc<dyn Fn(&str, &str, &serde_json::Value) -> Option<ToolCallResult> + Send + Sync>>,
+    pub prepare_tool_call:
+        Option<Arc<dyn Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync>>,
+    pub finalize_tool_call: Option<
+        Arc<dyn Fn(&str, String, anyhow::Error) -> (String, Option<anyhow::Error>) + Send + Sync>,
+    >,
+    pub after_tool_call: Option<
+        Arc<
+            dyn Fn(&str, &str, &serde_json::Value, String, anyhow::Error) -> Option<ToolCallResult>
+                + Send
+                + Sync,
+        >,
+    >,
     pub tools_execution_mode: String,
 }
 
@@ -428,7 +532,11 @@ pub struct Model {
     pub input_types: Vec<String>,
     #[serde(default)]
     pub cost: ModelCost,
-    #[serde(rename = "thinkingLevelMap", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "thinkingLevelMap",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub thinking_level_map: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headers: Option<serde_json::Map<String, serde_json::Value>>,
@@ -468,21 +576,30 @@ impl AgentMessage {
         let content = if self.content.is_empty() {
             None
         } else {
-            let blocks: Vec<serde_json::Value> = self.content.iter().map(|b| serde_json::to_value(b).unwrap_or(serde_json::Value::Null)).collect();
+            let blocks: Vec<serde_json::Value> = self
+                .content
+                .iter()
+                .map(|b| serde_json::to_value(b).unwrap_or(serde_json::Value::Null))
+                .collect();
             Some(serde_json::Value::Array(blocks))
         };
 
         let tool_calls = if self.tool_calls.is_empty() {
             None
         } else {
-            Some(self.tool_calls.iter().map(|tc| ToolCall {
-                id: tc.id.clone(),
-                call_type: "function".to_string(),
-                function: ToolCallFn {
-                    name: tc.name.clone(),
-                    arguments: tc.args.clone(),
-                },
-            }).collect())
+            Some(
+                self.tool_calls
+                    .iter()
+                    .map(|tc| ToolCall {
+                        id: tc.id.clone(),
+                        call_type: "function".to_string(),
+                        function: ToolCallFn {
+                            name: tc.name.clone(),
+                            arguments: tc.args.clone(),
+                        },
+                    })
+                    .collect(),
+            )
         };
 
         Message {
@@ -501,65 +618,80 @@ pub fn convert_to_llm(msgs: &[AgentMessage]) -> Vec<Message> {
 }
 
 pub fn convert_from_llm(msgs: Vec<Message>) -> Vec<AgentMessage> {
-    msgs.into_iter().map(|m| {
-        let content = if let Some(c) = m.content {
-            match c {
-                serde_json::Value::Array(arr) => {
-                    arr.into_iter().filter_map(|v| {
-                        let obj = match v {
-                            serde_json::Value::Object(o) => o,
-                            _ => return None,
-                        };
-                        let typ = obj.get("type")?.as_str()?.to_string();
-                        match typ.as_str() {
-                            "text" => {
-                                let text = obj.get("text")?.as_str()?.to_string();
-                                Some(ContentBlock::Text { text })
+    msgs.into_iter()
+        .map(|m| {
+            let content = if let Some(c) = m.content {
+                match c {
+                    serde_json::Value::Array(arr) => arr
+                        .into_iter()
+                        .filter_map(|v| {
+                            let obj = match v {
+                                serde_json::Value::Object(o) => o,
+                                _ => return None,
+                            };
+                            let typ = obj.get("type")?.as_str()?.to_string();
+                            match typ.as_str() {
+                                "text" => {
+                                    let text = obj.get("text")?.as_str()?.to_string();
+                                    Some(ContentBlock::Text { text })
+                                }
+                                "image_url" => {
+                                    let url_data = obj
+                                        .get("image_url")
+                                        .map(|v| match v {
+                                            serde_json::Value::Object(o) => ImageUrlData {
+                                                url: o
+                                                    .get("url")
+                                                    .and_then(|v| v.as_str().map(String::from)),
+                                            },
+                                            serde_json::Value::String(s) => ImageUrlData {
+                                                url: Some(s.clone()),
+                                            },
+                                            _ => ImageUrlData { url: None },
+                                        })
+                                        .unwrap_or_default();
+                                    Some(ContentBlock::Image {
+                                        image_url: url_data,
+                                    })
+                                }
+                                _ => None,
                             }
-                            "image_url" => {
-                                let url_data = obj.get("image_url").map(|v| {
-                                    match v {
-                                        serde_json::Value::Object(o) => ImageUrlData {
-                                            url: o.get("url").and_then(|v| v.as_str().map(String::from)),
-                                        },
-                                        serde_json::Value::String(s) => ImageUrlData { url: Some(s.clone()) },
-                                        _ => ImageUrlData { url: None },
-                                    }
-                                }).unwrap_or_default();
-                                Some(ContentBlock::Image { image_url: url_data })
-                            }
-                            _ => None,
-                        }
-                    }).collect()
+                        })
+                        .collect(),
+                    serde_json::Value::String(s) if !s.is_empty() => {
+                        vec![ContentBlock::text(s)]
+                    }
+                    _ => vec![],
                 }
-                serde_json::Value::String(s) if !s.is_empty() => {
-                    vec![ContentBlock::text(s)]
-                }
-                _ => vec![],
+            } else {
+                vec![]
+            };
+
+            let tool_calls = m
+                .tool_calls
+                .map(|tcs| {
+                    tcs.into_iter()
+                        .map(|tc| AgentToolCall {
+                            id: tc.id,
+                            name: tc.function.name,
+                            args: tc.function.arguments,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            AgentMessage {
+                role: m.role,
+                content,
+                thinking: m.reasoning_content,
+                tool_calls,
+                tool_call_id: m.tool_call_id,
+                metadata: None,
             }
-        } else {
-            vec![]
-        };
-
-        let tool_calls = m.tool_calls.map(|tcs| {
-            tcs.into_iter().map(|tc| AgentToolCall {
-                id: tc.id,
-                name: tc.function.name,
-                args: tc.function.arguments,
-            }).collect()
-        }).unwrap_or_default();
-
-        AgentMessage {
-            role: m.role,
-            content,
-            thinking: m.reasoning_content,
-            tool_calls,
-            tool_call_id: m.tool_call_id,
-            metadata: None,
-        }
-    }).collect()
+        })
+        .collect()
 }
 
 // Aliases for Go-style names (PascalCase conversion functions)
-pub use convert_to_llm as ConvertToLLM;
 pub use convert_from_llm as ConvertFromLLM;
+pub use convert_to_llm as ConvertToLLM;

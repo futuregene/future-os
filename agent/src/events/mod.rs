@@ -1,9 +1,9 @@
 //! Event bus — 1:1 compatible with Go internal/events/
 
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use chrono::{DateTime, Local};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentEvent {
@@ -49,6 +49,7 @@ type CallbackEntry = (String, Arc<dyn Fn(AgentEvent) + Send + Sync>);
 pub struct EventBus {
     subscribers: RwLock<HashMap<String, tokio::sync::mpsc::Sender<AgentEvent>>>,
     callbacks: RwLock<HashMap<String, CallbackEntry>>,
+    #[allow(clippy::type_complexity)]
     star_callbacks: RwLock<Vec<Arc<dyn Fn(AgentEvent) + Send + Sync>>>,
     next_id: RwLock<usize>,
     closed: RwLock<bool>,
@@ -88,7 +89,11 @@ impl EventBus {
 
     /// OnEvent registers a callback-based listener for a specific event type.
     /// Use "*" as event_type for wildcard (all events).
-    pub fn on_event(&self, event_type: &str, callback: Arc<dyn Fn(AgentEvent) + Send + Sync>) -> String {
+    pub fn on_event(
+        &self,
+        event_type: &str,
+        callback: Arc<dyn Fn(AgentEvent) + Send + Sync>,
+    ) -> String {
         let mut next = self.next_id.write().unwrap();
         *next += 1;
         let id = format!("listener_{}", *next);
@@ -96,7 +101,10 @@ impl EventBus {
         if event_type == "*" {
             self.star_callbacks.write().unwrap().push(callback);
         } else {
-            self.callbacks.write().unwrap().insert(id.clone(), (event_type.to_string(), callback));
+            self.callbacks
+                .write()
+                .unwrap()
+                .insert(id.clone(), (event_type.to_string(), callback));
         }
         id
     }
@@ -155,20 +163,41 @@ pub fn agent_end(reason: &str, usage: Option<&crate::types::Usage>) -> AgentEven
     let mut e = AgentEvent::new("agent_end").with_str("reason", reason);
     if let Some(u) = usage {
         let mut usage_map = serde_json::Map::new();
-        usage_map.insert("input_tokens".to_string(), serde_json::json!(u.prompt_tokens));
-        usage_map.insert("output_tokens".to_string(), serde_json::json!(u.completion_tokens));
-        usage_map.insert("cache_read_tokens".to_string(), serde_json::json!(u.cache_read_tokens));
-        usage_map.insert("cache_write_tokens".to_string(), serde_json::json!(u.cache_write_tokens));
-        usage_map.insert("total_tokens".to_string(), serde_json::json!(u.total_tokens));
-        e.data.insert("usage".to_string(), serde_json::Value::Object(usage_map));
+        usage_map.insert(
+            "input_tokens".to_string(),
+            serde_json::json!(u.prompt_tokens),
+        );
+        usage_map.insert(
+            "output_tokens".to_string(),
+            serde_json::json!(u.completion_tokens),
+        );
+        usage_map.insert(
+            "cache_read_tokens".to_string(),
+            serde_json::json!(u.cache_read_tokens),
+        );
+        usage_map.insert(
+            "cache_write_tokens".to_string(),
+            serde_json::json!(u.cache_write_tokens),
+        );
+        usage_map.insert(
+            "total_tokens".to_string(),
+            serde_json::json!(u.total_tokens),
+        );
+        e.data
+            .insert("usage".to_string(), serde_json::Value::Object(usage_map));
     }
     e
 }
 
-pub fn agent_end_with_stop_reason(reason: &str, usage: Option<&crate::types::Usage>, stop_reason: &str) -> AgentEvent {
+pub fn agent_end_with_stop_reason(
+    reason: &str,
+    usage: Option<&crate::types::Usage>,
+    stop_reason: &str,
+) -> AgentEvent {
     let mut e = agent_end(reason, usage);
     if !stop_reason.is_empty() {
-        e.data.insert("stop_reason".to_string(), serde_json::json!(stop_reason));
+        e.data
+            .insert("stop_reason".to_string(), serde_json::json!(stop_reason));
     }
     e
 }
@@ -185,7 +214,12 @@ pub fn compaction_start(reason: &str) -> AgentEvent {
     AgentEvent::new("compaction_start").with_str("reason", reason)
 }
 
-pub fn compaction_end(tokens_before: i32, summary: &str, aborted: bool, reason: &str) -> AgentEvent {
+pub fn compaction_end(
+    tokens_before: i32,
+    summary: &str,
+    aborted: bool,
+    reason: &str,
+) -> AgentEvent {
     AgentEvent::new("compaction_end")
         .with_i64("tokens_before", tokens_before as i64)
         .with_str("summary", summary)
@@ -212,13 +246,25 @@ pub fn message_start(role: &str) -> AgentEvent {
     AgentEvent::new("message_start").with_str("role", role)
 }
 
-pub fn text_start() -> AgentEvent { AgentEvent::new("text_start") }
-pub fn text_delta(text: &str) -> AgentEvent { AgentEvent::new("text_delta").with_str("text", text) }
-pub fn text_end() -> AgentEvent { AgentEvent::new("text_end") }
+pub fn text_start() -> AgentEvent {
+    AgentEvent::new("text_start")
+}
+pub fn text_delta(text: &str) -> AgentEvent {
+    AgentEvent::new("text_delta").with_str("text", text)
+}
+pub fn text_end() -> AgentEvent {
+    AgentEvent::new("text_end")
+}
 
-pub fn thinking_start() -> AgentEvent { AgentEvent::new("thinking_start") }
-pub fn thinking_delta(text: &str) -> AgentEvent { AgentEvent::new("thinking_delta").with_str("text", text) }
-pub fn thinking_end() -> AgentEvent { AgentEvent::new("thinking_end") }
+pub fn thinking_start() -> AgentEvent {
+    AgentEvent::new("thinking_start")
+}
+pub fn thinking_delta(text: &str) -> AgentEvent {
+    AgentEvent::new("thinking_delta").with_str("text", text)
+}
+pub fn thinking_end() -> AgentEvent {
+    AgentEvent::new("thinking_end")
+}
 
 pub fn toolcall_start(tool_name: &str, tool_id: &str) -> AgentEvent {
     AgentEvent::new("toolcall_start")
@@ -226,9 +272,13 @@ pub fn toolcall_start(tool_name: &str, tool_id: &str) -> AgentEvent {
         .with_str("tool_id", tool_id)
 }
 
-pub fn toolcall_delta(text: &str) -> AgentEvent { AgentEvent::new("toolcall_delta").with_str("text", text) }
+pub fn toolcall_delta(text: &str) -> AgentEvent {
+    AgentEvent::new("toolcall_delta").with_str("text", text)
+}
 
-pub fn toolcall_end() -> AgentEvent { AgentEvent::new("toolcall_end") }
+pub fn toolcall_end() -> AgentEvent {
+    AgentEvent::new("toolcall_end")
+}
 
 pub fn tool_result(tool_name: &str, result: &str, err: &str, duration_ms: i64) -> AgentEvent {
     AgentEvent::new("tool_result")
@@ -254,8 +304,17 @@ pub fn error_event(msg: &str) -> AgentEvent {
 
 pub fn usage_event(u: &crate::types::Usage) -> AgentEvent {
     let mut e = AgentEvent::new("usage");
-    e.data.insert("input_tokens".to_string(), serde_json::json!(u.prompt_tokens));
-    e.data.insert("output_tokens".to_string(), serde_json::json!(u.completion_tokens));
-    e.data.insert("total_tokens".to_string(), serde_json::json!(u.total_tokens));
+    e.data.insert(
+        "input_tokens".to_string(),
+        serde_json::json!(u.prompt_tokens),
+    );
+    e.data.insert(
+        "output_tokens".to_string(),
+        serde_json::json!(u.completion_tokens),
+    );
+    e.data.insert(
+        "total_tokens".to_string(),
+        serde_json::json!(u.total_tokens),
+    );
     e
 }

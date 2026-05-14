@@ -19,14 +19,14 @@ pub mod utils;
 
 pub use agent::Loop;
 pub use auth::AuthStore;
-pub use config::{merge_settings, load_settings, Settings};
+pub use config::{load_settings, merge_settings, Settings};
 pub use engine::{Engine, EngineConfig};
 pub use events::EventBus;
 pub use llm::Client as LLMClient;
+pub use models::{get_default_model, Registry as ModelRegistry};
 pub use rpc::ServerSession;
-pub use models::{Registry as ModelRegistry, get_default_model};
 pub use session::{Manager, Session, SessionEntry};
-pub use skills::{discover_skills, Skill, USER_SKILLS_DIR, PROJECT_SKILLS_DIR, AGENTS_SKILLS_DIR};
+pub use skills::{discover_skills, Skill, AGENTS_SKILLS_DIR, PROJECT_SKILLS_DIR, USER_SKILLS_DIR};
 pub use tools::all_tools;
 pub use types::{AgentMessage, AgentTool, LLMProvider, Message, StreamEvent, ToolDef};
 pub use utils::{default_config_dir, default_session_dir, generate_id};

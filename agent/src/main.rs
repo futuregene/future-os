@@ -2,12 +2,12 @@
 
 use anyhow::Result;
 use clap::Parser;
+use future_agent::{
+    Engine, EngineConfig, Manager, ModelRegistry, ServerSession, AGENTS_SKILLS_DIR,
+    PROJECT_SKILLS_DIR, USER_SKILLS_DIR,
+};
 use std::env;
 use std::sync::Arc;
-use future_agent::{
-    Engine, EngineConfig, Manager, ModelRegistry, ServerSession,
-    USER_SKILLS_DIR, PROJECT_SKILLS_DIR, AGENTS_SKILLS_DIR,
-};
 
 #[derive(Parser)]
 #[command(name = "future-agent")]
@@ -70,65 +70,80 @@ async fn main() -> Result<()> {
                 .to_string()
         }
     } else {
-        env::current_dir()?
-            .to_string_lossy()
-            .to_string()
+        env::current_dir()?.to_string_lossy().to_string()
     };
 
     // Initialize model registry
     let model_registry = ModelRegistry::new();
     let all_models = model_registry.all_models();
-    
+
     // Resolve model: CLI arg > env > settings.json default > user models.json > builtin default
     let resolved_model = cli
         .model
         .or_else(|| env::var("LLM_MODEL").ok())
-        .or_else(|| future_agent::models::get_default_model())
+        .or_else(future_agent::models::get_default_model)
         .or_else(|| {
             // Try to find a user-configured model from models.json
-            all_models.iter().find(|m| {
-                m.api_key.is_empty() == false
-            }).map(|m| m.id.clone())
+            all_models
+                .iter()
+                .find(|m| !m.api_key.is_empty())
+                .map(|m| m.id.clone())
         })
         .unwrap_or_else(|| "gpt-4o".to_string());
 
     // Resolve model config
     let model_config = model_registry.resolve(&resolved_model);
-    
+
     let base_url = cli
         .base_url
         .or_else(|| env::var("LLM_BASE_URL").ok())
-        .or_else(|| {
-            model_config.as_ref().map(|m| m.base_url.clone())
-        })
+        .or_else(|| model_config.as_ref().map(|m| m.base_url.clone()))
         .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
     // Load auth store for API keys
     let auth_store = future_agent::AuthStore::load();
-    
+
     // Resolve API key: CLI arg > env > auth.json > model config
     let api_key = cli
         .api_key
         .or_else(|| {
             let k = env::var("LLM_API_KEY").unwrap_or_default();
-            if k.is_empty() { None } else { Some(k) }
+            if k.is_empty() {
+                None
+            } else {
+                Some(k)
+            }
         })
         .or_else(|| {
             let k = env::var("ANTHROPIC_API_KEY").unwrap_or_default();
-            if k.is_empty() { None } else { Some(k) }
+            if k.is_empty() {
+                None
+            } else {
+                Some(k)
+            }
         })
         .or_else(|| {
             let k = env::var("OPENAI_API_KEY").unwrap_or_default();
-            if k.is_empty() { None } else { Some(k) }
+            if k.is_empty() {
+                None
+            } else {
+                Some(k)
+            }
         })
         .or_else(|| auth_store.get(&resolved_model))
-        .or_else(|| model_config.as_ref().and_then(|m| {
-            auth_store.get(&m.provider)
-        }))
+        .or_else(|| {
+            model_config
+                .as_ref()
+                .and_then(|m| auth_store.get(&m.provider))
+        })
         .or_else(|| auth_store.default_key())
         .or_else(|| {
             model_config.as_ref().and_then(|m| {
-                if m.api_key.is_empty() { None } else { Some(m.api_key.clone()) }
+                if m.api_key.is_empty() {
+                    None
+                } else {
+                    Some(m.api_key.clone())
+                }
             })
         })
         .unwrap_or_default();
@@ -146,7 +161,7 @@ async fn main() -> Result<()> {
     // Build engine
     let engine = Engine::new(&base_url, &api_key, &resolved_model, config)?
         .with_tools(future_agent::all_tools());
-    
+
     // Create event bus for server mode
     let event_bus = Arc::new(future_agent::EventBus::new());
 
@@ -155,7 +170,8 @@ async fn main() -> Result<()> {
     }
 
     // Server mode (gRPC only)
-    if cli.messages.is_empty() {  // No messages → start server mode for TUI
+    if cli.messages.is_empty() {
+        // No messages → start server mode for TUI
         // Parse grpc_addr (host:port or just port)
         let (grpc_host, grpc_port) = if cli.grpc_addr.starts_with(':') {
             // Just port: :50051
@@ -185,7 +201,8 @@ async fn main() -> Result<()> {
         let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
 
         let manager = Arc::new(Manager::default_for(&cwd));
-        let broadcaster: Arc<future_agent::rpc::SseBroadcaster> = Arc::new(future_agent::rpc::SseBroadcaster::new());
+        let broadcaster: Arc<future_agent::rpc::SseBroadcaster> =
+            Arc::new(future_agent::rpc::SseBroadcaster::new());
         let mut server_session = ServerSession::new(
             future_agent::utils::generate_id(),
             Arc::new(tokio::sync::RwLock::new(engine.agent_loop)),
@@ -196,7 +213,7 @@ async fn main() -> Result<()> {
         );
         server_session.model = resolved_model.clone();
         let session = Arc::new(std::sync::RwLock::new(server_session));
-        
+
         // Build AppState for gRPC server
         let app_state = future_agent::rpc::AppState {
             session: session.clone(),
@@ -211,7 +228,7 @@ async fn main() -> Result<()> {
             broadcaster: broadcaster.clone(),
             event_bus: event_bus.clone(),
         };
-        
+
         // Run gRPC server (no HTTP)
         future_agent::grpc::serve(app_state, grpc_host, grpc_port).await?;
         return Ok(());

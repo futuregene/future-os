@@ -2,9 +2,7 @@
 //!
 //! Uses reqwest for HTTP + SSE streaming, matching Go's OpenAI SDK behavior.
 
-use crate::types::{
-    Message, StreamEvent, ToolCall, ToolDef, Usage,
-};
+use crate::types::{Message, StreamEvent, ToolCall, ToolDef, Usage};
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use reqwest::Client as HttpClient;
@@ -14,7 +12,6 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-const DEFAULT_MAX_RETRIES: usize = 3;
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
 // ─── LLM Client ────────────────────────────────────────────────────────────
@@ -24,13 +21,20 @@ pub struct Client {
     base_url: String,
     api_key: String,
     reasoning_effort: String,
+    #[allow(dead_code)]
     tool_choice: Option<Value>,
+    #[allow(dead_code)]
     enable_cache_control: bool,
     thinking_budget: i32,
+    #[allow(dead_code)]
     stream_opts: Option<StreamOptions>,
+    #[allow(clippy::type_complexity)]
     on_payload: Option<Arc<dyn Fn(&[u8]) + Send + Sync>>,
+    #[allow(clippy::type_complexity)]
     on_response: Option<Arc<dyn Fn(u16, &HashMap<String, String>) + Send + Sync>>,
+    #[allow(dead_code)]
     is_cloudflare: bool,
+    #[allow(dead_code)]
     is_copilot: bool,
     thinking_level: String,
     thinking_level_map: HashMap<String, String>,
@@ -142,9 +146,14 @@ impl crate::types::LLMProvider for Client {
         // Add thinking/reasoning parameters (compat format)
         self.apply_thinking_params(&mut body);
 
-        eprintln!("[LLM] Request to {}: {}", url, serde_json::to_string(&body).unwrap_or_default());
+        eprintln!(
+            "[LLM] Request to {}: {}",
+            url,
+            serde_json::to_string(&body).unwrap_or_default()
+        );
 
-        let req = self.http
+        let req = self
+            .http
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
@@ -155,7 +164,8 @@ impl crate::types::LLMProvider for Client {
         eprintln!("[LLM] Response status: {}", resp.status());
 
         let status = resp.status();
-        let headers: HashMap<String, String> = resp.headers()
+        let headers: HashMap<String, String> = resp
+            .headers()
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
@@ -191,16 +201,18 @@ impl crate::types::LLMProvider for Client {
                                 }
                                 let data = &line[6..];
                                 if data == "[DONE]" {
-                                    let _ = tx.send(StreamEvent {
-                                        event_type: "stop".to_string(),
-                                        text: String::new(),
-                                        tool_call: None,
-                                        tool_name: String::new(),
-                                        tool_id: String::new(),
-                                        usage: None,
-                                        stop_reason: String::new(),
-                                        error_text: String::new(),
-                                    }).await;
+                                    let _ = tx
+                                        .send(StreamEvent {
+                                            event_type: "stop".to_string(),
+                                            text: String::new(),
+                                            tool_call: None,
+                                            tool_name: String::new(),
+                                            tool_id: String::new(),
+                                            usage: None,
+                                            stop_reason: String::new(),
+                                            error_text: String::new(),
+                                        })
+                                        .await;
                                     break;
                                 }
                                 if let Ok(event) = Self::parse_sse_chunk(data) {
@@ -210,30 +222,34 @@ impl crate::types::LLMProvider for Client {
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send(StreamEvent {
-                            event_type: "error".to_string(),
-                            text: String::new(),
-                            tool_call: None,
-                            tool_name: String::new(),
-                            tool_id: String::new(),
-                            usage: None,
-                            stop_reason: String::new(),
-                            error_text: e.to_string(),
-                        }).await;
+                        let _ = tx
+                            .send(StreamEvent {
+                                event_type: "error".to_string(),
+                                text: String::new(),
+                                tool_call: None,
+                                tool_name: String::new(),
+                                tool_id: String::new(),
+                                usage: None,
+                                stop_reason: String::new(),
+                                error_text: e.to_string(),
+                            })
+                            .await;
                     }
                 }
             }
 
-            let _ = tx.send(StreamEvent {
-                event_type: "stop".to_string(),
-                text: String::new(),
-                tool_call: None,
-                tool_name: String::new(),
-                tool_id: String::new(),
-                usage: None,
-                stop_reason: String::new(),
-                error_text: String::new(),
-            }).await;
+            let _ = tx
+                .send(StreamEvent {
+                    event_type: "stop".to_string(),
+                    text: String::new(),
+                    tool_call: None,
+                    tool_name: String::new(),
+                    tool_id: String::new(),
+                    usage: None,
+                    stop_reason: String::new(),
+                    error_text: String::new(),
+                })
+                .await;
 
             Ok::<_, ()>(())
         });
@@ -244,7 +260,10 @@ impl crate::types::LLMProvider for Client {
 
 impl Client {
     fn apply_thinking_params(&self, body: &mut Value) {
-        if self.thinking_level.is_empty() && self.thinking_budget == 0 && self.reasoning_effort.is_empty() {
+        if self.thinking_level.is_empty()
+            && self.thinking_budget == 0
+            && self.reasoning_effort.is_empty()
+        {
             return;
         }
 
@@ -271,7 +290,11 @@ impl Client {
                     }
                 }
                 "deepseek" => {
-                    let thinking_type = if reasoning_enabled { "enabled" } else { "disabled" };
+                    let thinking_type = if reasoning_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    };
                     let mut extra = serde_json::json!({
                         "thinking": { "type": thinking_type }
                     });
@@ -282,10 +305,10 @@ impl Client {
                         body[k] = v.clone();
                     }
                 }
-                "openrouter" | "openai" => {
-                    if reasoning_enabled && self.compat_supports_reasoning_effort {
-                        body["reasoning_effort"] = serde_json::json!(level_value);
-                    }
+                "openrouter" | "openai"
+                    if reasoning_enabled && self.compat_supports_reasoning_effort =>
+                {
+                    body["reasoning_effort"] = serde_json::json!(level_value);
                 }
                 _ => {}
             }
@@ -295,7 +318,10 @@ impl Client {
                 "type": "enabled",
                 "budget_tokens": self.thinking_budget,
             });
-        } else if self.thinking_budget == 0 && self.reasoning_effort.is_empty() && self.thinking_level.is_empty() {
+        } else if self.thinking_budget == 0
+            && self.reasoning_effort.is_empty()
+            && self.thinking_level.is_empty()
+        {
             // Explicitly disable
             body["thinking"] = serde_json::json!({ "type": "disabled" });
         }
@@ -334,20 +360,26 @@ impl Client {
                     let mut obj = serde_json::Map::new();
                     obj.insert("role".to_string(), serde_json::json!("assistant"));
                     if !msg.reasoning_content.is_empty() {
-                        obj.insert("reasoning_content".to_string(), serde_json::json!(msg.reasoning_content));
+                        obj.insert(
+                            "reasoning_content".to_string(),
+                            serde_json::json!(msg.reasoning_content),
+                        );
                     }
                     obj.insert("content".to_string(), Self::extract_content(msg.content));
                     if let Some(tcs) = msg.tool_calls {
-                        let tools: Vec<Value> = tcs.into_iter().map(|tc| {
-                            serde_json::json!({
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments,
-                                }
+                        let tools: Vec<Value> = tcs
+                            .into_iter()
+                            .map(|tc| {
+                                serde_json::json!({
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments,
+                                    }
+                                })
                             })
-                        }).collect();
+                            .collect();
                         obj.insert("tool_calls".to_string(), serde_json::json!(tools));
                     }
                     result.push(serde_json::json!(obj));
@@ -378,7 +410,10 @@ impl Client {
     fn parse_sse_chunk(data: &str) -> Result<StreamEvent> {
         let chunk: serde_json::Value = serde_json::from_str(data)?;
 
-        let choices = chunk.get("choices").and_then(|c| c.as_array()).and_then(|a| a.first());
+        let choices = chunk
+            .get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first());
         let delta = choices
             .and_then(|c| c.get("delta"))
             .cloned()
@@ -424,7 +459,9 @@ impl Client {
                 let _idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
                 if let (Some(id), Some(name)) = (
                     tc.get("id").and_then(|v| v.as_str()),
-                    tc.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()),
+                    tc.get("function")
+                        .and_then(|f| f.get("name"))
+                        .and_then(|v| v.as_str()),
                 ) {
                     event.event_type = "toolcall_start".to_string();
                     event.tool_id = id.to_string();
@@ -434,7 +471,8 @@ impl Client {
                         call_type: "function".to_string(),
                         function: crate::types::ToolCallFn {
                             name: name.to_string(),
-                            arguments: tc.get("function")
+                            arguments: tc
+                                .get("function")
                                 .and_then(|f| f.get("arguments"))
                                 .cloned()
                                 .unwrap_or(serde_json::Value::String(String::new())),

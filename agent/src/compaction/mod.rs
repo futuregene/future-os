@@ -13,7 +13,6 @@ pub struct CompactionSettings {
     pub keep_recent_tokens: i32,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactOptions {
     #[serde(rename = "reserveTokens")]
@@ -38,7 +37,11 @@ pub struct CompactionResult {
 }
 
 /// ShouldCompact returns true if compaction should be triggered.
-pub fn should_compact(context_tokens: i32, context_window: i32, settings: &CompactionSettings) -> bool {
+pub fn should_compact(
+    context_tokens: i32,
+    context_window: i32,
+    settings: &CompactionSettings,
+) -> bool {
     if !settings.enabled {
         return false;
     }
@@ -67,16 +70,17 @@ pub fn estimate_tokens(msg: &Message) -> i32 {
 
 fn count_content_chars(content: &Option<serde_json::Value>) -> i32 {
     match content {
-        Some(serde_json::Value::Array(arr)) => {
-            arr.iter().map(|v| {
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
+            .map(|v| {
                 if let Some(obj) = v.as_object() {
                     if let Some(text) = obj.get("text").and_then(|t| t.as_str()) {
                         return text.len() as i32;
                     }
                 }
                 0
-            }).sum()
-        }
+            })
+            .sum(),
         Some(serde_json::Value::String(s)) => s.len() as i32,
         _ => 0,
     }
@@ -92,10 +96,8 @@ pub fn find_valid_cut_points(messages: &[Message]) -> Vec<usize> {
     let mut points = vec![];
     for (i, msg) in messages.iter().enumerate() {
         match msg.role.as_str() {
-            "user" | "assistant" => {
-                if msg.tool_calls.as_ref().map_or(true, |v| v.is_empty()) {
-                    points.push(i);
-                }
+            "user" | "assistant" if msg.tool_calls.as_ref().is_none_or(|v| v.is_empty()) => {
+                points.push(i);
             }
             "system" => points.push(i),
             _ => {}
@@ -148,8 +150,12 @@ pub fn extract_file_operations(messages: &[Message]) -> (Vec<String>, Vec<String
                 continue;
             }
             match tc.function.name.as_str() {
-                "read" | "read_file" => { read_set.insert(path); }
-                "write" | "write_file" | "edit" | "patch" => { write_set.insert(path); }
+                "read" | "read_file" => {
+                    read_set.insert(path);
+                }
+                "write" | "write_file" | "edit" | "patch" => {
+                    write_set.insert(path);
+                }
                 _ => {}
             }
         }
@@ -168,7 +174,11 @@ pub fn compact(
     opts: &CompactOptions,
 ) -> (Vec<Message>, Option<CompactionResult>) {
     let tokens_before = estimate_context_tokens(&messages);
-    let context_window = if opts.context_window > 0 { opts.context_window } else { 200000 };
+    let context_window = if opts.context_window > 0 {
+        opts.context_window
+    } else {
+        200000
+    };
     let settings = CompactionSettings {
         enabled: true,
         reserve_tokens: opts.reserve_tokens,

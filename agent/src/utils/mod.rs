@@ -56,8 +56,8 @@ pub fn detect_image_mime_type(path: &Path) -> Option<String> {
     use std::fs::File;
     use std::io::Read;
     let mut file = File::open(path).ok()?;
-    let mut header = [0u8; 8];
-    file.read(&mut header).ok()?;
+    let mut header = [0u8; 12];
+    file.read_exact(&mut header).ok()?;
     match &header[..4] {
         [0x89, 0x50, 0x4E, 0x47] => Some("image/png".to_string()),
         [0xFF, 0xD8, 0xFF, _] => Some("image/jpeg".to_string()),
@@ -73,7 +73,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Default session directory for a given CWD
 pub fn default_session_dir(cwd: &str) -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    home.join(".future/agent").join("sessions").join(encode_cwd(cwd))
+    home.join(".future/agent")
+        .join("sessions")
+        .join(encode_cwd(cwd))
 }
 
 /// Default config directory
@@ -85,7 +87,10 @@ pub fn default_config_dir() -> PathBuf {
 /// Get default settings paths (global and project-level)
 pub fn default_settings_paths() -> (PathBuf, PathBuf) {
     let home = default_config_dir();
-    (home.join("settings.json"), PathBuf::from(".future/agent/settings.json"))
+    (
+        home.join("settings.json"),
+        PathBuf::from(".future/agent/settings.json"),
+    )
 }
 
 /// Canonical path (resolve symlinks, absolute)

@@ -2,12 +2,13 @@
 
 use crate::events::{
     self, agent_end, agent_end_with_stop_reason, agent_start, error_event, message_end,
-    message_start, text_delta, text_end, text_start, thinking_delta, thinking_end,
-    thinking_start, tool_end, tool_start, toolcall_delta, toolcall_end, toolcall_start, turn_start, usage_event, EventBus,
+    message_start, text_delta, text_end, text_start, thinking_delta, thinking_end, thinking_start,
+    tool_end, tool_start, toolcall_delta, toolcall_end, toolcall_start, turn_start, usage_event,
+    EventBus,
 };
 use crate::types::{
-    AgentMessage, AgentTool, AgentToolCall, ContentBlock, ConvertFromLLM, ConvertToLLM, Message, StreamEvent,
-    ToolCall, LLMProvider,
+    AgentMessage, AgentTool, AgentToolCall, ContentBlock, ConvertFromLLM, ConvertToLLM,
+    LLMProvider, Message, StreamEvent, ToolCall,
 };
 use anyhow::{anyhow, Result};
 use std::sync::{Arc, Mutex};
@@ -18,11 +19,8 @@ use tokio_stream::StreamExt;
 
 // ANSI terminal colors (matching Go)
 const C_RESET: &str = "\x1b[0m";
-const C_BOLD: &str = "\x1b[1m";
 const C_RED: &str = "\x1b[31m";
 const C_GREEN: &str = "\x1b[32m";
-const C_YELLOW: &str = "\x1b[33m";
-const C_BLUE: &str = "\x1b[34m";
 const C_MAGENTA: &str = "\x1b[35m";
 
 pub const DEFAULT_MAX_TURNS: i32 = 50;
@@ -82,14 +80,12 @@ impl Loop {
         self
     }
 
-    pub fn with_transform_context(mut self, f: Arc<dyn Fn(Vec<Message>, String) -> Vec<Message> + Send + Sync>) -> Self {
+    pub fn with_transform_context(
+        mut self,
+        f: Arc<dyn Fn(Vec<Message>, String) -> Vec<Message> + Send + Sync>,
+    ) -> Self {
         self.config.transform_context = Some(f);
         self
-    }
-
-    pub(crate) fn set_last_compaction_result(&self, result: crate::compaction::CompactionResult) {
-        let mut r = self.last_compaction_result.lock().unwrap();
-        *r = Some(result);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -102,10 +98,10 @@ impl Loop {
         user_prompt: String,
         on_text: impl Fn(String) + Send + 'static,
     ) -> Result<String> {
-        let messages = vec![
-            self.new_user_message(user_prompt),
-        ];
-        let (result, _) = self.run_streaming_with_messages(messages, on_text, |_| {}).await?;
+        let messages = vec![self.new_user_message(user_prompt)];
+        let (result, _) = self
+            .run_streaming_with_messages(messages, on_text, |_| {})
+            .await?;
         Ok(result)
     }
 
@@ -182,7 +178,12 @@ impl Loop {
                     };
                     *comp_result = None;
                     if let Some(ref bus) = self.event_bus {
-                        bus.emit(events::compaction_end(tokens_before, &summary, false, "auto"));
+                        bus.emit(events::compaction_end(
+                            tokens_before,
+                            &summary,
+                            false,
+                            "auto",
+                        ));
                     }
                 }
                 result
@@ -199,8 +200,14 @@ impl Loop {
             let llm_messages: Vec<Message> = ConvertToLLM(&work_messages);
 
             // Stream chat
-            let stream_result = self.provider
-                .stream_chat(self.model.clone(), llm_messages, tool_defs.clone(), self.system_prompt.clone())
+            let stream_result = self
+                .provider
+                .stream_chat(
+                    self.model.clone(),
+                    llm_messages,
+                    tool_defs.clone(),
+                    self.system_prompt.clone(),
+                )
                 .await;
 
             let mut rx = match stream_result {
@@ -210,11 +217,17 @@ impl Loop {
                         bus.emit(error_event(&e.to_string()));
                     }
                     last_error = Some(e);
-                    if self.config.max_retries > 0 && retry_attempt < self.config.max_retries as usize {
+                    if self.config.max_retries > 0
+                        && retry_attempt < self.config.max_retries as usize
+                    {
                         retry_attempt += 1;
                         let delay_ms = 2000 * (1 << (retry_attempt - 1));
                         if let Some(ref bus) = self.event_bus {
-                            bus.emit(events::auto_retry_start(retry_attempt, self.config.max_retries as usize, delay_ms));
+                            bus.emit(events::auto_retry_start(
+                                retry_attempt,
+                                self.config.max_retries as usize,
+                                delay_ms,
+                            ));
                         }
                         sleep(Duration::from_millis(delay_ms as u64)).await;
                         continue;
@@ -368,7 +381,7 @@ impl Loop {
             if let Some(err) = stream_error {
                 last_error = Some(err);
                 // If steering messages are pending, drain and restart
-                if self.steering_queue.len() > 0 {
+                if !self.steering_queue.is_empty() {
                     messages = self.drain_steering(messages);
                     last_error = None;
                     continue;
@@ -412,7 +425,11 @@ impl Loop {
                 let llm_msgs: Vec<Message> = ConvertToLLM(&messages);
                 if stop_fn(llm_msgs, &assistant_text) {
                     if let Some(ref bus) = self.event_bus {
-                        bus.emit(agent_end_with_stop_reason("stop_condition", total_usage.as_ref(), &last_stop_reason));
+                        bus.emit(agent_end_with_stop_reason(
+                            "stop_condition",
+                            total_usage.as_ref(),
+                            &last_stop_reason,
+                        ));
                     }
                     return Ok((assistant_text, messages));
                 }
@@ -420,7 +437,7 @@ impl Loop {
 
             // If no tool calls, check follow-up queue
             if tool_calls.is_empty() {
-                if self.follow_up_queue.len() > 0 {
+                if !self.follow_up_queue.is_empty() {
                     messages = self.drain_follow_up(messages);
                     if let Some(ref bus) = self.event_bus {
                         bus.emit(events::turn_end(turn));
@@ -428,7 +445,11 @@ impl Loop {
                     continue;
                 }
                 if let Some(ref bus) = self.event_bus {
-                    bus.emit(agent_end_with_stop_reason("complete", total_usage.as_ref(), &last_stop_reason));
+                    bus.emit(agent_end_with_stop_reason(
+                        "complete",
+                        total_usage.as_ref(),
+                        &last_stop_reason,
+                    ));
                 }
                 return Ok((assistant_text, messages));
             }
@@ -444,11 +465,15 @@ impl Loop {
         }
 
         if let Some(ref bus) = self.event_bus {
-            bus.emit(agent_end_with_stop_reason("max_turns", None, &last_stop_reason));
+            bus.emit(agent_end_with_stop_reason(
+                "max_turns",
+                None,
+                &last_stop_reason,
+            ));
         }
 
-        if last_error.is_some() {
-            return Err(last_error.unwrap().context("exceeded max turns"));
+        if let Some(last_error) = last_error {
+            return Err(last_error.context("exceeded max turns"));
         }
         Err(anyhow!("exceeded max turns ({})", max_turns))
     }
@@ -457,7 +482,12 @@ impl Loop {
     // TOOL EXECUTION
     // ═══════════════════════════════════════════════════════════════════════════
 
-    fn execute_tools(&self, turn: usize, tool_calls: &[ToolCall], messages: &mut Vec<AgentMessage>) {
+    fn execute_tools(
+        &self,
+        turn: usize,
+        tool_calls: &[ToolCall],
+        messages: &mut Vec<AgentMessage>,
+    ) {
         let use_parallel = if !self.config.tools_execution_mode.is_empty() {
             self.config.tools_execution_mode == "parallel"
         } else {
@@ -471,18 +501,29 @@ impl Loop {
         }
     }
 
-    fn execute_tools_parallel(&self, turn: usize, tool_calls: &[ToolCall], messages: &mut Vec<AgentMessage>) {
+    fn execute_tools_parallel(
+        &self,
+        turn: usize,
+        tool_calls: &[ToolCall],
+        messages: &mut Vec<AgentMessage>,
+    ) {
         // For now, use sequential execution since AgentConfig contains non-Clone fields
         // TODO: implement true parallel execution with Arc<AgentConfig>
         self.execute_tools_sequential(turn, tool_calls, messages);
     }
 
-    fn execute_tools_sequential(&self, _turn: usize, tool_calls: &[ToolCall], messages: &mut Vec<AgentMessage>) {
+    fn execute_tools_sequential(
+        &self,
+        _turn: usize,
+        tool_calls: &[ToolCall],
+        messages: &mut Vec<AgentMessage>,
+    ) {
         let tools = &self.tools;
         let config = &self.config;
         for tc in tool_calls {
             let start = Instant::now();
-            let (result, err_str, tool_name) = Self::execute_one_tool_impl_static(tc, tools, config);
+            let (result, err_str, tool_name) =
+                Self::execute_one_tool_impl_static(tc, tools, config);
             let duration = start.elapsed().as_millis() as u64;
 
             if self.verbose {
@@ -493,18 +534,28 @@ impl Loop {
                 };
                 let color = if err_str.is_some() { C_RED } else { C_GREEN };
                 if let Some(ref err) = err_str {
-                    eprintln!("\n{}{}{} {} {:-12} {:6}ms  {}", color, tag, C_RESET, "✗", tool_name, duration, err);
+                    eprintln!(
+                        "\n{}{}{} ✗ {:-12} {:6}ms  {}",
+                        color, tag, C_RESET, tool_name, duration, err
+                    );
                 } else {
-                    eprintln!("\n{}{}{} {} {:-12} {:6}ms", color, tag, C_RESET, "✓", tool_name, duration);
+                    eprintln!(
+                        "\n{}{}{} ✓ {:-12} {:6}ms",
+                        color, tag, C_RESET, tool_name, duration
+                    );
                 }
             }
 
-            let tool_msg = self.new_tool_result(&tc.id, &result, err_str.as_ref().map(|s| s.as_str()));
+            let tool_msg = self.new_tool_result(&tc.id, &result, err_str.as_deref());
             messages.push(tool_msg);
         }
     }
 
-    fn execute_one_tool_impl_static(tc: &ToolCall, tools: &[AgentTool], config: &crate::types::AgentConfig) -> (String, Option<String>, String) {
+    fn execute_one_tool_impl_static(
+        tc: &ToolCall,
+        tools: &[AgentTool],
+        config: &crate::types::AgentConfig,
+    ) -> (String, Option<String>, String) {
         let tool_name = tc.function.name.clone();
         let tool_id = tc.id.clone();
 
@@ -512,7 +563,11 @@ impl Loop {
         if let Some(ref hook) = config.before_tool_call {
             if let Some(result_val) = hook(&tool_name, &tool_id, &tc.function.arguments) {
                 if result_val.is_error {
-                    return (result_val.result.clone(), Some(result_val.result), tool_name);
+                    return (
+                        result_val.result.clone(),
+                        Some(result_val.result),
+                        tool_name,
+                    );
                 } else {
                     return (result_val.result.clone(), None, tool_name);
                 }
@@ -559,27 +614,31 @@ impl Loop {
 
         // Stage 4: AfterToolCall hook
         if let Some(ref hook) = config.after_tool_call {
-            let result_str = final_result.as_ref().map(|s| s.as_str()).unwrap_or("");
-            let err_owned = final_err.as_ref().map(|e| anyhow::anyhow!("{}", e)).unwrap_or_else(|| anyhow::anyhow!(""));
-            if let Some(result_val) = hook(&tool_name, &tool_id, &effective_args, result_str.to_string(), err_owned) {
-                let error_result = if result_val.is_error { Some(result_val.result.clone()) } else { None };
+            let result_str = final_result.as_deref().unwrap_or("");
+            let err_owned = final_err
+                .as_ref()
+                .map(|e| anyhow::anyhow!("{}", e))
+                .unwrap_or_else(|| anyhow::anyhow!(""));
+            if let Some(result_val) = hook(
+                &tool_name,
+                &tool_id,
+                &effective_args,
+                result_str.to_string(),
+                err_owned,
+            ) {
+                let error_result = if result_val.is_error {
+                    Some(result_val.result.clone())
+                } else {
+                    None
+                };
                 return (result_val.result, error_result, tool_name);
             }
         }
 
         // Return (result_string, error_string_option, tool_name)
-        let result_str = final_result.unwrap_or_else(|| String::new());
+        let result_str = final_result.unwrap_or_else(String::new);
         let error_str = final_err.map(|e| e.to_string());
         (result_str, error_str, tool_name)
-    }
-
-    fn execute_tool_internal(&self, name: &str, args: serde_json::Value, tools: &[AgentTool]) -> Result<String> {
-        for tool in tools {
-            if tool.def.function.name == name {
-                return (tool.handler)(args);
-            }
-        }
-        Err(anyhow!("tool {} not found", name))
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -674,14 +733,6 @@ impl Loop {
         messages
     }
 
-    fn new_system_message(&self, content: &str) -> AgentMessage {
-        AgentMessage {
-            role: "system".to_string(),
-            content: vec![ContentBlock::text(content)],
-            ..Default::default()
-        }
-    }
-
     fn new_user_message(&self, content: impl Into<String>) -> AgentMessage {
         AgentMessage {
             role: "user".to_string(),
@@ -741,6 +792,10 @@ impl PendingMessageQueue {
 
     pub fn len(&self) -> usize {
         self.rx.lock().unwrap().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn set_mode(&mut self, mode: &str) {
