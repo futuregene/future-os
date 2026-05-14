@@ -3,7 +3,6 @@
 // This build script compiles the proto files from the proto/ directory.
 // The proto files are in a separate repository at ../proto/
 
-use std::env;
 use std::path::PathBuf;
 
 fn main() {
@@ -36,6 +35,6 @@ fn main() {
         .build_server(true)
         .build_client(false)
         .out_dir("src/grpc/generated")
-        .compile(&proto_files, &[&proto_dir])
+        .compile_protos(&proto_files, &[&proto_dir])
         .expect("Failed to compile proto files");
 }
