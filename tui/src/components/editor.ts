@@ -388,6 +388,9 @@ export class Editor implements Component, Focusable {
       case "enter": return this.submit();
       case "shift+enter": return this.insertNewline();
 
+      // Space (parseKey converts " " to "space")
+      case "space": return this.insertChar(" ");
+
       // Tab
       case "tab": return true; // handled by App
 
@@ -986,6 +989,10 @@ export class Editor implements Component, Focusable {
 
     const visibleEnd = Math.min(totalVL, this.viewportTop + maxVisible);
 
+    // Top border rule (matches pi's horizontal separator above editor)
+    const hrColor = this.theme.border ?? 240;
+    lines.push(`${CSI}38;5;${hrColor}m${"─".repeat(screenWidth)}${RESET}`);
+
     // Scroll indicators
     if (this.viewportTop > 0) {
       const indicator = `${CSI}38;5;${this.theme.border ?? 240}m↑ ${this.viewportTop} more${RESET}`;
@@ -1078,6 +1085,9 @@ export class Editor implements Component, Focusable {
       const indicator = `${CSI}38;5;${this.theme.border ?? 240}m↓ ${remaining} more${RESET}`;
       lines.push(borderChar + indicator);
     }
+
+    // Bottom border rule (matches pi's horizontal separator below editor)
+    lines.push(`${CSI}38;5;${hrColor}m${"─".repeat(screenWidth)}${RESET}`);
 
     return lines;
   }
