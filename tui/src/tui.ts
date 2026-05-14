@@ -237,7 +237,7 @@ export class NodeTerminal implements Terminal {
       const logDir = path.join(os.homedir(), ".xihu");
       const logPath = path.join(logDir, "write.log");
       try { fs.mkdirSync(logDir, { recursive: true }); } catch {}
-      try { fs.appendFileSync(logPath, data.replace(/\x1b/g, "\\x1b")); } catch {}
+      try { fs.appendFileSync(logPath, data, { encoding: "utf8" }); } catch {}
     }
     process.stdout.write(data);
   }
