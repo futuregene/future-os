@@ -26,7 +26,7 @@ import { DARK_THEME, type Theme, fg, dim, bold } from "./theme.js";
 import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.js";
 import { parseKey, isKeyRelease, isKeyRepeat, Key } from "./keys.js";
 import { KeybindingManager } from "./keybindings.js";
-import { visibleWidth, stripAnsiCodes, normalizeTerminalOutput } from "./utils.js";
+import { visibleWidth, stripAnsiCodes, normalizeTerminalOutput, sliceByColumn } from "./utils.js";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
@@ -959,22 +959,25 @@ export class App extends Container {
 
   private compositeLineAt(base: string, overlay: string, col: number, width: number): string {
     if (isImageLine(base)) return base;
-    // Simple compositing: pad overlay to width, place at column position
+    // Composite overlay into base line, preserving ANSI codes on base
     const overlayClean = stripAnsiCodes(overlay);
-    const baseClean = stripAnsiCodes(base);
+    const overlayVisWidth = visibleWidth(overlayClean);
 
-    // Build: base up to col + overlay (clipped to width) + base after col+overlay
-    const before = baseClean.slice(0, Math.min(col, baseClean.length));
-    const overlayPart = overlayClean.slice(0, width);
-    const after = baseClean.slice(Math.min(col + overlayPart.length, baseClean.length));
+    // Extract before portion from base (0..col), preserving ANSI
+    let before = sliceByColumn(base, 0, col);
+    const beforeW = visibleWidth(stripAnsiCodes(before));
+    // Pad before to exactly col visible columns if needed
+    if (beforeW < col) before += " ".repeat(col - beforeW);
 
-    const padOverlay = overlayPart.length < width ? overlayPart + " ".repeat(width - overlayPart.length) : overlayPart;
+    // Pad overlay to specified width
+    const padLen = width - overlayVisWidth;
+    const paddedOverlay = padLen > 0 ? overlay + " ".repeat(padLen) : overlay;
 
-    // Preserve ANSI codes by re-applying: base background + overlay content
-    // For simplicity, use the overlay text directly (it carries its own ANSI codes)
-    const beforePadded = before.length < col ? before + " ".repeat(col - before.length) : before;
+    // Extract after portion from base (col + overlayVisWidth .. end), preserving ANSI
+    const afterStart = col + overlayVisWidth;
+    const after = sliceByColumn(base, afterStart);
 
-    return beforePadded + overlay + " ".repeat(Math.max(0, width - overlayClean.length)) + after;
+    return before + paddedOverlay + after;
   }
 
   private isOverlayVisible(

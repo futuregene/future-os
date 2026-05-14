@@ -166,6 +166,12 @@ export class NodeTerminal implements Terminal {
       this._modifyOtherKeysActive = false;
     }
 
+    // Suppress Kitty response detection during drain: the deactivation
+    // response \x1b[?u would otherwise be interpreted as an activation
+    // response and re-enable the protocol.
+    const prevKittyActive = this._kittyProtocolActive;
+    this._kittyProtocolActive = true; // sentinel to block re-enable
+
     const previousHandler = this.inputHandler;
     this.inputHandler = undefined;
 
@@ -185,6 +191,7 @@ export class NodeTerminal implements Terminal {
       }
     } finally {
       process.stdin.removeListener("data", onData);
+      this._kittyProtocolActive = prevKittyActive;
       this.inputHandler = previousHandler;
     }
   }

@@ -5,7 +5,7 @@
 
 import type { Component } from "../tui.js";
 import { CSI, RESET, BOLD } from "../tui.js";
-import { visibleWidth } from "../utils.js";
+import { visibleWidth, truncateToWidth } from "../utils.js";
 
 export interface SelectItem {
   value: string;
@@ -78,6 +78,7 @@ export class SelectList implements Component {
 
   setFilter(filter: string): void {
     this.filter = filter;
+    this.selectedIndex = 0;
     this.applyFilter();
   }
 
@@ -166,6 +167,10 @@ export class SelectList implements Component {
     const lines: string[] = [];
     const innerW = Math.max(20, width);
 
+    // Width budget: label gets most of the space, description gets the rest
+    const maxLabelW = Math.max(10, innerW - 35);
+    const maxDescW = Math.max(5, innerW - maxLabelW - 4);
+
     lines.push(`${CSI}38;5;${this.theme.accent}m${BOLD} ${this.title} ${RESET}`);
     lines.push(`${CSI}2mFilter: ${this.filter}_ ${RESET}`);
 
@@ -183,8 +188,10 @@ export class SelectList implements Component {
       if (!item) continue;
 
       const selected = idx === this.selectedIndex;
-      const labelPart = item.label.slice(0, 40);
-      const descPart = item.description?.slice(0, 30) ?? "";
+      const labelPart = truncateToWidth(item.label, maxLabelW);
+      // Normalize multiline descriptions: replace \r\n with space
+      const rawDesc = item.description?.replace(/\r\n/g, " ") ?? "";
+      const descPart = truncateToWidth(rawDesc, maxDescW);
 
       if (selected) {
         const prefix = `${CSI}38;5;${this.theme.selectedFg}m${CSI}48;5;${this.theme.selectedBg}m ▶ `;
