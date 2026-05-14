@@ -3,7 +3,7 @@
  * Complete terminal UI for xihu agent.
  */
 
-import { RpcClient } from "./rpc/client.js";
+import { RpcClient, GrpcClient, createClient } from "./rpc/index.js";
 import { ChatArea, type ChatMessage } from "./components/chat-area.js";
 import { Footer, type FooterData } from "./components/footer.js";
 import { SelectList, type SelectItem } from "./components/select-list.js";
@@ -60,7 +60,7 @@ function extractKittyImageIds(line: string): number[] {
 
 export class App extends Container {
   private terminal: NodeTerminal;
-  private client: RpcClient;
+  private client: RpcClient | GrpcClient;
   private theme: Theme;
   private editor: Editor;
   private chat: ChatArea;
@@ -164,7 +164,11 @@ export class App extends Container {
   constructor(private serverUrl = "http://localhost:7890") {
     super();
     this.terminal = new NodeTerminal();
-    this.client = new RpcClient(serverUrl);
+    // Use gRPC if XIHU_USE_GRPC is set, otherwise HTTP
+    const useGrpc = process.env.XIHU_USE_GRPC !== "0";
+    this.client = useGrpc 
+      ? new GrpcClient(process.env.XIHU_GRPC_ADDR ?? "localhost:50051")
+      : new RpcClient(serverUrl);
     this.theme = DARK_THEME;
     this.chat = new ChatArea(this.terminal.columns);
     this.footer = new Footer(this.terminal.columns);

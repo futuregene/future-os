@@ -11,6 +11,8 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/proto-loader": "^0.8.1",
     "marked": "^18.0.3"
   },
   "devDependencies": {
