@@ -165,6 +165,26 @@ function parseKittySequence(data: string): ParsedKittySequence | null {
     return { codepoint: normalizedCodepoint, modifier: modValue - 1, eventType };
   }
 
+  // Functional keys with CSI ~: \x1b[<num>;<mod>~ or \x1b[<num>;<mod>:<event>~
+  const funcMatch = data.match(/^\x1b\[(\d+)(?:;(\d+))?(?::(\d+))?~$/);
+  if (funcMatch) {
+    const keyNum = parseInt(funcMatch[1]!, 10);
+    const modValue = funcMatch[2] ? parseInt(funcMatch[2], 10) : 1;
+    const eventType = parseEventType(funcMatch[3]);
+    const funcCodes: Record<number, number> = {
+      2: FUNCTIONAL_CODEPOINTS.insert,
+      3: FUNCTIONAL_CODEPOINTS.delete,
+      5: FUNCTIONAL_CODEPOINTS.pageUp,
+      6: FUNCTIONAL_CODEPOINTS.pageDown,
+      7: FUNCTIONAL_CODEPOINTS.home,
+      8: FUNCTIONAL_CODEPOINTS.end,
+    };
+    const codepoint = funcCodes[keyNum];
+    if (codepoint !== undefined) {
+      return { codepoint, modifier: modValue - 1, eventType };
+    }
+  }
+
   return null;
 }
 
@@ -574,9 +594,41 @@ const LEGACY_KEY_SEQUENCES: Record<string, string[]> = {
   f12: ["\x1b[24~"],
 };
 
-function matchesLegacyModifierSequence(_data: string, _key: string, _modifier: number): boolean {
-  // Legacy modifier sequences are handled by parseKey() already, so exact
-  // matching via LEGACY_SEQUENCE_KEY_IDS in parseKey is sufficient here.
+const LEGACY_SHIFT_SEQUENCES: Record<string, string[]> = {
+  up: ["\x1b[a"],
+  down: ["\x1b[b"],
+  right: ["\x1b[c"],
+  left: ["\x1b[d"],
+  clear: ["\x1b[e"],
+  insert: ["\x1b[2$"],
+  delete: ["\x1b[3$"],
+  pageUp: ["\x1b[5$"],
+  pageDown: ["\x1b[6$"],
+  home: ["\x1b[7$"],
+  end: ["\x1b[8$"],
+};
+
+const LEGACY_CTRL_SEQUENCES: Record<string, string[]> = {
+  up: ["\x1bOa"],
+  down: ["\x1bOb"],
+  right: ["\x1bOc"],
+  left: ["\x1bOd"],
+  clear: ["\x1bOe"],
+  insert: ["\x1b[2^"],
+  delete: ["\x1b[3^"],
+  pageUp: ["\x1b[5^"],
+  pageDown: ["\x1b[6^"],
+  home: ["\x1b[7^"],
+  end: ["\x1b[8^"],
+};
+
+function matchesLegacyModifierSequence(data: string, key: string, modifier: number): boolean {
+  if (modifier === MODIFIERS.shift) {
+    return matchesLegacySequence(data, LEGACY_SHIFT_SEQUENCES[key] ?? []);
+  }
+  if (modifier === MODIFIERS.ctrl) {
+    return matchesLegacySequence(data, LEGACY_CTRL_SEQUENCES[key] ?? []);
+  }
   return false;
 }
 

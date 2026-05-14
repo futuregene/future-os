@@ -40,8 +40,8 @@ export class ChatArea implements Component {
 
   constructor(private maxWidth = 80, theme?: Theme) {
     this.theme = theme ?? {
-      bg: 235, fg: 252, accent: 109, border: 69,
-      selectedBg: 237, selectedFg: 255, dim: 245,
+      bg: 235, fg: 252, accent: 39, border: 240,
+      selectedBg: 38, selectedFg: 255, dim: 245,
       error: 204, success: 143,
       mdHeading: 221, mdLink: 117, mdCode: 109,
       mdCodeBlock: 143, mdCodeBlockBorder: 244, mdQuote: 244,

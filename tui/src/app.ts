@@ -26,7 +26,7 @@ import { DARK_THEME, type Theme, fg, dim, bold } from "./theme.js";
 import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.js";
 import { parseKey, isKeyRelease, isKeyRepeat, Key } from "./keys.js";
 import { KeybindingManager } from "./keybindings.js";
-import { visibleWidth, stripAnsiCodes } from "./utils.js";
+import { visibleWidth, stripAnsiCodes, normalizeTerminalOutput } from "./utils.js";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
@@ -141,7 +141,7 @@ export class App extends Container {
   private renderTimer: ReturnType<typeof setTimeout> | undefined;
   private lastRenderAt = 0;
   private static readonly MIN_RENDER_INTERVAL_MS = 16;
-  private static readonly SEGMENT_RESET = "\x1b[0m";
+  private static readonly SEGMENT_RESET = "\x1b[0m\x1b]8;;\x07";  // SGR reset + OSC 8 close (prevents hyperlink leak)
   private previousWidth = 0;
   private previousHeight = 0;
   private previousKittyImageIds = new Set<number>();
@@ -1113,7 +1113,7 @@ export class App extends Container {
     const reset = App.SEGMENT_RESET;
     for (let i = 0; i < lines.length; i++) {
       if (!isImageLine(lines[i])) {
-        lines[i] = lines[i] + reset;
+        lines[i] = normalizeTerminalOutput(lines[i]) + reset;
       }
     }
     return lines;
@@ -1143,7 +1143,7 @@ export class App extends Container {
     } else if (targetRow < currentRow) {
       this.terminal.write(`\x1b[${currentRow - targetRow}A`);
     }
-    this.terminal.write(`\x1b[${cursorPos.col}G`);
+    this.terminal.write(`\x1b[${cursorPos.col + 1}G`);
     this.hardwareCursorRow = targetRow;
     if (this.showHardwareCursor) {
       this.terminal.write("\x1b[?25h");
