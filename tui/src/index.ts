@@ -48,28 +48,18 @@ export { RpcClient } from "./rpc/client.js";
 // ─── Main entry point ────────────────────────────────────────────────────
 
 import { App } from "./app.js";
-import { RpcClient } from "./rpc/client.js";
 
 const args = process.argv.slice(2);
-let serverUrl = "http://localhost:7890";
-let socketPath: string | undefined;
+let grpcAddr = "localhost:50051";
 
 for (let i = 0; i < args.length; i++) {
-  if (args[i] === "--socket" && i + 1 < args.length) {
-    socketPath = args[i + 1];
-    process.env.XIHU_SOCKET = socketPath;
-    i++;
-  } else if (args[i] === "--port" && i + 1 < args.length) {
-    serverUrl = `http://localhost:${args[i + 1]}/`;
-    i++;
-  } else if (args[i] === "--url" && i + 1 < args.length) {
-    serverUrl = args[i + 1];
-    if (!serverUrl.endsWith("/")) serverUrl += "/";
+  if (args[i] === "--grpc-addr" && i + 1 < args.length) {
+    grpcAddr = args[i + 1];
     i++;
   }
 }
 
-const app = new App(serverUrl);
+const app = new App(grpcAddr);
 
 process.on("SIGINT", async () => {
   await app.stop();

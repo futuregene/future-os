@@ -5,7 +5,7 @@ use clap::Parser;
 use std::env;
 use std::sync::Arc;
 use xihu_agent::{
-    Engine, EngineConfig, LLMClient, LLMProvider, Manager, ModelRegistry, Server, ServerSession,
+    Engine, EngineConfig, Manager, ModelRegistry, ServerSession,
     USER_SKILLS_DIR, PROJECT_SKILLS_DIR, AGENTS_SKILLS_DIR,
 };
 
@@ -41,21 +41,9 @@ struct Cli {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Run as RPC server (HTTP mode)
-    #[arg(long)]
-    server: bool,
-
-    /// TCP port for server mode
-    #[arg(long)]
-    port: Option<String>,
-
-    /// Unix socket path for server mode
-    #[arg(long)]
-    socket: Option<String>,
-
-    /// gRPC port for server mode (default: disabled)
-    #[arg(long)]
-    grpc_port: Option<u16>,
+    /// gRPC server address (host:port, e.g., 127.0.0.1:50051)
+    #[arg(long, default_value = "127.0.0.1:50051")]
+    grpc_addr: String,
 
     /// Message arguments
     messages: Vec<String>,
@@ -115,13 +103,33 @@ async fn main() -> Result<()> {
         })
         .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
+    // Load auth store for API keys
+    let auth_store = xihu_agent::AuthStore::load();
+    
+    // Resolve API key: CLI arg > env > auth.json > model config
     let api_key = cli
         .api_key
-        .or_else(|| env::var("LLM_API_KEY").ok())
-        .or_else(|| env::var("ANTHROPIC_API_KEY").ok())
-        .or_else(|| env::var("OPENAI_API_KEY").ok())
         .or_else(|| {
-            model_config.as_ref().map(|m| m.api_key.clone())
+            let k = env::var("LLM_API_KEY").unwrap_or_default();
+            if k.is_empty() { None } else { Some(k) }
+        })
+        .or_else(|| {
+            let k = env::var("ANTHROPIC_API_KEY").unwrap_or_default();
+            if k.is_empty() { None } else { Some(k) }
+        })
+        .or_else(|| {
+            let k = env::var("OPENAI_API_KEY").unwrap_or_default();
+            if k.is_empty() { None } else { Some(k) }
+        })
+        .or_else(|| auth_store.get(&resolved_model))
+        .or_else(|| model_config.as_ref().and_then(|m| {
+            auth_store.get(&m.provider)
+        }))
+        .or_else(|| auth_store.default_key())
+        .or_else(|| {
+            model_config.as_ref().and_then(|m| {
+                if m.api_key.is_empty() { None } else { Some(m.api_key.clone()) }
+            })
         })
         .unwrap_or_default();
 
@@ -138,13 +146,35 @@ async fn main() -> Result<()> {
     // Build engine
     let engine = Engine::new(&base_url, &api_key, &resolved_model, config)?
         .with_tools(xihu_agent::all_tools());
+    
+    // Create event bus for server mode
+    let event_bus = Arc::new(xihu_agent::EventBus::new());
 
     if cli.verbose {
         eprintln!("\x1b[33m[model]\x1b[0m {}", resolved_model);
     }
 
-    // Server mode
-    if cli.server || cli.port.is_some() || cli.socket.is_some() {
+    // Server mode (gRPC only)
+    if true {  // Always run in server mode when invoked
+        // Parse grpc_addr (host:port or just port)
+        let (grpc_host, grpc_port) = if cli.grpc_addr.starts_with(':') {
+            // Just port: :50051
+            let port_str = &cli.grpc_addr[1..];
+            ("127.0.0.1", port_str.parse().unwrap_or(50051))
+        } else if cli.grpc_addr.contains(':') {
+            // host:port format
+            let parts: Vec<&str> = cli.grpc_addr.split(':').collect();
+            let host = parts.first().copied().unwrap_or("127.0.0.1");
+            let port: u16 = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(50051);
+            (host, port)
+        } else {
+            // Just port number
+            match cli.grpc_addr.parse::<u16>() {
+                Ok(port) => ("127.0.0.1", port),
+                Err(_) => ("127.0.0.1", 50051),
+            }
+        };
+        eprintln!("gRPC server listening on {}:{}", grpc_host, grpc_port);
         // Discover skills (matching Go's paths)
         let skill_dirs = vec![
             USER_SKILLS_DIR.to_string(),
@@ -155,52 +185,32 @@ async fn main() -> Result<()> {
         let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
 
         let manager = Arc::new(Manager::default_for(&cwd));
-        let mut server_session = ServerSession::new(engine.agent_loop, manager, &cwd);
+        let broadcaster: Arc<xihu_agent::rpc::SseBroadcaster> = Arc::new(xihu_agent::rpc::SseBroadcaster::new());
+        let mut server_session = ServerSession::new(
+            Arc::new(tokio::sync::RwLock::new(engine.agent_loop)),
+            manager,
+            &cwd,
+            event_bus.clone(),
+            broadcaster.clone(),
+        );
         server_session.model = resolved_model.clone();
         let session = Arc::new(std::sync::RwLock::new(server_session));
         
-        if let Some(ref grpc_port) = cli.grpc_port {
-            // Combined HTTP + gRPC mode (doesn't use Server HTTP interface)
-            let http_port = cli.port
-                .as_ref()
-                .and_then(|p| p.parse::<u16>().ok())
-                .unwrap_or(8080);
-            
-            // Build AppState directly
-            let broadcaster = xihu_agent::rpc::SseBroadcaster::new();
-            let app_state = xihu_agent::rpc::AppState {
-                session: session.clone(),
-                welcome_version: xihu_agent::utils::VERSION.to_string(),
-                welcome_cwd: cwd.clone(),
-                welcome_skills: skill_names.clone(),
-                welcome_context: vec![],
-                welcome_exts: vec![],
-                explicit_session: false,
-                broadcaster,
-            };
-            
-            xihu_agent::grpc::serve_combined(app_state, http_port, *grpc_port).await?;
-            return Ok(());
-        }
+        // Build AppState for gRPC server
+        let app_state = xihu_agent::rpc::AppState {
+            session: session.clone(),
+            welcome_version: xihu_agent::utils::VERSION.to_string(),
+            welcome_cwd: cwd.clone(),
+            welcome_skills: skill_names.clone(),
+            welcome_context: vec![],
+            welcome_exts: vec![],
+            explicit_session: false,
+            broadcaster: broadcaster.clone(),
+            event_bus: event_bus.clone(),
+        };
         
-        // HTTP server mode
-        let mut server = Server::new(session);
-        server.set_welcome(
-            xihu_agent::utils::VERSION,
-            &cwd,
-            skill_names,
-            vec![],      // context files
-            vec![],      // extensions
-        );
-
-        if let Some(ref port) = cli.port {
-            server.run_tcp(port).await?;
-        } else if let Some(ref path) = cli.socket {
-            server.run_unix(path).await?;
-        } else {
-            // Default: run with stdio
-            server.run_stdio()?;
-        }
+        // Run gRPC server (no HTTP)
+        xihu_agent::grpc::serve(app_state, grpc_host, grpc_port).await?;
         return Ok(());
     }
 

@@ -1,22 +1,12 @@
-//! RPC Server — 1:1 compatible with Go internal/rpc/
-//!
-//! Protocol: HTTP + JSON for commands, SSE for events.
-//! Uses axum for HTTP/SSE server (tiny_http replaced for proper SSE streaming support).
+//! RPC Server - Command handling for gRPC
 
 use crate::session::Manager;
 use crate::types::ConvertToLLM;
 use anyhow::Result;
-use axum::{
-    extract::State,
-    response::sse::{Event, Sse},
-    routing::get,
-    Json, Router,
-};
-use futures::Stream;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
+use crate::events::EventBus;
 
 // ─── RPC Command (stdin) ────────────────────────────────────────────────────
 
@@ -78,6 +68,8 @@ pub struct RpcCommand {
     #[serde(default)]
     pub output_path: String,
 }
+
+// ─── RPC Response (stdout) ───────────────────────────────────────────────
 
 // ─── RPC Response (stdout) ───────────────────────────────────────────────
 
@@ -171,7 +163,7 @@ impl SseEvent {
 // ─── ServerSession ────────────────────────────────────────────────────────
 
 pub struct ServerSession {
-    pub agent_loop: crate::agent::Loop,
+    pub agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>,
     pub messages: Vec<crate::types::AgentMessage>,
     pub model: String,
     pub thinking_level: String,
@@ -183,10 +175,12 @@ pub struct ServerSession {
     pub cwd: String,
     pub is_streaming: bool,
     pub session_name: String,
+    pub event_bus: Arc<EventBus>,
+    pub broadcaster: Arc<SseBroadcaster>,
 }
 
 impl ServerSession {
-    pub fn new(agent_loop: crate::agent::Loop, manager: Arc<Manager>, cwd: &str) -> Self {
+    pub fn new(agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>, manager: Arc<Manager>, cwd: &str, event_bus: Arc<EventBus>, broadcaster: Arc<SseBroadcaster>) -> Self {
         Self {
             agent_loop,
             messages: vec![],
@@ -200,6 +194,8 @@ impl ServerSession {
             cwd: cwd.to_string(),
             is_streaming: false,
             session_name: String::new(),
+            event_bus,
+            broadcaster,
         }
     }
 
@@ -220,23 +216,111 @@ impl ServerSession {
     }
 
     pub fn prompt(&mut self, msg: &str, _images: &[crate::types::ImageContent], _behavior: &str) -> Result<()> {
+        // Add message to session
         self.messages
             .push(crate::types::AgentMessage::new_user("user", serde_json::json!([{"type": "text", "text": msg}])));
+        
+        // Set streaming flag
+        self.is_streaming = true;
+        
+        // Clone messages for the background task
+        let messages = self.messages.clone();
+        let agent_loop = self.agent_loop.clone();
+        let broadcaster = self.broadcaster.clone();
+        
+        // Spawn background task to run agent loop
+        tokio::spawn(async move {
+            // Clone broadcaster for each closure
+            let broadcaster_text = broadcaster.clone();
+            let broadcaster_event = broadcaster.clone();
+            
+            // Run with timeout
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(60),
+                async {
+                    let r#loop = agent_loop.write().await;
+                    r#loop.run_streaming_with_messages(
+                        messages,
+                        move |text| {
+                            broadcaster_text.broadcast(crate::rpc::SseEvent {
+                                event_type: "text_chunk".to_string(),
+                                data: serde_json::json!({"text": text}).to_string(),
+                            });
+                        },
+                        move |event| {
+                            let (event_type, data) = match event.event_type.as_str() {
+                                "agent_start" => ("agent_start".to_string(), serde_json::json!({})),
+                                "agent_end" => ("agent_end".to_string(), serde_json::json!({})),
+                                "turn_start" => ("turn_start".to_string(), serde_json::json!({})),
+                                "message_start" => ("message_start".to_string(), serde_json::json!({})),
+                                "thinking_start" => ("thinking_start".to_string(), serde_json::json!({})),
+                                "thinking_end" => ("thinking_end".to_string(), serde_json::json!({})),
+                                "text_start" => ("text_start".to_string(), serde_json::json!({})),
+                                "text_end" => ("text_end".to_string(), serde_json::json!({})),
+                                "tool_start" => {
+                                    ("tool_start".to_string(), serde_json::json!({"tool_name": event.tool_name, "tool_id": event.tool_id}))
+                                }
+                                "tool_end" => {
+                                    ("tool_end".to_string(), serde_json::json!({"tool_name": event.tool_name, "tool_id": event.tool_id}))
+                                }
+                                "error" => {
+                                    ("error".to_string(), serde_json::json!({"error": event.error_text}))
+                                }
+                                _ => (event.event_type.clone(), serde_json::json!({
+                                    "text": event.text,
+                                    "tool_name": event.tool_name,
+                                    "tool_id": event.tool_id,
+                                    "error": event.error_text,
+                                })),
+                            };
+                            broadcaster_event.broadcast(crate::rpc::SseEvent {
+                                event_type,
+                                data: data.to_string(),
+                            });
+                        },
+                    ).await
+                }
+            ).await;
+            
+            match result {
+                Ok(Ok((_final_text, _final_messages))) => {
+                    broadcaster.broadcast(crate::rpc::SseEvent {
+                        event_type: "agent_end".to_string(),
+                        data: serde_json::json!({"type": "stop"}).to_string(),
+                    });
+                }
+                Ok(Err(e)) => {
+                    eprintln!("Agent loop error: {}", e);
+                    broadcaster.broadcast(crate::rpc::SseEvent {
+                        event_type: "error".to_string(),
+                        data: serde_json::json!({"error": e.to_string()}).to_string(),
+                    });
+                }
+                Err(_timeout) => {
+                    eprintln!("Agent loop timed out after 60s");
+                    broadcaster.broadcast(crate::rpc::SseEvent {
+                        event_type: "error".to_string(),
+                        data: serde_json::json!({"error": "timeout: agent loop timed out after 60 seconds"}).to_string(),
+                    });
+                }
+            }
+        });
+        
         Ok(())
     }
 
     pub fn steer(&mut self, msg: &str) -> Result<()> {
-        self.agent_loop.steering_queue.enqueue(msg.to_string());
+        self.agent_loop.try_write().unwrap().steering_queue.enqueue(msg.to_string());
         Ok(())
     }
 
     pub fn follow_up(&mut self, msg: &str) -> Result<()> {
-        self.agent_loop.follow_up_queue.enqueue(msg.to_string());
+        self.agent_loop.try_write().unwrap().follow_up_queue.enqueue(msg.to_string());
         Ok(())
     }
 
     pub fn abort(&self) {
-        self.agent_loop.abort();
+        self.agent_loop.try_write().unwrap().abort();
     }
 
     pub fn new_session(&mut self) -> Result<()> {
@@ -264,17 +348,17 @@ impl ServerSession {
             "xhigh" => 24000,
             _ => 0,
         };
-        self.agent_loop.config.thinking_budget = budget;
+        self.agent_loop.try_write().unwrap().config.thinking_budget = budget;
     }
 
     pub fn set_steering_mode(&mut self, mode: &str) {
         self.steering_mode = mode.to_string();
-        self.agent_loop.steering_queue.mode = mode.to_string();
+        self.agent_loop.try_write().unwrap().steering_queue.mode = mode.to_string();
     }
 
     pub fn set_follow_up_mode(&mut self, mode: &str) {
         self.follow_up_mode = mode.to_string();
-        self.agent_loop.follow_up_queue.mode = mode.to_string();
+        self.agent_loop.try_write().unwrap().follow_up_queue.mode = mode.to_string();
     }
 
     pub fn compact(&self, _instructions: &str) -> Result<serde_json::Value> {
@@ -315,7 +399,7 @@ impl ServerSession {
 
     pub fn set_auto_retry(&mut self, enabled: bool) {
         self.auto_retry = enabled;
-        self.agent_loop.config.max_retries = if enabled { 3 } else { 0 };
+        self.agent_loop.try_write().unwrap().config.max_retries = if enabled { 3 } else { 0 };
     }
 
     pub fn execute_bash(&self, command: &str) -> Result<serde_json::Value> {
@@ -405,342 +489,8 @@ pub struct AppState {
     pub welcome_context: Vec<String>,
     pub welcome_exts: Vec<String>,
     pub explicit_session: bool,
-    pub broadcaster: SseBroadcaster,
-}
-
-// ─── Server ───────────────────────────────────────────────────────────────
-
-pub struct Server {
-    pub session: Arc<RwLock<ServerSession>>,
-    welcome_version: String,
-    welcome_cwd: String,
-    welcome_skills: Vec<String>,
-    welcome_context: Vec<String>,
-    welcome_exts: Vec<String>,
-    explicit_session: bool,
-    broadcaster: SseBroadcaster,
-}
-
-impl Server {
-    pub fn new(session: Arc<RwLock<ServerSession>>) -> Self {
-        Self {
-            session,
-            welcome_version: crate::utils::VERSION.to_string(),
-            welcome_cwd: String::new(),
-            welcome_skills: vec![],
-            welcome_context: vec![],
-            welcome_exts: vec![],
-            explicit_session: false,
-            broadcaster: SseBroadcaster::new(),
-        }
-    }
-
-    pub fn into_app_state(self) -> AppState {
-        AppState {
-            session: self.session,
-            welcome_version: self.welcome_version,
-            welcome_cwd: self.welcome_cwd,
-            welcome_skills: self.welcome_skills,
-            welcome_context: self.welcome_context,
-            welcome_exts: self.welcome_exts,
-            explicit_session: self.explicit_session,
-            broadcaster: self.broadcaster,
-        }
-    }
-
-    pub fn set_welcome(&mut self, version: &str, cwd: &str, skills: Vec<String>, context: Vec<String>, exts: Vec<String>) {
-        self.welcome_version = version.to_string();
-        self.welcome_cwd = cwd.to_string();
-        self.welcome_skills = skills;
-        self.welcome_context = context;
-        self.welcome_exts = exts;
-    }
-
-    pub fn set_explicit_session(&mut self, v: bool) {
-        self.explicit_session = v;
-    }
-
-    fn handle_command(&self, cmd: RpcCommand) -> String {
-        let id = &cmd.id;
-        let cmd_type = &cmd.cmd_type;
-
-        match cmd_type.as_str() {
-            "prompt" => {
-                let _ = self.session.write().unwrap().prompt(&cmd.message, &cmd.images, &cmd.streaming_behavior);
-                RpcResponse::ok(id, "prompt", serde_json::json!({}))
-            }
-            "steer" => {
-                let _ = self.session.write().unwrap().steer(&cmd.message);
-                RpcResponse::ok(id, "steer", serde_json::json!({}))
-            }
-            "follow_up" => {
-                let _ = self.session.write().unwrap().follow_up(&cmd.message);
-                RpcResponse::ok(id, "follow_up", serde_json::json!({}))
-            }
-            "abort" => {
-                self.session.write().unwrap().abort();
-                RpcResponse::ok(id, "abort", serde_json::json!({}))
-            }
-            "new_session" => {
-                let _ = self.session.write().unwrap().new_session();
-                RpcResponse::ok(id, "new_session", serde_json::json!({"cancelled": false}))
-            }
-            "get_state" => {
-                let state = self.get_state();
-                RpcResponse::ok(id, "get_state", state)
-            }
-            "get_messages" => {
-                let msgs = self.session.read().unwrap().get_messages();
-                RpcResponse::ok(id, "get_messages", serde_json::json!({"messages": msgs}))
-            }
-            "set_model" => {
-                let _ = self.session.write().unwrap().set_model(&cmd.model_id);
-                RpcResponse::ok(id, "set_model", serde_json::json!({"model": cmd.model_id}))
-            }
-            "set_thinking_level" => {
-                self.session.write().unwrap().set_thinking_level(&cmd.level);
-                RpcResponse::ok(id, "set_thinking_level", serde_json::json!({}))
-            }
-            "set_steering_mode" => {
-                self.session.write().unwrap().set_steering_mode(&cmd.mode);
-                RpcResponse::ok(id, "set_steering_mode", serde_json::json!({}))
-            }
-            "set_follow_up_mode" => {
-                self.session.write().unwrap().set_follow_up_mode(&cmd.mode);
-                RpcResponse::ok(id, "set_follow_up_mode", serde_json::json!({}))
-            }
-            "compact" => {
-                let result = self.session.write().unwrap().compact(&cmd.custom_instructions);
-                match result {
-                    Ok(r) => RpcResponse::ok(id, "compact", r),
-                    Err(e) => RpcResponse::build_fail(id, "compact", &e.to_string()),
-                }
-            }
-            "set_auto_compaction" => {
-                self.session.write().unwrap().set_auto_compaction(cmd.enabled);
-                RpcResponse::ok(id, "set_auto_compaction", serde_json::json!({}))
-            }
-            "set_auto_retry" => {
-                self.session.write().unwrap().set_auto_retry(cmd.enabled);
-                RpcResponse::ok(id, "set_auto_retry", serde_json::json!({}))
-            }
-            "bash" => {
-                let result = self.session.write().unwrap().execute_bash(&cmd.command);
-                match result {
-                    Ok(r) => RpcResponse::ok(id, "bash", r),
-                    Err(e) => RpcResponse::build_fail(id, "bash", &e.to_string()),
-                }
-            }
-            "get_session_stats" => {
-                let stats = self.session.read().unwrap().get_session_stats();
-                RpcResponse::ok(id, "get_session_stats", stats)
-            }
-            "list_sessions" => {
-                let sessions = self.session.read().unwrap().list_sessions().unwrap_or_default();
-                RpcResponse::ok(id, "list_sessions", serde_json::json!({"sessions": sessions}))
-            }
-            "switch_session" => {
-                let _ = self.session.write().unwrap().switch_session(&cmd.session_path, &cmd.session_id);
-                RpcResponse::ok(id, "switch_session", serde_json::json!({"cancelled": false}))
-            }
-            "delete_session" => {
-                let _ = self.session.write().unwrap().delete_session(&cmd.session_id);
-                RpcResponse::ok(id, "delete_session", serde_json::json!({}))
-            }
-            "fork" => {
-                let _ = self.session.write().unwrap().fork(&cmd.entry_id);
-                RpcResponse::ok(id, "fork", serde_json::json!({}))
-            }
-            "get_fork_messages" => {
-                RpcResponse::ok(id, "get_fork_messages", serde_json::json!({"messages": []}))
-            }
-            "get_last_assistant_text" => {
-                let text = self.session.read().unwrap().get_last_assistant_text();
-                RpcResponse::ok(
-                    id,
-                    "get_last_assistant_text",
-                    serde_json::json!({"text": if text.is_empty() { None } else { Some(text) } }),
-                )
-            }
-            "set_session_name" => {
-                self.session.write().unwrap().set_session_name(&cmd.name);
-                RpcResponse::ok(id, "set_session_name", serde_json::json!({}))
-            }
-            "get_commands" => {
-                RpcResponse::ok(id, "get_commands", serde_json::json!({"commands": []}))
-            }
-            "abort_retry" => RpcResponse::ok(id, "abort_retry", serde_json::json!({})),
-            "abort_bash" => RpcResponse::ok(id, "abort_bash", serde_json::json!({})),
-            "cycle_model" => RpcResponse::ok(id, "cycle_model", serde_json::json!({"model": ""})),
-            "cycle_thinking_level" => RpcResponse::ok(id, "cycle_thinking_level", serde_json::json!({"level": ""})),
-            "get_available_models" => {
-                let registry = crate::models::Registry::new();
-                let models = registry.all_models().into_iter().map(|m| m.id).collect::<Vec<_>>();
-                RpcResponse::ok(id, "get_available_models", serde_json::json!({"models": models}))
-            }
-            "clone" => RpcResponse::ok(id, "clone", serde_json::json!({})),
-            "export_html" => RpcResponse::ok(id, "export_html", serde_json::json!({"path": ""})),
-            "ui_response" => RpcResponse::ok(id, "ui_response", serde_json::json!({})),
-            _ => RpcResponse::build_fail(id, cmd_type, &format!("unknown command: {}", cmd_type)),
-        }
-    }
-
-    fn get_state(&self) -> serde_json::Value {
-        let sess = self.session.read().unwrap();
-
-        let context_window = crate::models::builtin_models()
-            .into_iter()
-            .find(|m| m.id == sess.model)
-            .map(|m| m.context_window)
-            .unwrap_or(1000000);
-
-        let context_tokens = (sess.messages.len() * 200) as i32;
-        let context_percent = ((context_tokens as f64 / context_window as f64) * 100.0) as i32;
-
-        serde_json::json!({
-            "model": sess.model,
-            "thinkingLevel": sess.thinking_level,
-            "isStreaming": sess.is_streaming,
-            "isCompacting": false,
-            "steeringMode": sess.steering_mode,
-            "followUpMode": sess.follow_up_mode,
-            "sessionFile": "",
-            "sessionId": sess.session_id(),
-            "sessionName": sess.session_name(),
-            "explicitSession": self.explicit_session,
-            "autoCompactionEnabled": sess.auto_compaction,
-            "messageCount": sess.messages.len(),
-            "pendingMessageCount": sess.agent_loop.pending_message_count(),
-            "version": crate::utils::VERSION,
-            "cwd": self.welcome_cwd,
-            "skills": self.welcome_skills,
-            "contextFiles": self.welcome_context,
-            "extensions": self.welcome_exts,
-            "contextWindow": context_window,
-            "contextTokens": context_tokens,
-            "contextPercent": context_percent,
-            "tokensIn": 0,
-            "tokensOut": 0,
-            "totalCost": 0.0,
-        })
-    }
-
-    /// Run over HTTP on a TCP port using axum
-    pub async fn run_tcp(&mut self, addr: &str) -> Result<()> {
-        let addr = if addr.parse::<u16>().is_ok() {
-            format!("0.0.0.0:{}", addr)
-        } else if addr.starts_with(':') {
-            format!("0.0.0.0{}", addr)
-        } else {
-            addr.to_string()
-        };
-
-        let state = self.clone_as_app_state();
-
-        let app = Router::new()
-            .route("/", axum::routing::post(rpc_handler))
-            .route("/events", get(sse_handler))
-            .with_state(state);
-
-        eprintln!("xihu server listening on {}", addr);
-
-        let listener = tokio::net::TcpListener::bind(&addr).await?;
-        axum::serve(listener, app).await?;
-
-        Ok(())
-    }
-
-    /// Run over Unix socket
-    pub async fn run_unix(&mut self, path: &str) -> Result<()> {
-        use std::os::unix::net::UnixListener;
-
-        let _ = std::fs::remove_file(path);
-
-        let listener = UnixListener::bind(path)?;
-        eprintln!("xihu server listening on {}", path);
-
-        loop {
-            let (mut stream, _) = listener.accept()?;
-            let mut buf = vec![];
-            use std::io::Read;
-            stream.read_to_end(&mut buf)?;
-            let body_str = String::from_utf8_lossy(&buf);
-
-            if let Ok(cmd) = serde_json::from_str::<RpcCommand>(&body_str) {
-                let resp_str = self.handle_command(cmd);
-                use std::io::Write;
-                let _ = stream.write_all(resp_str.as_bytes());
-            }
-        }
-    }
-
-    /// Run over stdio (for pipe mode)
-    pub fn run_stdio(&mut self) -> Result<()> {
-        use std::io::{BufRead, Write};
-
-        let stdin = std::io::stdin();
-        let reader = stdin.lock();
-        let mut lines = reader.lines();
-
-        let welcome = serde_json::json!({
-            "type": "welcome",
-            "version": self.welcome_version,
-            "cwd": self.welcome_cwd,
-            "skills": self.welcome_skills,
-            "contextFiles": self.welcome_context,
-            "extensions": self.welcome_exts,
-        });
-        if let Ok(line) = serde_json::to_string(&welcome) {
-            println!("{}", line);
-        }
-
-        for line in lines {
-            if let Ok(line) = line {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                if let Ok(cmd) = serde_json::from_str::<RpcCommand>(&line) {
-                    let resp_str = self.handle_command(cmd);
-                    println!("{}", resp_str);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn clone_as_app_state(&self) -> AppState {
-        AppState {
-            session: self.session.clone(),
-            welcome_version: self.welcome_version.clone(),
-            welcome_cwd: self.welcome_cwd.clone(),
-            welcome_skills: self.welcome_skills.clone(),
-            welcome_context: self.welcome_context.clone(),
-            welcome_exts: self.welcome_exts.clone(),
-            explicit_session: self.explicit_session,
-            broadcaster: self.broadcaster.clone(),
-        }
-    }
-}
-
-// ─── HTTP Handlers ─────────────────────────────────────────────────────
-
-async fn rpc_handler(State(state): State<AppState>, Json(body): Json<serde_json::Value>) -> String {
-    // Try batch first
-    if let Ok(cmds) = serde_json::from_value::<Vec<RpcCommand>>(body.clone()) {
-        let responses: Vec<serde_json::Value> = cmds
-            .into_iter()
-            .map(|cmd| {
-                let resp_str = handle_command_internal(&state, cmd);
-                serde_json::from_str(&resp_str).unwrap_or_default()
-            })
-            .collect();
-        serde_json::to_string(&responses).unwrap_or_default()
-    } else if let Ok(cmd) = serde_json::from_value::<RpcCommand>(body) {
-        handle_command_internal(&state, cmd)
-    } else {
-        RpcResponse::build_fail("", "rpc", "invalid JSON")
-    }
+    pub broadcaster: Arc<SseBroadcaster>,
+    pub event_bus: Arc<EventBus>,
 }
 
 pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
@@ -895,7 +645,7 @@ fn get_state_internal(state: &AppState) -> serde_json::Value {
         "explicitSession": state.explicit_session,
         "autoCompactionEnabled": sess.auto_compaction,
         "messageCount": sess.messages.len(),
-        "pendingMessageCount": sess.agent_loop.pending_message_count(),
+        "pendingMessageCount": sess.agent_loop.try_read().map(|l|l.pending_message_count()).unwrap_or(0),
         "version": crate::utils::VERSION,
         "cwd": cwd,
         "skills": state.welcome_skills,
@@ -910,62 +660,3 @@ fn get_state_internal(state: &AppState) -> serde_json::Value {
     })
 }
 
-// ─── SSE Handler ─────────────────────────────────────────────────────────
-
-async fn sse_handler(
-    State(state): State<AppState>,
-) -> Sse<impl Stream<Item = Result<Event, axum::Error>>> {
-    let mut rx = state.broadcaster.subscribe();
-
-    // Create stream using BroadcastStream from tokio_stream with sync feature
-    // For now, use a simple manual stream implementation
-    use futures_util::StreamExt;
-    use tokio::time::{interval, Duration};
-
-    let stream = async_stream::stream! {
-        let mut heartbeat = interval(Duration::from_secs(30));
-
-        // Send initial ping (Go format: ": ping\n\n")
-        yield Ok(Event::default().comment(" ping"));
-
-        loop {
-            tokio::select! {
-                // Event from broadcaster
-                event = rx.recv() => {
-                    match event {
-                        Ok(evt) => {
-                            yield Ok(Event::default()
-                                .event(evt.event_type)
-                                .data(evt.data));
-                        }
-                        Err(broadcast::error::RecvError::Lagged(n)) => {
-                            eprintln!("SSE lagged {} events", n);
-                            continue;
-                        }
-                        Err(broadcast::error::RecvError::Closed) => {
-                            break;
-                        }
-                    }
-                }
-                // Heartbeat
-                _ = heartbeat.tick() => {
-                    yield Ok(Event::default().comment(" heartbeat"));
-                }
-            }
-        }
-    };
-
-    Sse::new(stream).keep_alive(
-        axum::response::sse::KeepAlive::default()
-    )
-}
-
-// ─── Event Broadcasting ─────────────────────────────────────────────────
-
-impl Server {
-    /// Broadcast an event to all SSE subscribers
-    pub fn broadcast_event(&self, event_type: &str, data: serde_json::Value) {
-        self.broadcaster
-            .broadcast(SseEvent::new(event_type, data));
-    }
-}

@@ -9,7 +9,7 @@
 //! 
 //! gRPC service: proto.XihuAgent (on grpc_port)
 
-use crate::rpc::{AppState, handle_command_internal, RpcResponse};
+use crate::rpc::{AppState, handle_command_internal};
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -22,123 +22,27 @@ pub mod proto {
     include!("generated/proto.rs");
 }
 
-/// Start a combined HTTP + gRPC server.
-/// 
-/// HTTP endpoints:
-/// - POST / - RPC commands (JSON)  
-/// - GET /events - SSE event stream
-/// 
-/// gRPC service: proto.XihuAgent (on grpc_port)
-pub async fn serve_combined(
+/// Start a gRPC-only server (no HTTP).
+pub async fn serve(
     state: AppState,
-    http_port: u16,
-    grpc_port: u16,
+    host: &str,
+    port: u16,
 ) -> Result<()> {
-    use axum::{routing::get, routing::post, extract::State, Json, Router};
-    use axum::response::sse::{Event, Sse};
-    use futures::Stream;
-    use tokio::time::{interval, Duration};
-    
-    // Create a closure-based handler for POST /
-    let rpc_handler = |State(state): State<AppState>, Json(body): Json<serde_json::Value>| async move {
-        if let Ok(cmds) = serde_json::from_value::<Vec<crate::rpc::RpcCommand>>(body.clone()) {
-            let responses: Vec<serde_json::Value> = cmds
-                .into_iter()
-                .map(|cmd| {
-                    let resp_str = handle_command_internal(&state, cmd);
-                    serde_json::from_str(&resp_str).unwrap_or_default()
-                })
-                .collect();
-            serde_json::to_string(&responses).unwrap_or_default()
-        } else if let Ok(cmd) = serde_json::from_value::<crate::rpc::RpcCommand>(body) {
-            handle_command_internal(&state, cmd)
-        } else {
-            RpcResponse::build_fail("", "rpc", "invalid JSON")
-        }
-    };
-    
-    // SSE handler
-    let sse_handler = |State(state): State<AppState>| {
-        let mut rx = state.broadcaster.subscribe();
-        async move {
-            let stream = async_stream::stream! {
-                let mut heartbeat = interval(Duration::from_secs(30));
-                
-                yield Ok::<_, std::convert::Infallible>(Event::default().comment(" ping"));
-                
-                loop {
-                    tokio::select! {
-                        event = rx.recv() => {
-                            match event {
-                                Ok(evt) => {
-                                    yield Ok(Event::default()
-                                        .event(evt.event_type)
-                                        .data(evt.data));
-                                }
-                                Err(broadcast::error::RecvError::Lagged(n)) => {
-                                    eprintln!("SSE lagged {} events", n);
-                                    continue;
-                                }
-                                Err(broadcast::error::RecvError::Closed) => break,
-                            }
-                        }
-                        _ = heartbeat.tick() => {
-                            yield Ok(Event::default().comment(" heartbeat"));
-                        }
-                    }
-                }
-            };
-            Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default())
-        }
-    };
-    
-    // Build HTTP router
-    let app = Router::new()
-        .route("/", post(rpc_handler))
-        .route("/events", get(sse_handler))
-        .with_state(state.clone());
-    
-    eprintln!("HTTP server listening on 0.0.0.0:{}", http_port);
-    eprintln!("gRPC server listening on 0.0.0.0:{}", grpc_port);
+    eprintln!("gRPC server listening on {}:{}", host, port);
     
     // Build gRPC service
     let grpc_service = XihuAgentService { state };
     
-    // Start both servers
-    let http_addr: SocketAddr = format!("0.0.0.0:{}", http_port).parse().unwrap();
-    let grpc_addr: SocketAddr = format!("0.0.0.0:{}", grpc_port).parse().unwrap();
+    // Start gRPC server
+    let grpc_addr: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
     
-    let http_handle = tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(http_addr).await.unwrap();
-        axum::serve(listener, app).await
-    });
-    
-    let grpc_handle = tokio::spawn(async move {
-        tonic::transport::Server::builder()
-            .add_service(proto::xihu_agent_server::XihuAgentServer::new(grpc_service))
-            .serve(grpc_addr)
-            .await
-    });
-    
-    tokio::select! {
-        result = http_handle => {
-            if let Err(e) = result {
-                eprintln!("HTTP server error: {}", e);
-            }
-        }
-        result = grpc_handle => {
-            if let Err(e) = result {
-                eprintln!("gRPC server error: {}", e);
-            }
-        }
-    }
+    tonic::transport::Server::builder()
+        .add_service(proto::xihu_agent_server::XihuAgentServer::new(grpc_service))
+        .serve(grpc_addr)
+        .await?;
     
     Ok(())
 }
-
-// =============================================================================
-// gRPC Service Implementation
-// =============================================================================
 
 #[derive(Clone)]
 struct XihuAgentService {

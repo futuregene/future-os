@@ -161,14 +161,11 @@ export class App extends Container {
 
   getFullRedrawCount(): number { return this.fullRedrawCount; }
 
-  constructor(private serverUrl = "http://localhost:7890") {
+  constructor(private grpcAddr = "localhost:50051") {
     super();
     this.terminal = new NodeTerminal();
-    // Use gRPC if XIHU_USE_GRPC is set, otherwise HTTP
-    const useGrpc = process.env.XIHU_USE_GRPC !== "0";
-    this.client = useGrpc 
-      ? new GrpcClient(process.env.XIHU_GRPC_ADDR ?? "localhost:50051")
-      : new RpcClient(serverUrl);
+    // Always use gRPC
+    this.client = new GrpcClient(grpcAddr);
     this.theme = DARK_THEME;
     this.chat = new ChatArea(this.terminal.columns);
     this.footer = new Footer(this.terminal.columns);

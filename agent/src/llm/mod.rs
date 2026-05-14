@@ -142,6 +142,8 @@ impl crate::types::LLMProvider for Client {
         // Add thinking/reasoning parameters (compat format)
         self.apply_thinking_params(&mut body);
 
+        eprintln!("[LLM] Request to {}: {}", url, serde_json::to_string(&body).unwrap_or_default());
+
         let req = self.http
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
@@ -150,6 +152,7 @@ impl crate::types::LLMProvider for Client {
             .build()?;
 
         let resp = self.http.execute(req).await?;
+        eprintln!("[LLM] Response status: {}", resp.status());
 
         let status = resp.status();
         let headers: HashMap<String, String> = resp.headers()

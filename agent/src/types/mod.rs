@@ -1,5 +1,6 @@
 //! Core type definitions — 1:1 compatible with Go pkg/types/types.go
 
+use std::sync::Arc;
 use serde::ser::{SerializeStruct, Serializer};
 use serde::{Deserialize, Deserializer, Serialize, de, de::MapAccess, de::SeqAccess};
 
@@ -391,17 +392,18 @@ pub struct ToolCallResult {
 
 // ─── AgentConfig ───────────────────────────────────────────────────────────
 
+#[derive(Clone)]
 pub struct AgentConfig {
     pub system_prompt: String,
     pub max_turns: i32,
     pub thinking_budget: i32,
     pub max_retries: i32,
-    pub transform_context: Option<Box<dyn Fn(Vec<Message>, String) -> Vec<Message> + Send + Sync>>,
-    pub stop_condition: Option<Box<dyn Fn(Vec<Message>, &str) -> bool + Send + Sync>>,
-    pub before_tool_call: Option<Box<dyn Fn(&str, &str, &serde_json::Value) -> Option<ToolCallResult> + Send + Sync>>,
-    pub prepare_tool_call: Option<Box<dyn Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync>>,
-    pub finalize_tool_call: Option<Box<dyn Fn(&str, String, anyhow::Error) -> (String, Option<anyhow::Error>) + Send + Sync>>,
-    pub after_tool_call: Option<Box<dyn Fn(&str, &str, &serde_json::Value, String, anyhow::Error) -> Option<ToolCallResult> + Send + Sync>>,
+    pub transform_context: Option<Arc<dyn Fn(Vec<Message>, String) -> Vec<Message> + Send + Sync>>,
+    pub stop_condition: Option<Arc<dyn Fn(Vec<Message>, &str) -> bool + Send + Sync>>,
+    pub before_tool_call: Option<Arc<dyn Fn(&str, &str, &serde_json::Value) -> Option<ToolCallResult> + Send + Sync>>,
+    pub prepare_tool_call: Option<Arc<dyn Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync>>,
+    pub finalize_tool_call: Option<Arc<dyn Fn(&str, String, anyhow::Error) -> (String, Option<anyhow::Error>) + Send + Sync>>,
+    pub after_tool_call: Option<Arc<dyn Fn(&str, &str, &serde_json::Value, String, anyhow::Error) -> Option<ToolCallResult> + Send + Sync>>,
     pub tools_execution_mode: String,
 }
 
