@@ -1,4 +1,4 @@
-//! Auth module - reads API credentials from ~/.xihu_agent/auth.json or ~/.xihu_agent-app/auth.json
+//! Auth module - reads API credentials from ~/.future/agent/auth.json or ~/.future/agent-app/auth.json
 //! Mirrors the Go internal/auth package.
 
 use serde::{Deserialize, Serialize};
@@ -24,10 +24,10 @@ impl AuthStore {
     pub fn load() -> Self {
         let paths = vec![
             dirs::home_dir()
-                .map(|h| h.join(".xihu_agent-app/auth.json"))
+                .map(|h| h.join(".future/agent-app/auth.json"))
                 .unwrap_or_default(),
             dirs::home_dir()
-                .map(|h| h.join(".xihu_agent/auth.json"))
+                .map(|h| h.join(".future/agent/auth.json"))
                 .unwrap_or_default(),
         ];
 
