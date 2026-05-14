@@ -338,6 +338,8 @@ export class Editor implements Component, Focusable {
       // Movement
       case "left": return this.moveLeft();
       case "right": return this.moveRight();
+      case "ctrl+b": return this.moveLeft();    // pi: cursorLeft
+      case "ctrl+f": return this.moveRight();   // pi: cursorRight
       case "up": return this.moveUp();
       case "down": return this.moveDown();
       case "home": return this.moveHome();
@@ -353,12 +355,14 @@ export class Editor implements Component, Focusable {
 
       // Deletion
       case "backspace": return this.deleteBackward();
-      case "delete": return this.deleteForward();
+      case "delete":
+      case "ctrl+d": return this.deleteForward();  // pi: deleteCharForward
       case "ctrl+h": return this.deleteBackward();
 
       // Kill / Yank
       case "ctrl+k": return this.killToEndOfLine();
-      case "alt+d": return this.killWordForward();
+      case "alt+d":
+      case "alt+delete": return this.killWordForward();  // pi: deleteWordForward
       case "alt+backspace":
       case "ctrl+w": return this.killWordBackward();
       case "ctrl+y": return this.yank();
@@ -367,7 +371,8 @@ export class Editor implements Component, Focusable {
       // Undo
       case "ctrl+/":
       case "ctrl+z":
-      case "ctrl+_": return this.undo();
+      case "ctrl+_":
+      case "ctrl+-": return this.undo();  // pi: undo
       case "alt+/":
       case "ctrl+shift+z": return this.redo();
 
@@ -376,9 +381,9 @@ export class Editor implements Component, Focusable {
       case "ctrl+e": return this.moveEnd();
       case "ctrl+u": return this.killToStartOfLine();
 
-      // Jump mode: f{char}
-      case "ctrl+f": this.jumpMode = "forward"; return true;
-      case "ctrl+shift+f": this.jumpMode = "backward"; return true;
+      // Jump mode: f{char} (pi: ctrl+] forward, ctrl+alt+] backward)
+      case "ctrl+]": this.jumpMode = "forward"; return true;
+      case "ctrl+alt+]": this.jumpMode = "backward"; return true;
 
       // Line operations (Vim-like: dd, yy)
       case "ctrl+shift+k": return this.deleteLine();
@@ -441,8 +446,8 @@ export class Editor implements Component, Focusable {
       case "alt+f": return this.visualMove(() => this.moveWordRight());
       case "ctrl+a": return this.visualMove(() => this.moveHome());
       case "ctrl+e": return this.visualMove(() => this.moveEnd());
-      case "ctrl+f": this.jumpMode = "forward"; return true;
-      case "ctrl+shift+f": this.jumpMode = "backward"; return true;
+      case "ctrl+]": this.jumpMode = "forward"; return true;
+      case "ctrl+alt+]": this.jumpMode = "backward"; return true;
 
       // Operators on selection
       case "d": return this.visualDelete();
