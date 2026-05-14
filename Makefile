@@ -1,4 +1,9 @@
-.PHONY: build build-agent build-tui test test-agent lint lint-agent lint-tui clean run run-agent run-tui
+.PHONY: build build-agent build-tui test test-agent lint lint-agent lint-tui clean run run-agent run-tui install
+
+# ─── Install ──────────────────────────────────────────────────────────────────
+
+install:
+	cd tui && npm install
 
 # ─── Build ──────────────────────────────────────────────────────────────────
 
@@ -35,7 +40,7 @@ fmt:
 run-agent:
 	cd agent && cargo run
 
-run-tui:
+run-tui: install
 	cd tui && npm run dev
 
 # ─── Clean ──────────────────────────────────────────────────────────────────

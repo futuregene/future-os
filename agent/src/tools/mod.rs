@@ -87,19 +87,28 @@ fn read_schema() -> serde_json::Value {
 }
 
 pub fn read_tool() -> AgentTool {
-    make_tool("read", "Read a file from the filesystem.", read_schema(), |args| {
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct ReadParams {
-            path: String,
-            offset: Option<usize>,
-            limit: Option<usize>,
-        }
-        let params: ReadParams = serde_json::from_value(args)?;
-        let content = tokio::runtime::Handle::current()
-            .block_on(run_read(&params.path, params.offset, params.limit))?;
-        Ok(content)
-    }, vec![])
+    make_tool(
+        "read",
+        "Read a file from the filesystem.",
+        read_schema(),
+        |args| {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct ReadParams {
+                path: String,
+                offset: Option<usize>,
+                limit: Option<usize>,
+            }
+            let params: ReadParams = serde_json::from_value(args)?;
+            let content = tokio::runtime::Handle::current().block_on(run_read(
+                &params.path,
+                params.offset,
+                params.limit,
+            ))?;
+            Ok(content)
+        },
+        vec![],
+    )
 }
 
 // ─── Write Tool ────────────────────────────────────────────────────────────
@@ -116,17 +125,22 @@ fn write_schema() -> serde_json::Value {
 }
 
 pub fn write_tool() -> AgentTool {
-    make_tool("write", "Write content to a file, creating or overwriting.", write_schema(), |args| {
-        #[derive(serde::Deserialize)]
-        struct WriteParams {
-            path: String,
-            content: String,
-        }
-        let params: WriteParams = serde_json::from_value(args)?;
-        tokio::runtime::Handle::current()
-            .block_on(run_write(&params.path, &params.content))?;
-        Ok(format!("Written to {}", params.path))
-    }, vec![])
+    make_tool(
+        "write",
+        "Write content to a file, creating or overwriting.",
+        write_schema(),
+        |args| {
+            #[derive(serde::Deserialize)]
+            struct WriteParams {
+                path: String,
+                content: String,
+            }
+            let params: WriteParams = serde_json::from_value(args)?;
+            tokio::runtime::Handle::current().block_on(run_write(&params.path, &params.content))?;
+            Ok(format!("Written to {}", params.path))
+        },
+        vec![],
+    )
 }
 
 // ─── Edit Tool ─────────────────────────────────────────────────────────────
@@ -148,25 +162,42 @@ fn edit_schema() -> serde_json::Value {
 }
 
 pub fn edit_tool() -> AgentTool {
-    make_tool("edit", "Edit a file using exact text replacement. Supports multi-edit via edits array.", edit_schema(), |args| {
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct EditParams {
-            path: String,
-            old_text: Option<String>,
-            new_text: Option<String>,
-            old_string: Option<String>,
-            new_string: Option<String>,
-            edits: Option<Vec<EditOp>>,
-        }
-        let params: EditParams = serde_json::from_value(args)?;
-        let old_text = params.old_text.or(params.old_string);
-        let new_text = params.new_text.or(params.new_string);
-        let edits: Option<Vec<EditOp>> = params.edits.map(|es| es.into_iter().map(|e| EditOp { old_text: e.old_text, new_text: e.new_text }).collect());
-        tokio::runtime::Handle::current()
-            .block_on(run_edit(&params.path, old_text.as_deref(), new_text.as_deref(), edits.as_deref()))?;
-        Ok(format!("Edited {}", params.path))
-    }, vec!["Include enough context for unique matching"])
+    make_tool(
+        "edit",
+        "Edit a file using exact text replacement. Supports multi-edit via edits array.",
+        edit_schema(),
+        |args| {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct EditParams {
+                path: String,
+                old_text: Option<String>,
+                new_text: Option<String>,
+                old_string: Option<String>,
+                new_string: Option<String>,
+                edits: Option<Vec<EditOp>>,
+            }
+            let params: EditParams = serde_json::from_value(args)?;
+            let old_text = params.old_text.or(params.old_string);
+            let new_text = params.new_text.or(params.new_string);
+            let edits: Option<Vec<EditOp>> = params.edits.map(|es| {
+                es.into_iter()
+                    .map(|e| EditOp {
+                        old_text: e.old_text,
+                        new_text: e.new_text,
+                    })
+                    .collect()
+            });
+            tokio::runtime::Handle::current().block_on(run_edit(
+                &params.path,
+                old_text.as_deref(),
+                new_text.as_deref(),
+                edits.as_deref(),
+            ))?;
+            Ok(format!("Edited {}", params.path))
+        },
+        vec!["Include enough context for unique matching"],
+    )
 }
 
 // ─── Grep Tool ─────────────────────────────────────────────────────────────
@@ -200,12 +231,17 @@ fn grep_schema() -> serde_json::Value {
 }
 
 pub fn grep_tool() -> AgentTool {
-    make_tool("grep", "Search for a pattern in files.", grep_schema(), |args| {
-        let params: GrepParams = serde_json::from_value(args)?;
-        let output = tokio::runtime::Handle::current()
-            .block_on(run_grep(&params))?;
-        Ok(output)
-    }, vec![])
+    make_tool(
+        "grep",
+        "Search for a pattern in files.",
+        grep_schema(),
+        |args| {
+            let params: GrepParams = serde_json::from_value(args)?;
+            let output = tokio::runtime::Handle::current().block_on(run_grep(&params))?;
+            Ok(output)
+        },
+        vec![],
+    )
 }
 
 // ─── Ls Tool ────────────────────────────────────────────────────────────────
@@ -221,15 +257,24 @@ fn ls_schema() -> serde_json::Value {
 }
 
 pub fn ls_tool() -> AgentTool {
-    make_tool("ls", "List directory contents.", ls_schema(), |args| {
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct LsParams { path: Option<String>, limit: Option<usize> }
-        let params: LsParams = serde_json::from_value(args)?;
-        let output = tokio::runtime::Handle::current()
-            .block_on(run_ls(params.path.as_deref(), params.limit.unwrap_or(500)))?;
-        Ok(output)
-    }, vec![])
+    make_tool(
+        "ls",
+        "List directory contents.",
+        ls_schema(),
+        |args| {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct LsParams {
+                path: Option<String>,
+                limit: Option<usize>,
+            }
+            let params: LsParams = serde_json::from_value(args)?;
+            let output = tokio::runtime::Handle::current()
+                .block_on(run_ls(params.path.as_deref(), params.limit.unwrap_or(500)))?;
+            Ok(output)
+        },
+        vec![],
+    )
 }
 
 // ─── All tools ─────────────────────────────────────────────────────────────
@@ -248,10 +293,7 @@ pub fn all_tools() -> Vec<AgentTool> {
 // ─── Tool runners ─────────────────────────────────────────────────────────
 
 async fn run_bash(command: &str, _timeout_secs: u64) -> Result<String> {
-    let output = Command::new("bash")
-        .args(["-c", command])
-        .output()
-        .await?;
+    let output = Command::new("bash").args(["-c", command]).output().await?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -265,7 +307,10 @@ async fn run_bash(command: &str, _timeout_secs: u64) -> Result<String> {
 
     // Truncate to last 50000 bytes
     let combined = if combined.len() > 50000 {
-        format!("...(truncated, showing last 50000 chars)\n{}", &combined[combined.len() - 50000..])
+        format!(
+            "...(truncated, showing last 50000 chars)\n{}",
+            &combined[combined.len() - 50000..]
+        )
     } else {
         combined
     };
@@ -297,7 +342,12 @@ async fn run_write(path: &str, content: &str) -> Result<()> {
     Ok(())
 }
 
-async fn run_edit(path: &str, old_text: Option<&str>, new_text: Option<&str>, edits: Option<&[EditOp]>) -> Result<()> {
+async fn run_edit(
+    path: &str,
+    old_text: Option<&str>,
+    new_text: Option<&str>,
+    edits: Option<&[EditOp]>,
+) -> Result<()> {
     let current = tokio::fs::read_to_string(path).await?;
 
     let final_content = if let Some(edits) = edits {
@@ -305,7 +355,12 @@ async fn run_edit(path: &str, old_text: Option<&str>, new_text: Option<&str>, ed
         let mut result = current.clone();
         for edit in edits.iter().rev() {
             if let Some(pos) = result.rfind(&edit.old_text) {
-                result = format!("{}{}{}", &result[..pos], edit.new_text, &result[pos + edit.old_text.len()..]);
+                result = format!(
+                    "{}{}{}",
+                    &result[..pos],
+                    edit.new_text,
+                    &result[pos + edit.old_text.len()..]
+                );
             }
         }
         result
@@ -324,20 +379,29 @@ async fn run_edit(path: &str, old_text: Option<&str>, new_text: Option<&str>, ed
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-struct EditOp { old_text: String, new_text: String }
+struct EditOp {
+    old_text: String,
+    new_text: String,
+}
 
 async fn run_grep(params: &GrepParams) -> Result<String> {
     let mut args = vec![];
-    if params.ignore_case.unwrap_or(false) { args.push("-i".to_string()); }
-    if params.literal.unwrap_or(false) { args.push("-F".to_string()); }
-    if let Some(c) = params.context { args.push(format!("-{}", c)); }
+    if params.ignore_case.unwrap_or(false) {
+        args.push("-i".to_string());
+    }
+    if params.literal.unwrap_or(false) {
+        args.push("-F".to_string());
+    }
+    if let Some(c) = params.context {
+        args.push(format!("-{}", c));
+    }
     args.push("-n".to_string());
     args.push(params.pattern.clone());
     if let Some(ref p) = params.path {
         if let Some(ref g) = params.glob {
             let include_pat = format!("--include={}", g);
             let output = Command::new("grep")
-                .args(&["-r", &include_pat, &params.pattern, p])
+                .args(["-r", &include_pat, &params.pattern, p])
                 .output()
                 .await?;
             return Ok(String::from_utf8_lossy(&output.stdout).to_string());
@@ -359,7 +423,9 @@ async fn run_ls(path: Option<&str>, limit: usize) -> Result<String> {
     let mut result = Vec::new();
     let mut count = 0;
     while let Some(entry) = entries.next_entry().await? {
-        if count >= limit { break; }
+        if count >= limit {
+            break;
+        }
         let name = entry.file_name().to_string_lossy().to_string();
         let is_dir = entry.file_type().await?.is_dir();
         let suffix = if is_dir { "/" } else { "" };

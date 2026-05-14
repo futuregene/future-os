@@ -3,11 +3,11 @@
 use crate::types::{Message, ToolCall};
 use crate::utils::{default_session_dir, encode_cwd, generate_entry_id, generate_id};
 use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use chrono::{DateTime, Local};
 
 pub const CURRENT_SESSION_VERSION: i32 = 3;
 
@@ -36,7 +36,11 @@ pub struct BranchSummaryMeta {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEntry {
     pub id: String,
-    #[serde(rename = "parent_id", default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "parent_id",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
     pub parent_id: String,
     #[serde(rename = "type")]
     pub entry_type: String,
@@ -53,13 +57,29 @@ pub struct SessionEntry {
     pub model: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
-    #[serde(rename = "thinking_level", default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "thinking_level",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
     pub thinking_level: String,
-    #[serde(rename = "branch_summary", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "branch_summary",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub branch_summary: Option<BranchSummaryMeta>,
-    #[serde(rename = "custom_type", default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "custom_type",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
     pub custom_type: String,
-    #[serde(rename = "custom_data", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "custom_data",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub custom_data: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub display: String,
@@ -142,7 +162,11 @@ pub struct Session {
     pub base_url: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
-    #[serde(rename = "parent_session_id", default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "parent_session_id",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
     pub parent_session_id: String,
     #[serde(rename = "leaf_id", default, skip_serializing_if = "String::is_empty")]
     pub leaf_id: String,
@@ -210,7 +234,9 @@ impl Manager {
     }
 
     pub fn default_for(cwd: &str) -> Self {
-        Self { dir: default_session_dir(cwd) }
+        Self {
+            dir: default_session_dir(cwd),
+        }
     }
 
     fn session_dir(&self, cwd: &str) -> PathBuf {
@@ -243,7 +269,9 @@ impl Manager {
         let mut entries = vec![];
         for line in reader.lines() {
             let line = line.context("read line")?;
-            if line.trim().is_empty() { continue; }
+            if line.trim().is_empty() {
+                continue;
+            }
             let entry: SessionEntry = serde_json::from_str(&line).context("parse entry")?;
             entries.push(entry);
         }
@@ -283,23 +311,23 @@ impl Manager {
                 sessions.push(sess);
             }
         }
-        sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        sessions.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(sessions)
     }
-    
+
     /// List all sessions across all CWD directories
     pub fn list_all(&self) -> Result<Vec<SessionSummary>> {
         if !self.dir.exists() {
             return Ok(vec![]);
         }
         let mut summaries = vec![];
-        
+
         for cwd_entry in fs::read_dir(&self.dir)? {
             let cwd_entry = cwd_entry?;
             if !cwd_entry.file_type()?.is_dir() {
                 continue;
             }
-            
+
             for entry in fs::read_dir(cwd_entry.path())? {
                 let entry = entry?;
                 let path = entry.path();
@@ -308,23 +336,27 @@ impl Manager {
                 }
                 let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                 let cwd = cwd_entry.file_name().to_str().unwrap_or("").to_string();
-                
+
                 if let Ok(sess) = self.load(id, &cwd) {
                     summaries.push(SessionSummary {
                         id: sess.id,
                         cwd: sess.cwd,
                         updated_at: sess.updated_at,
                         model: sess.model,
-                        name: if sess.name.is_empty() { None } else { Some(sess.name) },
+                        name: if sess.name.is_empty() {
+                            None
+                        } else {
+                            Some(sess.name)
+                        },
                     });
                 }
             }
         }
-        
-        summaries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+
+        summaries.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(summaries)
     }
-    
+
     /// Delete a session file
     pub fn delete(&self, id: &str, cwd: &str) -> Result<()> {
         let path = self.session_path(cwd, id);
@@ -389,12 +421,16 @@ pub fn build_context(entries: &[SessionEntry]) -> Vec<Message> {
 
         let content = entry.content.clone().unwrap_or(serde_json::Value::Null);
         let tool_calls: Vec<ToolCall> = entry.tool_calls.clone();
-        let reasoning = if entry.thinking_level.is_empty() { String::new() } else { String::new() };
+        let reasoning = String::new();
 
         msgs.push(Message {
             role,
             content: Some(content),
-            tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+            tool_calls: if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls)
+            },
             tool_call_id: String::new(),
             name: String::new(),
             reasoning_content: reasoning,

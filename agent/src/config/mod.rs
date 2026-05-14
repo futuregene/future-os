@@ -222,67 +222,132 @@ pub fn merge_settings(base: &Settings, override_: &Settings) -> Settings {
     // Simple field-by-field merge: non-empty/zero override wins
     let mut result = base.clone();
 
-    macro_rules! set_if {
-        ($field:expr, $val:expr) => {
-            let v = $val;
-            if !v.is_default() { *$field = v; }
-        };
+    if !override_.default_provider.is_empty() {
+        result.default_provider = override_.default_provider.clone();
     }
-
-    if !override_.default_provider.is_empty() { result.default_provider = override_.default_provider.clone(); }
-    if !override_.default_model.is_empty() { result.default_model = override_.default_model.clone(); }
-    if !override_.default_thinking_level.is_empty() { result.default_thinking_level = override_.default_thinking_level.clone(); }
-    if !override_.theme.is_empty() { result.theme = override_.theme.clone(); }
-    if override_.compaction_enabled.is_some() { result.compaction_enabled = override_.compaction_enabled.clone(); }
-    if override_.compaction_reserve_tokens != 0 { result.compaction_reserve_tokens = override_.compaction_reserve_tokens; }
-    if override_.compaction_keep_recent_tokens != 0 { result.compaction_keep_recent_tokens = override_.compaction_keep_recent_tokens; }
-    if !override_.shell_path.is_empty() { result.shell_path = override_.shell_path.clone(); }
-    if !override_.shell_command_prefix.is_empty() { result.shell_command_prefix = override_.shell_command_prefix.clone(); }
-    if override_.max_turns != 0 { result.max_turns = override_.max_turns; }
-    if !override_.system_prompt.is_empty() { result.system_prompt = override_.system_prompt.clone(); }
-    if !override_.extensions.is_empty() { result.extensions = override_.extensions.clone(); }
-    if !override_.skills.is_empty() { result.skills = override_.skills.clone(); }
-    if !override_.prompts.is_empty() { result.prompts = override_.prompts.clone(); }
-    if override_.enable_skill_commands.is_some() { result.enable_skill_commands = override_.enable_skill_commands.clone(); }
-    if !override_.thinking_level.is_empty() { result.thinking_level = override_.thinking_level.clone(); }
-    if override_.thinking_budgets.is_some() { result.thinking_budgets = override_.thinking_budgets.clone(); }
-    if override_.hide_thinking_block.is_some() { result.hide_thinking_block = override_.hide_thinking_block.clone(); }
-    if override_.images.is_some() { result.images = override_.images.clone(); }
-    if override_.terminal.is_some() { result.terminal = override_.terminal.clone(); }
-    if override_.retry.is_some() { result.retry = override_.retry.clone(); }
-    if override_.branch_summary.is_some() { result.branch_summary = override_.branch_summary.clone(); }
-    if override_.quiet_startup.is_some() { result.quiet_startup = override_.quiet_startup.clone(); }
-    if !override_.npm_command.is_empty() { result.npm_command = override_.npm_command.clone(); }
-    if override_.collapse_changelog.is_some() { result.collapse_changelog = override_.collapse_changelog.clone(); }
-    if override_.editor_padding_x != 0 { result.editor_padding_x = override_.editor_padding_x; }
-    if override_.autocomplete_max_visible != 0 { result.autocomplete_max_visible = override_.autocomplete_max_visible; }
-    if override_.show_hardware_cursor.is_some() { result.show_hardware_cursor = override_.show_hardware_cursor.clone(); }
-    if override_.markdown.is_some() { result.markdown = override_.markdown.clone(); }
-    if override_.warnings.is_some() { result.warnings = override_.warnings.clone(); }
-    if !override_.session_dir.is_empty() { result.session_dir = override_.session_dir.clone(); }
-    if !override_.scoped_models.is_empty() { result.scoped_models = override_.scoped_models.clone(); }
-    if !override_.double_escape_action.is_empty() { result.double_escape_action = override_.double_escape_action.clone(); }
-    if !override_.tree_filter_mode.is_empty() { result.tree_filter_mode = override_.tree_filter_mode.clone(); }
-    if !override_.enabled_models.is_empty() { result.enabled_models = override_.enabled_models.clone(); }
-    if !override_.transport.is_empty() { result.transport = override_.transport.clone(); }
-    if !override_.steering_mode.is_empty() { result.steering_mode = override_.steering_mode.clone(); }
-    if !override_.follow_up_mode.is_empty() { result.follow_up_mode = override_.follow_up_mode.clone(); }
-    if override_.enable_install_telemetry.is_some() { result.enable_install_telemetry = override_.enable_install_telemetry.clone(); }
-    if !override_.packages.is_empty() { result.packages = override_.packages.clone(); }
-    if !override_.themes.is_empty() { result.themes = override_.themes.clone(); }
-    if !override_.last_changelog_version.is_empty() { result.last_changelog_version = override_.last_changelog_version.clone(); }
+    if !override_.default_model.is_empty() {
+        result.default_model = override_.default_model.clone();
+    }
+    if !override_.default_thinking_level.is_empty() {
+        result.default_thinking_level = override_.default_thinking_level.clone();
+    }
+    if !override_.theme.is_empty() {
+        result.theme = override_.theme.clone();
+    }
+    if override_.compaction_enabled.is_some() {
+        result.compaction_enabled = override_.compaction_enabled;
+    }
+    if override_.compaction_reserve_tokens != 0 {
+        result.compaction_reserve_tokens = override_.compaction_reserve_tokens;
+    }
+    if override_.compaction_keep_recent_tokens != 0 {
+        result.compaction_keep_recent_tokens = override_.compaction_keep_recent_tokens;
+    }
+    if !override_.shell_path.is_empty() {
+        result.shell_path = override_.shell_path.clone();
+    }
+    if !override_.shell_command_prefix.is_empty() {
+        result.shell_command_prefix = override_.shell_command_prefix.clone();
+    }
+    if override_.max_turns != 0 {
+        result.max_turns = override_.max_turns;
+    }
+    if !override_.system_prompt.is_empty() {
+        result.system_prompt = override_.system_prompt.clone();
+    }
+    if !override_.extensions.is_empty() {
+        result.extensions = override_.extensions.clone();
+    }
+    if !override_.skills.is_empty() {
+        result.skills = override_.skills.clone();
+    }
+    if !override_.prompts.is_empty() {
+        result.prompts = override_.prompts.clone();
+    }
+    if override_.enable_skill_commands.is_some() {
+        result.enable_skill_commands = override_.enable_skill_commands;
+    }
+    if !override_.thinking_level.is_empty() {
+        result.thinking_level = override_.thinking_level.clone();
+    }
+    if override_.thinking_budgets.is_some() {
+        result.thinking_budgets = override_.thinking_budgets.clone();
+    }
+    if override_.hide_thinking_block.is_some() {
+        result.hide_thinking_block = override_.hide_thinking_block;
+    }
+    if override_.images.is_some() {
+        result.images = override_.images.clone();
+    }
+    if override_.terminal.is_some() {
+        result.terminal = override_.terminal.clone();
+    }
+    if override_.retry.is_some() {
+        result.retry = override_.retry.clone();
+    }
+    if override_.branch_summary.is_some() {
+        result.branch_summary = override_.branch_summary.clone();
+    }
+    if override_.quiet_startup.is_some() {
+        result.quiet_startup = override_.quiet_startup;
+    }
+    if !override_.npm_command.is_empty() {
+        result.npm_command = override_.npm_command.clone();
+    }
+    if override_.collapse_changelog.is_some() {
+        result.collapse_changelog = override_.collapse_changelog;
+    }
+    if override_.editor_padding_x != 0 {
+        result.editor_padding_x = override_.editor_padding_x;
+    }
+    if override_.autocomplete_max_visible != 0 {
+        result.autocomplete_max_visible = override_.autocomplete_max_visible;
+    }
+    if override_.show_hardware_cursor.is_some() {
+        result.show_hardware_cursor = override_.show_hardware_cursor;
+    }
+    if override_.markdown.is_some() {
+        result.markdown = override_.markdown.clone();
+    }
+    if override_.warnings.is_some() {
+        result.warnings = override_.warnings.clone();
+    }
+    if !override_.session_dir.is_empty() {
+        result.session_dir = override_.session_dir.clone();
+    }
+    if !override_.scoped_models.is_empty() {
+        result.scoped_models = override_.scoped_models.clone();
+    }
+    if !override_.double_escape_action.is_empty() {
+        result.double_escape_action = override_.double_escape_action.clone();
+    }
+    if !override_.tree_filter_mode.is_empty() {
+        result.tree_filter_mode = override_.tree_filter_mode.clone();
+    }
+    if !override_.enabled_models.is_empty() {
+        result.enabled_models = override_.enabled_models.clone();
+    }
+    if !override_.transport.is_empty() {
+        result.transport = override_.transport.clone();
+    }
+    if !override_.steering_mode.is_empty() {
+        result.steering_mode = override_.steering_mode.clone();
+    }
+    if !override_.follow_up_mode.is_empty() {
+        result.follow_up_mode = override_.follow_up_mode.clone();
+    }
+    if override_.enable_install_telemetry.is_some() {
+        result.enable_install_telemetry = override_.enable_install_telemetry;
+    }
+    if !override_.packages.is_empty() {
+        result.packages = override_.packages.clone();
+    }
+    if !override_.themes.is_empty() {
+        result.themes = override_.themes.clone();
+    }
+    if !override_.last_changelog_version.is_empty() {
+        result.last_changelog_version = override_.last_changelog_version.clone();
+    }
 
     result
-}
-
-/// trait IsDefault for checking zero/empty values
-trait IsDefault {
-    fn is_default(&self) -> bool;
-}
-
-impl IsDefault for Settings {
-    fn is_default(&self) -> bool {
-        // Use JSON serialization equality as a simple deep-equal check
-        serde_json::to_string(self).ok() == serde_json::to_string(&Settings::default()).ok()
-    }
 }

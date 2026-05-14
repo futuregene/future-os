@@ -29,7 +29,9 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
 
     // 4. Skills XML injection
     if !opts.skills.is_empty() && has_tool(&opts.tools, "read") {
-        let visible: Vec<_> = opts.skills.iter()
+        let visible: Vec<_> = opts
+            .skills
+            .iter()
             .filter(|s| !s.disable_model_invocation)
             .collect();
         if !visible.is_empty() {

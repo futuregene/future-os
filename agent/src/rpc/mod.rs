@@ -1,5 +1,6 @@
 //! RPC Server - Command handling for gRPC
 
+use crate::events::EventBus;
 use crate::session::Manager;
 use crate::types::ConvertToLLM;
 use anyhow::Result;
@@ -7,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
-use crate::events::EventBus;
 
 // ─── RPC Command (stdin) ────────────────────────────────────────────────────
 
@@ -197,16 +197,23 @@ pub struct ServerSession {
 }
 
 impl ServerSession {
-    pub fn new(session_id: String, agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>, manager: Arc<Manager>, cwd: &str, event_bus: Arc<EventBus>, broadcaster: Arc<SseBroadcaster>) -> Self {
+    pub fn new(
+        session_id: String,
+        agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>,
+        manager: Arc<Manager>,
+        cwd: &str,
+        event_bus: Arc<EventBus>,
+        broadcaster: Arc<SseBroadcaster>,
+    ) -> Self {
         Self {
             session_id: session_id.clone(),
             agent_loop,
             messages: vec![],
             model: String::new(),
-            thinking_level: "high".to_string(),  // Match Go default
+            thinking_level: "high".to_string(), // Match Go default
             steering_mode: "all".to_string(),
             follow_up_mode: "all".to_string(),
-            auto_compaction: true,  // Match Go default
+            auto_compaction: true, // Match Go default
             auto_retry: true,
             session_manager: manager,
             cwd: cwd.to_string(),
@@ -217,9 +224,10 @@ impl ServerSession {
             ephemeral: false,
         }
     }
-    
+
     /// Create a new session with the same agent_loop but cleared state
-    pub fn new_with_shared_loop(session_id: String,
+    pub fn new_with_shared_loop(
+        session_id: String,
         agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>,
         manager: Arc<Manager>,
         cwd: &str,
@@ -258,31 +266,37 @@ impl ServerSession {
         self.session_name = name.to_string();
     }
 
-    pub fn prompt(&mut self, msg: &str, _images: &[crate::types::ImageContent], _behavior: &str) -> Result<()> {
+    pub fn prompt(
+        &mut self,
+        msg: &str,
+        _images: &[crate::types::ImageContent],
+        _behavior: &str,
+    ) -> Result<()> {
         // Add message to session
-        self.messages
-            .push(crate::types::AgentMessage::new_user("user", serde_json::json!([{"type": "text", "text": msg}])));
-        
+        self.messages.push(crate::types::AgentMessage::new_user(
+            "user",
+            serde_json::json!([{"type": "text", "text": msg}]),
+        ));
+
         // Set streaming flag
         self.is_streaming = true;
-        
+
         // Clone messages for the background task
         let messages = self.messages.clone();
         let agent_loop = self.agent_loop.clone();
         let broadcaster = self.broadcaster.clone();
-        
+
         // Spawn background task to run agent loop
         tokio::spawn(async move {
             // Clone broadcaster for each closure
             let broadcaster_text = broadcaster.clone();
             let broadcaster_event = broadcaster.clone();
-            
+
             // Run with timeout
-            let result = tokio::time::timeout(
-                std::time::Duration::from_secs(60),
-                async {
-                    let r#loop = agent_loop.write().await;
-                    r#loop.run_streaming_with_messages(
+            let result = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+                let r#loop = agent_loop.write().await;
+                r#loop
+                    .run_streaming_with_messages(
                         messages,
                         move |text| {
                             broadcaster_text.broadcast(crate::rpc::SseEvent {
@@ -298,16 +312,28 @@ impl ServerSession {
                                 data.insert("delta".to_string(), serde_json::json!(&event.text));
                             }
                             if !event.tool_name.is_empty() {
-                                data.insert("tool_name".to_string(), serde_json::json!(&event.tool_name));
+                                data.insert(
+                                    "tool_name".to_string(),
+                                    serde_json::json!(&event.tool_name),
+                                );
                             }
                             if !event.tool_id.is_empty() {
-                                data.insert("tool_id".to_string(), serde_json::json!(&event.tool_id));
+                                data.insert(
+                                    "tool_id".to_string(),
+                                    serde_json::json!(&event.tool_id),
+                                );
                             }
                             if !event.error_text.is_empty() {
-                                data.insert("error".to_string(), serde_json::json!(&event.error_text));
+                                data.insert(
+                                    "error".to_string(),
+                                    serde_json::json!(&event.error_text),
+                                );
                             }
                             if !event.stop_reason.is_empty() {
-                                data.insert("stopReason".to_string(), serde_json::json!(&event.stop_reason));
+                                data.insert(
+                                    "stopReason".to_string(),
+                                    serde_json::json!(&event.stop_reason),
+                                );
                             }
                             if let Some(usage) = &event.usage {
                                 data.insert("usage".to_string(), serde_json::json!(usage));
@@ -317,10 +343,11 @@ impl ServerSession {
                                 data: serde_json::to_string(&data).unwrap_or_default(),
                             });
                         },
-                    ).await
-                }
-            ).await;
-            
+                    )
+                    .await
+            })
+            .await;
+
             match result {
                 Ok(Ok((_final_text, _final_messages))) => {
                     broadcaster.broadcast(crate::rpc::SseEvent {
@@ -344,17 +371,25 @@ impl ServerSession {
                 }
             }
         });
-        
+
         Ok(())
     }
 
     pub fn steer(&mut self, msg: &str) -> Result<()> {
-        self.agent_loop.try_write().unwrap().steering_queue.enqueue(msg.to_string());
+        self.agent_loop
+            .try_write()
+            .unwrap()
+            .steering_queue
+            .enqueue(msg.to_string());
         Ok(())
     }
 
     pub fn follow_up(&mut self, msg: &str) -> Result<()> {
-        self.agent_loop.try_write().unwrap().follow_up_queue.enqueue(msg.to_string());
+        self.agent_loop
+            .try_write()
+            .unwrap()
+            .follow_up_queue
+            .enqueue(msg.to_string());
         Ok(())
     }
 
@@ -417,7 +452,7 @@ impl ServerSession {
 
         if let Some(r) = result {
             let tokens_after = crate::compaction::estimate_context_tokens(&compacted);
-            let messages_removed = (tokens_before - tokens_after).max(0) as i32;
+            let messages_removed = (tokens_before - tokens_after).max(0);
             Ok(serde_json::json!({
                 "tokensBefore": r.tokens_before,
                 "tokensAfter": tokens_after,
@@ -451,7 +486,8 @@ impl ServerSession {
 
     pub fn set_tools(&mut self, tool_names: &[String]) {
         let all_tools = crate::tools::all_tools();
-        let selected: Vec<_> = all_tools.into_iter()
+        let selected: Vec<_> = all_tools
+            .into_iter()
             .filter(|t| tool_names.contains(&t.def.function.name))
             .collect();
         self.agent_loop.try_write().unwrap().tools = selected;
@@ -550,8 +586,7 @@ impl ServerSession {
     pub fn get_last_assistant_text(&self) -> String {
         self.messages
             .iter()
-            .filter(|m| m.role == "assistant")
-            .last()
+            .rfind(|m| m.role == "assistant")
             .map(|m| m.text())
             .unwrap_or_default()
     }
@@ -590,7 +625,7 @@ impl AppState {
         }
         self.session.clone()
     }
-    
+
     /// Create a new session and return its ID
     /// Uses the session's own session_id as the key
     pub fn create_session(&self, session: ServerSession) -> String {
@@ -603,7 +638,7 @@ impl AppState {
         }
         id
     }
-    
+
     /// Get active session ID
     pub fn get_active_session_id(&self) -> String {
         self.active_session_id.read().unwrap().clone()
@@ -613,13 +648,17 @@ impl AppState {
 pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     let id = &cmd.id;
     let cmd_type = &cmd.cmd_type;
-    
+
     // Get the target session based on session_id, or use default
     let session = state.get_session(&cmd.session_id);
-    
+
     match cmd_type.as_str() {
         "prompt" => {
-            let _ = session.write().unwrap().prompt(&cmd.message, &cmd.images, &cmd.streaming_behavior);
+            let _ =
+                session
+                    .write()
+                    .unwrap()
+                    .prompt(&cmd.message, &cmd.images, &cmd.streaming_behavior);
             RpcResponse::ok(id, "prompt", serde_json::json!({}))
         }
         "steer" => {
@@ -632,7 +671,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         }
         "abort" => {
             // Try to abort, but don't fail if lock is busy
-            if let Ok(mut sess) = session.try_write() {
+            if let Ok(sess) = session.try_write() {
                 sess.abort();
             }
             RpcResponse::ok(id, "abort", serde_json::json!({}))
@@ -651,10 +690,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 sess.broadcaster.clone(),
             );
             drop(sess);
-            
+
             // Add to sessions map
             let new_id = state.create_session(new_sess);
-            
+
             RpcResponse::ok(id, "new_session", serde_json::json!({"sessionId": new_id}))
         }
         "get_state" => {
@@ -697,7 +736,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "set_auto_retry", serde_json::json!({}))
         }
         "set_system_prompt" => {
-            session.write().unwrap().set_system_prompt(&cmd.system_prompt);
+            session
+                .write()
+                .unwrap()
+                .set_system_prompt(&cmd.system_prompt);
             RpcResponse::ok(id, "set_system_prompt", serde_json::json!({}))
         }
         "set_tools" => {
@@ -713,12 +755,19 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "disable_builtin_tools", serde_json::json!({}))
         }
         "append_system_prompt" => {
-            session.write().unwrap().append_system_prompt(&cmd.system_prompt);
+            session
+                .write()
+                .unwrap()
+                .append_system_prompt(&cmd.system_prompt);
             RpcResponse::ok(id, "append_system_prompt", serde_json::json!({}))
         }
         "set_ephemeral" => {
             session.write().unwrap().set_ephemeral(cmd.ephemeral);
-            RpcResponse::ok(id, "set_ephemeral", serde_json::json!({"ephemeral": cmd.ephemeral}))
+            RpcResponse::ok(
+                id,
+                "set_ephemeral",
+                serde_json::json!({"ephemeral": cmd.ephemeral}),
+            )
         }
         "bash" => {
             let result = session.write().unwrap().execute_bash(&cmd.command);
@@ -733,18 +782,30 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         }
         "list_sessions" => {
             // Use session_manager.list_all() to get all sessions from disk
-            let summaries = session.read().unwrap().session_manager.list_all().unwrap_or_default();
+            let summaries = session
+                .read()
+                .unwrap()
+                .session_manager
+                .list_all()
+                .unwrap_or_default();
             // Convert to the format expected by TUI
-            let sessions: Vec<serde_json::Value> = summaries.into_iter().map(|s| {
-                serde_json::json!({
-                    "id": s.id,
-                    "name": s.name,
-                    "model": s.model,
-                    "cwd": s.cwd,
-                    "updated_at": s.updated_at.format("%Y-%m-%d %H:%M:%S").to_string()
+            let sessions: Vec<serde_json::Value> = summaries
+                .into_iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "id": s.id,
+                        "name": s.name,
+                        "model": s.model,
+                        "cwd": s.cwd,
+                        "updated_at": s.updated_at.format("%Y-%m-%d %H:%M:%S").to_string()
+                    })
                 })
-            }).collect();
-            RpcResponse::ok(id, "list_sessions", serde_json::json!({"sessions": sessions}))
+                .collect();
+            RpcResponse::ok(
+                id,
+                "list_sessions",
+                serde_json::json!({"sessions": sessions}),
+            )
         }
         "switch_session" => {
             // Switch to the session specified by session_id
@@ -755,7 +816,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             if let Ok(mut active_id) = state.active_session_id.try_write() {
                 *active_id = cmd.session_id.clone();
             }
-            RpcResponse::ok(id, "switch_session", serde_json::json!({"cancelled": false}))
+            RpcResponse::ok(
+                id,
+                "switch_session",
+                serde_json::json!({"cancelled": false}),
+            )
         }
         "delete_session" => {
             if cmd.session_id.is_empty() {
@@ -764,7 +829,12 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             // Get cwd before deleting
             let cwd = session.read().unwrap().cwd.clone();
             // Delete from disk
-            if let Err(e) = session.read().unwrap().session_manager.delete(&cmd.session_id, &cwd) {
+            if let Err(e) = session
+                .read()
+                .unwrap()
+                .session_manager
+                .delete(&cmd.session_id, &cwd)
+            {
                 return RpcResponse::build_fail(id, "delete_session", &e.to_string());
             }
             // Remove from memory if present
@@ -778,7 +848,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             if entry_id.is_empty() {
                 return RpcResponse::build_fail(id, "fork", "entry_id is required");
             }
-            
+
             // Extract needed data from session
             let (agent_loop, session_manager, event_bus, broadcaster, cwd, session_id) = {
                 let sess = session.read().unwrap();
@@ -791,7 +861,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     sess.session_id.clone(),
                 )
             };
-            
+
             // Get parent session from manager
             let parent = match session_manager.load(&cwd, &session_id) {
                 Ok(s) => s,
@@ -799,16 +869,20 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     return RpcResponse::build_fail(id, "fork", "parent session not found");
                 }
             };
-            
+
             // Fork a new session
             let forked = crate::session::fork_session(&parent, entry_id);
             let forked_id = forked.id.clone();
-            
+
             // Save the forked session
             if let Err(e) = session_manager.save(&forked) {
-                return RpcResponse::build_fail(id, "fork", &format!("failed to save forked session: {}", e));
+                return RpcResponse::build_fail(
+                    id,
+                    "fork",
+                    &format!("failed to save forked session: {}", e),
+                );
             }
-            
+
             // Add to sessions map
             let new_sess = ServerSession::new_with_shared_loop(
                 forked_id.clone(),
@@ -819,12 +893,16 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 broadcaster,
             );
             state.create_session(new_sess);
-            
+
             RpcResponse::ok(id, "fork", serde_json::json!({"cancelled": false}))
         }
         "get_fork_messages" => {
             let msgs = session.read().unwrap().get_messages();
-            RpcResponse::ok(id, "get_fork_messages", serde_json::json!({"messages": msgs}))
+            RpcResponse::ok(
+                id,
+                "get_fork_messages",
+                serde_json::json!({"messages": msgs}),
+            )
         }
         "get_last_assistant_text" => {
             let text = session.read().unwrap().get_last_assistant_text();
@@ -846,19 +924,26 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 crate::skills::AGENTS_SKILLS_DIR.to_string(),
             ];
             let skills = crate::skills::discover_skills(&skill_dirs).unwrap_or_default();
-            
-            let commands: Vec<serde_json::Value> = skills.into_iter().map(|s| {
-                serde_json::json!({
-                    "name": s.name,
-                    "description": s.description,
-                    "source": "skill"
+
+            let commands: Vec<serde_json::Value> = skills
+                .into_iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "name": s.name,
+                        "description": s.description,
+                        "source": "skill"
+                    })
                 })
-            }).collect();
-            
-            RpcResponse::ok(id, "get_commands", serde_json::json!({"commands": commands}))
+                .collect();
+
+            RpcResponse::ok(
+                id,
+                "get_commands",
+                serde_json::json!({"commands": commands}),
+            )
         }
         "abort_retry" => {
-            if let Ok(mut sess) = session.try_write() {
+            if let Ok(sess) = session.try_write() {
                 sess.abort();
             }
             RpcResponse::ok(id, "abort_retry", serde_json::json!({}))
@@ -875,21 +960,29 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 .map(|m| m.id)
                 .collect();
             if models.is_empty() {
-                return RpcResponse::ok(id, "cycle_model", serde_json::json!({"model": "", "thinkingLevel": "", "isScoped": false}));
+                return RpcResponse::ok(
+                    id,
+                    "cycle_model",
+                    serde_json::json!({"model": "", "thinkingLevel": "", "isScoped": false}),
+                );
             }
             let current = session.read().unwrap().model.clone();
             let idx = models.iter().position(|m| m == &current).unwrap_or(0);
             let next_idx = (idx + 1) % models.len();
             let next_model = &models[next_idx];
-            
+
             // Update session model
             session.write().unwrap().model = next_model.clone();
-            
-            RpcResponse::ok(id, "cycle_model", serde_json::json!({
-                "model": next_model,
-                "thinkingLevel": session.read().unwrap().thinking_level.clone(),
-                "isScoped": false
-            }))
+
+            RpcResponse::ok(
+                id,
+                "cycle_model",
+                serde_json::json!({
+                    "model": next_model,
+                    "thinkingLevel": session.read().unwrap().thinking_level.clone(),
+                    "isScoped": false
+                }),
+            )
         }
         "cycle_thinking_level" => {
             // Cycle thinking level: off -> minimal -> low -> medium -> high -> xhigh -> off
@@ -898,16 +991,28 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             let idx = levels.iter().position(|l| *l == current).unwrap_or(0);
             let next_idx = (idx + 1) % levels.len();
             let next_level = levels[next_idx];
-            
+
             // Update session thinking level
             session.write().unwrap().thinking_level = next_level.to_string();
-            
-            RpcResponse::ok(id, "cycle_thinking_level", serde_json::json!({"level": next_level}))
+
+            RpcResponse::ok(
+                id,
+                "cycle_thinking_level",
+                serde_json::json!({"level": next_level}),
+            )
         }
         "get_available_models" => {
             let registry = crate::models::Registry::new();
-            let models = registry.all_models().into_iter().map(|m| m.id).collect::<Vec<_>>();
-            RpcResponse::ok(id, "get_available_models", serde_json::json!({"models": models}))
+            let models = registry
+                .all_models()
+                .into_iter()
+                .map(|m| m.id)
+                .collect::<Vec<_>>();
+            RpcResponse::ok(
+                id,
+                "get_available_models",
+                serde_json::json!({"models": models}),
+            )
         }
         "clone" => {
             // Extract needed data from session
@@ -926,7 +1031,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     sess.session_id.clone(),
                 )
             };
-            
+
             // Get parent session from manager
             let parent = match session_manager.load(&cwd, &session_id) {
                 Ok(s) => s,
@@ -934,21 +1039,29 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     return RpcResponse::build_fail(id, "clone", "parent session not found");
                 }
             };
-            
-            let leaf_id = parent.entries.last().map(|e| e.id.clone()).unwrap_or_default();
+
+            let leaf_id = parent
+                .entries
+                .last()
+                .map(|e| e.id.clone())
+                .unwrap_or_default();
             if leaf_id.is_empty() {
                 return RpcResponse::build_fail(id, "clone", "no entries to clone");
             }
-            
+
             // Fork from leaf
             let forked = crate::session::fork_session(&parent, &leaf_id);
             let forked_id = forked.id.clone();
-            
+
             // Save the forked session
             if let Err(e) = session_manager.save(&forked) {
-                return RpcResponse::build_fail(id, "clone", &format!("failed to save cloned session: {}", e));
+                return RpcResponse::build_fail(
+                    id,
+                    "clone",
+                    &format!("failed to save cloned session: {}", e),
+                );
             }
-            
+
             // Add to sessions map
             let new_sess = ServerSession::new_with_shared_loop(
                 forked_id.clone(),
@@ -959,7 +1072,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 broadcaster,
             );
             state.create_session(new_sess);
-            
+
             RpcResponse::ok(id, "clone", serde_json::json!({"cancelled": false}))
         }
         "export_html" => {
@@ -970,16 +1083,20 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             let cwd = sess.cwd.clone();
             let messages = sess.get_messages();
             drop(sess);
-            
+
             // Generate HTML
             let html = generate_session_html(&session_id, &model, &cwd, &messages);
-            
+
             // Write to file
             let output_path = format!("/tmp/future_agent_export_{}.html", session_id);
             if let Err(e) = std::fs::write(&output_path, html) {
-                return RpcResponse::build_fail(id, "export_html", &format!("failed to write file: {}", e));
+                return RpcResponse::build_fail(
+                    id,
+                    "export_html",
+                    &format!("failed to write file: {}", e),
+                );
             }
-            
+
             RpcResponse::ok(id, "export_html", serde_json::json!({"path": output_path}))
         }
         "ui_response" => RpcResponse::ok(id, "ui_response", serde_json::json!({})),
@@ -1035,21 +1152,31 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
 }
 
 /// Generate HTML representation of a session (matches Go exportSessionToHTML)
-fn generate_session_html(session_id: &str, model: &str, cwd: &str, messages: &[crate::types::Message]) -> String {
+fn generate_session_html(
+    session_id: &str,
+    model: &str,
+    cwd: &str,
+    messages: &[crate::types::Message],
+) -> String {
     let mut html = String::new();
-    
+
     html.push_str("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">");
-    html.push_str(&format!("<title>FutureAgent session {}</title>", session_id));
+    html.push_str(&format!(
+        "<title>FutureAgent session {}</title>",
+        session_id
+    ));
     html.push_str("<style>");
     html.push_str("body{font-family:system-ui;max-width:800px;margin:auto;padding:20px;background:#1a1a2e;color:#e0e0e0}");
     html.push_str(".user{background:#16213e;padding:10px;margin:5px 0;border-radius:8px}");
     html.push_str(".assistant{background:#0f3460;padding:10px;margin:5px 0;border-radius:8px}");
-    html.push_str(".tool{background:#1a1a1a;padding:10px;margin:5px 0;border-radius:8px;font-size:0.9em}");
+    html.push_str(
+        ".tool{background:#1a1a1a;padding:10px;margin:5px 0;border-radius:8px;font-size:0.9em}",
+    );
     html.push_str("pre{white-space:pre-wrap;word-wrap:break-word}");
     html.push_str("</style></head><body>\n");
     html.push_str(&format!("<h1>FutureAgent Session: {}</h1>\n", session_id));
     html.push_str(&format!("<p>Model: {} | CWD: {}</p>\n", model, cwd));
-    
+
     for msg in messages {
         let cls = match msg.role.as_str() {
             "assistant" => "assistant",
@@ -1068,7 +1195,7 @@ fn generate_session_html(session_id: &str, model: &str, cwd: &str, messages: &[c
             escape_html(&content)
         ));
     }
-    
+
     html.push_str("</body></html>");
     html
 }
@@ -1080,4 +1207,3 @@ fn escape_html(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
-

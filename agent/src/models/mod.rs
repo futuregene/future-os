@@ -95,19 +95,22 @@ pub fn settings_path() -> String {
 
 /// Settings represents the FutureAgent settings.json format.
 #[derive(Debug, Deserialize)]
-struct Settings {
+pub(crate) struct Settings {
     #[serde(rename = "defaultProvider", default)]
+    #[allow(dead_code)]
     default_provider: Option<String>,
     #[serde(rename = "defaultModel", default)]
     default_model: Option<String>,
     #[serde(rename = "defaultThinkingLevel", default)]
+    #[allow(dead_code)]
     default_thinking_level: Option<String>,
     #[serde(rename = "enabledModels", default)]
+    #[allow(dead_code)]
     enabled_models: Option<Vec<String>>,
 }
 
 /// LoadSettings reads ~/.future/agent/settings.json.
-pub fn load_settings(path: &str) -> Result<Settings, String> {
+pub(crate) fn load_settings(path: &str) -> Result<Settings, String> {
     let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     serde_json::from_str(&data).map_err(|e| e.to_string())
 }
@@ -127,18 +130,20 @@ pub fn get_default_model() -> Option<String> {
 pub fn load_user_models(path: &str) -> Result<Vec<Model>, String> {
     let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let cfg: ModelsConfig = serde_json::from_str(&data).map_err(|e| e.to_string())?;
-    
+
     if cfg.providers.is_none() {
         return Ok(vec![]);
     }
-    
+
     let providers = cfg.providers.unwrap();
     let mut models = vec![];
-    
+
     for (provider_name, provider) in providers {
         if let Some(api_key) = provider.api_key {
             let provider_api = provider.api.unwrap_or_else(|| "openai".to_string());
-            let provider_base_url = provider.base_url.unwrap_or_else(|| default_base_url_for_provider(&provider_name));
+            let provider_base_url = provider
+                .base_url
+                .unwrap_or_else(|| default_base_url_for_provider(&provider_name));
             for model in provider.models.unwrap_or_default() {
                 models.push(Model {
                     id: model.id.clone(),
@@ -149,20 +154,32 @@ pub fn load_user_models(path: &str) -> Result<Vec<Model>, String> {
                     api_key: api_key.clone(),
                     reasoning: model.reasoning.unwrap_or(false),
                     input: model.modalities.unwrap_or_default(),
-                    context_window: model.limit.as_ref().and_then(|l| l.context).unwrap_or(128000),
+                    context_window: model
+                        .limit
+                        .as_ref()
+                        .and_then(|l| l.context)
+                        .unwrap_or(128000),
                     max_tokens: model.limit.as_ref().and_then(|l| l.output).unwrap_or(4096),
                     cost: Cost {
                         input: model.cost.as_ref().and_then(|c| c.input).unwrap_or(0.0),
                         output: model.cost.as_ref().and_then(|c| c.output).unwrap_or(0.0),
-                        cache_read: model.cost.as_ref().and_then(|c| c.cache_read).unwrap_or(0.0),
-                        cache_write: model.cost.as_ref().and_then(|c| c.cache_write).unwrap_or(0.0),
+                        cache_read: model
+                            .cost
+                            .as_ref()
+                            .and_then(|c| c.cache_read)
+                            .unwrap_or(0.0),
+                        cache_write: model
+                            .cost
+                            .as_ref()
+                            .and_then(|c| c.cache_write)
+                            .unwrap_or(0.0),
                     },
                     ..Default::default()
                 });
             }
         }
     }
-    
+
     Ok(models)
 }
 
@@ -271,7 +288,8 @@ impl Registry {
 
     /// Get default model for a provider
     pub fn default_for_provider(&self, provider: &str) -> Option<Model> {
-        self.user.iter()
+        self.user
+            .iter()
             .chain(self.builtin.iter())
             .find(|m| m.provider == provider)
             .cloned()
@@ -283,4 +301,3 @@ impl Default for Registry {
         Self::new()
     }
 }
-
