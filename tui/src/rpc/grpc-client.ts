@@ -72,9 +72,12 @@ export class GrpcClient {
     
     this.streamCall.on("data", (response: any) => {
       try {
+        const rawData = typeof response.data === "string" ? JSON.parse(response.data) : response.data;
+        // Don't let data.type override the top-level response.type
+        const { type: _dataType, ...rest } = rawData || {};
         const event: AgentEvent = {
           type: response.type || "message",
-          ...(typeof response.data === "string" ? JSON.parse(response.data) : response.data),
+          ...rest,
         };
         
         for (const listener of this.eventListeners) {
@@ -95,8 +98,7 @@ export class GrpcClient {
       setTimeout(() => this.connectEvents(), 2000);
     });
 
-    this.streamCall.on("error", (err: Error) => {
-      console.error("Stream error:", err);
+    this.streamCall.on("error", (_err: Error) => {
       this.streamCall = null;
     });
 
@@ -131,7 +133,9 @@ export class GrpcClient {
         ...cmd,
       };
 
-      this.client.ExecuteCommand(request, (err: Error | null, response: any) => {
+      const deadline = new Date();
+      deadline.setSeconds(deadline.getSeconds() + 30);
+      this.client.ExecuteCommand(request, { deadline }, (err: Error | null, response: any) => {
         if (err) {
           reject(err);
           return;
@@ -156,7 +160,7 @@ export class GrpcClient {
   // ─── Session Management RPC Methods ──────────────────────────────────
 
   async newSession(): Promise<{ sessionId?: string; cancelled: boolean }> {
-    const result = await this.call("new_session", {}) as any;
+    const result = await this.call("new_session", { cwd: process.cwd() }) as any;
     if (result?.sessionId) {
       this.currentSessionId = result.sessionId;
     }
@@ -241,8 +245,8 @@ export class GrpcClient {
     return this.call("cycle_model", {}) as Promise<{ model: string; thinkingLevel: string; isScoped: boolean } | null>;
   }
 
-  async getAvailableModels(): Promise<{ models: string[] }> {
-    return this.call("get_available_models", {}) as Promise<{ models: string[] }>;
+  async getAvailableModels(): Promise<{ models: import("./types.js").ModelInfo[] }> {
+    return this.call("get_available_models", {}) as Promise<{ models: import("./types.js").ModelInfo[] }>;
   }
 
   async setThinkingLevel(level: RpcCommand["level"]): Promise<void> {

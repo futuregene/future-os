@@ -38,7 +38,14 @@ pub struct Loop {
     pub follow_up_queue: PendingMessageQueue,
     pub parallel_tools: bool,
     pub(crate) interrupt_tx: Mutex<Option<mpsc::Sender<()>>>,
-    pub(crate) last_compaction_result: Mutex<Option<crate::compaction::CompactionResult>>,
+    pub(crate) last_compaction_result: Arc<Mutex<Option<crate::compaction::CompactionResult>>>,
+    pub tool_event_callback: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
+    pub cumulative_input_tokens: Arc<std::sync::atomic::AtomicI64>,
+    pub cumulative_output_tokens: Arc<std::sync::atomic::AtomicI64>,
+    pub cumulative_cache_read_tokens: Arc<std::sync::atomic::AtomicI64>,
+    pub cumulative_cache_write_tokens: Arc<std::sync::atomic::AtomicI64>,
+    /// Last API call's prompt_tokens (actual context size, not cumulative across turns)
+    pub last_prompt_tokens: Arc<std::sync::atomic::AtomicI64>,
 }
 
 impl Loop {
@@ -56,7 +63,13 @@ impl Loop {
             follow_up_queue: PendingMessageQueue::new(64, "all"),
             parallel_tools: false,
             interrupt_tx: Mutex::new(None),
-            last_compaction_result: Mutex::new(None),
+            last_compaction_result: Arc::new(Mutex::new(None)),
+            tool_event_callback: None,
+            cumulative_input_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            cumulative_output_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            cumulative_cache_read_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            cumulative_cache_write_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            last_prompt_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
         }
     }
 
@@ -355,6 +368,22 @@ impl Loop {
                     }
                     "usage" => {
                         if let Some(ref u) = event.usage {
+                            self.cumulative_input_tokens
+                                .fetch_add(u.prompt_tokens, std::sync::atomic::Ordering::Relaxed);
+                            self.last_prompt_tokens
+                                .store(u.prompt_tokens, std::sync::atomic::Ordering::Relaxed);
+                            self.cumulative_output_tokens.fetch_add(
+                                u.completion_tokens,
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
+                            if let Some(cache_r) = u.cache_read_tokens {
+                                self.cumulative_cache_read_tokens
+                                    .fetch_add(cache_r, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            if let Some(cache_w) = u.cache_write_tokens {
+                                self.cumulative_cache_write_tokens
+                                    .fetch_add(cache_w, std::sync::atomic::Ordering::Relaxed);
+                            }
                             total_usage = Some(u.clone());
                             if let Some(ref bus) = self.event_bus {
                                 bus.emit(usage_event(u));
@@ -455,7 +484,7 @@ impl Loop {
             }
 
             // Execute tools
-            self.execute_tools(turn, &tool_calls, &mut messages);
+            self.execute_tools(turn, &tool_calls, &mut messages).await;
 
             if let Some(ref bus) = self.event_bus {
                 bus.emit(events::turn_end(turn));
@@ -482,7 +511,7 @@ impl Loop {
     // TOOL EXECUTION
     // ═══════════════════════════════════════════════════════════════════════════
 
-    fn execute_tools(
+    async fn execute_tools(
         &self,
         turn: usize,
         tool_calls: &[ToolCall],
@@ -495,13 +524,15 @@ impl Loop {
         };
 
         if use_parallel && tool_calls.len() > 1 {
-            self.execute_tools_parallel(turn, tool_calls, messages);
+            self.execute_tools_parallel(turn, tool_calls, messages)
+                .await;
         } else {
-            self.execute_tools_sequential(turn, tool_calls, messages);
+            self.execute_tools_sequential(turn, tool_calls, messages)
+                .await;
         }
     }
 
-    fn execute_tools_parallel(
+    async fn execute_tools_parallel(
         &self,
         turn: usize,
         tool_calls: &[ToolCall],
@@ -509,10 +540,11 @@ impl Loop {
     ) {
         // For now, use sequential execution since AgentConfig contains non-Clone fields
         // TODO: implement true parallel execution with Arc<AgentConfig>
-        self.execute_tools_sequential(turn, tool_calls, messages);
+        self.execute_tools_sequential(turn, tool_calls, messages)
+            .await;
     }
 
-    fn execute_tools_sequential(
+    async fn execute_tools_sequential(
         &self,
         _turn: usize,
         tool_calls: &[ToolCall],
@@ -522,8 +554,23 @@ impl Loop {
         let config = &self.config;
         for tc in tool_calls {
             let start = Instant::now();
+
+            // Broadcast tool_start (include tool_call for args)
+            if let Some(ref cb) = self.tool_event_callback {
+                cb(StreamEvent {
+                    event_type: "tool_start".to_string(),
+                    text: String::new(),
+                    tool_call: Some(tc.clone()),
+                    tool_name: tc.function.name.clone(),
+                    tool_id: tc.id.clone(),
+                    usage: None,
+                    stop_reason: String::new(),
+                    error_text: String::new(),
+                });
+            }
+
             let (result, err_str, tool_name) =
-                Self::execute_one_tool_impl_static(tc, tools, config);
+                Self::execute_one_tool_impl_static(tc, tools, config).await;
             let duration = start.elapsed().as_millis() as u64;
 
             if self.verbose {
@@ -546,12 +593,26 @@ impl Loop {
                 }
             }
 
+            // Broadcast tool_end
+            if let Some(ref cb) = self.tool_event_callback {
+                cb(StreamEvent {
+                    event_type: "tool_end".to_string(),
+                    text: result.clone(),
+                    tool_call: None,
+                    tool_name: tool_name.clone(),
+                    tool_id: tc.id.clone(),
+                    usage: None,
+                    stop_reason: String::new(),
+                    error_text: err_str.clone().unwrap_or_default(),
+                });
+            }
+
             let tool_msg = self.new_tool_result(&tc.id, &result, err_str.as_deref());
             messages.push(tool_msg);
         }
     }
 
-    fn execute_one_tool_impl_static(
+    async fn execute_one_tool_impl_static(
         tc: &ToolCall,
         tools: &[AgentTool],
         config: &crate::types::AgentConfig,
@@ -575,10 +636,17 @@ impl Loop {
         }
 
         // Stage 2: PrepareToolCall hook
+        let raw_args = tc.function.arguments.clone();
+        let normalized_args = match &raw_args {
+            serde_json::Value::String(s) => {
+                serde_json::from_str::<serde_json::Value>(s).unwrap_or(raw_args)
+            }
+            _ => raw_args,
+        };
         let effective_args = if let Some(ref hook) = config.prepare_tool_call {
-            hook(&tool_name, &tc.function.arguments)
+            hook(&tool_name, &normalized_args)
         } else {
-            tc.function.arguments.clone()
+            normalized_args
         };
 
         // Execute the tool
@@ -586,7 +654,7 @@ impl Loop {
         let mut result: Result<String> = Err(anyhow!("tool {} not found", tool_name));
         for tool in tools {
             if tool.def.function.name == tool_name {
-                result = (tool.handler)(effective_args.clone());
+                result = (tool.handler)(effective_args.clone()).await;
                 break;
             }
         }

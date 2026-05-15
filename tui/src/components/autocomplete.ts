@@ -247,10 +247,10 @@ export class FilePathProvider implements AutocompleteProvider {
   }
 
   match(text: string, _cursorPos: number): AutocompleteContext | null {
-    // Detect file path patterns: starts with . / ~ or contains / at cursor
+    // Detect file path patterns: starts with . or contains / at cursor
     const prefix = text.slice(0, _cursorPos);
     // Look for the last path-like token
-    const pathMatch = prefix.match(/(?:^|\s)([~.]?[^\s]*\/[^\s]*|[~.][^\s]*)$/);
+    const pathMatch = prefix.match(/(?:^|\s)([.]?[^\s]*\/[^\s]*|[.][^\s]*)$/);
     if (!pathMatch || !pathMatch[1]) return null;
     const token = pathMatch[1];
     const tokenStart = (pathMatch.index ?? 0) + pathMatch[0].indexOf(token);
