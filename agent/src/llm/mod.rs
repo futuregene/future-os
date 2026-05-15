@@ -9,6 +9,7 @@ use reqwest::Client as HttpClient;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -18,14 +19,14 @@ const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
 pub struct Client {
     http: HttpClient,
-    base_url: String,
-    api_key: String,
+    base_url: RwLock<String>,
+    api_key: RwLock<String>,
     reasoning_effort: String,
     #[allow(dead_code)]
     tool_choice: Option<Value>,
     #[allow(dead_code)]
     enable_cache_control: bool,
-    thinking_budget: i32,
+    thinking_budget: RwLock<i32>,
     #[allow(dead_code)]
     stream_opts: Option<StreamOptions>,
     #[allow(clippy::type_complexity)]
@@ -36,11 +37,13 @@ pub struct Client {
     is_cloudflare: bool,
     #[allow(dead_code)]
     is_copilot: bool,
-    thinking_level: String,
-    thinking_level_map: HashMap<String, String>,
-    compat_thinking_format: String,
-    compat_supports_reasoning_effort: bool,
-    compat_requires_reasoning_on_assistant: bool,
+    thinking_level: RwLock<String>,
+    thinking_level_map: RwLock<HashMap<String, String>>,
+    compat_thinking_format: RwLock<String>,
+    compat_supports_reasoning_effort: RwLock<bool>,
+    compat_requires_reasoning_on_assistant: RwLock<bool>,
+    temperature: Option<f32>,
+    max_tokens: Option<i32>,
 }
 
 #[derive(Clone, Default)]
@@ -49,7 +52,12 @@ pub struct StreamOptions {
 }
 
 impl Client {
-    pub fn new(base_url: &str, api_key: &str) -> Self {
+    pub fn new(
+        base_url: &str,
+        api_key: &str,
+        temperature: Option<f32>,
+        max_tokens: Option<i32>,
+    ) -> Self {
         let http = HttpClient::builder()
             .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
             .build()
@@ -59,50 +67,84 @@ impl Client {
 
         Self {
             http,
-            base_url: base_url.to_string(),
-            api_key: api_key.to_string(),
+            base_url: RwLock::new(base_url.to_string()),
+            api_key: RwLock::new(api_key.to_string()),
             reasoning_effort: String::new(),
             tool_choice: None,
             enable_cache_control: false,
-            thinking_budget: 0,
+            thinking_budget: RwLock::new(0),
             stream_opts: None,
             on_payload: None,
             on_response: None,
             is_cloudflare,
             is_copilot: false,
-            thinking_level: String::new(),
-            thinking_level_map: HashMap::new(),
-            compat_thinking_format: String::new(),
-            compat_supports_reasoning_effort: false,
-            compat_requires_reasoning_on_assistant: false,
+            thinking_level: RwLock::new(String::new()),
+            thinking_level_map: RwLock::new(HashMap::new()),
+            compat_thinking_format: RwLock::new(String::new()),
+            compat_supports_reasoning_effort: RwLock::new(false),
+            compat_requires_reasoning_on_assistant: RwLock::new(false),
+            temperature,
+            max_tokens,
         }
     }
 
-    pub fn with_thinking_level(mut self, level: &str) -> Self {
-        self.thinking_level = level.to_string();
+    pub fn with_thinking_level(self, level: &str) -> Self {
+        *self.thinking_level.write().unwrap() = level.to_string();
         self
     }
 
-    pub fn with_thinking_budget(mut self, budget: i32) -> Self {
-        self.thinking_budget = budget;
+    pub fn with_thinking_budget(self, budget: i32) -> Self {
+        *self.thinking_budget.write().unwrap() = budget;
         self
     }
 
     pub fn with_compat(
-        mut self,
+        self,
         format: &str,
         supports_reasoning_effort: bool,
         requires_reasoning_on_assistant: bool,
     ) -> Self {
-        self.compat_thinking_format = format.to_string();
-        self.compat_supports_reasoning_effort = supports_reasoning_effort;
-        self.compat_requires_reasoning_on_assistant = requires_reasoning_on_assistant;
+        *self.compat_thinking_format.write().unwrap() = format.to_string();
+        *self.compat_supports_reasoning_effort.write().unwrap() = supports_reasoning_effort;
+        *self.compat_requires_reasoning_on_assistant.write().unwrap() =
+            requires_reasoning_on_assistant;
         self
     }
 
-    pub fn with_thinking_level_map(mut self, map: HashMap<String, String>) -> Self {
-        self.thinking_level_map = map;
+    pub fn with_thinking_level_map(self, map: HashMap<String, String>) -> Self {
+        *self.thinking_level_map.write().unwrap() = map;
         self
+    }
+
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.temperature = Some(temperature);
+        self
+    }
+
+    pub fn with_max_tokens(mut self, max_tokens: i32) -> Self {
+        self.max_tokens = Some(max_tokens);
+        self
+    }
+}
+
+impl Client {
+    pub fn update_compat_dyn(
+        &self,
+        thinking_format: &str,
+        supports_reasoning_effort: bool,
+        requires_reasoning_on_assistant: bool,
+        thinking_level_map: HashMap<String, String>,
+    ) {
+        *self.compat_thinking_format.write().unwrap() = thinking_format.to_string();
+        *self.compat_supports_reasoning_effort.write().unwrap() = supports_reasoning_effort;
+        *self.compat_requires_reasoning_on_assistant.write().unwrap() =
+            requires_reasoning_on_assistant;
+        *self.thinking_level_map.write().unwrap() = thinking_level_map;
+    }
+
+    pub fn update_thinking_dyn(&self, level: &str, budget: i32) {
+        *self.thinking_level.write().unwrap() = level.to_string();
+        *self.thinking_budget.write().unwrap() = budget;
     }
 }
 
@@ -117,11 +159,12 @@ impl crate::types::LLMProvider for Client {
     ) -> Result<ReceiverStream<StreamEvent>> {
         let (tx, rx) = mpsc::channel(16);
 
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let base_url = self.base_url.read().unwrap().clone();
+        let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
         let mut body = serde_json::json!({
             "model": model,
-            "messages": Self::convert_messages_to_openai(messages, system_prompt, self.compat_requires_reasoning_on_assistant),
+            "messages": Self::convert_messages_to_openai(messages, system_prompt, *self.compat_requires_reasoning_on_assistant.read().unwrap()),
             "stream": true,
         });
 
@@ -143,20 +186,40 @@ impl crate::types::LLMProvider for Client {
             body["tools"] = serde_json::json!(openai_tools);
         }
 
+        // Add temperature
+        if let Some(temp) = self.temperature {
+            body["temperature"] = serde_json::json!(temp);
+        }
+
+        // Add max_tokens (use max_tokens field for most compat)
+        if let Some(mt) = self.max_tokens {
+            body["max_tokens"] = serde_json::json!(mt);
+        }
+
+        // Add stream_options for usage stats in streaming
+        body["stream_options"] = serde_json::json!({"include_usage": true});
+
         // Add thinking/reasoning parameters (compat format)
         self.apply_thinking_params(&mut body);
 
         eprintln!(
-            "[LLM] Request to {}: {}",
+            "[LLM] Request to {}:\n{}",
             url,
-            serde_json::to_string(&body).unwrap_or_default()
+            serde_json::to_string_pretty(&body).unwrap_or_default()
         );
 
         let req = self
             .http
             .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.api_key.read().unwrap()),
+            )
             .header("Content-Type", "application/json")
+            .header(
+                "User-Agent",
+                concat!("future-agent/", env!("CARGO_PKG_VERSION")),
+            )
             .json(&body)
             .build()?;
 
@@ -175,8 +238,23 @@ impl crate::types::LLMProvider for Client {
         }
 
         if !status.is_success() {
-            let text = resp.text().await?;
-            return Err(anyhow!("LLM API error {}: {}", status, text));
+            let status_code = status.as_u16();
+            let resp_headers: Vec<String> = resp
+                .headers()
+                .iter()
+                .map(|(k, v)| format!("{}: {:?}", k.to_string(), v.to_str().unwrap_or("")))
+                .collect();
+            eprintln!(
+                "[LLM] Error response headers ({}): {:?}",
+                status_code, resp_headers
+            );
+            let text = resp.text().await.unwrap_or_default();
+            eprintln!(
+                "[LLM] Error response body ({}): {}",
+                status_code,
+                &text[..text.len().min(500)]
+            );
+            return Err(anyhow!("LLM API error {}: {}", status_code, text));
         }
 
         let stream = resp.bytes_stream();
@@ -185,6 +263,8 @@ impl crate::types::LLMProvider for Client {
         tokio::spawn(async move {
             let mut stream = stream;
             let tx = tx;
+            let mut in_thinking = false;
+            let mut in_tool_call = false;
 
             while let Some(chunk_result) = stream.next().await {
                 match chunk_result {
@@ -201,6 +281,37 @@ impl crate::types::LLMProvider for Client {
                                 }
                                 let data = &line[6..];
                                 if data == "[DONE]" {
+                                    // Close any open thinking/tool call blocks
+                                    if in_tool_call {
+                                        let _ = tx
+                                            .send(StreamEvent {
+                                                event_type: "toolcall_end".to_string(),
+                                                text: String::new(),
+                                                tool_call: None,
+                                                tool_name: String::new(),
+                                                tool_id: String::new(),
+                                                usage: None,
+                                                stop_reason: String::new(),
+                                                error_text: String::new(),
+                                            })
+                                            .await;
+                                        in_tool_call = false;
+                                    }
+                                    if in_thinking {
+                                        let _ = tx
+                                            .send(StreamEvent {
+                                                event_type: "thinking_end".to_string(),
+                                                text: String::new(),
+                                                tool_call: None,
+                                                tool_name: String::new(),
+                                                tool_id: String::new(),
+                                                usage: None,
+                                                stop_reason: String::new(),
+                                                error_text: String::new(),
+                                            })
+                                            .await;
+                                        in_thinking = false;
+                                    }
                                     let _ = tx
                                         .send(StreamEvent {
                                             event_type: "stop".to_string(),
@@ -216,6 +327,49 @@ impl crate::types::LLMProvider for Client {
                                     break;
                                 }
                                 if let Ok(event) = Self::parse_sse_chunk(data) {
+                                    // Inject thinking_start / thinking_end around thinking_delta
+                                    if event.event_type == "thinking_delta" {
+                                        if !in_thinking {
+                                            in_thinking = true;
+                                            let _ = tx
+                                                .send(StreamEvent {
+                                                    event_type: "thinking_start".to_string(),
+                                                    text: String::new(),
+                                                    tool_call: None,
+                                                    tool_name: String::new(),
+                                                    tool_id: String::new(),
+                                                    usage: None,
+                                                    stop_reason: String::new(),
+                                                    error_text: String::new(),
+                                                })
+                                                .await;
+                                        }
+                                    } else if in_thinking
+                                        && event.event_type != "thinking_delta"
+                                        && event.event_type != "usage"
+                                    {
+                                        in_thinking = false;
+                                        let _ = tx
+                                            .send(StreamEvent {
+                                                event_type: "thinking_end".to_string(),
+                                                text: String::new(),
+                                                tool_call: None,
+                                                tool_name: String::new(),
+                                                tool_id: String::new(),
+                                                usage: None,
+                                                stop_reason: String::new(),
+                                                error_text: String::new(),
+                                            })
+                                            .await;
+                                    }
+
+                                    // Track tool call state for proper toolcall_end emission
+                                    if event.event_type == "toolcall_start" {
+                                        in_tool_call = true;
+                                    } else if event.event_type == "toolcall_end" {
+                                        in_tool_call = false;
+                                    }
+
                                     let _ = tx.send(event).await;
                                 }
                             }
@@ -238,6 +392,36 @@ impl crate::types::LLMProvider for Client {
                 }
             }
 
+            // Close any open blocks at stream end
+            if in_tool_call {
+                let _ = tx
+                    .send(StreamEvent {
+                        event_type: "toolcall_end".to_string(),
+                        text: String::new(),
+                        tool_call: None,
+                        tool_name: String::new(),
+                        tool_id: String::new(),
+                        usage: None,
+                        stop_reason: String::new(),
+                        error_text: String::new(),
+                    })
+                    .await;
+            }
+            if in_thinking {
+                let _ = tx
+                    .send(StreamEvent {
+                        event_type: "thinking_end".to_string(),
+                        text: String::new(),
+                        tool_call: None,
+                        tool_name: String::new(),
+                        tool_id: String::new(),
+                        usage: None,
+                        stop_reason: String::new(),
+                        error_text: String::new(),
+                    })
+                    .await;
+            }
+
             let _ = tx
                 .send(StreamEvent {
                     event_type: "stop".to_string(),
@@ -256,37 +440,80 @@ impl crate::types::LLMProvider for Client {
 
         Ok(ReceiverStream::new(rx))
     }
+
+    fn update_compat(
+        &self,
+        thinking_format: &str,
+        supports_reasoning_effort: bool,
+        requires_reasoning_on_assistant: bool,
+        thinking_level_map: HashMap<String, String>,
+    ) {
+        *self.compat_thinking_format.write().unwrap() = thinking_format.to_string();
+        *self.compat_supports_reasoning_effort.write().unwrap() = supports_reasoning_effort;
+        *self.compat_requires_reasoning_on_assistant.write().unwrap() =
+            requires_reasoning_on_assistant;
+        *self.thinking_level_map.write().unwrap() = thinking_level_map;
+    }
+
+    fn update_endpoint(&self, base_url: &str, api_key: &str) {
+        *self.base_url.write().unwrap() = base_url.to_string();
+        *self.api_key.write().unwrap() = api_key.to_string();
+    }
+
+    fn update_thinking(&self, level: &str, budget: i32) {
+        *self.thinking_level.write().unwrap() = level.to_string();
+        *self.thinking_budget.write().unwrap() = budget;
+    }
 }
 
 impl Client {
     fn apply_thinking_params(&self, body: &mut Value) {
-        if self.thinking_level.is_empty()
-            && self.thinking_budget == 0
-            && self.reasoning_effort.is_empty()
-        {
+        let thinking_level = self.thinking_level.read().unwrap();
+        let thinking_budget = *self.thinking_budget.read().unwrap();
+
+        if thinking_level.is_empty() && thinking_budget == 0 && self.reasoning_effort.is_empty() {
             return;
         }
 
-        if !self.compat_thinking_format.is_empty() {
-            let reasoning_enabled = self.thinking_level != "off";
-            let mut level_value = self.thinking_level.clone();
+        let compat_thinking_format = self.compat_thinking_format.read().unwrap();
+        // Auto-detect qwen format for dashscope/aliyuncs endpoints when no explicit format set
+        let effective_format: String = if compat_thinking_format.is_empty() {
+            let base_url = self.base_url.read().unwrap();
+            if base_url.contains("dashscope") || base_url.contains("aliyuncs") {
+                "qwen".to_string()
+            } else {
+                String::new()
+            }
+        } else {
+            compat_thinking_format.clone()
+        };
+        let effective_format_str = effective_format.as_str();
+        if !effective_format.is_empty() {
+            let reasoning_enabled = *thinking_level != "off";
+            let mut level_value = thinking_level.clone();
 
-            if let Some(mapped) = self.thinking_level_map.get(&self.thinking_level) {
+            let thinking_level_map = self.thinking_level_map.read().unwrap();
+            if let Some(mapped) = thinking_level_map.get(&*thinking_level) {
                 level_value = mapped.clone();
             }
+            drop(thinking_level_map);
+            drop(thinking_level);
 
-            match self.compat_thinking_format.as_str() {
+            match effective_format_str {
                 "zai" => {
                     body["enable_thinking"] = serde_json::json!(reasoning_enabled);
                 }
                 "qwen" | "qwen-chat-template" => {
-                    if self.compat_thinking_format == "qwen-chat-template" {
+                    if effective_format_str == "qwen-chat-template" {
                         body["chat_template_kwargs"] = serde_json::json!({
                             "enable_thinking": reasoning_enabled,
                             "preserve_thinking": true,
                         });
                     } else {
                         body["enable_thinking"] = serde_json::json!(reasoning_enabled);
+                    }
+                    if reasoning_enabled && *self.compat_supports_reasoning_effort.read().unwrap() {
+                        body["reasoning_effort"] = serde_json::json!(level_value);
                     }
                 }
                 "deepseek" => {
@@ -306,21 +533,22 @@ impl Client {
                     }
                 }
                 "openrouter" | "openai"
-                    if reasoning_enabled && self.compat_supports_reasoning_effort =>
+                    if reasoning_enabled
+                        && *self.compat_supports_reasoning_effort.read().unwrap() =>
                 {
                     body["reasoning_effort"] = serde_json::json!(level_value);
                 }
                 _ => {}
             }
-        } else if self.thinking_budget > 0 {
+        } else if thinking_budget > 0 {
             // Legacy fallback
             body["thinking"] = serde_json::json!({
                 "type": "enabled",
-                "budget_tokens": self.thinking_budget,
+                "budget_tokens": thinking_budget,
             });
-        } else if self.thinking_budget == 0
+        } else if thinking_budget == 0
             && self.reasoning_effort.is_empty()
-            && self.thinking_level.is_empty()
+            && thinking_level.is_empty()
         {
             // Explicitly disable
             body["thinking"] = serde_json::json!({ "type": "disabled" });
@@ -385,10 +613,20 @@ impl Client {
                     result.push(serde_json::json!(obj));
                 }
                 "tool" => {
+                    let content = Self::extract_content(msg.content.clone());
+                    let content_str = match &content {
+                        Value::Array(arr) => arr
+                            .first()
+                            .and_then(|b| b.get("text"))
+                            .and_then(|t| t.as_str())
+                            .unwrap_or(""),
+                        Value::String(s) => s.as_str(),
+                        _ => "",
+                    };
                     result.push(serde_json::json!({
                         "role": "tool",
                         "tool_call_id": msg.tool_call_id,
-                        "content": Self::extract_content(msg.content.clone()).as_str().unwrap_or(""),
+                        "content": content_str,
                     }));
                 }
                 _ => {}
@@ -435,21 +673,56 @@ impl Client {
             error_text: String::new(),
         };
 
-        // Reasoning content (from extra fields for DeepSeek-style)
-        if let Some(rc) = delta.get("reasoning_content").or(delta.get("thinking")) {
-            if let Some(s) = rc.as_str() {
-                event.event_type = "thinking_delta".to_string();
-                event.text = s.to_string();
+        // Usage — check BEFORE text/tool/stop checks, because some providers
+        // (DeepSeek) include usage in the final chunk alongside an empty content
+        // string and finish_reason. If we process content first, we return early
+        // and never see the usage data.
+        if let Some(usage_val) = chunk.get("usage").filter(|v| !v.is_null()) {
+            if let Ok(mut usage) = serde_json::from_value::<Usage>(usage_val.clone()) {
+                // DeepSeek nests cache tokens under prompt_tokens_details.
+                if usage.cache_read_tokens.is_none() {
+                    if let Some(cached) = usage_val
+                        .get("prompt_tokens_details")
+                        .and_then(|d| d.get("cached_tokens"))
+                        .and_then(|v| v.as_i64())
+                    {
+                        usage.cache_read_tokens = Some(cached);
+                    }
+                }
+                if usage.cache_write_tokens.is_none() {
+                    if let Some(cached) = usage_val
+                        .get("prompt_tokens_details")
+                        .and_then(|d| d.get("cache_write_tokens"))
+                        .and_then(|v| v.as_i64())
+                    {
+                        usage.cache_write_tokens = Some(cached);
+                    }
+                }
+                event.usage = Some(usage);
+                event.event_type = "usage".to_string();
                 return Ok(event);
             }
         }
 
-        // Text content
+        // Reasoning content (from extra fields for DeepSeek-style)
+        if let Some(rc) = delta.get("reasoning_content").or(delta.get("thinking")) {
+            if let Some(s) = rc.as_str() {
+                if !s.is_empty() {
+                    event.event_type = "thinking_delta".to_string();
+                    event.text = s.to_string();
+                    return Ok(event);
+                }
+            }
+        }
+
+        // Text content (skip empty strings so usage in same chunk is not lost)
         if let Some(text) = delta.get("content").or(delta.get("text")) {
             if let Some(s) = text.as_str() {
-                event.event_type = "text_delta".to_string();
-                event.text = s.to_string();
-                return Ok(event);
+                if !s.is_empty() {
+                    event.event_type = "text_delta".to_string();
+                    event.text = s.to_string();
+                    return Ok(event);
+                }
             }
         }
 
@@ -457,12 +730,17 @@ impl Client {
         if let Some(tcs) = delta.get("tool_calls").and_then(|tc| tc.as_array()) {
             for tc in tcs {
                 let _idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
-                if let (Some(id), Some(name)) = (
-                    tc.get("id").and_then(|v| v.as_str()),
-                    tc.get("function")
-                        .and_then(|f| f.get("name"))
-                        .and_then(|v| v.as_str()),
-                ) {
+                let has_id = tc.get("id").and_then(|v| v.as_str());
+                let has_name = tc
+                    .get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(|v| v.as_str());
+                let has_args = tc
+                    .get("function")
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(|v| v.as_str());
+
+                if let (Some(id), Some(name)) = (has_id, has_name) {
                     event.event_type = "toolcall_start".to_string();
                     event.tool_id = id.to_string();
                     event.tool_name = name.to_string();
@@ -479,17 +757,19 @@ impl Client {
                         },
                     });
                     return Ok(event);
+                } else if let Some(args_text) = has_args {
+                    // Argument-only delta (subsequent chunks after toolcall_start)
+                    event.event_type = "toolcall_delta".to_string();
+                    event.text = args_text.to_string();
+                    return Ok(event);
                 }
             }
         }
 
-        // Usage
-        if let Some(usage_val) = chunk.get("usage") {
-            if let Ok(usage) = serde_json::from_value::<Usage>(usage_val.clone()) {
-                event.usage = Some(usage);
-                event.event_type = "usage".to_string();
-                return Ok(event);
-            }
+        // Finish reason: tool_calls means the model finished emitting tool calls
+        if finish_reason == "tool_calls" {
+            event.event_type = "toolcall_end".to_string();
+            return Ok(event);
         }
 
         // Empty text event (stop marker)

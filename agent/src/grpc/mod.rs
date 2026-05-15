@@ -117,6 +117,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             tools: cmd.tools,
             no_tools: cmd.no_tools,
             ephemeral: cmd.ephemeral,
+            cwd: cmd.cwd,
         };
 
         // Handle the command

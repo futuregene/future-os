@@ -145,7 +145,7 @@ pub fn load_user_models(path: &str) -> Result<Vec<Model>, String> {
                 .base_url
                 .unwrap_or_else(|| default_base_url_for_provider(&provider_name));
             for model in provider.models.unwrap_or_default() {
-                models.push(Model {
+                let mut m = Model {
                     id: model.id.clone(),
                     name: model.name.unwrap_or_else(|| model.id.clone()),
                     provider: provider_name.clone(),
@@ -155,11 +155,13 @@ pub fn load_user_models(path: &str) -> Result<Vec<Model>, String> {
                     reasoning: model.reasoning.unwrap_or(false),
                     input: model.modalities.unwrap_or_default(),
                     context_window: model
-                        .limit
-                        .as_ref()
-                        .and_then(|l| l.context)
+                        .context_window
+                        .or_else(|| model.limit.as_ref().and_then(|l| l.context))
                         .unwrap_or(128000),
-                    max_tokens: model.limit.as_ref().and_then(|l| l.output).unwrap_or(4096),
+                    max_tokens: model
+                        .max_tokens
+                        .or_else(|| model.limit.as_ref().and_then(|l| l.output))
+                        .unwrap_or(4096),
                     cost: Cost {
                         input: model.cost.as_ref().and_then(|c| c.input).unwrap_or(0.0),
                         output: model.cost.as_ref().and_then(|c| c.output).unwrap_or(0.0),
@@ -175,7 +177,15 @@ pub fn load_user_models(path: &str) -> Result<Vec<Model>, String> {
                             .unwrap_or(0.0),
                     },
                     ..Default::default()
-                });
+                };
+                // Apply provider-level compat and thinking_level_map
+                if let Some(ref compat) = provider.compat {
+                    m.compat = compat.clone();
+                }
+                if let Some(ref tlm) = provider.thinking_level_map {
+                    m.thinking_level_map = tlm.clone();
+                }
+                models.push(m);
             }
         }
     }
@@ -190,6 +200,9 @@ fn default_base_url_for_provider(provider: &str) -> String {
         "google" => "https://generativelanguage.googleapis.com/v1beta".to_string(),
         "deepseek" => "https://api.deepseek.com".to_string(),
         "openrouter" => "https://openrouter.ai/api/v1".to_string(),
+        "dashscope" | "dashscope-coding" => {
+            "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()
+        }
         _ => "".to_string(),
     }
 }
@@ -209,6 +222,10 @@ struct ProviderConfig {
     api_key: Option<String>,
     #[serde(rename = "baseUrl", default)]
     base_url: Option<String>,
+    #[serde(rename = "compat", default)]
+    compat: Option<HashMap<String, serde_json::Value>>,
+    #[serde(rename = "thinkingLevelMap", default)]
+    thinking_level_map: Option<HashMap<String, serde_json::Value>>,
     #[serde(rename = "models", default)]
     models: Option<Vec<ModelConfig>>,
 }
@@ -223,6 +240,10 @@ struct ModelConfig {
     reasoning: Option<bool>,
     #[serde(rename = "modalities", default)]
     modalities: Option<Vec<String>>,
+    #[serde(rename = "contextWindow", default)]
+    context_window: Option<i32>,
+    #[serde(rename = "maxTokens", default)]
+    max_tokens: Option<i32>,
     #[serde(rename = "limit", default)]
     limit: Option<ModelLimit>,
     #[serde(rename = "cost", default)]
@@ -278,7 +299,17 @@ impl Registry {
 
     /// Resolve a model ID to a Model (checks user first, then builtin)
     pub fn resolve(&self, id: &str) -> Option<Model> {
-        // Check user models first
+        // Handle "provider/model" format
+        if let Some((_provider, _model_id)) = id.split_once('/') {
+            let full_id = id.to_string();
+            return self
+                .user
+                .iter()
+                .chain(self.builtin.iter())
+                .find(|m| format!("{}/{}", m.provider, m.id) == full_id)
+                .cloned();
+        }
+        // Check user models first by exact ID
         if let Some(m) = self.user.iter().find(|m| m.id == id) {
             return Some(m.clone());
         }
@@ -294,10 +325,81 @@ impl Registry {
             .find(|m| m.provider == provider)
             .cloned()
     }
+
+    /// Resolve enabled_models patterns to available model IDs.
+    /// Filters by auth (only models with configured API keys) and supports glob patterns.
+    /// Returns ordered list of model IDs matching the patterns.
+    pub fn resolve_scope(&self, patterns: &[String], auth: &crate::AuthStore) -> Vec<String> {
+        let mut all = self.all_models();
+
+        // Filter to only auth-configured models
+        all.retain(|m| !m.api_key.is_empty() || auth.get(&m.provider).is_some());
+
+        // Filter to only models matching patterns
+        let mut matched: Vec<String> = vec![];
+        for pattern in patterns {
+            let pattern_lower = pattern.to_lowercase();
+            for m in &all {
+                let id_lower = m.id.to_lowercase();
+                let prov_lower = m.provider.to_lowercase();
+                let full = format!("{}/{}", prov_lower, id_lower);
+
+                // Match: exact ID, glob *, or provider/model format
+                let is_match = glob_match(&pattern_lower, &id_lower)
+                    || glob_match(&pattern_lower, &full)
+                    || glob_match(&pattern_lower, &prov_lower);
+
+                if is_match && !matched.contains(&m.id) {
+                    matched.push(m.id.clone());
+                }
+            }
+        }
+
+        matched
+    }
 }
 
 impl Default for Registry {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Simple glob matching: supports * wildcard and literal matching.
+fn glob_match(pattern: &str, target: &str) -> bool {
+    if !pattern.contains('*') && !pattern.contains('?') {
+        return pattern == target;
+    }
+
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let mut pos = 0;
+
+    for (i, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+
+        if i == 0 {
+            // First part must match at beginning
+            if !target.starts_with(part) {
+                return false;
+            }
+            pos = part.len();
+        } else if i == parts.len() - 1 {
+            // Last part must match at end
+            let remaining = &target[pos..];
+            if !remaining.ends_with(part) {
+                return false;
+            }
+        } else {
+            // Middle parts must match somewhere
+            if let Some(idx) = target[pos..].find(part) {
+                pos += idx + part.len();
+            } else {
+                return false;
+            }
+        }
+    }
+
+    true
 }

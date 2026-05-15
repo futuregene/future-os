@@ -70,7 +70,7 @@ export class KeybindingManager {
    * maps "ctrl+p" → "Cycle model", we find the binding with that description
    * and keep it. When "ctrl+p" → "", we remove ALL bindings for that key.
    *
-   * Use this to load from a config file (e.g. ~/.future_tui/keybindings.json).
+   * Use this to load from a config file (e.g. ~/.future/tui/keybindings.json).
    */
   applyOverrides(overrides: UserOverrideMap): void {
     this.overrides = { ...overrides };

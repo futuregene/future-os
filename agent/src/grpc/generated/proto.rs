@@ -52,6 +52,9 @@ pub struct RpcCommand {
     pub name: ::prost::alloc::string::String,
     #[prost(string, tag = "94")]
     pub output_path: ::prost::alloc::string::String,
+    /// new_session cwd (TUI working directory)
+    #[prost(string, tag = "95")]
+    pub cwd: ::prost::alloc::string::String,
     /// set_system_prompt
     #[prost(string, tag = "100")]
     pub system_prompt: ::prost::alloc::string::String,

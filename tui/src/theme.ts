@@ -85,11 +85,11 @@ export interface Theme {
 }
 
 export const DARK_THEME: Theme = {
-  bg: 235,
+  bg: -1,                // use terminal default background
   fg: 252,
-  accent: 39,          // matches pi DEFAULT_THEME accent
-  border: 240,         // matches pi DEFAULT_THEME border
-  selectedBg: 38,      // matches pi DEFAULT_THEME selectedBg
+  accent: 39,            // matches pi DEFAULT_THEME accent
+  border: 240,           // matches pi DEFAULT_THEME border
+  selectedBg: 38,        // matches pi DEFAULT_THEME selectedBg
   selectedFg: 255,
   dim: C.dim,
   error: C.red,
@@ -102,8 +102,8 @@ export const DARK_THEME: Theme = {
   mdCodeBlockBorder: C.mdCodeBlockBorder,
   mdQuote: C.mdQuote,
 
-  toolPendingBg: C.toolPendingBg,
-  toolSuccessBg: C.toolSuccessBg,
+  toolPendingBg: 236,    // subtle dark gray
+  toolSuccessBg: 236,    // subtle dark gray
   toolErrorBg: C.toolErrorBg,
   toolTitle: C.accent,
   toolOutput: C.gray,
@@ -116,8 +116,8 @@ export const DARK_THEME: Theme = {
   thinkingXhigh: C.thinkingXhigh,
   thinkingText: C.gray,
 
-  userBg: C.userMsgBg,
-  assistantBg: 235,
+  userBg: C.userMsgBg,         // ChatGPT-style user message bubble background
+  assistantBg: -1,              // use terminal default background
 };
 
 // ─── Color helpers ─────────────────────────────────────────────────────

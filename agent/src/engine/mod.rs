@@ -22,22 +22,52 @@ pub struct Engine {
     pub verbose: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct EngineConfig {
     pub cwd: String,
     pub system_prompt: String,
     pub max_turns: i32,
     pub thinking_level: String,
+    pub thinking_level_map: std::collections::HashMap<String, String>,
     pub no_tools: String,
     pub compaction_reserve_tokens: i32,
     pub compaction_keep_recent_tokens: i32,
     pub extension_paths: Vec<String>,
     pub no_extensions: bool,
+    pub compat_thinking_format: String,
+    pub compat_supports_reasoning_effort: bool,
+    pub compat_requires_reasoning_on_assistant: bool,
 }
 
 impl Engine {
-    pub fn new(base_url: &str, api_key: &str, model: &str, config: EngineConfig) -> Result<Self> {
-        let client: Arc<dyn LLMProvider> = Arc::new(LLMClient::new(base_url, api_key));
+    pub fn new(
+        base_url: &str,
+        api_key: &str,
+        model: &str,
+        config: EngineConfig,
+        temperature: Option<f32>,
+        max_tokens: Option<i32>,
+    ) -> Result<Self> {
+        let mut llm_client = LLMClient::new(base_url, api_key, temperature, max_tokens);
+
+        // Apply model compat settings (always apply, even when format auto-detected)
+        llm_client = llm_client.with_compat(
+            &config.compat_thinking_format,
+            config.compat_supports_reasoning_effort,
+            config.compat_requires_reasoning_on_assistant,
+        );
+
+        // Apply thinking level (from settings or CLI)
+        if !config.thinking_level.is_empty() {
+            llm_client = llm_client.with_thinking_level(&config.thinking_level);
+        }
+
+        // Apply thinking level map from model config (e.g. deepseek: {high: "high"})
+        if !config.thinking_level_map.is_empty() {
+            llm_client = llm_client.with_thinking_level_map(config.thinking_level_map.clone());
+        }
+
+        let client: Arc<dyn LLMProvider> = Arc::new(llm_client);
         let cwd = config.cwd.clone();
         let _max_turns = config.max_turns;
         let agent_loop = Loop::new(client.clone(), model);
@@ -55,8 +85,8 @@ impl Engine {
             verbose: false,
         };
 
-        // Load default tools
-        engine.tools = tools::all_tools();
+        // Load default tools (4 core coding tools)
+        engine.tools = tools::coding_tools();
         engine.agent_loop = engine.agent_loop.with_tools(engine.tools.clone());
 
         Ok(engine)
@@ -87,18 +117,19 @@ impl Engine {
     }
 }
 
-impl Default for EngineConfig {
-    fn default() -> Self {
+impl EngineConfig {
+    pub fn with_defaults() -> Self {
         Self {
             cwd: ".".to_string(),
             system_prompt: String::new(),
             max_turns: DEFAULT_MAX_TURNS,
             thinking_level: String::new(),
             no_tools: String::new(),
-            compaction_reserve_tokens: 160000,
-            compaction_keep_recent_tokens: 80000,
+            compaction_reserve_tokens: 16384,
+            compaction_keep_recent_tokens: 20000,
             extension_paths: vec![],
             no_extensions: false,
+            ..Default::default()
         }
     }
 }

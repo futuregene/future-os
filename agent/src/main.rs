@@ -1,6 +1,7 @@
 //! future-agent — Rust agent backend (CLI entry point)
 
 use anyhow::Result;
+use chrono::Local;
 use clap::Parser;
 use future_agent::{
     Engine, EngineConfig, Manager, ModelRegistry, ServerSession, AGENTS_SKILLS_DIR,
@@ -58,27 +59,19 @@ async fn main() -> Result<()> {
         env::set_var("FUTURE_SKIP_VERSION_CHECK", "1");
     }
 
-    // Determine workspace - prefer ~/.openclaw/workspace if it exists
-    let cwd = if let Some(home) = dirs::home_dir() {
-        let workspace = home.join(".openclaw/workspace");
-        if workspace.exists() {
-            workspace.to_string_lossy().to_string()
-        } else {
-            env::current_dir()
-                .unwrap_or_else(|_| home.join("future-agent/agent"))
-                .to_string_lossy()
-                .to_string()
-        }
-    } else {
-        env::current_dir()?.to_string_lossy().to_string()
-    };
+    // Always use home directory — the agent should not depend on its launch directory
+    let cwd = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .to_string_lossy()
+        .to_string();
 
     // Initialize model registry
     let model_registry = ModelRegistry::new();
     let all_models = model_registry.all_models();
 
     // Resolve model: CLI arg > env > settings.json default > user models.json > builtin default
-    let resolved_model = cli
+    let model_from_user = cli.model.is_some() || env::var("LLM_MODEL").ok().is_some();
+    let mut resolved_model = cli
         .model
         .or_else(|| env::var("LLM_MODEL").ok())
         .or_else(future_agent::models::get_default_model)
@@ -93,6 +86,12 @@ async fn main() -> Result<()> {
 
     // Resolve model config
     let model_config = model_registry.resolve(&resolved_model);
+
+    // Use canonical model ID for API calls (strip provider prefix)
+    let engine_model = model_config
+        .as_ref()
+        .map(|m| m.id.clone())
+        .unwrap_or_else(|| resolved_model.clone());
 
     let base_url = cli
         .base_url
@@ -136,7 +135,6 @@ async fn main() -> Result<()> {
                 .as_ref()
                 .and_then(|m| auth_store.get(&m.provider))
         })
-        .or_else(|| auth_store.default_key())
         .or_else(|| {
             model_config.as_ref().and_then(|m| {
                 if m.api_key.is_empty() {
@@ -146,21 +144,105 @@ async fn main() -> Result<()> {
                 }
             })
         })
+        .or_else(|| auth_store.default_key())
         .unwrap_or_default();
 
-    let thinking = cli.thinking.or_else(|| env::var("LLM_THINKING").ok());
+    // Load settings for defaults
+    let settings_path = std::path::PathBuf::from(future_agent::models::settings_path());
+    let settings = future_agent::config::load_settings(&settings_path).unwrap_or_default();
 
-    // Build engine config
+    // If enabled_models is set and model not from CLI, pick from scope
+    if !settings.enabled_models.is_empty() && !model_from_user {
+        let scoped = model_registry.resolve_scope(&settings.enabled_models, &auth_store);
+        if !scoped.is_empty() {
+            let default_model = settings.default_model.clone();
+            let saved_in_scope = if !default_model.is_empty() {
+                scoped.iter().find(|m| *m == &default_model)
+            } else {
+                None
+            };
+            if let Some(m) = saved_in_scope {
+                resolved_model = m.clone();
+            } else {
+                // Pick first scoped model
+                resolved_model = scoped[0].clone();
+            }
+        }
+    }
+
+    // Resolve thinking level: CLI arg > env > settings.json default
+    let thinking = cli
+        .thinking
+        .or_else(|| env::var("LLM_THINKING").ok())
+        .or_else(|| {
+            if settings.default_thinking_level.is_empty() {
+                None
+            } else {
+                Some(settings.default_thinking_level.clone())
+            }
+        });
+
+    // Parse thinking level map from model config (e.g. deepseek: {high: "high"})
+    let thinking_level_map: std::collections::HashMap<String, String> = model_config
+        .as_ref()
+        .map(|m| {
+            m.thinking_level_map
+                .iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Cap max_tokens at 32000 (matching pi-mono)
+    let max_tokens = model_config.as_ref().and_then(|m| {
+        if m.max_tokens > 0 {
+            Some(std::cmp::min(m.max_tokens, 32000))
+        } else {
+            None
+        }
+    });
+
+    // Build engine config — apply settings defaults where CLI/env didn't override
     let config = EngineConfig {
         cwd: cwd.clone(),
-        max_turns: 50,
-        thinking_level: thinking.unwrap_or_default(),
-        ..Default::default()
+        max_turns: if settings.max_turns > 0 {
+            settings.max_turns
+        } else {
+            50
+        },
+        thinking_level: thinking.clone().unwrap_or_default(),
+        thinking_level_map,
+        compat_thinking_format: model_config
+            .as_ref()
+            .and_then(|m| m.compat.get("thinkingFormat"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        compat_supports_reasoning_effort: model_config
+            .as_ref()
+            .and_then(|m| m.compat.get("supportsReasoningEffort"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        compat_requires_reasoning_on_assistant: model_config
+            .as_ref()
+            .and_then(|m| m.compat.get("requiresReasoningContentOnAssistantMessages"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        compaction_reserve_tokens: settings.compaction_reserve_tokens(),
+        compaction_keep_recent_tokens: settings.compaction_keep_recent_tokens(),
+        ..EngineConfig::with_defaults()
     };
 
     // Build engine
-    let engine = Engine::new(&base_url, &api_key, &resolved_model, config)?
-        .with_tools(future_agent::all_tools());
+    let mut engine = Engine::new(
+        &base_url,
+        &api_key,
+        &engine_model,
+        config,
+        None, // temperature: use model default
+        max_tokens,
+    )?
+    .with_tools(future_agent::coding_tools());
 
     // Create event bus for server mode
     let event_bus = Arc::new(future_agent::EventBus::new());
@@ -200,6 +282,37 @@ async fn main() -> Result<()> {
         let skills = future_agent::discover_skills(&skill_dirs).unwrap_or_default();
         let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
 
+        // Load project context (CLAUDE.md / AGENTS.md / GEMINI.md)
+        let mut agent_content = String::new();
+        for fname in &["CLAUDE.md", "AGENTS.md", "GEMINI.md"] {
+            let p = std::path::Path::new(&cwd).join(fname);
+            if p.exists() {
+                if let Ok(content) = std::fs::read_to_string(&p) {
+                    agent_content = content;
+                    break;
+                }
+            }
+        }
+        let context_lines: Vec<String> = if agent_content.is_empty() {
+            vec![]
+        } else {
+            vec![agent_content.clone()]
+        };
+
+        // Build system prompt (skills + context + identity)
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        let system_prompt =
+            future_agent::prompt::build_prompt(&future_agent::prompt::PromptOptions {
+                working_directory: cwd.clone(),
+                date: today,
+                tools: engine.tools.clone(),
+                skills: skills.clone(),
+                agent_content,
+                ..Default::default()
+            });
+        engine.agent_loop.system_prompt = system_prompt.clone();
+        engine.agent_loop.config.system_prompt = system_prompt;
+
         let manager = Arc::new(Manager::default_for(&cwd));
         let broadcaster: Arc<future_agent::rpc::SseBroadcaster> =
             Arc::new(future_agent::rpc::SseBroadcaster::new());
@@ -212,6 +325,18 @@ async fn main() -> Result<()> {
             broadcaster.clone(),
         );
         server_session.model = resolved_model.clone();
+
+        // Apply thinking level from CLI/env/settings (server init defaults to "high")
+        if let Some(ref level) = thinking {
+            server_session.set_thinking_level(level);
+        }
+
+        // Apply settings to session (matching pi's SettingsManager getter defaults)
+        server_session.set_steering_mode(&settings.steering_mode_or_default());
+        server_session.set_follow_up_mode(&settings.follow_up_mode_or_default());
+        server_session.set_auto_compaction(settings.compaction_enabled());
+        server_session.set_auto_retry(settings.retry_enabled());
+
         let session = Arc::new(std::sync::RwLock::new(server_session));
 
         // Build AppState for gRPC server
@@ -222,7 +347,7 @@ async fn main() -> Result<()> {
             welcome_version: future_agent::utils::VERSION.to_string(),
             welcome_cwd: cwd.clone(),
             welcome_skills: skill_names.clone(),
-            welcome_context: vec![],
+            welcome_context: context_lines,
             welcome_exts: vec![],
             explicit_session: false,
             broadcaster: broadcaster.clone(),
