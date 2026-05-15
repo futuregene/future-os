@@ -68,6 +68,8 @@ pub struct RpcCommand {
     pub name: String,
     #[serde(default)]
     pub output_path: String,
+    #[serde(default)]
+    pub cwd: String,
 
     // set_system_prompt
     #[serde(default)]
@@ -180,7 +182,7 @@ impl SseEvent {
 pub struct ServerSession {
     pub session_id: String,
     pub agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>,
-    pub messages: Vec<crate::types::AgentMessage>,
+    pub messages: Arc<std::sync::RwLock<Vec<crate::types::AgentMessage>>>,
     pub model: String,
     pub thinking_level: String,
     pub steering_mode: String,
@@ -189,11 +191,22 @@ pub struct ServerSession {
     pub auto_retry: bool,
     pub session_manager: Arc<Manager>,
     pub cwd: String,
-    pub is_streaming: bool,
+    pub is_streaming: Arc<std::sync::atomic::AtomicBool>,
     pub session_name: String,
     pub event_bus: Arc<EventBus>,
     pub broadcaster: Arc<SseBroadcaster>,
     pub ephemeral: bool,
+    /// Cumulative token counters (Arc<AtomicI64> — read lock-free without agent_loop lock)
+    pub tokens_in: Arc<std::sync::atomic::AtomicI64>,
+    pub tokens_out: Arc<std::sync::atomic::AtomicI64>,
+    pub tokens_cache_r: Arc<std::sync::atomic::AtomicI64>,
+    pub tokens_cache_w: Arc<std::sync::atomic::AtomicI64>,
+    /// Last API call's prompt_tokens (actual context size, reset each call)
+    pub last_prompt_tokens: Arc<std::sync::atomic::AtomicI64>,
+    /// Sender for steering queue (cloned from loop, usable without loop lock)
+    pub steering_tx: tokio::sync::mpsc::Sender<String>,
+    /// Sender for follow_up queue
+    pub follow_up_tx: tokio::sync::mpsc::Sender<String>,
 }
 
 impl ServerSession {
@@ -205,23 +218,54 @@ impl ServerSession {
         event_bus: Arc<EventBus>,
         broadcaster: Arc<SseBroadcaster>,
     ) -> Self {
+        // Clone token counter Arcs and queue senders from the agent loop for lock-free access
+        let (ti, to, tcr, tcw, lpt, stx, ftx) = if let Ok(loop_) = agent_loop.try_read() {
+            (
+                loop_.cumulative_input_tokens.clone(),
+                loop_.cumulative_output_tokens.clone(),
+                loop_.cumulative_cache_read_tokens.clone(),
+                loop_.cumulative_cache_write_tokens.clone(),
+                loop_.last_prompt_tokens.clone(),
+                loop_.steering_queue.tx.clone(),
+                loop_.follow_up_queue.tx.clone(),
+            )
+        } else {
+            let (stx, _) = tokio::sync::mpsc::channel(64);
+            let (ftx, _) = tokio::sync::mpsc::channel(64);
+            (
+                Arc::new(std::sync::atomic::AtomicI64::new(0)),
+                Arc::new(std::sync::atomic::AtomicI64::new(0)),
+                Arc::new(std::sync::atomic::AtomicI64::new(0)),
+                Arc::new(std::sync::atomic::AtomicI64::new(0)),
+                Arc::new(std::sync::atomic::AtomicI64::new(0)),
+                stx,
+                ftx,
+            )
+        };
         Self {
             session_id: session_id.clone(),
             agent_loop,
-            messages: vec![],
+            messages: Arc::new(std::sync::RwLock::new(vec![])),
             model: String::new(),
             thinking_level: "high".to_string(), // Match Go default
-            steering_mode: "all".to_string(),
-            follow_up_mode: "all".to_string(),
+            steering_mode: "one-at-a-time".to_string(),
+            follow_up_mode: "one-at-a-time".to_string(),
             auto_compaction: true, // Match Go default
             auto_retry: true,
             session_manager: manager,
             cwd: cwd.to_string(),
-            is_streaming: false,
+            is_streaming: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             session_name: String::new(),
             event_bus,
             broadcaster,
             ephemeral: false,
+            tokens_in: ti,
+            tokens_out: to,
+            tokens_cache_r: tcr,
+            tokens_cache_w: tcw,
+            last_prompt_tokens: lpt,
+            steering_tx: stx,
+            follow_up_tx: ftx,
         }
     }
 
@@ -234,23 +278,37 @@ impl ServerSession {
         event_bus: Arc<EventBus>,
         broadcaster: Arc<SseBroadcaster>,
     ) -> Self {
+        let (stx, ftx) = if let Ok(loop_) = agent_loop.try_read() {
+            (loop_.steering_queue.tx.clone(), loop_.follow_up_queue.tx.clone())
+        } else {
+            let (stx, _) = tokio::sync::mpsc::channel(64);
+            let (ftx, _) = tokio::sync::mpsc::channel(64);
+            (stx, ftx)
+        };
         Self {
             session_id: session_id.clone(),
             agent_loop,
-            messages: vec![],
+            messages: Arc::new(std::sync::RwLock::new(vec![])),
             model: String::new(),
             thinking_level: "high".to_string(),
-            steering_mode: "all".to_string(),
-            follow_up_mode: "all".to_string(),
+            steering_mode: "one-at-a-time".to_string(),
+            follow_up_mode: "one-at-a-time".to_string(),
             auto_compaction: true,
             auto_retry: true,
             session_manager: manager,
             cwd: cwd.to_string(),
-            is_streaming: false,
+            is_streaming: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             session_name: String::new(),
             event_bus,
             broadcaster,
             ephemeral: false,
+            tokens_in: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            tokens_out: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            tokens_cache_r: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            tokens_cache_w: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            last_prompt_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            steering_tx: stx,
+            follow_up_tx: ftx,
         }
     }
 
@@ -273,18 +331,110 @@ impl ServerSession {
         _behavior: &str,
     ) -> Result<()> {
         // Add message to session
-        self.messages.push(crate::types::AgentMessage::new_user(
-            "user",
-            serde_json::json!([{"type": "text", "text": msg}]),
-        ));
+        self.messages
+            .write()
+            .unwrap()
+            .push(crate::types::AgentMessage::new_user(
+                "user",
+                serde_json::json!([{"type": "text", "text": msg}]),
+            ));
 
         // Set streaming flag
-        self.is_streaming = true;
+        self.is_streaming.store(true, std::sync::atomic::Ordering::Relaxed);
 
-        // Clone messages for the background task
-        let messages = self.messages.clone();
+        // Swap per-session token counters into the agent loop so updates are tracked per-session
+        {
+            if let Ok(mut r#loop) = self.agent_loop.try_write() {
+                r#loop.cumulative_input_tokens = self.tokens_in.clone();
+                r#loop.cumulative_output_tokens = self.tokens_out.clone();
+                r#loop.cumulative_cache_read_tokens = self.tokens_cache_r.clone();
+                r#loop.cumulative_cache_write_tokens = self.tokens_cache_w.clone();
+                r#loop.last_prompt_tokens = self.last_prompt_tokens.clone();
+            }
+        }
+
+        // Wire auto-compaction transform (checked before each turn)
+        if self.auto_compaction {
+            if let Ok(mut r#loop) = self.agent_loop.try_write() {
+                let comp_tokens = self.last_prompt_tokens.clone();
+                let comp_model = self.model.clone();
+                let comp_result = r#loop.last_compaction_result.clone();
+                r#loop.config.transform_context = Some(Arc::new(move |msgs, _| {
+                    use std::sync::atomic::Ordering;
+                    let context_tokens = comp_tokens.load(Ordering::Relaxed) as i32;
+                    if context_tokens == 0 {
+                        return msgs; // No API call made yet, nothing to compact
+                    }
+                    let context_window = crate::models::Registry::new()
+                        .resolve(&comp_model)
+                        .map(|m| m.context_window)
+                        .unwrap_or(200000);
+                    let (compacted, result) = crate::compaction::compact(
+                        msgs,
+                        &crate::compaction::CompactOptions {
+                            reserve_tokens: 16384,
+                            keep_recent_tokens: 20000,
+                            context_window,
+                            tokens_before: context_tokens,
+                        },
+                    );
+                    if let Some(r) = result {
+                        *comp_result.lock().unwrap() = Some(r);
+                        compacted
+                    } else {
+                        compacted
+                    }
+                }));
+            }
+        }
+
+        // Clone shared state for the background task
+        let messages_arc = self.messages.clone();
+        let initial_messages = messages_arc.read().unwrap().clone();
         let agent_loop = self.agent_loop.clone();
         let broadcaster = self.broadcaster.clone();
+        let is_streaming = self.is_streaming.clone();
+
+        // Set tool event callback so tool_start/tool_end reach the TUI
+        {
+            let broadcaster_tool = broadcaster.clone();
+            if let Ok(mut r#loop) = agent_loop.try_write() {
+                r#loop.tool_event_callback =
+                    Some(Arc::new(move |event: crate::types::StreamEvent| {
+                        let mut data = serde_json::Map::new();
+                        data.insert("type".to_string(), serde_json::json!(&event.event_type));
+                        if !event.tool_name.is_empty() {
+                            data.insert(
+                                "tool_name".to_string(),
+                                serde_json::json!(&event.tool_name),
+                            );
+                        }
+                        if !event.tool_id.is_empty() {
+                            data.insert("tool_id".to_string(), serde_json::json!(&event.tool_id));
+                        }
+                        if !event.text.is_empty() {
+                            data.insert("text".to_string(), serde_json::json!(&event.text));
+                        }
+                        if !event.error_text.is_empty() {
+                            data.insert("error".to_string(), serde_json::json!(&event.error_text));
+                        }
+                        if let Some(ref tc) = event.tool_call {
+                            data.insert("tool_args".to_string(), tc.function.arguments.clone());
+                        }
+                        broadcaster_tool.broadcast(crate::rpc::SseEvent {
+                            event_type: event.event_type.clone(),
+                            data: serde_json::to_string(&data).unwrap_or_default(),
+                        });
+                    }));
+            }
+        }
+
+        // Broadcast agent_start before the loop so TUI creates assistant message
+        let broadcaster_outer = broadcaster.clone();
+        broadcaster_outer.broadcast(crate::rpc::SseEvent {
+            event_type: "agent_start".to_string(),
+            data: serde_json::json!({"type": "agent_start"}).to_string(),
+        });
 
         // Spawn background task to run agent loop
         tokio::spawn(async move {
@@ -297,7 +447,7 @@ impl ServerSession {
                 let r#loop = agent_loop.write().await;
                 r#loop
                     .run_streaming_with_messages(
-                        messages,
+                        initial_messages,
                         move |text| {
                             broadcaster_text.broadcast(crate::rpc::SseEvent {
                                 event_type: "text_chunk".to_string(),
@@ -309,7 +459,7 @@ impl ServerSession {
                             let mut data = serde_json::Map::new();
                             data.insert("type".to_string(), serde_json::json!(&event.event_type));
                             if !event.text.is_empty() {
-                                data.insert("delta".to_string(), serde_json::json!(&event.text));
+                                data.insert("text".to_string(), serde_json::json!(&event.text));
                             }
                             if !event.tool_name.is_empty() {
                                 data.insert(
@@ -338,6 +488,9 @@ impl ServerSession {
                             if let Some(usage) = &event.usage {
                                 data.insert("usage".to_string(), serde_json::json!(usage));
                             }
+                            if let Some(ref tc) = event.tool_call {
+                                data.insert("tool_args".to_string(), tc.function.arguments.clone());
+                            }
                             broadcaster_event.broadcast(crate::rpc::SseEvent {
                                 event_type: event.event_type.clone(),
                                 data: serde_json::to_string(&data).unwrap_or_default(),
@@ -349,11 +502,22 @@ impl ServerSession {
             .await;
 
             match result {
-                Ok(Ok((_final_text, _final_messages))) => {
+                Ok(Ok((_final_text, final_messages))) => {
+                    // Update shared messages so next prompt includes the full context
+                    match messages_arc.write() {
+                        Ok(mut msgs) => {
+                            *msgs = final_messages;
+                        }
+                        Err(e) => {
+                            let mut msgs = e.into_inner();
+                            *msgs = final_messages;
+                        }
+                    }
                     broadcaster.broadcast(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),
-                        data: serde_json::json!({"type": "stop"}).to_string(),
+                        data: serde_json::json!({"type": "agent_end"}).to_string(),
                     });
+                    is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
                 Ok(Err(e)) => {
                     eprintln!("Agent loop error: {}", e);
@@ -361,6 +525,12 @@ impl ServerSession {
                         event_type: "error".to_string(),
                         data: serde_json::json!({"error": e.to_string()}).to_string(),
                     });
+                    broadcaster.broadcast(crate::rpc::SseEvent {
+                        event_type: "agent_end".to_string(),
+                        data: serde_json::json!({"type": "agent_end", "error": e.to_string()})
+                            .to_string(),
+                    });
+                    is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
                 Err(_timeout) => {
                     eprintln!("Agent loop timed out after 60s");
@@ -368,6 +538,11 @@ impl ServerSession {
                         event_type: "error".to_string(),
                         data: serde_json::json!({"error": "timeout: agent loop timed out after 60 seconds"}).to_string(),
                     });
+                    broadcaster.broadcast(crate::rpc::SseEvent {
+                        event_type: "agent_end".to_string(),
+                        data: serde_json::json!({"type": "agent_end", "error": "timeout"}).to_string(),
+                    });
+                    is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
             }
         });
@@ -376,20 +551,13 @@ impl ServerSession {
     }
 
     pub fn steer(&mut self, msg: &str) -> Result<()> {
-        self.agent_loop
-            .try_write()
-            .unwrap()
-            .steering_queue
-            .enqueue(msg.to_string());
+        // Queue message directly via sender — avoids agent_loop lock (held during streaming)
+        let _ = self.steering_tx.try_send(msg.to_string());
         Ok(())
     }
 
     pub fn follow_up(&mut self, msg: &str) -> Result<()> {
-        self.agent_loop
-            .try_write()
-            .unwrap()
-            .follow_up_queue
-            .enqueue(msg.to_string());
+        let _ = self.follow_up_tx.try_send(msg.to_string());
         Ok(())
     }
 
@@ -397,19 +565,88 @@ impl ServerSession {
         if let Ok(loop_) = self.agent_loop.try_write() {
             loop_.abort();
         }
+        self.is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn new_session(&mut self) -> Result<()> {
-        self.messages.clear();
+        self.messages.write().unwrap().clear();
         Ok(())
     }
 
     pub fn get_messages(&self) -> Vec<crate::types::Message> {
-        ConvertToLLM(&self.messages)
+        let msgs = self.messages.read().unwrap();
+        ConvertToLLM(&msgs)
     }
 
     pub fn set_model(&mut self, model: &str) -> Result<()> {
-        self.model = model.to_string();
+        // Resolve model config from registry to get base_url, compat settings, etc.
+        let registry = crate::models::Registry::new();
+        let resolved = registry.resolve(model);
+        // Use canonical model ID (strip provider prefix if present)
+        self.model = resolved
+            .as_ref()
+            .map(|m| m.id.clone())
+            .unwrap_or_else(|| model.to_string());
+
+        // Update the agent loop in one shot — both model name and provider endpoint.
+        // Uses try_write: if a prompt is actively streaming (holding the write lock),
+        // skip this update. The caller should retry or set_model before prompting.
+        if let Ok(mut loop_) = self.agent_loop.try_write() {
+            // Use resolved model's canonical ID (strip provider prefix if present)
+            if let Some(ref mc) = resolved {
+                loop_.model = mc.id.clone();
+            } else {
+                loop_.model = model.to_string();
+            }
+
+            if let Some(model_config) = resolved {
+                let thinking_format = model_config
+                    .compat
+                    .get("thinkingFormat")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let supports_reasoning_effort = model_config
+                    .compat
+                    .get("supportsReasoningEffort")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let requires_reasoning_on_assistant = model_config
+                    .compat
+                    .get("requiresReasoningContentOnAssistantMessages")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let tlm: HashMap<String, String> = model_config
+                    .thinking_level_map
+                    .into_iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
+                    .collect();
+
+                let auth = crate::AuthStore::load();
+                let api_key = auth
+                    .get(model)
+                    .or_else(|| auth.get(&model_config.provider))
+                    .or_else(|| {
+                        if model_config.api_key.is_empty() {
+                            None
+                        } else {
+                            Some(model_config.api_key.clone())
+                        }
+                    })
+                    .or_else(|| auth.default_key())
+                    .unwrap_or_default();
+
+                loop_.provider.update_compat(
+                    &thinking_format,
+                    supports_reasoning_effort,
+                    requires_reasoning_on_assistant,
+                    tlm,
+                );
+                loop_
+                    .provider
+                    .update_endpoint(&model_config.base_url, &api_key);
+            }
+        }
         Ok(())
     }
 
@@ -424,7 +661,10 @@ impl ServerSession {
             "xhigh" => 24000,
             _ => 0,
         };
-        self.agent_loop.try_write().unwrap().config.thinking_budget = budget;
+        if let Ok(mut loop_) = self.agent_loop.try_write() {
+            loop_.config.thinking_budget = budget;
+            loop_.provider.update_thinking(level, budget);
+        }
     }
 
     pub fn set_steering_mode(&mut self, mode: &str) {
@@ -438,15 +678,35 @@ impl ServerSession {
     }
 
     pub fn compact(&self, _instructions: &str) -> Result<serde_json::Value> {
-        let messages: Vec<crate::types::Message> = ConvertToLLM(&self.messages);
-        let tokens_before = crate::compaction::estimate_context_tokens(&messages);
+        use std::sync::atomic::Ordering;
+
+        let messages: Vec<crate::types::Message> = {
+            let msgs = self.messages.read().unwrap();
+            ConvertToLLM(&msgs)
+        };
+
+        // Use API-reported prompt_tokens (same as getState's contextTokens)
+        let tokens_before = self.last_prompt_tokens.load(Ordering::Relaxed) as i32;
+
+        // Resolve context_window from model registry (same as getState's contextWindow)
+        let context_window = crate::models::Registry::new()
+            .resolve(&self.model)
+            .map(|m| m.context_window)
+            .or_else(|| {
+                crate::models::builtin_models()
+                    .into_iter()
+                    .find(|m| m.id == self.model)
+                    .map(|m| m.context_window)
+            })
+            .unwrap_or(200000);
 
         let (compacted, result) = crate::compaction::compact(
             messages,
             &crate::compaction::CompactOptions {
                 reserve_tokens: 160000,
                 keep_recent_tokens: 80000,
-                context_window: 0,
+                context_window,
+                tokens_before,
             },
         );
 
@@ -454,7 +714,7 @@ impl ServerSession {
             let tokens_after = crate::compaction::estimate_context_tokens(&compacted);
             let messages_removed = (tokens_before - tokens_after).max(0);
             Ok(serde_json::json!({
-                "tokensBefore": r.tokens_before,
+                "tokensBefore": tokens_before,
                 "tokensAfter": tokens_after,
                 "summary": r.summary,
                 "messagesRemoved": messages_removed,
@@ -538,14 +798,15 @@ impl ServerSession {
     }
 
     pub fn get_session_stats(&self) -> serde_json::Value {
+        let msgs = self.messages.read().unwrap();
         serde_json::json!({
             "sessionFile": "",
             "sessionId": self.session_id(),
-            "userMessages": self.messages.iter().filter(|m| m.role == "user").count(),
-            "assistantMessages": self.messages.iter().filter(|m| m.role == "assistant").count(),
-            "toolCalls": self.messages.iter().filter(|m| !m.tool_calls.is_empty()).count(),
-            "toolResults": self.messages.iter().filter(|m| m.role == "tool").count(),
-            "totalMessages": self.messages.len(),
+            "userMessages": msgs.iter().filter(|m| m.role == "user").count(),
+            "assistantMessages": msgs.iter().filter(|m| m.role == "assistant").count(),
+            "toolCalls": msgs.iter().filter(|m| !m.tool_calls.is_empty()).count(),
+            "toolResults": msgs.iter().filter(|m| m.role == "tool").count(),
+            "totalMessages": msgs.len(),
             "tokens": {
                 "input": 0,
                 "output": 0,
@@ -584,8 +845,8 @@ impl ServerSession {
     }
 
     pub fn get_last_assistant_text(&self) -> String {
-        self.messages
-            .iter()
+        let msgs = self.messages.read().unwrap();
+        msgs.iter()
             .rfind(|m| m.role == "assistant")
             .map(|m| m.text())
             .unwrap_or_default()
@@ -618,11 +879,13 @@ impl AppState {
         if session_id.is_empty() {
             return self.session.clone();
         }
-        if let Ok(sessions) = &self.sessions.try_read() {
-            if let Some(sess) = sessions.get(session_id) {
-                return sess.clone();
-            }
+        let sessions = self.sessions.read().unwrap();
+        if let Some(sess) = sessions.get(session_id) {
+            return sess.clone();
         }
+        // Session not found in map — could have been created but not inserted.
+        // Return default session as last resort.
+        eprintln!("[get_session] session_id={} not found in sessions map, falling back to default", session_id);
         self.session.clone()
     }
 
@@ -630,9 +893,7 @@ impl AppState {
     /// Uses the session's own session_id as the key
     pub fn create_session(&self, session: ServerSession) -> String {
         let id = session.session_id.clone();
-        if let Ok(mut sessions) = self.sessions.try_write() {
-            sessions.insert(id.clone(), Arc::new(RwLock::new(session)));
-        }
+        self.sessions.write().unwrap().insert(id.clone(), Arc::new(RwLock::new(session)));
         if let Ok(mut active_id) = self.active_session_id.try_write() {
             *active_id = id.clone();
         }
@@ -654,12 +915,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
 
     match cmd_type.as_str() {
         "prompt" => {
-            let _ =
-                session
-                    .write()
-                    .unwrap()
-                    .prompt(&cmd.message, &cmd.images, &cmd.streaming_behavior);
-            RpcResponse::ok(id, "prompt", serde_json::json!({}))
+            let mut sess = session.write().unwrap();
+            if sess.is_streaming.load(std::sync::atomic::Ordering::Relaxed) {
+                RpcResponse::build_fail(id, "prompt", "agent is still streaming; wait or abort first")
+            } else {
+                let _ = sess.prompt(&cmd.message, &cmd.images, &cmd.streaming_behavior);
+                RpcResponse::ok(id, "prompt", serde_json::json!({}))
+            }
         }
         "steer" => {
             let _ = session.write().unwrap().steer(&cmd.message);
@@ -677,18 +939,30 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "abort", serde_json::json!({}))
         }
         "new_session" => {
-            // Create a new session with shared agent_loop
+            // Create a new session with shared agent_loop, preserving model/thinking
+            // Use TUI-provided cwd if available, otherwise home directory
+            let session_cwd = if !cmd.cwd.is_empty() {
+                cmd.cwd.clone()
+            } else {
+                dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                    .to_string_lossy()
+                    .to_string()
+            };
             let active_id = state.get_active_session_id();
             let session = state.get_session(&active_id);
             let sess = session.read().unwrap();
-            let new_sess = ServerSession::new_with_shared_loop(
+            let mut new_sess = ServerSession::new_with_shared_loop(
                 crate::utils::generate_id(),
                 sess.agent_loop.clone(),
                 sess.session_manager.clone(),
-                &sess.cwd,
+                &session_cwd,
                 sess.event_bus.clone(),
                 sess.broadcaster.clone(),
             );
+            // Preserve model and thinking level from the current session
+            new_sess.model = sess.model.clone();
+            new_sess.thinking_level = sess.thinking_level.clone();
             drop(sess);
 
             // Add to sessions map
@@ -953,12 +1227,34 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "abort_bash", serde_json::json!({}))
         }
         "cycle_model" => {
-            // Cycle to next model
-            let models: Vec<String> = crate::models::Registry::new()
-                .all_models()
-                .into_iter()
-                .map(|m| m.id)
-                .collect();
+            // Cycle to next model, respecting enabled_models from settings.
+            let registry = crate::models::Registry::new();
+            let auth = crate::AuthStore::load();
+            let settings_path = std::path::PathBuf::from(crate::models::settings_path());
+            let settings = crate::config::load_settings(&settings_path).unwrap_or_default();
+
+            let models: Vec<String> = if !settings.enabled_models.is_empty() {
+                // Use scoped models (from enabled_models) filtered by auth
+                let scoped = registry.resolve_scope(&settings.enabled_models, &auth);
+                if scoped.is_empty() {
+                    return RpcResponse::ok(
+                        id,
+                        "cycle_model",
+                        serde_json::json!({"model": "", "thinkingLevel": "", "isScoped": true}),
+                    );
+                }
+                scoped
+            } else {
+                // Fall back to all auth-configured models
+                let available: Vec<String> = registry
+                    .all_models()
+                    .into_iter()
+                    .filter(|m| !m.api_key.is_empty() || auth.get(&m.provider).is_some())
+                    .map(|m| m.id)
+                    .collect();
+                available
+            };
+
             if models.is_empty() {
                 return RpcResponse::ok(
                     id,
@@ -966,13 +1262,15 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     serde_json::json!({"model": "", "thinkingLevel": "", "isScoped": false}),
                 );
             }
+
+            let is_scoped = !settings.enabled_models.is_empty();
             let current = session.read().unwrap().model.clone();
             let idx = models.iter().position(|m| m == &current).unwrap_or(0);
             let next_idx = (idx + 1) % models.len();
             let next_model = &models[next_idx];
 
-            // Update session model
-            session.write().unwrap().model = next_model.clone();
+            // Use set_model to update session, agent_loop, compat, and endpoint
+            let _ = session.write().unwrap().set_model(next_model);
 
             RpcResponse::ok(
                 id,
@@ -980,7 +1278,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 serde_json::json!({
                     "model": next_model,
                     "thinkingLevel": session.read().unwrap().thinking_level.clone(),
-                    "isScoped": false
+                    "isScoped": is_scoped
                 }),
             )
         }
@@ -992,8 +1290,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             let next_idx = (idx + 1) % levels.len();
             let next_level = levels[next_idx];
 
-            // Update session thinking level
-            session.write().unwrap().thinking_level = next_level.to_string();
+            // Update session thinking level and propagate to provider
+            session.write().unwrap().set_thinking_level(next_level);
 
             RpcResponse::ok(
                 id,
@@ -1003,11 +1301,28 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         }
         "get_available_models" => {
             let registry = crate::models::Registry::new();
-            let models = registry
+            let auth = crate::AuthStore::load();
+            let models: Vec<serde_json::Value> = registry
                 .all_models()
                 .into_iter()
-                .map(|m| m.id)
-                .collect::<Vec<_>>();
+                .filter(|m| {
+                    // Model is available only if its specific provider has an API key in auth.json,
+                    // or the model itself has an API key set (from models.json).
+                    !m.api_key.is_empty() || auth.get(&m.provider).is_some()
+                })
+                .map(|m| {
+                    let has_image = m.input.contains(&"image".to_string());
+                    serde_json::json!({
+                        "id": m.id,
+                        "name": m.name,
+                        "provider": m.provider,
+                        "reasoning": m.reasoning,
+                        "image": has_image,
+                        "contextWindow": m.context_window,
+                        "maxTokens": m.max_tokens,
+                    })
+                })
+                .collect();
             RpcResponse::ok(
                 id,
                 "get_available_models",
@@ -1018,8 +1333,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             // Extract needed data from session
             let (agent_loop, session_manager, event_bus, broadcaster, cwd, session_id) = {
                 let sess = session.read().unwrap();
-                let entries = &sess.messages;
-                if entries.is_empty() {
+                if sess.messages.read().unwrap().is_empty() {
                     return RpcResponse::build_fail(id, "clone", "no entries to clone");
                 }
                 (
@@ -1108,25 +1422,53 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
     let session = state.get_session(session_id);
     let sess = session.read().unwrap();
 
-    let context_window = crate::models::builtin_models()
-        .into_iter()
-        .find(|m| m.id == sess.model)
+    // Resolve context window: registry first (user models), then builtin, then default
+    let registry = crate::models::Registry::new();
+    let context_window = registry
+        .resolve(&sess.model)
         .map(|m| m.context_window)
-        .unwrap_or(1000000);
+        .or_else(|| {
+            crate::models::builtin_models()
+                .into_iter()
+                .find(|m| m.id == sess.model)
+                .map(|m| m.context_window)
+        })
+        .unwrap_or(200000) as i64;
 
     let session_id = sess.session_id();
-    let cwd = if state.welcome_cwd.contains("workspace") && state.welcome_cwd.contains("(main)") {
-        state.welcome_cwd.clone()
-    } else if state.welcome_cwd.contains("workspace") {
-        format!("{} (main)", state.welcome_cwd)
+    let cwd = sess.cwd.clone();
+
+    // Read cumulative token usage directly from Arc<AtomicI64> — lock-free
+    use std::sync::atomic::Ordering;
+    let tokens_in = sess.tokens_in.load(Ordering::Relaxed);
+    let tokens_out = sess.tokens_out.load(Ordering::Relaxed);
+    let cache_r = sess.tokens_cache_r.load(Ordering::Relaxed);
+    let cache_w = sess.tokens_cache_w.load(Ordering::Relaxed);
+
+    // Compute cost from model pricing
+    let total_cost = if let Some(model_config) = registry.resolve(&sess.model) {
+        let input_cost = (tokens_in as f64 / 1_000_000.0) * model_config.cost.input;
+        let output_cost = (tokens_out as f64 / 1_000_000.0) * model_config.cost.output;
+        let cache_read_cost = (cache_r as f64 / 1_000_000.0) * model_config.cost.cache_read;
+        let cache_write_cost = (cache_w as f64 / 1_000_000.0) * model_config.cost.cache_write;
+        input_cost + output_cost + cache_read_cost + cache_write_cost
     } else {
-        state.welcome_cwd.clone()
+        0.0
+    };
+
+    // Use API-reported prompt_tokens from the last request as actual context usage
+    let context_tokens = sess.last_prompt_tokens.load(Ordering::Relaxed);
+    let msg_count = sess.messages.read().unwrap().len();
+    let context_percent = if context_window > 0 {
+        (context_tokens as f64 / context_window as f64) * 100.0
+    } else {
+        0.0
     };
 
     serde_json::json!({
         "model": sess.model,
         "thinkingLevel": sess.thinking_level,
-        "isStreaming": sess.is_streaming,
+        "isStreaming": sess.is_streaming.load(std::sync::atomic::Ordering::Relaxed),
         "isCompacting": false,
         "steeringMode": sess.steering_mode,
         "followUpMode": sess.follow_up_mode,
@@ -1135,7 +1477,7 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
         "sessionName": serde_json::Value::Null,
         "explicitSession": state.explicit_session,
         "autoCompactionEnabled": sess.auto_compaction,
-        "messageCount": sess.messages.len(),
+        "messageCount": msg_count,
         "pendingMessageCount": sess.agent_loop.try_read().map(|l|l.pending_message_count()).unwrap_or(0),
         "version": crate::utils::VERSION,
         "cwd": cwd,
@@ -1143,11 +1485,13 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
         "contextFiles": serde_json::Value::Null,
         "extensions": serde_json::Value::Null,
         "contextWindow": context_window,
-        "contextTokens": serde_json::Value::Null,
-        "contextPercent": serde_json::Value::Null,
-        "tokensIn": serde_json::Value::Null,
-        "tokensOut": serde_json::Value::Null,
-        "totalCost": serde_json::Value::Null,
+        "contextTokens": context_tokens,
+        "contextPercent": context_percent,
+        "tokensIn": tokens_in,
+        "tokensOut": tokens_out,
+        "tokensCacheR": cache_r,
+        "tokensCacheW": cache_w,
+        "totalCost": total_cost,
     })
 }
 

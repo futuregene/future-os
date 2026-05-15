@@ -9,7 +9,7 @@ import { ChatArea, type ChatMessage } from "./components/chat-area.js";
 import { Footer, type FooterData } from "./components/footer.js";
 import { SelectList, type SelectItem } from "./components/select-list.js";
 import { AutocompletePopup, type AutocompleteItem, AutocompleteManager, SlashCommandProvider, FilePathProvider, AttachmentProvider, type SlashCommand } from "./components/autocomplete.js";
-import { Editor } from "./components/editor.js";
+import { Input } from "./components/input.js";
 import {
   NodeTerminal,
   SYNC_BEGIN,
@@ -27,7 +27,7 @@ import { DARK_THEME, type Theme, fg, dim, bold } from "./theme.js";
 import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.js";
 import { parseKey, isKeyRelease, isKeyRepeat, Key } from "./keys.js";
 import { KeybindingManager } from "./keybindings.js";
-import { visibleWidth, stripAnsiCodes, normalizeTerminalOutput, sliceByColumn, truncateToWidth } from "./utils.js";
+import { extractSegments, visibleWidth, stripAnsiCodes, normalizeTerminalOutput, sliceByColumn, truncateToWidth, wrapTextWithAnsi } from "./utils.js";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
@@ -40,6 +40,7 @@ function isTermuxSession(): boolean {
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
 
 function extractKittyImageIds(line: string): number[] {
+  if (!line) return [];
   const sequenceStart = line.indexOf(KITTY_SEQUENCE_PREFIX);
   if (sequenceStart === -1) return [];
 
@@ -63,7 +64,7 @@ export class App extends Container {
   private terminal: NodeTerminal;
   private client: GrpcClient;
   private theme: Theme;
-  private editor: Editor;
+  private input: Input;
   private chat: ChatArea;
   private footer: Footer;
   private overlayStack: { component: Component; options?: OverlayOptions; preFocus: Component | null; hidden: boolean; focusOrder: number }[] = [];
@@ -97,7 +98,7 @@ export class App extends Container {
   private getModels = async (): Promise<string[]> => {
     try {
       const r = await this.client.getAvailableModels();
-      return r.models;
+      return r.models.map((m) => m.id);
     } catch { return []; }
   };
 
@@ -124,7 +125,10 @@ export class App extends Container {
     contextPercent: 0,
     tokensIn: 0,
     tokensOut: 0,
+    tokensCacheR: 0,
+    tokensCacheW: 0,
     totalCost: 0,
+    autoCompactionEnabled: true,
     thinkingHidden: false,  // true = show "Thinking..." instead of actual thinking
     explicitSession: false, // true when --session/--continue/--resume/--fork was used
   };
@@ -138,6 +142,7 @@ export class App extends Container {
   private maxLinesRendered = 0;
   private previousViewportTop = 0;
   private clearOnShrink = process.env.PI_CLEAR_ON_SHRINK === "1";
+  private forceClearNextRender = false;
   private showHardwareCursor = process.env.PI_HARDWARE_CURSOR === "1";
   private renderRequested = false;
   private renderTimer: ReturnType<typeof setTimeout> | undefined;
@@ -178,15 +183,12 @@ export class App extends Container {
     this.chat = new ChatArea(this.terminal.columns);
     this.footer = new Footer(this.terminal.columns);
 
-    this.editor = new Editor("❯ ", {
-      prompt: this.theme.accent,
-      text: this.theme.fg,
-      cursor: this.theme.accent,
-      bg: this.theme.bg,
-    }, {
-      onSubmit: (v) => this.handleSubmit(v),
-      onChange: (v) => this.acManager.query(v, v.length),
-    });
+    this.input = new Input();
+    this.input.onSubmit = (v) => this.handleSubmit(v);
+    this.input.onChange = (v) => this.acManager.query(v, v.length);
+    this.input.onEscape = () => { this.input.setValue(""); this.requestRender(); };
+    this.input.focused = true;
+    this.focusedComponent = this.input;
 
     // Wire autocomplete manager → popup
     this.acManager.onItems = (items) => {
@@ -205,16 +207,16 @@ export class App extends Container {
 
     // Register children with Container (matches pi's TUI extends Container)
     this.addChild(this.chat);
-    this.addChild(this.editor);
+    this.addChild(this.input);
     this.addChild(this.footer);
 
     // Register global keybindings
     this.keybindings.add(Key.ctrl_c, () => { this.handleInterrupt(); return true; }, "Interrupt / exit");
-    this.keybindings.add(Key.ctrl_l, () => { this.chat.clearMessages(); this.requestRender(); return true; }, "Clear chat");
+    this.keybindings.add(Key.ctrl_l, () => { this.forceClearNextRender = true; this.requestRender(true); return true; }, "Clear screen");
     this.keybindings.add(Key.ctrl_p, () => { this.cycleModel(); return true; }, "Cycle model");
     this.keybindings.add(Key.ctrl_r, () => { this.showSessions(); return true; }, "Browse sessions");
     this.keybindings.add(Key.ctrl_s, () => { this.showSettings(); return true; }, "Open settings");
-    this.keybindings.add(Key.ctrl_o, () => { this.showHelpOverlay(); return true; }, "Show help");
+
     this.keybindings.add(Key.ctrl_t, () => { this.cycleThinking(); return true; }, "Cycle thinking");
     this.keybindings.add(Key.shift_tab, () => { this.cycleThinking(); return true; }, "Cycle thinking");
 
@@ -362,6 +364,8 @@ export class App extends Container {
         if (e.text && this.chat) {
           this.chat.updateLastMessage(e.text);
         }
+        // Refresh state to update context percentage, token totals, etc.
+        this.refresh().then(() => this.requestRender());
         break;
       }
 
@@ -390,8 +394,11 @@ export class App extends Container {
         break;
 
       case "tool_start": {
-        const e = event as { tool_id?: string; tool_name?: string };
-        this.chat.addToolStart(e.tool_id ?? "", e.tool_name ?? "");
+        const e = event as { tool_id?: string; tool_name?: string; tool_args?: unknown };
+        const toolArgs = typeof e.tool_args === "string" ? e.tool_args
+          : typeof e.tool_args === "object" ? JSON.stringify(e.tool_args)
+          : undefined;
+        this.chat.addToolStart(e.tool_id ?? "", e.tool_name ?? "", toolArgs);
         break;
       }
 
@@ -419,9 +426,11 @@ export class App extends Container {
       }
 
       case "usage": {
-        const e = event as { input_tokens?: number; output_tokens?: number };
-        if (e.input_tokens !== undefined) this.state.tokensIn += e.input_tokens;
-        if (e.output_tokens !== undefined) this.state.tokensOut += e.output_tokens;
+        const e = event as { usage?: { prompt_tokens?: number; completion_tokens?: number; cache_read_tokens?: number; cache_write_tokens?: number; total_tokens?: number } };
+        if (e.usage?.prompt_tokens !== undefined) this.state.tokensIn += e.usage.prompt_tokens;
+        if (e.usage?.completion_tokens !== undefined) this.state.tokensOut += e.usage.completion_tokens;
+        if (e.usage?.cache_read_tokens !== undefined) this.state.tokensCacheR += e.usage.cache_read_tokens;
+        if (e.usage?.cache_write_tokens !== undefined) this.state.tokensCacheW += e.usage.cache_write_tokens;
         break;
       }
 
@@ -450,16 +459,17 @@ export class App extends Container {
       if (!focused?.wantsKeyRelease) return;
     }
 
-    // SGR mouse events: \x1b[<N;X;YM  (M=press, m=release)
+    // SGR mouse events: \x1b[<B;X;YM (press) or \x1b[<B;X;Ym (release)
+    // B=64 scroll up, B=65 scroll down
     const mouseMatch = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/);
     if (mouseMatch) {
-      const eventCode = parseInt(mouseMatch[1]!, 10);
-      if (eventCode === 64) {
-        // Wheel up — scroll chat up
+      const button = parseInt(mouseMatch[1]!, 10);
+      if (button === 64) {
+        // Scroll up: move viewport up, disable auto-scroll
         this.chat.scrollUp(3);
         this.requestRender();
-      } else if (eventCode === 65) {
-        // Wheel down — scroll chat down
+      } else if (button === 65) {
+        // Scroll down: move viewport down, re-enable auto-scroll at bottom
         this.chat.scrollDown(3);
         this.requestRender();
       }
@@ -484,7 +494,7 @@ export class App extends Container {
       const endIdx = data.indexOf("\x1b[201~");
       if (endIdx !== -1) {
         const content = data.slice(6, endIdx);
-        this.editor.insertText(content);
+        this.input.insertText(content);
         this.requestRender();
       }
       return;
@@ -506,7 +516,7 @@ export class App extends Container {
         if (top) {
           this.setFocus(top);
         } else {
-          this.setFocus(this.editor);
+          this.setFocus(this.input);
         }
       }
       this.handleKey(keyName);
@@ -523,7 +533,7 @@ export class App extends Container {
         }
         return;
       }
-      this.editor.insertText(data);
+      this.input.insertText(data);
       this.requestRender();
     }
   }
@@ -544,7 +554,8 @@ export class App extends Container {
         this.hideOverlay();
         this.requestRender();
       } else {
-        this.editor.setValue("");
+        this.input.setValue("");
+        this.autocomplete.hide();
         this.requestRender();
       }
       return;
@@ -575,7 +586,7 @@ export class App extends Container {
       if (key === "enter") {
         const item = this.autocomplete.getSelectedItem();
         if (item) {
-          this.editor.setValue(item.value);
+          this.input.setValue(item.value);
           this.autocomplete.hide();
           this.requestRender();
           this.handleSubmit(item.value);
@@ -592,7 +603,7 @@ export class App extends Container {
 
     // Other ctrl+key combos — pass to editor
     if (key.startsWith("ctrl+")) {
-      if (this.editor.handleKey(key)) {
+      if (this.input.handleKey(key)) {
         this.requestRender();
       }
       return;
@@ -603,7 +614,7 @@ export class App extends Container {
       if (this.autocomplete.isVisible()) {
         const item = this.autocomplete.getSelectedItem();
         if (item) {
-          this.editor.setValue(item.value);
+          this.input.setValue(item.value);
           this.autocomplete.hide();
           this.requestRender();
           this.handleSubmit(item.value);
@@ -618,7 +629,7 @@ export class App extends Container {
     // Enter - handled by editor (falls through)
 
     // Editor handles the rest
-    if (this.editor.handleKey(key)) {
+    if (this.input.handleKey(key)) {
       this.requestRender();
     }
   }
@@ -626,7 +637,7 @@ export class App extends Container {
   // ─── Autocomplete ───────────────────────────────────────────────
 
   private triggerAutocomplete(): void {
-    const text = this.editor.getValue();
+    const text = this.input.getValue();
     this.acManager.queryImmediate(text, text.length);
   }
 
@@ -640,15 +651,22 @@ export class App extends Container {
         content: "(aborted)",
       });
       this.requestRender();
-    } else {
-      this.stop();
-      process.exit(0);
+      return;
     }
+    // Not streaming: exit the app (matches pi behavior)
+    this.running = false;
+    setImmediate(async () => {
+      await this.stop();
+      process.exit(0);
+    });
   }
 
   // ─── Actions ────────────────────────────────────────────────────────────
 
   private async handleSubmit(value: string): Promise<void> {
+    this.input.setValue("");
+    this.requestRender();
+
     // Handle slash commands locally (don't send to LLM)
     if (value.startsWith("/")) {
       const parts = value.slice(1).split(/\s+/);
@@ -661,6 +679,7 @@ export class App extends Container {
           try {
             await this.client.setModel(arg);
             this.state.model = arg;
+            await this.refresh();
             this.chat.addMessage({
               id: crypto.randomUUID(),
               role: "system",
@@ -725,6 +744,27 @@ export class App extends Container {
         });
         return;
       }
+
+      if (cmd === "new") {
+        try {
+          const result = await this.client.newSession();
+          if (result.sessionId) {
+            await this.refresh();
+            this.chat.addMessage({
+              id: crypto.randomUUID(),
+              role: "system",
+              content: "New session started.",
+            });
+          }
+        } catch {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: "Not connected to agent.",
+          });
+        }
+        return;
+      }
     }
 
     // Regular prompt - send to server
@@ -733,17 +773,29 @@ export class App extends Container {
       role: "user",
       content: value,
     });
+
+    if (this.state.streaming) {
+      // Already streaming — steer the current turn (matches pi behavior)
+      try {
+        await this.client.steer(value);
+      } catch {
+        // Ignore steer errors; if agent is unreachable prompt would also fail
+      }
+      this.requestRender();
+      return;
+    }
+
     this.state.streaming = true;
     this.requestRender();
 
     try {
       await this.client.prompt(value);
-    } catch (err) {
+    } catch (_err) {
       this.state.streaming = false;
       this.chat.addMessage({
         id: crypto.randomUUID(),
         role: "system",
-        content: `Error: ${err}`,
+        content: "Not connected to agent. Start the agent or check the gRPC connection.",
       });
     }
     this.requestRender();
@@ -767,15 +819,8 @@ export class App extends Container {
 
     // Shortcuts line (truncate to fit terminal width)
     const termW = this.terminal.columns;
-    const shortcuts = truncateToWidth("escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more", termW - 4);
+    const shortcuts = truncateToWidth("ctrl+c interrupt · ctrl+p model · ctrl+t thinking · / commands", termW - 4);
     addColored(shortcuts, dim_);
-
-    // Expand hint
-    addColored("Press ctrl+o to show full startup help and loaded resources.", dim_);
-
-    // Onboarding (truncate to fit terminal width)
-    const onboarding = truncateToWidth("FutureAgent can explain its own features and look up its docs. Ask it how to use or extend FutureAgent.", termW - 4);
-    addColored(onboarding, dim_);
 
     // Context files
     if (this.state.contextFiles.length > 0) {
@@ -788,19 +833,18 @@ export class App extends Container {
       addColored(" " + shortNames.join(", "), dim_);
     }
 
-    // Skills (truncate to fit terminal width)
+    // Skills (wrap to fit terminal width)
     if (this.state.skills.length > 0) {
-      add("");
-      addColored("[Skills]", sectionHdr);
-      const skillsList = truncateToWidth(" " + this.state.skills.join(", "), termW - 4);
-      addColored(skillsList, dim_);
+      const skillsList = "[skills] " + this.state.skills.join(", ");
+      const lines = wrapTextWithAnsi(dim_(skillsList), this.terminal.columns - 4);
+      add(lines.join("\n"));
     }
 
     // Extensions (truncate to fit terminal width)
     if (this.state.extensions.length > 0) {
       add("");
       addColored("[Extensions]", sectionHdr);
-      const extList = truncateToWidth(" " + this.state.extensions.join(", "), termW - 4);
+      const extList = " " + this.state.extensions.join(", ");
       addColored(extList, dim_);
     }
   }
@@ -822,8 +866,11 @@ export class App extends Container {
       this.state.contextPercent = s.contextPercent ?? 0;
       this.state.tokensIn = s.tokensIn ?? 0;
       this.state.tokensOut = s.tokensOut ?? 0;
+      this.state.tokensCacheR = s.tokensCacheR ?? 0;
+      this.state.tokensCacheW = s.tokensCacheW ?? 0;
       this.state.totalCost = s.totalCost ?? 0;
       this.state.explicitSession = s.explicitSession ?? false;
+      this.state.autoCompactionEnabled = s.autoCompactionEnabled ?? true;
       
       // Update client's session ID if server returned one
       if (s.sessionId && s.sessionId !== this.state.sessionId) {
@@ -838,7 +885,7 @@ export class App extends Container {
     let models: string[] = [];
     try {
       const r = await this.client.getAvailableModels();
-      models = r.models;
+      models = r.models.map((m) => m.id);
     } catch (err) {
       this.chat.addMessage({
         id: crypto.randomUUID(),
@@ -862,6 +909,7 @@ export class App extends Container {
         try {
           await this.client.setModel(item.value);
           this.state.model = item.value;
+          await this.refresh();
           this.chat.addMessage({
             id: crypto.randomUUID(),
             role: "system",
@@ -886,11 +934,8 @@ export class App extends Container {
 
   private async cycleModel(): Promise<void> {
     try {
-      const r = await this.client.cycleModel();
-      if (r) {
-        this.state.model = r.model;
-        this.state.thinking = r.thinkingLevel;
-      }
+      await this.client.cycleModel();
+      await this.refresh();
     } catch { /* ignore */ }
     this.requestRender();
   }
@@ -986,7 +1031,7 @@ export class App extends Container {
     } else if (entry.preFocus) {
       this.setFocus(entry.preFocus);
     } else {
-      this.setFocus(this.editor);
+      this.setFocus(this.input);
     }
   }
 
@@ -1039,27 +1084,41 @@ export class App extends Container {
     return lines;
   }
 
-  private compositeLineAt(base: string, overlay: string, col: number, width: number): string {
+  private compositeLineAt(base: string, overlay: string, col: number, overlayWidth: number, totalWidth?: number): string {
     if (isImageLine(base)) return base;
-    // Composite overlay into base line, preserving ANSI codes on base
+
+    const tw = totalWidth ?? this.terminal.columns;
+    const afterStart = col + overlayWidth;
+    const baseSegs = extractSegments(base, col, afterStart, tw - afterStart, true);
+
+    // Extract overlay with width tracking
     const overlayClean = stripAnsiCodes(overlay);
     const overlayVisWidth = visibleWidth(overlayClean);
 
-    // Extract before portion from base (0..col), preserving ANSI
-    let before = sliceByColumn(base, 0, col);
-    const beforeW = visibleWidth(stripAnsiCodes(before));
-    // Pad before to exactly col visible columns if needed
-    if (beforeW < col) before += " ".repeat(col - beforeW);
+    // Pad segments to target widths
+    const beforePad = Math.max(0, col - baseSegs.beforeWidth);
+    const overlayPad = Math.max(0, overlayWidth - overlayVisWidth);
+    const actualBeforeWidth = Math.max(col, baseSegs.beforeWidth);
+    const actualOverlayWidth = Math.max(overlayWidth, overlayVisWidth);
+    const afterTarget = Math.max(0, tw - actualBeforeWidth - actualOverlayWidth);
+    const afterPad = Math.max(0, afterTarget - baseSegs.afterWidth);
 
-    // Pad overlay to specified width
-    const padLen = width - overlayVisWidth;
-    const paddedOverlay = padLen > 0 ? overlay + " ".repeat(padLen) : overlay;
+    // Compose result with reset marker between segments
+    const reset = "\x1b[0m";
+    const result =
+      baseSegs.before +
+      " ".repeat(beforePad) +
+      reset +
+      overlay +
+      " ".repeat(overlayPad) +
+      reset +
+      baseSegs.after +
+      " ".repeat(afterPad);
 
-    // Extract after portion from base (col + overlayVisWidth .. end), preserving ANSI
-    const afterStart = col + overlayVisWidth;
-    const after = sliceByColumn(base, afterStart);
-
-    return before + paddedOverlay + after;
+    // Final safeguard: verify and truncate to terminal width
+    const resultWidth = visibleWidth(result);
+    if (resultWidth <= tw) return result;
+    return sliceByColumn(result, 0, tw);
   }
 
   private isOverlayVisible(
@@ -1232,8 +1291,10 @@ export class App extends Container {
   private applyLineResets(lines: string[]): string[] {
     const reset = App.SEGMENT_RESET;
     for (let i = 0; i < lines.length; i++) {
-      if (!isImageLine(lines[i])) {
-        lines[i] = normalizeTerminalOutput(lines[i]) + reset;
+      const line = lines[i];
+      if (!line) continue;
+      if (!isImageLine(line)) {
+        lines[i] = normalizeTerminalOutput(line) + reset;
       }
     }
     return lines;
@@ -1243,6 +1304,7 @@ export class App extends Container {
     const viewportTop = Math.max(0, lines.length - height);
     for (let row = lines.length - 1; row >= viewportTop; row--) {
       const line = lines[row];
+      if (!line) continue;
       const markerIndex = line.indexOf("\x1b_pi:c\x07");
       if (markerIndex !== -1) {
         const beforeMarker = line.slice(0, markerIndex);
@@ -1290,6 +1352,7 @@ export class App extends Container {
   private collectKittyImageIds(lines: string[]): Set<number> {
     const ids = new Set<number>();
     for (const line of lines) {
+      if (!line) continue;
       for (const id of extractKittyImageIds(line)) {
         ids.add(id);
       }
@@ -1359,13 +1422,15 @@ export class App extends Container {
       contextPercent: this.state.contextPercent,
       tokensIn: this.state.tokensIn,
       tokensOut: this.state.tokensOut,
+      tokensCacheR: this.state.tokensCacheR,
+      tokensCacheW: this.state.tokensCacheW,
       totalCost: this.state.totalCost,
-      autoCompactionEnabled: true,
+      autoCompactionEnabled: this.state.autoCompactionEnabled,
     };
     this.footer.setData(footerData);
 
     const footerLines = this.footer.render(W).length;
-    const editorLines = this.editor.render(W);
+    const editorLines = this.input.render(W);
     const editorHeight = editorLines.length;
 
     // Set chat viewport based on remaining space
@@ -1375,6 +1440,8 @@ export class App extends Container {
     // Build render output: chat + editor + footer
     const chatLines = this.chat.render(W);
     let newLines = [...chatLines, ...editorLines, ...this.footer.render(W)];
+    // Filter out undefined entries (can happen with certain input sequences)
+    newLines = newLines.map((l) => l ?? "");
 
     // Composite overlays into rendered lines (before diff compare, matches pi)
     if (this.overlayStack.length > 0) {
@@ -1457,7 +1524,7 @@ export class App extends Container {
     const debugRedraw = process.env.PI_DEBUG_REDRAW === "1";
     const logRedraw = (reason: string): void => {
       if (!debugRedraw) return;
-      const logPath = path.join(os.homedir(), ".future_tui", "debug.log");
+      const logPath = path.join(os.homedir(), ".future", "tui", "debug.log");
       const msg = `[${new Date().toISOString()}] fullRender: ${reason} (prev=${this.previousLines.length}, new=${newLines.length}, w=${W}, h=${H})\n`;
       fs.appendFileSync(logPath, msg);
     };
@@ -1492,6 +1559,15 @@ export class App extends Container {
     // Content shrunk — clear empty rows when clearOnShrink enabled
     if (this.clearOnShrink && newLines.length < this.maxLinesRendered && this.overlayStack.length === 0) {
       logRedraw(`clearOnShrink (maxLinesRendered=${this.maxLinesRendered})`);
+      this.fullRedrawCount++;
+      fullRender(true);
+      return;
+    }
+
+    // Ctrl+L forced clear screen
+    if (this.forceClearNextRender) {
+      this.forceClearNextRender = false;
+      logRedraw("force clear (Ctrl+L)");
       this.fullRedrawCount++;
       fullRender(true);
       return;
@@ -1614,10 +1690,11 @@ export class App extends Container {
       if (i > firstChanged) buf += "\r\n";
       buf += "\x1b[2K";
       let line = newLines[i];
+      if (!line) continue;
       const isImage = isImageLine(line);
       if (!isImage && visibleWidth(line) > W) {
         // Log all lines to crash file for debugging (matches pi behavior)
-        const crashLogPath = path.join(os.homedir(), ".future_tui", "crash.log");
+        const crashLogPath = path.join(os.homedir(), ".future", "tui", "crash.log");
         const crashData = [
           `Crash at ${new Date().toISOString()}`,
           `Terminal width: ${W}`,
@@ -1684,7 +1761,7 @@ export class App extends Container {
     const innerW = W - 4;
     const leftCol = [
       acc("Shortcuts:"),
-      dim_("  ctrl+o  show this help"),
+
       dim_("  ctrl+c  interrupt"),
       dim_("  ctrl+d  clear / exit"),
       dim_("  ctrl+l  clear screen"),

@@ -21,6 +21,9 @@ pub struct CompactOptions {
     pub keep_recent_tokens: i32,
     #[serde(rename = "contextWindow")]
     pub context_window: i32,
+    /// Pre-computed context tokens (API-reported). If 0, falls back to estimate.
+    #[serde(default)]
+    pub tokens_before: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,7 +176,11 @@ pub fn compact(
     messages: Vec<Message>,
     opts: &CompactOptions,
 ) -> (Vec<Message>, Option<CompactionResult>) {
-    let tokens_before = estimate_context_tokens(&messages);
+    let tokens_before = if opts.tokens_before > 0 {
+        opts.tokens_before
+    } else {
+        estimate_context_tokens(&messages)
+    };
     let context_window = if opts.context_window > 0 {
         opts.context_window
     } else {
