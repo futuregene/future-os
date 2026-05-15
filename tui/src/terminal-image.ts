@@ -99,6 +99,7 @@ const KITTY_PREFIX = "\x1b_G";
 const ITERM2_PREFIX = "\x1b]1337;File=";
 
 export function isImageLine(line: string): boolean {
+  if (!line) return false;
   if (line.startsWith(KITTY_PREFIX) || line.startsWith(ITERM2_PREFIX)) {
     return true;
   }

@@ -1,19 +1,23 @@
 //! Tools — 1:1 compatible with Go internal/tools/
 
 use anyhow::{anyhow, Result};
+use std::future::Future;
 use std::path::Path;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::pin::Pin;
 use tokio::process::Command;
 
 // ─── Tool definitions ────────────────────────────────────────────────────────
 
-use crate::types::{AgentTool, FunctionDef, ToolDef};
+use crate::types::AgentTool;
+use crate::types::FunctionDef;
+use crate::types::ToolDef;
+use crate::types::ToolHandler;
 
 fn make_tool(
     name: &str,
     description: &str,
     parameters: serde_json::Value,
-    handler: fn(serde_json::Value) -> Result<String, anyhow::Error>,
+    handler: ToolHandler,
     guidelines: Vec<&str>,
 ) -> AgentTool {
     AgentTool {
@@ -49,8 +53,8 @@ fn bash_schema() -> serde_json::Value {
     })
 }
 
-pub fn bash_tool() -> AgentTool {
-    make_tool("bash", "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 50000 bytes.", bash_schema(), |args| {
+fn bash_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
+    Box::pin(async move {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct BashParams {
@@ -58,10 +62,18 @@ pub fn bash_tool() -> AgentTool {
             timeout: Option<u64>,
         }
         let params: BashParams = serde_json::from_value(args)?;
-        let output = tokio::runtime::Handle::current()
-            .block_on(run_bash(&params.command, params.timeout.unwrap_or(120)))?;
-        Ok(output)
-    }, vec!["Prefer one bash command per turn"])
+        run_bash(&params.command, params.timeout.unwrap_or(120)).await
+    })
+}
+
+pub fn bash_tool() -> AgentTool {
+    make_tool(
+        "bash",
+        "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 50000 bytes.",
+        bash_schema(),
+        bash_handler,
+        vec!["Prefer one bash command per turn"],
+    )
 }
 
 // ─── Read Tool ─────────────────────────────────────────────────────────────
@@ -86,27 +98,26 @@ fn read_schema() -> serde_json::Value {
     })
 }
 
+fn read_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
+    Box::pin(async move {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ReadParams {
+            path: String,
+            offset: Option<usize>,
+            limit: Option<usize>,
+        }
+        let params: ReadParams = serde_json::from_value(args)?;
+        run_read(&params.path, params.offset, params.limit).await
+    })
+}
+
 pub fn read_tool() -> AgentTool {
     make_tool(
         "read",
         "Read a file from the filesystem.",
         read_schema(),
-        |args| {
-            #[derive(serde::Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct ReadParams {
-                path: String,
-                offset: Option<usize>,
-                limit: Option<usize>,
-            }
-            let params: ReadParams = serde_json::from_value(args)?;
-            let content = tokio::runtime::Handle::current().block_on(run_read(
-                &params.path,
-                params.offset,
-                params.limit,
-            ))?;
-            Ok(content)
-        },
+        read_handler,
         vec![],
     )
 }
@@ -124,21 +135,25 @@ fn write_schema() -> serde_json::Value {
     })
 }
 
+fn write_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
+    Box::pin(async move {
+        #[derive(serde::Deserialize)]
+        struct WriteParams {
+            path: String,
+            content: String,
+        }
+        let params: WriteParams = serde_json::from_value(args)?;
+        run_write(&params.path, &params.content).await?;
+        Ok(format!("Written to {}", params.path))
+    })
+}
+
 pub fn write_tool() -> AgentTool {
     make_tool(
         "write",
         "Write content to a file, creating or overwriting.",
         write_schema(),
-        |args| {
-            #[derive(serde::Deserialize)]
-            struct WriteParams {
-                path: String,
-                content: String,
-            }
-            let params: WriteParams = serde_json::from_value(args)?;
-            tokio::runtime::Handle::current().block_on(run_write(&params.path, &params.content))?;
-            Ok(format!("Written to {}", params.path))
-        },
+        write_handler,
         vec![],
     )
 }
@@ -161,41 +176,46 @@ fn edit_schema() -> serde_json::Value {
     })
 }
 
+fn edit_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
+    Box::pin(async move {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct EditParams {
+            path: String,
+            old_text: Option<String>,
+            new_text: Option<String>,
+            old_string: Option<String>,
+            new_string: Option<String>,
+            edits: Option<Vec<EditOp>>,
+        }
+        let params: EditParams = serde_json::from_value(args)?;
+        let old_text = params.old_text.or(params.old_string);
+        let new_text = params.new_text.or(params.new_string);
+        let edits: Option<Vec<EditOp>> = params.edits.map(|es| {
+            es.into_iter()
+                .map(|e| EditOp {
+                    old_text: e.old_text,
+                    new_text: e.new_text,
+                })
+                .collect()
+        });
+        run_edit(
+            &params.path,
+            old_text.as_deref(),
+            new_text.as_deref(),
+            edits.as_deref(),
+        )
+        .await?;
+        Ok(format!("Edited {}", params.path))
+    })
+}
+
 pub fn edit_tool() -> AgentTool {
     make_tool(
         "edit",
         "Edit a file using exact text replacement. Supports multi-edit via edits array.",
         edit_schema(),
-        |args| {
-            #[derive(serde::Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct EditParams {
-                path: String,
-                old_text: Option<String>,
-                new_text: Option<String>,
-                old_string: Option<String>,
-                new_string: Option<String>,
-                edits: Option<Vec<EditOp>>,
-            }
-            let params: EditParams = serde_json::from_value(args)?;
-            let old_text = params.old_text.or(params.old_string);
-            let new_text = params.new_text.or(params.new_string);
-            let edits: Option<Vec<EditOp>> = params.edits.map(|es| {
-                es.into_iter()
-                    .map(|e| EditOp {
-                        old_text: e.old_text,
-                        new_text: e.new_text,
-                    })
-                    .collect()
-            });
-            tokio::runtime::Handle::current().block_on(run_edit(
-                &params.path,
-                old_text.as_deref(),
-                new_text.as_deref(),
-                edits.as_deref(),
-            ))?;
-            Ok(format!("Edited {}", params.path))
-        },
+        edit_handler,
         vec!["Include enough context for unique matching"],
     )
 }
@@ -230,16 +250,19 @@ fn grep_schema() -> serde_json::Value {
     })
 }
 
+fn grep_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
+    Box::pin(async move {
+        let params: GrepParams = serde_json::from_value(args)?;
+        run_grep(&params).await
+    })
+}
+
 pub fn grep_tool() -> AgentTool {
     make_tool(
         "grep",
         "Search for a pattern in files.",
         grep_schema(),
-        |args| {
-            let params: GrepParams = serde_json::from_value(args)?;
-            let output = tokio::runtime::Handle::current().block_on(run_grep(&params))?;
-            Ok(output)
-        },
+        grep_handler,
         vec![],
     )
 }
@@ -256,29 +279,42 @@ fn ls_schema() -> serde_json::Value {
     })
 }
 
+fn ls_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
+    Box::pin(async move {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct LsParams {
+            path: Option<String>,
+            limit: Option<usize>,
+        }
+        let params: LsParams = serde_json::from_value(args)?;
+        run_ls(params.path.as_deref(), params.limit.unwrap_or(500)).await
+    })
+}
+
 pub fn ls_tool() -> AgentTool {
     make_tool(
         "ls",
         "List directory contents.",
         ls_schema(),
-        |args| {
-            #[derive(serde::Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct LsParams {
-                path: Option<String>,
-                limit: Option<usize>,
-            }
-            let params: LsParams = serde_json::from_value(args)?;
-            let output = tokio::runtime::Handle::current()
-                .block_on(run_ls(params.path.as_deref(), params.limit.unwrap_or(500)))?;
-            Ok(output)
-        },
+        ls_handler,
         vec![],
     )
 }
 
-// ─── All tools ─────────────────────────────────────────────────────────────
+// ─── Tool sets ─────────────────────────────────────────────────────────────
 
+/// Core coding tools (default set): read, bash, edit, write
+pub fn coding_tools() -> Vec<AgentTool> {
+    vec![read_tool(), bash_tool(), edit_tool(), write_tool()]
+}
+
+/// Read-only tools: read, grep, ls
+pub fn readonly_tools() -> Vec<AgentTool> {
+    vec![read_tool(), grep_tool(), ls_tool()]
+}
+
+/// All built-in tools: read, bash, edit, write, grep, ls
 pub fn all_tools() -> Vec<AgentTool> {
     vec![
         bash_tool(),
@@ -290,10 +326,14 @@ pub fn all_tools() -> Vec<AgentTool> {
     ]
 }
 
-// ─── Tool runners ─────────────────────────────────────────────────────────
+// ─── Tool runners (async, using tokio) ─────────────────────────────────────
 
 async fn run_bash(command: &str, _timeout_secs: u64) -> Result<String> {
-    let output = Command::new("bash").args(["-c", command]).output().await?;
+    let output = Command::new("bash")
+        .args(["-c", command])
+        .output()
+        .await
+        .map_err(|e| anyhow!("bash: {}", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -319,9 +359,7 @@ async fn run_bash(command: &str, _timeout_secs: u64) -> Result<String> {
 }
 
 async fn run_read(path: &str, offset: Option<usize>, limit: Option<usize>) -> Result<String> {
-    let mut file = tokio::fs::File::open(path).await?;
-    let mut content = String::new();
-    file.read_to_string(&mut content).await?;
+    let content = tokio::fs::read_to_string(path).await?;
 
     let offset = offset.unwrap_or(1).saturating_sub(1); // 1-indexed → 0-indexed
     let limit = limit.unwrap_or(usize::MAX);
@@ -336,9 +374,7 @@ async fn run_write(path: &str, content: &str) -> Result<()> {
     if let Some(parent) = Path::new(path).parent() {
         tokio::fs::create_dir_all(parent).await.ok();
     }
-    let mut file = tokio::fs::File::create(path).await?;
-    file.write_all(content.as_bytes()).await?;
-    file.flush().await?;
+    tokio::fs::write(path, content).await?;
     Ok(())
 }
 
@@ -385,7 +421,7 @@ struct EditOp {
 }
 
 async fn run_grep(params: &GrepParams) -> Result<String> {
-    let mut args = vec![];
+    let mut args: Vec<String> = vec![];
     if params.ignore_case.unwrap_or(false) {
         args.push("-i".to_string());
     }
@@ -397,19 +433,23 @@ async fn run_grep(params: &GrepParams) -> Result<String> {
     }
     args.push("-n".to_string());
     args.push(params.pattern.clone());
-    if let Some(ref p) = params.path {
+
+    let output = if let Some(ref p) = params.path {
         if let Some(ref g) = params.glob {
             let include_pat = format!("--include={}", g);
-            let output = Command::new("grep")
+            Command::new("grep")
                 .args(["-r", &include_pat, &params.pattern, p])
                 .output()
-                .await?;
-            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+                .await
+        } else {
+            args.push(p.clone());
+            Command::new("grep").args(&args).output().await
         }
-        args.push(p.clone());
+    } else {
+        Command::new("grep").args(&args).output().await
     }
+    .map_err(|e| anyhow!("grep: {}", e))?;
 
-    let output = Command::new("grep").args(&args).output().await?;
     let result = String::from_utf8_lossy(&output.stdout).to_string();
 
     let limit = params.limit.unwrap_or(100);

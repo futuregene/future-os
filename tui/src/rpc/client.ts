@@ -172,7 +172,7 @@ export class RpcClient {
     return this.call("cycle_model", { type: "cycle_model" });
   }
 
-  async getAvailableModels(): Promise<{ models: string[] }> {
+  async getAvailableModels(): Promise<{ models: import("./types.js").ModelInfo[] }> {
     return this.call("get_available_models", { type: "get_available_models" });
   }
 

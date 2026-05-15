@@ -186,6 +186,21 @@ export function graphemeWidth(grapheme: string): number {
 // ─── Visible Width ─────────────────────────────────────────────────────────
 
 const segmenter = new Intl.Segmenter("en", { granularity: "grapheme" });
+
+export function getSegmenter(): Intl.Segmenter {
+  return segmenter;
+}
+
+const PUNCTUATION_REGEX = /[(){}[\]<>.,;:'"!?+\-=*/\\|&%^$#@~`]/;
+
+export function isWhitespaceChar(char: string): boolean {
+  return /\s/.test(char);
+}
+
+export function isPunctuationChar(char: string): boolean {
+  return PUNCTUATION_REGEX.test(char);
+}
+
 const visibleWidthCache = new Map<string, number>();
 const VISIBLE_WIDTH_CACHE_MAX = 2000;
 
@@ -195,6 +210,7 @@ export function visibleWidth(s: string): number {
 
   // Strip ANSI codes before computing visible width — escape sequences
   // have zero visible width but individual bytes would be counted as width 1.
+  if (s == null) return 0;
   const clean = s.includes("\x1b") ? stripAnsiCodes(s) : s;
 
   let width = 0;
@@ -270,13 +286,19 @@ export function extractAnsiCode(s: string, pos: number): AnsiCodeResult | null {
     };
   }
 
-  // APC: ESC _
+  // APC: ESC _ — terminated by BEL (\x07) or ST (\x1b\\)
   if (rest[1] === "_") {
+    const belIdx = rest.indexOf("\x07", 2);
     const stIdx = rest.indexOf("\x1b\\", 2);
-    if (stIdx === -1) return null;
+    let endIdx: number;
+    if (belIdx !== -1 && stIdx !== -1) endIdx = Math.min(belIdx, stIdx);
+    else if (belIdx !== -1) endIdx = belIdx;
+    else if (stIdx !== -1) endIdx = stIdx;
+    else return null;
+
     return {
-      length: stIdx + 2,
-      code: rest.slice(0, stIdx + 2),
+      length: endIdx + (rest[endIdx] === "\x07" ? 1 : 2),
+      code: rest.slice(0, endIdx + (rest[endIdx] === "\x07" ? 1 : 2)),
       type: "apc",
     };
   }
@@ -559,24 +581,19 @@ function finalizeLine(tracker: AnsiCodeTracker): string {
 export function applyBackgroundToLine(line: string, width: number, bg: number): string {
   const visibleLen = visibleWidth(stripAnsiCodes(line));
   const padding = Math.max(0, width - visibleLen);
-  // Reset at end, re-apply styles for padding
-  const parts: string[] = [];
-  let stylePrefix = "";
-  let i = 0;
-  while (i < line.length) {
-    const code = extractAnsiCode(line, i);
-    if (code) {
-      stylePrefix += code.code;
-      parts.push(code.code);
-      i += code.length;
-    } else {
-      parts.push(line[i]);
-      i++;
-    }
+
+  // -1 means use terminal default background (no explicit bg color)
+  if (bg < 0) {
+    return line + " ".repeat(padding);
   }
 
   const bgCode = `\x1b[48;5;${bg}m`;
-  return bgCode + stylePrefix + parts.join("") + "\x1b[0m" + bgCode + " ".repeat(padding) + "\x1b[0m";
+
+  // Replace every RESET with RESET + bgCode so mid-line style resets
+  // (from markdown links, code spans, etc.) don't clear the background.
+  const safeLine = line.replace(/\x1b\[0?m/g, `\x1b[0m${bgCode}`);
+
+  return bgCode + safeLine + "\x1b[0m" + bgCode + " ".repeat(padding) + "\x1b[0m";
 }
 
 // ─── Truncate to Width ─────────────────────────────────────────────────────

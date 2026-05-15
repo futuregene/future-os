@@ -1,0 +1,37 @@
+A Poem About Programming
+
+In silent glow of monitor's light,
+I chase the bugs throughout the night.
+A semicolon out of place,
+A missing brace, a null in space.
+
+The compiler speaks in cryptic tongue,
+Of errors left when code is young.
+But one by one, the warnings fade,
+As careful changes have been made.
+
+The loop that once ran wild and free,
+Now counts its steps obediently.
+The function that returned a mess,
+Now does its job with finesse.
+
+Abstraction stacks in layered grace,
+Each module finding its own place.
+From lowly bits to RESTful calls,
+The grand cathedral slowly falls
+
+Into a structure, clean and tight,
+Where every piece reflects the light.
+Of patterns learned through years of toil,
+And midnight oil that seems to boil.
+
+For in this craft of ones and zeros,
+We build new worlds, like brave explorers.
+With keyboard as our magic wand,
+We shape the future and beyond.
+
+Yet when the final build runs green,
+The purest joy is felt, unseen.
+For in each line of code we write,
+A spark of intellect takes flight.
+To make the impossible routine.

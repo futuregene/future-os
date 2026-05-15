@@ -316,5 +316,13 @@ pub fn usage_event(u: &crate::types::Usage) -> AgentEvent {
         "total_tokens".to_string(),
         serde_json::json!(u.total_tokens),
     );
+    if let Some(cache_r) = u.cache_read_tokens {
+        e.data
+            .insert("cache_read_tokens".to_string(), serde_json::json!(cache_r));
+    }
+    if let Some(cache_w) = u.cache_write_tokens {
+        e.data
+            .insert("cache_write_tokens".to_string(), serde_json::json!(cache_w));
+    }
     e
 }

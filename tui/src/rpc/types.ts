@@ -16,6 +16,7 @@ export interface RpcCommand {
   streamingBehavior?: "steer" | "followUp";
   // new_session
   parentSession?: string;
+  cwd?: string;
   // set_model
   provider?: string;
   modelId?: string;
@@ -111,6 +112,8 @@ export interface RpcSessionState {
   // Token usage (cumulative for session)
   tokensIn?: number;
   tokensOut?: number;
+  tokensCacheR?: number;
+  tokensCacheW?: number;
   totalCost?: number;
 }
 
@@ -124,6 +127,20 @@ export interface SessionSummary {
   updated_at: string;
   model: string;
   name?: string;
+}
+
+// ============================================================================
+// Model Info (from get_available_models)
+// ============================================================================
+
+export interface ModelInfo {
+  id: string;
+  name: string;
+  provider: string;
+  reasoning: boolean;
+  image: boolean;
+  contextWindow: number;
+  maxTokens: number;
 }
 
 // ============================================================================

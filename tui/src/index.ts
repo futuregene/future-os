@@ -381,6 +381,12 @@ async function buildInitialPrompt(
 
 // ─── Apply CLI Options to Server ─────────────────────────────────
 
+function grpcDeadline(seconds = 30): Date {
+  const d = new Date();
+  d.setSeconds(d.getSeconds() + seconds);
+  return d;
+}
+
 async function applyCliOptions(
   client: any,
   sessionId: string,
@@ -391,6 +397,7 @@ async function applyCliOptions(
     await new Promise<void>((resolve, reject) => {
       client.ExecuteCommand(
         { id: "cfg1", type: "set_model", modelId: args.model, sessionId },
+        { deadline: grpcDeadline() },
         (err: Error | null, response: any) => {
           if (err || !response.success) reject(new Error(response?.error || err?.message));
           else resolve();
@@ -404,6 +411,7 @@ async function applyCliOptions(
     await new Promise<void>((resolve, reject) => {
       client.ExecuteCommand(
         { id: "cfg2", type: "set_thinking_level", level: args.thinking, sessionId },
+        { deadline: grpcDeadline() },
         (err: Error | null, response: any) => {
           if (err || !response.success) reject(new Error(response?.error || err?.message));
           else resolve();
@@ -417,6 +425,7 @@ async function applyCliOptions(
     await new Promise<void>((resolve, reject) => {
       client.ExecuteCommand(
         { id: "cfg3", type: "set_system_prompt", systemPrompt: args.systemPrompt, sessionId },
+        { deadline: grpcDeadline() },
         (err: Error | null, response: any) => {
           if (err || !response.success) reject(new Error(response?.error || err?.message));
           else resolve();
@@ -430,6 +439,7 @@ async function applyCliOptions(
     await new Promise<void>((resolve, reject) => {
       client.ExecuteCommand(
         { id: "cfg4", type: "set_tools", tools: args.tools, sessionId },
+        { deadline: grpcDeadline() },
         (err: Error | null, response: any) => {
           if (err || !response.success) reject(new Error(response?.error || err?.message));
           else resolve();
@@ -443,6 +453,7 @@ async function applyCliOptions(
     await new Promise<void>((resolve, reject) => {
       client.ExecuteCommand(
         { id: "cfg5", type: "disable_tools", sessionId },
+        { deadline: grpcDeadline() },
         (err: Error | null, response: any) => {
           if (err || !response.success) reject(new Error(response?.error || err?.message));
           else resolve();
@@ -456,6 +467,7 @@ async function applyCliOptions(
     await new Promise<void>((resolve, reject) => {
       client.ExecuteCommand(
         { id: "cfg6", type: "set_ephemeral", ephemeral: true, sessionId },
+        { deadline: grpcDeadline() },
         (err: Error | null, response: any) => {
           if (err || !response.success) reject(new Error(response?.error || err?.message));
           else resolve();
@@ -469,6 +481,7 @@ async function applyCliOptions(
     await new Promise<void>((resolve, reject) => {
       client.ExecuteCommand(
         { id: "cfg7", type: "disable_builtin_tools", sessionId },
+        { deadline: grpcDeadline() },
         (err: Error | null, response: any) => {
           if (err || !response.success) reject(new Error(response?.error || err?.message));
           else resolve();
@@ -483,6 +496,7 @@ async function applyCliOptions(
     await new Promise<void>((resolve, reject) => {
       client.ExecuteCommand(
         { id: "cfg8", type: "append_system_prompt", systemPrompt: prompt, sessionId },
+        { deadline: grpcDeadline() },
         (err: Error | null, response: any) => {
           if (err || !response.success) reject(new Error(response?.error || err?.message));
           else resolve();
@@ -510,9 +524,11 @@ async function runPrintMode(
   const client = new GrpcClient(grpcAddr);
 
   // Get initial state to get session ID
+  const deadline = new Date();
+  deadline.setSeconds(deadline.getSeconds() + 30);
   const state = await new Promise<any>((resolve, reject) => {
     const request = { id: String(Date.now()), type: "get_state", sessionId: "" };
-    (client as any).client.ExecuteCommand(request, (err: Error | null, response: any) => {
+    (client as any).client.ExecuteCommand(request, { deadline }, (err: Error | null, response: any) => {
       if (err || !response.success) {
         reject(new Error(response?.error || err?.message || "get_state failed"));
       } else {
@@ -552,6 +568,9 @@ async function runPrintMode(
         if (response.type === "text_chunk") {
           const data = JSON.parse(response.data);
           text += data.text ?? "";
+        } else if (response.type === "error") {
+          const data = JSON.parse(response.data);
+          console.error(data.error ?? "unknown error");
         } else if (response.type === "agent_end") {
           done = true;
           stream.cancel();
@@ -575,7 +594,9 @@ async function runPrintMode(
       sessionId,
       message: prompt,
     };
-    (client as any).client.ExecuteCommand(request, (err: Error | null, response: any) => {
+    const promptDeadline = new Date();
+    promptDeadline.setSeconds(promptDeadline.getSeconds() + 30);
+    (client as any).client.ExecuteCommand(request, { deadline: promptDeadline }, (err: Error | null, response: any) => {
       if (err || !response.success) {
         stream.cancel();
         reject(new Error(response?.error || err?.message || "prompt failed"));
@@ -612,6 +633,7 @@ async function listModels(grpcAddr: string, search?: string): Promise<void> {
   const result = await new Promise<any>((resolve, reject) => {
     (client as any).client.ExecuteCommand(
       { id: "1", type: "get_available_models" },
+      { deadline: grpcDeadline() },
       (err: Error | null, response: any) => {
         if (err || !response.success) {
           reject(new Error(response?.error || err?.message));
@@ -622,19 +644,63 @@ async function listModels(grpcAddr: string, search?: string): Promise<void> {
     );
   });
 
-  let models = result.models || [];
-  if (search) {
-    const searchLower = search.toLowerCase();
-    models = models.filter((m: string) => m.toLowerCase().includes(searchLower));
+  interface ModelInfo {
+    id: string;
+    name: string;
+    provider: string;
+    reasoning: boolean;
+    image: boolean;
+    contextWindow: number;
+    maxTokens: number;
   }
 
-  console.log(`Found ${models.length} model(s):`);
-  for (const model of models.slice(0, 50)) {
-    console.log(`  ${model}`);
+  let models: ModelInfo[] = result.models || [];
+  if (search) {
+    const searchLower = search.toLowerCase();
+    models = models.filter(
+      (m) =>
+        m.id.toLowerCase().includes(searchLower) ||
+        m.name.toLowerCase().includes(searchLower) ||
+        m.provider.toLowerCase().includes(searchLower)
+    );
   }
-  if (models.length > 50) {
-    console.log(`  ... and ${models.length - 50} more`);
+
+  // Format number with K/M suffix (matching pi style)
+  function fmtNum(n: number): string {
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+    if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
+    return String(n);
   }
+
+  // Compute column widths
+  const maxProvider = Math.max("provider".length, ...models.map((m) => m.provider.length));
+  const maxModel = Math.max("model".length, ...models.map((m) => m.id.length));
+  const ctxW = "context".length;
+  const outW = "max-out".length;
+  const thinkW = "thinking".length;
+  const imgW = "images".length;
+
+  const header =
+    "provider".padEnd(maxProvider) + "  " +
+    "model".padEnd(maxModel) + "  " +
+    "context".padStart(ctxW) + "  " +
+    "max-out".padStart(outW) + "  " +
+    "thinking".padStart(thinkW) + "  " +
+    "images".padStart(imgW);
+  console.log(header);
+
+  for (const model of models.slice(0, 100)) {
+    const row =
+      model.provider.padEnd(maxProvider) + "  " +
+      model.id.padEnd(maxModel) + "  " +
+      fmtNum(model.contextWindow).padStart(ctxW) + "  " +
+      fmtNum(model.maxTokens).padStart(outW) + "  " +
+      (model.reasoning ? "yes" : "no").padStart(thinkW) + "  " +
+      (model.image ? "yes" : "no").padStart(imgW);
+    console.log(row);
+  }
+
+  console.log(`\n${models.length} model(s)`);
 }
 
 // ─── Main ────────────────────────────────────────────────────────
@@ -679,8 +745,6 @@ if (args.print) {
 } else {
 
 // Interactive mode (TUI)
-console.error(`Connecting to gRPC server at ${args.grpcAddr}`);
-
 const app = new App(args.grpcAddr, {
   session: args.session,
   continue: args.continue,
@@ -698,12 +762,29 @@ process.on("SIGTERM", async () => {
   process.exit(0);
 });
 
+// Restore terminal on crash before Node prints the stack trace.
+// The exitHandler in NodeTerminal.start() is a synchronous failsafe,
+// but it fires after the stack trace is already on screen. This handler
+// fires first, so the error output lands on a clean terminal.
+process.on("uncaughtException", async (err) => {
+  try { await app.stop(); } catch {}
+  console.error(err);
+  process.exit(1);
+});
+
+process.on("unhandledRejection", async (reason) => {
+  try { await app.stop(); } catch {}
+  console.error(reason);
+  process.exit(1);
+});
+
 // Apply CLI options after app starts
 app.start().then(() => {
   // Options are applied via gRPC after connection
   // For now, TUI reads options from state - server handles them
-}).catch((err) => {
+}).catch(async (err) => {
   console.error("Fatal error:", err);
+  await app.stop();
   process.exit(1);
 });
 }

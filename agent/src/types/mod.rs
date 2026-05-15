@@ -2,7 +2,12 @@
 
 use serde::ser::{SerializeStruct, Serializer};
 use serde::{de, de::MapAccess, de::SeqAccess, Deserialize, Deserializer, Serialize};
+use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+
+use anyhow;
 
 // ─── ContentBlock (polymorphic) ───────────────────────────────────────────────
 
@@ -466,13 +471,27 @@ pub struct FunctionDef {
     pub parameters: serde_json::Value,
 }
 
+/// Type alias for async tool handler functions.
+pub type ToolHandler =
+    fn(serde_json::Value) -> Pin<Box<dyn Future<Output = Result<String, anyhow::Error>> + Send>>;
+
 /// AgentTool wraps a tool definition with a handler function.
 /// Handler is not serialized (matches Go's function pointer field).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AgentTool {
     pub def: ToolDef,
-    pub handler: fn(serde_json::Value) -> Result<String, anyhow::Error>,
+    pub handler: ToolHandler,
     pub guidelines: Vec<String>,
+}
+
+impl std::fmt::Debug for AgentTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentTool")
+            .field("def", &self.def)
+            .field("handler", &"<fn>")
+            .field("guidelines", &self.guidelines)
+            .finish()
+    }
 }
 
 // ─── ToolCallResult ────────────────────────────────────────────────────────
@@ -567,6 +586,22 @@ pub trait LLMProvider: Send + Sync {
         tools: Vec<ToolDef>,
         system_prompt: String,
     ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<StreamEvent>>;
+
+    /// Update compat/thinking settings at runtime (e.g. after set_model).
+    fn update_compat(
+        &self,
+        _thinking_format: &str,
+        _supports_reasoning_effort: bool,
+        _requires_reasoning_on_assistant: bool,
+        _thinking_level_map: HashMap<String, String>,
+    ) {
+    }
+
+    /// Update the endpoint (base_url + api_key) at runtime for model switching.
+    fn update_endpoint(&self, _base_url: &str, _api_key: &str) {}
+
+    /// Update thinking level and budget at runtime (after set_thinking_level / cycle_thinking_level).
+    fn update_thinking(&self, _level: &str, _budget: i32) {}
 }
 
 // ─── Message ↔ AgentMessage conversion ────────────────────────────────────

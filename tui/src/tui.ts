@@ -20,13 +20,6 @@ export const DIM = `${CSI}2m`;
 export const SYNC_BEGIN = "\x1b[?2026h";
 export const SYNC_END = "\x1b[?2026l";
 
-// SGR mouse tracking: sends \x1b[<N;X;YM for all events including wheel
-export const MOUSE_TRACK_ON = `${CSI}?1003h`;
-export const MOUSE_TRACK_OFF = `${CSI}?1003l`;
-
-// Mouse wheel event codes in SGR protocol
-export const MOUSE_SCROLL_UP = 64;
-export const MOUSE_SCROLL_DOWN = 65;
 
 export function cursorPos(row: number, col: number): string {
   return `${CSI}${row};${col}H`;
@@ -78,6 +71,8 @@ export class NodeTerminal implements Terminal {
   private stdinBuffer?: StdinBuffer;
   private stdinDataHandler?: (data: string) => void;
   private progressInterval?: ReturnType<typeof setInterval>;
+  private exitHandler?: () => void;
+  private stopped = false;
 
   get kittyProtocolActive(): boolean {
     return this._kittyProtocolActive;
@@ -86,6 +81,7 @@ export class NodeTerminal implements Terminal {
   start(onInput: (data: string) => void, onResize: () => void): void {
     this.inputHandler = onInput;
     this.resizeHandler = onResize;
+    this.stopped = false;
 
     this.wasRaw = process.stdin.isRaw || false;
     if (process.stdin.setRawMode) {
@@ -94,9 +90,44 @@ export class NodeTerminal implements Terminal {
     process.stdin.setEncoding("utf8");
     process.stdin.resume();
 
-    // Enable bracketed paste mode + SGR mouse tracking
+    // Enable bracketed paste mode
     process.stdout.write("\x1b[?2004h");
-    process.stdout.write(MOUSE_TRACK_ON);
+
+    // Enable SGR mouse tracking (basic + extended coordinates)
+    process.stdout.write("\x1b[?1000h\x1b[?1006h");
+
+    // Failsafe: restore terminal on unexpected exit (crash, uncaught exception, etc.)
+    // Must be synchronous — process.exit event doesn't support async.
+    this.exitHandler = () => {
+      if (this.stopped) return;
+      // Show cursor (may be hidden by TUI)
+      process.stdout.write("\x1b[?25h");
+      // Disable bracketed paste mode
+      process.stdout.write("\x1b[?2004l");
+      // Disable SGR mouse tracking
+      process.stdout.write("\x1b[?1006l\x1b[?1000l");
+      // Disable Kitty keyboard protocol
+      if (this._kittyProtocolActive) {
+        process.stdout.write("\x1b[<u");
+        this._kittyProtocolActive = false;
+      }
+      // Disable modifyOtherKeys fallback
+      if (this._modifyOtherKeysActive) {
+        process.stdout.write("\x1b[>4;0m");
+        this._modifyOtherKeysActive = false;
+      }
+      // Clear progress indicator
+      if (this.progressInterval) {
+        clearInterval(this.progressInterval);
+        this.progressInterval = undefined;
+        process.stdout.write(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
+      }
+      // Restore raw mode
+      if (process.stdin.setRawMode) process.stdin.setRawMode(this.wasRaw);
+      // Newline so shell prompt starts clean
+      process.stdout.write("\r\n");
+    };
+    process.on("exit", this.exitHandler);
 
     // Set up resize handler
     process.stdout.on("resize", this.resizeHandler);
@@ -197,13 +228,21 @@ export class NodeTerminal implements Terminal {
   }
 
   stop(): void {
+    this.stopped = true;
+    if (this.exitHandler) {
+      process.removeListener("exit", this.exitHandler);
+      this.exitHandler = undefined;
+    }
+
     if (this.clearProgressInterval()) {
       process.stdout.write(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
     }
 
-    // Disable bracketed paste mode + mouse tracking
+    // Disable bracketed paste mode
     process.stdout.write("\x1b[?2004l");
-    process.stdout.write(MOUSE_TRACK_OFF);
+
+    // Disable SGR mouse tracking
+    process.stdout.write("\x1b[?1006l\x1b[?1000l");
 
     // Disable Kitty keyboard protocol
     if (this._kittyProtocolActive) {
@@ -241,7 +280,7 @@ export class NodeTerminal implements Terminal {
 
   write(data: string): void {
     if (process.env.PI_TUI_WRITE_LOG === "1") {
-      const logDir = path.join(os.homedir(), ".future_tui");
+      const logDir = path.join(os.homedir(), ".future", "tui");
       const logPath = path.join(logDir, "write.log");
       try { fs.mkdirSync(logDir, { recursive: true }); } catch {}
       try { fs.appendFileSync(logPath, data, { encoding: "utf8" }); } catch {}
@@ -321,7 +360,7 @@ export interface Theme {
 }
 
 export const DEFAULT_THEME: Theme = {
-  bg: 235,
+  bg: -1,
   fg: 252,
   accent: 39,
   border: 240,

@@ -8,7 +8,7 @@ import type { Component } from "../tui.js";
 import { fg, bg, bold, italic } from "../theme.js";
 import type { Theme } from "../theme.js";
 import { MarkdownRenderer } from "./markdown.js";
-import { visibleWidth, applyBackgroundToLine } from "../utils.js";
+import { visibleWidth, applyBackgroundToLine, truncateToWidth, wrapTextWithAnsi } from "../utils.js";
 
 export interface ChatMessage {
   id: string;
@@ -38,19 +38,20 @@ export class ChatArea implements Component {
   private md = new MarkdownRenderer();
   private theme: Theme;
 
+
   constructor(private maxWidth = 80, theme?: Theme) {
     this.theme = theme ?? {
-      bg: 235, fg: 252, accent: 39, border: 240,
+      bg: -1, fg: 252, accent: 39, border: 240,
       selectedBg: 38, selectedFg: 255, dim: 245,
       error: 204, success: 143,
       mdHeading: 221, mdLink: 117, mdCode: 109,
       mdCodeBlock: 143, mdCodeBlockBorder: 244, mdQuote: 244,
-      toolPendingBg: 17, toolSuccessBg: 22, toolErrorBg: 52,
+      toolPendingBg: 236, toolSuccessBg: 236, toolErrorBg: 52,
       toolTitle: 109, toolOutput: 244,
       thinkingOff: 240, thinkingMinimal: 110, thinkingLow: 68,
       thinkingMedium: 117, thinkingHigh: 182, thinkingXhigh: 213,
       thinkingText: 244,
-      userBg: 59, assistantBg: 235,
+      userBg: 59, assistantBg: -1,
     };
   }
 
@@ -114,15 +115,19 @@ export class ChatArea implements Component {
 
   // ─── Tool call management ───────────────────────────────────────
 
-  addToolStart(toolId: string, toolName: string): void {
-    this.messages.push({
+  addToolStart(toolId: string, toolName: string, toolArgs?: string): void {
+    const msg: ChatMessage = {
       id: crypto.randomUUID(),
       role: "tool",
       content: "",
       name: toolName,
       tool: toolId,
       toolStatus: "running",
-    });
+    };
+    if (toolArgs !== undefined) {
+      (msg as { toolArgs?: string }).toolArgs = toolArgs;
+    }
+    this.messages.push(msg);
     this.rerender();
     if (this.autoScroll) this.scrollToBottom();
   }
@@ -139,14 +144,11 @@ export class ChatArea implements Component {
     }
   }
 
-  finishTool(toolId: string, toolArgs?: string): void {
+  finishTool(toolId: string, _output?: string): void {
     for (let i = this.messages.length - 1; i >= 0; i--) {
       const msg = this.messages[i];
       if (msg.role === "tool" && msg.tool === toolId) {
         msg.toolStatus = "complete";
-        if (toolArgs !== undefined) {
-          (msg as { toolArgs?: string }).toolArgs = toolArgs;
-        }
         this.rerender();
         return;
       }
@@ -210,10 +212,12 @@ export class ChatArea implements Component {
   }
 
   scrollDown(lines = 5): void {
-    this.viewportTop = Math.min(
-      Math.max(0, this.renderedLines.length - this.viewportHeight),
-      this.viewportTop + lines
-    );
+    const maxTop = Math.max(0, this.renderedLines.length - this.viewportHeight);
+    this.viewportTop = Math.min(maxTop, this.viewportTop + lines);
+    // Re-enable auto-scroll when scrolled to bottom
+    if (this.viewportTop >= maxTop) {
+      this.autoScroll = true;
+    }
   }
 
   scrollToBottom(): void {
@@ -290,10 +294,11 @@ export class ChatArea implements Component {
     for (const line of rendered) {
       if (line === "") continue;
       const text = ` ${line}`;
-      const pad = Math.max(0, this.width - visibleWidth(text));
-      const padded = text + " ".repeat(pad);
+      // Use applyBackgroundToLine to properly handle inner RESET codes
+      // from markdown (links, code, etc.) — they would otherwise clear the bg.
+      const bgLine = applyBackgroundToLine(text, this.width, this.theme.userBg);
       this.renderedLines.push({
-        text: bg(this.theme.userBg, padded),
+        text: bgLine,
         dim: false,
       });
     }
@@ -315,12 +320,16 @@ export class ChatArea implements Component {
         });
       } else {
         const thinkingLines = this.md.render(msg.thinking!, this.width - 2);
+        const thinkPrefix = `\x1b[3m\x1b[38;5;${this.theme.thinkingText}m`;
         for (const line of thinkingLines) {
           if (line === "") {
             this.renderedLines.push({ text: "", dim: true });
           } else {
+            // Re-apply thinking style after every ANSI reset within the line,
+            // so that markdown bold/code/link codes don't clear the thinking color.
+            const styled = ` ${line}`.replace(/\x1b\[0m/g, `\x1b[0m${thinkPrefix}`);
             this.renderedLines.push({
-              text: fg(this.theme.thinkingText, italic(` ${line}`)),
+              text: thinkPrefix + styled + RESET,
               dim: true,
             });
           }
@@ -345,59 +354,90 @@ export class ChatArea implements Component {
     }
   }
 
-  // ─── Tool message (pi style: background color only, no borders) ─
+  // ─── Tool message (single-line summary) ─
 
   private renderToolMessage(msg: ChatMessage): void {
     const toolName = msg.name || msg.tool || "tool";
     const status = msg.toolStatus || "running";
 
-    // Background color based on status
+    // Background color based on status (subtle dark gray, red for errors)
     const bgColor = status === "error" ? this.theme.toolErrorBg
-      : status === "complete" ? this.theme.toolSuccessBg
+      : status !== "running" ? this.theme.toolSuccessBg
       : this.theme.toolPendingBg;
 
-    // Command line: $ toolname args
+    // Single-line header: tool name + key args (file path for read/write/edit)
     const toolArgs = (msg as { toolArgs?: string }).toolArgs;
-    const commandLine = toolArgs !== undefined && toolArgs !== ""
-      ? `${fg(this.theme.toolTitle, bold("$"))} ${fg(this.theme.toolTitle, toolName)} ${fg(this.theme.toolOutput, toolArgs)}`
-      : `${fg(this.theme.toolTitle, bold("$"))} ${fg(this.theme.toolTitle, toolName)}`;
-
-    // Full-width bg line with command.
-    // fg()/bold() emit RESET codes that would clear the background, so we
-    // re-apply the background after every inner RESET before the final one.
-    const text = " " + commandLine;
-    const bgLine = applyBackgroundToLine(text, this.width, bgColor);
+    const commandLine = " " + this.formatToolCall(toolName, toolArgs);
     this.renderedLines.push({
-      text: bgLine,
+      text: applyBackgroundToLine(commandLine, this.width, bgColor),
       dim: false,
     });
+  }
 
-    // Exit code for completed tools
-    if (status === "complete" && msg.exitCode !== undefined) {
-      const exitColor = msg.exitCode === 0 ? this.theme.success : this.theme.error;
-      const exitText = ` ${fg(exitColor, `[exit ${msg.exitCode}]`)}`;
-      const exitBgLine = applyBackgroundToLine(exitText, this.width, bgColor);
-      this.renderedLines.push({
-        text: exitBgLine,
-        dim: true,
-      });
+  /** Format tool call display per tool type (matches pi's per-tool renderCall). */
+  private formatToolCall(toolName: string, toolArgs?: string): string {
+    // Total line: " " + prefix + " " + content, must fit within this.width
+    // Available for content = this.width - 1 (leading space) - visibleWidth(prefix) - 1 (separator)
+    const maxFor = (prefixLen: number) => Math.max(10, this.width - 2 - prefixLen);
+    if (!toolArgs) {
+      return fg(this.theme.toolTitle, bold(truncateToWidth(toolName, maxFor(toolName.length))));
     }
 
-    // Tool output content (the actual stdout / result)
-    if (msg.content && msg.content.trim()) {
-      const outputLines = msg.content.split("\n");
-      for (const ol of outputLines) {
-        if (!ol.trim()) {
-          this.renderedLines.push({
-            text: applyBackgroundToLine("", this.width, bgColor),
-            dim: true,
-          });
-          continue;
+    try {
+      const args = JSON.parse(toolArgs);
+
+      switch (toolName) {
+        case "bash": {
+          const cmd = typeof args.command === "string" ? args.command : "";
+          const firstLine = cmd.split("\n")[0] ?? "";
+          const cmdText = firstLine ? firstLine : "...";
+          return `${fg(this.theme.toolTitle, bold("$"))} ${truncateToWidth(cmdText, maxFor(1))}`;
         }
-        const text = ` ${fg(this.theme.toolOutput, ol)}`;
-        const bgLine = applyBackgroundToLine(text, this.width, bgColor);
-        this.renderedLines.push({ text: bgLine, dim: true });
+        case "read": {
+          const filePath = typeof args.path === "string" ? args.path : "";
+          let rangeInfo = "";
+          if (args.offset !== undefined) {
+            const start = args.offset ?? 1;
+            const end = args.limit !== undefined ? start + args.limit - 1 : "";
+            rangeInfo = `:${start}${end ? `-${end}` : ""}`;
+          }
+          const maxPath = Math.max(5, maxFor(4) - rangeInfo.length);
+          const pathDisplay = filePath
+            ? fg(this.theme.accent, truncateToWidth(filePath, maxPath))
+            : fg(this.theme.toolOutput, "...");
+          return `${fg(this.theme.toolTitle, bold("read"))} ${pathDisplay}${fg(this.theme.error, rangeInfo)}`;
+        }
+        case "write": {
+          const filePath = typeof args.path === "string" ? args.path : "";
+          const pathDisplay = filePath ? fg(this.theme.accent, truncateToWidth(filePath, maxFor(5))) : fg(this.theme.toolOutput, "...");
+          return `${fg(this.theme.toolTitle, bold("write"))} ${pathDisplay}`;
+        }
+        case "edit": {
+          const filePath = typeof args.path === "string" ? args.path : "";
+          const pathDisplay = filePath ? fg(this.theme.accent, truncateToWidth(filePath, maxFor(4))) : fg(this.theme.toolOutput, "...");
+          return `${fg(this.theme.toolTitle, bold("edit"))} ${pathDisplay}`;
+        }
+        case "grep": {
+          const pattern = typeof args.pattern === "string" ? args.pattern : "";
+          const filePath = typeof args.path === "string" ? args.path : "";
+          const patternDisplay = pattern ? fg(this.theme.toolOutput, truncateToWidth(pattern, maxFor(4))) : "...";
+          const pathDisplay = filePath ? ` ${fg(this.theme.accent, truncateToWidth(filePath, Math.max(5, maxFor(4) - (pattern ? pattern.length + 1 : 0))))}` : "";
+          return `${fg(this.theme.toolTitle, bold("grep"))} ${patternDisplay}${pathDisplay}`;
+        }
+        case "ls": {
+          const filePath = typeof args.path === "string" ? args.path : "";
+          const pathDisplay = filePath ? fg(this.theme.accent, truncateToWidth(filePath, maxFor(2))) : fg(this.theme.toolOutput, "...");
+          return `${fg(this.theme.toolTitle, bold("ls"))} ${pathDisplay}`;
+        }
+        default: {
+          const argSummary = JSON.stringify(args);
+          const truncated = truncateToWidth(argSummary, maxFor(toolName.length));
+          return `${fg(this.theme.toolTitle, bold(toolName))} ${fg(this.theme.toolOutput, truncated)}`;
+        }
       }
+    } catch {
+      const displayArgs = truncateToWidth(toolArgs, maxFor(toolName.length));
+      return `${fg(this.theme.toolTitle, bold(toolName))} ${fg(this.theme.toolOutput, displayArgs)}`;
     }
   }
 
@@ -405,12 +445,16 @@ export class ChatArea implements Component {
 
   private renderSystemMessage(msg: ChatMessage): void {
     if (msg.welcome) {
+      const wrapWidth = Math.max(1, this.width - 2);
       const lines = msg.content.split("\n");
       for (const line of lines) {
         if (!line.trim()) {
           this.renderedLines.push({ text: "", dim: true });
         } else {
-          this.renderedLines.push({ text: line, dim: true });
+          const wrapped = wrapTextWithAnsi(line, wrapWidth);
+          for (const wl of wrapped) {
+            this.renderedLines.push({ text: wl, dim: true });
+          }
         }
       }
       return;
