@@ -207,6 +207,8 @@ pub struct ServerSession {
     pub steering_tx: tokio::sync::mpsc::Sender<String>,
     /// Sender for follow_up queue
     pub follow_up_tx: tokio::sync::mpsc::Sender<String>,
+    /// Sender for interrupting the current stream (per-stream, set in prompt())
+    pub interrupt_tx: Option<tokio::sync::mpsc::Sender<()>>,
 }
 
 impl ServerSession {
@@ -266,6 +268,7 @@ impl ServerSession {
             last_prompt_tokens: lpt,
             steering_tx: stx,
             follow_up_tx: ftx,
+            interrupt_tx: None,
         }
     }
 
@@ -309,6 +312,7 @@ impl ServerSession {
             last_prompt_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             steering_tx: stx,
             follow_up_tx: ftx,
+            interrupt_tx: None,
         }
     }
 
@@ -436,73 +440,105 @@ impl ServerSession {
             data: serde_json::json!({"type": "agent_start"}).to_string(),
         });
 
+        // Create interrupt channel so steer()/abort() can stop the current stream
+        let (interrupt_tx, interrupt_rx) = tokio::sync::mpsc::channel::<()>(1);
+        self.interrupt_tx = Some(interrupt_tx);
+
         // Spawn background task to run agent loop
         tokio::spawn(async move {
-            // Clone broadcaster for each closure
-            let broadcaster_text = broadcaster.clone();
-            let broadcaster_event = broadcaster.clone();
-
             // Run with timeout
             let result = tokio::time::timeout(std::time::Duration::from_secs(60), async {
-                let r#loop = agent_loop.write().await;
-                r#loop
-                    .run_streaming_with_messages(
-                        initial_messages,
-                        move |text| {
-                            broadcaster_text.broadcast(crate::rpc::SseEvent {
-                                event_type: "text_chunk".to_string(),
-                                data: serde_json::json!({"text": text}).to_string(),
-                            });
-                        },
-                        move |event| {
-                            // Build full event data matching pi's format
-                            let mut data = serde_json::Map::new();
-                            data.insert("type".to_string(), serde_json::json!(&event.event_type));
-                            if !event.text.is_empty() {
-                                data.insert("text".to_string(), serde_json::json!(&event.text));
+                let mut current_messages = initial_messages;
+                let mut current_interrupt_rx = Some(interrupt_rx);
+
+                loop {
+                    let bt = broadcaster.clone();
+                    let be = broadcaster.clone();
+                    let r#loop = agent_loop.write().await;
+
+                    match r#loop
+                        .run_streaming_with_messages(
+                            current_messages,
+                            move |text| {
+                                bt.broadcast(crate::rpc::SseEvent {
+                                    event_type: "text_chunk".to_string(),
+                                    data: serde_json::json!({"text": text}).to_string(),
+                                });
+                            },
+                            move |event| {
+                                let mut data = serde_json::Map::new();
+                                data.insert("type".to_string(), serde_json::json!(&event.event_type));
+                                if !event.text.is_empty() {
+                                    data.insert("text".to_string(), serde_json::json!(&event.text));
+                                }
+                                if !event.tool_name.is_empty() {
+                                    data.insert(
+                                        "tool_name".to_string(),
+                                        serde_json::json!(&event.tool_name),
+                                    );
+                                }
+                                if !event.tool_id.is_empty() {
+                                    data.insert(
+                                        "tool_id".to_string(),
+                                        serde_json::json!(&event.tool_id),
+                                    );
+                                }
+                                if !event.error_text.is_empty() {
+                                    data.insert(
+                                        "error".to_string(),
+                                        serde_json::json!(&event.error_text),
+                                    );
+                                }
+                                if !event.stop_reason.is_empty() {
+                                    data.insert(
+                                        "stopReason".to_string(),
+                                        serde_json::json!(&event.stop_reason),
+                                    );
+                                }
+                                if let Some(usage) = &event.usage {
+                                    data.insert("usage".to_string(), serde_json::json!(usage));
+                                }
+                                if let Some(ref tc) = event.tool_call {
+                                    data.insert(
+                                        "tool_args".to_string(),
+                                        tc.function.arguments.clone(),
+                                    );
+                                }
+                                be.broadcast(crate::rpc::SseEvent {
+                                    event_type: event.event_type.clone(),
+                                    data: serde_json::to_string(&data).unwrap_or_default(),
+                                });
+                            },
+                            current_interrupt_rx.take(),
+                        )
+                        .await
+                    {
+                        Ok((_, final_messages)) => {
+                            current_messages = final_messages;
+
+                            let follow_ups = r#loop.follow_up_queue.drain();
+                            drop(r#loop);
+
+                            if follow_ups.is_empty() {
+                                return Ok(current_messages);
                             }
-                            if !event.tool_name.is_empty() {
-                                data.insert(
-                                    "tool_name".to_string(),
-                                    serde_json::json!(&event.tool_name),
-                                );
+                            for msg in follow_ups {
+                                current_messages.push(crate::types::AgentMessage::new_user(
+                                    "user",
+                                    serde_json::json!([{"type": "text", "text": msg}]),
+                                ));
                             }
-                            if !event.tool_id.is_empty() {
-                                data.insert(
-                                    "tool_id".to_string(),
-                                    serde_json::json!(&event.tool_id),
-                                );
-                            }
-                            if !event.error_text.is_empty() {
-                                data.insert(
-                                    "error".to_string(),
-                                    serde_json::json!(&event.error_text),
-                                );
-                            }
-                            if !event.stop_reason.is_empty() {
-                                data.insert(
-                                    "stopReason".to_string(),
-                                    serde_json::json!(&event.stop_reason),
-                                );
-                            }
-                            if let Some(usage) = &event.usage {
-                                data.insert("usage".to_string(), serde_json::json!(usage));
-                            }
-                            if let Some(ref tc) = event.tool_call {
-                                data.insert("tool_args".to_string(), tc.function.arguments.clone());
-                            }
-                            broadcaster_event.broadcast(crate::rpc::SseEvent {
-                                event_type: event.event_type.clone(),
-                                data: serde_json::to_string(&data).unwrap_or_default(),
-                            });
-                        },
-                    )
-                    .await
+                            // No interrupt channel for follow-up re-runs
+                            current_interrupt_rx = None;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
             })
             .await;
 
             match result {
-                Ok(Ok((_final_text, final_messages))) => {
+                Ok(Ok(final_messages)) => {
                     // Update shared messages so next prompt includes the full context
                     match messages_arc.write() {
                         Ok(mut msgs) => {
@@ -551,17 +587,27 @@ impl ServerSession {
     }
 
     pub fn steer(&mut self, msg: &str) -> Result<()> {
-        // Queue message directly via sender — avoids agent_loop lock (held during streaming)
         let _ = self.steering_tx.try_send(msg.to_string());
+        if let Some(ref tx) = self.interrupt_tx {
+            let _ = tx.try_send(());
+        }
         Ok(())
     }
 
     pub fn follow_up(&mut self, msg: &str) -> Result<()> {
+        if !self.is_streaming.load(std::sync::atomic::Ordering::Relaxed) {
+            return self.prompt(msg, &[], "");
+        }
         let _ = self.follow_up_tx.try_send(msg.to_string());
         Ok(())
     }
 
     pub fn abort(&self) {
+        // Primary path: send via interrupt_tx (works even when agent_loop is locked)
+        if let Some(ref tx) = self.interrupt_tx {
+            let _ = tx.try_send(());
+        }
+        // Fallback: try loop directly (only works when not streaming)
         if let Ok(loop_) = self.agent_loop.try_write() {
             loop_.abort();
         }

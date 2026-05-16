@@ -775,11 +775,11 @@ export class App extends Container {
     });
 
     if (this.state.streaming) {
-      // Already streaming — steer the current turn (matches pi behavior)
+      // Already streaming — queue as follow-up, processed after current turn finishes
       try {
-        await this.client.steer(value);
+        await this.client.followUp(value);
       } catch {
-        // Ignore steer errors; if agent is unreachable prompt would also fail
+        // Ignore followUp errors; if agent is unreachable prompt would also fail
       }
       this.requestRender();
       return;
