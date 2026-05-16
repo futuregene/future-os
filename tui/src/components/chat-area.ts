@@ -82,33 +82,37 @@ export class ChatArea implements Component {
     if (this.autoScroll) this.scrollToBottom();
   }
 
+  private lastAssistantMsg(): ChatMessage | undefined {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      if (this.messages[i].role === "assistant") return this.messages[i];
+    }
+    return undefined;
+  }
+
   updateLastMessage(content: string): void {
-    if (this.messages.length === 0) return;
-    const last = this.messages[this.messages.length - 1];
-    if (last.role === "assistant") {
-      last.content = content;
-      last.pending = true;
+    const msg = this.lastAssistantMsg();
+    if (msg) {
+      msg.content = content;
+      msg.pending = true;
       this.rerender();
       if (this.autoScroll) this.scrollToBottom();
     }
   }
 
   appendToLastMessage(delta: string): void {
-    if (this.messages.length === 0) return;
-    const last = this.messages[this.messages.length - 1];
-    if (last.role === "assistant") {
-      last.content += delta;
-      last.pending = true;
+    const msg = this.lastAssistantMsg();
+    if (msg) {
+      msg.content += delta;
+      msg.pending = true;
       this.rerender();
       if (this.autoScroll) this.scrollToBottom();
     }
   }
 
   markLastMessageComplete(): void {
-    if (this.messages.length === 0) return;
-    const last = this.messages[this.messages.length - 1];
-    if (last.role === "assistant") {
-      last.pending = false;
+    const msg = this.lastAssistantMsg();
+    if (msg) {
+      msg.pending = false;
       this.rerender();
     }
   }

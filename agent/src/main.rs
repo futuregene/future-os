@@ -377,7 +377,7 @@ async fn main() -> Result<()> {
     let agent_loop = engine.agent_loop;
 
     let (_result, _final_messages) = agent_loop
-        .run_streaming_with_messages(messages, |text| print!("{}", text), |_event| {})
+        .run_streaming_with_messages(messages, |text| print!("{}", text), |_event| {}, None)
         .await?;
 
     println!();

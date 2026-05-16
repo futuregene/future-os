@@ -113,18 +113,20 @@ impl Loop {
     ) -> Result<String> {
         let messages = vec![self.new_user_message(user_prompt)];
         let (result, _) = self
-            .run_streaming_with_messages(messages, on_text, |_| {})
+            .run_streaming_with_messages(messages, on_text, |_| {}, None)
             .await?;
         Ok(result)
     }
 
     /// RunStreamingWithMessages runs the agent loop with pre-existing messages.
     /// Returns (final_text, all_messages).
+    /// `interrupt_rx` is an optional channel that, when fired, interrupts the current stream.
     pub async fn run_streaming_with_messages(
         &self,
         mut messages: Vec<AgentMessage>,
         on_text: impl Fn(String) + Send + 'static,
         on_event: impl Fn(StreamEvent) + Send + 'static,
+        mut interrupt_rx: Option<tokio::sync::mpsc::Receiver<()>>,
     ) -> Result<(String, Vec<AgentMessage>)> {
         // Validate: last message must not be from assistant
         if let Some(last) = messages.last() {
@@ -269,7 +271,23 @@ impl Loop {
             let mut output_started = false;
             let mut stream_error = None;
 
-            while let Some(event) = rx.next().await {
+            loop {
+                let event = if let Some(ref mut irx) = interrupt_rx {
+                    tokio::select! {
+                        event_opt = rx.next() => event_opt,
+                        _ = irx.recv() => {
+                            stream_error = Some(anyhow!("interrupted"));
+                            break;
+                        }
+                    }
+                } else {
+                    rx.next().await
+                };
+
+                let event = match event {
+                    Some(e) => e,
+                    None => break,
+                };
                 on_event(event.clone());
 
                 match event.event_type.as_str() {
@@ -781,9 +799,6 @@ impl Loop {
 
     fn drain_steering(&self, mut messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
         let msgs = self.steering_queue.drain();
-        if !msgs.is_empty() {
-            eprintln!("[steering] injected {} steering message(s)", msgs.len());
-        }
         for msg in msgs {
             messages.insert(0, self.new_user_message(msg));
         }
@@ -792,9 +807,6 @@ impl Loop {
 
     fn drain_follow_up(&self, mut messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
         let msgs = self.follow_up_queue.drain();
-        if !msgs.is_empty() {
-            eprintln!("[followup] injected {} follow-up message(s)", msgs.len());
-        }
         for msg in msgs {
             messages.push(self.new_user_message(msg));
         }
