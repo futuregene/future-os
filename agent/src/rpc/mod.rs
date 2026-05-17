@@ -575,6 +575,11 @@ impl ServerSession {
 
                         // Prepend session_info entry with metadata
                         use std::sync::atomic::Ordering;
+                        // Preserve parent_session_id from existing session on disk
+                        let parent_session_id = session_manager
+                            .load(&session_id)
+                            .map(|s| s.parent_session_id)
+                            .unwrap_or_default();
                         let info = serde_json::json!({
                             "cwd": session_cwd,
                             "model": session_model,
@@ -586,6 +591,7 @@ impl ServerSession {
                             "last_prompt_tokens": last_prompt.load(Ordering::Relaxed),
                             "session_name": session_name,
                             "auto_compaction": auto_compaction,
+                            "parent_session_id": parent_session_id,
                         });
                         let info_entry = crate::session::SessionEntry {
                             id: crate::utils::generate_entry_id(),
@@ -615,7 +621,7 @@ impl ServerSession {
                             model: session_model.clone(),
                             base_url: String::new(),
                             name: String::new(),
-                            parent_session_id: String::new(),
+                            parent_session_id,
                             leaf_id: String::new(),
                             entries,
                             created_at: chrono::Local::now(),
@@ -1246,7 +1252,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                         "name": s.name,
                         "model": s.model,
                         "cwd": s.cwd,
-                        "updated_at": s.updated_at.format("%Y-%m-%d %H:%M:%S").to_string()
+                        "updated_at": s.updated_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                        "parent_session_id": s.parent_session_id,
                     })
                 })
                 .collect();
@@ -1345,11 +1352,44 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "fork", serde_json::json!({"cancelled": false}))
         }
         "get_fork_messages" => {
-            let msgs = session.read().unwrap().get_messages();
+            // Load session from disk to get entry IDs (needed for fork)
+            let (session_manager, session_id) = {
+                let sess = session.read().unwrap();
+                (sess.session_manager.clone(), sess.session_id.clone())
+            };
+            let user_entries: Vec<serde_json::Value> = session_manager
+                .load(&session_id)
+                .map(|s| {
+                    s.entries
+                        .iter()
+                        .filter(|e| e.entry_type == crate::session::ENTRY_TYPE_USER)
+                        .map(|e| {
+                            let content_text = e.content.as_ref()
+                                .map(|c| {
+                                    if let Some(arr) = c.as_array() {
+                                        arr.iter()
+                                            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                                            .collect::<Vec<_>>()
+                                            .join(" ")
+                                    } else {
+                                        c.as_str().unwrap_or("").to_string()
+                                    }
+                                })
+                                .unwrap_or_default();
+                            serde_json::json!({
+                                "id": e.id,
+                                "role": e.role,
+                                "content": content_text,
+                                "timestamp": e.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             RpcResponse::ok(
                 id,
                 "get_fork_messages",
-                serde_json::json!({"messages": msgs}),
+                serde_json::json!({"messages": user_entries}),
             )
         }
         "get_last_assistant_text" => {

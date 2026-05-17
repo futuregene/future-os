@@ -129,6 +129,7 @@ export interface SessionSummary {
   updated_at: string;
   model: string;
   name?: string;
+  parent_session_id?: string;
 }
 
 // ============================================================================

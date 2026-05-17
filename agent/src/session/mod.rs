@@ -196,6 +196,8 @@ pub struct SessionSummary {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(rename = "parent_session_id", default, skip_serializing_if = "String::is_empty")]
+    pub parent_session_id: String,
 }
 
 impl Session {
@@ -323,6 +325,19 @@ impl Manager {
             .find(|e| e.entry_type == ENTRY_TYPE_LABEL && !e.label.is_empty())
             .map(|e| e.label.clone())
             .unwrap_or_default();
+        let parent_session_id = entries
+            .iter()
+            .find_map(|e| {
+                if e.entry_type == ENTRY_TYPE_SESSION_INFO {
+                    e.content.as_ref()
+                        .and_then(|v| v.get("parent_session_id"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
         let session = Session {
             id: id.to_string(),
             version: CURRENT_SESSION_VERSION,
@@ -330,7 +345,7 @@ impl Manager {
             model,
             base_url: String::new(),
             name,
-            parent_session_id: String::new(),
+            parent_session_id,
             leaf_id: String::new(),
             entries,
             created_at,
@@ -388,6 +403,7 @@ impl Manager {
                 updated_at: sess.updated_at,
                 model: sess.model,
                 name: if sess.name.is_empty() { None } else { Some(sess.name) },
+                parent_session_id: sess.parent_session_id.clone(),
             });
         }
     }
@@ -415,6 +431,31 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
     for e in &mut entries {
         e.id = generate_entry_id();
     }
+    // Prepend session_info with parent_session_id so tree relationships survive save/load
+    let info = serde_json::json!({
+        "cwd": parent.cwd,
+        "model": parent.model,
+        "parent_session_id": parent.id,
+    });
+    entries.insert(0, SessionEntry {
+        id: generate_entry_id(),
+        parent_id: String::new(),
+        entry_type: ENTRY_TYPE_SESSION_INFO.to_string(),
+        role: "system".to_string(),
+        content: Some(info),
+        tool_calls: vec![],
+        timestamp: Local::now(),
+        summary: String::new(),
+        model: parent.model.clone(),
+        label: String::new(),
+        thinking_level: String::new(),
+        branch_summary: None,
+        custom_type: String::new(),
+        custom_data: None,
+        display: String::new(),
+        provider: String::new(),
+        tool_call_id: String::new(),
+    });
     let now = Local::now();
     Session {
         id: generate_id(),
