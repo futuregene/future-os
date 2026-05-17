@@ -398,6 +398,18 @@ impl ServerSession {
         let agent_loop = self.agent_loop.clone();
         let broadcaster = self.broadcaster.clone();
         let is_streaming = self.is_streaming.clone();
+        let session_manager = self.session_manager.clone();
+        let session_id = self.session_id.clone();
+        let session_cwd = self.cwd.clone();
+        let session_model = self.model.clone();
+        let session_thinking = self.thinking_level.clone();
+        let tokens_in = self.tokens_in.clone();
+        let tokens_out = self.tokens_out.clone();
+        let tokens_cache_r = self.tokens_cache_r.clone();
+        let tokens_cache_w = self.tokens_cache_w.clone();
+        let last_prompt = self.last_prompt_tokens.clone();
+        let session_name = self.session_name.clone();
+        let auto_compaction = self.auto_compaction;
 
         // Set tool event callback so tool_start/tool_end reach the TUI
         {
@@ -547,6 +559,65 @@ impl ServerSession {
                         Err(e) => {
                             let mut msgs = e.into_inner();
                             *msgs = final_messages;
+                        }
+                    }
+                    // Save session to disk
+                    {
+                        let msgs = messages_arc.read().unwrap();
+                        let mut entries: Vec<crate::session::SessionEntry> = msgs
+                            .iter()
+                            .map(|m| crate::session::agent_message_to_entry(m))
+                            .collect();
+
+                        // Prepend session_info entry with metadata
+                        use std::sync::atomic::Ordering;
+                        let info = serde_json::json!({
+                            "cwd": session_cwd,
+                            "model": session_model,
+                            "thinking_level": session_thinking,
+                            "tokens_in": tokens_in.load(Ordering::Relaxed),
+                            "tokens_out": tokens_out.load(Ordering::Relaxed),
+                            "tokens_cache_r": tokens_cache_r.load(Ordering::Relaxed),
+                            "tokens_cache_w": tokens_cache_w.load(Ordering::Relaxed),
+                            "last_prompt_tokens": last_prompt.load(Ordering::Relaxed),
+                            "session_name": session_name,
+                            "auto_compaction": auto_compaction,
+                        });
+                        let info_entry = crate::session::SessionEntry {
+                            id: crate::utils::generate_entry_id(),
+                            parent_id: String::new(),
+                            entry_type: crate::session::ENTRY_TYPE_SESSION_INFO.to_string(),
+                            role: "system".to_string(),
+                            content: Some(info),
+                            tool_calls: vec![],
+                            timestamp: chrono::Local::now(),
+                            summary: String::new(),
+                            model: session_model.clone(),
+                            label: String::new(),
+                            thinking_level: session_thinking.clone(),
+                            branch_summary: None,
+                            custom_type: String::new(),
+                            custom_data: None,
+                            display: String::new(),
+                            provider: String::new(),
+                        };
+                        entries.insert(0, info_entry);
+
+                        let session = crate::session::Session {
+                            id: session_id.clone(),
+                            version: crate::session::CURRENT_SESSION_VERSION,
+                            cwd: session_cwd.clone(),
+                            model: session_model.clone(),
+                            base_url: String::new(),
+                            name: String::new(),
+                            parent_session_id: String::new(),
+                            leaf_id: String::new(),
+                            entries,
+                            created_at: chrono::Local::now(),
+                            updated_at: chrono::Local::now(),
+                        };
+                        if let Err(e) = session_manager.save(&session) {
+                            eprintln!("Failed to save session: {}", e);
                         }
                     }
                     broadcaster.broadcast(crate::rpc::SseEvent {
@@ -878,7 +949,39 @@ impl ServerSession {
             .collect())
     }
 
-    pub fn switch_session(&mut self, _path: &str, _id: &str) -> Result<()> {
+    pub fn switch_session(&mut self, id: &str) -> Result<()> {
+        if let Some(path) = self.session_manager.find(id) {
+            let session = self.session_manager.load_path(&path, id)?;
+            let msgs = crate::session::entries_to_agent_messages(&session.entries);
+            if !session.model.is_empty() {
+                self.model = session.model.clone();
+            }
+            // Restore metadata from session_info entry
+            if let Some(info) = session.get_session_info() {
+                if let Some(tl) = info.get("thinking_level").and_then(|v| v.as_str()) {
+                    self.thinking_level = tl.to_string();
+                }
+                if let Some(name) = info.get("session_name").and_then(|v| v.as_str()) {
+                    self.session_name = name.to_string();
+                }
+                if let Some(v) = info.get("auto_compaction").and_then(|v| v.as_bool()) {
+                    self.auto_compaction = v;
+                }
+                use std::sync::atomic::Ordering;
+                let restore_i64 = |key: &str, target: &std::sync::atomic::AtomicI64| {
+                    if let Some(v) = info.get(key).and_then(|v| v.as_i64()) {
+                        target.store(v, Ordering::Relaxed);
+                    }
+                };
+                restore_i64("tokens_in", &self.tokens_in);
+                restore_i64("tokens_out", &self.tokens_out);
+                restore_i64("tokens_cache_r", &self.tokens_cache_r);
+                restore_i64("tokens_cache_w", &self.tokens_cache_w);
+                restore_i64("last_prompt_tokens", &self.last_prompt_tokens);
+            }
+            *self.messages.write().unwrap() = msgs;
+            self.session_id = id.to_string();
+        }
         Ok(())
     }
 
@@ -1128,32 +1231,31 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             )
         }
         "switch_session" => {
-            // Switch to the session specified by session_id
             if cmd.session_id.is_empty() {
                 return RpcResponse::build_fail(id, "switch_session", "session_id is required");
             }
-            // Update active_session_id
-            if let Ok(mut active_id) = state.active_session_id.try_write() {
-                *active_id = cmd.session_id.clone();
-            }
-            RpcResponse::ok(
-                id,
-                "switch_session",
-                serde_json::json!({"cancelled": false}),
-            )
+            let mut sess = session.write().unwrap();
+            let result = match sess.switch_session(&cmd.session_id) {
+                Ok(()) => {
+                    if let Ok(mut active_id) = state.active_session_id.try_write() {
+                        *active_id = cmd.session_id.clone();
+                    }
+                    RpcResponse::ok(id, "switch_session", serde_json::json!({"cancelled": false}))
+                }
+                Err(e) => RpcResponse::build_fail(id, "switch_session", &e.to_string()),
+            };
+            result
         }
         "delete_session" => {
             if cmd.session_id.is_empty() {
                 return RpcResponse::build_fail(id, "delete_session", "session_id is required");
             }
-            // Get cwd before deleting
-            let cwd = session.read().unwrap().cwd.clone();
             // Delete from disk
             if let Err(e) = session
                 .read()
                 .unwrap()
                 .session_manager
-                .delete(&cmd.session_id, &cwd)
+                .delete(&cmd.session_id)
             {
                 return RpcResponse::build_fail(id, "delete_session", &e.to_string());
             }
@@ -1170,7 +1272,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             }
 
             // Extract needed data from session
-            let (agent_loop, session_manager, event_bus, broadcaster, cwd, session_id) = {
+            let (agent_loop, session_manager, event_bus, broadcaster, _cwd, session_id) = {
                 let sess = session.read().unwrap();
                 (
                     sess.agent_loop.clone(),
@@ -1183,7 +1285,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             };
 
             // Get parent session from manager
-            let parent = match session_manager.load(&cwd, &session_id) {
+            let parent = match session_manager.load(&session_id) {
                 Ok(s) => s,
                 Err(_) => {
                     return RpcResponse::build_fail(id, "fork", "parent session not found");
@@ -1377,7 +1479,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         }
         "clone" => {
             // Extract needed data from session
-            let (agent_loop, session_manager, event_bus, broadcaster, cwd, session_id) = {
+            let (agent_loop, session_manager, event_bus, broadcaster, _cwd, session_id) = {
                 let sess = session.read().unwrap();
                 if sess.messages.read().unwrap().is_empty() {
                     return RpcResponse::build_fail(id, "clone", "no entries to clone");
@@ -1393,7 +1495,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             };
 
             // Get parent session from manager
-            let parent = match session_manager.load(&cwd, &session_id) {
+            let parent = match session_manager.load(&session_id) {
                 Ok(s) => s,
                 Err(_) => {
                     return RpcResponse::build_fail(id, "clone", "parent session not found");
@@ -1459,7 +1561,6 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
 
             RpcResponse::ok(id, "export_html", serde_json::json!({"path": output_path}))
         }
-        "ui_response" => RpcResponse::ok(id, "ui_response", serde_json::json!({})),
         _ => RpcResponse::build_fail(id, cmd_type, &format!("unknown command: {}", cmd_type)),
     }
 }

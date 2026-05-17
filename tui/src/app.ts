@@ -246,6 +246,7 @@ export class App extends Container {
       try {
         await this.client.switchSession(this.cliOptions.session);
         await this.refresh();
+        await this.loadSessionMessages();
       } catch (err) {
         this.chat.addMessage({
           id: crypto.randomUUID(),
@@ -259,10 +260,10 @@ export class App extends Container {
       try {
         const { sessions } = await this.client.listSessions();
         if (sessions.length > 0) {
-          // Sort by updated_at descending
           sessions.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
           await this.client.switchSession(sessions[0].id);
           await this.refresh();
+          await this.loadSessionMessages();
         }
       } catch (err) {
         this.chat.addMessage({
@@ -849,6 +850,48 @@ export class App extends Container {
     }
   }
 
+  private async loadSessionMessages(): Promise<void> {
+    try {
+      const result = await this.client.getMessages();
+      const messages = (result as { messages?: Record<string, unknown>[] }).messages || [];
+
+      this.chat.clearMessages();
+
+      for (const msg of messages) {
+        const role = (msg.role as string) || "";
+        // Only render user, assistant, and tool messages
+        if (!["user", "assistant", "tool"].includes(role)) continue;
+
+        let content = "";
+        const raw = msg.content;
+        if (typeof raw === "string") {
+          content = raw;
+        } else if (Array.isArray(raw)) {
+          content = (raw as Array<Record<string, unknown>>)
+            .map((block) => (typeof block.text === "string" ? block.text : ""))
+            .filter(Boolean)
+            .join("");
+        }
+
+        const toolCalls = msg.tool_calls as Array<Record<string, unknown>> | undefined;
+        if (!content && !toolCalls?.length) continue;
+
+        this.chat.addMessage({
+          id: (msg.id as string) || crypto.randomUUID(),
+          role: role as ChatMessage["role"],
+          content,
+          name: (msg.name as string) || undefined,
+          tool: (msg.tool_call_id as string) || undefined,
+          thinking: (msg.reasoning_content as string) || undefined,
+        });
+      }
+
+      this.requestRender();
+    } catch {
+      // Session messages not available — proceed with empty chat
+    }
+  }
+
   private async refresh(): Promise<void> {
     try {
       const s = await this.client.getState();
@@ -1178,6 +1221,7 @@ export class App extends Container {
         try {
           await this.client.switchSession(item.value);
           await this.refresh();
+          await this.loadSessionMessages();
           this.chat.addMessage({
             id: crypto.randomUUID(),
             role: "system",

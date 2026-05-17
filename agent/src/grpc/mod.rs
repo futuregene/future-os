@@ -49,12 +49,6 @@ struct FutureAgentService {
 impl proto::future_agent_server::FutureAgent for FutureAgentService {
     type StreamEventsStream =
         Pin<Box<dyn tokio_stream::Stream<Item = Result<proto::StreamEvent, tonic::Status>> + Send>>;
-    type ExtensionUIStream = Pin<
-        Box<
-            dyn tokio_stream::Stream<Item = Result<proto::ExtensionUiResponse, tonic::Status>>
-                + Send,
-        >,
-    >;
     async fn execute_command(
         &self,
         request: tonic::Request<proto::RpcCommand>,
@@ -185,14 +179,5 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         };
 
         Ok(tonic::Response::new(Box::pin(stream)))
-    }
-
-    async fn extension_ui(
-        &self,
-        _request: tonic::Request<tonic::Streaming<proto::ExtensionUiRequest>>,
-    ) -> Result<tonic::Response<Self::ExtensionUIStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented(
-            "Extension UI not yet implemented",
-        ))
     }
 }

@@ -1,13 +1,13 @@
 //! Session management — 1:1 compatible with Go internal/session/
 
 use crate::types::{Message, ToolCall};
-use crate::utils::{default_session_dir, encode_cwd, generate_entry_id, generate_id};
+use crate::utils::{default_session_dir, generate_entry_id, generate_id};
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const CURRENT_SESSION_VERSION: i32 = 3;
 
@@ -222,6 +222,13 @@ impl Session {
     pub fn set_base_url(&mut self, url: &str) {
         self.base_url = url.to_string();
     }
+
+    pub fn get_session_info(&self) -> Option<&serde_json::Value> {
+        self.entries
+            .iter()
+            .find(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
+            .and_then(|e| e.content.as_ref())
+    }
 }
 
 pub struct Manager {
@@ -239,19 +246,13 @@ impl Manager {
         }
     }
 
-    fn session_dir(&self, cwd: &str) -> PathBuf {
-        self.dir.join(encode_cwd(cwd))
-    }
-
-    fn session_path(&self, cwd: &str, id: &str) -> PathBuf {
-        self.session_dir(cwd).join(format!("{}.jsonl", id))
+    fn session_path(&self, id: &str) -> PathBuf {
+        self.dir.join(format!("{}.jsonl", id))
     }
 
     pub fn save(&self, session: &Session) -> Result<()> {
-        let path = self.session_path(&session.cwd, &session.id);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).context("create session dir")?;
-        }
+        let path = self.session_path(&session.id);
+        fs::create_dir_all(&self.dir).context("create session dir")?;
         let file = File::create(&path).context("create session file")?;
         let mut w = std::io::BufWriter::new(file);
         for entry in &session.entries {
@@ -262,9 +263,13 @@ impl Manager {
         Ok(())
     }
 
-    pub fn load(&self, id: &str, cwd: &str) -> Result<Session> {
-        let path = self.session_path(cwd, id);
-        let file = File::open(&path).context("open session file")?;
+    pub fn load(&self, id: &str) -> Result<Session> {
+        let path = self.session_path(id);
+        self.load_path(&path, id)
+    }
+
+    pub(crate) fn load_path(&self, path: &Path, id: &str) -> Result<Session> {
+        let file = File::open(path).context("open session file")?;
         let reader = BufReader::new(file);
         let mut entries = vec![];
         for line in reader.lines() {
@@ -279,87 +284,112 @@ impl Manager {
             return Err(anyhow!("session {} has no entries", id));
         }
         let created_at = entries[0].timestamp;
-        let cwd = cwd.to_string();
+        let updated_at = entries.last().map(|e| e.timestamp).unwrap_or(created_at);
+        let cwd = entries
+            .iter()
+            .find_map(|e| {
+                if e.entry_type == ENTRY_TYPE_SESSION_INFO {
+                    e.content.as_ref().and_then(|v| v.get("cwd")).and_then(|v| v.as_str()).map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        let model = entries
+            .iter()
+            .rev()
+            .find_map(|e| {
+                if e.entry_type == ENTRY_TYPE_MODEL_CHANGE && !e.model.is_empty() {
+                    Some(e.model.clone())
+                } else if e.entry_type == ENTRY_TYPE_ASSISTANT && !e.model.is_empty() {
+                    Some(e.model.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
         let session = Session {
             id: id.to_string(),
             version: CURRENT_SESSION_VERSION,
             cwd,
-            model: String::new(),
+            model,
             base_url: String::new(),
             name: String::new(),
             parent_session_id: String::new(),
             leaf_id: String::new(),
             entries,
             created_at,
-            updated_at: Local::now(),
+            updated_at,
         };
         Ok(session)
     }
 
     pub fn list(&self, cwd: &str) -> Result<Vec<Session>> {
-        let dir = self.session_dir(cwd);
-        fs::create_dir_all(&dir).ok();
+        fs::create_dir_all(&self.dir).ok();
         let mut sessions = vec![];
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            if let Ok(sess) = self.load(id, cwd) {
-                sessions.push(sess);
-            }
-        }
-        sessions.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
-        Ok(sessions)
-    }
-
-    /// List all sessions across all CWD directories
-    pub fn list_all(&self) -> Result<Vec<SessionSummary>> {
-        if !self.dir.exists() {
-            return Ok(vec![]);
-        }
-        let mut summaries = vec![];
-
-        for cwd_entry in fs::read_dir(&self.dir)? {
-            let cwd_entry = cwd_entry?;
-            if !cwd_entry.file_type()?.is_dir() {
-                continue;
-            }
-
-            for entry in fs::read_dir(cwd_entry.path())? {
+        if self.dir.exists() {
+            for entry in fs::read_dir(&self.dir)? {
                 let entry = entry?;
                 let path = entry.path();
                 if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
                     continue;
                 }
                 let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                let cwd = cwd_entry.file_name().to_str().unwrap_or("").to_string();
-
-                if let Ok(sess) = self.load(id, &cwd) {
-                    summaries.push(SessionSummary {
-                        id: sess.id,
-                        cwd: sess.cwd,
-                        updated_at: sess.updated_at,
-                        model: sess.model,
-                        name: if sess.name.is_empty() {
-                            None
-                        } else {
-                            Some(sess.name)
-                        },
-                    });
+                if let Ok(sess) = self.load_path(&path, id) {
+                    if sess.cwd == cwd || cwd.is_empty() {
+                        sessions.push(sess);
+                    }
                 }
             }
         }
+        sessions.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
+        Ok(sessions)
+    }
 
+    /// List all sessions in the flat sessions directory
+    pub fn list_all(&self) -> Result<Vec<SessionSummary>> {
+        if !self.dir.exists() {
+            return Ok(vec![]);
+        }
+        let mut summaries = vec![];
+        for entry in fs::read_dir(&self.dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            self.try_push_summary(&path, &mut summaries);
+        }
         summaries.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(summaries)
     }
 
+    fn try_push_summary(&self, path: &Path, summaries: &mut Vec<SessionSummary>) {
+        if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+            return;
+        }
+        let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if let Ok(sess) = self.load_path(path, id) {
+            summaries.push(SessionSummary {
+                id: sess.id,
+                cwd: sess.cwd,
+                updated_at: sess.updated_at,
+                model: sess.model,
+                name: if sess.name.is_empty() { None } else { Some(sess.name) },
+            });
+        }
+    }
+
+    /// Find a session by ID in the flat sessions directory
+    pub fn find(&self, id: &str) -> Option<PathBuf> {
+        let path = self.session_path(id);
+        if path.exists() {
+            Some(path)
+        } else {
+            None
+        }
+    }
+
     /// Delete a session file
-    pub fn delete(&self, id: &str, cwd: &str) -> Result<()> {
-        let path = self.session_path(cwd, id);
+    pub fn delete(&self, id: &str) -> Result<()> {
+        let path = self.session_path(id);
         fs::remove_file(path).map_err(|e| anyhow!("failed to delete session: {}", e))
     }
 }
@@ -408,6 +438,56 @@ fn for_each_entry<'a>(entries: &'a [SessionEntry], from_id: &str) -> Vec<&'a Ses
     result
 }
 
+/// Convert SessionEntry to AgentMessage for TUI display
+pub fn entries_to_agent_messages(entries: &[SessionEntry]) -> Vec<crate::types::AgentMessage> {
+    use crate::types::{AgentToolCall, ContentBlock};
+    let mut msgs = vec![];
+    for entry in entries {
+        let role = match entry.entry_type.as_str() {
+            "user" | "system" | "assistant" | "tool" => entry.entry_type.clone(),
+            _ => continue,
+        };
+
+        let content: Vec<ContentBlock> = match &entry.content {
+            Some(serde_json::Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| {
+                    let text = v.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                    Some(ContentBlock::Text {
+                        text: text.to_string(),
+                    })
+                })
+                .collect(),
+            Some(serde_json::Value::String(s)) => {
+                vec![ContentBlock::Text {
+                    text: s.clone(),
+                }]
+            }
+            _ => vec![],
+        };
+
+        let tool_calls: Vec<AgentToolCall> = entry
+            .tool_calls
+            .iter()
+            .map(|tc| AgentToolCall {
+                id: tc.id.clone(),
+                name: tc.function.name.clone(),
+                args: tc.function.arguments.clone(),
+            })
+            .collect();
+
+        msgs.push(crate::types::AgentMessage {
+            role,
+            content,
+            thinking: String::new(),
+            tool_calls,
+            tool_call_id: String::new(),
+            metadata: None,
+        });
+    }
+    msgs
+}
+
 /// Build context messages from session entries (matching Go BuildContext)
 pub fn build_context(entries: &[SessionEntry]) -> Vec<Message> {
     let mut msgs = vec![];
@@ -437,4 +517,58 @@ pub fn build_context(entries: &[SessionEntry]) -> Vec<Message> {
         });
     }
     msgs
+}
+
+/// Convert AgentMessage back to SessionEntry for persistence
+pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry {
+    let entry_type = match msg.role.as_str() {
+        "user" => ENTRY_TYPE_USER,
+        "assistant" => ENTRY_TYPE_ASSISTANT,
+        "tool" => ENTRY_TYPE_TOOL,
+        "system" => ENTRY_TYPE_SYSTEM,
+        _ => ENTRY_TYPE_USER,
+    };
+
+    let content_blocks: Vec<serde_json::Value> = msg
+        .content
+        .iter()
+        .map(|b| serde_json::to_value(b).unwrap_or(serde_json::Value::Null))
+        .collect();
+    let content = if content_blocks.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Array(content_blocks))
+    };
+
+    let tool_calls: Vec<crate::types::ToolCall> = msg
+        .tool_calls
+        .iter()
+        .map(|tc| crate::types::ToolCall {
+            id: tc.id.clone(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: tc.name.clone(),
+                arguments: tc.args.clone(),
+            },
+        })
+        .collect();
+
+    SessionEntry {
+        id: generate_entry_id(),
+        parent_id: String::new(),
+        entry_type: entry_type.to_string(),
+        role: msg.role.clone(),
+        content,
+        tool_calls,
+        timestamp: Local::now(),
+        summary: String::new(),
+        model: String::new(),
+        label: String::new(),
+        thinking_level: String::new(),
+        branch_summary: None,
+        custom_type: String::new(),
+        custom_data: None,
+        display: String::new(),
+        provider: String::new(),
+    }
 }

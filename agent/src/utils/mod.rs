@@ -70,12 +70,10 @@ pub fn detect_image_mime_type(path: &Path) -> Option<String> {
 /// Version string — set at build time via build.rs
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Default session directory for a given CWD
-pub fn default_session_dir(cwd: &str) -> PathBuf {
+/// Default base session directory (contains per-cwd subdirectories)
+pub fn default_session_dir(_cwd: &str) -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    home.join(".future/agent")
-        .join("sessions")
-        .join(encode_cwd(cwd))
+    home.join(".future/agent").join("sessions")
 }
 
 /// Default config directory

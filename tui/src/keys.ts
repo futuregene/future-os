@@ -88,6 +88,7 @@ function normalizeShiftedLetterIdentityCodepoint(codepoint: number, modifier: nu
 
 const LEGACY_SEQUENCE_KEY_IDS: Record<string, string> = {
   "\x1bOA": "up", "\x1bOB": "down", "\x1bOC": "right", "\x1bOD": "left",
+  "\x1b[A": "up", "\x1b[B": "down", "\x1b[C": "right", "\x1b[D": "left",
   "\x1bOH": "home", "\x1bOF": "end",
   "\x1b[E": "clear", "\x1bOE": "clear",
   "\x1bOe": "ctrl+clear", "\x1b[e": "shift+clear",

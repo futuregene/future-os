@@ -246,65 +246,6 @@ pub struct FunctionCall {
     pub arguments: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ExtensionUiRequest {
-    /// "extension_ui_request"
-    #[prost(string, tag = "1")]
-    pub r#type: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub id: ::prost::alloc::string::String,
-    /// "select" | "confirm" | "input" | "editor" | "notify" | "setStatus" | "setWidget" | "setTitle" | "set_editor_text"
-    #[prost(string, tag = "3")]
-    pub method: ::prost::alloc::string::String,
-    /// select / confirm / input / editor
-    #[prost(string, tag = "10")]
-    pub title: ::prost::alloc::string::String,
-    #[prost(string, tag = "11")]
-    pub message: ::prost::alloc::string::String,
-    #[prost(string, repeated, tag = "12")]
-    pub options: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    #[prost(string, tag = "13")]
-    pub placeholder: ::prost::alloc::string::String,
-    #[prost(string, tag = "14")]
-    pub prefill: ::prost::alloc::string::String,
-    #[prost(int32, tag = "15")]
-    pub timeout: i32,
-    /// notify
-    ///
-    /// "info" | "warning" | "error"
-    #[prost(string, tag = "20")]
-    pub notify_type: ::prost::alloc::string::String,
-    /// setStatus
-    #[prost(string, tag = "30")]
-    pub status_key: ::prost::alloc::string::String,
-    #[prost(string, tag = "31")]
-    pub status_text: ::prost::alloc::string::String,
-    /// setWidget
-    #[prost(string, tag = "40")]
-    pub widget_key: ::prost::alloc::string::String,
-    #[prost(string, repeated, tag = "41")]
-    pub widget_lines: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// "aboveEditor" | "belowEditor"
-    #[prost(string, tag = "42")]
-    pub widget_placement: ::prost::alloc::string::String,
-    /// setTitle / set_editor_text
-    #[prost(string, tag = "50")]
-    pub text: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ExtensionUiResponse {
-    /// "extension_ui_response"
-    #[prost(string, tag = "1")]
-    pub r#type: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub id: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub value: ::prost::alloc::string::String,
-    #[prost(bool, tag = "4")]
-    pub confirmed: bool,
-    #[prost(bool, tag = "5")]
-    pub cancelled: bool,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BashResult {
     #[prost(string, tag = "1")]
     pub output: ::prost::alloc::string::String,
@@ -378,20 +319,6 @@ pub mod future_agent_server {
             request: tonic::Request<super::StreamRequest>,
         ) -> std::result::Result<
             tonic::Response<Self::StreamEventsStream>,
-            tonic::Status,
-        >;
-        /// Server streaming response type for the ExtensionUI method.
-        type ExtensionUIStream: tonic::codegen::tokio_stream::Stream<
-                Item = std::result::Result<super::ExtensionUiResponse, tonic::Status>,
-            >
-            + std::marker::Send
-            + 'static;
-        /// Bidirectional streaming - for extension UI
-        async fn extension_ui(
-            &self,
-            request: tonic::Request<tonic::Streaming<super::ExtensionUiRequest>>,
-        ) -> std::result::Result<
-            tonic::Response<Self::ExtensionUIStream>,
             tonic::Status,
         >;
     }
@@ -556,54 +483,6 @@ pub mod future_agent_server {
                                 max_encoding_message_size,
                             );
                         let res = grpc.server_streaming(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/proto.FutureAgent/ExtensionUI" => {
-                    #[allow(non_camel_case_types)]
-                    struct ExtensionUISvc<T: FutureAgent>(pub Arc<T>);
-                    impl<
-                        T: FutureAgent,
-                    > tonic::server::StreamingService<super::ExtensionUiRequest>
-                    for ExtensionUISvc<T> {
-                        type Response = super::ExtensionUiResponse;
-                        type ResponseStream = T::ExtensionUIStream;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::ResponseStream>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<
-                                tonic::Streaming<super::ExtensionUiRequest>,
-                            >,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as FutureAgent>::extension_ui(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = ExtensionUISvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.streaming(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)
