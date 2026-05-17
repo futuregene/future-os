@@ -59,7 +59,7 @@ Entry point: `main.rs` — CLI arg parsing (clap), model/provider/auth resolutio
 | `agent/mod.rs` | Agentic loop: call LLM → stream events → execute tools → repeat. Supports interrupt/abort, steering/followUp queues, parallel tool execution, auto-retry with exponential backoff |
 | `engine/mod.rs` | `Engine` struct: wires provider, tools, session, and agent loop together |
 | `llm/mod.rs` | OpenAI-compatible streaming HTTP client (reqwest + SSE parsing). Supports thinking/reasoning content extraction, tool call accumulation from streaming chunks |
-| `grpc/mod.rs` | gRPC server using tonic. Implements `FutureAgent` service: `ExecuteCommand`, `StreamEvents` (server-side streaming), `ExtensionUI` (bidirectional) |
+| `grpc/mod.rs` | gRPC server using tonic. Implements `FutureAgent` service: `ExecuteCommand` (unary), `StreamEvents` (server-side streaming) |
 | `rpc/mod.rs` | Command handler dispatch (25+ commands: prompt, steer, abort, set_model, compact, fork, etc.) and `ServerSession` state management |
 | `session/mod.rs` | Conversation persistence as JSONL files in `~/.future/agent/sessions/<encoded-cwd>/`. Tree-structured entries with ParentID for forks. `Manager` handles save/load/list |
 | `types/mod.rs` | Core types: `Message`, `StreamEvent`, `AgentTool`, `ToolDef`, `AgentConfig`, `LLMProvider` trait, `ContentBlock` (polymorphic text/image/tool_result), and `ConvertToLLM`/`ConvertFromLLM` conversion |
@@ -81,10 +81,9 @@ Session files are JSONL, tree-structured (each entry has ID + optional ParentID)
 
 ### gRPC API (`proto/proto/future.proto`)
 
-The `FutureAgent` service has three RPCs:
+The `FutureAgent` service has two RPCs:
 - `ExecuteCommand(RpcCommand) → RpcResponse` — unary, 30+ command types
 - `StreamEvents(StreamRequest) → stream StreamEvent` — server-side streaming for SSE events
-- `ExtensionUI(stream ExtensionUIRequest) → stream ExtensionUIResponse` — bidirectional for extension UIs
 
 Commands include: prompt, steer, followUp, abort, new_session, set_model, set_thinking_level, compact, fork, clone, export_html, cycle_model, cycle_thinking_level, list_sessions, switch_session, get_available_models, and more.
 
