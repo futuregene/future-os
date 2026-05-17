@@ -169,7 +169,15 @@ fn edit_schema() -> serde_json::Value {
             "newText": { "type": "string" },
             "edits": {
                 "type": "array",
-                "description": "Array of {oldText, newText} for multi-edit mode"
+                "description": "Array of {oldText, newText} for multi-edit mode",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "oldText": { "type": "string" },
+                        "newText": { "type": "string" }
+                    },
+                    "required": ["oldText", "newText"]
+                }
             }
         },
         "required": ["path"]

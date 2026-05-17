@@ -37,6 +37,7 @@ pub struct EngineConfig {
     pub compat_thinking_format: String,
     pub compat_supports_reasoning_effort: bool,
     pub compat_requires_reasoning_on_assistant: bool,
+    pub max_tokens_field: String,
 }
 
 impl Engine {
@@ -56,6 +57,11 @@ impl Engine {
             config.compat_supports_reasoning_effort,
             config.compat_requires_reasoning_on_assistant,
         );
+
+        // Apply max_tokens field name from compat (pi uses maxTokensField for this)
+        if !config.max_tokens_field.is_empty() {
+            llm_client = llm_client.with_max_tokens_field(&config.max_tokens_field);
+        }
 
         // Apply thinking level (from settings or CLI)
         if !config.thinking_level.is_empty() {
@@ -129,6 +135,7 @@ impl EngineConfig {
             compaction_keep_recent_tokens: 20000,
             extension_paths: vec![],
             no_extensions: false,
+            max_tokens_field: String::new(),
             ..Default::default()
         }
     }

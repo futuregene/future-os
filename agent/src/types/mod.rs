@@ -602,6 +602,9 @@ pub trait LLMProvider: Send + Sync {
 
     /// Update thinking level and budget at runtime (after set_thinking_level / cycle_thinking_level).
     fn update_thinking(&self, _level: &str, _budget: i32) {}
+
+    /// Update max_tokens field name (from compat.maxTokensField: "max_tokens" or "max_completion_tokens").
+    fn update_max_tokens_field(&self, _field: &str) {}
 }
 
 // ─── Message ↔ AgentMessage conversion ────────────────────────────────────

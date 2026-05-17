@@ -42,6 +42,7 @@ pub struct Client {
     compat_thinking_format: RwLock<String>,
     compat_supports_reasoning_effort: RwLock<bool>,
     compat_requires_reasoning_on_assistant: RwLock<bool>,
+    max_tokens_field: RwLock<String>,
     temperature: Option<f32>,
     max_tokens: Option<i32>,
 }
@@ -83,6 +84,7 @@ impl Client {
             compat_thinking_format: RwLock::new(String::new()),
             compat_supports_reasoning_effort: RwLock::new(false),
             compat_requires_reasoning_on_assistant: RwLock::new(false),
+            max_tokens_field: RwLock::new("max_tokens".to_string()),
             temperature,
             max_tokens,
         }
@@ -108,6 +110,13 @@ impl Client {
         *self.compat_supports_reasoning_effort.write().unwrap() = supports_reasoning_effort;
         *self.compat_requires_reasoning_on_assistant.write().unwrap() =
             requires_reasoning_on_assistant;
+        self
+    }
+
+    pub fn with_max_tokens_field(self, field: &str) -> Self {
+        if !field.is_empty() {
+            *self.max_tokens_field.write().unwrap() = field.to_string();
+        }
         self
     }
 
@@ -191,9 +200,11 @@ impl crate::types::LLMProvider for Client {
             body["temperature"] = serde_json::json!(temp);
         }
 
-        // Add max_tokens (use max_tokens field for most compat)
+        // Use model-specific max_tokens field name (from compat.maxTokensField)
+        // pi sets maxTokensField to "max_completion_tokens" for o1/o3/gpt-5 reasoning models
         if let Some(mt) = self.max_tokens {
-            body["max_tokens"] = serde_json::json!(mt);
+            let field = self.max_tokens_field.read().unwrap();
+            body[field.as_str()] = serde_json::json!(mt);
         }
 
         // Add stream_options for usage stats in streaming
@@ -254,6 +265,39 @@ impl crate::types::LLMProvider for Client {
                 status_code,
                 &text[..text.len().min(500)]
             );
+
+            // Parse Azure/OpenAI error body for a user-friendly message
+            if let Ok(err_body) = serde_json::from_str::<serde_json::Value>(&text) {
+                let code = err_body
+                    .get("error")
+                    .and_then(|e| e.get("code"))
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("");
+                match (status_code, code) {
+                    (404, "DeploymentNotFound") => {
+                        return Err(anyhow!(
+                            "Azure deployment not found. Check that the model deployment exists \
+                             in your Azure OpenAI resource and the deployment name matches the \
+                             model ID. If you just created the deployment, wait a few minutes \
+                             and try again."
+                        ));
+                    }
+                    (401, _) => {
+                        return Err(anyhow!(
+                            "Authentication failed (401). Check your API key is correct and \
+                             has access to this Azure OpenAI resource."
+                        ));
+                    }
+                    (429, _) => {
+                        return Err(anyhow!(
+                            "Rate limited (429). The API is throttling requests. \
+                             Try again in a few seconds."
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+
             return Err(anyhow!("LLM API error {}: {}", status_code, text));
         }
 
@@ -464,6 +508,10 @@ impl crate::types::LLMProvider for Client {
         *self.thinking_level.write().unwrap() = level.to_string();
         *self.thinking_budget.write().unwrap() = budget;
     }
+
+    fn update_max_tokens_field(&self, field: &str) {
+        *self.max_tokens_field.write().unwrap() = field.to_string();
+    }
 }
 
 impl Client {
@@ -540,19 +588,9 @@ impl Client {
                 }
                 _ => {}
             }
-        } else if thinking_budget > 0 {
-            // Legacy fallback
-            body["thinking"] = serde_json::json!({
-                "type": "enabled",
-                "budget_tokens": thinking_budget,
-            });
-        } else if thinking_budget == 0
-            && self.reasoning_effort.is_empty()
-            && thinking_level.is_empty()
-        {
-            // Explicitly disable
-            body["thinking"] = serde_json::json!({ "type": "disabled" });
         }
+        // When effective_format is empty (no compat thinking format configured),
+        // don't add any thinking parameters — provider doesn't support it.
     }
 
     fn convert_messages_to_openai(

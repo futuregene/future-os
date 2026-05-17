@@ -15,6 +15,11 @@ export class Input implements Component, Focusable {
   public onEscape?: () => void;
   public onChange?: (value: string) => void;
 
+  // Input history — up/down to recall previous submissions
+  private history: string[] = [];
+  private historyIndex = -1;
+  private historyDraft = "";
+
   focused: boolean = false;
 
   // Bracketed paste mode buffering
@@ -67,7 +72,41 @@ export class Input implements Component, Focusable {
 
     // Submit
     if (key === "enter") {
-      if (this.onSubmit) this.onSubmit(this.value);
+      const v = this.value;
+      if (v && (this.history.length === 0 || this.history[0] !== v)) {
+        this.history.unshift(v);
+      }
+      this.historyIndex = -1;
+      this.historyDraft = "";
+      if (this.onSubmit) this.onSubmit(v);
+      return true;
+    }
+
+    // History navigation
+    if (key === "up") {
+      if (this.history.length === 0) return true;
+      if (this.historyIndex === -1) {
+        this.historyDraft = this.value;
+        this.historyIndex = 0;
+      } else if (this.historyIndex < this.history.length - 1) {
+        this.historyIndex++;
+      }
+      this.value = this.history[this.historyIndex] ?? this.historyDraft;
+      this.cursor = this.value.length;
+      this.onChange?.(this.value);
+      return true;
+    }
+    if (key === "down") {
+      if (this.historyIndex === -1) return true;
+      if (this.historyIndex > 0) {
+        this.historyIndex--;
+        this.value = this.history[this.historyIndex] ?? this.historyDraft;
+      } else {
+        this.historyIndex = -1;
+        this.value = this.historyDraft;
+      }
+      this.cursor = this.value.length;
+      this.onChange?.(this.value);
       return true;
     }
 
@@ -77,7 +116,7 @@ export class Input implements Component, Focusable {
       return true;
     }
 
-    if (key === "delete" || key === "ctrl+d") {
+    if (key === "delete") {
       this.handleForwardDelete();
       return true;
     }

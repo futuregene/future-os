@@ -245,8 +245,12 @@ export class GrpcClient {
     return this.call("cycle_model", {}) as Promise<{ model: string; thinkingLevel: string; isScoped: boolean } | null>;
   }
 
-  async getAvailableModels(): Promise<{ models: import("./types.js").ModelInfo[] }> {
-    return this.call("get_available_models", {}) as Promise<{ models: import("./types.js").ModelInfo[] }>;
+  async getAvailableModels(): Promise<{ models: import("./types.js").ModelInfo[]; enabled_model_ids?: string[] }> {
+    return this.call("get_available_models", {}) as Promise<{ models: import("./types.js").ModelInfo[]; enabled_model_ids?: string[] }>;
+  }
+
+  async setEnabledModels(modelIds: string[]): Promise<void> {
+    await this.call("set_enabled_models", { enabledModels: modelIds });
   }
 
   async setThinkingLevel(level: RpcCommand["level"]): Promise<void> {

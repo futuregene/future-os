@@ -66,6 +66,9 @@ pub struct RpcCommand {
     /// set_ephemeral
     #[prost(bool, tag = "120")]
     pub ephemeral: bool,
+    /// set_enabled_models
+    #[prost(string, repeated, tag = "130")]
+    pub enabled_models: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ImageContent {
