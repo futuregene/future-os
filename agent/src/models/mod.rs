@@ -127,70 +127,91 @@ pub fn get_default_model() -> Option<String> {
 
 /// LoadUserModels reads a pi-compatible models.json file.
 /// Returns empty vec if file doesn't exist.
-pub fn load_user_models(path: &str) -> Result<Vec<Model>, String> {
+/// Load user models + provider-level overrides from models.json.
+/// Providers without models still contribute baseUrl/compat overrides.
+fn load_user_models_with_overrides(
+    path: &str,
+) -> Result<(Vec<Model>, HashMap<String, ProviderOverride>), String> {
     let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let cfg: ModelsConfig = serde_json::from_str(&data).map_err(|e| e.to_string())?;
 
-    if cfg.providers.is_none() {
-        return Ok(vec![]);
-    }
+    let providers = match cfg.providers {
+        Some(p) => p,
+        None => return Ok((vec![], HashMap::new())),
+    };
 
-    let providers = cfg.providers.unwrap();
     let mut models = vec![];
+    let mut overrides = HashMap::new();
 
     for (provider_name, provider) in providers {
-        if let Some(api_key) = provider.api_key {
-            let provider_api = provider.api.unwrap_or_else(|| "openai".to_string());
-            let provider_base_url = provider
-                .base_url
-                .unwrap_or_else(|| default_base_url_for_provider(&provider_name));
-            for model in provider.models.unwrap_or_default() {
-                let mut m = Model {
-                    id: model.id.clone(),
-                    name: model.name.unwrap_or_else(|| model.id.clone()),
-                    provider: provider_name.clone(),
-                    api: provider_api.clone(),
-                    base_url: provider_base_url.clone(),
-                    api_key: api_key.clone(),
-                    reasoning: model.reasoning.unwrap_or(false),
-                    input: model.modalities.unwrap_or_default(),
-                    context_window: model
-                        .context_window
-                        .or_else(|| model.limit.as_ref().and_then(|l| l.context))
-                        .unwrap_or(128000),
-                    max_tokens: model
-                        .max_tokens
-                        .or_else(|| model.limit.as_ref().and_then(|l| l.output))
-                        .unwrap_or(4096),
-                    cost: Cost {
-                        input: model.cost.as_ref().and_then(|c| c.input).unwrap_or(0.0),
-                        output: model.cost.as_ref().and_then(|c| c.output).unwrap_or(0.0),
-                        cache_read: model
-                            .cost
-                            .as_ref()
-                            .and_then(|c| c.cache_read)
-                            .unwrap_or(0.0),
-                        cache_write: model
-                            .cost
-                            .as_ref()
-                            .and_then(|c| c.cache_write)
-                            .unwrap_or(0.0),
-                    },
-                    ..Default::default()
-                };
-                // Apply provider-level compat and thinking_level_map
-                if let Some(ref compat) = provider.compat {
-                    m.compat = compat.clone();
-                }
-                if let Some(ref tlm) = provider.thinking_level_map {
-                    m.thinking_level_map = tlm.clone();
-                }
-                models.push(m);
+        // Store provider-level override (even if no models listed)
+        if provider.base_url.is_some() || provider.api_key.is_some() {
+            overrides.insert(
+                provider_name.clone(),
+                ProviderOverride {
+                    base_url: provider.base_url.clone(),
+                    api_key: provider.api_key.clone(),
+                },
+            );
+        }
+
+        // Skip model loading if no api_key
+        let api_key = match provider.api_key.clone() {
+            Some(k) => k,
+            None => continue,
+        };
+        let provider_api = provider.api.unwrap_or_else(|| "openai".to_string());
+        let provider_base_url = provider
+            .base_url
+            .clone()
+            .unwrap_or_else(|| default_base_url_for_provider(&provider_name));
+
+        // Load explicit models
+        for model in provider.models.unwrap_or_default() {
+            let mut m = Model {
+                id: model.id.clone(),
+                name: model.name.unwrap_or_else(|| model.id.clone()),
+                provider: provider_name.clone(),
+                api: provider_api.clone(),
+                base_url: provider_base_url.clone(),
+                api_key: api_key.clone(),
+                reasoning: model.reasoning.unwrap_or(false),
+                input: model.modalities.unwrap_or_default(),
+                context_window: model
+                    .context_window
+                    .or_else(|| model.limit.as_ref().and_then(|l| l.context))
+                    .unwrap_or(128000),
+                max_tokens: model
+                    .max_tokens
+                    .or_else(|| model.limit.as_ref().and_then(|l| l.output))
+                    .unwrap_or(4096),
+                cost: Cost {
+                    input: model.cost.as_ref().and_then(|c| c.input).unwrap_or(0.0),
+                    output: model.cost.as_ref().and_then(|c| c.output).unwrap_or(0.0),
+                    cache_read: model
+                        .cost
+                        .as_ref()
+                        .and_then(|c| c.cache_read)
+                        .unwrap_or(0.0),
+                    cache_write: model
+                        .cost
+                        .as_ref()
+                        .and_then(|c| c.cache_write)
+                        .unwrap_or(0.0),
+                },
+                ..Default::default()
+            };
+            if let Some(ref compat) = provider.compat {
+                m.compat = compat.clone();
             }
+            if let Some(ref tlm) = provider.thinking_level_map {
+                m.thinking_level_map = tlm.clone();
+            }
+            models.push(m);
         }
     }
 
-    Ok(models)
+    Ok((models, overrides))
 }
 
 fn default_base_url_for_provider(provider: &str) -> String {
@@ -270,17 +291,43 @@ struct ModelCost {
     cache_write: Option<f64>,
 }
 
+/// Provider-level override from user models.json (no models needed — just baseUrl/apiKey/compat etc.)
+#[derive(Debug, Clone, Default)]
+struct ProviderOverride {
+    base_url: Option<String>,
+    api_key: Option<String>,
+}
+
 /// Registry provides model resolution.
 pub struct Registry {
     builtin: Vec<Model>,
     user: Vec<Model>,
+    provider_overrides: HashMap<String, ProviderOverride>,
 }
 
 impl Registry {
     pub fn new() -> Self {
+        let (user_models, overrides) = load_user_models_with_overrides(&user_models_path())
+            .unwrap_or_default();
         Self {
             builtin: builtin_models(),
-            user: load_user_models(&user_models_path()).unwrap_or_default(),
+            user: user_models,
+            provider_overrides: overrides,
+        }
+    }
+
+    fn apply_override(&self, model: &mut Model) {
+        if let Some(ov) = self.provider_overrides.get(&model.provider) {
+            if let Some(ref url) = ov.base_url {
+                if !url.is_empty() {
+                    model.base_url = url.clone();
+                }
+            }
+            if let Some(ref key) = ov.api_key {
+                if !key.is_empty() {
+                    model.api_key = key.clone();
+                }
+            }
         }
     }
 
@@ -293,6 +340,9 @@ impl Registry {
             } else {
                 models.push(user_model.clone());
             }
+        }
+        for m in &mut models {
+            self.apply_override(m);
         }
         models
     }
@@ -307,14 +357,19 @@ impl Registry {
                 .iter()
                 .chain(self.builtin.iter())
                 .find(|m| format!("{}/{}", m.provider, m.id) == full_id)
-                .cloned();
+                .cloned()
+                .map(|mut m| { self.apply_override(&mut m); m });
         }
         // Check user models first by exact ID
-        if let Some(m) = self.user.iter().find(|m| m.id == id) {
-            return Some(m.clone());
+        if let Some(mut m) = self.user.iter().find(|m| m.id == id).cloned() {
+            self.apply_override(&mut m);
+            return Some(m);
         }
         // Then builtin
-        self.builtin.iter().find(|m| m.id == id).cloned()
+        self.builtin.iter().find(|m| m.id == id).cloned().map(|mut m| {
+            self.apply_override(&mut m);
+            m
+        })
     }
 
     /// Get default model for a provider
@@ -324,6 +379,10 @@ impl Registry {
             .chain(self.builtin.iter())
             .find(|m| m.provider == provider)
             .cloned()
+            .map(|mut m| {
+                self.apply_override(&mut m);
+                m
+            })
     }
 
     /// Resolve enabled_models patterns to available model IDs.

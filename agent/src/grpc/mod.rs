@@ -112,6 +112,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             no_tools: cmd.no_tools,
             ephemeral: cmd.ephemeral,
             cwd: cmd.cwd,
+            enabled_models: Some(cmd.enabled_models),
         };
 
         // Handle the command

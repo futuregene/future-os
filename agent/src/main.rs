@@ -228,6 +228,24 @@ async fn main() -> Result<()> {
             .and_then(|m| m.compat.get("requiresReasoningContentOnAssistantMessages"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        max_tokens_field: model_config
+            .as_ref()
+            .and_then(|m| m.compat.get("maxTokensField"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                // Fallback: reasoning models without thinkingFormat need
+                // max_completion_tokens (Azure GPT-5/o1/o3 etc. don't set maxTokensField yet)
+                let m = model_config.as_ref()?;
+                if m.reasoning
+                    && !m.compat.contains_key("thinkingFormat")
+                {
+                    Some("max_completion_tokens".to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default(),
         compaction_reserve_tokens: settings.compaction_reserve_tokens(),
         compaction_keep_recent_tokens: settings.compaction_keep_recent_tokens(),
         ..EngineConfig::with_defaults()

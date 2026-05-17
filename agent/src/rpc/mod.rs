@@ -84,6 +84,10 @@ pub struct RpcCommand {
     // set_ephemeral
     #[serde(default)]
     pub ephemeral: bool,
+
+    // set_enabled_models
+    #[serde(default)]
+    pub enabled_models: Option<Vec<String>>,
 }
 
 // ─── RPC Response (stdout) ───────────────────────────────────────────────
@@ -600,6 +604,7 @@ impl ServerSession {
                             custom_data: None,
                             display: String::new(),
                             provider: String::new(),
+                            tool_call_id: String::new(),
                         };
                         entries.insert(0, info_entry);
 
@@ -759,6 +764,21 @@ impl ServerSession {
                     requires_reasoning_on_assistant,
                     tlm,
                 );
+                // maxTokensField: pi compat field controlling max_tokens vs max_completion_tokens
+                if let Some(field) = model_config
+                    .compat
+                    .get("maxTokensField")
+                    .and_then(|v| v.as_str())
+                {
+                    loop_.provider.update_max_tokens_field(field);
+                } else if model_config.reasoning
+                    && !model_config.compat.contains_key("thinkingFormat")
+                {
+                    // Fallback: reasoning models without thinkingFormat need max_completion_tokens
+                    loop_.provider.update_max_tokens_field("max_completion_tokens");
+                } else {
+                    loop_.provider.update_max_tokens_field("max_tokens");
+                }
                 loop_
                     .provider
                     .update_endpoint(&model_config.base_url, &api_key);
@@ -956,13 +976,19 @@ impl ServerSession {
             if !session.model.is_empty() {
                 self.model = session.model.clone();
             }
+            // Restore session name from label entries (via load_path) or session_info
+            if !session.name.is_empty() {
+                self.session_name = session.name.clone();
+            }
             // Restore metadata from session_info entry
             if let Some(info) = session.get_session_info() {
                 if let Some(tl) = info.get("thinking_level").and_then(|v| v.as_str()) {
                     self.thinking_level = tl.to_string();
                 }
-                if let Some(name) = info.get("session_name").and_then(|v| v.as_str()) {
-                    self.session_name = name.to_string();
+                if self.session_name.is_empty() {
+                    if let Some(name) = info.get("session_name").and_then(|v| v.as_str()) {
+                        self.session_name = name.to_string();
+                    }
                 }
                 if let Some(v) = info.get("auto_compaction").and_then(|v| v.as_bool()) {
                     self.auto_compaction = v;
@@ -1335,7 +1361,35 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             )
         }
         "set_session_name" => {
-            session.write().unwrap().set_session_name(&cmd.name);
+            let (session_manager, session_id) = {
+                let mut sess = session.write().unwrap();
+                sess.set_session_name(&cmd.name);
+                (sess.session_manager.clone(), sess.session_id.clone())
+            };
+            // Persist label entry to session JSONL so name survives restarts
+            if let Ok(mut s) = session_manager.load(&session_id) {
+                s.entries.push(crate::session::SessionEntry {
+                    id: crate::utils::generate_entry_id(),
+                    parent_id: String::new(),
+                    entry_type: crate::session::ENTRY_TYPE_LABEL.to_string(),
+                    role: String::new(),
+                    content: None,
+                    tool_calls: vec![],
+                    timestamp: chrono::Local::now(),
+                    summary: String::new(),
+                    model: String::new(),
+                    label: cmd.name.clone(),
+                    thinking_level: String::new(),
+                    branch_summary: None,
+                    custom_type: String::new(),
+                    custom_data: None,
+                    display: String::new(),
+                    provider: String::new(),
+                    tool_call_id: String::new(),
+                });
+                s.name = cmd.name.clone();
+                let _ = session_manager.save(&s);
+            }
             RpcResponse::ok(id, "set_session_name", serde_json::json!({}))
         }
         "get_commands" => {
@@ -1471,11 +1525,30 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     })
                 })
                 .collect();
+            // Include current enabled_models from settings so the TUI knows the scope
+            let settings_path = std::path::PathBuf::from(crate::models::settings_path());
+            let settings = crate::config::load_settings(&settings_path).unwrap_or_default();
+            let enabled_model_ids: Vec<String> = if settings.enabled_models.is_empty() {
+                models.iter().map(|m| m["id"].as_str().unwrap_or("").to_string()).collect()
+            } else {
+                settings.enabled_models.clone()
+            };
             RpcResponse::ok(
                 id,
                 "get_available_models",
-                serde_json::json!({"models": models}),
+                serde_json::json!({"models": models, "enabled_model_ids": enabled_model_ids}),
             )
+        }
+        "set_enabled_models" => {
+            let enabled: Vec<String> = cmd.enabled_models.clone().unwrap_or_default();
+            let settings_path = std::path::PathBuf::from(crate::models::settings_path());
+            let mut settings = crate::config::load_settings(&settings_path).unwrap_or_default();
+            settings.enabled_models = enabled;
+            if let Err(e) = settings.save(&settings_path) {
+                RpcResponse::build_fail(id, "set_enabled_models", &e.to_string())
+            } else {
+                RpcResponse::ok(id, "set_enabled_models", serde_json::json!({}))
+            }
         }
         "clone" => {
             // Extract needed data from session

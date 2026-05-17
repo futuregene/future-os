@@ -85,6 +85,12 @@ pub struct SessionEntry {
     pub display: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub provider: String,
+    #[serde(
+        rename = "tool_call_id",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub tool_call_id: String,
 }
 
 impl SessionEntry {
@@ -106,6 +112,7 @@ impl SessionEntry {
             custom_data: None,
             display: String::new(),
             provider: String::new(),
+            tool_call_id: String::new(),
         }
     }
 
@@ -127,10 +134,11 @@ impl SessionEntry {
             custom_data: None,
             display: String::new(),
             provider: String::new(),
+            tool_call_id: String::new(),
         }
     }
 
-    pub fn new_tool(_call_id: &str, content: &str) -> Self {
+    pub fn new_tool(call_id: &str, content: &str) -> Self {
         Self {
             id: generate_entry_id(),
             parent_id: String::new(),
@@ -148,6 +156,7 @@ impl SessionEntry {
             custom_data: None,
             display: String::new(),
             provider: String::new(),
+            tool_call_id: call_id.to_string(),
         }
     }
 }
@@ -308,13 +317,19 @@ impl Manager {
                 }
             })
             .unwrap_or_default();
+        let name = entries
+            .iter()
+            .rev()
+            .find(|e| e.entry_type == ENTRY_TYPE_LABEL && !e.label.is_empty())
+            .map(|e| e.label.clone())
+            .unwrap_or_default();
         let session = Session {
             id: id.to_string(),
             version: CURRENT_SESSION_VERSION,
             cwd,
             model,
             base_url: String::new(),
-            name: String::new(),
+            name,
             parent_session_id: String::new(),
             leaf_id: String::new(),
             entries,
@@ -481,7 +496,7 @@ pub fn entries_to_agent_messages(entries: &[SessionEntry]) -> Vec<crate::types::
             content,
             thinking: String::new(),
             tool_calls,
-            tool_call_id: String::new(),
+            tool_call_id: entry.tool_call_id.clone(),
             metadata: None,
         });
     }
@@ -511,7 +526,7 @@ pub fn build_context(entries: &[SessionEntry]) -> Vec<Message> {
             } else {
                 Some(tool_calls)
             },
-            tool_call_id: String::new(),
+            tool_call_id: entry.tool_call_id.clone(),
             name: String::new(),
             reasoning_content: reasoning,
         });
@@ -570,5 +585,6 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
         custom_data: None,
         display: String::new(),
         provider: String::new(),
+        tool_call_id: msg.tool_call_id.clone(),
     }
 }

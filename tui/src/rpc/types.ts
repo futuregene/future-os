@@ -28,6 +28,8 @@ export interface RpcCommand {
   customInstructions?: string;
   // set_auto_compaction / set_auto_retry
   enabled?: boolean;
+  // set_enabled_models
+  enabledModels?: string[];
   // bash
   command?: string;
   // Session

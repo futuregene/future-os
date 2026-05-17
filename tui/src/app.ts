@@ -9,6 +9,7 @@ import { ChatArea, type ChatMessage } from "./components/chat-area.js";
 import { Footer, type FooterData } from "./components/footer.js";
 import { SelectList, type SelectItem } from "./components/select-list.js";
 import { AutocompletePopup, type AutocompleteItem, AutocompleteManager, SlashCommandProvider, FilePathProvider, AttachmentProvider, type SlashCommand } from "./components/autocomplete.js";
+import { ScopedModelsSelector } from "./components/scoped-models-selector.js";
 import { Input } from "./components/input.js";
 import {
   NodeTerminal,
@@ -79,19 +80,13 @@ export class App extends Container {
   private readonly slashCommands: SlashCommand[] = [
     { value: "/model", label: "/model", description: "select model", takesModelArg: true },
     { value: "/sessions", label: "/sessions", description: "browse sessions" },
-    { value: "/settings", label: "/settings", description: "open settings" },
     { value: "/new", label: "/new", description: "new session" },
     { value: "/clone", label: "/clone", description: "clone session", takesSessionArg: true },
     { value: "/fork", label: "/fork", description: "fork session", takesSessionArg: true },
     { value: "/tree", label: "/tree", description: "session tree" },
-    { value: "/thinking", label: "/thinking", description: "toggle thinking level" },
     { value: "/name", label: "/name", description: "set session name" },
-    { value: "/scoped-models", label: "/scoped-models", description: "manage scoped models" },
-    { value: "/theme", label: "/theme", description: "change theme" },
-    { value: "/changelog", label: "/changelog", description: "show changelog" },
+    { value: "/scoped-models", label: "/scoped-models", description: "configure model scope" },
     { value: "/help", label: "/help", description: "show help" },
-    { value: "/hotkeys", label: "/hotkeys", description: "show shortcuts" },
-    { value: "/quit", label: "/quit", description: "quit future-tui" },
   ];
 
   // Autocomplete provider callbacks
@@ -212,7 +207,6 @@ export class App extends Container {
 
     // Register global keybindings
     this.keybindings.add(Key.ctrl_c, () => { this.handleInterrupt(); return true; }, "Interrupt / exit");
-    this.keybindings.add(Key.ctrl_l, () => { this.forceClearNextRender = true; this.requestRender(true); return true; }, "Clear screen");
     this.keybindings.add(Key.ctrl_p, () => { this.cycleModel(); return true; }, "Cycle model");
     this.keybindings.add(Key.ctrl_r, () => { this.showSessions(); return true; }, "Browse sessions");
     this.keybindings.add(Key.ctrl_s, () => { this.showSettings(); return true; }, "Open settings");
@@ -705,7 +699,7 @@ export class App extends Container {
         return;
       }
 
-      if (cmd === "help" || cmd === "hotkeys") {
+      if (cmd === "help") {
         this.showHelpOverlay();
         return;
       }
@@ -762,6 +756,72 @@ export class App extends Container {
             id: crypto.randomUUID(),
             role: "system",
             content: "Not connected to agent.",
+          });
+        }
+        return;
+      }
+
+      if (cmd === "name") {
+        if (!arg) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: "Usage: /name <session name>",
+          });
+        } else {
+          try {
+            await this.client.setSessionName(arg);
+            this.chat.addMessage({
+              id: crypto.randomUUID(),
+              role: "system",
+              content: `Session name set to: ${arg}`,
+            });
+          } catch (err) {
+            this.chat.addMessage({
+              id: crypto.randomUUID(),
+              role: "system",
+              content: `Failed to set session name: ${err}`,
+            });
+          }
+        }
+        return;
+      }
+
+      if (cmd === "scoped-models") {
+        try {
+          const r = await this.client.getAvailableModels();
+          const models = r.models;
+          const enabledSet = new Set(r.enabled_model_ids ?? models.map((m) => m.id));
+          const selector = new ScopedModelsSelector({
+            allModels: models,
+            enabledModelIds: enabledSet,
+            onSave: async (enabledIds) => {
+              try {
+                await this.client.setEnabledModels(enabledIds);
+                this.chat.addMessage({
+                  id: crypto.randomUUID(),
+                  role: "system",
+                  content: `Model scope saved (${enabledIds.length}/${models.length} enabled)`,
+                });
+              } catch (err) {
+                this.chat.addMessage({
+                  id: crypto.randomUUID(),
+                  role: "system",
+                  content: `Failed to save model scope: ${err}`,
+                });
+              }
+              this.hideOverlay();
+            },
+            onCancel: () => {
+              this.hideOverlay();
+            },
+          });
+          this.showOverlay(selector);
+        } catch (err) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: `Failed to load models: ${err}`,
           });
         }
         return;
@@ -1807,8 +1867,6 @@ export class App extends Container {
       acc("Shortcuts:"),
 
       dim_("  ctrl+c  interrupt"),
-      dim_("  ctrl+d  clear / exit"),
-      dim_("  ctrl+l  clear screen"),
       dim_("  ctrl+p  cycle model"),
       dim_("  ctrl+r  browse sessions"),
       dim_("  ctrl+t  cycle thinking"),
@@ -1822,14 +1880,13 @@ export class App extends Container {
       dim_("  /model [name]  select model"),
       dim_("  /sessions   browse sessions"),
       dim_("  /new       new session"),
-      dim_("  /settings  open settings"),
+      dim_("  /scoped-models  configure model scope"),
       dim_("  /compact   compact context"),
       dim_("  /clone     clone session"),
       dim_("  /fork      fork session"),
       dim_("  /tree      session tree"),
-      dim_("  /thinking  toggle thinking"),
       dim_("  /name [n]  set session name"),
-      dim_("  /help /hotkeys /quit"),
+      dim_("  /help"),
     ];
 
     const colW = Math.floor(innerW / 2);
