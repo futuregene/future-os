@@ -740,6 +740,178 @@ export class App extends Container {
         return;
       }
 
+      if (cmd === "clone") {
+        try {
+          const result = await this.client.clone();
+          if (!result.cancelled) {
+            await this.refresh();
+            await this.loadSessionMessages();
+            this.chat.addMessage({
+              id: crypto.randomUUID(),
+              role: "system",
+              content: "Session cloned — continue in new branch.",
+            });
+          }
+        } catch (err) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: `Failed to clone session: ${err}`,
+          });
+        }
+        return;
+      }
+
+      if (cmd === "fork") {
+        try {
+          const result = await this.client.getForkMessages();
+          const messages = (result as { messages?: Array<{ id: string; role: string; content: string; timestamp: string }> }).messages || [];
+          if (messages.length === 0) {
+            this.chat.addMessage({
+              id: crypto.randomUUID(),
+              role: "system",
+              content: "No user messages to fork from.",
+            });
+            return;
+          }
+          const items: SelectItem[] = messages.map((m, i) => ({
+            value: m.id,
+            label: `#${i + 1}  ${m.timestamp || ""}`,
+            description: (m.content || "").substring(0, 70),
+          }));
+          const sl = new SelectList({
+            title: "Fork from message",
+            items,
+            maxVisible: 15,
+            onSelect: async (item) => {
+              try {
+                const r = await this.client.fork(item.value);
+                if (!r.cancelled) {
+                  await this.refresh();
+                  await this.loadSessionMessages();
+                  this.chat.addMessage({
+                    id: crypto.randomUUID(),
+                    role: "system",
+                    content: `Forked from ${item.label}.`,
+                  });
+                }
+              } catch (err) {
+                this.chat.addMessage({
+                  id: crypto.randomUUID(),
+                  role: "system",
+                  content: `Failed to fork: ${err}`,
+                });
+              }
+              this.hideOverlay();
+            },
+            onCancel: () => {
+              this.hideOverlay();
+            },
+          });
+          this.showOverlay(sl);
+        } catch (err) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: `Failed to load fork messages: ${err}`,
+          });
+        }
+        return;
+      }
+
+      if (cmd === "tree") {
+        try {
+          const r = await this.client.listSessions();
+          const sessions = r.sessions;
+          if (sessions.length === 0) {
+            this.chat.addMessage({
+              id: crypto.randomUUID(),
+              role: "system",
+              content: "No sessions found.",
+            });
+            return;
+          }
+          // Group sessions by cwd, build tree from parent_session_id
+          const grouped = new Map<string, typeof sessions>();
+          for (const s of sessions) {
+            const cwd = s.cwd || "";
+            if (!grouped.has(cwd)) grouped.set(cwd, []);
+            grouped.get(cwd)!.push(s);
+          }
+          // Build flat tree lines (indented by parent relationship)
+          const items: SelectItem[] = [];
+          for (const [, group] of grouped) {
+            // Build parent->children map
+            const children = new Map<string, typeof sessions>();
+            const roots: typeof sessions = [];
+            for (const s of group) {
+              const parentId = s.parent_session_id || "";
+              if (parentId && group.some((g) => g.id === parentId)) {
+                if (!children.has(parentId)) children.set(parentId, []);
+                children.get(parentId)!.push(s);
+              } else {
+                roots.push(s);
+              }
+            }
+            // Flatten recursively
+            const flatten = (list: typeof sessions, depth: number) => {
+              list.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+              for (const s of list) {
+                const prefix = depth > 0 ? "  ".repeat(depth - 1) + (children.get(s.id)?.length ? "├─ " : "└─ ") : "";
+                const currentMarker = s.id === this.state.sessionId ? "▶ " : "  ";
+                const label = `${currentMarker}${prefix}${s.name || s.id}`;
+                items.push({
+                  value: s.id,
+                  label,
+                  description: `${s.model} · ${new Date(s.updated_at).toLocaleString()}`,
+                });
+                if (children.has(s.id)) {
+                  flatten(children.get(s.id)!, depth + 1);
+                }
+              }
+            };
+            flatten(roots, 0);
+          }
+          const treeList = new SelectList({
+            title: "Session Tree",
+            items,
+            maxVisible: 20,
+            onSelect: async (item) => {
+              try {
+                if (item.value !== this.state.sessionId) {
+                  await this.client.switchSession(item.value);
+                  await this.refresh();
+                  await this.loadSessionMessages();
+                  this.chat.addMessage({
+                    id: crypto.randomUUID(),
+                    role: "system",
+                    content: `Switched to: ${item.label}`,
+                  });
+                }
+              } catch (err) {
+                this.chat.addMessage({
+                  id: crypto.randomUUID(),
+                  role: "system",
+                  content: `Failed to switch session: ${err}`,
+                });
+              }
+              this.hideOverlay();
+            },
+            onCancel: () => {
+              this.hideOverlay();
+            },
+          });
+          this.showOverlay(treeList);
+        } catch (err) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: `Failed to load session tree: ${err}`,
+          });
+        }
+        return;
+      }
+
       if (cmd === "new") {
         try {
           const result = await this.client.newSession();
