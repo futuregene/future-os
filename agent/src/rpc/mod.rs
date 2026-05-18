@@ -286,7 +286,10 @@ impl ServerSession {
         broadcaster: Arc<SseBroadcaster>,
     ) -> Self {
         let (stx, ftx) = if let Ok(loop_) = agent_loop.try_read() {
-            (loop_.steering_queue.tx.clone(), loop_.follow_up_queue.tx.clone())
+            (
+                loop_.steering_queue.tx.clone(),
+                loop_.follow_up_queue.tx.clone(),
+            )
         } else {
             let (stx, _) = tokio::sync::mpsc::channel(64);
             let (ftx, _) = tokio::sync::mpsc::channel(64);
@@ -348,7 +351,8 @@ impl ServerSession {
             ));
 
         // Set streaming flag
-        self.is_streaming.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.is_streaming
+            .store(true, std::sync::atomic::Ordering::Relaxed);
 
         // Swap per-session token counters into the agent loop so updates are tracked per-session
         {
@@ -483,7 +487,10 @@ impl ServerSession {
                             },
                             move |event| {
                                 let mut data = serde_json::Map::new();
-                                data.insert("type".to_string(), serde_json::json!(&event.event_type));
+                                data.insert(
+                                    "type".to_string(),
+                                    serde_json::json!(&event.event_type),
+                                );
                                 if !event.text.is_empty() {
                                     data.insert("text".to_string(), serde_json::json!(&event.text));
                                 }
@@ -570,7 +577,7 @@ impl ServerSession {
                         let msgs = messages_arc.read().unwrap();
                         let mut entries: Vec<crate::session::SessionEntry> = msgs
                             .iter()
-                            .map(|m| crate::session::agent_message_to_entry(m))
+                            .map(crate::session::agent_message_to_entry)
                             .collect();
 
                         // Prepend session_info entry with metadata
@@ -658,7 +665,8 @@ impl ServerSession {
                     });
                     broadcaster.broadcast(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),
-                        data: serde_json::json!({"type": "agent_end", "error": "timeout"}).to_string(),
+                        data: serde_json::json!({"type": "agent_end", "error": "timeout"})
+                            .to_string(),
                     });
                     is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
@@ -693,7 +701,8 @@ impl ServerSession {
         if let Ok(loop_) = self.agent_loop.try_write() {
             loop_.abort();
         }
-        self.is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.is_streaming
+            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn new_session(&mut self) -> Result<()> {
@@ -781,7 +790,9 @@ impl ServerSession {
                     && !model_config.compat.contains_key("thinkingFormat")
                 {
                     // Fallback: reasoning models without thinkingFormat need max_completion_tokens
-                    loop_.provider.update_max_tokens_field("max_completion_tokens");
+                    loop_
+                        .provider
+                        .update_max_tokens_field("max_completion_tokens");
                 } else {
                     loop_.provider.update_max_tokens_field("max_tokens");
                 }
@@ -1066,7 +1077,10 @@ impl AppState {
         }
         // Session not found in map — could have been created but not inserted.
         // Return default session as last resort.
-        eprintln!("[get_session] session_id={} not found in sessions map, falling back to default", session_id);
+        eprintln!(
+            "[get_session] session_id={} not found in sessions map, falling back to default",
+            session_id
+        );
         self.session.clone()
     }
 
@@ -1074,7 +1088,10 @@ impl AppState {
     /// Uses the session's own session_id as the key
     pub fn create_session(&self, session: ServerSession) -> String {
         let id = session.session_id.clone();
-        self.sessions.write().unwrap().insert(id.clone(), Arc::new(RwLock::new(session)));
+        self.sessions
+            .write()
+            .unwrap()
+            .insert(id.clone(), Arc::new(RwLock::new(session)));
         if let Ok(mut active_id) = self.active_session_id.try_write() {
             *active_id = id.clone();
         }
@@ -1098,7 +1115,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "prompt" => {
             let mut sess = session.write().unwrap();
             if sess.is_streaming.load(std::sync::atomic::Ordering::Relaxed) {
-                RpcResponse::build_fail(id, "prompt", "agent is still streaming; wait or abort first")
+                RpcResponse::build_fail(
+                    id,
+                    "prompt",
+                    "agent is still streaming; wait or abort first",
+                )
             } else {
                 let _ = sess.prompt(&cmd.message, &cmd.images, &cmd.streaming_behavior);
                 RpcResponse::ok(id, "prompt", serde_json::json!({}))
@@ -1273,7 +1294,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     if let Ok(mut active_id) = state.active_session_id.try_write() {
                         *active_id = cmd.session_id.clone();
                     }
-                    RpcResponse::ok(id, "switch_session", serde_json::json!({"cancelled": false}))
+                    RpcResponse::ok(
+                        id,
+                        "switch_session",
+                        serde_json::json!({"cancelled": false}),
+                    )
                 }
                 Err(e) => RpcResponse::build_fail(id, "switch_session", &e.to_string()),
             };
@@ -1357,10 +1382,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 let sess = session.read().unwrap();
                 (sess.session_manager.clone(), sess.session_id.clone())
             };
-            let user_entries: Vec<serde_json::Value> = session_manager
-                .load(&session_id)
-                .map(|s| {
-                    s.entries
+            let user_entries: Vec<serde_json::Value> =
+                session_manager
+                    .load(&session_id)
+                    .map(|s| {
+                        s.entries
                         .iter()
                         .filter(|e| e.entry_type == crate::session::ENTRY_TYPE_USER)
                         .map(|e| {
@@ -1384,8 +1410,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                             })
                         })
                         .collect()
-                })
-                .unwrap_or_default();
+                    })
+                    .unwrap_or_default();
             RpcResponse::ok(
                 id,
                 "get_fork_messages",
@@ -1569,7 +1595,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             let settings_path = std::path::PathBuf::from(crate::models::settings_path());
             let settings = crate::config::load_settings(&settings_path).unwrap_or_default();
             let enabled_model_ids: Vec<String> = if settings.enabled_models.is_empty() {
-                models.iter().map(|m| m["id"].as_str().unwrap_or("").to_string()).collect()
+                models
+                    .iter()
+                    .map(|m| m["id"].as_str().unwrap_or("").to_string())
+                    .collect()
             } else {
                 settings.enabled_models.clone()
             };

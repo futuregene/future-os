@@ -253,7 +253,7 @@ impl crate::types::LLMProvider for Client {
             let resp_headers: Vec<String> = resp
                 .headers()
                 .iter()
-                .map(|(k, v)| format!("{}: {:?}", k.to_string(), v.to_str().unwrap_or("")))
+                .map(|(k, v)| format!("{}: {:?}", k, v.to_str().unwrap_or("")))
                 .collect();
             eprintln!(
                 "[LLM] Error response headers ({}): {:?}",

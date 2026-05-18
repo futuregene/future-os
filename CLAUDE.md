@@ -109,6 +109,6 @@ Follows a `Component`/`Container`/`Focusable` pattern with overlay stack:
 
 **Key systems**: `keys.ts` (Kitty CSI-u/xterm/legacy parsing), `keybindings.ts` (KeybindingManager with context filtering), `theme.ts` (256-color + style composers), `utils.ts` (Intl.Segmenter-based visibleWidth, ANSI-aware word wrap, CJK/emoji grapheme width).
 
-**17 components**: AutocompleteManager, Box, CancellableLoader, ChatArea, Container, Editor, Footer, Image, Input, Loader, MarkdownRenderer, ScopedModelsSelector, SelectList, SettingsList, Spacer, Text, TruncatedText.
+**14 components**: AutocompleteManager, Box, ChatArea, Container, Editor, Footer, Image, Input, Loader, MarkdownRenderer, ScopedModelsSelector, SelectList, Spacer, Text.
 
 **RPC** (`rpc/`): gRPC client (`grpc-client.ts`) connecting to the Rust backend. 30+ methods: session management (newSession, switchSession, clone, fork, listSessions, deleteSession, setSessionName), prompting (prompt, steer, followUp, abort), model control (setModel, cycleModel, getAvailableModels, setEnabledModels, setThinkingLevel, cycleThinkingLevel), session operations (compact, getState, getMessages, getForkMessages, getLastAssistantText, getSessionStats, exportHtml), and tool control (bash, abortBash, setSteeringMode, setFollowUpMode, setAutoCompaction, setAutoRetry, abortRetry).
