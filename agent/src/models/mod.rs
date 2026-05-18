@@ -307,8 +307,8 @@ pub struct Registry {
 
 impl Registry {
     pub fn new() -> Self {
-        let (user_models, overrides) = load_user_models_with_overrides(&user_models_path())
-            .unwrap_or_default();
+        let (user_models, overrides) =
+            load_user_models_with_overrides(&user_models_path()).unwrap_or_default();
         Self {
             builtin: builtin_models(),
             user: user_models,
@@ -358,7 +358,10 @@ impl Registry {
                 .chain(self.builtin.iter())
                 .find(|m| format!("{}/{}", m.provider, m.id) == full_id)
                 .cloned()
-                .map(|mut m| { self.apply_override(&mut m); m });
+                .map(|mut m| {
+                    self.apply_override(&mut m);
+                    m
+                });
         }
         // Check user models first by exact ID
         if let Some(mut m) = self.user.iter().find(|m| m.id == id).cloned() {
@@ -366,10 +369,14 @@ impl Registry {
             return Some(m);
         }
         // Then builtin
-        self.builtin.iter().find(|m| m.id == id).cloned().map(|mut m| {
-            self.apply_override(&mut m);
-            m
-        })
+        self.builtin
+            .iter()
+            .find(|m| m.id == id)
+            .cloned()
+            .map(|mut m| {
+                self.apply_override(&mut m);
+                m
+            })
     }
 
     /// Get default model for a provider

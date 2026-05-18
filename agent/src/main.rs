@@ -85,7 +85,8 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
     // Resolve API key from auth.json > model config
-    let api_key = auth_store.get(&resolved_model)
+    let api_key = auth_store
+        .get(&resolved_model)
         .or_else(|| {
             model_config
                 .as_ref()
@@ -176,15 +177,8 @@ async fn main() -> Result<()> {
     };
 
     // Build engine
-    let mut engine = Engine::new(
-        &base_url,
-        &api_key,
-        &engine_model,
-        config,
-        None,
-        max_tokens,
-    )?
-    .with_tools(future_agent::coding_tools());
+    let mut engine = Engine::new(&base_url, &api_key, &engine_model, config, None, max_tokens)?
+        .with_tools(future_agent::coding_tools());
 
     let event_bus = Arc::new(future_agent::EventBus::new());
 

@@ -634,7 +634,9 @@ impl AgentMessage {
                         function: ToolCallFn {
                             name: tc.name.clone(),
                             arguments: match &tc.args {
-                                serde_json::Value::String(s) => serde_json::Value::String(s.clone()),
+                                serde_json::Value::String(s) => {
+                                    serde_json::Value::String(s.clone())
+                                }
                                 other => serde_json::Value::String(
                                     serde_json::to_string(other).unwrap_or_default(),
                                 ),
