@@ -48,6 +48,9 @@ run-tui: install
 generate-models:
 	cd agent && python3 scripts/generate_models.py
 
+generate-proto:
+	cd agent && cargo build
+
 # ─── Clean ──────────────────────────────────────────────────────────────────
 
 clean:
@@ -67,4 +70,5 @@ help:
 	@echo "  run-agent    Build and run Rust agent"
 	@echo "  run-tui      Run TUI in dev mode"
 	@echo "  generate-models  Fetch model data and regenerate models_generated.rs"
+	@echo "  generate-proto   Compile proto/future.proto to Rust gRPC code"
 	@echo "  clean        Remove build artifacts"
