@@ -44,7 +44,7 @@ Agent config is under `~/.future/agent/`:
 - `auth.json` — API keys by provider, plus a default key
 - `sessions/` — JSONL conversation persistence
 
-Model config reads purely from these files. No model-related CLI flags or env vars (except `LLM_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `LLM_BASE_URL` env vars which override files).
+Model config reads purely from these files. No model-related CLI flags or env vars (except `LLM_BASE_URL` env var which overrides files).
 
 The TUI does **not** read a local settings file — all configuration flows through the agent via gRPC.
 
@@ -87,7 +87,7 @@ Entry point: `main.rs` — only CLI flag is `--grpc-addr`. Resolves model from s
 
 Provider model: `LLMProvider` trait (`stream_chat`). Uses OpenAI-compatible HTTP+SSE. Thinking/reasoning extraction via compat format parameters (deepseek, openrouter, zai, qwen).
 
-API key resolution order: `LLM_API_KEY` env → `ANTHROPIC_API_KEY` env → `OPENAI_API_KEY` env → `auth.json` (by model ID) → `auth.json` (by provider) → model built-in key → `auth.json` default key.
+API key resolution order: `auth.json` (by model ID) → `auth.json` (by provider) → model built-in key → `auth.json` default key.
 
 Session files are JSONL, tree-structured (each entry has ID + optional ParentID). Entry types: session_info, user, assistant, tool, compaction, model_change, thinking_level_change, branch_summary, label, custom.
 
