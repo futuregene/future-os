@@ -104,7 +104,7 @@ Commands include: prompt, steer, followUp, abort, new_session, switch_session, s
 
 Follows a `Component`/`Container`/`Focusable` pattern with overlay stack:
 
-**Core framework** (`tui.ts`): `Component` interface (render/input/invalidation), `Container` class (addChild/removeChild, cascading invalidation), `OverlayHandle`, `InputListener` pipeline, `NodeTerminal` for raw-mode stdin with Kitty CSI-u, bracketed paste, SGR mouse tracking.
+**Core framework** (`tui.ts`): `Component` interface (render/input/invalidation), `Container` class (addChild/removeChild, cascading invalidation), `OverlayHandle`, `InputListener` pipeline, `NodeTerminal` for raw-mode stdin with Kitty CSI-u, bracketed paste. Mouse tracking disabled — native text selection works, scroll via keyboard.
 
 **Rendering** (`app.ts`): Dual-phase scheduling (nextTick + setTimeout at ~60fps), differential rendering (changed-line ranges → minimal ANSI updates), overlay compositing, Kitty image lifecycle management.
 
