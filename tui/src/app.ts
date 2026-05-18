@@ -454,23 +454,6 @@ export class App extends Container {
       if (!focused?.wantsKeyRelease) return;
     }
 
-    // SGR mouse events: \x1b[<B;X;YM (press) or \x1b[<B;X;Ym (release)
-    // B=64 scroll up, B=65 scroll down
-    const mouseMatch = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/);
-    if (mouseMatch) {
-      const button = parseInt(mouseMatch[1]!, 10);
-      if (button === 64) {
-        // Scroll up: move viewport up, disable auto-scroll
-        this.chat.scrollUp(3);
-        this.requestRender();
-      } else if (button === 65) {
-        // Scroll down: move viewport down, re-enable auto-scroll at bottom
-        this.chat.scrollDown(3);
-        this.requestRender();
-      }
-      return;
-    }
-
     // Input listener pipeline
     if (this.inputListeners.size > 0) {
       let d: string | undefined = data;

@@ -93,8 +93,8 @@ export class NodeTerminal implements Terminal {
     // Enable bracketed paste mode
     process.stdout.write("\x1b[?2004h");
 
-    // Enable SGR mouse tracking (basic + extended coordinates)
-    process.stdout.write("\x1b[?1000h\x1b[?1006h");
+    // Mouse tracking disabled — native text selection takes priority.
+    // Scroll via keyboard (PgUp/PgDn, Up/Down) or trackpad in some terminals.
 
     // Failsafe: restore terminal on unexpected exit (crash, uncaught exception, etc.)
     // Must be synchronous — process.exit event doesn't support async.
@@ -104,8 +104,6 @@ export class NodeTerminal implements Terminal {
       process.stdout.write("\x1b[?25h");
       // Disable bracketed paste mode
       process.stdout.write("\x1b[?2004l");
-      // Disable SGR mouse tracking
-      process.stdout.write("\x1b[?1006l\x1b[?1000l");
       // Disable Kitty keyboard protocol
       if (this._kittyProtocolActive) {
         process.stdout.write("\x1b[<u");
@@ -240,9 +238,6 @@ export class NodeTerminal implements Terminal {
 
     // Disable bracketed paste mode
     process.stdout.write("\x1b[?2004l");
-
-    // Disable SGR mouse tracking
-    process.stdout.write("\x1b[?1006l\x1b[?1000l");
 
     // Disable Kitty keyboard protocol
     if (this._kittyProtocolActive) {
