@@ -1,0 +1,239 @@
+// future.proto - Protocol Buffers schema for FutureAgent
+// This schema defines the gRPC API for the FutureAgent engine.
+// Generated code from this file should be used by all client implementations.
+
+syntax = "proto3";
+
+package proto;
+
+option go_package = "github.com/futuregene/future-os/proto/go;proto";
+option java_package = "ai.proto";
+option java_multiple_files = true;
+
+// =============================================================================
+// RPC Commands
+// =============================================================================
+
+message RpcCommand {
+  string id = 1;
+  string type = 2;  // Command type: "prompt", "get_state", "bash", etc.
+
+  // Prompting
+  string message = 10;
+  repeated ImageContent images = 11;
+  string streaming_behavior = 12;  // "steer" | "followUp"
+
+  // new_session
+  string parent_session = 20;
+
+  // set_model
+  string provider = 30;
+  string model_id = 31;
+
+  // set_thinking_level
+  string level = 40;  // "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
+
+  // set_steering_mode / set_follow_up_mode
+  string mode = 50;  // "all" | "one-at-a-time"
+
+  // compact
+  string custom_instructions = 60;
+
+  // set_auto_compaction / set_auto_retry
+  bool enabled = 70;
+
+  // bash
+  string command = 80;
+
+  // Session
+  string session_path = 90;
+  string session_id = 91;
+  string entry_id = 92;
+  string name = 93;
+  string output_path = 94;
+
+  // new_session cwd (TUI working directory)
+  string cwd = 95;
+
+  // set_system_prompt
+  string system_prompt = 100;
+
+  // set_tools / disable_tools
+  repeated string tools = 110;
+  bool no_tools = 111;
+
+  // set_ephemeral
+  bool ephemeral = 120;
+
+  // set_enabled_models
+  repeated string enabled_models = 130;
+}
+
+message ImageContent {
+  string type = 1;  // "image_url" | "image_base64"
+  oneof content {
+    string url = 10;
+    string base64 = 11;
+  }
+}
+
+// =============================================================================
+// RPC Responses
+// =============================================================================
+
+message RpcResponse {
+  string id = 1;
+  string type = 2;  // always "response"
+  string command = 3;  // the command this responds to
+  bool success = 4;
+  string data = 5;  // JSON string representation of response data
+  string error = 6;
+}
+
+// =============================================================================
+// Session State
+// =============================================================================
+
+message SessionState {
+  string model = 1;
+  string thinking_level = 2;
+  bool is_streaming = 3;
+  bool is_compacting = 4;
+  string steering_mode = 5;
+  string follow_up_mode = 6;
+  string session_file = 7;
+  string session_id = 8;
+  string session_name = 9;
+  bool explicit_session = 10;
+  bool auto_compaction_enabled = 11;
+  int32 message_count = 12;
+  int32 pending_message_count = 13;
+  string version = 14;
+  string cwd = 15;
+  repeated string skills = 16;
+  repeated string context_files = 17;
+  repeated string extensions = 18;
+  int32 context_tokens = 19;
+  int32 context_window = 20;
+  double context_percent = 21;
+  int32 tokens_in = 22;
+  int32 tokens_out = 23;
+  double total_cost = 24;
+}
+
+// =============================================================================
+// Session Stats
+// =============================================================================
+
+message SessionStats {
+  string session_file = 1;
+  string session_id = 2;
+  int32 user_messages = 3;
+  int32 assistant_messages = 4;
+  int32 tool_calls = 5;
+  int32 tool_results = 6;
+  int32 total_messages = 7;
+  TokenStats tokens = 8;
+  double cost = 9;
+}
+
+message TokenStats {
+  int32 input = 1;
+  int32 output = 2;
+  int32 cache_read = 3;
+  int32 total = 4;
+}
+
+// =============================================================================
+// Messages
+// =============================================================================
+
+message Message {
+  string role = 1;  // "user" | "assistant" | "tool"
+  repeated ContentBlock content = 2;
+  string name = 3;
+  ToolCalls tool_calls = 4;
+  ToolCall tool_call = 5;
+  string text = 6;
+}
+
+message ContentBlock {
+  string type = 1;  // "text" | "image" | "tool_use" | "tool_result"
+  string text = 10;
+  string image_url = 11;
+  string tool_use_id = 12;
+  string tool_use_name = 13;
+  string tool_use_input = 14;
+  string tool_result_id = 15;
+  string tool_result_content = 16;
+}
+
+message ToolCalls {
+  repeated ToolCall calls = 1;
+}
+
+message ToolCall {
+  string id = 1;
+  string type = 2;  // "function"
+  FunctionCall function = 3;
+}
+
+message FunctionCall {
+  string name = 1;
+  string arguments = 2;  // JSON string
+}
+
+// =============================================================================
+// Bash Result
+// =============================================================================
+
+message BashResult {
+  string output = 1;
+  int32 exit_code = 2;
+}
+
+// =============================================================================
+// Compact Result
+// =============================================================================
+
+message CompactResult {
+  int32 tokens_before = 1;
+  int32 tokens_after = 2;
+  string summary = 3;
+  int32 messages_removed = 4;
+}
+
+// =============================================================================
+// Session List Item
+// =============================================================================
+
+message SessionListItem {
+  string id = 1;
+  string cwd = 2;
+  string model = 3;
+  int64 updated_at = 4;
+}
+
+// =============================================================================
+// gRPC Service Definition
+// =============================================================================
+
+service FutureAgent {
+  // Unary RPC - send command, get response
+  rpc ExecuteCommand(RpcCommand) returns (RpcResponse);
+
+  // Server-side streaming - for SSE events
+  rpc StreamEvents(StreamRequest) returns (stream StreamEvent);
+}
+
+message StreamRequest {
+  // Client can specify filters for events
+  repeated string event_types = 1;
+}
+
+message StreamEvent {
+  string type = 1;  // Event type: "ping", "message", "tool_call", etc.
+  string data = 2;   // JSON serialized event data
+}
+
+
