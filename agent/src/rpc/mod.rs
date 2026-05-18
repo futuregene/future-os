@@ -144,7 +144,7 @@ pub struct SseBroadcaster {
 
 impl SseBroadcaster {
     pub fn new() -> Self {
-        let (tx, _) = broadcast::channel(64);
+        let (tx, _) = broadcast::channel(4096);
         Self { tx }
     }
 
@@ -463,7 +463,7 @@ impl ServerSession {
         // Spawn background task to run agent loop
         tokio::spawn(async move {
             // Run with timeout
-            let result = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            let result = tokio::time::timeout(std::time::Duration::from_secs(600), async {
                 let mut current_messages = initial_messages;
                 let mut current_interrupt_rx = Some(interrupt_rx);
 

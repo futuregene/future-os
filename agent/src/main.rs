@@ -1,4 +1,4 @@
-//! future-agent — Rust agent backend (CLI entry point)
+//! future-agent — Rust agent backend (gRPC server entry point)
 
 use anyhow::Result;
 use chrono::Local;
@@ -14,52 +14,15 @@ use std::sync::Arc;
 #[command(name = "future-agent")]
 #[command(version = future_agent::utils::VERSION)]
 struct Cli {
-    /// Base URL for LLM API
-    #[arg(long, env = "LLM_BASE_URL")]
-    base_url: Option<String>,
-
-    /// API key
-    #[arg(long, env = "LLM_API_KEY")]
-    api_key: Option<String>,
-
-    /// Model name
-    #[arg(short, long, env = "LLM_MODEL")]
-    model: Option<String>,
-
-    /// Thinking level
-    #[arg(long)]
-    thinking: Option<String>,
-
-    /// Session directory
-    #[arg(long)]
-    session_dir: Option<String>,
-
-    /// Offline mode
-    #[arg(long)]
-    offline: bool,
-
-    /// Verbose output
-    #[arg(short, long)]
-    verbose: bool,
-
     /// gRPC server address (host:port, e.g., 127.0.0.1:50051)
     #[arg(long, default_value = "127.0.0.1:50051")]
     grpc_addr: String,
-
-    /// Message arguments
-    messages: Vec<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    if cli.offline {
-        env::set_var("FUTURE_OFFLINE", "1");
-        env::set_var("FUTURE_SKIP_VERSION_CHECK", "1");
-    }
-
-    // Always use home directory — the agent should not depend on its launch directory
     let cwd = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
         .to_string_lossy()
@@ -69,66 +32,64 @@ async fn main() -> Result<()> {
     let model_registry = ModelRegistry::new();
     let all_models = model_registry.all_models();
 
-    // Resolve model: CLI arg > env > settings.json default > user models.json > builtin default
-    let model_from_user = cli.model.is_some() || env::var("LLM_MODEL").ok().is_some();
-    let mut resolved_model = cli
-        .model
-        .or_else(|| env::var("LLM_MODEL").ok())
-        .or_else(future_agent::models::get_default_model)
+    // Load settings
+    let settings_path = std::path::PathBuf::from(future_agent::models::settings_path());
+    let settings = future_agent::config::load_settings(&settings_path).unwrap_or_default();
+
+    // Load auth store
+    let auth_store = future_agent::AuthStore::load();
+
+    // Resolve model from config files only:
+    // settings.json default_model > models.json (first with api_key) > builtin default
+    let resolved_model = future_agent::models::get_default_model()
         .or_else(|| {
-            // Try to find a user-configured model from models.json
             all_models
                 .iter()
                 .find(|m| !m.api_key.is_empty())
                 .map(|m| m.id.clone())
         })
-        .unwrap_or_else(|| "gpt-4o".to_string());
+        .unwrap_or_else(|| "deepseek-v4-flash".to_string());
+
+    // Apply scoped models from settings
+    let resolved_model = if !settings.enabled_models.is_empty() {
+        let scoped = model_registry.resolve_scope(&settings.enabled_models, &auth_store);
+        if !scoped.is_empty() {
+            let default_model = &settings.default_model;
+            let saved_in_scope = if !default_model.is_empty() {
+                scoped.iter().find(|m| *m == default_model)
+            } else {
+                None
+            };
+            if let Some(m) = saved_in_scope {
+                m.clone()
+            } else {
+                scoped[0].clone()
+            }
+        } else {
+            resolved_model
+        }
+    } else {
+        resolved_model
+    };
 
     // Resolve model config
     let model_config = model_registry.resolve(&resolved_model);
 
-    // Use canonical model ID for API calls (strip provider prefix)
     let engine_model = model_config
         .as_ref()
         .map(|m| m.id.clone())
         .unwrap_or_else(|| resolved_model.clone());
 
-    let base_url = cli
-        .base_url
-        .or_else(|| env::var("LLM_BASE_URL").ok())
+    let base_url = env::var("LLM_BASE_URL")
+        .ok()
         .or_else(|| model_config.as_ref().map(|m| m.base_url.clone()))
         .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
-    // Load auth store for API keys
-    let auth_store = future_agent::AuthStore::load();
-
-    // Resolve API key: CLI arg > env > auth.json > model config
-    let api_key = cli
-        .api_key
-        .or_else(|| {
-            let k = env::var("LLM_API_KEY").unwrap_or_default();
-            if k.is_empty() {
-                None
-            } else {
-                Some(k)
-            }
-        })
-        .or_else(|| {
-            let k = env::var("ANTHROPIC_API_KEY").unwrap_or_default();
-            if k.is_empty() {
-                None
-            } else {
-                Some(k)
-            }
-        })
-        .or_else(|| {
-            let k = env::var("OPENAI_API_KEY").unwrap_or_default();
-            if k.is_empty() {
-                None
-            } else {
-                Some(k)
-            }
-        })
+    // Resolve API key from env vars > auth.json > model config
+    let api_key = env::var("LLM_API_KEY")
+        .ok()
+        .or_else(|| env::var("ANTHROPIC_API_KEY").ok())
+        .or_else(|| env::var("OPENAI_API_KEY").ok())
         .or_else(|| auth_store.get(&resolved_model))
         .or_else(|| {
             model_config
@@ -147,42 +108,14 @@ async fn main() -> Result<()> {
         .or_else(|| auth_store.default_key())
         .unwrap_or_default();
 
-    // Load settings for defaults
-    let settings_path = std::path::PathBuf::from(future_agent::models::settings_path());
-    let settings = future_agent::config::load_settings(&settings_path).unwrap_or_default();
+    // Resolve thinking level from settings.json
+    let thinking = if settings.default_thinking_level.is_empty() {
+        None
+    } else {
+        Some(settings.default_thinking_level.clone())
+    };
 
-    // If enabled_models is set and model not from CLI, pick from scope
-    if !settings.enabled_models.is_empty() && !model_from_user {
-        let scoped = model_registry.resolve_scope(&settings.enabled_models, &auth_store);
-        if !scoped.is_empty() {
-            let default_model = settings.default_model.clone();
-            let saved_in_scope = if !default_model.is_empty() {
-                scoped.iter().find(|m| *m == &default_model)
-            } else {
-                None
-            };
-            if let Some(m) = saved_in_scope {
-                resolved_model = m.clone();
-            } else {
-                // Pick first scoped model
-                resolved_model = scoped[0].clone();
-            }
-        }
-    }
-
-    // Resolve thinking level: CLI arg > env > settings.json default
-    let thinking = cli
-        .thinking
-        .or_else(|| env::var("LLM_THINKING").ok())
-        .or_else(|| {
-            if settings.default_thinking_level.is_empty() {
-                None
-            } else {
-                Some(settings.default_thinking_level.clone())
-            }
-        });
-
-    // Parse thinking level map from model config (e.g. deepseek: {high: "high"})
+    // Parse thinking level map from model config
     let thinking_level_map: std::collections::HashMap<String, String> = model_config
         .as_ref()
         .map(|m| {
@@ -193,7 +126,7 @@ async fn main() -> Result<()> {
         })
         .unwrap_or_default();
 
-    // Cap max_tokens at 32000 (matching pi-mono)
+    // Cap max_tokens at 32000
     let max_tokens = model_config.as_ref().and_then(|m| {
         if m.max_tokens > 0 {
             Some(std::cmp::min(m.max_tokens, 32000))
@@ -202,7 +135,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Build engine config — apply settings defaults where CLI/env didn't override
+    // Build engine config from settings and model config
     let config = EngineConfig {
         cwd: cwd.clone(),
         max_turns: if settings.max_turns > 0 {
@@ -234,12 +167,8 @@ async fn main() -> Result<()> {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .or_else(|| {
-                // Fallback: reasoning models without thinkingFormat need
-                // max_completion_tokens (Azure GPT-5/o1/o3 etc. don't set maxTokensField yet)
                 let m = model_config.as_ref()?;
-                if m.reasoning
-                    && !m.compat.contains_key("thinkingFormat")
-                {
+                if m.reasoning && !m.compat.contains_key("thinkingFormat") {
                     Some("max_completion_tokens".to_string())
                 } else {
                     None
@@ -257,148 +186,107 @@ async fn main() -> Result<()> {
         &api_key,
         &engine_model,
         config,
-        None, // temperature: use model default
+        None,
         max_tokens,
     )?
     .with_tools(future_agent::coding_tools());
 
-    // Create event bus for server mode
     let event_bus = Arc::new(future_agent::EventBus::new());
 
-    if cli.verbose {
-        eprintln!("\x1b[33m[model]\x1b[0m {}", resolved_model);
-    }
+    // Always run gRPC server mode
+    let (grpc_host, grpc_port) = if cli.grpc_addr.starts_with(':') {
+        let port_str = &cli.grpc_addr[1..];
+        ("127.0.0.1", port_str.parse().unwrap_or(50051))
+    } else if cli.grpc_addr.contains(':') {
+        let parts: Vec<&str> = cli.grpc_addr.split(':').collect();
+        let host = parts.first().copied().unwrap_or("127.0.0.1");
+        let port: u16 = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(50051);
+        (host, port)
+    } else {
+        match cli.grpc_addr.parse::<u16>() {
+            Ok(port) => ("127.0.0.1", port),
+            Err(_) => ("127.0.0.1", 50051),
+        }
+    };
+    eprintln!("gRPC server listening on {}:{}", grpc_host, grpc_port);
 
-    // Server mode (gRPC only)
-    if cli.messages.is_empty() {
-        // No messages → start server mode for TUI
-        // Parse grpc_addr (host:port or just port)
-        let (grpc_host, grpc_port) = if cli.grpc_addr.starts_with(':') {
-            // Just port: :50051
-            let port_str = &cli.grpc_addr[1..];
-            ("127.0.0.1", port_str.parse().unwrap_or(50051))
-        } else if cli.grpc_addr.contains(':') {
-            // host:port format
-            let parts: Vec<&str> = cli.grpc_addr.split(':').collect();
-            let host = parts.first().copied().unwrap_or("127.0.0.1");
-            let port: u16 = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(50051);
-            (host, port)
-        } else {
-            // Just port number
-            match cli.grpc_addr.parse::<u16>() {
-                Ok(port) => ("127.0.0.1", port),
-                Err(_) => ("127.0.0.1", 50051),
-            }
-        };
-        eprintln!("gRPC server listening on {}:{}", grpc_host, grpc_port);
-        // Discover skills (matching Go's paths)
-        let skill_dirs = vec![
-            USER_SKILLS_DIR.to_string(),
-            format!("{}/{}", cwd, PROJECT_SKILLS_DIR),
-            AGENTS_SKILLS_DIR.to_string(),
-        ];
-        let skills = future_agent::discover_skills(&skill_dirs).unwrap_or_default();
-        let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
+    // Discover skills
+    let skill_dirs = vec![
+        USER_SKILLS_DIR.to_string(),
+        format!("{}/{}", cwd, PROJECT_SKILLS_DIR),
+        AGENTS_SKILLS_DIR.to_string(),
+    ];
+    let skills = future_agent::discover_skills(&skill_dirs).unwrap_or_default();
+    let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
 
-        // Load project context (CLAUDE.md / AGENTS.md / GEMINI.md)
-        let mut agent_content = String::new();
-        for fname in &["CLAUDE.md", "AGENTS.md", "GEMINI.md"] {
-            let p = std::path::Path::new(&cwd).join(fname);
-            if p.exists() {
-                if let Ok(content) = std::fs::read_to_string(&p) {
-                    agent_content = content;
-                    break;
-                }
+    // Load project context
+    let mut agent_content = String::new();
+    for fname in &["CLAUDE.md", "AGENTS.md", "GEMINI.md"] {
+        let p = std::path::Path::new(&cwd).join(fname);
+        if p.exists() {
+            if let Ok(content) = std::fs::read_to_string(&p) {
+                agent_content = content;
+                break;
             }
         }
-        let context_lines: Vec<String> = if agent_content.is_empty() {
-            vec![]
-        } else {
-            vec![agent_content.clone()]
-        };
+    }
+    let context_lines: Vec<String> = if agent_content.is_empty() {
+        vec![]
+    } else {
+        vec![agent_content.clone()]
+    };
 
-        // Build system prompt (skills + context + identity)
-        let today = Local::now().format("%Y-%m-%d").to_string();
-        let system_prompt =
-            future_agent::prompt::build_prompt(&future_agent::prompt::PromptOptions {
-                working_directory: cwd.clone(),
-                date: today,
-                tools: engine.tools.clone(),
-                skills: skills.clone(),
-                agent_content,
-                ..Default::default()
-            });
-        engine.agent_loop.system_prompt = system_prompt.clone();
-        engine.agent_loop.config.system_prompt = system_prompt;
+    // Build system prompt
+    let today = Local::now().format("%Y-%m-%d").to_string();
+    let system_prompt = future_agent::prompt::build_prompt(&future_agent::prompt::PromptOptions {
+        working_directory: cwd.clone(),
+        date: today,
+        tools: engine.tools.clone(),
+        skills: skills.clone(),
+        agent_content,
+        ..Default::default()
+    });
+    engine.agent_loop.system_prompt = system_prompt.clone();
+    engine.agent_loop.config.system_prompt = system_prompt;
 
-        let manager = Arc::new(Manager::default_for(&cwd));
-        let broadcaster: Arc<future_agent::rpc::SseBroadcaster> =
-            Arc::new(future_agent::rpc::SseBroadcaster::new());
-        let mut server_session = ServerSession::new(
-            future_agent::utils::generate_id(),
-            Arc::new(tokio::sync::RwLock::new(engine.agent_loop)),
-            manager,
-            &cwd,
-            event_bus.clone(),
-            broadcaster.clone(),
-        );
-        server_session.model = resolved_model.clone();
+    let manager = Arc::new(Manager::default_for(&cwd));
+    let broadcaster: Arc<future_agent::rpc::SseBroadcaster> =
+        Arc::new(future_agent::rpc::SseBroadcaster::new());
+    let mut server_session = ServerSession::new(
+        future_agent::utils::generate_id(),
+        Arc::new(tokio::sync::RwLock::new(engine.agent_loop)),
+        manager,
+        &cwd,
+        event_bus.clone(),
+        broadcaster.clone(),
+    );
+    server_session.model = resolved_model.clone();
 
-        // Apply thinking level from CLI/env/settings (server init defaults to "high")
-        if let Some(ref level) = thinking {
-            server_session.set_thinking_level(level);
-        }
-
-        // Apply settings to session (matching pi's SettingsManager getter defaults)
-        server_session.set_steering_mode(&settings.steering_mode_or_default());
-        server_session.set_follow_up_mode(&settings.follow_up_mode_or_default());
-        server_session.set_auto_compaction(settings.compaction_enabled());
-        server_session.set_auto_retry(settings.retry_enabled());
-
-        let session = Arc::new(std::sync::RwLock::new(server_session));
-
-        // Build AppState for gRPC server
-        let app_state = future_agent::rpc::AppState {
-            session: session.clone(),
-            sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-            active_session_id: Arc::new(std::sync::RwLock::new(String::new())),
-            welcome_version: future_agent::utils::VERSION.to_string(),
-            welcome_cwd: cwd.clone(),
-            welcome_skills: skill_names.clone(),
-            welcome_context: context_lines,
-            welcome_exts: vec![],
-            explicit_session: false,
-            broadcaster: broadcaster.clone(),
-            event_bus: event_bus.clone(),
-        };
-
-        // Run gRPC server (no HTTP)
-        future_agent::grpc::serve(app_state, grpc_host, grpc_port).await?;
-        return Ok(());
+    if let Some(ref level) = thinking {
+        server_session.set_thinking_level(level);
     }
 
-    // Non-server mode: run prompt
-    if cli.messages.is_empty() {
-        eprintln!("Usage: future-agent [options] [messages...]");
-        std::process::exit(1);
-    }
+    server_session.set_steering_mode(&settings.steering_mode_or_default());
+    server_session.set_follow_up_mode(&settings.follow_up_mode_or_default());
+    server_session.set_auto_compaction(settings.compaction_enabled());
+    server_session.set_auto_retry(settings.retry_enabled());
 
-    let msg = cli.messages.join(" ");
+    let session = Arc::new(std::sync::RwLock::new(server_session));
 
-    // Build initial message
-    let messages = vec![future_agent::AgentMessage::new_user(
-        "user",
-        serde_json::json!([{"type": "text", "text": msg}]),
-    )];
+    let app_state = future_agent::rpc::AppState {
+        session: session.clone(),
+        sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        active_session_id: Arc::new(std::sync::RwLock::new(String::new())),
+        welcome_version: future_agent::utils::VERSION.to_string(),
+        welcome_cwd: cwd.clone(),
+        welcome_skills: skill_names.clone(),
+        welcome_context: context_lines,
+        welcome_exts: vec![],
+        explicit_session: false,
+        broadcaster: broadcaster.clone(),
+        event_bus: event_bus.clone(),
+    };
 
-    // Run agent
-    let agent_loop = engine.agent_loop;
-
-    let (_result, _final_messages) = agent_loop
-        .run_streaming_with_messages(messages, |text| print!("{}", text), |_event| {}, None)
-        .await?;
-
-    println!();
-
+    future_agent::grpc::serve(app_state, grpc_host, grpc_port).await?;
     Ok(())
 }
