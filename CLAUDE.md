@@ -44,7 +44,7 @@ Agent config is under `~/.future/agent/`:
 - `auth.json` — API keys by provider, plus a default key
 - `sessions/` — JSONL conversation persistence
 
-Model config reads purely from these files. No model-related CLI flags or env vars (except `LLM_BASE_URL` env var which overrides files).
+Model config reads purely from these files. No model-related CLI flags or env vars.
 
 The TUI does **not** read a local settings file — all configuration flows through the agent via gRPC.
 

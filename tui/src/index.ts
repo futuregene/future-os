@@ -80,7 +80,7 @@ interface CliArgs {
 
 function parseArgs(args: string[]): CliArgs {
   const result: CliArgs = {
-    grpcAddr: process.env.FUTURE_GRPC_ADDR ?? "localhost:50051",
+    grpcAddr: "localhost:50051",
     session: null,
     continue: false,
     resume: false,

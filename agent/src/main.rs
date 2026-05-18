@@ -7,7 +7,6 @@ use future_agent::{
     Engine, EngineConfig, Manager, ModelRegistry, ServerSession, AGENTS_SKILLS_DIR,
     PROJECT_SKILLS_DIR, USER_SKILLS_DIR,
 };
-use std::env;
 use std::sync::Arc;
 
 #[derive(Parser)]
@@ -80,9 +79,9 @@ async fn main() -> Result<()> {
         .map(|m| m.id.clone())
         .unwrap_or_else(|| resolved_model.clone());
 
-    let base_url = env::var("LLM_BASE_URL")
-        .ok()
-        .or_else(|| model_config.as_ref().map(|m| m.base_url.clone()))
+    let base_url = model_config
+        .as_ref()
+        .map(|m| m.base_url.clone())
         .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
     // Resolve API key from auth.json > model config
