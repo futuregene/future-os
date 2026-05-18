@@ -353,11 +353,12 @@ async fn run_bash(command: &str, _timeout_secs: u64) -> Result<String> {
         format!("{}\n{}", stdout, stderr)
     };
 
-    // Truncate to last 50000 bytes
+    // Truncate to last 50000 bytes, respecting UTF-8 char boundaries
     let combined = if combined.len() > 50000 {
+        let start = combined.ceil_char_boundary(combined.len() - 50000);
         format!(
             "...(truncated, showing last 50000 chars)\n{}",
-            &combined[combined.len() - 50000..]
+            &combined[start..]
         )
     } else {
         combined
