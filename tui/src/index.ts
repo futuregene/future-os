@@ -66,8 +66,6 @@ interface CliArgs {
   noSession: boolean;
   // New options
   mode: string | null;
-  theme: string | null;
-  noThemes: boolean;
   promptTemplate: string[] | null;
   noPromptTemplates: boolean;
   noContextFiles: boolean;
@@ -103,8 +101,6 @@ function parseArgs(args: string[]): CliArgs {
     noBuiltinTools: false,
     noSession: false,
     mode: null,
-    theme: null,
-    noThemes: false,
     promptTemplate: null,
     noPromptTemplates: false,
     noContextFiles: false,
@@ -228,14 +224,6 @@ function parseArgs(args: string[]): CliArgs {
           result.mode = args[++i];
         }
         break;
-      case "--theme":
-        if (i + 1 < args.length) {
-          result.theme = args[++i];
-        }
-        break;
-      case "--no-themes":
-        result.noThemes = true;
-        break;
       case "--prompt-template":
         result.promptTemplate = result.promptTemplate ?? [];
         if (i + 1 < args.length) {
@@ -316,8 +304,6 @@ Options:
   --no-builtin-tools, -nbt Disable built-in tools (keep extensions)
   --no-session          Ephemeral mode (don't save session)
   --mode <mode>        Output mode: text, json (default: text)
-  --theme <path>       Load a theme file
-  --no-themes          Disable themes
   --prompt-template <path> Load a prompt template file
   --no-prompt-templates, -np Disable prompt templates
   --no-context-files, -nc  Disable AGENTS.md and CLAUDE.md discovery

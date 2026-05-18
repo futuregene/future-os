@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 fn main() {
     // Find the proto directory (sibling to agent)
-    let proto_dir = PathBuf::from("../proto/proto");
+    let proto_dir = PathBuf::from("../proto");
 
     if !proto_dir.exists() {
         println!(
@@ -31,7 +31,7 @@ fn main() {
         return;
     }
 
-    println!("cargo:rerun-if-changed=../proto/proto");
+    println!("cargo:rerun-if-changed=../proto");
 
     // Compile with tonic_build
     tonic_build::configure()
