@@ -145,6 +145,16 @@ impl Loop {
         if let Some(ref bus) = self.event_bus {
             bus.emit(agent_start(&self.session_id, &self.model, ""));
         }
+        on_event(StreamEvent {
+            event_type: "agent_start".to_string(),
+            text: String::new(),
+            tool_call: None,
+            tool_name: String::new(),
+            tool_id: String::new(),
+            usage: None,
+            stop_reason: String::new(),
+            error_text: String::new(),
+        });
 
         let tool_defs: Vec<_> = self.tools.iter().map(|t| t.def.clone()).collect();
         let mut last_error = None;
@@ -489,6 +499,18 @@ impl Loop {
                     if let Some(ref bus) = self.event_bus {
                         bus.emit(events::turn_end(turn));
                     }
+                    // Emit agent_start so the TUI creates a new assistant block
+                    // for the follow-up response (under the follow-up user message).
+                    on_event(StreamEvent {
+                        event_type: "agent_start".to_string(),
+                        text: String::new(),
+                        tool_call: None,
+                        tool_name: String::new(),
+                        tool_id: String::new(),
+                        usage: None,
+                        stop_reason: String::new(),
+                        error_text: String::new(),
+                    });
                     continue;
                 }
                 if let Some(ref bus) = self.event_bus {
