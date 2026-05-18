@@ -43,6 +43,11 @@ run-agent:
 run-tui: install
 	cd tui && npm run dev
 
+# ─── Generate ───────────────────────────────────────────────────────────────
+
+generate-models:
+	cd agent && python3 scripts/generate_models.py
+
 # ─── Clean ──────────────────────────────────────────────────────────────────
 
 clean:
@@ -61,4 +66,5 @@ help:
 	@echo "  fmt          Format Rust code"
 	@echo "  run-agent    Build and run Rust agent"
 	@echo "  run-tui      Run TUI in dev mode"
+	@echo "  generate-models  Fetch model data and regenerate models_generated.rs"
 	@echo "  clean        Remove build artifacts"
