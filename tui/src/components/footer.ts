@@ -4,7 +4,7 @@
  */
 
 import { CSI, RESET } from "../tui.js";
-import { visibleWidth } from "../utils.js";
+import { visibleWidth, truncateToWidth } from "../utils.js";
 import type { Component } from "../tui.js";
 
 export interface FooterData {
@@ -120,10 +120,17 @@ export class Footer implements Component {
 
     const leftLen = visibleWidth(leftStr);
     const rightLen = visibleWidth(right);
-    const padding = Math.max(1, width - leftLen - rightLen - 1);
+    const avail = width - 1; // reserve 1 for safety margin
 
-    // Use terminal default background (no explicit bg color)
-    const line = leftStr + baseFg + " ".repeat(padding) + right;
+    // Truncate right side if combined width exceeds terminal
+    let rightStr = right;
+    if (leftLen + rightLen > avail) {
+      const maxRight = Math.max(0, avail - leftLen);
+      rightStr = truncateToWidth(right, maxRight, { ellipsis: false });
+    }
+
+    const padding = Math.max(1, width - leftLen - visibleWidth(rightStr) - 1);
+    const line = leftStr + baseFg + " ".repeat(padding) + rightStr;
 
     return [`${line}${RESET}`];
   }
