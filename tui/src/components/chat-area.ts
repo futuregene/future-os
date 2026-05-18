@@ -37,7 +37,7 @@ export class ChatArea implements Component {
 
   private md = new MarkdownRenderer();
   private theme: Theme;
-
+  private onChange?: () => void;
 
   constructor(private maxWidth = 80, theme?: Theme) {
     this.theme = theme ?? {
@@ -80,6 +80,11 @@ export class ChatArea implements Component {
     this.messages.push(msg);
     this.rerender();
     if (this.autoScroll) this.scrollToBottom();
+    this.onChange?.();
+  }
+
+  setOnChange(cb: () => void): void {
+    this.onChange = cb;
   }
 
   private lastAssistantMsg(): ChatMessage | undefined {

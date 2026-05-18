@@ -176,6 +176,7 @@ export class App extends Container {
     this.client = new GrpcClient(grpcAddr);
     this.theme = DARK_THEME;
     this.chat = new ChatArea(this.terminal.columns);
+    this.chat.setOnChange(() => this.requestRender());
     this.footer = new Footer(this.terminal.columns);
 
     this.input = new Input();
