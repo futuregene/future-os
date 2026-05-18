@@ -108,6 +108,7 @@ export class App extends Container {
     model: "",
     thinking: "off",
     streaming: false,
+    spinnerFrame: 0,
     sessionId: "",  // Current session ID
     sessionName: "",
     cwd: "",
@@ -1656,6 +1657,7 @@ export class App extends Container {
 
   private doRender(): void {
     if (!this.running) return;
+    if (this.state.streaming) this.state.spinnerFrame++;
     const W = this.terminal.columns;
     const H = this.terminal.rows;
     const widthChanged = this.previousWidth !== 0 && this.previousWidth !== W;
@@ -1676,6 +1678,7 @@ export class App extends Container {
       model: this.state.model,
       thinking: this.state.thinking,
       streaming: this.state.streaming,
+      spinnerFrame: this.state.spinnerFrame,
       sessionName: this.state.sessionName,
       contextTokens: this.state.contextTokens,
       contextWindow: this.state.contextWindow,

@@ -12,6 +12,7 @@ export interface FooterData {
   model?: string;
   thinking?: string;
   streaming?: boolean;
+  spinnerFrame?: number;
   sessionName?: string;
   pending?: number;
   contextTokens?: number;
@@ -34,6 +35,9 @@ const GREEN_FG = 71;
 const YELLOW_FG = 226;
 const RED_FG = 204;
 const AUTO_FG = 240;
+const SPINNER_FG = 39;
+
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 function colorFg(c: number, text: string): string {
   return `\x1b[38;5;${c}m${text}\x1b[38;5;${BASE_FG}m`;
@@ -57,8 +61,14 @@ export class Footer implements Component {
   render(width: number): string[] {
     const baseFg = `\x1b[38;5;${BASE_FG}m`;
 
-    // Build left side: [pwd] [model] [thinking]
+    // Build left side: [spinner] [pwd] [model] [thinking]
     const leftParts: string[] = [];
+
+    // Spinner when streaming
+    if (this.data.streaming) {
+      const frameIdx = (this.data.spinnerFrame ?? 0) % SPINNER_FRAMES.length;
+      leftParts.push(colorFg(SPINNER_FG, SPINNER_FRAMES[frameIdx]));
+    }
 
     // PWD — uses default fg (245)
     if (this.data.cwd) {
