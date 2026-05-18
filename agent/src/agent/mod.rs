@@ -23,7 +23,7 @@ const C_RED: &str = "\x1b[31m";
 const C_GREEN: &str = "\x1b[32m";
 const C_MAGENTA: &str = "\x1b[35m";
 
-pub const DEFAULT_MAX_TURNS: i32 = 50;
+pub const DEFAULT_MAX_TURNS: i32 = 0; // 0 = unlimited
 
 pub struct Loop {
     pub provider: Arc<dyn LLMProvider>,
@@ -131,14 +131,17 @@ impl Loop {
         // Validate: last message must not be from assistant
         if let Some(last) = messages.last() {
             if last.role == "assistant" {
-                return Err(anyhow!("agent: last message must not be from assistant"));
+                return Err(anyhow!(
+                    "Internal error: conversation ended with an assistant message. \
+                     This is a bug — please report it."
+                ));
             }
         }
 
         let max_turns = if self.config.max_turns > 0 {
             self.config.max_turns as usize
         } else {
-            DEFAULT_MAX_TURNS as usize
+            DEFAULT_MAX_TURNS.max(0) as usize // 0 = unlimited
         };
 
         // Emit agent_start
@@ -157,11 +160,31 @@ impl Loop {
         });
 
         let tool_defs: Vec<_> = self.tools.iter().map(|t| t.def.clone()).collect();
-        let mut last_error = None;
+        let mut last_error: Option<anyhow::Error> = None;
         let mut last_stop_reason = String::new();
         let mut retry_attempt = 0;
 
-        for turn in 0..max_turns {
+        let mut turn: usize = 0;
+        loop {
+            // Check max turn limit (0 = unlimited)
+            if max_turns > 0 && turn >= max_turns {
+                if let Some(ref bus) = self.event_bus {
+                    bus.emit(agent_end_with_stop_reason(
+                        "max_turns",
+                        None,
+                        &last_stop_reason,
+                    ));
+                }
+                if let Some(last_error) = last_error {
+                    return Err(last_error.context("exceeded max turns"));
+                }
+                return Err(anyhow!(
+                    "Reached the turn limit ({}). The agent tried too many tool-call \
+                     rounds without completing. You can increase the limit in settings \
+                     (max_turns) or try a simpler prompt.",
+                    max_turns
+                ));
+            }
             // Drain steering queue FIRST
             let steering_before = self.steering_queue.len();
             messages = self.drain_steering(messages);
@@ -531,20 +554,8 @@ impl Loop {
             }
 
             last_error = None;
+            turn += 1;
         }
-
-        if let Some(ref bus) = self.event_bus {
-            bus.emit(agent_end_with_stop_reason(
-                "max_turns",
-                None,
-                &last_stop_reason,
-            ));
-        }
-
-        if let Some(last_error) = last_error {
-            return Err(last_error.context("exceeded max turns"));
-        }
-        Err(anyhow!("exceeded max turns ({})", max_turns))
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -691,7 +702,11 @@ impl Loop {
 
         // Execute the tool
         let start = Instant::now();
-        let mut result: Result<String> = Err(anyhow!("tool {} not found", tool_name));
+        let mut result: Result<String> = Err(anyhow!(
+            "Unknown tool '{}'. The model requested a tool that is not available. \
+             This may happen if the model is not compatible with the tool set.",
+            tool_name
+        ));
         for tool in tools {
             if tool.def.function.name == tool_name {
                 result = (tool.handler)(effective_args.clone()).await;

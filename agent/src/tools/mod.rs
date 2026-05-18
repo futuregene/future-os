@@ -341,7 +341,7 @@ async fn run_bash(command: &str, _timeout_secs: u64) -> Result<String> {
         .args(["-c", command])
         .output()
         .await
-        .map_err(|e| anyhow!("bash: {}", e))?;
+        .map_err(|e| anyhow!("Failed to run bash command: {}", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -412,10 +412,18 @@ async fn run_edit(
         if let Some(pos) = current.find(old) {
             format!("{}{}{}", &current[..pos], new, &current[pos + old.len()..])
         } else {
-            return Err(anyhow!("Pattern not found: {}", old));
+            return Err(anyhow!(
+                "Edit failed: could not find the text to replace in the file. \
+                 The file may have changed since it was last read. Try reading \
+                 the file again and re-applying the edit."
+            ));
         }
     } else {
-        return Err(anyhow!("Either oldText+newText or edits array required"));
+        return Err(anyhow!(
+            "Edit failed: missing required parameters. Provide either \
+             oldText + newText for a simple replacement, or an edits \
+             array for structured changes."
+        ));
     };
 
     tokio::fs::write(path, &final_content).await?;
@@ -456,7 +464,7 @@ async fn run_grep(params: &GrepParams) -> Result<String> {
     } else {
         Command::new("grep").args(&args).output().await
     }
-    .map_err(|e| anyhow!("grep: {}", e))?;
+    .map_err(|e| anyhow!("Failed to run grep: {}", e))?;
 
     let result = String::from_utf8_lossy(&output.stdout).to_string();
 

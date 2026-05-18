@@ -298,7 +298,13 @@ impl crate::types::LLMProvider for Client {
                 }
             }
 
-            return Err(anyhow!("LLM API error {}: {}", status_code, text));
+            return Err(anyhow!(
+                "API request failed (HTTP {}). {}",
+                status_code,
+                if text.is_empty() { "No response body.".to_string() }
+                else if text.len() > 200 { format!("{}…", &text[..200]) }
+                else { text }
+            ));
         }
 
         let stream = resp.bytes_stream();
