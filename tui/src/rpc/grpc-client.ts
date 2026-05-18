@@ -21,7 +21,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Load proto descriptor — relative to repo root, overridable via env
-const PROTO_PATH = process.env.FUTURE_PROTO_PATH ?? join(__dirname, "..", "..", "..", "proto", "proto", "future.proto");
+const PROTO_PATH = process.env.FUTURE_PROTO_PATH ?? join(__dirname, "..", "..", "..", "proto", "future.proto");
 
 // ─── Proto Setup ─────────────────────────────────────────────────────────
 
