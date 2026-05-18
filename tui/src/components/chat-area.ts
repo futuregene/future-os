@@ -463,12 +463,16 @@ export class ChatArea implements Component {
       }
       return;
     }
+    const wrapWidth = Math.max(1, this.width - 2);
     const lines = msg.content.split("\n");
     for (let i = 0; i < lines.length; i++) {
       if (!lines[i].trim()) continue;
       const isError = lines[i].toLowerCase().includes("error") || lines[i].toLowerCase().includes("failed");
       const color = isError ? fg(this.theme.error, lines[i]) : fg(this.theme.dim, lines[i]);
-      this.renderedLines.push({ text: ` ${color}`, dim: true });
+      const wrapped = wrapTextWithAnsi(color, wrapWidth);
+      for (const wl of wrapped) {
+        this.renderedLines.push({ text: ` ${wl}`, dim: true });
+      }
     }
   }
 }
