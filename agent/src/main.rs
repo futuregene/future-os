@@ -85,12 +85,8 @@ async fn main() -> Result<()> {
         .or_else(|| model_config.as_ref().map(|m| m.base_url.clone()))
         .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
-    // Resolve API key from env vars > auth.json > model config
-    let api_key = env::var("LLM_API_KEY")
-        .ok()
-        .or_else(|| env::var("ANTHROPIC_API_KEY").ok())
-        .or_else(|| env::var("OPENAI_API_KEY").ok())
-        .or_else(|| auth_store.get(&resolved_model))
+    // Resolve API key from auth.json > model config
+    let api_key = auth_store.get(&resolved_model)
         .or_else(|| {
             model_config
                 .as_ref()
