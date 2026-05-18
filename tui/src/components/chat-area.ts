@@ -94,38 +94,24 @@ export class ChatArea implements Component {
     return undefined;
   }
 
-  /** Get or create the assistant message that new content should append to.
-   *  If the last message is not an assistant (e.g. a user message just added
-   *  while streaming), auto-creates a new assistant block so output appears
-   *  under the correct user message. */
-  private ensureAssistantMsg(): ChatMessage {
-    const last = this.messages[this.messages.length - 1];
-    if (last?.role === "assistant") return last;
-    const msg: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: "assistant",
-      content: "",
-      thinking: "",
-      pending: true,
-    };
-    this.messages.push(msg);
-    return msg;
-  }
-
   updateLastMessage(content: string): void {
-    const msg = this.ensureAssistantMsg();
-    msg.content = content;
-    msg.pending = true;
-    this.rerender();
-    if (this.autoScroll) this.scrollToBottom();
+    const msg = this.lastAssistantMsg();
+    if (msg) {
+      msg.content = content;
+      msg.pending = true;
+      this.rerender();
+      if (this.autoScroll) this.scrollToBottom();
+    }
   }
 
   appendToLastMessage(delta: string): void {
-    const msg = this.ensureAssistantMsg();
-    msg.content += delta;
-    msg.pending = true;
-    this.rerender();
-    if (this.autoScroll) this.scrollToBottom();
+    const msg = this.lastAssistantMsg();
+    if (msg) {
+      msg.content += delta;
+      msg.pending = true;
+      this.rerender();
+      if (this.autoScroll) this.scrollToBottom();
+    }
   }
 
   markLastMessageComplete(): void {
@@ -201,14 +187,18 @@ export class ChatArea implements Component {
   }
 
   appendThinkingDelta(text: string): void {
-    const msg = this.ensureAssistantMsg();
-    msg.thinking = (msg.thinking ?? "") + text;
-    this.rerender();
+    if (this.messages.length === 0) return;
+    const last = this.messages[this.messages.length - 1];
+    if (last.role === "assistant" && last.thinking !== undefined) {
+      last.thinking += text;
+      this.rerender();
+    }
   }
 
   endThinking(): void {
-    const msg = this.lastAssistantMsg();
-    if (msg?.thinking !== undefined) {
+    if (this.messages.length === 0) return;
+    const last = this.messages[this.messages.length - 1];
+    if (last.role === "assistant" && last.thinking !== undefined) {
       this.rerender();
     }
   }

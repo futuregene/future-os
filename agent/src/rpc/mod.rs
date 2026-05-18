@@ -453,12 +453,8 @@ impl ServerSession {
             }
         }
 
-        // Broadcast agent_start before the loop so TUI creates assistant message
-        let broadcaster_outer = broadcaster.clone();
-        broadcaster_outer.broadcast(crate::rpc::SseEvent {
-            event_type: "agent_start".to_string(),
-            data: serde_json::json!({"type": "agent_start"}).to_string(),
-        });
+        // agent_start is now emitted inside run_streaming_with_messages via on_event,
+        // for both initial prompts and follow-up turns.
 
         // Create interrupt channel so steer()/abort() can stop the current stream
         let (interrupt_tx, interrupt_rx) = tokio::sync::mpsc::channel::<()>(1);
