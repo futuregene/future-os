@@ -21,6 +21,7 @@ make fmt                # Format Rust code with cargo fmt
 make run-agent          # Build and run Rust agent
 make run-tui            # Run TUI in dev mode (auto-installs npm deps)
 make generate-models    # Fetch model data from APIs, regenerate models_generated.rs
+make generate-proto     # Compile proto/future.proto → Rust gRPC code
 make clean              # Remove target/, dist/, node_modules/
 make help               # Show all targets
 
@@ -64,7 +65,7 @@ The TUI does **not** read a local settings file — all configuration flows thro
 
 ### Rust backend (`agent/src/`)
 
-Entry point: `main.rs` — only CLI flag is `--grpc-addr`. Resolves model from settings.json, API key from env vars → auth.json → model built-in, then starts gRPC server.
+Entry point: `main.rs` — only CLI flag is `--grpc-addr`. Resolves model from settings.json, API key from auth.json → model built-in, then starts gRPC server.
 
 | Module | Role |
 |--------|------|
