@@ -125,6 +125,8 @@ export class App extends Container {
     tokensCacheW: 0,
     totalCost: 0,
     autoCompactionEnabled: true,
+    toolStartTime: 0,
+    activeToolCount: 0,
     thinkingHidden: false,  // true = show "Thinking..." instead of actual thinking
     explicitSession: false, // true when --session/--continue/--resume/--fork was used
   };
@@ -396,6 +398,8 @@ export class App extends Container {
           : typeof e.tool_args === "object" ? JSON.stringify(e.tool_args)
           : undefined;
         this.chat.addToolStart(e.tool_id ?? "", e.tool_name ?? "", toolArgs);
+        if (this.state.activeToolCount === 0) this.state.toolStartTime = performance.now();
+        this.state.activeToolCount++;
         break;
       }
 
@@ -408,6 +412,8 @@ export class App extends Container {
       case "tool_end": {
         const e = event as { tool_id?: string; text?: string };
         this.chat.finishTool(e.tool_id ?? "", e.text);
+        this.state.activeToolCount = Math.max(0, this.state.activeToolCount - 1);
+        if (this.state.activeToolCount === 0) this.state.toolStartTime = 0;
         break;
       }
 
@@ -428,6 +434,7 @@ export class App extends Container {
         if (e.usage?.completion_tokens !== undefined) this.state.tokensOut += e.usage.completion_tokens;
         if (e.usage?.cache_read_tokens !== undefined) this.state.tokensCacheR += e.usage.cache_read_tokens;
         if (e.usage?.cache_write_tokens !== undefined) this.state.tokensCacheW += e.usage.cache_write_tokens;
+        this.state.contextTokens = (e.usage?.prompt_tokens ?? 0) + (e.usage?.completion_tokens ?? 0);
         break;
       }
 
@@ -1544,6 +1551,7 @@ export class App extends Container {
       this.lastRenderAt = performance.now();
       this.doRender();
       if (this.renderRequested) this.scheduleRender();
+      else if (this.state.streaming) this.requestRender();
     }, delay);
   }
 
@@ -1689,6 +1697,9 @@ export class App extends Container {
       tokensCacheW: this.state.tokensCacheW,
       totalCost: this.state.totalCost,
       autoCompactionEnabled: this.state.autoCompactionEnabled,
+      toolElapsed: this.state.toolStartTime > 0
+        ? Math.floor((performance.now() - this.state.toolStartTime) / 1000)
+        : 0,
     };
     this.footer.setData(footerData);
 
