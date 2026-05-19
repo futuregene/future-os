@@ -22,6 +22,7 @@ export interface FooterData {
   tokensOut?: number;
   tokensCacheR?: number;
   tokensCacheW?: number;
+  toolElapsed?: number;
   totalCost?: number;
   autoCompactionEnabled?: boolean;
 }
@@ -68,6 +69,11 @@ export class Footer implements Component {
     if (this.data.streaming) {
       const frameIdx = (this.data.spinnerFrame ?? 0) % SPINNER_FRAMES.length;
       leftParts.push(colorFg(SPINNER_FG, SPINNER_FRAMES[frameIdx]));
+    }
+
+    // Tool elapsed time
+    if (this.data.toolElapsed !== undefined && this.data.toolElapsed > 0) {
+      leftParts.push(colorFg(TOKEN_FG, `${this.data.toolElapsed}s`));
     }
 
     // PWD — uses default fg (245)
