@@ -1067,12 +1067,18 @@ impl AppState {
         if session_id.is_empty() {
             return self.session.clone();
         }
-        let sessions = self.sessions.read().unwrap();
-        if let Some(sess) = sessions.get(session_id) {
-            return sess.clone();
+        {
+            let sessions = self.sessions.read().unwrap();
+            if let Some(sess) = sessions.get(session_id) {
+                return sess.clone();
+            }
         }
-        // Session not found in map — could have been created but not inserted.
-        // Return default session as last resort.
+        // Session not found in map — if it matches the default session's own
+        // ID, return it silently. Otherwise warn and fall back to default.
+        let default_id = self.session.read().unwrap().session_id.clone();
+        if session_id == default_id {
+            return self.session.clone();
+        }
         eprintln!(
             "[get_session] session_id={} not found in sessions map, falling back to default",
             session_id
@@ -1293,6 +1299,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 Ok(()) => {
                     if let Ok(mut active_id) = state.active_session_id.try_write() {
                         *active_id = cmd.session_id.clone();
+                    }
+                    // Insert into sessions map so subsequent lookups by this
+                    // session_id succeed (avoids fallback-to-default warning).
+                    if let Ok(mut sessions) = state.sessions.try_write() {
+                        sessions.insert(cmd.session_id.clone(), session.clone());
                     }
                     RpcResponse::ok(
                         id,
