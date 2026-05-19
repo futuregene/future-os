@@ -1282,7 +1282,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         }
         "switch_session" => {
             if cmd.session_id.is_empty() {
-                return RpcResponse::build_fail(id, "switch_session", "No session selected. Choose a session from the list to switch to.");
+                return RpcResponse::build_fail(
+                    id,
+                    "switch_session",
+                    "No session selected. Choose a session from the list to switch to.",
+                );
             }
             let mut sess = session.write().unwrap();
             let result = match sess.switch_session(&cmd.session_id) {
@@ -1302,7 +1306,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         }
         "delete_session" => {
             if cmd.session_id.is_empty() {
-                return RpcResponse::build_fail(id, "delete_session", "No session selected to delete. Choose a session first.");
+                return RpcResponse::build_fail(
+                    id,
+                    "delete_session",
+                    "No session selected to delete. Choose a session first.",
+                );
             }
             // Delete from disk
             if let Err(e) = session
@@ -1322,7 +1330,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "fork" => {
             let entry_id = &cmd.entry_id;
             if entry_id.is_empty() {
-                return RpcResponse::build_fail(id, "fork", "No message selected to fork from. Choose a user message to fork at.");
+                return RpcResponse::build_fail(
+                    id,
+                    "fork",
+                    "No message selected to fork from. Choose a user message to fork at.",
+                );
             }
 
             // Extract needed data from session
@@ -1342,7 +1354,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             let parent = match session_manager.load(&session_id) {
                 Ok(s) => s,
                 Err(_) => {
-                    return RpcResponse::build_fail(id, "fork", "Session not found on disk — it may have been deleted or moved.");
+                    return RpcResponse::build_fail(
+                        id,
+                        "fork",
+                        "Session not found on disk — it may have been deleted or moved.",
+                    );
                 }
             };
 
@@ -1620,7 +1636,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             let (agent_loop, session_manager, event_bus, broadcaster, _cwd, session_id) = {
                 let sess = session.read().unwrap();
                 if sess.messages.read().unwrap().is_empty() {
-                    return RpcResponse::build_fail(id, "clone", "Nothing to clone — the current session has no messages yet.");
+                    return RpcResponse::build_fail(
+                        id,
+                        "clone",
+                        "Nothing to clone — the current session has no messages yet.",
+                    );
                 }
                 (
                     sess.agent_loop.clone(),
@@ -1636,7 +1656,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             let parent = match session_manager.load(&session_id) {
                 Ok(s) => s,
                 Err(_) => {
-                    return RpcResponse::build_fail(id, "clone", "Session not found on disk — it may have been deleted or moved.");
+                    return RpcResponse::build_fail(
+                        id,
+                        "clone",
+                        "Session not found on disk — it may have been deleted or moved.",
+                    );
                 }
             };
 
@@ -1646,7 +1670,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 .map(|e| e.id.clone())
                 .unwrap_or_default();
             if leaf_id.is_empty() {
-                return RpcResponse::build_fail(id, "clone", "Nothing to clone — no messages found in session.");
+                return RpcResponse::build_fail(
+                    id,
+                    "clone",
+                    "Nothing to clone — no messages found in session.",
+                );
             }
 
             // Fork from leaf

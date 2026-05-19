@@ -215,18 +215,30 @@ export class ChatArea implements Component {
     this.rerender();
   }
 
-  scrollUp(lines = 5): void {
+  scrollUp(lines = 5): boolean {
+    if (this.viewportTop <= 0) return false;
     this.viewportTop = Math.max(0, this.viewportTop - lines);
     this.autoScroll = false;
+    return true;
   }
 
-  scrollDown(lines = 5): void {
+  scrollDown(lines = 5): boolean {
     const maxTop = Math.max(0, this.renderedLines.length - this.viewportHeight);
+    if (this.viewportTop >= maxTop) return false;
     this.viewportTop = Math.min(maxTop, this.viewportTop + lines);
-    // Re-enable auto-scroll when scrolled to bottom
     if (this.viewportTop >= maxTop) {
       this.autoScroll = true;
     }
+    return true;
+  }
+
+  isAtTop(): boolean {
+    return this.viewportTop <= 0;
+  }
+
+  isAtBottom(): boolean {
+    const maxTop = Math.max(0, this.renderedLines.length - this.viewportHeight);
+    return this.viewportTop >= maxTop;
   }
 
   scrollToBottom(): void {
@@ -243,6 +255,17 @@ export class ChatArea implements Component {
 
   invalidate(): void {
     this.lastRenderWidth = -1;
+  }
+
+  /** Render ALL lines (bypass viewport) — used to seed terminal scrollback with full chat history. */
+  renderAll(width: number): string[] {
+    if (width !== this.lastRenderWidth || this.dirty) {
+      this.lastRenderWidth = width;
+      this.width = width;
+      this.dirty = false;
+      this.rerender();
+    }
+    return this.renderedLines.map((rl) => rl.text);
   }
 
   render(width: number): string[] {

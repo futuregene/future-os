@@ -421,8 +421,10 @@ impl Loop {
                         if let Some(ref u) = event.usage {
                             self.cumulative_input_tokens
                                 .fetch_add(u.prompt_tokens, std::sync::atomic::Ordering::Relaxed);
-                            self.last_prompt_tokens
-                                .store(u.prompt_tokens + u.completion_tokens, std::sync::atomic::Ordering::Relaxed);
+                            self.last_prompt_tokens.store(
+                                u.prompt_tokens + u.completion_tokens,
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
                             self.cumulative_output_tokens.fetch_add(
                                 u.completion_tokens,
                                 std::sync::atomic::Ordering::Relaxed,

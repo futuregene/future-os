@@ -217,6 +217,18 @@ export class App extends Container {
 
     this.keybindings.add(Key.ctrl_t, () => { this.cycleThinking(); return true; }, "Cycle thinking");
     this.keybindings.add(Key.shift_tab, () => { this.cycleThinking(); return true; }, "Cycle thinking");
+    this.keybindings.add(Key.pageUp, () => {
+      this.chat.scrollUp(this.terminal.rows); this.requestRender(); return true;
+    }, "Scroll chat up");
+    this.keybindings.add(Key.pageDown, () => {
+      this.chat.scrollDown(this.terminal.rows); this.requestRender(); return true;
+    }, "Scroll chat down");
+    this.keybindings.add(Key.ctrl_up, () => {
+      this.chat.scrollUp(3); this.requestRender(); return true;
+    }, "Scroll chat up (line)");
+    this.keybindings.add(Key.ctrl_down, () => {
+      this.chat.scrollDown(3); this.requestRender(); return true;
+    }, "Scroll chat down (line)");
 
     // Subscribe to SSE events
     this.client.subscribe((event) => {
@@ -457,6 +469,22 @@ export class App extends Container {
       return;
     }
 
+    // Mouse wheel — scroll chat (alt screen mode, no terminal scrollback)
+    if (data === "wheelUp") {
+      if (!this.overlayStack.length && !this.autocomplete.isVisible()) {
+        this.chat.scrollUp(3);
+        this.requestRender();
+      }
+      return;
+    }
+    if (data === "wheelDown") {
+      if (!this.overlayStack.length && !this.autocomplete.isVisible()) {
+        this.chat.scrollDown(3);
+        this.requestRender();
+      }
+      return;
+    }
+
     // Filter key release events unless focused component explicitly wants them (matches pi)
     if (isKeyRelease(data)) {
       const focused = this.focusedComponent;
@@ -651,6 +679,8 @@ export class App extends Container {
   // ─── Actions ────────────────────────────────────────────────────────────
 
   private async handleSubmit(value: string): Promise<void> {
+    if (!value.trim()) return;
+
     this.input.setValue("");
     this.requestRender();
 
@@ -1110,7 +1140,7 @@ export class App extends Container {
         });
       }
 
-      this.requestRender();
+      this.requestRender(true);
     } catch {
       // Session messages not available — proceed with empty chat
     }
@@ -1770,7 +1800,7 @@ export class App extends Container {
       let buf = SYNC_BEGIN;
       if (clear) {
         buf += this.deleteKittyImages(this.previousKittyImageIds);
-        buf += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, clear scrollback
+        buf += "\x1b[H\x1b[2J"; // Home, clear screen (never clear scrollback — terminal scrollback holds TUI + bash history)
       }
       for (let i = 0; i < newLines.length; i++) {
         if (i > 0) buf += "\r\n";
