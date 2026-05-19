@@ -301,9 +301,13 @@ impl crate::types::LLMProvider for Client {
             return Err(anyhow!(
                 "API request failed (HTTP {}). {}",
                 status_code,
-                if text.is_empty() { "No response body.".to_string() }
-                else if text.len() > 200 { format!("{}…", &text[..200]) }
-                else { text }
+                if text.is_empty() {
+                    "No response body.".to_string()
+                } else if text.len() > 200 {
+                    format!("{}…", &text[..200])
+                } else {
+                    text
+                }
             ));
         }
 
@@ -315,6 +319,107 @@ impl crate::types::LLMProvider for Client {
             let tx = tx;
             let mut in_thinking = false;
             let mut in_tool_call = false;
+            let mut buffer = String::new();
+
+            // Helper to emit events from a parsed SSE data line, handling
+            // thinking/tool-call bookending (matches original per-line logic).
+            async fn process_data_line(
+                data: &str,
+                tx: &mpsc::Sender<StreamEvent>,
+                in_thinking: &mut bool,
+                in_tool_call: &mut bool,
+            ) -> bool {
+                if data == "[DONE]" {
+                    if *in_tool_call {
+                        let _ = tx
+                            .send(StreamEvent {
+                                event_type: "toolcall_end".to_string(),
+                                text: String::new(),
+                                tool_call: None,
+                                tool_name: String::new(),
+                                tool_id: String::new(),
+                                usage: None,
+                                stop_reason: String::new(),
+                                error_text: String::new(),
+                            })
+                            .await;
+                        *in_tool_call = false;
+                    }
+                    if *in_thinking {
+                        let _ = tx
+                            .send(StreamEvent {
+                                event_type: "thinking_end".to_string(),
+                                text: String::new(),
+                                tool_call: None,
+                                tool_name: String::new(),
+                                tool_id: String::new(),
+                                usage: None,
+                                stop_reason: String::new(),
+                                error_text: String::new(),
+                            })
+                            .await;
+                        *in_thinking = false;
+                    }
+                    let _ = tx
+                        .send(StreamEvent {
+                            event_type: "stop".to_string(),
+                            text: String::new(),
+                            tool_call: None,
+                            tool_name: String::new(),
+                            tool_id: String::new(),
+                            usage: None,
+                            stop_reason: String::new(),
+                            error_text: String::new(),
+                        })
+                        .await;
+                    return false; // signal done
+                }
+                if let Ok(event) = Client::parse_sse_chunk(data) {
+                    if event.event_type == "thinking_delta" {
+                        if !*in_thinking {
+                            *in_thinking = true;
+                            let _ = tx
+                                .send(StreamEvent {
+                                    event_type: "thinking_start".to_string(),
+                                    text: String::new(),
+                                    tool_call: None,
+                                    tool_name: String::new(),
+                                    tool_id: String::new(),
+                                    usage: None,
+                                    stop_reason: String::new(),
+                                    error_text: String::new(),
+                                })
+                                .await;
+                        }
+                    } else if *in_thinking
+                        && event.event_type != "thinking_delta"
+                        && event.event_type != "usage"
+                    {
+                        *in_thinking = false;
+                        let _ = tx
+                            .send(StreamEvent {
+                                event_type: "thinking_end".to_string(),
+                                text: String::new(),
+                                tool_call: None,
+                                tool_name: String::new(),
+                                tool_id: String::new(),
+                                usage: None,
+                                stop_reason: String::new(),
+                                error_text: String::new(),
+                            })
+                            .await;
+                    }
+
+                    if event.event_type == "toolcall_start" {
+                        *in_tool_call = true;
+                    } else if event.event_type == "toolcall_end" {
+                        *in_tool_call = false;
+                    }
+
+                    let _ = tx.send(event).await;
+                }
+                true // continue
+            }
 
             while let Some(chunk_result) = stream.next().await {
                 match chunk_result {
@@ -322,106 +427,36 @@ impl crate::types::LLMProvider for Client {
                         if let Some(ref cb) = on_payload {
                             cb(&bytes);
                         }
-                        if let Ok(text) = String::from_utf8(bytes.to_vec()) {
-                            // Parse SSE lines
-                            for line in text.lines() {
+                        // Use from_utf8_lossy — SSE structure is ASCII so \n\n
+                        // delimiters are never affected by replacement chars.
+                        buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+                        // Process complete SSE events (delimited by \n\n).
+                        // Keep trailing partial event in buffer for next chunk.
+                        while let Some(pos) = buffer.find("\n\n") {
+                            let event_block = buffer[..pos].to_string();
+                            buffer = buffer[pos + 2..].to_string();
+                            let mut done = false;
+                            for line in event_block.lines() {
                                 let line = line.trim();
                                 if !line.starts_with("data: ") {
                                     continue;
                                 }
                                 let data = &line[6..];
-                                if data == "[DONE]" {
-                                    // Close any open thinking/tool call blocks
-                                    if in_tool_call {
-                                        let _ = tx
-                                            .send(StreamEvent {
-                                                event_type: "toolcall_end".to_string(),
-                                                text: String::new(),
-                                                tool_call: None,
-                                                tool_name: String::new(),
-                                                tool_id: String::new(),
-                                                usage: None,
-                                                stop_reason: String::new(),
-                                                error_text: String::new(),
-                                            })
-                                            .await;
-                                        in_tool_call = false;
-                                    }
-                                    if in_thinking {
-                                        let _ = tx
-                                            .send(StreamEvent {
-                                                event_type: "thinking_end".to_string(),
-                                                text: String::new(),
-                                                tool_call: None,
-                                                tool_name: String::new(),
-                                                tool_id: String::new(),
-                                                usage: None,
-                                                stop_reason: String::new(),
-                                                error_text: String::new(),
-                                            })
-                                            .await;
-                                        in_thinking = false;
-                                    }
-                                    let _ = tx
-                                        .send(StreamEvent {
-                                            event_type: "stop".to_string(),
-                                            text: String::new(),
-                                            tool_call: None,
-                                            tool_name: String::new(),
-                                            tool_id: String::new(),
-                                            usage: None,
-                                            stop_reason: String::new(),
-                                            error_text: String::new(),
-                                        })
-                                        .await;
+                                if !process_data_line(
+                                    data,
+                                    &tx,
+                                    &mut in_thinking,
+                                    &mut in_tool_call,
+                                )
+                                .await
+                                {
+                                    done = true;
                                     break;
                                 }
-                                if let Ok(event) = Self::parse_sse_chunk(data) {
-                                    // Inject thinking_start / thinking_end around thinking_delta
-                                    if event.event_type == "thinking_delta" {
-                                        if !in_thinking {
-                                            in_thinking = true;
-                                            let _ = tx
-                                                .send(StreamEvent {
-                                                    event_type: "thinking_start".to_string(),
-                                                    text: String::new(),
-                                                    tool_call: None,
-                                                    tool_name: String::new(),
-                                                    tool_id: String::new(),
-                                                    usage: None,
-                                                    stop_reason: String::new(),
-                                                    error_text: String::new(),
-                                                })
-                                                .await;
-                                        }
-                                    } else if in_thinking
-                                        && event.event_type != "thinking_delta"
-                                        && event.event_type != "usage"
-                                    {
-                                        in_thinking = false;
-                                        let _ = tx
-                                            .send(StreamEvent {
-                                                event_type: "thinking_end".to_string(),
-                                                text: String::new(),
-                                                tool_call: None,
-                                                tool_name: String::new(),
-                                                tool_id: String::new(),
-                                                usage: None,
-                                                stop_reason: String::new(),
-                                                error_text: String::new(),
-                                            })
-                                            .await;
-                                    }
-
-                                    // Track tool call state for proper toolcall_end emission
-                                    if event.event_type == "toolcall_start" {
-                                        in_tool_call = true;
-                                    } else if event.event_type == "toolcall_end" {
-                                        in_tool_call = false;
-                                    }
-
-                                    let _ = tx.send(event).await;
-                                }
+                            }
+                            if done {
+                                break;
                             }
                         }
                     }
