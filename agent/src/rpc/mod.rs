@@ -1086,10 +1086,12 @@ impl AppState {
         self.session.clone()
     }
 
-    /// Create a new session and return its ID
-    /// Uses the session's own session_id as the key
-    pub fn create_session(&self, session: ServerSession) -> String {
+    /// Create a new session and return its ID.
+    /// Each session gets its own private SseBroadcaster so events are only
+    /// delivered to subscribers of that specific session (not globally).
+    pub fn create_session(&self, mut session: ServerSession) -> String {
         let id = session.session_id.clone();
+        session.broadcaster = Arc::new(SseBroadcaster::new());
         self.sessions
             .write()
             .unwrap()
@@ -1300,6 +1302,9 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     if let Ok(mut active_id) = state.active_session_id.try_write() {
                         *active_id = cmd.session_id.clone();
                     }
+                    // Give this session its own private broadcaster so events
+                    // are only delivered to subscribers of this session.
+                    sess.broadcaster = Arc::new(SseBroadcaster::new());
                     // Insert into sessions map so subsequent lookups by this
                     // session_id succeed (avoids fallback-to-default warning).
                     if let Ok(mut sessions) = state.sessions.try_write() {

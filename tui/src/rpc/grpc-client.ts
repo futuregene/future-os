@@ -64,13 +64,19 @@ export class GrpcClient {
   // ─── Event Streaming ─────────────────────────────────────────────────
 
   connectEvents(): void {
-    if (this.streamCall) return;
+    // Cancel existing stream so the new one carries the up-to-date
+    // session_id (important after newSession / switchSession / fork).
+    if (this.streamCall) {
+      this.streamCall.cancel();
+      this.streamCall = null;
+    }
 
-    this.streamCall = this.client.StreamEvents({
-      session_id: this.currentSessionId,
+    const call = this.client.StreamEvents({
+      sessionId: this.currentSessionId,
     });
-    
-    this.streamCall.on("data", (response: any) => {
+    this.streamCall = call;
+
+    call.on("data", (response: any) => {
       try {
         const rawData = typeof response.data === "string" ? JSON.parse(response.data) : response.data;
         // Don't let data.type override the top-level response.type
@@ -79,7 +85,7 @@ export class GrpcClient {
           type: response.type || "message",
           ...rest,
         };
-        
+
         for (const listener of this.eventListeners) {
           try {
             listener(event);
@@ -92,14 +98,18 @@ export class GrpcClient {
       }
     });
 
-    this.streamCall.on("end", () => {
-      this.streamCall = null;
-      // Reconnect after delay
-      setTimeout(() => this.connectEvents(), 2000);
+    call.on("end", () => {
+      if (this.streamCall === call) {
+        this.streamCall = null;
+        // Reconnect after delay
+        setTimeout(() => this.connectEvents(), 2000);
+      }
     });
 
-    this.streamCall.on("error", (_err: Error) => {
-      this.streamCall = null;
+    call.on("error", (_err: Error) => {
+      if (this.streamCall === call) {
+        this.streamCall = null;
+      }
     });
 
     this.connected = true;
@@ -163,6 +173,7 @@ export class GrpcClient {
     const result = await this.call("new_session", { cwd: process.cwd() }) as any;
     if (result?.sessionId) {
       this.currentSessionId = result.sessionId;
+      this.connectEvents();
     }
     return result || { cancelled: false };
   }
@@ -171,6 +182,7 @@ export class GrpcClient {
     const result = await this.call("switch_session", { sessionId }) as any;
     if (result && !result.cancelled) {
       this.currentSessionId = sessionId;
+      this.connectEvents();
     }
     return result || { cancelled: false };
   }
@@ -179,6 +191,7 @@ export class GrpcClient {
     const result = await this.call("fork", { entryId }) as any;
     if (result?.sessionId) {
       this.currentSessionId = result.sessionId;
+      this.connectEvents();
     }
     return result || { text: "", cancelled: true };
   }
@@ -187,6 +200,7 @@ export class GrpcClient {
     const result = await this.call("clone", {}) as any;
     if (result?.sessionId) {
       this.currentSessionId = result.sessionId;
+      this.connectEvents();
     }
     return result || { cancelled: true };
   }

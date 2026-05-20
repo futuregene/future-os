@@ -151,9 +151,18 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
 
     async fn stream_events(
         &self,
-        _request: tonic::Request<proto::StreamRequest>,
+        request: tonic::Request<proto::StreamRequest>,
     ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
-        let mut rx = self.state.broadcaster.subscribe();
+        let req = request.into_inner();
+        let session_id = req.session_id;
+
+        let mut rx = if session_id.is_empty() {
+            self.state.broadcaster.subscribe()
+        } else {
+            let session = self.state.get_session(&session_id);
+            let sess = session.read().unwrap();
+            sess.broadcaster.subscribe()
+        };
 
         let stream = async_stream::stream! {
             // Send initial ping
