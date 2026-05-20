@@ -229,6 +229,8 @@ service FutureAgent {
 message StreamRequest {
   // Client can specify filters for events
   repeated string event_types = 1;
+  // Scope events to a specific session
+  string session_id = 2;
 }
 
 message StreamEvent {

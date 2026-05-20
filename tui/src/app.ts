@@ -1172,6 +1172,7 @@ export class App extends Container {
       // Update client's session ID if server returned one
       if (s.sessionId && s.sessionId !== this.state.sessionId) {
         (this.client as any).currentSessionId = s.sessionId;
+        (this.client as any).connectEvents();
       }
     } catch {
       this.state.model = "(not connected)";

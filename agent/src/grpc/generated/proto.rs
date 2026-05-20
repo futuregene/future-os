@@ -282,6 +282,9 @@ pub struct StreamRequest {
     /// Client can specify filters for events
     #[prost(string, repeated, tag = "1")]
     pub event_types: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Scope events to a specific session
+    #[prost(string, tag = "2")]
+    pub session_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StreamEvent {
