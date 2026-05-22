@@ -654,14 +654,14 @@ impl ServerSession {
                     is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
                 Err(_timeout) => {
-                    eprintln!("Agent loop timed out after 10 min");
+                    eprintln!("Agent loop timed out after 1 hour");
                     broadcaster.broadcast(crate::rpc::SseEvent {
                         event_type: "error".to_string(),
-                        data: serde_json::json!({"error": "The request took too long (10 minute timeout). Try a simpler prompt, or break the task into smaller steps."}).to_string(),
+                        data: serde_json::json!({"error": "The request took too long (1 hour timeout). Try a simpler prompt, or break the task into smaller steps."}).to_string(),
                     });
                     broadcaster.broadcast(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),
-                        data: serde_json::json!({"type": "agent_end", "error": "Request timed out after 10 minutes."})
+                        data: serde_json::json!({"type": "agent_end", "error": "Request timed out after 1 hour."})
                             .to_string(),
                     });
                     is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
