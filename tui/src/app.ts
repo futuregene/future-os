@@ -438,11 +438,12 @@ export class App extends Container {
 
       case "error": {
         this.state.streaming = false;
-        const e = event as { error_message?: string };
+        const e = event as { error?: string; error_message?: string };
+        const msg = e.error ?? e.error_message ?? "unknown error";
         this.chat.addMessage({
           id: crypto.randomUUID(),
           role: "system",
-          content: `Error: ${e.error_message ?? "unknown"}`,
+          content: `Error: ${msg}`,
         });
         break;
       }
