@@ -462,8 +462,8 @@ impl ServerSession {
 
         // Spawn background task to run agent loop
         tokio::spawn(async move {
-            // Run with timeout
-            let result = tokio::time::timeout(std::time::Duration::from_secs(600), async {
+            // Run with timeout — generous limit for complex multi-turn tasks
+            let result = tokio::time::timeout(std::time::Duration::from_secs(3600), async {
                 let mut current_messages = initial_messages;
                 let mut current_interrupt_rx = Some(interrupt_rx);
 
