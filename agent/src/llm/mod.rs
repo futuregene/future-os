@@ -13,7 +13,7 @@ use std::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-const DEFAULT_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_TIMEOUT_SECS: u64 = 600;
 
 // ─── LLM Client ────────────────────────────────────────────────────────────
 
