@@ -1,4 +1,4 @@
-.PHONY: build build-agent build-tui test test-agent lint lint-agent lint-tui clean run run-agent run-tui install
+.PHONY: build build-agent build-tui build-tui-single test test-agent lint lint-agent lint-tui clean run run-agent run-tui install
 
 # ─── Install ──────────────────────────────────────────────────────────────────
 
@@ -14,6 +14,9 @@ build-agent:
 
 build-tui:
 	cd tui && npm run build
+
+build-tui-single:
+	cd tui && npm run build && bun build --compile dist/index.js --outfile dist/future-tui
 
 # ─── Test ───────────────────────────────────────────────────────────────────
 
@@ -57,14 +60,16 @@ clean:
 	rm -rf agent/target
 	rm -rf tui/dist
 	rm -rf tui/node_modules
+	rm -f tui/future-tui
 
 # ─── Help ───────────────────────────────────────────────────────────────────
 
 help:
-	@echo "  build        Build agent and TUI"
-	@echo "  build-agent  Build Rust agent"
-	@echo "  build-tui    Build TypeScript TUI"
-	@echo "  test         Run Rust tests"
+	@echo "  build            Build agent and TUI"
+	@echo "  build-agent      Build Rust agent"
+	@echo "  build-tui        Build TypeScript TUI"
+	@echo "  build-tui-single Build standalone TUI binary (via bun build --compile)"
+	@echo "  test             Run Rust tests"
 	@echo "  lint         Lint Rust + TypeScript"
 	@echo "  fmt          Format Rust code"
 	@echo "  run-agent    Build and run Rust agent"

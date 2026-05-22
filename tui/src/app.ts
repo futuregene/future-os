@@ -86,6 +86,7 @@ export class App extends Container {
     { value: "/tree", label: "/tree", description: "session tree" },
     { value: "/name", label: "/name", description: "set session name" },
     { value: "/scoped-models", label: "/scoped-models", description: "configure model scope" },
+    { value: "/reload", label: "/reload", description: "reload skills + context" },
     { value: "/help", label: "/help", description: "show help" },
   ];
 
@@ -145,7 +146,9 @@ export class App extends Container {
   private renderRequested = false;
   private renderTimer: ReturnType<typeof setTimeout> | undefined;
   private lastRenderAt = 0;
-  private static readonly MIN_RENDER_INTERVAL_MS = 16;
+  private resizeDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+  private static readonly MIN_RENDER_INTERVAL_MS = 33;
+  private static readonly RESIZE_DEBOUNCE_MS = 150;
   private static readonly SEGMENT_RESET = "\x1b[0m\x1b]8;;\x07";  // SGR reset + OSC 8 close (prevents hyperlink leak)
   private previousWidth = 0;
   private previousHeight = 0;
@@ -246,7 +249,7 @@ export class App extends Container {
     // Terminal manages stdin, emits complete sequences via onInput callback
     this.terminal.start(
       (data: string) => this.handleInput(data),
-      () => this.requestRender(),
+      () => this.requestResizeRender(),
     );
 
     // Handle CLI session options
@@ -337,6 +340,10 @@ export class App extends Container {
     if (this.renderTimer) {
       clearTimeout(this.renderTimer);
       this.renderTimer = undefined;
+    }
+    if (this.resizeDebounceTimer) {
+      clearTimeout(this.resizeDebounceTimer);
+      this.resizeDebounceTimer = undefined;
     }
     this.renderRequested = false;
 
@@ -723,6 +730,31 @@ export class App extends Container {
 
       if (cmd === "help") {
         this.showHelpOverlay();
+        return;
+      }
+
+      if (cmd === "reload") {
+        try {
+          const result = await this.client.reloadConfig();
+          await this.refresh();
+          const skillList = result.skills?.length
+            ? result.skills.length + " skills loaded"
+            : "no skills found";
+          const ctxList = result.contextFiles?.length
+            ? ", " + result.contextFiles.join(", ")
+            : "";
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: `Reloaded: ${skillList}${ctxList}`,
+          });
+        } catch (err) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: `Reload failed: ${err}`,
+          });
+        }
         return;
       }
 
@@ -1542,8 +1574,16 @@ export class App extends Container {
   /**
    * Request a render. Uses dual-phase scheduling (matches pi):
    * - force: process.nextTick for immediate full redraw
-   * - ambient: setTimeout-based coalescing at ~60fps
+   * - ambient: setTimeout-based coalescing at ~30fps
    */
+  private requestResizeRender(): void {
+    if (this.resizeDebounceTimer) clearTimeout(this.resizeDebounceTimer);
+    this.resizeDebounceTimer = setTimeout(() => {
+      this.resizeDebounceTimer = undefined;
+      this.requestRender();
+    }, App.RESIZE_DEBOUNCE_MS);
+  }
+
   private requestRender(force = false): void {
     if (force) {
       this.previousLines = [];

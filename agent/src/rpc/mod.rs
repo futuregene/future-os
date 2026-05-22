@@ -1053,8 +1053,8 @@ pub struct AppState {
     pub active_session_id: Arc<RwLock<String>>,
     pub welcome_version: String,
     pub welcome_cwd: String,
-    pub welcome_skills: Vec<String>,
-    pub welcome_context: Vec<String>,
+    pub welcome_skills: Arc<RwLock<Vec<String>>>,
+    pub welcome_context: Arc<RwLock<Vec<String>>>,
     pub welcome_exts: Vec<String>,
     pub explicit_session: bool,
     pub broadcaster: Arc<SseBroadcaster>,
@@ -1743,6 +1743,72 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
 
             RpcResponse::ok(id, "export_html", serde_json::json!({"path": output_path}))
         }
+        "reload_config" => {
+            // Re-discover skills and re-read context files, then rebuild system prompt.
+            let (cwd, tools) = {
+                let sess = session.read().unwrap();
+                let loop_ = match sess.agent_loop.try_read() {
+                    Ok(l) => l,
+                    Err(_) => return RpcResponse::build_fail(
+                        id, "reload_config", "agent is busy, retry in a moment",
+                    ),
+                };
+                (sess.cwd.clone(), loop_.tools.clone())
+            };
+
+            // Re-discover skills (blocking I/O, no locks held)
+            let skill_dirs = vec![
+                crate::skills::USER_SKILLS_DIR.to_string(),
+                format!("{}/{}", cwd, crate::skills::PROJECT_SKILLS_DIR),
+                crate::skills::AGENTS_SKILLS_DIR.to_string(),
+            ];
+            let skills = crate::skills::discover_skills(&skill_dirs).unwrap_or_default();
+            let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
+
+            // Re-read context files
+            let mut agent_content = String::new();
+            for fname in &["CLAUDE.md", "AGENTS.md", "GEMINI.md"] {
+                let p = std::path::Path::new(&cwd).join(fname);
+                if p.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&p) {
+                        agent_content = content;
+                        break;
+                    }
+                }
+            }
+            let context_lines: Vec<String> = if agent_content.is_empty() {
+                vec![]
+            } else {
+                vec![agent_content.clone()]
+            };
+
+            // Rebuild system prompt
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            let new_prompt = crate::prompt::build_prompt(&crate::prompt::PromptOptions {
+                working_directory: cwd.clone(),
+                date: today,
+                tools: tools.clone(),
+                skills: skills.clone(),
+                agent_content: agent_content.clone(),
+                ..Default::default()
+            });
+
+            // Update welcome_* state for get_state
+            *state.welcome_skills.write().unwrap() = skill_names.clone();
+            *state.welcome_context.write().unwrap() = context_lines;
+
+            // Update running session's system prompt
+            let sess = session.read().unwrap();
+            if let Ok(mut r#loop) = sess.agent_loop.try_write() {
+                r#loop.system_prompt = new_prompt.clone();
+                r#loop.config.system_prompt = new_prompt;
+            }
+
+            RpcResponse::ok(id, "reload_config", serde_json::json!({
+                "skills": skill_names,
+                "contextFiles": if agent_content.is_empty() { vec![] } else { vec!["CLAUDE.md".to_string()] },
+            }))
+        }
         _ => RpcResponse::build_fail(id, cmd_type, &format!("unknown command: {}", cmd_type)),
     }
 }
@@ -1810,8 +1876,8 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
         "pendingMessageCount": sess.agent_loop.try_read().map(|l|l.pending_message_count()).unwrap_or(0),
         "version": crate::utils::VERSION,
         "cwd": cwd,
-        "skills": state.welcome_skills,
-        "contextFiles": serde_json::Value::Null,
+        "skills": state.welcome_skills.read().unwrap().clone(),
+        "contextFiles": state.welcome_context.read().unwrap().clone(),
         "extensions": serde_json::Value::Null,
         "contextWindow": context_window,
         "contextTokens": context_tokens,
