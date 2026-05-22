@@ -38,6 +38,7 @@ export class ChatArea implements Component {
   private md = new MarkdownRenderer();
   private theme: Theme;
   private onChange?: () => void;
+  private messageLineRanges: { start: number; end: number }[] = [];
 
   constructor(private maxWidth = 80, theme?: Theme) {
     this.theme = theme ?? {
@@ -78,7 +79,11 @@ export class ChatArea implements Component {
 
   addMessage(msg: ChatMessage): void {
     this.messages.push(msg);
-    this.rerender();
+    if (this.lastRenderWidth === -1) {
+      this.rerender();
+    } else {
+      this.appendLastMessage();
+    }
     if (this.autoScroll) this.scrollToBottom();
     this.onChange?.();
   }
@@ -87,38 +92,31 @@ export class ChatArea implements Component {
     this.onChange = cb;
   }
 
-  private lastAssistantMsg(): ChatMessage | undefined {
-    for (let i = this.messages.length - 1; i >= 0; i--) {
-      if (this.messages[i].role === "assistant") return this.messages[i];
-    }
-    return undefined;
-  }
-
   updateLastMessage(content: string): void {
-    const msg = this.lastAssistantMsg();
-    if (msg) {
-      msg.content = content;
-      msg.pending = true;
-      this.rerender();
+    const idx = this.findAssistantIndex();
+    if (idx >= 0) {
+      this.messages[idx].content = content;
+      this.messages[idx].pending = true;
+      this.rerenderMessage(idx);
       if (this.autoScroll) this.scrollToBottom();
     }
   }
 
   appendToLastMessage(delta: string): void {
-    const msg = this.lastAssistantMsg();
-    if (msg) {
-      msg.content += delta;
-      msg.pending = true;
-      this.rerender();
+    const idx = this.findAssistantIndex();
+    if (idx >= 0) {
+      this.messages[idx].content += delta;
+      this.messages[idx].pending = true;
+      this.rerenderMessage(idx);
       if (this.autoScroll) this.scrollToBottom();
     }
   }
 
   markLastMessageComplete(): void {
-    const msg = this.lastAssistantMsg();
-    if (msg) {
-      msg.pending = false;
-      this.rerender();
+    const idx = this.findAssistantIndex();
+    if (idx >= 0) {
+      this.messages[idx].pending = false;
+      this.rerenderMessage(idx);
     }
   }
 
@@ -137,30 +135,28 @@ export class ChatArea implements Component {
       (msg as { toolArgs?: string }).toolArgs = toolArgs;
     }
     this.messages.push(msg);
-    this.rerender();
+    if (this.lastRenderWidth === -1) {
+      this.rerender();
+    } else {
+      this.appendLastMessage();
+    }
     if (this.autoScroll) this.scrollToBottom();
   }
 
   appendToolDelta(toolId: string, text: string): void {
-    for (let i = this.messages.length - 1; i >= 0; i--) {
-      const msg = this.messages[i];
-      if (msg.role === "tool" && msg.tool === toolId) {
-        msg.content += text;
-        this.rerender();
-        if (this.autoScroll) this.scrollToBottom();
-        return;
-      }
+    const idx = this.findToolIndex(toolId);
+    if (idx >= 0) {
+      this.messages[idx].content += text;
+      this.rerenderMessage(idx);
+      if (this.autoScroll) this.scrollToBottom();
     }
   }
 
   finishTool(toolId: string, _output?: string): void {
-    for (let i = this.messages.length - 1; i >= 0; i--) {
-      const msg = this.messages[i];
-      if (msg.role === "tool" && msg.tool === toolId) {
-        msg.toolStatus = "complete";
-        this.rerender();
-        return;
-      }
+    const idx = this.findToolIndex(toolId);
+    if (idx >= 0) {
+      this.messages[idx].toolStatus = "complete";
+      this.rerenderMessage(idx);
     }
   }
 
@@ -173,33 +169,44 @@ export class ChatArea implements Component {
   startThinking(): void {
     if (this.messages.length === 0) {
       this.messages.push({ id: this.newId(), role: "assistant", content: "", thinking: "" });
-      this.rerender();
+      if (this.lastRenderWidth === -1) {
+        this.rerender();
+      } else {
+        this.appendLastMessage();
+      }
       return;
     }
-    const last = this.messages[this.messages.length - 1];
+    const lastIdx = this.messages.length - 1;
+    const last = this.messages[lastIdx];
     if (last.role === "assistant") {
       last.thinking = "";
-      this.rerender();
+      this.rerenderMessage(lastIdx);
     } else {
       this.messages.push({ id: this.newId(), role: "assistant", content: "", thinking: "" });
-      this.rerender();
+      if (this.lastRenderWidth === -1) {
+        this.rerender();
+      } else {
+        this.appendLastMessage();
+      }
     }
   }
 
   appendThinkingDelta(text: string): void {
     if (this.messages.length === 0) return;
-    const last = this.messages[this.messages.length - 1];
+    const lastIdx = this.messages.length - 1;
+    const last = this.messages[lastIdx];
     if (last.role === "assistant" && last.thinking !== undefined) {
       last.thinking += text;
-      this.rerender();
+      this.rerenderMessage(lastIdx);
     }
   }
 
   endThinking(): void {
     if (this.messages.length === 0) return;
-    const last = this.messages[this.messages.length - 1];
+    const lastIdx = this.messages.length - 1;
+    const last = this.messages[lastIdx];
     if (last.role === "assistant" && last.thinking !== undefined) {
-      this.rerender();
+      this.rerenderMessage(lastIdx);
     }
   }
 
@@ -291,14 +298,69 @@ export class ChatArea implements Component {
     this.dirty = false;
 
     this.renderedLines = [];
+    this.messageLineRanges = [];
     for (let i = 0; i < this.messages.length; i++) {
       if (i > 0) {
-        // Add spacing between messages (matches pi's Spacer(1) between components)
         this.renderedLines.push({ text: "", dim: true });
       }
+      const start = this.renderedLines.length;
       this.renderMessage(this.messages[i]);
+      this.messageLineRanges.push({ start, end: this.renderedLines.length - 1 });
     }
     this.renderedLines.push({ text: "", dim: true });
+  }
+
+  /** Re-render only the message at msgIdx, splicing its lines in-place. */
+  private rerenderMessage(msgIdx: number): void {
+    if (this.lastRenderWidth === -1 || msgIdx >= this.messageLineRanges.length) {
+      this.rerender();
+      return;
+    }
+    const range = this.messageLineRanges[msgIdx];
+    const oldLen = range.end - range.start + 1;
+
+    // Render into a temp array via swap (avoids threading out params everywhere)
+    const saved = this.renderedLines;
+    this.renderedLines = [];
+    this.renderMessage(this.messages[msgIdx]);
+    const newLines = this.renderedLines;
+    this.renderedLines = saved;
+
+    this.renderedLines.splice(range.start, oldLen, ...newLines);
+    const delta = newLines.length - oldLen;
+    range.end = range.start + newLines.length - 1;
+    for (let i = msgIdx + 1; i < this.messageLineRanges.length; i++) {
+      this.messageLineRanges[i].start += delta;
+      this.messageLineRanges[i].end += delta;
+    }
+  }
+
+  /** Append the last message in this.messages to renderedLines (assumes msg already pushed). */
+  private appendLastMessage(): void {
+    // Remove trailing spacer
+    this.renderedLines.pop();
+    if (this.messages.length > 1) {
+      this.renderedLines.push({ text: "", dim: true });
+    }
+    const start = this.renderedLines.length;
+    this.renderMessage(this.messages[this.messages.length - 1]);
+    this.messageLineRanges.push({ start, end: this.renderedLines.length - 1 });
+    this.renderedLines.push({ text: "", dim: true });
+  }
+
+  private findAssistantIndex(): number {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      if (this.messages[i].role === "assistant") return i;
+    }
+    return -1;
+  }
+
+  private findToolIndex(toolId: string): number {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const msg = this.messages[i];
+      if (msg.role === "tool" && msg.tool === toolId) return i;
+    }
+    return -1;
   }
 
   private renderMessage(msg: ChatMessage): void {
