@@ -16,6 +16,7 @@ agent/target/
 # Node
 tui/node_modules/
 tui/dist/
+*/node_modules/
 
 # IDE
 .idea/
