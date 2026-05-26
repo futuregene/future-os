@@ -50,7 +50,7 @@ impl FeishuConfig {
     }
 
     pub fn api_base(&self) -> &str {
-        if self.domain == "lark" { "https://open.larksuite.com" } else { "https://open.feishu.cn" }
+        if self.domain == "lark" { "https://open.larksuite.com/open-apis" } else { "https://open.feishu.cn/open-apis" }
     }
 
     pub fn ws_base(&self) -> &str {
