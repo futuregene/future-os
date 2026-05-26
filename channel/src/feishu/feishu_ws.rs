@@ -36,6 +36,9 @@ pub struct FeishuEvent {
     /// Message create time in milliseconds since epoch.
     /// Used to filter out stale messages replayed on reconnect.
     pub create_time_ms: Option<i64>,
+    /// Mentions from the message object (Feishu API v2 puts mentions here,
+    /// not inside the content JSON).
+    pub mentions: Option<Vec<serde_json::Value>>,
     pub raw: serde_json::Value,
 }
 
@@ -266,8 +269,10 @@ fn parse_feishu_event(data: &serde_json::Value) -> Option<FeishuEvent> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    // Feishu API v2 uses "message_type", older API uses "msg_type"
     let msg_type = message
-        .get("msg_type")
+        .get("message_type")
+        .or_else(|| message.get("msg_type"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     let content = message
@@ -294,6 +299,11 @@ fn parse_feishu_event(data: &serde_json::Value) -> Option<FeishuEvent> {
         .get("parent_id")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+
+    // Extract mentions from the message object (API v2 format)
+    let mentions = message.get("mentions").and_then(|v| v.as_array()).map(|arr| {
+        arr.iter().cloned().collect::<Vec<_>>()
+    });
 
     let tenant_key = header
         .get("tenant_key")
@@ -323,6 +333,7 @@ fn parse_feishu_event(data: &serde_json::Value) -> Option<FeishuEvent> {
         tenant_key,
         app_id,
         create_time_ms,
+        mentions,
         raw: data.clone(),
     })
 }
@@ -382,15 +393,30 @@ pub fn extract_file_key(content: &str) -> (Option<String>, Option<String>) {
     }
 }
 
-/// Check if the bot was @mentioned in a group message.
+/// Check if the bot was @mentioned in the content JSON (old Feishu API).
+/// In the old API, mentions are embedded inside the content JSON string.
 pub fn is_bot_mentioned(content: &str, msg_type: &str, bot_open_id: &str) -> bool {
+    /// Extract the open_id from a mention's id field, which can be either:
+    ///   - a plain string: "ou_xxx"
+    ///   - an object: {"open_id": "ou_xxx", "user_id": "xxx"}
+    fn mention_id_matches(mention: &serde_json::Value, bot_open_id: &str) -> bool {
+        match mention.get("id") {
+            // Object format: {"open_id": "ou_xxx", ...}
+            Some(id_obj) if id_obj.is_object() => {
+                id_obj.get("open_id").and_then(|v| v.as_str()) == Some(bot_open_id)
+                    || id_obj.get("user_id").and_then(|v| v.as_str()) == Some(bot_open_id)
+            }
+            // String format: "ou_xxx"
+            Some(id_str) => id_str.as_str() == Some(bot_open_id),
+            None => false,
+        }
+    }
+
     match msg_type {
         "text" => {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(content) {
                 if let Some(mentions) = parsed["mentions"].as_array() {
-                    return mentions
-                        .iter()
-                        .any(|m| m["id"].as_str() == Some(bot_open_id));
+                    return mentions.iter().any(|m| mention_id_matches(m, bot_open_id));
                 }
             }
             false
@@ -401,10 +427,18 @@ pub fn is_bot_mentioned(content: &str, msg_type: &str, bot_open_id: &str) -> boo
                     for block in blocks {
                         if let Some(elements) = block.as_array() {
                             for element in elements {
-                                if element.get("tag").and_then(|t| t.as_str()) == Some("at")
-                                    && element.get("user_id").and_then(|t| t.as_str()) == Some(bot_open_id)
-                                {
-                                    return true;
+                                if element.get("tag").and_then(|t| t.as_str()) == Some("at") {
+                                    // user_id can be a string or an object with open_id
+                                    let user_id_match = match element.get("user_id") {
+                                        Some(uid) if uid.is_object() => {
+                                            uid.get("open_id").and_then(|v| v.as_str()) == Some(bot_open_id)
+                                        }
+                                        Some(uid) => uid.as_str() == Some(bot_open_id),
+                                        None => false,
+                                    };
+                                    if user_id_match {
+                                        return true;
+                                    }
                                 }
                             }
                         }
@@ -415,4 +449,19 @@ pub fn is_bot_mentioned(content: &str, msg_type: &str, bot_open_id: &str) -> boo
         }
         _ => false,
     }
+}
+
+/// Check if the bot is mentioned in the event-level mentions array (Feishu API v2).
+/// In API v2, mentions are in `message.mentions` rather than inside the content JSON.
+/// Each mention has an `id` object with `open_id`, `union_id`, etc.
+pub fn is_bot_mentioned_in_mentions(mentions: &[serde_json::Value], bot_open_id: &str) -> bool {
+    mentions.iter().any(|m| {
+        match m.get("id") {
+            Some(id_obj) if id_obj.is_object() => {
+                id_obj.get("open_id").and_then(|v| v.as_str()) == Some(bot_open_id)
+            }
+            Some(id_str) => id_str.as_str() == Some(bot_open_id),
+            None => false,
+        }
+    })
 }

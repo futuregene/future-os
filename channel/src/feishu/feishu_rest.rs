@@ -276,6 +276,37 @@ impl FeishuRestClient {
         self.get(&path).await
     }
 
+    /// Get bot's own information (used to get the bot's open_id for mention detection).
+    /// Calls GET /open-apis/bot/v3/info
+    pub async fn get_bot_info(&self) -> Result<BotInfo> {
+        let token = self.get_token().await?;
+        let url = format!("{}/bot/v3/info", self.api_base);
+        let resp: Value = self.http
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        let code = resp["code"].as_i64().unwrap_or(-1);
+        if code != 0 {
+            return Err(anyhow!(
+                "Failed to get bot info: {} (code {})",
+                resp["msg"].as_str().unwrap_or("unknown"),
+                code
+            ));
+        }
+
+        let bot = &resp["bot"];
+        Ok(BotInfo {
+            open_id: bot["open_id"].as_str().unwrap_or("").to_string(),
+            app_name: bot["app_name"].as_str().unwrap_or("").to_string(),
+            app_id: bot["app_id"].as_str().unwrap_or("").to_string(),
+            avatar_url: bot["avatar_url"].as_str().unwrap_or("").to_string(),
+        })
+    }
+
     /// Create a CardKit card entity. Returns the card_id for later operations.
     pub async fn create_cardkit_card(&self, card: &Value) -> Result<String> {
         let resp = self.post("/cardkit/v1/cards", &serde_json::json!({
@@ -444,6 +475,14 @@ pub struct SendMessageResponse {
 pub struct UserInfo {
     pub open_id: String,
     pub name: String,
+    pub avatar_url: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BotInfo {
+    pub open_id: String,
+    pub app_name: String,
+    pub app_id: String,
     pub avatar_url: String,
 }
 

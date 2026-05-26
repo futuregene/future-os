@@ -9,7 +9,7 @@ use super::config::FeishuConfig;
 use super::feishu_rest::{
     bytes_to_base64_data, mime_from_ext, FeishuRestClient,
 };
-use super::feishu_ws::{extract_file_key, extract_image_key, extract_text_content, is_bot_mentioned, FeishuEvent};
+use super::feishu_ws::{extract_file_key, extract_image_key, extract_text_content, is_bot_mentioned, is_bot_mentioned_in_mentions, FeishuEvent};
 use super::policy::{Access, PolicyEngine};
 use super::session_store::SessionStore;
 use crate::config::AgentConfig;
@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub struct Bridge {
     feishu: FeishuRestClient,
@@ -47,6 +47,18 @@ impl Bridge {
         let sessions_dir = dirs_next_path().join("channel").join("feishu");
         let sessions = SessionStore::new(sessions_dir.join("sessions.json"));
 
+        // Fetch bot's own open_id to enable @mention detection in group chats
+        let bot_open_id = match feishu.get_bot_info().await {
+            Ok(info) => {
+                info!("[BOT] open_id={} app_name={}", info.open_id, info.app_name);
+                info.open_id
+            }
+            Err(e) => {
+                warn!("[BOT] Failed to get bot info: {}. @mention detection in groups will not work.", e);
+                String::new()
+            }
+        };
+
         Ok(Self {
             feishu,
             agent: Arc::new(RwLock::new(agent)),
@@ -54,7 +66,7 @@ impl Bridge {
             agent_cfg,
             policy: Arc::new(RwLock::new(policy)),
             sessions,
-            bot_open_id: Arc::new(RwLock::new(String::new())),
+            bot_open_id: Arc::new(RwLock::new(bot_open_id)),
             prompt_locks: RwLock::new(HashMap::new()),
             processed: RwLock::new(HashSet::new()),
         })
@@ -136,10 +148,22 @@ impl Bridge {
         }
 
         // ─── ACK: react to indicate processing (must complete within 3s) ────
-        let ack_reaction_id = match self.feishu.react_to_message(&message_id, "Typing").await {
-            Ok(id) => Some(id),
-            Err(e) => {
+        let ack_reaction_id = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.feishu.react_to_message(&message_id, "Typing"),
+        )
+        .await
+        {
+            Ok(Ok(id)) => {
+                debug!("[ACK] reaction succeeded: {}", id);
+                Some(id)
+            }
+            Ok(Err(e)) => {
                 warn!("[ACK] reaction failed: {}", e);
+                None
+            }
+            Err(_) => {
+                warn!("[ACK] reaction timed out after 5s");
                 None
             }
         };
@@ -150,20 +174,31 @@ impl Bridge {
                 let policy = self.policy.read().await;
                 match policy.check_dm(&sender_id) {
                     Access::Denied(reason) => {
+                        debug!("[POLICY] DM denied for {}: {}", sender_id, reason);
                         self.feishu.reply_message(&message_id, "text",
                             &serde_json::json!({"text": reason}).to_string()).await?;
                         return Ok(());
                     }
-                    Access::Allowed => {}
+                    Access::Allowed => {
+                        debug!("[POLICY] DM allowed for {}", sender_id);
+                    }
                 }
             }
             "group" => {
                 let msg_type = event.msg_type.as_deref().unwrap_or("");
                 let content = event.content.as_deref().unwrap_or("");
-                let mentioned = is_bot_mentioned(content, msg_type, &bot_id);
+                // Check both content-level mentions (old API) and event-level mentions (API v2)
+                let content_mentioned = is_bot_mentioned(content, msg_type, &bot_id);
+                let event_mentioned = event.mentions.as_ref()
+                    .map(|m| is_bot_mentioned_in_mentions(m, &bot_id))
+                    .unwrap_or(false);
+                let mentioned = content_mentioned || event_mentioned;
+                debug!("[POLICY] group chat={} mentioned={} (content={} event={}) bot_id={}",
+                    chat_id, mentioned, content_mentioned, event_mentioned, bot_id);
                 let policy = self.policy.read().await;
                 match policy.check_group(&chat_id, mentioned) {
                     Access::Denied(reason) => {
+                        debug!("[POLICY] group denied: {}", reason);
                         // Only reply if the bot was mentioned
                         if mentioned {
                             self.feishu.reply_message(&message_id, "text",
@@ -171,7 +206,9 @@ impl Bridge {
                         }
                         return Ok(());
                     }
-                    Access::Allowed => {}
+                    Access::Allowed => {
+                        debug!("[POLICY] group allowed for {}", chat_id);
+                    }
                 }
             }
             _ => {}
