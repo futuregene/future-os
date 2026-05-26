@@ -24,6 +24,12 @@ build-tui-single:
 build-cli:
 	cd cli && npm run build
 
+build-channel:
+	cd channel && cargo build
+
+build-channel-release:
+	cd channel && cargo build --release
+
 # ─── Test ───────────────────────────────────────────────────────────────────
 
 test: test-agent
@@ -58,6 +64,9 @@ run-tui: install
 run-cli: install-cli
 	cd cli && npm run dev
 
+run-channel:
+	cd channel && cargo run
+
 # ─── Generate ───────────────────────────────────────────────────────────────
 
 generate-models:
@@ -70,6 +79,7 @@ generate-proto:
 
 clean:
 	rm -rf agent/target
+	rm -rf channel/target
 	rm -rf tui/dist
 	rm -rf tui/node_modules
 	rm -f tui/future-tui
@@ -79,17 +89,20 @@ clean:
 # ─── Help ───────────────────────────────────────────────────────────────────
 
 help:
-	@echo "  build            Build agent, TUI, and CLI"
-	@echo "  build-agent      Build Rust agent"
-	@echo "  build-tui        Build TypeScript TUI"
-	@echo "  build-tui-single Build standalone TUI binary (via bun build --compile)"
-	@echo "  build-cli        Build TypeScript CLI"
-	@echo "  test             Run Rust tests"
-	@echo "  lint             Lint Rust + TypeScript"
-	@echo "  fmt              Format Rust code"
-	@echo "  run-agent        Build and run Rust agent"
-	@echo "  run-tui          Run TUI in dev mode"
-	@echo "  run-cli          Run CLI in dev mode"
-	@echo "  generate-models  Fetch model data and regenerate models_generated.rs"
-	@echo "  generate-proto   Compile proto/future.proto to Rust gRPC code"
-	@echo "  clean            Remove build artifacts"
+	@echo "  build              Build agent, TUI, and CLI"
+	@echo "  build-agent        Build Rust agent"
+	@echo "  build-tui          Build TypeScript TUI"
+	@echo "  build-tui-single   Build standalone TUI binary (via bun build --compile)"
+	@echo "  build-cli          Build TypeScript CLI"
+	@echo "  build-channel      Build channel bridge"
+	@echo "  build-channel-release  Build channel bridge (optimized)"
+	@echo "  test               Run Rust tests"
+	@echo "  lint               Lint Rust + TypeScript"
+	@echo "  fmt                Format Rust code"
+	@echo "  run-agent          Build and run Rust agent"
+	@echo "  run-tui            Run TUI in dev mode"
+	@echo "  run-cli            Run CLI in dev mode"
+	@echo "  run-channel        Build and run channel bridge"
+	@echo "  generate-models    Fetch model data and regenerate models_generated.rs"
+	@echo "  generate-proto     Compile proto/future.proto to Rust gRPC code"
+	@echo "  clean              Remove build artifacts"
