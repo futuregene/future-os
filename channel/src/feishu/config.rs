@@ -53,6 +53,10 @@ impl FeishuConfig {
         if self.domain == "lark" { "https://open.larksuite.com/open-apis" } else { "https://open.feishu.cn/open-apis" }
     }
 
+    pub fn api_domain(&self) -> &str {
+        if self.domain == "lark" { "https://open.larksuite.com" } else { "https://open.feishu.cn" }
+    }
+
     pub fn ws_base(&self) -> &str {
         if self.domain == "lark" { "wss://open.larksuite.com" } else { "wss://open.feishu.cn" }
     }

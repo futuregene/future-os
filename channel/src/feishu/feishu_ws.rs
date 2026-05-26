@@ -77,14 +77,14 @@ const HEARTBEAT_TIMEOUT: u64 = 300;
 pub struct FeishuWsClient {
     app_id: String,
     app_secret: String,
-    api_base: String,
+    domain: String,
     ping_interval: Arc<RwLock<u64>>,
 }
 
 impl FeishuWsClient {
-    pub fn new(api_base: &str, app_id: &str, app_secret: &str) -> Self {
+    pub fn new(domain: &str, app_id: &str, app_secret: &str) -> Self {
         Self {
-            api_base: api_base.to_string(),
+            domain: domain.to_string(),
             app_id: app_id.to_string(),
             app_secret: app_secret.to_string(),
             ping_interval: Arc::new(RwLock::new(DEFAULT_PING_INTERVAL)),
@@ -94,7 +94,7 @@ impl FeishuWsClient {
     /// Call POST /callback/ws/endpoint to get the WebSocket URL.
     async fn bootstrap_ws(&self) -> Result<(String, Option<ClientConfig>)> {
         let client = reqwest::Client::new();
-        let url = format!("{}/callback/ws/endpoint", self.api_base);
+        let url = format!("{}/callback/ws/endpoint", self.domain);
         let resp: BootstrapResponse = client
             .post(&url)
             .header("locale", "zh")

@@ -25,7 +25,7 @@ impl FeishuChannel {
         let feishu_cfg = config::FeishuConfig::from_channel_config(&ch_cfg);
 
         let ws_client = feishu_ws::FeishuWsClient::new(
-            feishu_cfg.api_base(),
+            feishu_cfg.api_domain(),
             &feishu_cfg.app_id,
             &feishu_cfg.app_secret,
         );
