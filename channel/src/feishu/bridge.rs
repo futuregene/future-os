@@ -147,27 +147,6 @@ impl Bridge {
             return Ok(());
         }
 
-        // ─── ACK: react to indicate processing (must complete within 3s) ────
-        let ack_reaction_id = match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            self.feishu.react_to_message(&message_id, "Typing"),
-        )
-        .await
-        {
-            Ok(Ok(id)) => {
-                debug!("[ACK] reaction succeeded: {}", id);
-                Some(id)
-            }
-            Ok(Err(e)) => {
-                warn!("[ACK] reaction failed: {}", e);
-                None
-            }
-            Err(_) => {
-                warn!("[ACK] reaction timed out after 5s");
-                None
-            }
-        };
-
         // ─── Permission check ──────────────────────────────────────────────
         match chat_type {
             "p2p" => {
@@ -195,15 +174,16 @@ impl Bridge {
                 let mentioned = content_mentioned || event_mentioned;
                 debug!("[POLICY] group chat={} mentioned={} (content={} event={}) bot_id={}",
                     chat_id, mentioned, content_mentioned, event_mentioned, bot_id);
+                // Silently skip non-mentioned messages — no ACK, no reaction
+                if !mentioned {
+                    return Ok(());
+                }
                 let policy = self.policy.read().await;
-                match policy.check_group(&chat_id, mentioned) {
+                match policy.check_group(&chat_id, true) {
                     Access::Denied(reason) => {
                         debug!("[POLICY] group denied: {}", reason);
-                        // Only reply if the bot was mentioned
-                        if mentioned {
-                            self.feishu.reply_message(&message_id, "text",
-                                &serde_json::json!({"text": reason}).to_string()).await?;
-                        }
+                        self.feishu.reply_message(&message_id, "text",
+                            &serde_json::json!({"text": reason}).to_string()).await?;
                         return Ok(());
                     }
                     Access::Allowed => {
@@ -213,6 +193,27 @@ impl Bridge {
             }
             _ => {}
         }
+
+        // ─── ACK: react to indicate processing (must complete within 3s) ────
+        let ack_reaction_id = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.feishu.react_to_message(&message_id, "Typing"),
+        )
+        .await
+        {
+            Ok(Ok(id)) => {
+                debug!("[ACK] reaction succeeded: {}", id);
+                Some(id)
+            }
+            Ok(Err(e)) => {
+                warn!("[ACK] reaction failed: {}", e);
+                None
+            }
+            Err(_) => {
+                warn!("[ACK] reaction timed out after 5s");
+                None
+            }
+        };
 
         // ─── Extract message content ───────────────────────────────────────
         let msg_type = event.msg_type.as_deref().unwrap_or("text");
