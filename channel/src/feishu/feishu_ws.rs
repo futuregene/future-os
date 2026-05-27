@@ -162,7 +162,7 @@ impl FeishuWsClient {
         loop {
             tokio::select! {
                 _ = ping_timer.tick() => {
-                    let interval_secs = *ping_interval_arc.read().await;
+                    let _interval_secs = *ping_interval_arc.read().await;
                     if last_recv.elapsed().as_secs() > HEARTBEAT_TIMEOUT {
                         warn!("WebSocket heartbeat timeout, reconnecting...");
                         return Err(anyhow!("WebSocket heartbeat timeout"));
@@ -187,7 +187,8 @@ impl FeishuWsClient {
                         warn!("Failed to send ping: {}", e);
                         return Err(anyhow!("WebSocket send error: {}", e));
                     }
-                    ping_timer = interval(Duration::from_secs(interval_secs));
+                    // Note: don't reset ping_timer — interval.tick() fires at
+                    // the configured period automatically after the first tick.
                 }
 
                 msg = ws_stream.next() => {
@@ -203,9 +204,31 @@ impl FeishuWsClient {
                                         .unwrap_or("unknown");
 
                                     match frame_type {
+                                        "ping" => {
+                                            debug!("Received ping, sending pong");
+                                            seq_id += 1;
+                                            let pong_frame = WsFrame {
+                                                seq_id,
+                                                log_id: frame.log_id,
+                                                service: 0,
+                                                method: 0,
+                                                headers: vec![
+                                                    Header { key: "type".into(), value: "pong".into() },
+                                                ],
+                                                payload: vec![],
+                                                payload_encoding: String::new(),
+                                                payload_type: String::new(),
+                                                log_id_new: String::new(),
+                                            };
+                                            let mut buf = Vec::new();
+                                            if let Err(e) = pong_frame.encode(&mut buf) {
+                                                warn!("Failed to encode pong: {}", e);
+                                            } else if let Err(e) = ws_stream.send(WsMessage::Binary(buf.into())).await {
+                                                warn!("Failed to send pong: {}", e);
+                                            }
+                                        }
                                         "pong" => {
                                             debug!("Received pong");
-                                            // Server may send updated client config in pong payload
                                         }
                                         "event" => {
                                             let payload_str = String::from_utf8_lossy(&frame.payload);
