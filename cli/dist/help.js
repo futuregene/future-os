@@ -9,6 +9,10 @@ Usage:
   future agent stop
   future agent restart
   future agent status
+  future channel start
+  future channel stop
+  future channel restart
+  future channel status
   future tui [tui options]
 `);
 }

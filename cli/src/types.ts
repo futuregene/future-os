@@ -5,3 +5,4 @@ export type ServiceResult = {
 };
 
 export type AgentCommand = "start" | "stop" | "restart" | "status";
+export type ChannelCommand = "start" | "stop" | "restart" | "status";

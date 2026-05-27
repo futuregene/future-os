@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { agent, isAgentCommand } from "./commands/agent.js";
+import { channel, isChannelCommand } from "./commands/channel.js";
 import { login, logout, status } from "./commands/auth.js";
 import { tui } from "./commands/tui.js";
 import { printHelp } from "./help.js";
@@ -20,6 +21,10 @@ async function main() {
     }
     if (group === "agent" && isAgentCommand(command)) {
         await agent(command);
+        return;
+    }
+    if (group === "channel" && isChannelCommand(command)) {
+        await channel(command);
         return;
     }
     if (group === "tui") {
