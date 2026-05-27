@@ -72,9 +72,12 @@ pub struct RpcCommand {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ImageContent {
-    /// "image_url" | "image_base64"
+    /// "image_url" | "image_base64" | "image_file"
     #[prost(string, tag = "1")]
     pub r#type: ::prost::alloc::string::String,
+    /// local file path when saved to disk
+    #[prost(string, tag = "12")]
+    pub file_path: ::prost::alloc::string::String,
     #[prost(oneof = "image_content::Content", tags = "10, 11")]
     pub content: ::core::option::Option<image_content::Content>,
 }

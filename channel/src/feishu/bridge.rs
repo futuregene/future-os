@@ -38,6 +38,8 @@ pub struct Bridge {
     gen_counters: RwLock<HashMap<String, Arc<AtomicU64>>>,
     /// Dedup: track recently processed message IDs to prevent Feishu redelivery duplicates.
     processed: RwLock<HashSet<String>>,
+    /// Whether the current model supports image input.
+    image_support: RwLock<bool>,
 }
 
 impl Bridge {
@@ -75,6 +77,7 @@ impl Bridge {
             prompt_locks: RwLock::new(HashMap::new()),
             gen_counters: RwLock::new(HashMap::new()),
             processed: RwLock::new(HashSet::new()),
+            image_support: RwLock::new(false),
         })
     }
 
@@ -232,7 +235,13 @@ impl Bridge {
         // ─── Check for slash commands ─────────────────────────────────────
         if let Some(text) = extract_text_content(content, msg_type) {
             if text.starts_with('/') {
-                return self.handle_slash_command(&chat_id, thread_id.as_deref(), &message_id, &text).await;
+                let result = self.handle_slash_command(
+                    &chat_id, thread_id.as_deref(), &message_id, &text, ack_reaction_id,
+                ).await;
+                // handle_slash_command handles reactions for non-agent cases.
+                // For the _ wildcard (falls through to process_prompt), reactions
+                // are managed by the AgentEnd handler in run_prompt_loop.
+                return result;
             }
         }
 
@@ -269,22 +278,45 @@ impl Bridge {
     async fn ensure_session(&self, chat_id: &str, thread_id: Option<&str>) -> Result<String> {
         if let Some(sid) = self.sessions.get(chat_id, thread_id) {
             if !sid.is_empty() {
+                // Re-activate session on the agent side (agent may have restarted)
+                let mut agent = self.agent.write().await;
+                let _ = agent.switch_session(&sid).await;
+                let cache = agent.get_state(&sid).await
+                    .map(|s| s.image_support).unwrap_or(false);
+                drop(agent);
+                *self.image_support.write().await = cache;
                 return Ok(sid);
             }
         }
         let mut agent = self.agent.write().await;
         let sid = agent.new_session(&self.agent_cfg.cwd).await?;
         self.sessions.set_session_id(chat_id, thread_id, &sid);
+        let cache = agent.get_state(&sid).await
+            .map(|s| s.image_support).unwrap_or(false);
+        drop(agent);
+        *self.image_support.write().await = cache;
         Ok(sid)
     }
 
+    /// Refresh cached image support flag from agent's current model.
+    async fn refresh_image_support(&self, session_id: &str) {
+        let mut agent = self.agent.write().await;
+        if let Ok(state) = agent.get_state(session_id).await {
+            *self.image_support.write().await = state.image_support;
+        }
+    }
+
     /// Handle slash commands locally (before hitting the agent).
+    /// Reactions: for commands handled in-process, swaps "Typing"→"DONE".
+    /// For the `_` wildcard (falls through to process_prompt), the AgentEnd
+    /// handler in run_prompt_loop manages reactions instead.
     async fn handle_slash_command(
         &self,
         chat_id: &str,
         thread_id: Option<&str>,
         message_id: &str,
         text: &str,
+        ack_reaction_id: Option<String>,
     ) -> Result<()> {
         let parts: Vec<&str> = text.trim().splitn(2, char::is_whitespace).collect();
         let cmd = parts[0].to_lowercase();
@@ -321,7 +353,8 @@ impl Bridge {
                         match agent.get_state(&sid).await {
                             Ok(state) => {
                                 let status = card::status_card(
-                                    &state.model, &state.thinking_level,
+                                    &state.model, state.image_support, &state.thinking_level,
+                                    state.context_tokens, state.context_window,
                                     state.tokens_in, state.tokens_out, state.message_count,
                                 );
                                 self.feishu.reply_message(message_id, "interactive",
@@ -354,6 +387,9 @@ impl Bridge {
                 let mut agent = self.agent.write().await;
                 match agent.set_model(&sid, &model_id).await {
                     Ok(()) => {
+                        drop(agent);
+                        self.refresh_image_support(&sid).await;
+                        let mut agent = self.agent.write().await;
                         let state = agent.get_state(&sid).await?;
                         self.feishu.reply_message(message_id, "text",
                             &serde_json::json!({"text": format!("Model switched to: {}", state.model)}).to_string()).await?;
@@ -371,16 +407,27 @@ impl Bridge {
                 match agent.get_available_models(&session_id).await {
                     Ok(models) => {
                         let list: Vec<String> = models.iter().map(|m| {
-                            if m.provider.is_empty() {
-                                format!("• {} — `{}`", m.name, m.id)
+                            let image_icon = if m.image { "🖼️ " } else { "" };
+                            let ctx = if m.context_window > 0 {
+                                format!(" | {}K ctx", m.context_window / 1000)
                             } else {
-                                format!("• {} — `{}/{}`", m.name, m.provider, m.id)
+                                String::new()
+                            };
+                            let out = if m.max_tokens > 0 {
+                                format!(" | {}K out", m.max_tokens / 1000)
+                            } else {
+                                String::new()
+                            };
+                            if m.provider.is_empty() {
+                                format!("• {}{} — `{}`{}{}", image_icon, m.name, m.id, ctx, out)
+                            } else {
+                                format!("• {}{} — `{}/{}`{}{}", image_icon, m.name, m.provider, m.id, ctx, out)
                             }
                         }).collect();
                         let text = if list.is_empty() {
                             "No models available".to_string()
                         } else {
-                            format!("Available models:\n{}", list.join("\n"))
+                            format!("Available models ({})\n{}", list.len(), list.join("\n"))
                         };
                         self.feishu.reply_message(message_id, "text",
                             &serde_json::json!({"text": text}).to_string()).await?;
@@ -451,10 +498,19 @@ impl Bridge {
             }
 
             _ => {
-                // Unknown slash command — send to agent as normal prompt
-                self.process_prompt(chat_id, thread_id, message_id, text, &[], false, None).await?;
+                // Unknown slash command — send to agent as normal prompt.
+                // Pass ack_reaction_id so the AgentEnd handler can clean it up.
+                self.process_prompt(chat_id, thread_id, message_id, text, &[], false, ack_reaction_id).await?;
+                // Don't add DONE here — run_prompt_loop's AgentEnd handler does it.
+                return Ok(());
             }
         }
+
+        // Non-agent slash commands: swap reactions here since process_prompt wasn't called.
+        if let Some(ref rid) = ack_reaction_id {
+            let _ = self.feishu.remove_reaction(message_id, rid).await;
+        }
+        let _ = self.feishu.react_to_message(message_id, "DONE").await;
 
         Ok(())
     }
@@ -468,16 +524,23 @@ impl Bridge {
         image_key: &str,
         ack_reaction_id: Option<String>,
     ) -> Result<()> {
-        // Download image and convert to base64
+        // Download image, save to disk, and convert to base64
         match self.feishu.download_resource(message_id, image_key, "image").await {
             Ok(data) => {
-                let base64 = bytes_to_base64_data(&data, "image/png");
-                let prompt = "[User sent an image]";
-                let images = vec![ImageInput {
-                    content_type: "image_url".into(),
-                    data: ImageData::Base64(base64),
-                }];
-                self.process_prompt(chat_id, thread_id, message_id, prompt, &images, false, ack_reaction_id).await?;
+                let file_path = save_received_file(&data, &format!("image_{}.png", message_id));
+                let prompt = format!("[User sent an image: {}]", file_path.display());
+                let image_support = *self.image_support.read().await;
+                let images = if image_support {
+                    let base64 = bytes_to_base64_data(&data, "image/png");
+                    vec![ImageInput {
+                        content_type: "image_url".into(),
+                        data: ImageData::Base64(base64),
+                        file_path: Some(file_path.to_string_lossy().to_string()),
+                    }]
+                } else {
+                    vec![]
+                };
+                self.process_prompt(chat_id, thread_id, message_id, &prompt, &images, false, ack_reaction_id).await?;
             }
             Err(e) => {
                 self.feishu.reply_message(message_id, "text",
@@ -504,13 +567,24 @@ impl Bridge {
             match self.feishu.download_resource(message_id, &key, rtype).await {
                 Ok(data) => {
                     let name = file_name.unwrap_or_else(|| "file".to_string());
-                    let mime = mime_from_ext(&name);
-                    let base64 = bytes_to_base64_data(&data, mime);
-                    let text = format!("[User sent a file: {} ({} bytes)]", name, data.len());
-                    let images = vec![ImageInput {
-                        content_type: "image_url".into(),
-                        data: ImageData::Base64(base64),
-                    }];
+                    let file_path = save_received_file(&data, &name);
+                    let text = format!(
+                        "[User sent a file: {} ({} bytes)]\nFile path: {}",
+                        name, data.len(),
+                        file_path.display()
+                    );
+                    let image_support = *self.image_support.read().await;
+                    let images = if image_support {
+                        let mime = mime_from_ext(&name);
+                        let base64 = bytes_to_base64_data(&data, mime);
+                        vec![ImageInput {
+                            content_type: "image_url".into(),
+                            data: ImageData::Base64(base64),
+                            file_path: Some(file_path.to_string_lossy().to_string()),
+                        }]
+                    } else {
+                        vec![]
+                    };
                     self.process_prompt(chat_id, thread_id, message_id, &text, &images, false, ack_reaction_id).await?;
                 }
                 Err(e) => {
@@ -639,7 +713,13 @@ async fn run_prompt_loop(
             let mut prompt_text = text.to_string();
             for img in images {
                 match &img.data {
-                    ImageData::Base64(_) => prompt_text.push_str("\n[Image attached]"),
+                    ImageData::Base64(_) => {
+                        if let Some(ref fp) = img.file_path {
+                            prompt_text.push_str(&format!("\n[File saved: {}]", fp));
+                        } else {
+                            prompt_text.push_str("\n[Image attached]");
+                        }
+                    }
                     ImageData::Url(_) => prompt_text.push_str("\n[Image URL attached]"),
                 }
             }
@@ -922,4 +1002,14 @@ fn dirs_next_path() -> std::path::PathBuf {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from("~"))
         .join(".future")
+}
+
+/// Save a downloaded file to ~/.future/channel/files/{filename}.
+/// Returns the absolute path on success.
+fn save_received_file(data: &[u8], filename: &str) -> std::path::PathBuf {
+    let dir = dirs_next_path().join("channel").join("files");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(filename);
+    let _ = std::fs::write(&path, data);
+    path
 }

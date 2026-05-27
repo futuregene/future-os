@@ -134,7 +134,17 @@ pub fn tool_card(tool_name: &str, args: &str) -> Value {
 }
 
 /// Build a status card (for /status command).
-pub fn status_card(model: &str, thinking: &str, tokens_in: i64, tokens_out: i64, msg_count: usize) -> Value {
+pub fn status_card(
+    model: &str, image_support: bool, thinking: &str,
+    context_tokens: i64, context_window: i64,
+    tokens_in: i64, tokens_out: i64, msg_count: usize,
+) -> Value {
+    let image_icon = if image_support { "🖼️" } else { "" };
+    let context_pct = if context_window > 0 {
+        format!(" ({:.0}%)", (context_tokens as f64 / context_window as f64) * 100.0)
+    } else {
+        String::new()
+    };
     json!({
         "config": {
             "update_multi": false
@@ -144,8 +154,9 @@ pub fn status_card(model: &str, thinking: &str, tokens_in: i64, tokens_out: i64,
             "template": "green"
         },
         "elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content": format!("**Model:** {}", model)}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": format!("**Model:** {} {}", model, image_icon)}},
             {"tag": "div", "text": {"tag": "lark_md", "content": format!("**Thinking:** {}", thinking)}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": format!("**Context:** {} / {}{}", context_tokens, context_window, context_pct)}},
             {"tag": "div", "text": {"tag": "lark_md", "content": format!("**Tokens:** {} in / {} out", tokens_in, tokens_out)}},
             {"tag": "div", "text": {"tag": "lark_md", "content": format!("**Messages:** {}", msg_count)}},
         ]

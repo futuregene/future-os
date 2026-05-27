@@ -93,6 +93,7 @@ impl AgentClient {
                     ImageData::Url(url) => proto::image_content::Content::Url(url),
                     ImageData::Base64(b64) => proto::image_content::Content::Base64(b64),
                 }),
+                file_path: img.file_path.unwrap_or_default(),
             }
         }).collect();
 
@@ -115,6 +116,7 @@ impl AgentClient {
         let resp = self.call("get_state", session_id, Default::default()).await?;
         Ok(SessionState {
             model: resp["model"].as_str().unwrap_or("?").to_string(),
+            image_support: resp["imageSupport"].as_bool().unwrap_or(false),
             thinking_level: resp["thinkingLevel"].as_str().unwrap_or("off").to_string(),
             is_streaming: resp["isStreaming"].as_bool().unwrap_or(false),
             context_tokens: resp["contextTokens"].as_i64().unwrap_or(0),
@@ -136,6 +138,9 @@ impl AgentClient {
                 id: m["id"].as_str().unwrap_or("?").to_string(),
                 name: m["name"].as_str().unwrap_or("?").to_string(),
                 provider: m["provider"].as_str().unwrap_or("").to_string(),
+                image: m["image"].as_bool().unwrap_or(false),
+                context_window: m["contextWindow"].as_i64().unwrap_or(0),
+                max_tokens: m["maxTokens"].as_i64().unwrap_or(0),
             }).collect()
         }).unwrap_or_default();
         Ok(models)
@@ -246,6 +251,7 @@ impl AgentClient {
 #[derive(Debug, Clone)]
 pub struct SessionState {
     pub model: String,
+    pub image_support: bool,
     pub thinking_level: String,
     pub is_streaming: bool,
     pub context_tokens: i64,
@@ -263,6 +269,9 @@ pub struct ModelInfo {
     pub id: String,
     pub name: String,
     pub provider: String,
+    pub image: bool,
+    pub context_window: i64,
+    pub max_tokens: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -275,4 +284,5 @@ pub enum ImageData {
 pub struct ImageInput {
     pub content_type: String,
     pub data: ImageData,
+    pub file_path: Option<String>,
 }

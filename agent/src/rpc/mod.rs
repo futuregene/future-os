@@ -338,16 +338,27 @@ impl ServerSession {
     pub fn prompt(
         &mut self,
         msg: &str,
-        _images: &[crate::types::ImageContent],
+        images: &[crate::types::ImageContent],
         _behavior: &str,
     ) -> Result<()> {
-        // Add message to session
+        // Build content blocks: text + images
+        let mut content: Vec<serde_json::Value> = Vec::new();
+        content.push(serde_json::json!({"type": "text", "text": msg}));
+        for img in images {
+            let url = img.data.as_deref().unwrap_or("");
+            if !url.is_empty() {
+                content.push(serde_json::json!({
+                    "type": "image_url",
+                    "image_url": {"url": url}
+                }));
+            }
+        }
         self.messages
             .write()
             .unwrap()
             .push(crate::types::AgentMessage::new_user(
                 "user",
-                serde_json::json!([{"type": "text", "text": msg}]),
+                serde_json::Value::Array(content),
             ));
 
         // Set streaming flag
@@ -1830,6 +1841,11 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
         })
         .unwrap_or(200000) as i64;
 
+    let image_support = registry
+        .resolve(&sess.model)
+        .map(|m| m.input.contains(&"image".to_string()))
+        .unwrap_or(false);
+
     let session_id = sess.session_id();
     let cwd = sess.cwd.clone();
 
@@ -1862,6 +1878,7 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
 
     serde_json::json!({
         "model": sess.model,
+        "imageSupport": image_support,
         "thinkingLevel": sess.thinking_level,
         "isStreaming": sess.is_streaming.load(std::sync::atomic::Ordering::Relaxed),
         "isCompacting": false,

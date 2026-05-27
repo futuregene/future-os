@@ -70,11 +70,12 @@ message RpcCommand {
 }
 
 message ImageContent {
-  string type = 1;  // "image_url" | "image_base64"
+  string type = 1;  // "image_url" | "image_base64" | "image_file"
   oneof content {
     string url = 10;
     string base64 = 11;
   }
+  string file_path = 12;  // local file path when saved to disk
 }
 
 // =============================================================================
