@@ -155,11 +155,8 @@ fn load_user_models_with_overrides(
             );
         }
 
-        // Skip model loading if no api_key
-        let api_key = match provider.api_key.clone() {
-            Some(k) => k,
-            None => continue,
-        };
+        // Use provider-level api_key if present, otherwise models will rely on auth.json
+        let api_key = provider.api_key.clone().unwrap_or_default();
         let provider_api = provider.api.unwrap_or_else(|| "openai".to_string());
         let provider_base_url = provider
             .base_url
