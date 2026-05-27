@@ -389,7 +389,8 @@ impl FeishuRestClient {
     }
 
     /// Set streaming mode on/off for a CardKit card.
-    /// Uses raw HTTP call because the API may return empty body (not valid JSON).
+    /// Uses PATCH /cardkit/v1/cards/{card_id}/settings
+    /// Returns empty body on success — use raw HTTP status check.
     pub async fn set_card_streaming_mode(
         &self,
         card_id: &str,
@@ -399,10 +400,10 @@ impl FeishuRestClient {
         let token = self.get_token().await?;
         let url = format!("{}/cardkit/v1/cards/{}/settings", self.api_base, card_id);
         let resp = self.http
-            .put(&url)
+            .patch(&url)
             .header("Authorization", format!("Bearer {}", token))
             .json(&serde_json::json!({
-                "settings": serde_json::json!({"streaming_mode": streaming_mode}).to_string(),
+                "settings": serde_json::json!({"config": {"streaming_mode": streaming_mode}}).to_string(),
                 "sequence": sequence,
             }))
             .send()
