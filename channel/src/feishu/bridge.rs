@@ -16,6 +16,7 @@ use crate::config::AgentConfig;
 use crate::grpc_client::{AgentClient, AgentEvent, ImageData, ImageInput};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
@@ -29,8 +30,12 @@ pub struct Bridge {
     policy: Arc<RwLock<PolicyEngine>>,
     sessions: SessionStore,
     pub bot_open_id: Arc<RwLock<String>>,
-    /// Per-chat mutex to serialize prompt calls (abort + prompt must be atomic).
+    /// Per-chat mutex: serializes abort+prompt to prevent races.
+    /// Held only briefly — not during stream processing.
     prompt_locks: RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Per-chat generation counter: incremented on each new prompt.
+    /// Streams check this to detect they've been superseded and stop early.
+    gen_counters: RwLock<HashMap<String, Arc<AtomicU64>>>,
     /// Dedup: track recently processed message IDs to prevent Feishu redelivery duplicates.
     processed: RwLock<HashSet<String>>,
 }
@@ -68,6 +73,7 @@ impl Bridge {
             sessions,
             bot_open_id: Arc::new(RwLock::new(bot_open_id)),
             prompt_locks: RwLock::new(HashMap::new()),
+            gen_counters: RwLock::new(HashMap::new()),
             processed: RwLock::new(HashSet::new()),
         })
     }
@@ -258,6 +264,20 @@ impl Bridge {
         Ok(())
     }
 
+    /// Ensure a session exists for this chat/thread, creating one if needed.
+    /// Returns the session_id.
+    async fn ensure_session(&self, chat_id: &str, thread_id: Option<&str>) -> Result<String> {
+        if let Some(sid) = self.sessions.get(chat_id, thread_id) {
+            if !sid.is_empty() {
+                return Ok(sid);
+            }
+        }
+        let mut agent = self.agent.write().await;
+        let sid = agent.new_session(&self.agent_cfg.cwd).await?;
+        self.sessions.set_session_id(chat_id, thread_id, &sid);
+        Ok(sid)
+    }
+
     /// Handle slash commands locally (before hitting the agent).
     async fn handle_slash_command(
         &self,
@@ -271,10 +291,26 @@ impl Bridge {
         let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
 
         match cmd.as_str() {
-            "/reset" => {
+            "/new" => {
+                // Abort the old session if there is one
+                if let Some(old_sid) = self.sessions.get(chat_id, thread_id) {
+                    if !old_sid.is_empty() {
+                        let mut agent = self.agent.write().await;
+                        let _ = agent.abort(&old_sid).await;
+                    }
+                }
                 self.sessions.reset(chat_id, thread_id);
-                self.feishu.reply_message(message_id, "text",
-                    &serde_json::json!({"text": "Session reset. Start a new conversation."}).to_string()).await?;
+                match self.ensure_session(chat_id, thread_id).await {
+                    Ok(sid) => {
+                        info!("[NEW] session={}", sid);
+                        self.feishu.reply_message(message_id, "text",
+                            &serde_json::json!({"text": format!("New session: {}", sid)}).to_string()).await?;
+                    }
+                    Err(e) => {
+                        self.feishu.reply_message(message_id, "text",
+                            &serde_json::json!({"text": format!("Failed to create new session: {}", e)}).to_string()).await?;
+                    }
+                }
             }
 
             "/status" => {
@@ -305,27 +341,26 @@ impl Bridge {
             }
 
             "/model" if !arg.is_empty() => {
-                let session_id = self.sessions.get(chat_id, thread_id);
                 // Accept both ":" and "/" as provider-model separator
                 let model_id = arg.replace(':', "/");
-                match session_id {
-                    Some(sid) => {
-                        let mut agent = self.agent.write().await;
-                        match agent.set_model(&sid, &model_id).await {
-                            Ok(()) => {
-                                let state = agent.get_state(&sid).await?;
-                                self.feishu.reply_message(message_id, "text",
-                                    &serde_json::json!({"text": format!("Model switched to: {}", state.model)}).to_string()).await?;
-                            }
-                            Err(e) => {
-                                self.feishu.reply_message(message_id, "text",
-                                    &serde_json::json!({"text": format!("Failed to switch model: {}", e)}).to_string()).await?;
-                            }
-                        }
-                    }
-                    None => {
+                let sid = match self.ensure_session(chat_id, thread_id).await {
+                    Ok(sid) => sid,
+                    Err(e) => {
                         self.feishu.reply_message(message_id, "text",
-                            &serde_json::json!({"text": "No active session. Send a message first."}).to_string()).await?;
+                            &serde_json::json!({"text": format!("Failed to create session: {}", e)}).to_string()).await?;
+                        return Ok(());
+                    }
+                };
+                let mut agent = self.agent.write().await;
+                match agent.set_model(&sid, &model_id).await {
+                    Ok(()) => {
+                        let state = agent.get_state(&sid).await?;
+                        self.feishu.reply_message(message_id, "text",
+                            &serde_json::json!({"text": format!("Model switched to: {}", state.model)}).to_string()).await?;
+                    }
+                    Err(e) => {
+                        self.feishu.reply_message(message_id, "text",
+                            &serde_json::json!({"text": format!("Failed to switch model: {}", e)}).to_string()).await?;
                     }
                 }
             }
@@ -376,6 +411,35 @@ impl Bridge {
                     None => {
                         self.feishu.reply_message(message_id, "text",
                             &serde_json::json!({"text": "No active session to abort."}).to_string()).await?;
+                    }
+                }
+            }
+
+            "/effort" if !arg.is_empty() => {
+                let valid_levels = ["off", "minimal", "low", "medium", "high", "xhigh"];
+                let level = arg.to_lowercase();
+                if !valid_levels.contains(&level.as_str()) {
+                    self.feishu.reply_message(message_id, "text",
+                        &serde_json::json!({"text": format!("Invalid level: {}. Use: off, minimal, low, medium, high, xhigh", arg)}).to_string()).await?;
+                    return Ok(());
+                }
+                let sid = match self.ensure_session(chat_id, thread_id).await {
+                    Ok(sid) => sid,
+                    Err(e) => {
+                        self.feishu.reply_message(message_id, "text",
+                            &serde_json::json!({"text": format!("Failed to create session: {}", e)}).to_string()).await?;
+                        return Ok(());
+                    }
+                };
+                let mut agent = self.agent.write().await;
+                match agent.set_thinking_level(&sid, &level).await {
+                    Ok(()) => {
+                        self.feishu.reply_message(message_id, "text",
+                            &serde_json::json!({"text": format!("Thinking level set to: {}", level)}).to_string()).await?;
+                    }
+                    Err(e) => {
+                        self.feishu.reply_message(message_id, "text",
+                            &serde_json::json!({"text": format!("Failed to set thinking level: {}", e)}).to_string()).await?;
                     }
                 }
             }
@@ -491,11 +555,19 @@ impl Bridge {
 
         self.sessions.touch(chat_id, thread_id);
 
-        // Per-chat lock: serialize abort+prompt to prevent "still streaming" errors
+        // Per-chat lock: serializes abort+prompt (held briefly, not during stream)
         let prompt_lock = {
             let mut locks = self.prompt_locks.write().await;
             locks.entry(chat_id.to_string())
                 .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+
+        // Per-chat generation counter: lets new prompts interrupt old streams
+        let gen_counter = {
+            let mut counters = self.gen_counters.write().await;
+            counters.entry(chat_id.to_string())
+                .or_insert_with(|| Arc::new(AtomicU64::new(0)))
                 .clone()
         };
 
@@ -517,7 +589,8 @@ impl Bridge {
                 &text_owned,
                 &images_vec,
                 streaming,
-                prompt_lock,
+                &prompt_lock,
+                &gen_counter,
                 ack_reaction_id,
             ).await {
                 error!("Prompt loop error: {}", e);
@@ -550,30 +623,35 @@ async fn run_prompt_loop(
     text: &str,
     images: &[ImageInput],
     streaming: bool,
-    prompt_lock: Arc<tokio::sync::Mutex<()>>,
+    prompt_lock: &tokio::sync::Mutex<()>,
+    gen_counter: &AtomicU64,
     ack_reaction_id: Option<String>,
 ) -> Result<()> {
-    // Hold the per-chat lock for the entire prompt + stream lifecycle.
-    // This prevents a second run_prompt_loop from starting (and aborting
-    // this one) while we're still streaming, which would produce duplicate
-    // replies from both the aborted stream and the new stream.
-    let _guard = prompt_lock.lock().await;
+    // Hold the per-chat lock only for abort+prompt, not during streaming.
+    // This lets a new message interrupt an ongoing stream.
+    let my_gen = {
+        let _guard = prompt_lock.lock().await;
 
-    // Send prompt via gRPC
-    {
-        let mut client = agent.write().await;
-        let _ = client.abort(session_id).await;
-        let mut prompt_text = text.to_string();
-        for img in images {
-            match &img.data {
-                ImageData::Base64(_) => prompt_text.push_str("\n[Image attached]"),
-                ImageData::Url(_) => prompt_text.push_str("\n[Image URL attached]"),
+        // Abort current generation, then send the new prompt
+        {
+            let mut client = agent.write().await;
+            let _ = client.abort(session_id).await;
+            let mut prompt_text = text.to_string();
+            for img in images {
+                match &img.data {
+                    ImageData::Base64(_) => prompt_text.push_str("\n[Image attached]"),
+                    ImageData::Url(_) => prompt_text.push_str("\n[Image URL attached]"),
+                }
             }
+            info!("[SEND] session={} text=\"{}\"", session_id,
+                if prompt_text.len() > 300 { format!("{}...", truncate_at_char(&prompt_text, 300)) } else { prompt_text.clone() });
+            client.prompt(session_id, &prompt_text, images.to_vec()).await?;
         }
-        info!("[SEND] session={} text=\"{}\"", session_id,
-            if prompt_text.len() > 300 { format!("{}...", truncate_at_char(&prompt_text, 300)) } else { prompt_text.clone() });
-        client.prompt(session_id, &prompt_text, images.to_vec()).await?;
-    }
+
+        // Bump generation — we're now the latest active stream
+        gen_counter.fetch_add(1, Ordering::SeqCst) + 1
+    };
+    // Lock released here — streaming happens concurrently with other prompts
 
     let mut stream = {
         let mut client = agent.write().await;
@@ -599,7 +677,20 @@ async fn run_prompt_loop(
     let mut last_flush = Instant::now();
     let mut needs_flush = false;
 
+    /// Check if we've been superseded by a newer prompt. If so, stop silently
+    /// — the newer stream owns the response.
+    macro_rules! check_superseded {
+        () => {
+            if gen_counter.load(Ordering::SeqCst) != my_gen {
+                info!("[STREAM] gen={} superseded, stopping", my_gen);
+                return Ok(());
+            }
+        };
+    }
+
     while let Some(event) = stream.message().await? {
+        check_superseded!();
+
         let parsed = AgentClient::parse_event(event);
 
         match parsed {
@@ -610,8 +701,6 @@ async fn run_prompt_loop(
                     stream_text.push_str("\n\n");
                 }
                 stream_text.push_str("💭 **Thinking...**\n\n");
-                // Don't flush immediately — let the throttle handle it to avoid
-                // blocking the gRPC event stream on an HTTP round-trip.
                 needs_flush = true;
             }
             Some(AgentEvent::ThinkingDelta(text)) => {
@@ -635,9 +724,6 @@ async fn run_prompt_loop(
                 }
                 needs_flush = true;
                 if let Some(ref cid) = cardkit_card_id {
-                    // Use a shorter flush interval for thinking (100ms vs 250ms)
-                    // because thinking tokens are small and rapid — a 250ms
-                    // batch looks stuttery compared to content chunks.
                     let thinking_flush = std::time::Duration::from_millis(100);
                     if last_flush.elapsed() >= thinking_flush {
                         card_seq += 1;
@@ -648,7 +734,6 @@ async fn run_prompt_loop(
                 }
             }
             Some(AgentEvent::ThinkingEnd) => {
-                // Flush pending thinking text
                 if needs_flush {
                     if let Some(ref cid) = cardkit_card_id {
                         card_seq += 1;
@@ -659,7 +744,6 @@ async fn run_prompt_loop(
                 }
             }
             Some(AgentEvent::TextChunk(chunk)) => {
-                // Add divider when transitioning from thinking/tools back to content
                 if !last_was_content && !stream_text.is_empty() {
                     stream_text.push_str("\n\n---\n\n");
                 }
@@ -682,7 +766,6 @@ async fn run_prompt_loop(
                     }
                 }
 
-                // Throttled stream update: flush at most every 250ms
                 needs_flush = true;
                 if let Some(ref cid) = cardkit_card_id {
                     if last_flush.elapsed() >= flush_interval {
@@ -695,7 +778,6 @@ async fn run_prompt_loop(
             }
             Some(AgentEvent::ToolStart { tool_id, tool_name, tool_args, .. }) => {
                 last_was_content = false;
-                // Append tool call in chronological order
                 let args_preview = tool_args.as_deref().unwrap_or("");
                 let args_display = if !args_preview.is_empty() {
                     let truncated = if args_preview.len() > 200 {
@@ -712,10 +794,8 @@ async fn run_prompt_loop(
                     "\n\n{}🔧 **Running tool:** `{}`{}",
                     marker, tool_name, args_display
                 );
-                // Store full entry (marker + text) for exact ToolEnd replacement
                 tool_running.insert(tool_id.clone(), running_text.clone());
                 stream_text.push_str(&running_text);
-                // Tool start: throttle flush (same 250ms interval as content)
                 needs_flush = true;
                 if let Some(ref cid) = cardkit_card_id {
                     if last_flush.elapsed() >= flush_interval {
@@ -753,11 +833,9 @@ async fn run_prompt_loop(
                         "\n\n✅ **Tool** `{}` **completed**{}",
                         tool_name, result_display
                     );
-                    // Exact replacement using marker+text
                     if let Some(ref old) = old_entry {
                         stream_text = stream_text.replace(old, &new_entry);
                     }
-                    // Tool end: throttle flush (same 250ms interval as content)
                     needs_flush = true;
                     if last_flush.elapsed() >= flush_interval {
                         card_seq += 1;
@@ -769,6 +847,7 @@ async fn run_prompt_loop(
             }
             Some(AgentEvent::ToolDelta { .. }) => {}
             Some(AgentEvent::AgentEnd { error }) => {
+                check_superseded!();
                 // Flush any pending text before finalizing
                 if needs_flush {
                     if let Some(ref cid) = cardkit_card_id {
@@ -783,16 +862,19 @@ async fn run_prompt_loop(
                 let _ = feishu.react_to_message(feishu_msg_id, "DONE").await;
 
                 if let Some(err) = error {
-                    info!("[REPLY] error=\"{}\"", err);
-                    let err_card = card::error_card(&err);
-                    feishu.reply_message(feishu_msg_id, "interactive",
-                        &card::card_content(&err_card)).await?;
+                    // "interrupted" is expected when a newer message aborts this
+                    // stream — don't show an error card, just let the new stream win.
+                    if err.contains("interrupted") || err.contains("Interrupted") {
+                        info!("[REPLY] interrupted by newer message, stopping silently");
+                    } else {
+                        info!("[REPLY] error=\"{}\"", err);
+                        let err_card = card::error_card(&err);
+                        feishu.reply_message(feishu_msg_id, "interactive",
+                            &card::card_content(&err_card)).await?;
+                    }
                 } else if !stream_text.trim().is_empty() {
                     info!("[REPLY] text_len={}", stream_text.len());
                     if let Some(ref cid) = cardkit_card_id {
-                        // Disable streaming mode FIRST, then update final card content.
-                        // Order matters: Feishu uses streaming_mode to drive the
-                        // "[生成中...]" status in the message list.
                         card_seq += 1;
                         if let Err(e) = feishu.set_card_streaming_mode(cid, false, card_seq).await {
                             warn!("[CARD] set_card_streaming_mode failed: {}", e);
@@ -812,7 +894,7 @@ async fn run_prompt_loop(
                 break;
             }
             Some(AgentEvent::Error(err)) => {
-                // Swap reactions even on error
+                check_superseded!();
                 if let Some(ref rid) = ack_reaction_id {
                     let _ = feishu.remove_reaction(feishu_msg_id, rid).await;
                 }

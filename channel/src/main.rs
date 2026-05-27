@@ -38,6 +38,7 @@ async fn main() -> Result<()> {
 
     let agent_cfg = Arc::new(config.agent);
     let mut handles = Vec::new();
+    let shutdown = Arc::new(tokio::sync::Notify::new());
 
     // ── Feishu ─────────────────────────────────────────────────────────
 
@@ -49,8 +50,9 @@ async fn main() -> Result<()> {
             info!("Starting Feishu channel...");
             let agent = agent_cfg.clone();
             let fcfg = feishu_cfg.clone();
+            let sd = shutdown.clone();
             handles.push(tokio::spawn(async move {
-                if let Err(e) = feishu::FeishuChannel::run(agent, fcfg).await {
+                if let Err(e) = feishu::FeishuChannel::run(agent, fcfg, sd).await {
                     tracing::error!("Feishu channel exited: {}", e);
                 }
             }));
@@ -66,6 +68,7 @@ async fn main() -> Result<()> {
 
     tokio::signal::ctrl_c().await?;
     info!("Shutting down...");
+    shutdown.notify_waiters();
     for h in handles {
         h.abort();
     }

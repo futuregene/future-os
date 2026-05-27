@@ -20,8 +20,12 @@ pub struct FeishuChannel;
 
 impl FeishuChannel {
     /// Start the Feishu channel. Connects WebSocket and enters the event loop.
-    /// Auto-reconnects on disconnect.
-    pub async fn run(agent_cfg: Arc<AgentConfig>, ch_cfg: crate::config::FeishuChannelConfig) -> Result<()> {
+    /// Auto-reconnects on disconnect. Checks `shutdown` to stop on Ctrl-C.
+    pub async fn run(
+        agent_cfg: Arc<AgentConfig>,
+        ch_cfg: crate::config::FeishuChannelConfig,
+        shutdown: Arc<tokio::sync::Notify>,
+    ) -> Result<()> {
         let feishu_cfg = config::FeishuConfig::from_channel_config(&ch_cfg);
 
         let ws_client = feishu_ws::FeishuWsClient::new(
@@ -34,21 +38,36 @@ impl FeishuChannel {
             let bridge = bridge::Bridge::new(agent_cfg.clone(), feishu_cfg.clone()).await?;
             let bridge = Arc::new(bridge);
             let b = bridge.clone();
+            let sd = shutdown.clone();
 
-            let result = ws_client.connect_and_listen(move |event| {
-                let b = b.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = b.handle_event(event).await {
-                        error!("Error handling event: {}", e);
-                    }
-                });
-            }).await;
+            // Run connect_and_listen with shutdown signal
+            let result = tokio::select! {
+                r = ws_client.connect_and_listen(move |event| {
+                    let b = b.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = b.handle_event(event).await {
+                            error!("Error handling event: {}", e);
+                        }
+                    });
+                }) => r,
+                _ = sd.notified() => {
+                    info!("Feishu channel shutting down");
+                    return Ok(());
+                }
+            };
 
             match result {
                 Ok(()) => info!("WebSocket closed cleanly, reconnecting..."),
                 Err(e) => {
                     warn!("WebSocket error: {}. Reconnecting in 5s...", e);
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    // Use select to make the sleep cancellable by shutdown
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {},
+                        _ = shutdown.notified() => {
+                            info!("Feishu channel shutting down");
+                            return Ok(());
+                        }
+                    }
                 }
             }
         }

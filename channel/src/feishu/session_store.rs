@@ -96,11 +96,13 @@ impl SessionStore {
         data.get(&key).map(|e| e.session_id.clone())
     }
 
-    /// Remove and reset the session for a chat (used by /reset).
+    /// Remove and reset the session for a chat (used by /new).
     pub fn reset(&self, chat_id: &str, thread_id: Option<&str>) {
         let key = Self::session_key(chat_id, thread_id);
-        let mut data = self.data.write().unwrap();
-        data.remove(&key);
+        {
+            let mut data = self.data.write().unwrap();
+            data.remove(&key);
+        } // write lock dropped before save_to_disk acquires read lock
         let _ = self.save_to_disk();
     }
 
