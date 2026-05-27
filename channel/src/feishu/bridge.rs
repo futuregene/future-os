@@ -306,10 +306,12 @@ impl Bridge {
 
             "/model" if !arg.is_empty() => {
                 let session_id = self.sessions.get(chat_id, thread_id);
+                // Accept both ":" and "/" as provider-model separator
+                let model_id = arg.replace(':', "/");
                 match session_id {
                     Some(sid) => {
                         let mut agent = self.agent.write().await;
-                        match agent.set_model(&sid, arg).await {
+                        match agent.set_model(&sid, &model_id).await {
                             Ok(()) => {
                                 let state = agent.get_state(&sid).await?;
                                 self.feishu.reply_message(message_id, "text",
@@ -333,7 +335,13 @@ impl Bridge {
                 let mut agent = self.agent.write().await;
                 match agent.get_available_models(&session_id).await {
                     Ok(models) => {
-                        let list: Vec<String> = models.iter().map(|m| format!("• {} ({})", m.name, m.id)).collect();
+                        let list: Vec<String> = models.iter().map(|m| {
+                            if m.provider.is_empty() {
+                                format!("• {} — `{}`", m.name, m.id)
+                            } else {
+                                format!("• {} — `{}/{}`", m.name, m.provider, m.id)
+                            }
+                        }).collect();
                         let text = if list.is_empty() {
                             "No models available".to_string()
                         } else {

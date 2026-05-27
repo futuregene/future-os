@@ -163,7 +163,7 @@ pub fn help_card() -> Value {
         "elements": [
             {"tag": "div", "text": {"tag": "lark_md", "content": "/reset — Start a new session"}},
             {"tag": "div", "text": {"tag": "lark_md", "content": "/status — Show current session info"}},
-            {"tag": "div", "text": {"tag": "lark_md", "content": "/model <name> — Switch model"}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": "/model <provider/model> — Switch model"}},
             {"tag": "div", "text": {"tag": "lark_md", "content": "/models — List available models"}},
             {"tag": "div", "text": {"tag": "lark_md", "content": "/abort — Abort current generation"}},
             {"tag": "div", "text": {"tag": "lark_md", "content": "/help — Show this help"}},
