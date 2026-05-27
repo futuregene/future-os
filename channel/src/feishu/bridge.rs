@@ -598,18 +598,13 @@ async fn run_prompt_loop(
             Some(AgentEvent::AgentStart) | Some(AgentEvent::Ping) => {}
             Some(AgentEvent::ThinkingStart) => {
                 last_was_content = false;
-                // Start new thinking section in chronological order
                 if !stream_text.is_empty() {
                     stream_text.push_str("\n\n");
                 }
                 stream_text.push_str("💭 **Thinking...**\n\n");
-                // Flush header immediately
-                if let Some(ref cid) = cardkit_card_id {
-                    card_seq += 1;
-                    let _ = feishu.update_card_element(cid, streaming_element_id, &stream_text, card_seq).await;
-                    last_flush = Instant::now();
-                    needs_flush = false;
-                }
+                // Don't flush immediately — let the throttle handle it to avoid
+                // blocking the gRPC event stream on an HTTP round-trip.
+                needs_flush = true;
             }
             Some(AgentEvent::ThinkingDelta(text)) => {
                 last_was_content = false;
@@ -632,7 +627,11 @@ async fn run_prompt_loop(
                 }
                 needs_flush = true;
                 if let Some(ref cid) = cardkit_card_id {
-                    if last_flush.elapsed() >= flush_interval {
+                    // Use a shorter flush interval for thinking (100ms vs 250ms)
+                    // because thinking tokens are small and rapid — a 250ms
+                    // batch looks stuttery compared to content chunks.
+                    let thinking_flush = std::time::Duration::from_millis(100);
+                    if last_flush.elapsed() >= thinking_flush {
                         card_seq += 1;
                         let _ = feishu.update_card_element(cid, streaming_element_id, &stream_text, card_seq).await;
                         last_flush = Instant::now();
