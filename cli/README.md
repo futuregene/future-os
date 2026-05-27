@@ -28,7 +28,7 @@ npm run dev -- tui
 `~/.future/agent/auth.json` while leaving non-secret settings such as `base_url` intact.
 It also removes the `future` provider from `~/.future/agent/models.json`.
 
-By default, the CLI connects to Future API at `http://127.0.0.1:7003`.
+By default, the CLI connects to Future API at `http://api.westlakefuturegene.com`.
 Set `future.base_url` in `~/.future/agent/auth.json` to use another API URL.
 
 The saved key is intended for future `future-server/api` requests and is also readable by the
