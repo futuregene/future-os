@@ -700,12 +700,12 @@ impl ServerSession {
     }
 
     pub fn abort(&self) {
-        // Primary path: send via interrupt_tx (works even when agent_loop is locked)
+        // Primary path: send via interrupt_tx for streaming-mode abort
         if let Some(ref tx) = self.interrupt_tx {
             let _ = tx.try_send(());
         }
-        // Fallback: try loop directly (only works when not streaming)
-        if let Ok(loop_) = self.agent_loop.try_write() {
+        // Set AgentLoop interrupt flag (works with read lock, even during tool execution)
+        if let Ok(loop_) = self.agent_loop.try_read() {
             loop_.abort();
         }
         self.is_streaming

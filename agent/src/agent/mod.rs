@@ -11,6 +11,7 @@ use crate::types::{
     LLMProvider, Message, StreamEvent, ToolCall,
 };
 use anyhow::{anyhow, Result};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -37,7 +38,7 @@ pub struct Loop {
     pub steering_queue: PendingMessageQueue,
     pub follow_up_queue: PendingMessageQueue,
     pub parallel_tools: bool,
-    pub(crate) interrupt_tx: Mutex<Option<mpsc::Sender<()>>>,
+    pub(crate) interrupt_flag: AtomicBool,
     pub(crate) last_compaction_result: Arc<Mutex<Option<crate::compaction::CompactionResult>>>,
     pub tool_event_callback: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
     pub cumulative_input_tokens: Arc<std::sync::atomic::AtomicI64>,
@@ -62,7 +63,7 @@ impl Loop {
             steering_queue: PendingMessageQueue::new(64, "all"),
             follow_up_queue: PendingMessageQueue::new(64, "all"),
             parallel_tools: false,
-            interrupt_tx: Mutex::new(None),
+            interrupt_flag: AtomicBool::new(false),
             last_compaction_result: Arc::new(Mutex::new(None)),
             tool_event_callback: None,
             cumulative_input_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
@@ -474,6 +475,22 @@ impl Loop {
                 return Err(last_error.unwrap());
             }
 
+            // Check for pending interrupt (may have arrived during API call
+            // or last stream event — tokio::select! can pick stream end over
+            // the interrupt channel)
+            if let Some(ref mut irx) = interrupt_rx {
+                if irx.try_recv().is_ok() {
+                    // Same interrupt path as above
+                    if self.steering_queue.is_empty() {
+                        if let Some(ref bus) = self.event_bus {
+                            bus.emit(agent_end("interrupted", None));
+                        }
+                        return Err(anyhow!("interrupted"));
+                    }
+                    messages = self.drain_steering(messages);
+                }
+            }
+
             // Emit message_end
             if let Some(ref bus) = self.event_bus {
                 bus.emit(message_end("assistant"));
@@ -606,6 +623,10 @@ impl Loop {
         let tools = &self.tools;
         let config = &self.config;
         for tc in tool_calls {
+            // Check for abort between tool executions
+            if self.is_interrupted() {
+                break;
+            }
             let start = Instant::now();
 
             // Broadcast tool_start (include tool_call for args)
@@ -788,21 +809,15 @@ impl Loop {
 
     /// Abort cancels current streaming without queuing a message.
     pub fn abort(&self) {
-        let mut tx = self.interrupt_tx.lock().unwrap();
-        if let Some(ref sender) = *tx {
-            let _ = sender.try_send(());
-        }
-        *tx = None;
+        self.interrupt_flag.store(true, Ordering::SeqCst);
     }
 
     fn is_interrupted(&self) -> bool {
-        let tx = self.interrupt_tx.lock().unwrap();
-        tx.is_some()
+        self.interrupt_flag.load(Ordering::SeqCst)
     }
 
     fn clear_interrupt(&self) {
-        let mut tx = self.interrupt_tx.lock().unwrap();
-        *tx = None;
+        self.interrupt_flag.store(false, Ordering::SeqCst);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
