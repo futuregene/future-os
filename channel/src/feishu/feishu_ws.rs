@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 // Generated from proto/feishu_ws.proto
 mod feishu_pb {
@@ -164,7 +164,6 @@ impl FeishuWsClient {
                 _ = ping_timer.tick() => {
                     let _interval_secs = *ping_interval_arc.read().await;
                     if last_recv.elapsed().as_secs() > HEARTBEAT_TIMEOUT {
-                        warn!("WebSocket heartbeat timeout, reconnecting...");
                         return Err(anyhow!("WebSocket heartbeat timeout"));
                     }
                     seq_id += 1;
@@ -258,7 +257,6 @@ impl FeishuWsClient {
                             return Ok(());
                         }
                         Some(Err(e)) => {
-                            error!("WebSocket error: {}", e);
                             return Err(anyhow!("WebSocket error: {}", e));
                         }
                         None => {
