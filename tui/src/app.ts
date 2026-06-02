@@ -477,22 +477,6 @@ export class App extends Container {
       return;
     }
 
-    // Mouse wheel — scroll chat (alt screen mode, no terminal scrollback)
-    if (data === "wheelUp") {
-      if (!this.overlayStack.length && !this.autocomplete.isVisible()) {
-        this.chat.scrollUp(3);
-        this.requestRender();
-      }
-      return;
-    }
-    if (data === "wheelDown") {
-      if (!this.overlayStack.length && !this.autocomplete.isVisible()) {
-        this.chat.scrollDown(3);
-        this.requestRender();
-      }
-      return;
-    }
-
     // Filter key release events unless focused component explicitly wants them (matches pi)
     if (isKeyRelease(data)) {
       const focused = this.focusedComponent;

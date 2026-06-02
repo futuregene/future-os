@@ -96,17 +96,12 @@ export class NodeTerminal implements Terminal {
     // Enable bracketed paste mode
     process.stdout.write("\x1b[?2004h");
 
-    // SGR mouse tracking for wheel events (buttons: 64=wheel-up, 65=wheel-down)
-    process.stdout.write("\x1b[?1000h\x1b[?1006h");
-
     // Failsafe: restore terminal on unexpected exit (crash, uncaught exception, etc.)
     // Must be synchronous — process.exit event doesn't support async.
     this.exitHandler = () => {
       if (this.stopped) return;
       // Show cursor (may be hidden by TUI)
       process.stdout.write("\x1b[?25h");
-      // Disable mouse tracking
-      process.stdout.write("\x1b[?1000l\x1b[?1006l");
       // Disable bracketed paste mode
       process.stdout.write("\x1b[?2004l");
       // Disable Kitty keyboard protocol
@@ -149,9 +144,6 @@ export class NodeTerminal implements Terminal {
 
     const kittyResponsePattern = /^\x1b\[\?(\d+)u$/;
 
-    // SGR mouse sequence pattern: ESC[<Cb;Cx;CyM (press) or ESC[<Cb;Cx;Cym (release)
-    const sgrMousePattern = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
-
     this.stdinBuffer.on("data", (sequence) => {
       // Check for Kitty protocol response
       if (!this._kittyProtocolActive) {
@@ -162,18 +154,6 @@ export class NodeTerminal implements Terminal {
           process.stdout.write("\x1b[>7u");
           return;
         }
-      }
-
-      // Parse SGR mouse events — forward wheel events as keys, ignore others
-      const mouseMatch = sequence.match(sgrMousePattern);
-      if (mouseMatch) {
-        const btn = parseInt(mouseMatch[1], 10);
-        if (btn === 64 && this.inputHandler) {
-          this.inputHandler("wheelUp");
-        } else if (btn === 65 && this.inputHandler) {
-          this.inputHandler("wheelDown");
-        }
-        return;
       }
 
       if (this.inputHandler) {
@@ -256,9 +236,6 @@ export class NodeTerminal implements Terminal {
     if (this.clearProgressInterval()) {
       process.stdout.write(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
     }
-
-    // Disable mouse tracking
-    process.stdout.write("\x1b[?1000l\x1b[?1006l");
 
     // Disable bracketed paste mode
     process.stdout.write("\x1b[?2004l");
