@@ -1156,8 +1156,9 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "abort", serde_json::json!({}))
         }
         "new_session" => {
-            // Create a new session with shared agent_loop, preserving model/thinking
-            // Use TUI-provided cwd if available, otherwise home directory
+            // Re-discover skills so newly installed skills are picked up
+            // without an agent restart. Do this before creating the session
+            // so get_state reflects the latest skill list.
             let session_cwd = if !cmd.cwd.is_empty() {
                 cmd.cwd.clone()
             } else {
@@ -1166,6 +1167,18 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     .to_string_lossy()
                     .to_string()
             };
+            {
+                let skill_dirs = vec![
+                    crate::skills::USER_SKILLS_DIR.to_string(),
+                    format!("{}/{}", session_cwd, crate::skills::PROJECT_SKILLS_DIR),
+                    crate::skills::AGENTS_SKILLS_DIR.to_string(),
+                ];
+                let skills = crate::skills::discover_skills(&skill_dirs).unwrap_or_default();
+                let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
+                *state.welcome_skills.write().unwrap() = skill_names;
+            }
+
+            // Create a new session with shared agent_loop, preserving model/thinking
             let active_id = state.get_active_session_id();
             let session = state.get_session(&active_id);
             let sess = session.read().unwrap();
