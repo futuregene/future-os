@@ -471,8 +471,18 @@ impl ServerSession {
         let (interrupt_tx, interrupt_rx) = tokio::sync::mpsc::channel::<()>(1);
         self.interrupt_tx = Some(interrupt_tx);
 
+        // Clear any stale interrupt flag left by a previous abort().
+        // The channel calls abort() before prompt() to stop the previous
+        // generation, which sets interrupt_flag=true. Without clearing it,
+        // the spawned task's first loop iteration would exit immediately
+        // without calling the LLM.
+        if let Ok(r#loop) = self.agent_loop.try_read() {
+            r#loop.clear_interrupt();
+        }
+
         // Spawn background task to run agent loop
         tokio::spawn(async move {
+            eprintln!("[TASK] prompt task started session_id={}", session_id);
             // Run with timeout — generous limit for complex multi-turn tasks
             let result = tokio::time::timeout(std::time::Duration::from_secs(3600), async {
                 let mut current_messages = initial_messages;
@@ -481,7 +491,9 @@ impl ServerSession {
                 loop {
                     let bt = broadcaster.clone();
                     let be = broadcaster.clone();
+                    eprintln!("[TASK] acquiring agent_loop write lock...");
                     let r#loop = agent_loop.write().await;
+                    eprintln!("[TASK] agent_loop lock acquired, starting run_streaming_with_messages model={}", r#loop.model);
 
                     match r#loop
                         .run_streaming_with_messages(
@@ -1073,7 +1085,9 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Get session by ID, or return default session if id is empty/None
+    /// Get session by ID, or return default session if id is empty/None.
+    /// If the session is not in the in-memory map, tries loading from disk
+    /// before falling back to the default.
     pub fn get_session(&self, session_id: &str) -> Arc<RwLock<ServerSession>> {
         if session_id.is_empty() {
             return self.session.clone();
@@ -1085,13 +1099,52 @@ impl AppState {
             }
         }
         // Session not found in map — if it matches the default session's own
-        // ID, return it silently. Otherwise warn and fall back to default.
+        // ID, return it silently.
         let default_id = self.session.read().unwrap().session_id.clone();
         if session_id == default_id {
             return self.session.clone();
         }
+
+        // Try loading from disk — the session may exist on disk but not yet
+        // be in the in-memory map (e.g. after an agent restart).
+        {
+            let default_sess = self.session.read().unwrap();
+            if default_sess.session_manager.find(session_id).is_some() {
+                drop(default_sess);
+
+                let (agent_loop, session_manager, event_bus, _broadcaster, cwd) = {
+                    let sess = self.session.read().unwrap();
+                    (
+                        sess.agent_loop.clone(),
+                        sess.session_manager.clone(),
+                        sess.event_bus.clone(),
+                        sess.broadcaster.clone(),
+                        sess.cwd.clone(),
+                    )
+                };
+
+                let mut new_sess = ServerSession::new_with_shared_loop(
+                    session_id.to_string(),
+                    agent_loop,
+                    session_manager.clone(),
+                    &cwd,
+                    event_bus,
+                    Arc::new(SseBroadcaster::new()),
+                );
+
+                // Load session data from disk (messages, model, thinking level, etc.)
+                if new_sess.switch_session(session_id).is_ok() {
+                    let sess_arc = Arc::new(RwLock::new(new_sess));
+                    if let Ok(mut sessions) = self.sessions.try_write() {
+                        sessions.insert(session_id.to_string(), sess_arc.clone());
+                    }
+                    return sess_arc;
+                }
+            }
+        }
+
         eprintln!(
-            "[get_session] session_id={} not found in sessions map, falling back to default",
+            "[get_session] session_id={} not found in sessions map or on disk, falling back to default",
             session_id
         );
         self.session.clone()
@@ -1128,6 +1181,12 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
 
     match cmd_type.as_str() {
         "prompt" => {
+            eprintln!(
+                "[AGENT] prompt session_id={} text_len={} images={}",
+                cmd.session_id,
+                cmd.message.len(),
+                cmd.images.len()
+            );
             let mut sess = session.write().unwrap();
             if sess.is_streaming.load(std::sync::atomic::Ordering::Relaxed) {
                 RpcResponse::build_fail(
