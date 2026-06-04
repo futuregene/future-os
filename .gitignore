@@ -12,6 +12,7 @@ vendor/
 
 # Rust
 agent/target/
+channel/target/
 
 # Node
 tui/node_modules/
