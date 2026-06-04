@@ -55,6 +55,14 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
     ) -> Result<tonic::Response<proto::RpcResponse>, tonic::Status> {
         let cmd = request.into_inner();
 
+        // Log every received command for debugging
+        eprintln!(
+            "[GRPC] recv type={} session_id={} msg_len={}",
+            cmd.r#type,
+            cmd.session_id,
+            cmd.message.len()
+        );
+
         // Convert proto command to internal command
         let internal_images: Vec<crate::types::ImageContent> = cmd
             .images

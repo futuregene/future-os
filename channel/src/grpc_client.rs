@@ -166,8 +166,10 @@ impl AgentClient {
 
     /// Switch to an existing session.
     pub async fn switch_session(&mut self, session_id: &str) -> Result<()> {
-        self.call("switch_session", "", RpcCommand {
-            session_id: session_id.to_string(),
+        // Note: pass session_id as the second arg to call(), not via extra.
+        // Rust struct update syntax (..extra) does NOT override fields
+        // that are already explicitly set in the struct literal.
+        self.call("switch_session", session_id, RpcCommand {
             ..Default::default()
         }).await?;
         Ok(())

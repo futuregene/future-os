@@ -249,6 +249,13 @@ impl Loop {
             let llm_messages: Vec<Message> = ConvertToLLM(&work_messages);
 
             // Stream chat
+            eprintln!(
+                "[LLM] calling stream_chat model={} system_prompt_len={} msgs_len={} tools={}",
+                self.model,
+                self.system_prompt.len(),
+                llm_messages.len(),
+                tool_defs.len()
+            );
             let stream_result = self
                 .provider
                 .stream_chat(
@@ -258,6 +265,7 @@ impl Loop {
                     self.system_prompt.clone(),
                 )
                 .await;
+            eprintln!("[LLM] stream_chat returned: {}", if stream_result.is_ok() { "Ok" } else { "Err" });
 
             let mut rx = match stream_result {
                 Ok(rx) => rx,
@@ -816,7 +824,7 @@ impl Loop {
         self.interrupt_flag.load(Ordering::SeqCst)
     }
 
-    fn clear_interrupt(&self) {
+    pub fn clear_interrupt(&self) {
         self.interrupt_flag.store(false, Ordering::SeqCst);
     }
 

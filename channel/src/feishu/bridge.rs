@@ -607,25 +607,18 @@ impl Bridge {
         _is_reply: bool,
         ack_reaction_id: Option<String>,
     ) -> Result<()> {
-        // Get or create session
-        let (mut session_id, is_new) = self.sessions.get_or_create(chat_id, thread_id);
-
-        if is_new || session_id.is_empty() {
-            // Create a new agent session
-            let mut agent = self.agent.write().await;
-            match agent.new_session(&self.agent_cfg.cwd).await {
-                Ok(sid) => {
-                    session_id = sid;
-                    self.sessions.set_session_id(chat_id, thread_id, &session_id);
-                }
-                Err(e) => {
-                    error!("Failed to create agent session: {}", e);
-                    self.feishu.reply_message(feishu_msg_id, "text",
-                        &serde_json::json!({"text": format!("Failed to create session: {}", e)}).to_string()).await?;
-                    return Ok(());
-                }
+        // Get or create session — ensure_session also reactivates existing
+        // sessions on the agent (switch_session), which is essential after
+        // an agent restart.
+        let session_id = match self.ensure_session(chat_id, thread_id).await {
+            Ok(sid) => sid,
+            Err(e) => {
+                error!("Failed to ensure session: {}", e);
+                self.feishu.reply_message(feishu_msg_id, "text",
+                    &serde_json::json!({"text": format!("Failed to create session: {}", e)}).to_string()).await?;
+                return Ok(());
             }
-        }
+        };
 
         self.sessions.touch(chat_id, thread_id);
 
