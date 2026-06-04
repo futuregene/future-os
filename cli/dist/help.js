@@ -2,17 +2,21 @@ export function printHelp() {
     console.log(`Future OS CLI
 
 Usage:
-  future auth login
-  future auth status
-  future auth logout
-  future agent start
-  future agent stop
-  future agent restart
-  future agent status
-  future channel start
-  future channel stop
-  future channel restart
-  future channel status
-  future tui [tui options]
+  future-cli auth login
+  future-cli auth status
+  future-cli auth logout
+  future-cli agent start
+  future-cli agent stop
+  future-cli agent restart
+  future-cli agent status
+  future-cli channel start
+  future-cli channel stop
+  future-cli channel restart
+  future-cli channel status
+  future-cli tools list
+  future-cli tools call <name> [--args '<json>' | --stdin]
+  future-cli skills list
+  future-cli skills get <name>
+  future-cli tui [tui options]
 `);
 }
