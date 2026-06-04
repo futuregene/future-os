@@ -1,4 +1,4 @@
-// future-cli skills — dynamic skill bundles for AI agents (agent-browser style).
+// future skills — dynamic skill bundles for AI agents (agent-browser style).
 // Bundles group related tools together. Agents load a bundle to get a
 // focused workflow guide that matches the installed CLI version.
 
@@ -63,7 +63,7 @@ export function skills(command: SkillsCommand, args: string[]): void {
   if (command === "get") {
     const name = args[0];
     if (!name) {
-      console.error("Usage: future-cli skills get <name>");
+      console.error("Usage: future skills get <name>");
       process.exitCode = 1;
       return;
     }
@@ -80,8 +80,8 @@ function skillsList(): void {
     const bundle = SKILL_BUNDLES[name];
     console.log(`  ${name.padEnd(20)} ${bundle.tools.length} tools — ${bundle.description}`);
   }
-  console.log(`\n${names.length} skill bundles. Use \`future-cli skills get <name>\` to load one.`);
-  console.log("Use `future-cli skills get core` for the full guide.");
+  console.log(`\n${names.length} skill bundles. Use \`future skills get <name>\` to load one.`);
+  console.log("Use `future skills get core` for the full guide.");
 }
 
 // ── Get ──────────────────────────────────────────────────────────────────────
@@ -90,7 +90,7 @@ function skillsGet(name: string): void {
   const bundle = SKILL_BUNDLES[name];
   if (!bundle) {
     console.error(
-      `Unknown skill "${name}". Use "future-cli skills list" to see available bundles.`,
+      `Unknown skill "${name}". Use "future skills list" to see available bundles.`,
     );
     process.exitCode = 1;
     return;
@@ -103,7 +103,7 @@ function bundleSkill(name: string, bundle: SkillBundle): string {
     .map((t) => {
       const info = TOOL_CATALOG[t];
       if (!info) return "";
-      return `### ${t}\n${info.description}\n\nArguments: \`${JSON.stringify(info.args)}\`\n\nExample:\n\`\`\`bash\nfuture-cli tools call ${t} --args '${info.example}'\n\`\`\`\n`;
+      return `### ${t}\n${info.description}\n\nArguments: \`${JSON.stringify(info.args)}\`\n\nExample:\n\`\`\`bash\nfuture tools call ${t} --args '${info.example}'\n\`\`\`\n`;
     })
     .filter(Boolean)
     .join("\n");
@@ -126,16 +126,16 @@ Tools in this bundle: ${toolList}
 
 \`\`\`bash
 # List available bundles
-future-cli skills list
+future skills list
 
 # Get this bundle again
-future-cli skills get ${name}
+future skills get ${name}
 
 # Call a tool from this bundle
-future-cli tools call <tool_name> --args '<json>'
+future tools call <tool_name> --args '<json>'
 
 # List all individual tools
-future-cli tools list
+future tools list
 \`\`\`
 
 ## Available tools
