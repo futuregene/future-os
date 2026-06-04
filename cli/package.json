@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "bin": {
-    "future-cli": "dist/index.js"
+    "future": "dist/index.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

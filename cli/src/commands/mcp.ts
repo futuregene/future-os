@@ -114,7 +114,7 @@ export async function initializeSession(apiKey: string): Promise<string> {
   const { body, sessionId } = await mcpPost(url, "initialize", {
     protocolVersion: "2024-11-05",
     capabilities: {},
-    clientInfo: { name: "future-cli", version: "1.0" },
+    clientInfo: { name: "future", version: "1.0" },
   }, apiKey, undefined, 1);
 
   if (body.error) throw new Error(`MCP initialize failed: ${JSON.stringify(body.error)}`);

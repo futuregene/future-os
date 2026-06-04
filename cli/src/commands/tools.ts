@@ -155,7 +155,7 @@ export async function loadApiKey(): Promise<string> {
     const testKey = process.env["FUTURE_API_TEST_KEY"];
     if (testKey) return testKey;
     if (isNodeError(err) && err.code === "ENOENT") {
-      throw new Error(`No API key. Run "future-cli auth login" first, or set FUTURE_API_KEY.`);
+      throw new Error(`No API key. Run "future auth login" first, or set FUTURE_API_KEY.`);
     }
     throw err;
   }
@@ -266,7 +266,7 @@ async function initializeSession(apiKey: string): Promise<string> {
   const { body, sessionId } = await mcpPost(mcpUrl, "initialize", {
     protocolVersion: "2024-11-05",
     capabilities: {},
-    clientInfo: { name: "future-cli", version: "1.0" },
+    clientInfo: { name: "future", version: "1.0" },
   }, apiKey, undefined, 1);
 
   if (body.error) throw new Error(`MCP initialize failed: ${JSON.stringify(body.error)}`);
@@ -348,7 +348,7 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
   if (command === "call") {
     const toolName = args[0];
     if (!toolName) {
-      console.error("Usage: future-cli tools call <tool_name> [--args '<json>' | --stdin]");
+      console.error("Usage: future tools call <tool_name> [--args '<json>' | --stdin]");
       process.exitCode = 1;
       return;
     }
