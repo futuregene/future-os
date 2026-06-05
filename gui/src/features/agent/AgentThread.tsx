@@ -1,3 +1,4 @@
+import type { AgentModelOption } from "../../integrations/agent/models";
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { MessageAttachment } from "./types";
 import { useEffect, useState } from "react";
@@ -12,6 +13,7 @@ interface AgentThreadProps {
   leftPanelExpanded: boolean;
   loadingStore: boolean;
   modelId: string;
+  modelOptions: AgentModelOption[];
   onModelChange: (modelId: string) => void;
   pendingPrompt: { attachments?: MessageAttachment[]; id: string; content: string } | null;
   onArchiveThread: () => void;
@@ -28,6 +30,7 @@ export function AgentThread({
   leftPanelExpanded,
   loadingStore,
   modelId,
+  modelOptions,
   onModelChange,
   pendingPrompt,
   onArchiveThread,
@@ -50,6 +53,7 @@ export function AgentThread({
     thread,
     loadingStore,
     modelId,
+    modelOptions,
     pendingPrompt,
     onPromptConsumed,
     onThreadActivity,
@@ -109,6 +113,7 @@ export function AgentThread({
               className="pointer-events-auto mx-auto max-w-3xl"
               disabled={!thread || loadingThread || loadingStore}
               modelId={modelId}
+              modelOptions={modelOptions}
               onModelChange={onModelChange}
               onSend={handleSend}
             />

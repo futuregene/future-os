@@ -1,4 +1,5 @@
 import type { Dispatch, SetStateAction } from "react";
+import type { AgentModelOption } from "../../integrations/agent/models";
 import type { StoredRun, StoredThread } from "../../integrations/storage/threadStore";
 import type { ComposerSendPayload } from "./Composer";
 import type { AgentActivityItem, AgentMessage, MessageAttachment } from "./types";
@@ -27,6 +28,7 @@ interface UseAgentThreadControllerInput {
   thread: StoredThread | null;
   loadingStore: boolean;
   modelId: string;
+  modelOptions: AgentModelOption[];
   pendingPrompt: { attachments?: MessageAttachment[]; id: string; content: string } | null;
   onPromptConsumed: (id: string) => void;
   onThreadActivity: () => void;
@@ -36,6 +38,7 @@ export function useAgentThreadController({
   thread,
   loadingStore,
   modelId,
+  modelOptions,
   pendingPrompt,
   onPromptConsumed,
   onThreadActivity,
@@ -196,8 +199,8 @@ export function useAgentThreadController({
         agentSessionId,
         run.id,
         modelId,
-        modelSupportsImages(modelId) ? imageAttachmentPaths(importedAttachments) : [],
-        modelThinkingLevel(modelId),
+        modelSupportsImages(modelId, modelOptions) ? imageAttachmentPaths(importedAttachments) : [],
+        modelThinkingLevel(modelId, modelOptions),
       );
       if (streamTimer !== null) {
         window.clearInterval(streamTimer);
@@ -265,7 +268,7 @@ export function useAgentThreadController({
       );
       onThreadActivity();
     }
-  }, [modelId, onThreadActivity, refreshRecentRun, thread]);
+  }, [modelId, modelOptions, onThreadActivity, refreshRecentRun, thread]);
 
   useEffect(() => {
     const scrollContainer = scrollRef.current;
