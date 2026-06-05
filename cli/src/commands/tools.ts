@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -129,6 +130,28 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
       limit: "int",
     },
     example: '{"query": "BRCA1 variant classification guidelines 2025"}',
+  },
+  image_gen: {
+    description: "Generate images from text prompts.",
+    args: {
+      prompt: "string (required)",
+      size: 'string (default: "1024x1024")',
+      quality: 'string (default: "medium")',
+      n: "int (1–10)",
+      output_format: 'string (default: "png")',
+    },
+    example: '{"prompt": "A photograph of a red fox in an autumn forest, golden hour", "size": "1024x1024"}',
+  },
+  image_edit: {
+    description: "Edit an existing image using text instructions.",
+    args: {
+      prompt: "string (required)",
+      image_b64: "string (required, base64-encoded image)",
+      mask_b64: "string (optional, base64-encoded mask)",
+      size: 'string (default: "1024x1024")',
+      quality: 'string (default: "medium")',
+    },
+    example: '{"prompt": "Convert to watercolor painting", "image_b64": "<base64>"}',
   },
 };
 
@@ -295,7 +318,12 @@ async function listTools(apiKey: string): Promise<Array<{ name: string; descript
   });
 }
 
-async function callTool(apiKey: string, name: string, args: Record<string, unknown>): Promise<string> {
+interface CallToolResponse {
+  text: string;
+  structuredContent: Record<string, unknown> | null;
+}
+
+async function callTool(apiKey: string, name: string, args: Record<string, unknown>): Promise<CallToolResponse> {
   const mcpUrl = process.env["FUTURE_MCP_URL"] || DEFAULT_MCP_URL;
   const sessionId = await initializeSession(apiKey);
   const { body } = await mcpPost(mcpUrl, "tools/call", {
@@ -316,7 +344,23 @@ async function callTool(apiKey: string, name: string, args: Record<string, unkno
       return JSON.stringify(b, null, 2);
     });
 
-  return texts.join("\n");
+  return {
+    text: texts.join("\n"),
+    structuredContent: isRecord(result?.structuredContent)
+      ? (result!.structuredContent as Record<string, unknown>)
+      : null,
+  };
+}
+
+/** Extract b64_json from structured_content.images[N].b64_json */
+function extractImageB64(structured: Record<string, unknown> | null): string | null {
+  if (!structured) return null;
+  const images = structured["images"];
+  if (!Array.isArray(images) || images.length === 0) return null;
+  const first = images[0];
+  if (!isRecord(first)) return null;
+  const b64 = first["b64_json"];
+  return typeof b64 === "string" ? b64 : null;
 }
 
 // ── Public command ───────────────────────────────────────────────────────────
@@ -348,7 +392,7 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
   if (command === "call") {
     const toolName = args[0];
     if (!toolName) {
-      console.error("Usage: future tools call <tool_name> [--args '<json>' | --stdin]");
+      console.error("Usage: future tools call <tool_name> [--args '<json>' | --stdin] [--output <path>]");
       process.exitCode = 1;
       return;
     }
@@ -356,6 +400,10 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     let toolArgs: Record<string, unknown> = {};
     const argsIdx = args.indexOf("--args");
     const stdinFlag = args.includes("--stdin");
+    const outputIdx = args.indexOf("--output");
+    const outputPath = outputIdx !== -1 && outputIdx + 1 < args.length
+      ? args[outputIdx + 1]
+      : null;
 
     if (stdinFlag) {
       // Read from stdin
@@ -369,7 +417,20 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     }
 
     const result = await callTool(apiKey, toolName, toolArgs);
-    console.log(result);
+    console.log(result.text);
+
+    // Handle image output
+    if (outputPath) {
+      const b64 = extractImageB64(result.structuredContent);
+      if (b64) {
+        const buf = Buffer.from(b64, "base64");
+        await writeFile(outputPath, buf);
+        console.log(`\nImage saved to: ${outputPath}`);
+      } else {
+        console.error("\nWarning: --output specified but no b64_json found in response.");
+        process.exitCode = 1;
+      }
+    }
     return;
   }
 }
