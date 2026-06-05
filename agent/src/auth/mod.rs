@@ -34,7 +34,6 @@ impl AuthStore {
             if path.exists() {
                 if let Ok(contents) = std::fs::read_to_string(&path) {
                     if let Ok(store) = Self::from_json(&contents) {
-                        eprintln!("Loaded auth from {:?}", path);
                         return store;
                     }
                 }

@@ -1,0 +1,25 @@
+[package]
+name = "futureos"
+version = "0.1.0"
+description = "FutureOS desktop agent workspace"
+authors = ["FutureOS"]
+edition = "2021"
+
+[lib]
+name = "futureos_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+tonic = "0.12"
+prost = "0.13"
+tokio = { version = "1", features = ["time"] }
+tauri-plugin-dialog = "2"
+base64 = "0.22"

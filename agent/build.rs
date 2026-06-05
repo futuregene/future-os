@@ -4,6 +4,7 @@
 // The proto files are in a separate repository at ../proto/
 
 use std::path::PathBuf;
+use std::process::Command;
 
 fn main() {
     // Find the proto directory (sibling to agent)
@@ -33,6 +34,22 @@ fn main() {
 
     println!("cargo:rerun-if-changed=../proto");
 
+    if !has_protoc() {
+        let generated = PathBuf::from("src/grpc/generated/proto.rs");
+        if generated.exists() {
+            println!(
+                "cargo:warning=protoc not found; reusing checked-in generated proto at {:?}",
+                generated
+            );
+            return;
+        }
+
+        panic!(
+            "Could not find `protoc`, and {:?} does not exist. Install protobuf with `brew install protobuf` or set PROTOC.",
+            generated
+        );
+    }
+
     // Compile with tonic_build
     tonic_build::configure()
         .build_server(true)
@@ -40,4 +57,16 @@ fn main() {
         .out_dir("src/grpc/generated")
         .compile_protos(&proto_files, &[&proto_dir])
         .expect("Failed to compile proto files");
+}
+
+fn has_protoc() -> bool {
+    if std::env::var_os("PROTOC").is_some() {
+        return true;
+    }
+
+    Command::new("protoc")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }

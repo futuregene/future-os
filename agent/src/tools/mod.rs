@@ -2,9 +2,40 @@
 
 use anyhow::{anyhow, Result};
 use std::future::Future;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use tokio::process::Command;
+
+#[derive(Clone, Debug)]
+pub struct ToolExecutionScope {
+    workspace: PathBuf,
+    approved_outside_paths: Arc<Mutex<Vec<PathBuf>>>,
+}
+
+tokio::task_local! {
+    static TOOL_SCOPE: ToolExecutionScope;
+}
+
+pub async fn with_workspace_scope<F>(workspace: String, future: F) -> F::Output
+where
+    F: Future,
+{
+    let scope = ToolExecutionScope {
+        workspace: normalize_path(&PathBuf::from(workspace)),
+        approved_outside_paths: Arc::new(Mutex::new(vec![])),
+    };
+    TOOL_SCOPE.scope(scope, future).await
+}
+
+pub fn approve_outside_path(path: &str) {
+    let path = normalize_path(&PathBuf::from(path));
+    let _ = TOOL_SCOPE.try_with(|scope| {
+        if let Ok(mut approved) = scope.approved_outside_paths.lock() {
+            approved.push(path);
+        }
+    });
+}
 
 // ─── Tool definitions ────────────────────────────────────────────────────────
 
@@ -143,8 +174,8 @@ fn write_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<
             content: String,
         }
         let params: WriteParams = serde_json::from_value(args)?;
-        run_write(&params.path, &params.content).await?;
-        Ok(format!("Written to {}", params.path))
+        let path = run_write(&params.path, &params.content).await?;
+        Ok(format!("Written to {}", path.display()))
     })
 }
 
@@ -337,8 +368,12 @@ pub fn all_tools() -> Vec<AgentTool> {
 // ─── Tool runners (async, using tokio) ─────────────────────────────────────
 
 async fn run_bash(command: &str, _timeout_secs: u64) -> Result<String> {
+    let cwd = active_workspace()?;
     let output = Command::new("bash")
         .args(["-c", command])
+        .current_dir(&cwd)
+        .env("HOME", &cwd)
+        .env("PWD", &cwd)
         .output()
         .await
         .map_err(|e| anyhow!("Failed to run bash command: {}", e))?;
@@ -368,6 +403,7 @@ async fn run_bash(command: &str, _timeout_secs: u64) -> Result<String> {
 }
 
 async fn run_read(path: &str, offset: Option<usize>, limit: Option<usize>) -> Result<String> {
+    let path = workspace_path(path)?;
     let content = tokio::fs::read_to_string(path).await?;
 
     let offset = offset.unwrap_or(1).saturating_sub(1); // 1-indexed → 0-indexed
@@ -379,12 +415,13 @@ async fn run_read(path: &str, offset: Option<usize>, limit: Option<usize>) -> Re
     Ok(result)
 }
 
-async fn run_write(path: &str, content: &str) -> Result<()> {
-    if let Some(parent) = Path::new(path).parent() {
+async fn run_write(path: &str, content: &str) -> Result<PathBuf> {
+    let path = workspace_path(path)?;
+    if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await.ok();
     }
-    tokio::fs::write(path, content).await?;
-    Ok(())
+    tokio::fs::write(&path, content).await?;
+    Ok(path)
 }
 
 async fn run_edit(
@@ -393,7 +430,8 @@ async fn run_edit(
     new_text: Option<&str>,
     edits: Option<&[EditOp]>,
 ) -> Result<()> {
-    let current = tokio::fs::read_to_string(path).await?;
+    let path = workspace_path(path)?;
+    let current = tokio::fs::read_to_string(&path).await?;
 
     let final_content = if let Some(edits) = edits {
         // Multi-edit mode
@@ -438,6 +476,7 @@ struct EditOp {
 }
 
 async fn run_grep(params: &GrepParams) -> Result<String> {
+    let cwd = active_workspace()?;
     let mut args: Vec<String> = vec![];
     if params.ignore_case.unwrap_or(false) {
         args.push("-i".to_string());
@@ -452,18 +491,29 @@ async fn run_grep(params: &GrepParams) -> Result<String> {
     args.push(params.pattern.clone());
 
     let output = if let Some(ref p) = params.path {
+        let path = workspace_path(p)?;
+        let path = path.to_string_lossy().to_string();
         if let Some(ref g) = params.glob {
             let include_pat = format!("--include={}", g);
             Command::new("grep")
-                .args(["-r", &include_pat, &params.pattern, p])
+                .args(["-r", &include_pat, &params.pattern, &path])
+                .current_dir(&cwd)
                 .output()
                 .await
         } else {
-            args.push(p.clone());
-            Command::new("grep").args(&args).output().await
+            args.push(path);
+            Command::new("grep")
+                .args(&args)
+                .current_dir(&cwd)
+                .output()
+                .await
         }
     } else {
-        Command::new("grep").args(&args).output().await
+        Command::new("grep")
+            .args(&args)
+            .current_dir(&cwd)
+            .output()
+            .await
     }
     .map_err(|e| anyhow!("Failed to run grep: {}", e))?;
 
@@ -476,6 +526,7 @@ async fn run_grep(params: &GrepParams) -> Result<String> {
 
 async fn run_ls(path: Option<&str>, limit: usize) -> Result<String> {
     let path = path.unwrap_or(".");
+    let path = workspace_path(path)?;
     let mut entries = tokio::fs::read_dir(path).await?;
     let mut result = Vec::new();
     let mut count = 0;
@@ -490,4 +541,124 @@ async fn run_ls(path: Option<&str>, limit: usize) -> Result<String> {
         count += 1;
     }
     Ok(result.join("\n"))
+}
+
+fn workspace_path(path: &str) -> Result<PathBuf> {
+    let cwd = active_workspace()?;
+    let path = path
+        .strip_prefix("~/")
+        .map(|relative| cwd.join(relative))
+        .unwrap_or_else(|| PathBuf::from(path));
+    let raw_path = path.as_path();
+    let absolute_path = if raw_path.is_absolute() {
+        raw_path.to_path_buf()
+    } else {
+        cwd.join(raw_path)
+    };
+    let normalized_path = normalize_path(&absolute_path);
+    ensure_workspace_access(&cwd, &normalized_path)?;
+    Ok(normalized_path)
+}
+
+fn active_workspace() -> Result<PathBuf> {
+    if let Ok(workspace) = TOOL_SCOPE.try_with(|scope| scope.workspace.clone()) {
+        return Ok(workspace);
+    }
+    Ok(std::env::current_dir()?)
+}
+
+fn ensure_workspace_access(workspace: &Path, path: &Path) -> Result<()> {
+    if TOOL_SCOPE.try_with(|_| ()).is_err() {
+        return Ok(());
+    }
+
+    let workspace = normalize_path(workspace);
+    let path = normalize_path(path);
+    if path.starts_with(&workspace) || is_approved_outside_path(&path) {
+        return Ok(());
+    }
+
+    Err(anyhow!(
+        "Path is outside the current workspace and requires approval: {}",
+        path.display()
+    ))
+}
+
+fn is_approved_outside_path(path: &Path) -> bool {
+    TOOL_SCOPE
+        .try_with(|scope| {
+            scope
+                .approved_outside_paths
+                .lock()
+                .map(|approved| {
+                    approved.iter().any(|approved_path| {
+                        path == approved_path || path.starts_with(approved_path)
+                    })
+                })
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_path(name: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("futureos-tools-{name}-{stamp}"))
+    }
+
+    #[tokio::test]
+    async fn scoped_workspace_maps_tilde_paths_to_workspace() {
+        let workspace = test_path("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace_string = workspace.to_string_lossy().to_string();
+
+        let written_path = with_workspace_scope(workspace_string.clone(), async {
+            run_write("~/poem.txt", "inside workspace").await
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(written_path, workspace.join("poem.txt"));
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("poem.txt")).unwrap(),
+            "inside workspace"
+        );
+    }
+
+    #[tokio::test]
+    async fn scoped_workspace_rejects_unapproved_absolute_outside_write() {
+        let workspace = test_path("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let outside = test_path("outside.txt");
+        let workspace_string = workspace.to_string_lossy().to_string();
+        let outside_string = outside.to_string_lossy().to_string();
+
+        let result = with_workspace_scope(workspace_string, async {
+            run_write(&outside_string, "no").await
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert!(!outside.exists());
+    }
 }
