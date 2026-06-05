@@ -1,48 +1,52 @@
+import { invoke } from "@tauri-apps/api/core";
+
 export interface AgentModelOption {
   id: string;
   label: string;
   provider: string;
   supportsImages?: boolean;
-  thinkingLevel?: "off" | "xhigh";
+  thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | string | null;
+  contextWindow?: number | null;
+  isDefault?: boolean;
 }
 
-export const agentModelOptions = [
-  {
-    id: "deepseek-v4-flash",
-    label: "DeepSeek V4 Flash",
-    provider: "deepseek",
-    thinkingLevel: "off",
-  },
-  {
-    id: "deepseek-v4-pro",
-    label: "DeepSeek V4 Pro",
-    provider: "deepseek",
-    thinkingLevel: "off",
-  },
-  {
-    id: "qwen3.6-plus",
-    label: "Qwen 3.6 Plus",
-    provider: "dashscope-coding",
-    supportsImages: true,
-    thinkingLevel: "xhigh",
-  },
-] satisfies AgentModelOption[];
+export const agentModelOptions: AgentModelOption[] = [];
+export const defaultAgentModelId = "";
 
-export const defaultAgentModelId = agentModelOptions[0].id;
-
-export function modelLabel(modelId: string) {
-  return agentModelOptions.find(model => model.id === modelId)?.label ?? modelId;
+export async function loadAgentModelOptions() {
+  return normalizeAgentModelOptions(await invoke<AgentModelOption[]>("list_agent_models"));
 }
 
-export function modelSupportsImages(modelId: string) {
-  return Boolean(modelOption(modelId)?.supportsImages);
+export function normalizeAgentModelOptions(models: AgentModelOption[]) {
+  const seen = new Set<string>();
+  return models
+    .filter(model => model.id.trim().length > 0)
+    .filter((model) => {
+      const key = `${model.provider}/${model.id}`;
+      if (seen.has(key))
+        return false;
+      seen.add(key);
+      return true;
+    });
 }
 
-export function modelThinkingLevel(modelId: string) {
-  return modelOption(modelId)?.thinkingLevel;
+export function defaultModelId(models: AgentModelOption[]) {
+  return models.find(model => model.isDefault)?.id ?? models[0]?.id ?? defaultAgentModelId;
 }
 
-function modelOption(modelId: string) {
+export function modelLabel(modelId: string, models: AgentModelOption[]) {
+  return modelOption(modelId, models)?.label ?? (modelId || "Model");
+}
+
+export function modelSupportsImages(modelId: string, models: AgentModelOption[]) {
+  return Boolean(modelOption(modelId, models)?.supportsImages);
+}
+
+export function modelThinkingLevel(modelId: string, models: AgentModelOption[]) {
+  return modelOption(modelId, models)?.thinkingLevel ?? undefined;
+}
+
+function modelOption(modelId: string, models: AgentModelOption[]) {
   const normalizedId = modelId.includes("/") ? modelId.split("/").pop() ?? modelId : modelId;
-  return agentModelOptions.find(model => model.id === normalizedId);
+  return models.find(model => model.id === modelId || model.id === normalizedId);
 }

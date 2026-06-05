@@ -206,6 +206,11 @@ fn list_research_resources(
 }
 
 #[tauri::command]
+async fn list_agent_models() -> Result<Vec<agent_bridge::AgentModelOption>, String> {
+    agent_bridge::list_agent_models().await
+}
+
+#[tauri::command]
 async fn agent_prompt(
     message: String,
     image_paths: Option<Vec<String>>,
@@ -274,6 +279,7 @@ pub fn run() {
             delete_artifact,
             promote_artifact_to_research,
             list_research_resources,
+            list_agent_models,
             agent_prompt
         ])
         .run(tauri::generate_context!())

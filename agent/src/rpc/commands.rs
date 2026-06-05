@@ -9,6 +9,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     let id = &cmd.id;
     let cmd_type = &cmd.cmd_type;
 
+    if cmd_type == "list_models" {
+        return list_models_response(id);
+    }
+
     // Get the target session based on session_id, or use default
     let session = state.get_session(&cmd.session_id);
 
@@ -791,4 +795,90 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         }
         _ => RpcResponse::build_fail(id, cmd_type, &format!("unknown command: {}", cmd_type)),
     }
+}
+
+fn list_models_response(id: &str) -> String {
+    let registry = crate::models::Registry::new();
+    let auth = crate::AuthStore::load();
+    let settings_path = std::path::PathBuf::from(crate::models::settings_path());
+    let settings = crate::config::load_settings(&settings_path).unwrap_or_default();
+    let default_model = settings.default_model.clone();
+    let default_thinking_level = settings.default_thinking_level.clone();
+
+    let mut models: Vec<crate::models::Model> = if !settings.enabled_models.is_empty() {
+        registry
+            .resolve_scope(&settings.enabled_models, &auth)
+            .into_iter()
+            .filter_map(|model_id| registry.resolve(&model_id))
+            .collect()
+    } else {
+        registry
+            .all_models()
+            .into_iter()
+            .filter(|model| !model.api_key.is_empty() || auth.get(&model.provider).is_some())
+            .collect()
+    };
+
+    models.sort_by(|left, right| {
+        left.provider
+            .cmp(&right.provider)
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    models.dedup_by(|left, right| left.id == right.id && left.provider == right.provider);
+
+    let fallback_default = models
+        .first()
+        .map(|model| model.id.clone())
+        .unwrap_or_default();
+    let effective_default = if !default_model.is_empty()
+        && models.iter().any(|model| {
+            model.id == default_model || format!("{}/{}", model.provider, model.id) == default_model
+        }) {
+        default_model.clone()
+    } else {
+        fallback_default
+    };
+
+    let payload_models: Vec<serde_json::Value> = models
+        .into_iter()
+        .map(|model| {
+            let id = model.id;
+            let label = if model.name.is_empty() {
+                id.clone()
+            } else {
+                model.name
+            };
+            let provider = model.provider;
+            let full_id = format!("{provider}/{id}");
+            let thinking_level = if model.reasoning {
+                if default_thinking_level.is_empty() {
+                    "high".to_string()
+                } else {
+                    default_thinking_level.clone()
+                }
+            } else {
+                "off".to_string()
+            };
+            serde_json::json!({
+                "id": id.clone(),
+                "label": label,
+                "provider": provider.clone(),
+                "supportsImages": model.input.iter().any(|input| input == "image"),
+                "thinkingLevel": thinking_level,
+                "contextWindow": model.context_window,
+                "isDefault": id == effective_default || full_id == effective_default,
+            })
+        })
+        .collect();
+
+    RpcResponse::ok(
+        id,
+        "list_models",
+        serde_json::json!({
+            "models": payload_models,
+            "defaultModel": effective_default,
+            "isScoped": !settings.enabled_models.is_empty(),
+        }),
+    )
 }

@@ -1,9 +1,10 @@
 import type { FormEvent, KeyboardEvent } from "react";
+import type { AgentModelOption } from "../../integrations/agent/models";
 import type { MessageAttachment } from "./types";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUp, Check, ChevronDown, Paperclip, Sparkles, X } from "lucide-react";
 import { useState } from "react";
-import { agentModelOptions, modelLabel } from "../../integrations/agent/models";
+import { modelLabel } from "../../integrations/agent/models";
 import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { fileNameFromPath } from "./attachments";
@@ -18,6 +19,7 @@ interface ComposerProps {
   className?: string;
   disabled?: boolean;
   modelId?: string;
+  modelOptions: AgentModelOption[];
   onModelChange?: (modelId: string) => void;
   placeholder?: string;
   textareaClassName?: string;
@@ -28,6 +30,7 @@ export function Composer({
   className,
   disabled,
   modelId,
+  modelOptions,
   onModelChange,
   placeholder,
   textareaClassName,
@@ -35,7 +38,7 @@ export function Composer({
   const [value, setValue] = useState("");
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const activeModelId = modelId ?? agentModelOptions[0].id;
+  const activeModelId = modelId || modelOptions[0]?.id || "";
   const modelMenuRef = useDismissableLayer<HTMLDivElement>({
     enabled: modelMenuOpen,
     onDismiss: () => setModelMenuOpen(false),
@@ -162,16 +165,21 @@ export function Composer({
               type="button"
               title="Model"
             >
-              <span className="truncate">{modelLabel(activeModelId)}</span>
+              <span className="truncate">{modelLabel(activeModelId, modelOptions)}</span>
               <ChevronDown className="size-3 shrink-0" />
             </button>
             {modelMenuOpen
               ? (
                   <div className="absolute bottom-9 right-0 z-30 w-56 rounded-lg border border-line-soft bg-white p-1 shadow-panel">
-                    {agentModelOptions.map(model => (
+                    {modelOptions.length === 0
+                      ? (
+                          <div className="px-2 py-2 text-sm text-ink-muted">Start Future Agent to load models.</div>
+                        )
+                      : null}
+                    {modelOptions.map(model => (
                       <button
                         className="flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition-colors hover:bg-surface-subtle"
-                        key={model.id}
+                        key={`${model.provider}/${model.id}`}
                         onClick={() => {
                           onModelChange?.(model.id);
                           setModelMenuOpen(false);

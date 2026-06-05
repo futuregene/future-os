@@ -1,5 +1,6 @@
 import type { NewConversationStart } from "../../features/agent/NewConversation";
 import type { MessageAttachment } from "../../features/agent/types";
+import type { AgentModelOption } from "../../integrations/agent/models";
 import type { StoredRun, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { DeleteDialogState, RenameDialogState } from "./AppShellDialogs";
@@ -8,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { ResearchView } from "../../features/research/ResearchView";
-import { defaultAgentModelId } from "../../integrations/agent/models";
+import { defaultAgentModelId, defaultModelId, loadAgentModelOptions } from "../../integrations/agent/models";
 import {
   archiveThread,
   createDefaultChatThread,
@@ -51,6 +52,7 @@ export function AppShell() {
   const [rightExpanded, setRightExpanded] = useState(false);
   const [contextTab, setContextTab] = useState<ContextTab>("runs");
   const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
+  const [modelOptions, setModelOptions] = useState<AgentModelOption[]>([]);
   const [selectedModelId, setSelectedModelId] = useState(defaultAgentModelId);
   const [threads, setThreads] = useState<StoredThread[]>([]);
   const [threadRunStatuses, setThreadRunStatuses] = useState<Record<string, StoredRun["status"] | undefined>>({});
@@ -138,6 +140,39 @@ export function AppShell() {
       cancelled = true;
     };
   }, [refreshThreadRunStatuses]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function refreshAgentModels() {
+      try {
+        const nextModels = await loadAgentModelOptions();
+        if (cancelled)
+          return;
+        setModelOptions(nextModels);
+        setSelectedModelId(current =>
+          nextModels.some(model => model.id === current)
+            ? current
+            : defaultModelId(nextModels),
+        );
+      }
+      catch {
+        if (!cancelled) {
+          setModelOptions([]);
+        }
+      }
+    }
+
+    void refreshAgentModels();
+    const timer = window.setInterval(() => {
+      void refreshAgentModels();
+    }, 10000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const activeThreads = useMemo(
     () => threads.filter(thread => thread.status === "active"),
@@ -465,6 +500,7 @@ export function AppShell() {
                 initialWorkspaceId={newChatWorkspaceId}
                 leftPanelExpanded={leftExpanded}
                 modelId={selectedModelId}
+                modelOptions={modelOptions}
                 onAddWorkspace={handleAddWorkspace}
                 onModelChange={setSelectedModelId}
                 onStart={handleStartNewConversation}
@@ -494,6 +530,7 @@ export function AppShell() {
                     <AgentThread
                       loadingStore={loadingStore}
                       modelId={activeThread?.modelId ?? selectedModelId}
+                      modelOptions={modelOptions}
                       onModelChange={handleModelChange}
                       pendingPrompt={pendingPrompt}
                       thread={activeThread}

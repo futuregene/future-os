@@ -1,4 +1,5 @@
 import type { FormEvent } from "react";
+import type { AgentModelOption } from "../../integrations/agent/models";
 import type { StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ComposerSendPayload } from "./Composer";
 import type { MessageAttachment } from "./types";
@@ -48,6 +49,7 @@ interface NewConversationProps {
   initialWorkspaceId?: string | null;
   leftPanelExpanded: boolean;
   modelId: string;
+  modelOptions: AgentModelOption[];
   onModelChange: (modelId: string) => void;
   onStart: (input: NewConversationStart) => void;
   onAddWorkspace: (input: WorkspaceCreateRequest) => Promise<StoredWorkspace | null>;
@@ -59,6 +61,7 @@ export function NewConversation({
   initialWorkspaceId,
   leftPanelExpanded,
   modelId,
+  modelOptions,
   onAddWorkspace,
   onModelChange,
   onStart,
@@ -226,6 +229,7 @@ export function NewConversation({
             <Composer
               className="w-full rounded-b-none bg-white"
               modelId={modelId}
+              modelOptions={modelOptions}
               onModelChange={onModelChange}
               onSend={handleSend}
               placeholder="随心输入"
