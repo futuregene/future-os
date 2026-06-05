@@ -1,4 +1,4 @@
-.PHONY: build build-agent build-tui build-tui-single build-cli test test-agent lint lint-agent lint-tui lint-cli clean run run-agent run-tui run-cli install install-cli install-skills
+.PHONY: build build-agent build-tui build-tui-single build-cli build-gui test test-agent lint lint-agent lint-tui lint-cli lint-gui stylelint-gui check-gui clean clean-gui run run-agent run-tui run-cli run-gui package-gui install install-cli install-skills install-gui
 
 # ─── Install ──────────────────────────────────────────────────────────────────
 
@@ -12,9 +12,12 @@ install-skills:
 	@mkdir -p ~/.agents/skills
 	rsync -a skills/future-os-skills/ ~/.agents/skills/future-os-skills/
 
+install-gui:
+	cd gui && npm install
+
 # ─── Build ──────────────────────────────────────────────────────────────────
 
-build: build-agent build-tui build-cli
+build: build-agent build-tui build-cli build-gui
 
 build-agent:
 	cd agent && cargo build
@@ -27,6 +30,9 @@ build-tui-single:
 
 build-cli:
 	cd cli && npm run build
+
+build-gui:
+	cd gui && npm run build
 
 build-channel:
 	cd channel && cargo build
@@ -43,7 +49,7 @@ test-agent:
 
 # ─── Lint ───────────────────────────────────────────────────────────────────
 
-lint: lint-agent lint-tui lint-cli
+lint: lint-agent lint-tui lint-cli lint-gui stylelint-gui
 
 lint-agent:
 	cd agent && cargo fmt --check && cargo clippy
@@ -53,6 +59,15 @@ lint-tui:
 
 lint-cli:
 	cd cli && npx tsc --noEmit
+
+lint-gui:
+	cd gui && npm run lint
+
+stylelint-gui:
+	cd gui && npm run stylelint
+
+check-gui: lint-gui stylelint-gui build-gui
+	cd gui/src-tauri && cargo check
 
 fmt:
 	cd agent && cargo fmt
@@ -67,6 +82,12 @@ run-tui: install
 
 run-cli: install-cli
 	cd cli && npm run dev
+
+run-gui: install-gui
+	cd gui && npm run tauri:dev
+
+package-gui:
+	cd gui && npm run tauri:build
 
 run-channel:
 	cd channel && cargo run
@@ -89,15 +110,22 @@ clean:
 	rm -f tui/future-tui
 	rm -rf cli/dist
 	rm -rf cli/node_modules
+	$(MAKE) clean-gui
+
+clean-gui:
+	rm -rf gui/dist
+	rm -rf gui/node_modules
+	rm -rf gui/src-tauri/target
 
 # ─── Help ───────────────────────────────────────────────────────────────────
 
 help:
-	@echo "  build              Build agent, TUI, and CLI"
+	@echo "  build              Build agent, TUI, CLI, and GUI"
 	@echo "  build-agent        Build Rust agent"
 	@echo "  build-tui          Build TypeScript TUI"
 	@echo "  build-tui-single   Build standalone TUI binary (via bun build --compile)"
 	@echo "  build-cli          Build TypeScript CLI"
+	@echo "  build-gui          Build React/Tauri GUI frontend"
 	@echo "  build-channel      Build channel bridge"
 	@echo "  build-channel-release  Build channel bridge (optimized)"
 	@echo "  test               Run Rust tests"
@@ -106,6 +134,8 @@ help:
 	@echo "  run-agent          Build and run Rust agent"
 	@echo "  run-tui            Run TUI in dev mode"
 	@echo "  run-cli            Run CLI in dev mode"
+	@echo "  run-gui            Run GUI in Tauri dev mode"
+	@echo "  package-gui        Build GUI desktop bundles"
 	@echo "  run-channel        Build and run channel bridge"
 	@echo "  generate-models    Fetch model data and regenerate models_generated.rs"
 	@echo "  generate-proto     Compile proto/future.proto to Rust gRPC code"

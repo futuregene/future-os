@@ -13,11 +13,30 @@ vendor/
 # Rust
 agent/target/
 channel/target/
+gui/src-tauri/target/
+gui/src-tauri/gen/
+*.app/
+*.dmg
+*.msi
+*.AppImage
 
 # Node
 tui/node_modules/
 tui/dist/
+cli/node_modules/
+cli/dist/
+gui/node_modules/
+gui/dist/
+gui/.vite/
 */node_modules/
+
+# FutureOS local app data
+.future/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
 
 # IDE
 .idea/

@@ -33,18 +33,28 @@ async fn main() -> Result<()> {
 
     // Load settings
     let settings_path = std::path::PathBuf::from(future_agent::models::settings_path());
-    let settings = future_agent::config::load_settings(&settings_path).unwrap_or_default();
+    let settings = match future_agent::config::load_settings(&settings_path) {
+        Ok(settings) => settings,
+        Err(error) => {
+            eprintln!(
+                "Failed to load settings from {}: {}. Falling back to defaults.",
+                settings_path.display(),
+                error
+            );
+            future_agent::Settings::default()
+        }
+    };
 
     // Load auth store
     let auth_store = future_agent::AuthStore::load();
 
     // Resolve model from config files only:
-    // settings.json default_model > models.json (first with api_key) > builtin default
+    // settings.json default_model > first auth-configured/api-key model > builtin default
     let resolved_model = future_agent::models::get_default_model()
         .or_else(|| {
             all_models
                 .iter()
-                .find(|m| !m.api_key.is_empty())
+                .find(|m| !m.api_key.is_empty() || auth_store.get(&m.provider).is_some())
                 .map(|m| m.id.clone())
         })
         .unwrap_or_else(|| "deepseek-v4-flash".to_string());
@@ -197,8 +207,6 @@ async fn main() -> Result<()> {
             Err(_) => ("127.0.0.1", 50051),
         }
     };
-    eprintln!("gRPC server listening on {}:{}", grpc_host, grpc_port);
-
     // Discover skills
     let skill_dirs = vec![
         USER_SKILLS_DIR.to_string(),
@@ -241,6 +249,7 @@ async fn main() -> Result<()> {
     let manager = Arc::new(Manager::default_for(&cwd));
     let broadcaster: Arc<future_agent::rpc::SseBroadcaster> =
         Arc::new(future_agent::rpc::SseBroadcaster::new());
+    let approval_gate = future_agent::rpc::ApprovalGate::default();
     let mut server_session = ServerSession::new(
         future_agent::utils::generate_id(),
         Arc::new(tokio::sync::RwLock::new(engine.agent_loop)),
@@ -248,6 +257,7 @@ async fn main() -> Result<()> {
         &cwd,
         event_bus.clone(),
         broadcaster.clone(),
+        approval_gate.clone(),
     );
     server_session.model = resolved_model.clone();
 
@@ -274,6 +284,7 @@ async fn main() -> Result<()> {
         explicit_session: false,
         broadcaster: broadcaster.clone(),
         event_bus: event_bus.clone(),
+        approval_gate,
     };
 
     future_agent::grpc::serve(app_state, grpc_host, grpc_port).await?;

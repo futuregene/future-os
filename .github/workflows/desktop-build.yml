@@ -1,0 +1,87 @@
+name: Build desktop apps
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+            artifact_name: futureos-macos
+          - name: Windows
+            os: windows-latest
+            artifact_name: futureos-windows
+          - name: Linux
+            os: ubuntu-22.04
+            artifact_name: futureos-linux
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            agent
+            gui/src-tauri
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            patchelf \
+            protobuf-compiler \
+            wget
+
+      - name: Install macOS system dependencies
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Install Windows system dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install protoc --yes
+
+      - name: Install npm dependencies
+        working-directory: gui
+        run: npm ci
+
+      - name: Build desktop bundle
+        working-directory: gui
+        run: npm run tauri:build
+
+      - name: Upload desktop bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          if-no-files-found: error
+          path: gui/src-tauri/target/release/bundle/**
