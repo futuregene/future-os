@@ -1,12 +1,16 @@
-.PHONY: build build-agent build-tui build-tui-single build-cli test test-agent lint lint-agent lint-tui lint-cli clean run run-agent run-tui run-cli install install-cli
+.PHONY: build build-agent build-tui build-tui-single build-cli test test-agent lint lint-agent lint-tui lint-cli clean run run-agent run-tui run-cli install install-cli install-skills
 
 # ─── Install ──────────────────────────────────────────────────────────────────
 
 install:
 	cd tui && npm install
 
-install-cli:
+install-cli: install-skills
 	cd cli && npm install && npm run build && npm link
+
+install-skills:
+	@mkdir -p ~/.agents/skills
+	rsync -a skills/future-os-skills/ ~/.agents/skills/future-os-skills/
 
 # ─── Build ──────────────────────────────────────────────────────────────────
 
