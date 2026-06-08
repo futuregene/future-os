@@ -4,31 +4,32 @@
 import { TOOL_CATALOG } from "./tools.js";
 const SKILL_BUNDLES = {
     core: {
-        description: "Full suite. All 20 tools across research, rare disease diagnosis, gene/variant analysis, and general utilities.",
+        description: "Full suite. All 18 tools across research, rare disease diagnosis, gene/variant analysis, and general utilities.",
         tools: [
             "case_searcher", "disease_searcher", "normalize_disease", "gene_getter",
             "extract_phenotype", "get_phenotype_by_hpo_id", "knowledge_searcher",
-            "phenotype_analyzer", "think", "variant_getter", "variant_searcher",
-            "get_paper", "get_page", "search_page",
-            "image_gen", "image_edit", "read_image", "parse_pdf", "web_search", "fetch_url",
+            "phenotype_analyzer", "variant_getter", "variant_searcher",
+            "get_paper",
+            "image_gen", "image_edit", "read_image", "parse_pdf",
+            "think", "search_page", "get_page",
         ],
     },
     research: {
-        description: "Research tools: literature search, paper retrieval, page fetching, and knowledge base search. 4 tools.",
-        tools: ["get_paper", "get_page", "search_page", "knowledge_searcher"],
+        description: "Research tools: paper retrieval and knowledge base search. 2 tools.",
+        tools: ["get_paper", "knowledge_searcher"],
     },
     "rare-disease": {
-        description: "Rare disease diagnosis: HPO extraction, phenotype-based disease inference, variant interpretation. 10 tools.",
+        description: "Rare disease diagnosis: HPO extraction, phenotype-based disease inference, variant interpretation. 9 tools.",
         tools: [
             "normalize_disease", "disease_searcher", "extract_phenotype",
             "phenotype_analyzer", "case_searcher",
             "gene_getter", "variant_getter", "variant_searcher",
-            "get_phenotype_by_hpo_id", "think",
+            "get_phenotype_by_hpo_id",
         ],
     },
     general: {
-        description: "General utilities: image generation, image editing, image reading/OCR, PDF parsing, web search, URL fetching, browser search, MinerU document parsing, PPT generation. 6 tools (more upcoming).",
-        tools: ["image_gen", "image_edit", "read_image", "parse_pdf", "web_search", "fetch_url"],
+        description: "General utilities: image generation, image editing, image reading/OCR, PDF parsing, thinking, and page tools. 7 tools.",
+        tools: ["image_gen", "image_edit", "read_image", "parse_pdf", "think", "search_page", "get_page"],
     },
 };
 export function isSkillsCommand(command) {
@@ -142,10 +143,8 @@ function buildWorkflowSection(bundleName) {
         return `
 ## Literature & research workflow
 
-1. \`search_page\` — search the web for relevant content
-2. \`get_page\` — fetch and extract page content by URL
-3. \`get_paper\` — get paper content by PMID, DOI, etc.
-4. \`knowledge_searcher\` — search rare disease knowledge bases
+1. \`get_paper\` — get paper content by PMID, DOI, etc.
+2. \`knowledge_searcher\` — search rare disease knowledge bases
 `;
     }
     if (bundleName === "core" || bundleName === "general") {
@@ -169,14 +168,6 @@ The \`--output\` flag saves the generated image to the specified path.
 IMAGE_B64=$(base64 -i input.png | tr -d '\\n')
 future tools call image_edit --args "{\\\"prompt\\": \\"Convert to watercolor\\", \\"image_b64\\": \\"$IMAGE_B64\\"}" --output ./edited.png
 \`\`\`
-
-## Upcoming tools
-
-Additional general-purpose tools are being built:
-- **Browser search** — interactive web browsing and search
-- **Image recognition / OCR** — extract text and recognize content from images
-- **MinerU document parsing** — parse PDFs and scanned documents
-- **PPT generation** — create presentations from content
 
 ## Notes
 
