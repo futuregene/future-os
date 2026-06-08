@@ -171,12 +171,13 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     example: '{"pdf_b64": "<base64>"}',
   },
   web_search: {
-    description: "Search the web using DuckDuckGo. Returns titles, links, and snippets.",
+    description: "Search the web. Returns titles, links, and snippets.",
     args: {
       query: "string (required)",
       count: "integer (default: 10, max: 20)",
+      offset: "integer (default: 0)",
     },
-    example: '{"query": "BRCA1 variant classification guidelines 2025"}',
+    example: '{"query": "BRCA1 variant classification guidelines 2025", "count": 5, "offset": 0}',
   },
   fetch_url: {
     description: "Fetch and extract content from a web page URL. Returns page title and compact content.",
