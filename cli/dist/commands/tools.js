@@ -141,6 +141,32 @@ export const TOOL_CATALOG = {
         },
         example: '{"prompt": "Convert to watercolor painting", "image_b64": "<base64>"}',
     },
+    read_image: {
+        description: "Read and analyze an image. Provide a base64-encoded image and a question — supports OCR, object recognition, and visual Q&A.",
+        args: {
+            image_b64: "string (required, base64-encoded image)",
+            question: "string (required, e.g. 'Extract text' or 'Describe this image')",
+            mime_type: 'string (default: "image/png")',
+            max_tokens: "integer (default: 2000)",
+        },
+        example: '{"image_b64": "<base64>", "question": "What text is in this image?"}',
+    },
+    parse_pdf: {
+        description: "Parse PDF documents into markdown. Upload a base64-encoded PDF and get structured markdown with text, tables, and formulas preserved. Uses MinerU vlm-http-client backend.",
+        args: {
+            pdf_b64: "string (required, base64-encoded PDF content)",
+        },
+        example: '{"pdf_b64": "<base64>"}',
+    },
+    web_search: {
+        description: "Search the web for information. Searches web sources only (domains fixed).",
+        args: {
+            queries: "string[] (required)",
+            information_to_extract: "string",
+            max_results_per_query: "integer (default: 10)",
+        },
+        example: '{"queries": ["BRCA1 variant classification guidelines 2025"], "information_to_extract": "latest guidelines and recommendations"}',
+    },
 };
 // ── Auth ─────────────────────────────────────────────────────────────────────
 export async function loadApiKey() {

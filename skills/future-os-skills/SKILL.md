@@ -1,6 +1,6 @@
 ---
 name: future-os-skills
-description: Rare disease, genomics & image tools. Use for disease search, phenotype extraction, gene/variant lookup, paper retrieval, knowledge search, and image generation/editing. 16 tools in 5 skill bundles.
+description: Rare disease, genomics, research & general tools. Use for disease search, phenotype extraction, gene/variant lookup, paper retrieval, knowledge search, image generation/editing/reading, PDF parsing, browser search, OCR, document parsing, and PPT generation. 18 tools in 4 skill bundles.
 allowed-tools: Bash(future:*)
 ---
 
@@ -30,10 +30,9 @@ so instructions never go stale.
 Load a specialized skill when the task is focused on one domain:
 
 ```bash
-future skills get rare-disease      # 5 disease-diagnosis tools
-future skills get gene-variant      # 4 gene/variant analysis tools
-future skills get literature        # 4 literature/search tools
-future skills get image-gen         # 2 image generation/editing tools
+future skills get research           # 4 literature/search tools
+future skills get rare-disease       # 10 disease/gene/variant tools
+future skills get general            # 4 image/vision/PDF tools (+ upcoming: browser, MinerU, PPT)
 ```
 
 Run `future skills list` to see everything available on the installed version.
@@ -61,11 +60,10 @@ future tools call image_gen --args ‘{"prompt": "A red fox", "size": "1024x1024
 
 | Bundle | Tools | Purpose |
 |--------|-------|---------|
-| `core` | 16 | Full suite with all workflows |
-| `rare-disease` | 5 | normalize_disease, disease_searcher, extract_phenotype, phenotype_analyzer, case_searcher |
-| `gene-variant` | 4 | gene_getter, variant_getter, variant_searcher, get_phenotype_by_hpo_id |
-| `literature` | 4 | search_page, get_page, get_paper, knowledge_searcher |
-| `image-gen` | 2 | image_gen, image_edit |
+| `core` | 19 | Full suite with all workflows |
+| `research` | 4 | search_page, get_page, get_paper, knowledge_searcher |
+| `rare-disease` | 10 | normalize_disease, disease_searcher, extract_phenotype, phenotype_analyzer, case_searcher, gene_getter, variant_getter, variant_searcher, get_phenotype_by_hpo_id, think |
+| `general` | 5 | image_gen, image_edit, read_image, parse_pdf, web_search (+ upcoming: browser search, MinerU, PPT) |
 
 ## CLI source
 
