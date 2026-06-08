@@ -98,7 +98,7 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     example: '{"variant_id": "15-48702977-G-A", "assembly": "hg38"}',
   },
   variant_searcher: {
-    description: "Search variants using raremcp variant search with filter parameters.",
+    description: "Search variants with filter parameters.",
     args: {
       gene: "string",
       consequence: "string",
@@ -108,7 +108,7 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     example: '{"gene": "FBN1", "consequence": "missense", "frequency_max": 0.01}',
   },
   get_paper: {
-    description: "Get paper content from raremcp by paper identifier (PMID, DOI, etc.).",
+    description: "Get paper content by paper identifier (PMID, DOI, etc.).",
     args: {
       paper_id: "string (required)",
       max_k: "int",
@@ -124,7 +124,7 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     example: '{"url": "https://pubmed.ncbi.nlm.nih.gov/12345678/"}',
   },
   search_page: {
-    description: "Search web pages through raremcp.",
+    description: "Search web pages.",
     args: {
       query: "string (required)",
       limit: "int",
@@ -164,7 +164,7 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     example: '{"image_b64": "<base64>", "question": "What text is in this image?"}',
   },
   parse_pdf: {
-    description: "Parse PDF documents into markdown. Upload a base64-encoded PDF and get structured markdown with text, tables, and formulas preserved. Uses MinerU vlm-http-client backend.",
+    description: "Parse PDF documents into markdown. Upload a base64-encoded PDF and get structured markdown with text, tables, and formulas preserved.",
     args: {
       pdf_b64: "string (required, base64-encoded PDF content)",
     },

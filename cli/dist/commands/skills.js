@@ -116,9 +116,7 @@ ${entries}${workflowSection}
 ## Notes
 
 - Each successful tool call is billed at 10 credits (millicredit units)
-- Tools are proxied through raremcp
 - Credentials read from \`~/.future/agent/auth.json\` automatically
-- Some tools may return errors for IDs not found in local raremcp data
 `;
 }
 function buildWorkflowSection(bundleName) {
