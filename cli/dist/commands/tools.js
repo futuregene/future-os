@@ -159,13 +159,19 @@ export const TOOL_CATALOG = {
         example: '{"pdf_b64": "<base64>"}',
     },
     web_search: {
-        description: "Search the web for information. Searches web sources only (domains fixed).",
+        description: "Search the web using DuckDuckGo. Returns titles, links, and snippets.",
         args: {
-            queries: "string[] (required)",
-            information_to_extract: "string",
-            max_results_per_query: "integer (default: 10)",
+            query: "string (required)",
+            count: "integer (default: 10, max: 20)",
         },
-        example: '{"queries": ["BRCA1 variant classification guidelines 2025"], "information_to_extract": "latest guidelines and recommendations"}',
+        example: '{"query": "BRCA1 variant classification guidelines 2025"}',
+    },
+    fetch_url: {
+        description: "Fetch and extract content from a web page URL. Returns page title and compact content.",
+        args: {
+            url: "string (required)",
+        },
+        example: '{"url": "https://en.wikipedia.org/wiki/BRCA1"}',
     },
 };
 // ── Auth ─────────────────────────────────────────────────────────────────────

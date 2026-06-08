@@ -4,13 +4,13 @@
 import { TOOL_CATALOG } from "./tools.js";
 const SKILL_BUNDLES = {
     core: {
-        description: "Full suite. All 19 tools across research, rare disease diagnosis, gene/variant analysis, and general utilities.",
+        description: "Full suite. All 20 tools across research, rare disease diagnosis, gene/variant analysis, and general utilities.",
         tools: [
             "case_searcher", "disease_searcher", "normalize_disease", "gene_getter",
             "extract_phenotype", "get_phenotype_by_hpo_id", "knowledge_searcher",
             "phenotype_analyzer", "think", "variant_getter", "variant_searcher",
             "get_paper", "get_page", "search_page",
-            "image_gen", "image_edit", "read_image", "parse_pdf", "web_search",
+            "image_gen", "image_edit", "read_image", "parse_pdf", "web_search", "fetch_url",
         ],
     },
     research: {
@@ -27,8 +27,8 @@ const SKILL_BUNDLES = {
         ],
     },
     general: {
-        description: "General utilities: image generation, image editing, image reading/OCR, PDF parsing, web search, browser search, MinerU document parsing, PPT generation. 5 tools (more upcoming).",
-        tools: ["image_gen", "image_edit", "read_image", "parse_pdf", "web_search"],
+        description: "General utilities: image generation, image editing, image reading/OCR, PDF parsing, web search, URL fetching, browser search, MinerU document parsing, PPT generation. 6 tools (more upcoming).",
+        tools: ["image_gen", "image_edit", "read_image", "parse_pdf", "web_search", "fetch_url"],
     },
 };
 export function isSkillsCommand(command) {
