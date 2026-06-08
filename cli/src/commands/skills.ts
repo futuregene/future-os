@@ -15,40 +15,34 @@ interface SkillBundle {
 const SKILL_BUNDLES: Record<string, SkillBundle> = {
   core: {
     description:
-      "Full suite. All 16 tools for disease search, phenotype analysis, gene/variant lookup, literature search, and image generation/editing.",
+      "Full suite. All 19 tools across research, rare disease diagnosis, gene/variant analysis, and general utilities.",
     tools: [
       "case_searcher", "disease_searcher", "normalize_disease", "gene_getter",
       "extract_phenotype", "get_phenotype_by_hpo_id", "knowledge_searcher",
       "phenotype_analyzer", "think", "variant_getter", "variant_searcher",
       "get_paper", "get_page", "search_page",
-      "image_gen", "image_edit",
+      "image_gen", "image_edit", "read_image", "parse_pdf", "web_search",
     ],
+  },
+  research: {
+    description:
+      "Research tools: literature search, paper retrieval, page fetching, and knowledge base search. 4 tools.",
+    tools: ["get_paper", "get_page", "search_page", "knowledge_searcher"],
   },
   "rare-disease": {
     description:
-      "Rare disease diagnosis: disease lookup, phenotype extraction, case matching, and phenotype analysis. 5 tools.",
+      "Rare disease diagnosis: HPO extraction, phenotype-based disease inference, variant interpretation. 10 tools.",
     tools: [
       "normalize_disease", "disease_searcher", "extract_phenotype",
       "phenotype_analyzer", "case_searcher",
-    ],
-  },
-  "gene-variant": {
-    description:
-      "Gene and variant analysis: gene info, variant search, variant details, phenotype by HPO. 4 tools.",
-    tools: [
       "gene_getter", "variant_getter", "variant_searcher",
-      "get_phenotype_by_hpo_id",
+      "get_phenotype_by_hpo_id", "think",
     ],
   },
-  literature: {
+  general: {
     description:
-      "Literature and web search: paper retrieval, page fetching, web search, knowledge bases. 4 tools.",
-    tools: ["get_paper", "get_page", "search_page", "knowledge_searcher"],
-  },
-  "image-gen": {
-    description:
-      "Image generation and editing. Generate images from text prompts or edit existing images. 2 tools.",
-    tools: ["image_gen", "image_edit"],
+      "General utilities: image generation, image editing, image reading/OCR, PDF parsing, web search, browser search, MinerU document parsing, PPT generation. 5 tools (more upcoming).",
+    tools: ["image_gen", "image_edit", "read_image", "parse_pdf", "web_search"],
   },
 };
 
@@ -167,11 +161,7 @@ function buildWorkflowSection(bundleName: string): string {
 3. \`extract_phenotype\` — extract HPO terms from free-text clinical descriptions
 4. \`phenotype_analyzer\` — differential diagnosis from phenotype list
 5. \`case_searcher\` — find similar cases by phenotype profile
-`;
-  }
 
-  if (bundleName === "core" || bundleName === "gene-variant") {
-    return `
 ## Gene/variant analysis workflow
 
 1. \`gene_getter\` — get gene information by symbol or ID
@@ -181,9 +171,9 @@ function buildWorkflowSection(bundleName: string): string {
 `;
   }
 
-  if (bundleName === "core" || bundleName === "literature") {
+  if (bundleName === "core" || bundleName === "research") {
     return `
-## Literature & web search workflow
+## Literature & research workflow
 
 1. \`search_page\` — search the web for relevant content
 2. \`get_page\` — fetch and extract page content by URL
@@ -192,9 +182,9 @@ function buildWorkflowSection(bundleName: string): string {
 `;
   }
 
-  if (bundleName === "core" || bundleName === "image-gen") {
+  if (bundleName === "core" || bundleName === "general") {
     return `
-## Image generation & editing workflow
+## Image generation & editing
 
 1. \`image_gen\` — generate images from text prompts
 2. \`image_edit\` — edit existing images with new instructions
@@ -211,8 +201,16 @@ The \`--output\` flag saves the generated image to the specified path.
 
 \`\`\`bash
 IMAGE_B64=$(base64 -i input.png | tr -d '\\n')
-future tools call image_edit --args "{\\"prompt\\": \\"Convert to watercolor\\", \\"image_b64\\": \\"$IMAGE_B64\\"}" --output ./edited.png
+future tools call image_edit --args "{\\\"prompt\\": \\"Convert to watercolor\\", \\"image_b64\\": \\"$IMAGE_B64\\"}" --output ./edited.png
 \`\`\`
+
+## Upcoming tools
+
+Additional general-purpose tools are being built:
+- **Browser search** — interactive web browsing and search
+- **Image recognition / OCR** — extract text and recognize content from images
+- **MinerU document parsing** — parse PDFs and scanned documents
+- **PPT generation** — create presentations from content
 
 ## Notes
 
