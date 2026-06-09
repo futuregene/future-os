@@ -15,8 +15,6 @@ Usage:
   future channel status
   future tools list
   future tools call <name> [--args '<json>' | --stdin]
-  future skills list
-  future skills get <name>
   future tui [tui options]
 `);
 }
