@@ -154,12 +154,6 @@ fn approval_shape(
             title: "Approve outside-workspace write".to_string(),
             summary: "Agent wants to modify a file outside the current workspace.".to_string(),
         }),
-        "read" if path_is_outside_workspace(cwd, arguments) => Some(ApprovalShape {
-            kind: "outside_workspace_read",
-            risk_level: "medium",
-            title: "Approve outside-workspace read".to_string(),
-            summary: "Agent wants to read a file outside the current workspace.".to_string(),
-        }),
         _ => None,
     }
 }
