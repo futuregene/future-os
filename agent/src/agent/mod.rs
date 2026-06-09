@@ -355,7 +355,7 @@ impl Loop {
         self.interrupt_flag.load(Ordering::SeqCst)
     }
 
-    fn clear_interrupt(&self) {
+    pub fn clear_interrupt(&self) {
         self.interrupt_flag.store(false, Ordering::SeqCst);
     }
 

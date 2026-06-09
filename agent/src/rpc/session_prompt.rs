@@ -16,10 +16,33 @@ impl ServerSession {
         std::fs::create_dir_all(&self.cwd)?;
         if let Ok(mut r#loop) = self.agent_loop.try_write() {
             let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+            // Discover skills so they appear in the system prompt's <available_skills> block.
+            let skill_dirs = vec![
+                crate::skills::USER_SKILLS_DIR.to_string(),
+                format!("{}/{}", self.cwd, crate::skills::PROJECT_SKILLS_DIR),
+                crate::skills::AGENTS_SKILLS_DIR.to_string(),
+            ];
+            let skills = crate::skills::discover_skills(&skill_dirs).unwrap_or_default();
+
+            // Load project context (CLAUDE.md / AGENTS.md / GEMINI.md)
+            let mut agent_content = String::new();
+            for fname in &["CLAUDE.md", "AGENTS.md", "GEMINI.md"] {
+                let p = std::path::Path::new(&self.cwd).join(fname);
+                if p.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&p) {
+                        agent_content = content;
+                        break;
+                    }
+                }
+            }
+
             let system_prompt = crate::prompt::build_prompt(&crate::prompt::PromptOptions {
                 working_directory: self.cwd.clone(),
                 date: today,
                 tools: r#loop.tools.clone(),
+                skills,
+                agent_content,
                 prompt_guidelines: vec![
                     "When asked to create, save, write, or modify a file, use an available tool to do it. Only describe file changes after the tool succeeds.".to_string(),
                 ],
@@ -174,6 +197,14 @@ impl ServerSession {
 
         // agent_start is now emitted inside run_streaming_with_messages via on_event,
         // for both initial prompts and follow-up turns.
+
+        // Clear any stale interrupt flag left by a previous abort().
+        // Ctrl+C / abort sets interrupt_flag=true on the shared agent_loop.
+        // Without clearing it, the spawned task's first loop iteration would
+        // exit immediately without calling the LLM.
+        if let Ok(r#loop) = self.agent_loop.try_read() {
+            r#loop.clear_interrupt();
+        }
 
         // Create interrupt channel so steer()/abort() can stop the current stream
         let (interrupt_tx, interrupt_rx) = tokio::sync::mpsc::channel::<()>(1);
