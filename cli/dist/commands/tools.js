@@ -51,13 +51,12 @@ export const TOOL_CATALOG = {
         args: { hpo_id: "string (required)" },
         example: '{"hpo_id": "HP:0001166"}',
     },
-    knowledge_searcher: {
-        description: "Search rare disease knowledge sources and extract requested information.",
+    search_paper: {
+        description: "Search academic papers and extract requested information.",
         args: {
             information_to_extract: "string",
-            domains: 'string[] (default: ["all"])',
         },
-        example: '{"information_to_extract": "inheritance pattern and typical age of onset", "domains": ["all"]}',
+        example: '{"information_to_extract": "inheritance pattern and typical age of onset"}',
     },
     phenotype_analyzer: {
         description: "Analyze phenotype evidence for rare disease interpretation. Produces differential diagnosis with scored disease matches.",
@@ -151,12 +150,12 @@ export const TOOL_CATALOG = {
         },
         example: '{"image_b64": "<base64>", "question": "What text is in this image?"}',
     },
-    parse_pdf: {
-        description: "Parse PDF documents into markdown. Upload a base64-encoded PDF and get structured markdown with text, tables, and formulas preserved.",
+    parse_doc: {
+        description: "Parse PDF and Word documents into markdown. Upload a base64-encoded document and get structured markdown with text, tables, and formulas preserved.",
         args: {
-            pdf_b64: "string (required, base64-encoded PDF content)",
+            doc_b64: "string (required, base64-encoded document content)",
         },
-        example: '{"pdf_b64": "<base64>"}',
+        example: '{"doc_b64": "<base64>"}',
     },
     web_search: {
         description: "Search the web. Returns titles, links, and snippets.",

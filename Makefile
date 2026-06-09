@@ -10,7 +10,10 @@ install-cli: install-skills
 
 install-skills:
 	@mkdir -p ~/.agents/skills
-	rsync -a skills/future-os-skills/ ~/.agents/skills/future-os-skills/
+	rsync -a skills/future-os-paper/ ~/.agents/skills/future-os-paper/
+	rsync -a skills/future-os-web/ ~/.agents/skills/future-os-web/
+	rsync -a skills/future-os-image/ ~/.agents/skills/future-os-image/
+	rsync -a skills/future-os-document/ ~/.agents/skills/future-os-document/
 
 install-gui:
 	cd gui && npm install
