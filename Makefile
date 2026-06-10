@@ -6,7 +6,7 @@ install:
 	cd tui && npm install
 
 install-cli: install-skills
-	cd cli && npm install && npm run build && npm link
+	cd cli && npm install && npm run build && chmod +x dist/index.js && npm link
 
 install-skills:
 	@mkdir -p ~/.agents/skills
