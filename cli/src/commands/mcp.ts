@@ -1,10 +1,15 @@
 // Shared MCP protocol helpers used by tools.ts and skills.ts.
 import { request as httpRequest } from "node:http";
+import { DEFAULT_API_URL } from "../constants.js";
 
-const DEFAULT_MCP_URL = "http://localhost:7003/mcp";
+function resolveMcpUrl(): string {
+  if (process.env["FUTURE_MCP_URL"]) return process.env["FUTURE_MCP_URL"];
+  const apiBase = process.env["FUTURE_API_BASE"] ?? DEFAULT_API_URL;
+  return `${apiBase}/mcp`;
+}
 
 export function mcpUrl(): string {
-  return process.env["FUTURE_MCP_URL"] || DEFAULT_MCP_URL;
+  return resolveMcpUrl();
 }
 
 export interface McpResponse {
