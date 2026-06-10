@@ -1,16 +1,15 @@
 import { readFile } from "node:fs/promises";
 import { writeFile } from "node:fs/promises";
-import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
 import { getRecord, isRecord, isNodeError } from "../utils/object.js";
+import { mcpPost, mcpUrl, initializeSession } from "./mcp.js";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const AUTH_FILE = join(homedir(), ".future", "agent", "auth.json");
 const FUTURE_PROVIDER = "future";
-const DEFAULT_MCP_URL = "http://localhost:7003/mcp";
 
 // ── Tool catalog (matches config/api.yaml, manually maintained) ──────────────
 
@@ -216,127 +215,11 @@ export async function loadApiKey(): Promise<string> {
   }
 }
 
-// ── MCP protocol ─────────────────────────────────────────────────────────────
-
-function mcpPost(
-  url: string,
-  method: string,
-  params: Record<string, unknown>,
-  apiKey: string,
-  sessionId?: string,
-  id?: number,
-): Promise<{ body: Record<string, unknown>; sessionId: string | null }> {
-  const body: Record<string, unknown> = {
-    jsonrpc: "2.0",
-    method,
-    params,
-  };
-  if (id !== undefined) body.id = id;
-
-  const payload = JSON.stringify(body);
-  const urlObj = new URL(url);
-
-  return new Promise((resolve, reject) => {
-    const req = httpRequest(
-      {
-        hostname: urlObj.hostname,
-        port: urlObj.port || 80,
-        path: urlObj.pathname + urlObj.search,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/json, text/event-stream",
-          "Authorization": `Bearer ${apiKey}`,
-          ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
-          "Content-Length": Buffer.byteLength(payload).toString(),
-        },
-        agent: false,
-      },
-      (res) => {
-        const sid = res.headers["mcp-session-id"] as string | undefined;
-        let data = "";
-        res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
-        res.on("end", () => {
-          // Parse SSE
-          for (const line of data.split("\n")) {
-            if (line.startsWith("data:")) {
-              const payload = line.slice(5).trim();
-              if (payload) {
-                try {
-                  resolve({ body: JSON.parse(payload) as Record<string, unknown>, sessionId: sid ?? null });
-                  return;
-                } catch {
-                  reject(new Error(`Invalid JSON in SSE: ${payload}`));
-                  return;
-                }
-              }
-            }
-          }
-          resolve({ body: {}, sessionId: sid ?? null });
-        });
-      },
-    );
-    req.on("error", reject);
-    req.write(payload);
-    req.end();
-  });
-}
-
-async function mcpNotify(
-  url: string,
-  method: string,
-  params: Record<string, unknown>,
-  apiKey: string,
-  sessionId: string,
-): Promise<void> {
-  const payload = JSON.stringify({ jsonrpc: "2.0", method, params });
-  const urlObj = new URL(url);
-
-  return new Promise((resolve) => {
-    const req = httpRequest(
-      {
-        hostname: urlObj.hostname,
-        port: urlObj.port || 80,
-        path: urlObj.pathname + urlObj.search,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json, text/event-stream",
-          Authorization: `Bearer ${apiKey}`,
-          "Mcp-Session-Id": sessionId,
-          "Content-Length": Buffer.byteLength(payload).toString(),
-        },
-        agent: false,
-      },
-      () => resolve(),
-    );
-    req.on("error", () => resolve());
-    req.write(payload);
-    req.end();
-  });
-}
-
-async function initializeSession(apiKey: string): Promise<string> {
-  const mcpUrl = process.env["FUTURE_MCP_URL"] || DEFAULT_MCP_URL;
-  const { body, sessionId } = await mcpPost(mcpUrl, "initialize", {
-    protocolVersion: "2024-11-05",
-    capabilities: {},
-    clientInfo: { name: "future", version: "1.0" },
-  }, apiKey, undefined, 1);
-
-  if (body.error) throw new Error(`MCP initialize failed: ${JSON.stringify(body.error)}`);
-  if (!sessionId) throw new Error("No session ID received from MCP server");
-
-  await mcpNotify(mcpUrl, "notifications/initialized", {}, apiKey, sessionId);
-  return sessionId;
-}
-
 // ── Tool operations ──────────────────────────────────────────────────────────
 
-async function listTools(apiKey: string): Promise<Array<{ name: string; description: string }>> {
-  const mcpUrl = process.env["FUTURE_MCP_URL"] || DEFAULT_MCP_URL;
+async function listRemoteTools(apiKey: string): Promise<Array<{ name: string; description: string }>> {
   const sessionId = await initializeSession(apiKey);
-  const { body } = await mcpPost(mcpUrl, "tools/list", {}, apiKey, sessionId, 2);
+  const { body } = await mcpPost(mcpUrl(), "tools/list", {}, apiKey, sessionId, 2);
 
   if (body.error) throw new Error(`tools/list failed: ${JSON.stringify(body.error)}`);
   const result = getRecord(body.result);
@@ -355,10 +238,9 @@ interface CallToolResponse {
   structuredContent: Record<string, unknown> | null;
 }
 
-async function callTool(apiKey: string, name: string, args: Record<string, unknown>): Promise<CallToolResponse> {
-  const mcpUrl = process.env["FUTURE_MCP_URL"] || DEFAULT_MCP_URL;
+async function callRemoteTool(apiKey: string, name: string, args: Record<string, unknown>): Promise<CallToolResponse> {
   const sessionId = await initializeSession(apiKey);
-  const { body } = await mcpPost(mcpUrl, "tools/call", {
+  const { body } = await mcpPost(mcpUrl(), "tools/call", {
     name,
     arguments: args,
   }, apiKey, sessionId, 2);
@@ -408,7 +290,7 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
 
   if (command === "list") {
     const jsonFlag = args.includes("--json");
-    const tools = await listTools(apiKey);
+    const tools = await listRemoteTools(apiKey);
     if (jsonFlag) {
       console.log(JSON.stringify(tools, null, 2));
     } else {
@@ -448,7 +330,7 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
       toolArgs = JSON.parse(args[argsIdx + 1]);
     }
 
-    const result = await callTool(apiKey, toolName, toolArgs);
+    const result = await callRemoteTool(apiKey, toolName, toolArgs);
     console.log(result.text);
 
     // Handle image output
