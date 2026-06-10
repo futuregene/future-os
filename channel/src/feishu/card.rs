@@ -183,6 +183,70 @@ pub fn help_card() -> Value {
     })
 }
 
+/// Build an approval card with Approve / Reject buttons.
+/// Uses CardKit actions so button clicks are delivered as card.action.trigger events.
+pub fn approval_card(
+    approval_request_id: &str,
+    tool_name: &str,
+    risk_level: &str,
+    title: &str,
+    summary: &str,
+    requested_action: &str,
+) -> Value {
+    let risk_emoji = match risk_level {
+        "high" => "🔴",
+        "medium" => "🟡",
+        _ => "⚪",
+    };
+    let body_text = format!(
+        "**{}** {}\n\n**Tool:** `{}`\n**Risk:** {}\n\n{}",
+        risk_emoji, title, tool_name, risk_level, summary
+    );
+    let mut elements: Vec<Value> = vec![
+        json!({"tag": "markdown", "content": body_text}),
+    ];
+    if !requested_action.is_empty() {
+        let preview = if requested_action.len() > 500 {
+            format!("{}\n..._(truncated)_", &requested_action[..500])
+        } else {
+            requested_action.to_string()
+        };
+        elements.push(json!({
+            "tag": "markdown",
+            "content": format!("```\n{}\n```", preview)
+        }));
+    }
+
+    json!({
+        "config": { "update_multi": false },
+        "header": {
+            "title": {"tag": "plain_text", "content": format!("{} Approval Required", risk_emoji)},
+            "template": "yellow"
+        },
+        "elements": elements,
+        "actions": [
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "✅ Approve"},
+                "type": "primary",
+                "value": {
+                    "action": "approve",
+                    "approval_request_id": approval_request_id
+                }
+            },
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "❌ Reject"},
+                "type": "danger",
+                "value": {
+                    "action": "reject",
+                    "approval_request_id": approval_request_id
+                }
+            }
+        ]
+    })
+}
+
 /// Build the card "content" field for sending as interactive message.
 pub fn card_content(card: &Value) -> String {
     serde_json::to_string(card).unwrap_or_else(|_| "{}".into())
@@ -202,7 +266,13 @@ pub fn to_cardkit_format(card: &Value) -> Value {
         ck.insert("header".to_string(), header.clone());
     }
     let elements = card.get("elements").cloned().unwrap_or_else(|| json!([]));
-    ck.insert("body".to_string(), json!({"elements": elements}));
+    let mut body = serde_json::Map::new();
+    body.insert("elements".to_string(), elements);
+    // Carry over actions (buttons) if present in card
+    if let Some(actions) = card.get("actions") {
+        body.insert("actions".to_string(), actions.clone());
+    }
+    ck.insert("body".to_string(), json!(body));
     // Carry over any card_link if present
     if let Some(link) = card.get("card_link") {
         ck.insert("card_link".to_string(), link.clone());

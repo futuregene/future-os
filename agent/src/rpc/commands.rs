@@ -84,14 +84,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         }
         "new_session" => {
             // Create a new session with shared agent_loop, preserving model/thinking
-            // Use TUI-provided cwd if available, otherwise home directory
+            // Use TUI-provided cwd if available, otherwise default workspace
             let session_cwd = if !cmd.cwd.is_empty() {
                 cmd.cwd.clone()
             } else {
-                dirs::home_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                    .to_string_lossy()
-                    .to_string()
+                super::session::default_workspace()
             };
             let active_id = state.get_active_session_id();
             let session = state.get_session(&active_id);
@@ -792,6 +789,23 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     "contextFiles": if agent_content.is_empty() { vec![] } else { vec!["CLAUDE.md".to_string()] },
                 }),
             )
+        }
+        "set_cwd" => {
+            let mut sess = session.write().unwrap();
+            sess.set_cwd(&cmd.cwd);
+            RpcResponse::ok(id, "set_cwd", serde_json::json!({"cwd": cmd.cwd}))
+        }
+        "set_permission_level" => {
+            let valid = ["all", "workspace", "none"];
+            if !valid.contains(&cmd.level.as_str()) {
+                return RpcResponse::build_fail(
+                    id,
+                    "set_permission_level",
+                    &format!("invalid level: {}. valid: all, workspace, none", cmd.level),
+                );
+            }
+            session.write().unwrap().set_permission_level(&cmd.level);
+            RpcResponse::ok(id, "set_permission_level", serde_json::json!({"permissionLevel": cmd.level}))
         }
         _ => RpcResponse::build_fail(id, cmd_type, &format!("unknown command: {}", cmd_type)),
     }

@@ -104,6 +104,7 @@ export interface RpcSessionState {
   // Welcome info
   version?: string;
   cwd?: string;
+  permissionLevel?: "all" | "workspace" | "none";
   skills?: string[];
   contextFiles?: string[];
   extensions?: string[];

@@ -224,6 +224,11 @@ impl Bridge {
             }
         };
 
+        // ─── Handle card action events (approval button clicks) ────────────
+        if event.event_type == "card.action.trigger" {
+            return self.handle_card_action(&event).await;
+        }
+
         // ─── Extract message content ───────────────────────────────────────
         let msg_type = event.msg_type.as_deref().unwrap_or("text");
         let content = event.content.as_deref().unwrap_or("");
@@ -669,6 +674,58 @@ impl Bridge {
         Ok(())
     }
 
+    /// Handle card action events (approval button clicks from interactive cards).
+    async fn handle_card_action(&self, event: &FeishuEvent) -> Result<()> {
+        let content = match &event.content {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+        let value: serde_json::Value = match serde_json::from_str(content) {
+            Ok(v) => v,
+            Err(_) => return Ok(()),
+        };
+        let action = value.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let approval_request_id = value.get("approval_request_id").and_then(|v| v.as_str()).unwrap_or("");
+
+        if approval_request_id.is_empty() {
+            return Ok(());
+        }
+
+        let approved = action == "approve";
+        let note = if approved { "approved via Feishu card" } else { "rejected via Feishu card" };
+
+        info!("[CARD_ACTION] action={} approval_request_id={}", action, approval_request_id);
+
+        // Get any active session to send the decision through.
+        // Card actions may arrive after the streaming session has changed,
+        // so we try the session associated with the chat.
+        let session_id = self.sessions.get(
+            event.chat_id.as_deref().unwrap_or(""),
+            None,
+        ).unwrap_or_default();
+
+        if !session_id.is_empty() {
+            let mut agent = self.agent.write().await;
+            match agent.approval_decision(&session_id, approval_request_id, approved, note).await {
+                Ok(()) => info!("[CARD_ACTION] decision sent successfully"),
+                Err(e) => warn!("[CARD_ACTION] failed to send decision: {}", e),
+            }
+        }
+
+        // Reply to the card message to acknowledge
+        if let Some(ref msg_id) = event.message_id {
+            let ack_text = if approved {
+                "✅ Approved. The tool will execute shortly."
+            } else {
+                "❌ Rejected. The tool call has been denied."
+            };
+            self.feishu.reply_message(msg_id, "text",
+                &serde_json::json!({"text": ack_text}).to_string()).await?;
+        }
+
+        Ok(())
+    }
+
     /// Resolve sender name from Feishu.
     pub async fn resolve_sender_name(&self, open_id: &str) -> Option<String> {
         if !self.feishu_cfg.behavior.resolve_sender_names {
@@ -919,6 +976,53 @@ async fn run_prompt_loop(
                 }
             }
             Some(AgentEvent::ToolDelta { .. }) => {}
+            Some(AgentEvent::ApprovalRequest { approval_request_id, tool_name, risk_level, title, summary, requested_action, .. }) => {
+                // Flush any pending text before sending approval card
+                if needs_flush {
+                    if let Some(ref cid) = cardkit_card_id {
+                        card_seq += 1;
+                        let _ = feishu.update_card_element(cid, streaming_element_id, &stream_text, card_seq).await;
+                        needs_flush = false;
+                        last_flush = Instant::now();
+                    }
+                }
+                // Finalize current streaming card
+                if let Some(ref cid) = cardkit_card_id {
+                    let _ = feishu.set_card_streaming_mode(cid, false, card_seq).await;
+                    let complete_card = card::complete_card("", &stream_text);
+                    let ck_complete = card::to_cardkit_format(&complete_card);
+                    card_seq += 1;
+                    let _ = feishu.update_cardkit_card(cid, &ck_complete, card_seq).await;
+                    cardkit_card_id = None;
+                }
+                // Send approval card with Approve/Reject buttons
+                let action_preview = if let serde_json::Value::String(s) = &requested_action {
+                    s.clone()
+                } else {
+                    serde_json::to_string_pretty(&requested_action).unwrap_or_default()
+                };
+                let approval = card::approval_card(
+                    &approval_request_id, &tool_name, &risk_level, &title, &summary, &action_preview,
+                );
+                let ck_card = card::to_cardkit_format(&approval);
+                match feishu.create_cardkit_card(&ck_card).await {
+                    Ok(cid) => {
+                        info!("[APPROVAL] card created cid={} request_id={}", cid, approval_request_id);
+                        card_seq += 1;
+                        let _ = feishu.reply_with_card_id(feishu_msg_id, &cid).await;
+                    }
+                    Err(e) => {
+                        warn!("[APPROVAL] create_cardkit_card failed: {}", e);
+                        // Fallback: text message
+                        let fallback = format!(
+                            "⚠️ Approval: {}\nTool: {}\nUse `/approve {}` or `/reject {}` in TUI",
+                            title, tool_name, approval_request_id, approval_request_id
+                        );
+                        feishu.reply_message(feishu_msg_id, "text",
+                            &serde_json::json!({"text": fallback}).to_string()).await?;
+                    }
+                }
+            }
             Some(AgentEvent::AgentEnd { error }) => {
                 check_superseded!();
                 // Flush any pending text before finalizing

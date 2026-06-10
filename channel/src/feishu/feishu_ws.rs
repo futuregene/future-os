@@ -275,9 +275,15 @@ impl FeishuWsClient {
 fn parse_feishu_event(data: &serde_json::Value) -> Option<FeishuEvent> {
     let header = data.get("header")?;
     let event = data.get("event")?;
-    let message = event.get("message")?;
 
     let event_type = header.get("event_type")?.as_str()?;
+
+    // Card action event (button click on approval card)
+    if event_type == "card.action.trigger" {
+        return parse_card_action_event(header, event);
+    }
+
+    let message = event.get("message")?;
 
     if event_type != "im.message.receive_v1" {
         return None;
@@ -470,6 +476,61 @@ pub fn is_bot_mentioned(content: &str, msg_type: &str, bot_open_id: &str) -> boo
         }
         _ => false,
     }
+}
+
+/// Parse a card.action.trigger event (button click on an interactive card).
+/// Returns a FeishuEvent with event_type="card.action.trigger" and the action
+/// value stored in the content field as JSON.
+fn parse_card_action_event(
+    header: &serde_json::Value,
+    event: &serde_json::Value,
+) -> Option<FeishuEvent> {
+    let action = event.get("action")?;
+    let action_value = action.get("value")?;
+
+    let message_id = event
+        .get("context")
+        .and_then(|c| c.get("open_message_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let chat_id = event
+        .get("context")
+        .and_then(|c| c.get("chat_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let sender_open_id = event
+        .get("operator")
+        .and_then(|o| o.get("open_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let tenant_key = header
+        .get("tenant_key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let app_id = header
+        .get("app_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    Some(FeishuEvent {
+        event_type: "card.action.trigger".to_string(),
+        message_id,
+        chat_id,
+        chat_type: None,
+        sender_open_id,
+        msg_type: Some("card_action".to_string()),
+        content: Some(action_value.to_string()),
+        root_id: None,
+        parent_id: None,
+        tenant_key,
+        app_id,
+        create_time_ms: None,
+        mentions: None,
+        raw: event.clone(),
+    })
 }
 
 /// Check if the bot is mentioned in the event-level mentions array (Feishu API v2).

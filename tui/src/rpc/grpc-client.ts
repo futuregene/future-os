@@ -489,6 +489,22 @@ export class GrpcClient {
     await this.call("set_auto_retry", { enabled });
   }
 
+  async setCwd(cwd: string): Promise<void> {
+    await this.call("set_cwd", { cwd });
+  }
+
+  async approvalDecision(requestId: string, approved: boolean, note?: string): Promise<void> {
+    await this.call("approval_decision", {
+      mode: approved ? "approved" : "rejected",
+      message: note || "",
+      entryId: requestId,
+    } as any);
+  }
+
+  async setPermissionLevel(level: "all" | "workspace" | "none"): Promise<void> {
+    await this.call("set_permission_level", { level } as any);
+  }
+
   async abortRetry(): Promise<void> {
     await this.call("abort_retry", {});
   }

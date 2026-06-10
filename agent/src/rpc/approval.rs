@@ -53,7 +53,7 @@ impl ApprovalGate {
         ));
 
         let decision =
-            tokio::task::block_in_place(|| rx.recv_timeout(Duration::from_secs(60 * 30)));
+            tokio::task::block_in_place(|| rx.recv_timeout(Duration::from_secs(30)));
         match decision {
             Ok(decision) if decision.approved => {
                 if let Some(path) = approved_argument_path(cwd, arguments) {
@@ -222,7 +222,7 @@ fn is_workspace_read_command(cwd: &str, command: &str) -> bool {
         let program = segment.split_whitespace().next().unwrap_or_default().trim();
         matches!(
             program,
-            "cat" | "find" | "grep" | "head" | "ls" | "pwd" | "rg" | "sed" | "tail" | "wc"
+            "cat" | "echo" | "find" | "future" | "future-cli" | "grep" | "head" | "ls" | "pwd" | "rg" | "sed" | "tail" | "wc"
         )
     })
 }

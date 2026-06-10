@@ -24,6 +24,16 @@ pub enum AgentEvent {
     ToolStart { tool_id: String, tool_name: String, tool_args: Option<String> },
     ToolDelta { tool_id: String, text: String },
     ToolEnd { tool_id: String, text: Option<String> },
+    ApprovalRequest {
+        approval_request_id: String,
+        tool_id: String,
+        tool_name: String,
+        kind: String,
+        risk_level: String,
+        title: String,
+        summary: String,
+        requested_action: serde_json::Value,
+    },
     Error(String),
     Ping,
 }
@@ -155,6 +165,23 @@ impl AgentClient {
         Ok(())
     }
 
+    /// Send approval decision back to the agent.
+    pub async fn approval_decision(
+        &mut self,
+        session_id: &str,
+        request_id: &str,
+        approved: bool,
+        note: &str,
+    ) -> Result<()> {
+        self.call("approval_decision", session_id, RpcCommand {
+            mode: if approved { "approved".to_string() } else { "rejected".to_string() },
+            message: note.to_string(),
+            entry_id: request_id.to_string(),
+            ..Default::default()
+        }).await?;
+        Ok(())
+    }
+
     /// Set thinking level.
     pub async fn set_thinking_level(&mut self, session_id: &str, level: &str) -> Result<()> {
         self.call("set_thinking_level", session_id, RpcCommand {
@@ -234,6 +261,19 @@ impl AgentClient {
                 Some(AgentEvent::ToolEnd {
                     tool_id: data["tool_id"].as_str().unwrap_or("").to_string(),
                     text: data["text"].as_str().map(|s| s.to_string()),
+                })
+            }
+            "approval_request" => {
+                let data = serde_json::from_str::<Value>(&event.data).ok()?;
+                Some(AgentEvent::ApprovalRequest {
+                    approval_request_id: data["approval_request_id"].as_str().unwrap_or("").to_string(),
+                    tool_id: data["tool_id"].as_str().unwrap_or("").to_string(),
+                    tool_name: data["tool_name"].as_str().unwrap_or("").to_string(),
+                    kind: data["kind"].as_str().unwrap_or("").to_string(),
+                    risk_level: data["risk_level"].as_str().unwrap_or("").to_string(),
+                    title: data["title"].as_str().unwrap_or("").to_string(),
+                    summary: data["summary"].as_str().unwrap_or("").to_string(),
+                    requested_action: data["requested_action"].clone(),
                 })
             }
             "error" => {

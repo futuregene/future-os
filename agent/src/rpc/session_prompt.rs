@@ -177,16 +177,24 @@ impl ServerSession {
                 let approval_broadcaster = broadcaster.clone();
                 let approval_session_id = session_id.clone();
                 let approval_cwd = session_cwd.clone();
+                let permission_level = self.permission_level.clone();
                 r#loop.config.before_tool_call =
                     Some(Arc::new(move |tool_name, tool_id, arguments| {
-                        approval_gate.request(
-                            &approval_broadcaster,
-                            &approval_session_id,
-                            &approval_cwd,
-                            tool_name,
-                            tool_id,
-                            arguments,
-                        )
+                        match permission_level.as_str() {
+                            "all" => None, // no restrictions
+                            "none" => Some(crate::types::ToolCallResult {
+                                result: format!("Tool call `{tool_name}` denied: permission level is set to 'none'."),
+                                is_error: true,
+                            }),
+                            _ => approval_gate.request(
+                                &approval_broadcaster,
+                                &approval_session_id,
+                                &approval_cwd,
+                                tool_name,
+                                tool_id,
+                                arguments,
+                            ),
+                        }
                     }));
                 let prepare_cwd = session_cwd.clone();
                 r#loop.config.prepare_tool_call = Some(Arc::new(move |tool_name, arguments| {
