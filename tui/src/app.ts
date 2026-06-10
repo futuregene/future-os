@@ -78,6 +78,8 @@ export class App extends Container {
 
   // Slash commands for autocomplete (with model/session arg flags)
   private readonly slashCommands: SlashCommand[] = [
+    { value: "/approve", label: "/approve", description: "approve pending tool execution" },
+    { value: "/reject", label: "/reject", description: "reject pending tool execution" },
     { value: "/model", label: "/model", description: "select model", takesModelArg: true },
     { value: "/sessions", label: "/sessions", description: "browse sessions" },
     { value: "/new", label: "/new", description: "new session" },
@@ -436,6 +438,30 @@ export class App extends Container {
         break;
       }
 
+      case "approval_request": {
+        const e = event as {
+          approval_request_id?: string;
+          tool_id?: string;
+          tool_name?: string;
+          kind?: string;
+          risk_level?: string;
+          title?: string;
+          summary?: string;
+          requested_action?: unknown;
+        };
+        this.showApprovalOverlay({
+          requestId: e.approval_request_id ?? "",
+          toolId: e.tool_id ?? "",
+          toolName: e.tool_name ?? "",
+          kind: e.kind ?? "",
+          riskLevel: e.risk_level ?? "",
+          title: e.title ?? "Approve tool execution",
+          summary: e.summary ?? "",
+          requestedAction: e.requested_action,
+        });
+        break;
+      }
+
       case "error": {
         this.state.streaming = false;
         const e = event as { error?: string; error_message?: string };
@@ -639,6 +665,61 @@ export class App extends Container {
     if (this.input.handleKey(key)) {
       this.requestRender();
     }
+  }
+
+  // ─── Approval Overlay ────────────────────────────────────────────
+
+  private pendingApproval: {
+    requestId: string;
+    toolName: string;
+    title: string;
+    summary: string;
+    riskLevel: string;
+    requestedAction?: unknown;
+  } | null = null;
+
+  private showApprovalOverlay(req: {
+    requestId: string;
+    toolId: string;
+    toolName: string;
+    kind: string;
+    riskLevel: string;
+    title: string;
+    summary: string;
+    requestedAction?: unknown;
+  }): void {
+    // Store pending approval
+    this.pendingApproval = {
+      requestId: req.requestId,
+      toolName: req.toolName,
+      title: req.title,
+      summary: req.summary,
+      riskLevel: req.riskLevel,
+      requestedAction: req.requestedAction,
+    };
+
+    // Show as a chat message with instructions
+    const actionPreview = req.requestedAction
+      ? (typeof req.requestedAction === "string"
+          ? req.requestedAction
+          : JSON.stringify(req.requestedAction, null, 2))
+      : "";
+    this.chat.addMessage({
+      id: crypto.randomUUID(),
+      role: "system",
+      content: [
+        `⚠️ **Approval Required** [${req.riskLevel.toUpperCase()} RISK]`,
+        `**${req.title}**`,
+        req.summary,
+        actionPreview ? `\`\`\`\n${actionPreview.slice(0, 500)}\n\`\`\`` : "",
+        "",
+        `Type **/approve ${req.requestId}** to allow or **/reject ${req.requestId}** to deny.`,
+      ].join("\n"),
+    });
+
+    // Auto-fill the input with the approve command
+    this.input.setValue(`/approve ${req.requestId}`);
+    this.requestRender();
   }
 
   // ─── Autocomplete ───────────────────────────────────────────────
@@ -1033,6 +1114,42 @@ export class App extends Container {
             id: crypto.randomUUID(),
             role: "system",
             content: `Failed to load models: ${err}`,
+          });
+        }
+        return;
+      }
+
+      if (cmd === "approve" && arg) {
+        try {
+          await this.client.approvalDecision(arg, true);
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: `Approved request: ${arg}`,
+          });
+        } catch (err) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: `Failed to approve: ${err}`,
+          });
+        }
+        return;
+      }
+
+      if (cmd === "reject" && arg) {
+        try {
+          await this.client.approvalDecision(arg, false, "rejected by user");
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: `Rejected request: ${arg}`,
+          });
+        } catch (err) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: `Failed to reject: ${err}`,
           });
         }
         return;

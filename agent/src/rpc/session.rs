@@ -39,6 +39,19 @@ pub struct ServerSession {
     /// Sender for interrupting the current stream (per-stream, set in prompt())
     pub interrupt_tx: Option<tokio::sync::mpsc::Sender<()>>,
     pub approval_gate: ApprovalGate,
+    /// Permission level for tool execution: "all" | "workspace" | "none"
+    pub permission_level: String,
+}
+
+/// Default workspace directory for new sessions.
+pub fn default_workspace() -> String {
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join(".future")
+        .join("agent")
+        .join("workspace")
+        .to_string_lossy()
+        .to_string()
 }
 
 impl ServerSession {
@@ -101,6 +114,7 @@ impl ServerSession {
             follow_up_tx: ftx,
             interrupt_tx: None,
             approval_gate,
+            permission_level: "all".to_string(),
         }
     }
 
@@ -150,6 +164,7 @@ impl ServerSession {
             follow_up_tx: ftx,
             interrupt_tx: None,
             approval_gate,
+            permission_level: "all".to_string(),
         }
     }
 
@@ -538,6 +553,18 @@ impl ServerSession {
 
     pub fn fork(&mut self, _entry_id: &str) -> Result<()> {
         Ok(())
+    }
+
+    pub fn set_cwd(&mut self, cwd: &str) {
+        self.cwd = cwd.to_string();
+    }
+
+    pub fn set_permission_level(&mut self, level: &str) {
+        self.permission_level = level.to_string();
+    }
+
+    pub fn get_permission_level(&self) -> &str {
+        &self.permission_level
     }
 
     pub fn get_last_assistant_text(&self) -> String {
