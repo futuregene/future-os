@@ -1,8 +1,10 @@
 ---
-name: future-os-document
+name: future-document
 description: Parse PDF and Word (.docx) documents into structured Markdown. Preserves document structure including headings, tables, lists, and mathematical formulas. Accepts base64-encoded document data. Returns full Markdown with page count metadata.
 allowed-tools: Bash(future:*)
 ---
+
+> **Authentication is automatic.** The `future` CLI reads your credentials from `~/.future/agent/auth.json`. You do NOT need to find, configure, or pass API keys — just call the tools below.
 
 # Document Parse
 

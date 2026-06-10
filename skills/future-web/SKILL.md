@@ -1,8 +1,10 @@
 ---
-name: future-os-web
+name: future-web
 description: Search the public web for current information. Returns page titles, URLs, and content snippets from search results. Pair with fetch_url to retrieve full page content. Use for fact-checking, news, documentation, and any information beyond your knowledge cutoff.
 allowed-tools: Bash(future:*)
 ---
+
+> **Authentication is automatic.** The `future` CLI reads your credentials from `~/.future/agent/auth.json`. You do NOT need to find, configure, or pass API keys — just call the tools below.
 
 # Web Search
 

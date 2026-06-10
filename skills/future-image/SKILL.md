@@ -1,8 +1,10 @@
 ---
-name: future-os-image
+name: future-image
 description: Generate images from text prompts, edit existing images using natural-language instructions, and analyze images (OCR, visual Q&A, object recognition). Image generation supports configurable size and quality. Editing accepts both source image and optional mask. Analysis returns structured text descriptions.
 allowed-tools: Bash(future:*)
 ---
+
+> **Authentication is automatic.** The `future` CLI reads your credentials from `~/.future/agent/auth.json`. You do NOT need to find, configure, or pass API keys — just call the tools below.
 
 # Image
 
