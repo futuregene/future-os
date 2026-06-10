@@ -39,12 +39,12 @@ future tools call read_image --args '{"image_b64": "<base64>", "question": "Extr
 ### image_gen
 Generate one or more images from a natural-language text prompt. Returns base64-encoded image data. Use `--output` to save to a file. Generation can take 2–20 minutes.
 
-Arguments: `{"prompt": "string (required)", "size": "string (default: \"1024x1024\")", "quality": "string (default: \"medium\")", "n": "int (1–10)", "output_format": "string (default: \"png\")"}`
+Arguments: `{"prompt": "string (required)", "size": "string (default: \"1024x1024\", options: 1024x1024, 1792x1024, 1024x1792, 2560x1440, 3840x2160)", "quality": "string (default: \"medium\", options: low, medium, high)", "n": "int (1–10, default: 1)", "output_format": "string (default: \"png\", options: png, jpeg)"}`
 
 ### image_edit
 Modify an existing image according to a text instruction. Provide the source image as base64 and describe the desired changes. An optional mask defines which regions to edit (transparent pixels are edited, opaque preserved).
 
-Arguments: `{"prompt": "string (required)", "image_b64": "string (required, base64-encoded source image)", "mask_b64": "string (optional, base64-encoded mask)", "size": "string (default: \"1024x1024\")", "quality": "string (default: \"medium\")"}`
+Arguments: `{"prompt": "string (required)", "image_b64": "string (required, base64-encoded source image)", "mask_b64": "string (optional, base64-encoded mask)", "size": "string (default: \"1024x1024\")", "quality": "string (default: \"medium\", options: low, medium, high)", "output_format": "string (default: \"png\", options: png, jpeg)"}`
 
 ### read_image
 Analyze an image and answer questions about its content. Supports OCR (text extraction), object recognition, scene description, and general visual Q&A.

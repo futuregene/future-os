@@ -24,8 +24,11 @@ Load this skill when the user asks to:
 All tools are called via the `future` CLI. You have access to the `bash` tool — use it to run these commands:
 
 ```bash
-# Search for papers on a topic
-future tools call search_paper --args '{"information_to_extract": "inheritance pattern and typical age of onset for Marfan syndrome"}'
+# Search for papers on a topic (multiple queries allowed, each returns results)
+future tools call search_paper --args '{"queries": ["inheritance pattern of Marfan syndrome", "typical age of onset Marfan syndrome"], "information_to_extract": "extract key findings"}'
+
+# Search with a single query
+future tools call search_paper --args '{"queries": ["BRCA1 variant classification guidelines 2025"]}'
 
 # Retrieve a specific paper by ID
 future tools call get_paper --args '{"paper_id": "PMID:12345678"}'
@@ -34,9 +37,9 @@ future tools call get_paper --args '{"paper_id": "PMID:12345678"}'
 ## Available tools
 
 ### search_paper
-Search academic databases for papers matching a query. Returns a list of papers with title, authors, abstract, publication date, and DOI.
+Search academic databases for papers matching one or more queries. Each query returns independent results. Returns a list of papers with title, authors, abstract, publication date, and DOI.
 
-Arguments: `{"information_to_extract": "string (required, natural-language description of what you want to find)"}`
+Arguments: `{"queries": ["string (required, one or more search queries)"], "information_to_extract": "string (optional, what to extract from results)", "max_results_per_query": "integer (optional, default: 10)", "domains": ["string (optional, filter by domain, fixed to [\"paper\"])"]}`
 
 ### get_paper
 Retrieve the full content of a paper by its identifier. Supports PMID, DOI, and other standard identifiers. Returns the paper body text.
