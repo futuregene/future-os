@@ -34,13 +34,12 @@ future tools call image_edit --args '{"prompt": "Convert to watercolor painting"
 # The image_b64 must be base64-encoded. DO NOT assign base64 to a shell variable
 # (it will exceed ARG_MAX for large images). Use one of these patterns:
 
-# RECIPE 1: Python in-process (works for ANY image size, always use this):
+# RECIPE 1: pipe base64 to future CLI (works for ANY image size):
 python3 -c "
-import json, base64, sys, subprocess
+import json, base64
 img_b64 = base64.b64encode(open('/path/to/image.png','rb').read()).decode()
-args = json.dumps({'image_b64': img_b64, 'question': 'Describe this image'})
-subprocess.run(['future','tools','call','read_image','--stdin'], input=args, text=True)
-"
+print(json.dumps({'image_b64': img_b64, 'question': 'Describe this image'}))
+" | future tools call read_image --stdin
 
 # RECIPE 2: For small images only (<500KB base64), inline --args works:
 future tools call read_image --args '{"image_b64": "<base64>", "question": "Extract all text from this image"}'
@@ -61,6 +60,8 @@ When `future tools call` fails, it prints a JSON error object. Parse it to under
 | `insufficient_credit` | Account balance too low | Tell user to top up |
 
 **Never run `future auth login` unprompted** — the error is almost always something else.
+
+**Output troubleshooting:** If `future tools call` produces no output, the command likely succeeded but output was lost in a subshell. Use the pipe form (Recipe 1) — it sends output directly to the terminal.
 
 ## Available tools
 
