@@ -451,7 +451,6 @@ impl ServerSession {
         let output = std::process::Command::new("bash")
             .args(["-c", command])
             .current_dir(&self.cwd)
-            .env("HOME", &self.cwd)
             .env("PWD", &self.cwd)
             .output()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
