@@ -45,3 +45,4 @@ gui/.vite/
 *.swo
 bin/
 /log
+# Python cache

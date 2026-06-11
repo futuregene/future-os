@@ -31,7 +31,10 @@ future tools call image_gen --args '{"prompt": "A red fox in an autumn forest", 
 future tools call image_edit --args '{"prompt": "Convert to watercolor painting", "image_b64": "<base64>"}' --output ./edited.png
 
 # Analyze an image (OCR, description, visual Q&A)
+# For small images, inline base64 works:
 future tools call read_image --args '{"image_b64": "<base64>", "question": "Extract all text from this image"}'
+# For large images (>500KB base64), use --stdin to avoid "argument list too long":
+future tools call read_image --stdin < ./args.json
 ```
 
 ## Available tools
@@ -48,5 +51,7 @@ Arguments: `{"prompt": "string (required)", "image_b64": "string (required, base
 
 ### read_image
 Analyze an image and answer questions about its content. Supports OCR (text extraction), object recognition, scene description, and general visual Q&A.
+
+**⚠️ Large images:** When the base64 string exceeds ~500KB, the shell will reject `--args` with "argument list too long". Use `--stdin` instead — write the JSON to a file and pipe it in.
 
 Arguments: `{"image_b64": "string (required, base64-encoded image)", "question": "string (required)", "mime_type": "string (default: \"image/png\")", "max_tokens": "integer (default: 2000)"}`
