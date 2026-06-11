@@ -331,7 +331,14 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     }
 
     const result = await callRemoteTool(apiKey, toolName, toolArgs);
-    console.log(result.text);
+
+    // Output structured content as JSON when available (primary data for agent consumption).
+    // Fall back to text content otherwise.
+    if (result.structuredContent && Object.keys(result.structuredContent).length > 0) {
+      console.log(JSON.stringify(result.structuredContent, null, 2));
+    } else {
+      console.log(result.text);
+    }
 
     // Handle image output
     if (outputPath) {
