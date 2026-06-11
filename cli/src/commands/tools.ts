@@ -106,7 +106,7 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     example: '{"gene": "FBN1", "consequence": "missense", "frequency_max": 0.01}',
   },
   get_paper: {
-    description: "Get paper content by paper identifier (PMID, DOI, etc.).",
+    description: "Get full paper content by identifier (PMID, DOI). Returns structured Paper object with metadata (title, authors, journal, year, DOI) and complete body_text.",
     args: {
       paper_id: "string (required)",
       max_k: "int",

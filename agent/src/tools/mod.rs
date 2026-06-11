@@ -100,7 +100,7 @@ fn bash_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<S
 pub fn bash_tool() -> AgentTool {
     make_tool(
         "bash",
-        "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 50000 bytes.",
+        "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 500000 bytes.",
         bash_schema(),
         bash_handler,
         vec!["Prefer one bash command per turn"],
@@ -387,11 +387,11 @@ async fn run_bash(command: &str, _timeout_secs: u64) -> Result<String> {
         format!("{}\n{}", stdout, stderr)
     };
 
-    // Truncate to last 50000 bytes, respecting UTF-8 char boundaries
-    let combined = if combined.len() > 50000 {
-        let start = combined.ceil_char_boundary(combined.len() - 50000);
+    // Truncate to last 500000 bytes, respecting UTF-8 char boundaries
+    let combined = if combined.len() > 500000 {
+        let start = combined.ceil_char_boundary(combined.len() - 500000);
         format!(
-            "...(truncated, showing last 50000 chars)\n{}",
+            "...(truncated, showing last 500000 chars)\n{}",
             &combined[start..]
         )
     } else {

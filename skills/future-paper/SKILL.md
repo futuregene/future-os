@@ -51,6 +51,12 @@ Arguments: `{"queries": ["string (required, one or more search queries)"], "info
   - `source`
 
 ### get_paper
-Retrieve the full content of a paper by its identifier. Supports PMID, DOI, and other standard identifiers. Returns the paper body text.
+Retrieve the full content of a paper by its identifier. Supports PMID, DOI, and other standard identifiers. Returns the complete paper body text with bibliographic metadata.
 
 Arguments: `{"paper_id": "string (required, e.g. PMID:12345678 or 10.1234/example)", "max_k": "int (optional, max chunks to return)"}`
+
+**Output** is in `structured_content.paper` — a single Paper object with full body text:
+- `paper_id`, `title`, `authors`, `journal`, `volume`, `pages`, `publication_date`, `year`
+- `doi`, `pubmed_id`, `pmc_id`, `arxiv_id`, `url`
+- `citation_count`, `impact_factor`, `ai_summary`, `source`
+- `body_text` — complete paper body text (may be long)
