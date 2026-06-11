@@ -372,7 +372,6 @@ async fn run_bash(command: &str, _timeout_secs: u64) -> Result<String> {
     let output = Command::new("bash")
         .args(["-c", command])
         .current_dir(&cwd)
-        .env("HOME", &cwd)
         .env("PWD", &cwd)
         .output()
         .await
