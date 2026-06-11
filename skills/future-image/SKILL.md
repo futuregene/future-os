@@ -31,10 +31,19 @@ future tools call image_gen --args '{"prompt": "A red fox in an autumn forest", 
 future tools call image_edit --args '{"prompt": "Convert to watercolor painting", "image_b64": "<base64>"}' --output ./edited.png
 
 # Analyze an image (OCR, description, visual Q&A)
-# For small images, inline base64 works:
+# The image_b64 must be base64-encoded. DO NOT assign base64 to a shell variable
+# (it will exceed ARG_MAX for large images). Use one of these patterns:
+
+# RECIPE 1: Python in-process (works for ANY image size, always use this):
+python3 -c "
+import json, base64, sys, subprocess
+img_b64 = base64.b64encode(open('/path/to/image.png','rb').read()).decode()
+args = json.dumps({'image_b64': img_b64, 'question': 'Describe this image'})
+subprocess.run(['future','tools','call','read_image','--stdin'], input=args, text=True)
+"
+
+# RECIPE 2: For small images only (<500KB base64), inline --args works:
 future tools call read_image --args '{"image_b64": "<base64>", "question": "Extract all text from this image"}'
-# For large images (>500KB base64), use --stdin to avoid "argument list too long":
-future tools call read_image --stdin < ./args.json
 ```
 
 ## Available tools
@@ -52,6 +61,6 @@ Arguments: `{"prompt": "string (required)", "image_b64": "string (required, base
 ### read_image
 Analyze an image and answer questions about its content. Supports OCR (text extraction), object recognition, scene description, and general visual Q&A.
 
-**⚠️ Large images:** When the base64 string exceeds ~500KB, the shell will reject `--args` with "argument list too long". Use `--stdin` instead — write the JSON to a file and pipe it in.
+**⚠️ Large images:** NEVER assign base64 to a shell variable or use `--args` — the shell argument limit (~256KB) will cause "argument list too long". Always use **Recipe 1** above (Python in-process + `--stdin`).
 
 Arguments: `{"image_b64": "string (required, base64-encoded image)", "question": "string (required)", "mime_type": "string (default: \"image/png\")", "max_tokens": "integer (default: 2000)"}`
