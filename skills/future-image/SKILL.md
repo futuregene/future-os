@@ -46,6 +46,22 @@ subprocess.run(['future','tools','call','read_image','--stdin'], input=args, tex
 future tools call read_image --args '{"image_b64": "<base64>", "question": "Extract all text from this image"}'
 ```
 
+## Error handling
+
+**Authentication is automatic.** The `future` CLI reads credentials from `~/.future/agent/auth.json`. You do NOT need to run `future auth login` — if you see an error, read the actual error message first.
+
+When `future tools call` fails, it prints a JSON error object. Parse it to understand the cause:
+
+| Error pattern | Meaning | Action |
+|---|---|---|
+| `unauthorized` / `401` | Auth token missing or expired | Tell user: "Auth token may be expired, run `future auth login`" |
+| `403` / `model_access_denied` | Model access denied (API key issue on server side) | Tell user the model returned 403, don't try to re-login |
+| `upstream_request_failed` | RareMCP or upstream service unreachable | Retry once, then report to user |
+| `argument list too long` | Shell ARG_MAX exceeded | Switch to Recipe 1 (Python in-process) |
+| `insufficient_credit` | Account balance too low | Tell user to top up |
+
+**Never run `future auth login` unprompted** — the error is almost always something else.
+
 ## Available tools
 
 ### image_gen
