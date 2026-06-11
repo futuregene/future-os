@@ -285,6 +285,34 @@ export function isToolsCommand(command: string): command is ToolsCommand {
   return command === "list" || command === "call";
 }
 
+// ── Path-to-base64 resolution ──────────────────────────────────────────────
+
+/** Resolve image_path / doc_path fields to base64 before sending to API.
+ *  This allows users to pass file paths instead of giant base64 strings. */
+async function resolveLocalPaths(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const resolved = { ...args };
+
+  // read_image / image_edit: support image_path and mask_path
+  for (const key of ["image_path", "doc_path", "mask_path"]) {
+    const val = resolved[key];
+    if (typeof val !== "string") continue;
+    try {
+      const buf = await readFile(val);
+      const b64Key = key === "image_path" ? "image_b64"
+        : key === "mask_path" ? "mask_b64"
+        : "doc_b64";
+      resolved[b64Key] = buf.toString("base64");
+      // Keep the original path so API knows the filename too
+    } catch {
+      // File not found — leave as-is, let API report the error
+    }
+  }
+
+  return resolved;
+}
+
+// ── Public command entry ────────────────────────────────────────────────────
+
 export async function tools(command: ToolsCommand, args: string[]): Promise<void> {
   const apiKey = await loadApiKey();
 
@@ -329,6 +357,9 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     } else if (argsIdx !== -1 && argsIdx + 1 < args.length) {
       toolArgs = JSON.parse(args[argsIdx + 1]);
     }
+
+    // Resolve image_path / doc_path → base64 before sending to API
+    toolArgs = await resolveLocalPaths(toolArgs);
 
     const result = await callRemoteTool(apiKey, toolName, toolArgs);
 

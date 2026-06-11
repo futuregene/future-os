@@ -27,23 +27,14 @@ All tools are called via the `future` CLI using the `bash` tool. Use `--output` 
 # Generate an image from a text prompt
 future tools call image_gen --args '{"prompt": "A red fox in an autumn forest", "size": "1024x1024"}' --output ./output.png
 
-# Edit an existing image
-future tools call image_edit --args '{"prompt": "Convert to watercolor painting", "image_b64": "<base64>"}' --output ./edited.png
+# Edit an existing image (use image_path, not base64!)
+future tools call image_edit --args '{"prompt": "Convert to watercolor painting", "image_path": "/path/to/photo.png"}' --output ./edited.png
 
-# Analyze an image (OCR, description, visual Q&A)
-# The image_b64 must be base64-encoded. DO NOT assign base64 to a shell variable
-# (it will exceed ARG_MAX for large images). Use one of these patterns:
-
-# RECIPE 1: pipe base64 to future CLI (works for ANY image size):
-python3 -c "
-import json, base64
-img_b64 = base64.b64encode(open('/path/to/image.png','rb').read()).decode()
-print(json.dumps({'image_b64': img_b64, 'question': 'Describe this image'}))
-" | future tools call read_image --stdin
-
-# RECIPE 2: For small images only (<500KB base64), inline --args works:
-future tools call read_image --args '{"image_b64": "<base64>", "question": "Extract all text from this image"}'
+# Analyze an image — use image_path, the CLI handles base64 automatically:
+future tools call read_image --args '{"image_path": "/Users/fgbot/gundam.png", "question": "Describe this image"}'
 ```
+
+**Always use `image_path` instead of `image_b64`.** The CLI reads the file and encodes it automatically — no Python, no base64, no pipe, no size limits.
 
 ## Error handling
 
@@ -56,12 +47,9 @@ When `future tools call` fails, it prints a JSON error object. Parse it to under
 | `unauthorized` / `401` | Auth token missing or expired | Tell user: "Auth token may be expired, run `future auth login`" |
 | `403` / `model_access_denied` | Model access denied (API key issue on server side) | Tell user the model returned 403, don't try to re-login |
 | `upstream_request_failed` | RareMCP or upstream service unreachable | Retry once, then report to user |
-| `argument list too long` | Shell ARG_MAX exceeded | Switch to Recipe 1 (Python in-process) |
 | `insufficient_credit` | Account balance too low | Tell user to top up |
 
 **Never run `future auth login` unprompted** — the error is almost always something else.
-
-**Output troubleshooting:** If `future tools call` produces no output, the command likely succeeded but output was lost in a subshell. Use the pipe form (Recipe 1) — it sends output directly to the terminal.
 
 ## Available tools
 
@@ -71,13 +59,11 @@ Generate one or more images from a natural-language text prompt. Returns base64-
 Arguments: `{"prompt": "string (required)", "size": "string (default: \"1024x1024\", options: 1024x1024, 1792x1024, 1024x1792, 2560x1440, 3840x2160)", "quality": "string (default: \"medium\", options: low, medium, high)", "n": "int (1–10, default: 1)", "output_format": "string (default: \"png\", options: png, jpeg)"}`
 
 ### image_edit
-Modify an existing image according to a text instruction. Provide the source image as base64 and describe the desired changes. An optional mask defines which regions to edit (transparent pixels are edited, opaque preserved).
+Modify an existing image according to a text instruction. Use `image_path` to point to the source image — the CLI handles base64 encoding.
 
-Arguments: `{"prompt": "string (required)", "image_b64": "string (required, base64-encoded source image)", "mask_b64": "string (optional, base64-encoded mask)", "size": "string (default: \"1024x1024\")", "quality": "string (default: \"medium\", options: low, medium, high)", "output_format": "string (default: \"png\", options: png, jpeg)"}`
+Arguments: `{"prompt": "string (required)", "image_path": "string (path to source image)", "mask_path": "string (optional, path to mask image)", "size": "string (default: \"1024x1024\")", "quality": "string (default: \"medium\", options: low, medium, high)", "output_format": "string (default: \"png\", options: png, jpeg)"}`
 
 ### read_image
-Analyze an image and answer questions about its content. Supports OCR (text extraction), object recognition, scene description, and general visual Q&A.
+Analyze an image and answer questions about its content. Use `image_path` to point to the file — the CLI handles base64 encoding automatically.
 
-**⚠️ Large images:** NEVER assign base64 to a shell variable or use `--args` — the shell argument limit (~256KB) will cause "argument list too long". Always use **Recipe 1** above (Python in-process + `--stdin`).
-
-Arguments: `{"image_b64": "string (required, base64-encoded image)", "question": "string (required)", "mime_type": "string (default: \"image/png\")", "max_tokens": "integer (default: 2000)"}`
+Arguments: `{"image_path": "string (path to image file)", "question": "string (required)", "mime_type": "string (default: \"image/png\")", "max_tokens": "integer (default: 2000)"}`
