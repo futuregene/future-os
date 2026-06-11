@@ -36,6 +36,10 @@ export function mcpPost(
   const urlObj = new URL(url);
 
   return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      req.destroy(new Error(`MCP request timed out after 60s`));
+    }, 60_000);
+
     const req = httpRequest(
       {
         hostname: urlObj.hostname,
@@ -52,6 +56,15 @@ export function mcpPost(
         agent: false,
       },
       (res) => {
+        clearTimeout(timeout);
+        if (res.statusCode && res.statusCode >= 400) {
+          let body = "";
+          res.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+          res.on("end", () => reject(new Error(
+            `MCP request failed: HTTP ${res.statusCode}${body ? " — " + body.slice(0, 200) : ""}`
+          )));
+          return;
+        }
         const sid = res.headers["mcp-session-id"] as string | undefined;
         let data = "";
         res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
@@ -74,7 +87,7 @@ export function mcpPost(
         });
       },
     );
-    req.on("error", reject);
+    req.on("error", (err) => { clearTimeout(timeout); reject(err); });
     req.write(payload);
     req.end();
   });
