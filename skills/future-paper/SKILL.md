@@ -41,12 +41,14 @@ Search academic databases for papers matching one or more queries. Each query re
 
 Arguments: `{"queries": ["string (required, one or more search queries)"], "information_to_extract": "string (optional, what to extract from results, default: 'Extract key concepts and relevant information')", "max_results_per_query": "integer (optional, 1-20, default: 10)"}`
 
-**Output** is in `structured_content.papers[]` — each Paper has:
-- `paper_id`, `title`, `ai_summary`
-- `authors`, `journal`, `volume`, `pages`, `publication_date`, `year`
-- `doi`, `pubmed_id`, `pmc_id`, `arxiv_id`, `url`
-- `citation_count`, `impact_factor`
-- `source`, `query`
+**Output** is in `structured_content.results[]` — each result is grouped by query and contains:
+- `query` — the search query
+- `papers[]` — array of Paper objects, each with:
+  - `paper_id`, `title`, `ai_summary`
+  - `authors`, `journal`, `volume`, `pages`, `publication_date`, `year`
+  - `doi`, `pubmed_id`, `pmc_id`, `arxiv_id`, `url`
+  - `citation_count`, `impact_factor`
+  - `source`
 
 ### get_paper
 Retrieve the full content of a paper by its identifier. Supports PMID, DOI, and other standard identifiers. Returns the paper body text.
