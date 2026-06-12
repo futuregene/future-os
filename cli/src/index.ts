@@ -5,6 +5,7 @@ import { channel, isChannelCommand } from "./commands/channel.js";
 import { login, logout, status } from "./commands/auth.js";
 import { tui } from "./commands/tui.js";
 import { tools, isToolsCommand } from "./commands/tools.js";
+import { skills, isSkillsCommand } from "./commands/skills.js";
 import { printHelp } from "./help.js";
 
 async function main(): Promise<void> {
@@ -43,6 +44,11 @@ async function main(): Promise<void> {
 
   if (group === "tools" && isToolsCommand(command)) {
     await tools(command, args.slice(2));
+    return;
+  }
+
+  if (group === "skills" && isSkillsCommand(command)) {
+    await skills(command, args.slice(2));
     return;
   }
 
