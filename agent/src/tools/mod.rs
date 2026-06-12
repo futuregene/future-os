@@ -1,6 +1,7 @@
 //! Tools — 1:1 compatible with Go internal/tools/
 
 use anyhow::{anyhow, Result};
+use dirs::home_dir;
 use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
@@ -416,6 +417,8 @@ async fn run_read(path: &str, offset: Option<usize>, limit: Option<usize>) -> Re
 
 async fn run_write(path: &str, content: &str) -> Result<PathBuf> {
     let path = workspace_path(path)?;
+    let cwd = active_workspace()?;
+    ensure_workspace_access(&cwd, &path)?;
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await.ok();
     }
@@ -430,6 +433,8 @@ async fn run_edit(
     edits: Option<&[EditOp]>,
 ) -> Result<()> {
     let path = workspace_path(path)?;
+    let cwd = active_workspace()?;
+    ensure_workspace_access(&cwd, &path)?;
     let current = tokio::fs::read_to_string(&path).await?;
 
     let final_content = if let Some(edits) = edits {
@@ -544,10 +549,11 @@ async fn run_ls(path: Option<&str>, limit: usize) -> Result<String> {
 
 fn workspace_path(path: &str) -> Result<PathBuf> {
     let cwd = active_workspace()?;
-    let path = path
-        .strip_prefix("~/")
-        .map(|relative| cwd.join(relative))
-        .unwrap_or_else(|| PathBuf::from(path));
+    let path = if let Some(relative) = path.strip_prefix("~/") {
+        home_dir().unwrap_or_default().join(relative)
+    } else {
+        PathBuf::from(path)
+    };
     let raw_path = path.as_path();
     let absolute_path = if raw_path.is_absolute() {
         raw_path.to_path_buf()
@@ -555,7 +561,6 @@ fn workspace_path(path: &str) -> Result<PathBuf> {
         cwd.join(raw_path)
     };
     let normalized_path = normalize_path(&absolute_path);
-    ensure_workspace_access(&cwd, &normalized_path)?;
     Ok(normalized_path)
 }
 
