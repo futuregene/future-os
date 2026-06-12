@@ -34,6 +34,7 @@ pub struct AppState {
     pub broadcaster: Arc<SseBroadcaster>,
     pub event_bus: Arc<EventBus>,
     pub approval_gate: ApprovalGate,
+    pub verbose: bool,
 }
 
 impl AppState {

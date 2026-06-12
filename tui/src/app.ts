@@ -1289,7 +1289,7 @@ export class App extends Container {
       this.state.sessionName = s.sessionName ?? "";
       this.state.cwd = s.cwd ?? "";
       this.state.version = s.version ?? "";
-      this.state.skills = s.skills ?? [];
+      this.state.skills = (s.skills ?? []).slice().sort((a, b) => a.localeCompare(b));
       this.state.contextFiles = s.contextFiles ?? [];
       this.state.extensions = s.extensions ?? [];
       this.state.contextTokens = s.contextTokens ?? 0;

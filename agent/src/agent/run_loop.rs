@@ -61,6 +61,15 @@ impl Loop {
         let mut last_stop_reason = String::new();
         let mut retry_attempt = 0;
 
+        if self.verbose {
+            eprintln!(
+                "[agent] starting run model={} msgs={} tools={}",
+                self.model,
+                messages.len(),
+                tool_defs.len()
+            );
+        }
+
         let mut turn: usize = 0;
         loop {
             // Check max turn limit (0 = unlimited)
@@ -144,6 +153,20 @@ impl Loop {
             // Convert to LLM format
             let llm_messages: Vec<Message> = ConvertToLLM(&work_messages);
 
+            if self.verbose {
+                eprintln!(
+                    "[agent] turn={} calling LLM model={} msgs={} tools={} sys_prompt_len={} msg_chars={}",
+                    turn,
+                    self.model,
+                    llm_messages.len(),
+                    tool_defs.len(),
+                    self.system_prompt.len(),
+                    llm_messages.iter().map(|m| {
+                        m.content.as_ref().map(|c| c.to_string().len()).unwrap_or(0)
+                    }).sum::<usize>()
+                );
+            }
+
             // Stream chat
             let stream_result = self
                 .provider
@@ -180,7 +203,9 @@ impl Loop {
                     if let Some(ref bus) = self.event_bus {
                         bus.emit(agent_end("error", None));
                     }
-                    return Err(last_error.unwrap().context("turn 0"));
+                    let err = last_error.unwrap();
+                    eprintln!("[agent] LLM call failed: {}", err);
+                    return Err(err.context("turn 0"));
                 }
             };
 
@@ -507,10 +532,25 @@ impl Loop {
                         &last_stop_reason,
                     ));
                 }
+                if self.verbose {
+                    eprintln!(
+                        "[agent] complete turns={} output_len={}",
+                        turn + 1,
+                        assistant_text.len()
+                    );
+                }
                 return Ok((assistant_text, messages));
             }
 
             // Execute tools
+            if self.verbose {
+                eprintln!(
+                    "[agent] turn={} executing {} tools: {}",
+                    turn,
+                    tool_calls.len(),
+                    tool_calls.iter().map(|t| t.function.name.as_str()).collect::<Vec<_>>().join(", ")
+                );
+            }
             self.execute_tools(turn, &tool_calls, &mut messages).await;
 
             if let Some(ref bus) = self.event_bus {

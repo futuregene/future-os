@@ -16,6 +16,10 @@ struct Cli {
     /// gRPC server address (host:port, e.g., 127.0.0.1:50051)
     #[arg(long, default_value = "127.0.0.1:50051")]
     grpc_addr: String,
+
+    /// Enable verbose logging (show gRPC requests, LLM calls, tool execution)
+    #[arg(long, default_value_t = false)]
+    verbose: bool,
 }
 
 #[tokio::main]
@@ -243,6 +247,7 @@ async fn main() -> Result<()> {
         agent_content,
         ..Default::default()
     });
+    engine.agent_loop.verbose = cli.verbose;
     engine.agent_loop.system_prompt = system_prompt.clone();
     engine.agent_loop.config.system_prompt = system_prompt;
 
@@ -285,6 +290,7 @@ async fn main() -> Result<()> {
         broadcaster: broadcaster.clone(),
         event_bus: event_bus.clone(),
         approval_gate,
+        verbose: cli.verbose,
     };
 
     future_agent::grpc::serve(app_state, grpc_host, grpc_port).await?;
