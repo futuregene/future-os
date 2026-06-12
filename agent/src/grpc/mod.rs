@@ -55,6 +55,16 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
     ) -> Result<tonic::Response<proto::RpcResponse>, tonic::Status> {
         let cmd = request.into_inner();
 
+        // Log requests in verbose mode
+        if self.state.verbose {
+            eprintln!(
+                "[grpc] {} session={} msg={:.80}",
+                cmd.r#type,
+                if cmd.session_id.is_empty() { "-" } else { &cmd.session_id },
+                if cmd.message.is_empty() { "-" } else { &cmd.message }
+            );
+        }
+
         // Convert proto command to internal command
         let internal_images: Vec<crate::types::ImageContent> = cmd
             .images

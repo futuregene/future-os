@@ -303,6 +303,8 @@ export class GrpcClient {
     call.on("error", (_err: Error) => {
       if (this.streamCall === call) {
         this.streamCall = null;
+        // Reconnect after delay
+        setTimeout(() => this.connectEvents(), 2000);
       }
     });
 
