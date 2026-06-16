@@ -50,26 +50,81 @@ impl AppState {
             }
         }
         // Session not found in map — if it matches the default session's own
-        // ID, return it silently. Otherwise warn and fall back to default.
+        // ID, return it silently.
         let default_id = self.session.read().unwrap().session_id.clone();
         if session_id == default_id {
             return self.session.clone();
         }
+
+        // Try loading from disk under a write lock to prevent races:
+        // two concurrent callers (e.g. StreamEvents + prompt) could
+        // both miss the map lookup and create duplicate Session objects
+        // with different broadcasters, breaking event delivery.
+        {
+            let mut sessions = self.sessions.write().unwrap();
+            // Double-check: another caller may have loaded it while we waited
+            if let Some(sess) = sessions.get(session_id) {
+                return sess.clone();
+            }
+
+            let (agent_loop, session_manager, event_bus, cwd, approval_gate) = {
+                let sess = self.session.read().unwrap();
+                if !sess.session_manager.find(session_id).is_some() {
+                    return self.session.clone(); // not on disk either
+                }
+                (
+                    sess.agent_loop.clone(),
+                    sess.session_manager.clone(),
+                    sess.event_bus.clone(),
+                    sess.cwd.clone(),
+                    sess.approval_gate.clone(),
+                )
+            };
+
+            let broadcaster = Arc::new(SseBroadcaster::new());
+            let mut new_sess = ServerSession::new_with_shared_loop(
+                session_id.to_string(),
+                agent_loop,
+                session_manager.clone(),
+                &cwd,
+                event_bus,
+                broadcaster,
+                approval_gate,
+            );
+            if new_sess.switch_session(session_id).is_ok() {
+                // If the session file had no model saved, copy from default
+                if new_sess.model.is_empty() {
+                    let default_model = self.session.read().unwrap().model.clone();
+                    if !default_model.is_empty() {
+                        new_sess.model = default_model;
+                    }
+                }
+                let sess_arc = Arc::new(RwLock::new(new_sess));
+                sessions.insert(session_id.to_string(), sess_arc.clone());
+                return sess_arc;
+            }
+        }
+
         self.session.clone()
     }
 
     pub fn find_session(&self, session_id: &str) -> Option<Arc<RwLock<ServerSession>>> {
+        let sess = self.get_session(session_id);
+        // get_session already handles empty, map lookup, default match,
+        // and disk fallback. If it returned the default session as a
+        // fallback, check whether we actually wanted the default or if
+        // the requested session truly doesn't exist.
         if session_id.is_empty() {
-            return Some(self.session.clone());
+            return Some(sess);
         }
-        if let Some(sess) = self.sessions.read().unwrap().get(session_id) {
-            return Some(sess.clone());
+        let found_id = sess.read().unwrap().session_id.clone();
+        if found_id == session_id || session_id == self.session.read().unwrap().session_id.clone() {
+            Some(sess)
+        } else {
+            // get_session fell back to default but the requested session
+            // doesn't match the default — session not found.
+            None
         }
-        let default_id = self.session.read().unwrap().session_id.clone();
-        if session_id == default_id {
-            return Some(self.session.clone());
-        }
-        None
     }
 
     /// Create a new session and return its ID.

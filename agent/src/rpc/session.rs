@@ -528,6 +528,10 @@ impl ServerSession {
                 if let Some(v) = info.get("auto_compaction").and_then(|v| v.as_bool()) {
                     self.auto_compaction = v;
                 }
+                // Restore cwd from session_info (previously lost after agent restart)
+                if let Some(saved_cwd) = info.get("cwd").and_then(|v| v.as_str()) {
+                    self.cwd = saved_cwd.to_string();
+                }
                 use std::sync::atomic::Ordering;
                 let restore_i64 = |key: &str, target: &std::sync::atomic::AtomicI64| {
                     if let Some(v) = info.get(key).and_then(|v| v.as_i64()) {
