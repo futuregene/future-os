@@ -257,23 +257,47 @@ export class GrpcClient {
 
   // ─── Event Streaming ─────────────────────────────────────────────────
 
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
   connectEvents(): void {
-    // Cancel existing stream so the new one carries the up-to-date
-    // session_id (important after newSession / switchSession / fork).
+    // Cancel existing stream and timer
     if (this.streamCall) {
       this.streamCall.cancel();
       this.streamCall = null;
     }
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
 
-    const call = this.client.StreamEvents({
-      sessionId: this.currentSessionId,
-    });
+    const scheduleReconnect = () => {
+      if (!this.reconnectTimer) {
+        this.connected = false;
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;
+          this.connectEvents();
+        }, 2000);
+      }
+    };
+
+    let call;
+    try {
+      call = this.client.StreamEvents({
+        sessionId: this.currentSessionId,
+      });
+    } catch (_err) {
+      // StreamEvents() threw synchronously (channel dead)
+      scheduleReconnect();
+      return;
+    }
     this.streamCall = call;
 
     call.on("data", (response: any) => {
+      if (!this.connected) {
+        this.connected = true;
+      }
       try {
         const rawData = typeof response.data === "string" ? JSON.parse(response.data) : response.data;
-        // Don't let data.type override the top-level response.type
         const { type: _dataType, ...rest } = rawData || {};
         const event: AgentEvent = {
           type: response.type || "message",
@@ -295,21 +319,21 @@ export class GrpcClient {
     call.on("end", () => {
       if (this.streamCall === call) {
         this.streamCall = null;
-        // Reconnect after delay
-        setTimeout(() => this.connectEvents(), 2000);
+        scheduleReconnect();
       }
     });
 
     call.on("error", (_err: Error) => {
       if (this.streamCall === call) {
         this.streamCall = null;
-        // Reconnect after delay
-        setTimeout(() => this.connectEvents(), 2000);
+        scheduleReconnect();
       }
     });
-
-    this.connected = true;
+    // Note: connected is set to true only when first stream data arrives
+    // (see "data" handler above), not here. The StreamEvents call creates
+    // the stream but the gRPC channel may not be ready for unary RPCs yet.
   }
+
 
   isConnected(): boolean {
     return this.connected;
@@ -326,12 +350,27 @@ export class GrpcClient {
   disconnect(): void {
     this.streamCall?.cancel();
     this.streamCall = null;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.connected = false;
   }
 
   // ─── RPC Call Helper ─────────────────────────────────────────────────
 
-  private async call(type: string, cmd: Partial<RpcCommand>): Promise<unknown> {
-    return new Promise((resolve, reject) => {
+  private async call(type: string, cmd: Partial<RpcCommand>, retry = true): Promise<unknown> {
+    // Wait for connection if not yet connected (first call or reconnecting)
+    if (!this.connected && !this.reconnectTimer) {
+      this.connectEvents();
+    }
+    // Brief wait for connection to establish
+    const start = Date.now();
+    while (!this.connected && Date.now() - start < 5000) {
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    const doCall = (): Promise<unknown> => new Promise((resolve, reject) => {
       const request = {
         id: String(Date.now()),
         type,
@@ -361,6 +400,23 @@ export class GrpcClient {
         }
       });
     });
+
+    try {
+      return await doCall();
+    } catch (err: any) {
+      // On transport error, trigger reconnect so stream comes back.
+      // Don't retry the call itself — for non-idempotent commands like
+      // 'prompt', the request may have already reached the agent and
+      // we'd create a duplicate. The stream will deliver events either way.
+      const msg = err?.message || String(err);
+      const isTransport = msg.includes("transport") || msg.includes("14 UNAVAILABLE")
+        || msg.includes("Connect Failed") || msg.includes("ECONNREFUSED");
+      if (isTransport) {
+        this.connected = false;
+        this.connectEvents();
+      }
+      throw err;
+    }
   }
 
   // ─── Session Management RPC Methods ──────────────────────────────────

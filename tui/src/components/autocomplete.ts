@@ -43,6 +43,8 @@ export class AutocompleteManager {
   private pendingQuery: (() => void) | null = null;
   private lastText = "";
   private lastCursorPos = 0;
+  /** The latest matched context (for token-aware completion). */
+  activeContext: AutocompleteContext | null = null;
 
   /** Callback when items are ready (or empty to hide). */
   onItems?: (items: AutocompleteItem[]) => void;
@@ -104,6 +106,7 @@ export class AutocompleteManager {
         const items = await provider.getCompletions(ctx, signal);
         if (signal.aborted) return;
         if (items.length > 0) {
+          this.activeContext = ctx;
           this.onItems?.(items);
           return;
         }
@@ -113,6 +116,7 @@ export class AutocompleteManager {
     }
 
     // No provider matched or returned items
+    this.activeContext = null;
     if (!signal.aborted) {
       this.onItems?.([]);
     }

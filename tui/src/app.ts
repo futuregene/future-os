@@ -78,6 +78,7 @@ export class App extends Container {
 
   // Slash commands for autocomplete (with model/session arg flags)
   private readonly slashCommands: SlashCommand[] = [
+    { value: "/cwd", label: "/cwd", description: "change working directory" },
     { value: "/approve", label: "/approve", description: "approve pending tool execution" },
     { value: "/reject", label: "/reject", description: "reject pending tool execution" },
     { value: "/model", label: "/model", description: "select model", takesModelArg: true },
@@ -237,6 +238,10 @@ export class App extends Container {
 
     // Subscribe to SSE events
     this.client.subscribe((event) => {
+      // If we were showing "not connected", refresh state on first event
+      if (this.state.model === "(not connected)") {
+        this.refresh().catch(() => {});
+      }
       this.handleAgentEvent(event);
     });
   }
@@ -619,10 +624,18 @@ export class App extends Container {
       if (key === "enter") {
         const item = this.autocomplete.getSelectedItem();
         if (item) {
-          this.input.setValue(item.value);
+          const ctx = this.acManager.activeContext;
+          if (ctx?.token) {
+            // File path completion: replace only the token portion,
+            // preserving the prefix (e.g. "/cwd " stays intact)
+            const before = ctx.text.slice(0, ctx.tokenStart);
+            const after = ctx.text.slice(ctx.tokenStart + ctx.token.length);
+            this.input.setValue(before + item.value + after);
+          } else {
+            this.input.setValue(item.value);
+          }
           this.autocomplete.hide();
           this.requestRender();
-          this.handleSubmit(item.value);
         }
         return;
       }
@@ -1119,6 +1132,33 @@ export class App extends Container {
         return;
       }
 
+      if (cmd === "cwd" && arg) {
+        try {
+          let resolved = arg;
+          if (resolved === "~") {
+            resolved = os.homedir();
+          } else if (resolved.startsWith("~/")) {
+            resolved = path.join(os.homedir(), resolved.slice(2));
+          } else if (!path.isAbsolute(resolved)) {
+            resolved = path.resolve(this.state.cwd ?? os.homedir(), resolved);
+          }
+          await this.client.setCwd(resolved);
+          this.state.cwd = resolved;
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: `Working directory: ${resolved}`,
+          });
+        } catch (err) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: `Failed to change directory: ${err}`,
+          });
+        }
+        return;
+      }
+
       if (cmd === "approve" && arg) {
         try {
           await this.client.approvalDecision(arg, true);
@@ -1179,13 +1219,19 @@ export class App extends Container {
 
     try {
       await this.client.prompt(value);
-    } catch (_err) {
+    } catch (err: any) {
       this.state.streaming = false;
-      this.chat.addMessage({
-        id: crypto.randomUUID(),
-        role: "system",
-        content: "Not connected to agent. Start the agent or check the gRPC connection.",
-      });
+      const msg = err?.message || String(err);
+      // Transport errors: prompt may have reached the agent anyway.
+      // Stream events will arrive once the connection recovers.
+      if (!msg.includes("transport") && !msg.includes("14 UNAVAILABLE")
+          && !msg.includes("Connect Failed") && !msg.includes("ECONNREFUSED")) {
+        this.chat.addMessage({
+          id: crypto.randomUUID(),
+          role: "system",
+          content: "Not connected to agent. Start the agent or check the gRPC connection.",
+        });
+      }
     }
     this.requestRender();
   }
@@ -1309,7 +1355,11 @@ export class App extends Container {
         (this.client as any).connectEvents();
       }
     } catch {
-      this.state.model = "(not connected)";
+      // Keep last known model; footer briefly showing "(not connected)" is
+      // confusing during transient reconnects.
+      if (!this.state.model || this.state.model === "(no model)") {
+        this.state.model = "(not connected)";
+      }
     }
   }
 
