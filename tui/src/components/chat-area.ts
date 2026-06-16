@@ -333,6 +333,8 @@ export class ChatArea implements Component {
       this.messageLineRanges[i].start += delta;
       this.messageLineRanges[i].end += delta;
     }
+    if (this.autoScroll) this.scrollToBottom();
+    this.onChange?.();
   }
 
   /** Append the last message in this.messages to renderedLines (assumes msg already pushed). */
@@ -346,6 +348,8 @@ export class ChatArea implements Component {
     this.renderMessage(this.messages[this.messages.length - 1]);
     this.messageLineRanges.push({ start, end: this.renderedLines.length - 1 });
     this.renderedLines.push({ text: "", dim: true });
+    if (this.autoScroll) this.scrollToBottom();
+    this.onChange?.();
   }
 
   private findAssistantIndex(): number {

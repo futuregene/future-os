@@ -581,7 +581,6 @@ name = "future-agent"
 version = "0.3.0"
 dependencies = [
  "anyhow",
- "async-stream",
  "async-trait",
  "atty",
  "base32",
@@ -2315,6 +2314,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

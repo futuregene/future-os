@@ -219,9 +219,10 @@ impl ServerSession {
         self.interrupt_tx = Some(interrupt_tx);
 
         // Spawn background task to run agent loop
+        let perm = self.permission_level.clone();
         tokio::spawn(async move {
             // Run with timeout — generous limit for complex multi-turn tasks
-            let result = crate::tools::with_workspace_scope(session_cwd.clone(), async {
+            let result = crate::tools::with_workspace_scope(session_cwd.clone(), perm, async {
                 tokio::time::timeout(std::time::Duration::from_secs(3600), async {
                     let mut current_messages = initial_messages;
                     let mut current_interrupt_rx = Some(interrupt_rx);
@@ -613,7 +614,7 @@ mod tests {
         });
         let agent_loop = Loop::new(provider, "mock").with_tools(coding_tools());
 
-        crate::tools::with_workspace_scope(workspace.to_string_lossy().to_string(), async {
+        crate::tools::with_workspace_scope(workspace.to_string_lossy().to_string(), "workspace".to_string(), async {
             let _ = agent_loop
                 .run_streaming_with_messages(
                     vec![AgentMessage::new_user(
