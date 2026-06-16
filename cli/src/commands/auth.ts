@@ -41,13 +41,18 @@ type FutureAuthEntry = {
   base_url?: string;
 };
 
-type OpenAIModelsResponse = {
-  data?: unknown;
-};
-
 type ModelConfig = {
   id: string;
   name?: string;
+  reasoning?: boolean;
+  modalities?: string[];
+  contextWindow?: number;
+  maxTokens?: number;
+  cost?: {
+    input?: number;
+    output?: number;
+    cache_read?: number;
+  };
 };
 
 type ModelsFile = Record<string, unknown>;
@@ -225,31 +230,154 @@ async function fetchFutureModels(apiUrl: string, apiKey: string): Promise<ModelC
   const response = await fetch(`${apiUrl}/openai/v1/models`, {
     headers: { Authorization: `Bearer ${apiKey}` },
   });
-  const body = (await response.json()) as OpenAIModelsResponse & { message?: string };
+  const body = (await response.json()) as unknown;
   if (!response.ok) {
-    throw new Error(body.message ?? `Failed to fetch models with ${response.status}`);
+    const message = getRecord(body)?.message;
+    throw new Error(
+      typeof message === "string" ? message : `Failed to fetch models with ${response.status}`,
+    );
   }
 
-  if (!Array.isArray(body.data)) {
-    throw new Error("Future models response must contain a data array.");
+  const data = Array.isArray(body) ? body : getRecord(body)?.data;
+  if (!Array.isArray(data)) {
+    throw new Error("Future models response must be an array or contain a data array.");
   }
 
   const models: ModelConfig[] = [];
-  for (const item of body.data) {
+  for (const item of data) {
     const model = getRecord(item);
     if (!model || typeof model.id !== "string") {
       continue;
     }
 
     const id = model.id;
-    const ownedBy = typeof model.owned_by === "string" ? model.owned_by : undefined;
-    models.push({
-      id,
-      name: ownedBy ? `${ownedBy}: ${id}` : id,
-    });
+    models.push(toAgentModelConfig(id, model));
   }
 
   return models;
+}
+
+function toAgentModelConfig(id: string, model: Record<string, unknown>): ModelConfig {
+  const ownedBy = typeof model.owned_by === "string" ? model.owned_by : undefined;
+  const name = typeof model.name === "string" && model.name.trim() ? model.name : undefined;
+  const supportedParameters = stringArray(model.supported_parameters);
+  const contextWindow = firstNumber(model.contextWindow, model.context_length);
+  const maxTokens = firstNumber(
+    model.maxTokens,
+    model.max_tokens,
+    model.maxOutputTokens,
+    model.max_output_tokens,
+    model.maxCompletionTokens,
+    model.max_completion_tokens,
+    getRecord(model.top_provider)?.max_completion_tokens,
+  );
+  const modalities = modalitiesFromModel(model);
+  const cost = costFromModel(model);
+
+  return {
+    id,
+    name: name ?? (ownedBy ? `${ownedBy}: ${id}` : id),
+    reasoning: supportsReasoning(supportedParameters),
+    ...(modalities.length > 0 ? { modalities } : {}),
+    ...(contextWindow !== undefined ? { contextWindow } : {}),
+    ...(maxTokens !== undefined ? { maxTokens } : {}),
+    ...(cost ? { cost } : {}),
+  };
+}
+
+function modalitiesFromModel(model: Record<string, unknown>): string[] {
+  const explicit = stringArray(model.modalities);
+  if (explicit.length > 0) {
+    return explicit;
+  }
+
+  const input = getRecord(model.modalities)?.input;
+  const inputModalities = stringArray(input);
+  if (inputModalities.length > 0) {
+    return inputModalities;
+  }
+
+  const architecture = getRecord(model.architecture);
+  const modality = architecture?.modality;
+  if (typeof modality !== "string" || !modality.trim()) {
+    return [];
+  }
+
+  const inputSide = modality.split("->", 1)[0] ?? modality;
+  return inputSide
+    .split("+")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
+function costFromModel(model: Record<string, unknown>): ModelConfig["cost"] | undefined {
+  const directCost = getRecord(model.cost);
+  if (directCost) {
+    const input = firstNumber(directCost.input, directCost.prompt);
+    const output = firstNumber(directCost.output, directCost.completion);
+    const cacheRead = firstNumber(
+      directCost.cache_read,
+      directCost.cacheRead,
+      directCost.input_cache_read,
+    );
+    return compactCost(input, output, cacheRead);
+  }
+
+  const pricing = getRecord(model.pricing);
+  if (!pricing) {
+    return undefined;
+  }
+
+  return compactCost(
+    perTokenPriceToPerMillion(pricing.prompt),
+    perTokenPriceToPerMillion(pricing.completion),
+    perTokenPriceToPerMillion(pricing.input_cache_read),
+  );
+}
+
+function compactCost(
+  input: number | undefined,
+  output: number | undefined,
+  cacheRead: number | undefined,
+): ModelConfig["cost"] | undefined {
+  const cost: NonNullable<ModelConfig["cost"]> = {};
+  if (input !== undefined) cost.input = input;
+  if (output !== undefined) cost.output = output;
+  if (cacheRead !== undefined) cost.cache_read = cacheRead;
+  return Object.keys(cost).length > 0 ? cost : undefined;
+}
+
+function supportsReasoning(supportedParameters: string[]): boolean {
+  return supportedParameters.some(
+    (parameter) => parameter === "reasoning" || parameter === "include_reasoning",
+  );
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function firstNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    const number = numberFromUnknown(value);
+    if (number !== undefined) {
+      return number;
+    }
+  }
+  return undefined;
+}
+
+function numberFromUnknown(value: unknown): number | undefined {
+  const number =
+    typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function perTokenPriceToPerMillion(value: unknown): number | undefined {
+  const price = numberFromUnknown(value);
+  return price === undefined ? undefined : price * 1_000_000;
 }
 
 async function loadModelsFile(): Promise<ModelsFile> {
