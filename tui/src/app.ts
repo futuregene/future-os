@@ -311,7 +311,9 @@ export class App extends Container {
       await this.refresh();
       this.showSessions();
     } else {
-      // No explicit session option, create new session
+      // No explicit session option, create new session.
+      // Reload skills first so getState returns the latest list.
+      try { await this.client.reloadConfig(); } catch { /* ok if agent doesn't support it */ }
       await this.refresh();
       if (!this.state.explicitSession) {
         try {
