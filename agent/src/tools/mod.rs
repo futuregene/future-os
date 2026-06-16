@@ -12,19 +12,22 @@ use tokio::process::Command;
 pub struct ToolExecutionScope {
     workspace: PathBuf,
     approved_outside_paths: Arc<Mutex<Vec<PathBuf>>>,
+    /// "all" | "workspace" | "none" — controls workspace boundary enforcement
+    permission_level: String,
 }
 
 tokio::task_local! {
     static TOOL_SCOPE: ToolExecutionScope;
 }
 
-pub async fn with_workspace_scope<F>(workspace: String, future: F) -> F::Output
+pub async fn with_workspace_scope<F>(workspace: String, permission_level: String, future: F) -> F::Output
 where
     F: Future,
 {
     let scope = ToolExecutionScope {
         workspace: normalize_path(&PathBuf::from(workspace)),
         approved_outside_paths: Arc::new(Mutex::new(vec![])),
+        permission_level,
     };
     TOOL_SCOPE.scope(scope, future).await
 }
@@ -576,6 +579,11 @@ fn ensure_workspace_access(workspace: &Path, path: &Path) -> Result<()> {
         return Ok(());
     }
 
+    // "all" permission: no workspace restrictions
+    if TOOL_SCOPE.try_with(|scope| scope.permission_level.clone()).unwrap_or_default() == "all" {
+        return Ok(());
+    }
+
     let workspace = normalize_path(workspace);
     let path = normalize_path(path);
     if path.starts_with(&workspace) || is_approved_outside_path(&path) {
@@ -631,20 +639,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scoped_workspace_maps_tilde_paths_to_workspace() {
+    async fn scoped_workspace_writes_inside_workspace() {
         let workspace = test_path("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
         let workspace_string = workspace.to_string_lossy().to_string();
+        let inside = workspace.join("poem.txt");
 
-        let written_path = with_workspace_scope(workspace_string.clone(), async {
-            run_write("~/poem.txt", "inside workspace").await
+        let written_path = with_workspace_scope(workspace_string.clone(), "all".to_string(), async {
+            run_write(&inside.to_string_lossy(), "inside workspace").await
         })
         .await
         .unwrap();
 
-        assert_eq!(written_path, workspace.join("poem.txt"));
+        assert_eq!(written_path, inside);
         assert_eq!(
-            std::fs::read_to_string(workspace.join("poem.txt")).unwrap(),
+            std::fs::read_to_string(&inside).unwrap(),
             "inside workspace"
         );
     }
@@ -657,7 +666,7 @@ mod tests {
         let workspace_string = workspace.to_string_lossy().to_string();
         let outside_string = outside.to_string_lossy().to_string();
 
-        let result = with_workspace_scope(workspace_string, async {
+        let result = with_workspace_scope(workspace_string, "workspace".to_string(), async {
             run_write(&outside_string, "no").await
         })
         .await;

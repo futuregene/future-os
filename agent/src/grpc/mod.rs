@@ -13,7 +13,8 @@ use crate::rpc::{handle_command_internal, AppState};
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use tokio::sync::broadcast;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt;
 
 // Include the generated proto code
 pub mod proto {
@@ -166,7 +167,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         let req = request.into_inner();
         let session_id = req.session_id;
 
-        let mut rx = if session_id.is_empty() {
+        let rx = if session_id.is_empty() {
             self.state.broadcaster.subscribe()
         } else {
             let session = self.state.get_session(&session_id);
@@ -181,29 +182,26 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             sess.broadcaster.subscribe()
         };
 
-        let stream = async_stream::stream! {
-            // Send initial ping
-            yield Ok(proto::StreamEvent {
-                r#type: "ping".to_string(),
-                data: r#"{"type":"ping"}"#.to_string(),
-            });
-
-            loop {
-                match rx.recv().await {
-                    Ok(event) => {
-                        yield Ok(proto::StreamEvent {
-                            r#type: event.event_type,
-                            data: event.data,
-                        });
-                    }
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        eprintln!("SSE lagged {} events", n);
-                        continue;
-                    }
-                    Err(broadcast::error::RecvError::Closed) => break,
+        // Convert broadcast receiver into a Stream, adding an initial ping.
+        // Using StreamExt directly instead of async_stream::stream! gives tonic
+        // a proper poll-based stream — yields are not buffered internally.
+        let ping = tokio_stream::once(Ok(proto::StreamEvent {
+            r#type: "ping".to_string(),
+            data: r#"{"type":"ping"}"#.to_string(),
+        }));
+        let events = BroadcastStream::new(rx).map(|r| {
+            match r {
+                Ok(event) => Ok(proto::StreamEvent {
+                    r#type: event.event_type,
+                    data: event.data,
+                }),
+                Err(e) => {
+                    eprintln!("SSE stream error: {}", e);
+                    Err(tonic::Status::internal(e.to_string()))
                 }
             }
-        };
+        });
+        let stream = ping.chain(events);
 
         Ok(tonic::Response::new(Box::pin(stream)))
     }
