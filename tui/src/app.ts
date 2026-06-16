@@ -626,11 +626,16 @@ export class App extends Container {
         if (item) {
           const ctx = this.acManager.activeContext;
           if (ctx?.token) {
-            // File path completion: replace only the token portion,
-            // preserving the prefix (e.g. "/cwd " stays intact)
+            // Replace only the token portion, preserving the prefix.
+            // If the item value already starts with the prefix (e.g.
+            // slash command "/model" with before="/"), avoid doubling.
             const before = ctx.text.slice(0, ctx.tokenStart);
             const after = ctx.text.slice(ctx.tokenStart + ctx.token.length);
-            this.input.setValue(before + item.value + after);
+            let value = item.value;
+            if (before && value.startsWith(before)) {
+              value = value.slice(before.length);
+            }
+            this.input.setValue(before + value + after);
           } else {
             this.input.setValue(item.value);
           }
