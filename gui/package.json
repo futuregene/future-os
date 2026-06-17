@@ -7,6 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
+    "test": "vitest run",
     "stylelint": "stylelint \"src/**/*.css\"",
     "preview": "vite preview --host 127.0.0.1",
     "tauri": "tauri",
@@ -19,12 +20,16 @@
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "unified": "^11.0.5"
   },
   "devDependencies": {
     "@antfu/eslint-config": "^9.0.0",
     "@eslint-react/eslint-plugin": "^5.8.10",
     "@tauri-apps/cli": "^2.2.0",
+    "@types/mdast": "^4.0.4",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
@@ -38,6 +43,7 @@
     "stylelint-config-tailwindcss": "^1.0.1",
     "tailwindcss": "^3.4.16",
     "typescript": "^5.7.2",
-    "vite": "^6.0.3"
+    "vite": "^6.0.3",
+    "vitest": "^3.2.6"
   }
 }

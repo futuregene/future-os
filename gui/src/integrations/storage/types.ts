@@ -134,6 +134,24 @@ export interface StoredReviewFileChange {
   updatedAt: number;
 }
 
+export interface GitReview {
+  isGitWorkspace: boolean;
+  workspacePath: string;
+  branch?: string | null;
+  upstream?: string | null;
+  additions: number;
+  deletions: number;
+  files: GitReviewFile[];
+}
+
+export interface GitReviewFile {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  diff: string;
+}
+
 export interface ThreadCleanupSummary {
   threadId: string;
   workspaceId: string;
@@ -173,5 +191,14 @@ export interface StoredResearchResource {
   summary?: string | null;
   metadata?: string | null;
   createdAt: number;
+  updatedAt: number;
+}
+
+export interface ReferenceTargetSearchResult {
+  targetType: "approval" | "artifact" | "research" | "review" | "run" | "tool" | string;
+  targetId: string;
+  title: string;
+  subtitle?: string | null;
+  searchText?: string | null;
   updatedAt: number;
 }

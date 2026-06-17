@@ -8,9 +8,10 @@ import { PlanBlock } from "./PlanBlock";
 
 interface MessageBlockProps {
   message: AgentMessage;
+  workspaceId?: string | null;
 }
 
-export function MessageBlock({ message }: MessageBlockProps) {
+export function MessageBlock({ message, workspaceId }: MessageBlockProps) {
   const isUser = message.role === "user";
 
   return (
@@ -31,7 +32,7 @@ export function MessageBlock({ message }: MessageBlockProps) {
           {message.content
             ? isUser
               ? <p className="whitespace-pre-wrap">{message.content}</p>
-              : <MarkdownContent content={message.content} />
+              : <MarkdownContent content={message.content} workspaceId={workspaceId} />
             : null}
           {message.attachments && message.attachments.length > 0
             ? (

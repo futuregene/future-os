@@ -61,8 +61,16 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             eprintln!(
                 "[grpc] {} session={} msg={:.80}",
                 cmd.r#type,
-                if cmd.session_id.is_empty() { "-" } else { &cmd.session_id },
-                if cmd.message.is_empty() { "-" } else { &cmd.message }
+                if cmd.session_id.is_empty() {
+                    "-"
+                } else {
+                    &cmd.session_id
+                },
+                if cmd.message.is_empty() {
+                    "-"
+                } else {
+                    &cmd.message
+                }
             );
         }
 
@@ -189,16 +197,14 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             r#type: "ping".to_string(),
             data: r#"{"type":"ping"}"#.to_string(),
         }));
-        let events = BroadcastStream::new(rx).map(|r| {
-            match r {
-                Ok(event) => Ok(proto::StreamEvent {
-                    r#type: event.event_type,
-                    data: event.data,
-                }),
-                Err(e) => {
-                    eprintln!("SSE stream error: {}", e);
-                    Err(tonic::Status::internal(e.to_string()))
-                }
+        let events = BroadcastStream::new(rx).map(|r| match r {
+            Ok(event) => Ok(proto::StreamEvent {
+                r#type: event.event_type,
+                data: event.data,
+            }),
+            Err(e) => {
+                eprintln!("SSE stream error: {}", e);
+                Err(tonic::Status::internal(e.to_string()))
             }
         });
         let stream = ping.chain(events);

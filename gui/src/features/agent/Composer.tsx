@@ -1,10 +1,12 @@
-import type { FormEvent, KeyboardEvent } from "react";
+import type { ChangeEvent, FormEvent, KeyboardEvent } from "react";
 import type { AgentModelOption } from "../../integrations/agent/models";
+import type { ReferenceTargetSearchResult } from "../../integrations/storage/threadStore";
 import type { MessageAttachment } from "./types";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ArrowUp, Check, ChevronDown, Paperclip, Sparkles, X } from "lucide-react";
-import { useState } from "react";
+import { AlertTriangle, ArrowUp, Beaker, Box, Check, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, Sparkles, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { modelLabel } from "../../integrations/agent/models";
+import { searchReferenceTargets } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { fileNameFromPath } from "./attachments";
@@ -23,6 +25,7 @@ interface ComposerProps {
   onModelChange?: (modelId: string) => void;
   placeholder?: string;
   textareaClassName?: string;
+  workspaceId?: string | null;
 }
 
 export function Composer({
@@ -34,15 +37,59 @@ export function Composer({
   onModelChange,
   placeholder,
   textareaClassName,
+  workspaceId,
 }: ComposerProps) {
   const [value, setValue] = useState("");
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [caretPosition, setCaretPosition] = useState(0);
+  const [referenceResults, setReferenceResults] = useState<ReferenceTargetSearchResult[]>([]);
+  const [referenceSearchOpen, setReferenceSearchOpen] = useState(false);
+  const [selectedReferenceIndex, setSelectedReferenceIndex] = useState(0);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const activeModelId = modelId || modelOptions[0]?.id || "";
+  const activeMention = useMemo(() => findActiveMention(value, caretPosition), [caretPosition, value]);
   const modelMenuRef = useDismissableLayer<HTMLDivElement>({
     enabled: modelMenuOpen,
     onDismiss: () => setModelMenuOpen(false),
   });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadReferenceResults() {
+      if (!workspaceId || !activeMention || disabled) {
+        setReferenceResults([]);
+        setReferenceSearchOpen(false);
+        return;
+      }
+
+      try {
+        const results = await searchReferenceTargets({
+          limit: 8,
+          query: activeMention.query,
+          workspaceId,
+        });
+        if (!cancelled) {
+          setReferenceResults(results);
+          setReferenceSearchOpen(true);
+          setSelectedReferenceIndex(0);
+        }
+      }
+      catch {
+        if (!cancelled) {
+          setReferenceResults([]);
+          setReferenceSearchOpen(false);
+        }
+      }
+    }
+
+    void loadReferenceResults();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeMention, disabled, workspaceId]);
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -56,14 +103,66 @@ export function Composer({
     onSend({ attachments, content: trimmed });
     setValue("");
     setAttachments([]);
+    setReferenceSearchOpen(false);
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (referenceSearchOpen && referenceResults.length > 0) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setSelectedReferenceIndex(index => (index + 1) % referenceResults.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setSelectedReferenceIndex(index => (index - 1 + referenceResults.length) % referenceResults.length);
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        insertReference(referenceResults[selectedReferenceIndex]);
+        return;
+      }
+    }
+
+    if (event.key === "Escape" && referenceSearchOpen) {
+      event.preventDefault();
+      setReferenceSearchOpen(false);
+      return;
+    }
+
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing)
       return;
 
     event.preventDefault();
     submitValue();
+  }
+
+  function handleChange(event: ChangeEvent<HTMLTextAreaElement>) {
+    setValue(event.target.value);
+    setCaretPosition(event.target.selectionStart);
+  }
+
+  function updateCaret() {
+    setCaretPosition(textareaRef.current?.selectionStart ?? value.length);
+  }
+
+  function insertReference(reference: ReferenceTargetSearchResult) {
+    if (!activeMention)
+      return;
+
+    const label = escapeMarkdownLinkLabel(`${reference.targetType}:${reference.title}`);
+    const targetId = encodeFutureReferenceId(reference.targetId);
+    const markdown = `[${label}](futureos://${reference.targetType}/${targetId})`;
+    const nextValue = `${value.slice(0, activeMention.start)}${markdown}${value.slice(activeMention.end)}`;
+    const nextCaret = activeMention.start + markdown.length;
+    setValue(nextValue);
+    setCaretPosition(nextCaret);
+    setReferenceSearchOpen(false);
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(nextCaret, nextCaret);
+    });
   }
 
   async function handleAttachFiles() {
@@ -96,12 +195,22 @@ export function Composer({
   return (
     <form
       className={cn(
-        "rounded-lg border border-line bg-white/95 p-2 shadow-panel backdrop-blur",
+        "relative rounded-lg border border-line bg-white/95 p-2 shadow-panel backdrop-blur",
         className,
       )}
       onSubmit={handleSubmit}
     >
+      {referenceSearchOpen && activeMention
+        ? (
+            <ReferenceSearchMenu
+              results={referenceResults}
+              selectedIndex={selectedReferenceIndex}
+              onSelect={insertReference}
+            />
+          )
+        : null}
       <textarea
+        ref={textareaRef}
         className={cn(
           "h-14 w-full resize-none border-0 bg-transparent px-2 py-1 text-sm leading-5 text-ink outline-none placeholder:text-ink-muted",
           textareaClassName,
@@ -110,7 +219,10 @@ export function Composer({
         value={value}
         disabled={disabled}
         onKeyDown={handleKeyDown}
-        onChange={event => setValue(event.target.value)}
+        onChange={handleChange}
+        onClick={updateCaret}
+        onKeyUp={updateCaret}
+        onSelect={updateCaret}
       />
       {attachments.length > 0
         ? (
@@ -210,4 +322,91 @@ export function Composer({
       </div>
     </form>
   );
+}
+
+function ReferenceSearchMenu({
+  onSelect,
+  results,
+  selectedIndex,
+}: {
+  onSelect: (reference: ReferenceTargetSearchResult) => void;
+  results: ReferenceTargetSearchResult[];
+  selectedIndex: number;
+}) {
+  return (
+    <div className="absolute bottom-full left-2 z-30 mb-2 w-[min(30rem,calc(100%-1rem))] rounded-lg border border-line-soft bg-white p-1 shadow-panel">
+      {results.length === 0
+        ? <div className="px-2 py-2 text-sm text-ink-muted">No references found.</div>
+        : null}
+      {results.map((result, index) => (
+        <button
+          className={cn(
+            "flex h-11 w-full items-center gap-2 rounded-md px-2 text-left transition-colors",
+            index === selectedIndex ? "bg-surface-subtle" : "hover:bg-surface-subtle",
+          )}
+          key={`${result.targetType}:${result.targetId}`}
+          onMouseDown={(event) => {
+            event.preventDefault();
+            onSelect(result);
+          }}
+          type="button"
+        >
+          {referenceIcon(result.targetType)}
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-medium text-ink">{result.title}</span>
+            <span className="block truncate text-xs text-ink-muted">
+              {result.targetType}
+              {result.subtitle ? ` · ${result.subtitle}` : ""}
+            </span>
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function referenceIcon(targetType: string) {
+  const className = "size-4 shrink-0 text-ink-soft";
+  switch (targetType) {
+    case "approval":
+      return <AlertTriangle className={className} />;
+    case "research":
+      return <Microscope className={className} />;
+    case "review":
+      return <FileDiff className={className} />;
+    case "run":
+      return <PlayCircle className={className} />;
+    case "tool":
+      return <Beaker className={className} />;
+    default:
+      return <Box className={className} />;
+  }
+}
+
+function findActiveMention(value: string, caretPosition: number) {
+  const beforeCaret = value.slice(0, caretPosition);
+  const match = beforeCaret.match(/(^|\s)@([^\s@]*)$/);
+  if (!match)
+    return null;
+
+  const markerOffset = match[1].length;
+  const start = caretPosition - match[0].length + markerOffset;
+  return {
+    end: caretPosition,
+    query: match[2],
+    start,
+  };
+}
+
+function escapeMarkdownLinkLabel(value: string) {
+  return value
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\[/g, "(")
+    .replace(/\]/g, ")");
+}
+
+function encodeFutureReferenceId(value: string) {
+  return encodeURIComponent(value).replace(/[!'()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
 }

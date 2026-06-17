@@ -2,7 +2,6 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{mpsc, Arc, Mutex},
-    time::Duration,
 };
 
 use super::{SseBroadcaster, SseEvent};
@@ -52,8 +51,7 @@ impl ApprovalGate {
             }),
         ));
 
-        let decision =
-            tokio::task::block_in_place(|| rx.recv_timeout(Duration::from_secs(30)));
+        let decision = tokio::task::block_in_place(|| rx.recv());
         match decision {
             Ok(decision) if decision.approved => {
                 if let Some(path) = approved_argument_path(cwd, arguments) {
@@ -104,12 +102,12 @@ impl ApprovalGate {
                         "approval_request_id": request_id,
                         "tool_id": tool_id,
                         "status": "cancelled",
-                        "note": "Approval request timed out.",
+                        "note": "Approval request was cancelled because the session ended.",
                     }),
                 ));
                 Some(crate::types::ToolCallResult {
                     result: format!(
-                        "Tool call `{tool_name}` was cancelled because approval timed out."
+                        "Tool call `{tool_name}` was cancelled because the approval request ended."
                     ),
                     is_error: true,
                 })
@@ -222,7 +220,19 @@ fn is_workspace_read_command(cwd: &str, command: &str) -> bool {
         let program = segment.split_whitespace().next().unwrap_or_default().trim();
         matches!(
             program,
-            "cat" | "echo" | "find" | "future" | "future-cli" | "grep" | "head" | "ls" | "pwd" | "rg" | "sed" | "tail" | "wc"
+            "cat"
+                | "echo"
+                | "find"
+                | "future"
+                | "future-cli"
+                | "grep"
+                | "head"
+                | "ls"
+                | "pwd"
+                | "rg"
+                | "sed"
+                | "tail"
+                | "wc"
         )
     })
 }
@@ -305,6 +315,61 @@ fn approved_argument_path(cwd: &str, arguments: &serde_json::Value) -> Option<St
         workspace.join(path)
     };
     Some(candidate.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_path(name: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("futureos-approval-{name}-{stamp}"))
+    }
+
+    #[test]
+    fn write_inside_workspace_does_not_require_approval() {
+        let workspace = temp_path("workspace");
+        let args = serde_json::json!({
+            "path": workspace.join("poem.txt").to_string_lossy(),
+            "content": "hello"
+        });
+
+        assert!(approval_shape(workspace.to_string_lossy().as_ref(), "write", &args).is_none());
+    }
+
+    #[test]
+    fn write_outside_workspace_requires_approval() {
+        let workspace = temp_path("workspace");
+        let outside = temp_path("outside.txt");
+        let args = serde_json::json!({
+            "path": outside.to_string_lossy(),
+            "content": "hello"
+        });
+
+        let shape = approval_shape(workspace.to_string_lossy().as_ref(), "write", &args)
+            .expect("outside workspace write should require approval");
+        assert_eq!(shape.kind, "outside_workspace_write");
+        assert_eq!(shape.risk_level, "medium");
+    }
+
+    #[test]
+    fn edit_outside_workspace_requires_approval_from_json_string_args() {
+        let workspace = temp_path("workspace");
+        let outside = temp_path("outside.txt");
+        let args = serde_json::json!(serde_json::json!({
+            "path": outside.to_string_lossy(),
+            "oldText": "a",
+            "newText": "b"
+        })
+        .to_string());
+
+        let shape = approval_shape(workspace.to_string_lossy().as_ref(), "edit", &args)
+            .expect("outside workspace edit should require approval");
+        assert_eq!(shape.kind, "outside_workspace_write");
+    }
 }
 
 fn normalize_path(path: &Path) -> PathBuf {

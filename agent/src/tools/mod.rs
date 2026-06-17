@@ -1,7 +1,6 @@
 //! Tools — 1:1 compatible with Go internal/tools/
 
 use anyhow::{anyhow, Result};
-use dirs::home_dir;
 use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
@@ -20,7 +19,11 @@ tokio::task_local! {
     static TOOL_SCOPE: ToolExecutionScope;
 }
 
-pub async fn with_workspace_scope<F>(workspace: String, permission_level: String, future: F) -> F::Output
+pub async fn with_workspace_scope<F>(
+    workspace: String,
+    permission_level: String,
+    future: F,
+) -> F::Output
 where
     F: Future,
 {
@@ -104,10 +107,13 @@ fn bash_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<S
 pub fn bash_tool() -> AgentTool {
     make_tool(
         "bash",
-        "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 500000 bytes.",
+        "Execute a shell command in the current working directory. Use this for exploration and command-line programs. For ordinary file creation or edits, prefer write/edit tools, but shell redirection and heredocs may be used when they are the better fit. Returns stdout and stderr. Output is truncated to last 500000 bytes.",
         bash_schema(),
         bash_handler,
-        vec!["Prefer one bash command per turn"],
+        vec![
+            "Prefer one bash command per turn",
+            "Prefer write/edit for ordinary file writes; use shell redirection, heredocs, tee, or cat > file only when they are more appropriate for the task.",
+        ],
     )
 }
 
@@ -186,10 +192,10 @@ fn write_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<
 pub fn write_tool() -> AgentTool {
     make_tool(
         "write",
-        "Write content to a file, creating or overwriting.",
+        "Write content to a file, creating or overwriting. Prefer this for ordinary user-requested file saves.",
         write_schema(),
         write_handler,
-        vec![],
+        vec!["When asked to create, save, or overwrite a normal file, prefer this write tool."],
     )
 }
 
@@ -347,9 +353,9 @@ pub fn ls_tool() -> AgentTool {
 
 // ─── Tool sets ─────────────────────────────────────────────────────────────
 
-/// Core coding tools (default set): read, bash, edit, write
+/// Core coding tools (default set): read, write, edit, bash
 pub fn coding_tools() -> Vec<AgentTool> {
-    vec![read_tool(), bash_tool(), edit_tool(), write_tool()]
+    vec![read_tool(), write_tool(), edit_tool(), bash_tool()]
 }
 
 /// Read-only tools: read, grep, ls
@@ -357,13 +363,13 @@ pub fn readonly_tools() -> Vec<AgentTool> {
     vec![read_tool(), grep_tool(), ls_tool()]
 }
 
-/// All built-in tools: read, bash, edit, write, grep, ls
+/// All built-in tools: read, write, edit, bash, grep, ls
 pub fn all_tools() -> Vec<AgentTool> {
     vec![
-        bash_tool(),
         read_tool(),
         write_tool(),
         edit_tool(),
+        bash_tool(),
         grep_tool(),
         ls_tool(),
     ]
@@ -371,15 +377,26 @@ pub fn all_tools() -> Vec<AgentTool> {
 
 // ─── Tool runners (async, using tokio) ─────────────────────────────────────
 
-async fn run_bash(command: &str, _timeout_secs: u64) -> Result<String> {
+async fn run_bash(command: &str, timeout_secs: u64) -> Result<String> {
     let cwd = active_workspace()?;
-    let output = Command::new("bash")
+    let mut child = Command::new("bash");
+    child
         .args(["-c", command])
         .current_dir(&cwd)
-        .env("PWD", &cwd)
-        .output()
-        .await
-        .map_err(|e| anyhow!("Failed to run bash command: {}", e))?;
+        .env("PWD", &cwd);
+    child.kill_on_drop(true);
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs.max(1)),
+        child.output(),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "Bash command timed out after {} seconds",
+            timeout_secs.max(1)
+        )
+    })?
+    .map_err(|e| anyhow!("Failed to run bash command: {}", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -553,7 +570,7 @@ async fn run_ls(path: Option<&str>, limit: usize) -> Result<String> {
 fn workspace_path(path: &str) -> Result<PathBuf> {
     let cwd = active_workspace()?;
     let path = if let Some(relative) = path.strip_prefix("~/") {
-        home_dir().unwrap_or_default().join(relative)
+        cwd.join(relative)
     } else {
         PathBuf::from(path)
     };
@@ -580,7 +597,11 @@ fn ensure_workspace_access(workspace: &Path, path: &Path) -> Result<()> {
     }
 
     // "all" permission: no workspace restrictions
-    if TOOL_SCOPE.try_with(|scope| scope.permission_level.clone()).unwrap_or_default() == "all" {
+    if TOOL_SCOPE
+        .try_with(|scope| scope.permission_level.clone())
+        .unwrap_or_default()
+        == "all"
+    {
         return Ok(());
     }
 
@@ -645,11 +666,12 @@ mod tests {
         let workspace_string = workspace.to_string_lossy().to_string();
         let inside = workspace.join("poem.txt");
 
-        let written_path = with_workspace_scope(workspace_string.clone(), "all".to_string(), async {
-            run_write(&inside.to_string_lossy(), "inside workspace").await
-        })
-        .await
-        .unwrap();
+        let written_path =
+            with_workspace_scope(workspace_string.clone(), "all".to_string(), async {
+                run_write(&inside.to_string_lossy(), "inside workspace").await
+            })
+            .await
+            .unwrap();
 
         assert_eq!(written_path, inside);
         assert_eq!(

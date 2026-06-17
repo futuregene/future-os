@@ -224,6 +224,49 @@ pub struct ResearchResourceRecord {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveMarkdownReferencesInput {
+    pub workspace_id: String,
+    pub references: Vec<MarkdownReferenceInput>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkdownReferenceInput {
+    pub target_type: String,
+    pub target_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedMarkdownReference {
+    pub target_type: String,
+    pub target_id: String,
+    pub status: String,
+    pub data: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchReferenceTargetsInput {
+    pub workspace_id: String,
+    pub query: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferenceTargetSearchResult {
+    pub target_type: String,
+    pub target_id: String,
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub search_text: Option<String>,
+    pub updated_at: i64,
+}
+
 #[derive(Debug)]
 pub struct UpsertToolCallInput {
     pub run_id: String,

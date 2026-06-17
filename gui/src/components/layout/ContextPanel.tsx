@@ -1,77 +1,71 @@
-import type { StoredApprovalRequest, StoredArtifact, StoredReviewChangeset, StoredReviewFileChange, StoredRun, StoredRunEvent, StoredThread, StoredToolCall, StoredToolOutput } from "../../integrations/storage/threadStore";
-import { PanelRightClose, PanelRightOpen } from "lucide-react";
+import type { GitReview, StoredArtifact, StoredRun, StoredThread, StoredToolCall, StoredWorkspace } from "../../integrations/storage/threadStore";
+import { ChevronDown, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { upsertFutureReferenceEntries } from "../../features/markdown/futureReferenceStore";
 import {
-  listApprovalRequests,
+  abortRun,
+  clearFinishedRuns,
+  getGitReview,
   listArtifacts,
-  listReviewChangesets,
-  listReviewFileChanges,
-  listRunEvents,
   listRuns,
   listToolCalls,
-  listToolOutputs,
 } from "../../integrations/storage/threadStore";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { IconButton } from "../ui/IconButton";
-import { Tabs } from "../ui/Tabs";
-import { ApprovalsPanel } from "./context-panel/ApprovalsPanel";
 import { ArtifactsPanel } from "./context-panel/ArtifactsPanel";
 import { EmptyState } from "./context-panel/ContextEmptyState";
 import { ReviewPanel } from "./context-panel/ReviewPanel";
 import { RunsPanel } from "./context-panel/RunsPanel";
 
-export type ContextTab = "runs" | "approvals" | "review" | "artifacts";
+export type ContextTab = "runs" | "review" | "artifacts";
 
-const tabs = [
+const gitTabs = [
   { value: "runs", label: "Runs" },
-  { value: "approvals", label: "Approvals" },
   { value: "review", label: "Review" },
+] satisfies Array<{ value: ContextTab; label: string }>;
+
+const fileTabs = [
+  { value: "runs", label: "Runs" },
   { value: "artifacts", label: "Artifacts" },
 ] satisfies Array<{ value: ContextTab; label: string }>;
 
 interface ContextPanelProps {
   activeThread: StoredThread | null;
+  activeWorkspace: StoredWorkspace | null;
   activeTab: ContextTab;
   expanded: boolean;
-  pendingApprovalCount: number;
   onTabChange: (tab: ContextTab) => void;
   onToggleExpanded: () => void;
 }
 
 export function ContextPanel({
   activeThread,
+  activeWorkspace,
   activeTab,
   expanded,
-  pendingApprovalCount,
   onTabChange,
   onToggleExpanded,
 }: ContextPanelProps) {
   const [runs, setRuns] = useState<StoredRun[]>([]);
-  const [eventsByRun, setEventsByRun] = useState<Record<string, StoredRunEvent[]>>({});
   const [toolsByRun, setToolsByRun] = useState<Record<string, StoredToolCall[]>>({});
-  const [outputsByTool, setOutputsByTool] = useState<Record<string, StoredToolOutput[]>>({});
-  const [approvals, setApprovals] = useState<StoredApprovalRequest[]>([]);
   const [artifacts, setArtifacts] = useState<StoredArtifact[]>([]);
-  const [changesets, setChangesets] = useState<StoredReviewChangeset[]>([]);
-  const [filesByChangeset, setFilesByChangeset] = useState<Record<string, StoredReviewFileChange[]>>({});
+  const [gitReview, setGitReview] = useState<GitReview | null>(null);
   const [loading, setLoading] = useState(false);
   const activeThreadId = activeThread?.id ?? null;
+  const activeWorkspaceId = activeWorkspace?.id ?? activeThread?.workspaceId ?? null;
+  const isGitWorkspace = gitReview?.isGitWorkspace ?? false;
+  const tabs = isGitWorkspace ? gitTabs : fileTabs;
   const hasContextData = runs.length > 0
-    || approvals.length > 0
     || artifacts.length > 0
-    || changesets.length > 0;
+    || (gitReview?.files.length ?? 0) > 0;
   const showInitialLoading = loading && !hasContextData;
 
   const refreshContext = useCallback(async (options?: { showLoading?: boolean }) => {
     if (!activeThreadId) {
       setRuns([]);
-      setEventsByRun({});
       setToolsByRun({});
-      setOutputsByTool({});
-      setApprovals([]);
       setArtifacts([]);
-      setChangesets([]);
-      setFilesByChangeset({});
+      setGitReview(null);
       setLoading(false);
       return;
     }
@@ -79,54 +73,58 @@ export function ContextPanel({
     const showLoading = options?.showLoading ?? false;
     if (showLoading) {
       setRuns([]);
-      setEventsByRun({});
       setToolsByRun({});
-      setOutputsByTool({});
-      setApprovals([]);
       setArtifacts([]);
-      setChangesets([]);
-      setFilesByChangeset({});
+      setGitReview(null);
       setLoading(true);
     }
     try {
-      const [nextRuns, nextApprovals, nextChangesets, nextArtifacts] = await Promise.all([
+      const [nextRuns, nextGitReview] = await Promise.all([
         listRuns(activeThreadId),
-        listApprovalRequests(activeThreadId),
-        listReviewChangesets(activeThreadId),
-        listArtifacts(activeThreadId),
+        activeWorkspaceId ? getGitReview(activeWorkspaceId) : Promise.resolve(null),
       ]);
-      const eventEntries = await Promise.all(
-        nextRuns.slice(0, 8).map(async run => [run.id, await listRunEvents(run.id)] as const),
-      );
-      const toolEntries = await Promise.all(
-        nextRuns.slice(0, 8).map(async run => [run.id, await listToolCalls(run.id)] as const),
-      );
+      const nextArtifacts = nextGitReview?.isGitWorkspace ? [] : await listArtifacts(activeThreadId);
+      const toolEntries = await Promise.all(nextRuns.map(async run => [run.id, await listToolCalls(run.id)] as const));
       const toolCalls = toolEntries.flatMap(([, tools]) => tools);
-      const outputEntries = await Promise.all(
-        toolCalls.slice(0, 24).map(async tool => [tool.id, await listToolOutputs(tool.id)] as const),
-      );
-      const fileEntries = await Promise.all(
-        nextChangesets.slice(0, 8).map(async changeset => [
-          changeset.id,
-          await listReviewFileChanges(changeset.id),
-        ] as const),
-      );
 
       setRuns(nextRuns);
-      setEventsByRun(Object.fromEntries(eventEntries));
       setToolsByRun(Object.fromEntries(toolEntries));
-      setOutputsByTool(Object.fromEntries(outputEntries));
-      setApprovals(nextApprovals);
       setArtifacts(nextArtifacts);
-      setChangesets(nextChangesets);
-      setFilesByChangeset(Object.fromEntries(fileEntries));
+      setGitReview(nextGitReview);
+      upsertContextReferences(activeWorkspaceId, {
+        artifacts: nextArtifacts,
+        runs: nextRuns,
+        tools: toolCalls,
+      });
     }
     finally {
       if (showLoading) {
         setLoading(false);
       }
     }
-  }, [activeThreadId]);
+  }, [activeThreadId, activeWorkspaceId]);
+
+  useEffect(() => {
+    if (!tabs.some(tab => tab.value === activeTab)) {
+      onTabChange(tabs[0].value);
+    }
+  }, [activeTab, onTabChange, tabs]);
+
+  async function handleTerminateRun(run: StoredRun) {
+    if (!activeThreadId)
+      return;
+
+    await abortRun({ runId: run.id, threadId: activeThreadId });
+    await refreshContext();
+  }
+
+  async function handleClearFinishedRuns() {
+    if (!activeThreadId)
+      return;
+
+    await clearFinishedRuns(activeThreadId);
+    await refreshContext();
+  }
 
   useEffect(() => {
     void refreshContext({ showLoading: true });
@@ -152,11 +150,6 @@ export function ContextPanel({
         type="button"
       >
         <PanelRightOpen className="size-3.5" />
-        {pendingApprovalCount > 0
-          ? (
-              <span className="absolute right-1 top-1 size-2 rounded-full bg-amber-500 ring-2 ring-white" />
-            )
-          : null}
       </button>
     );
   }
@@ -167,11 +160,19 @@ export function ContextPanel({
         className="flex h-12 shrink-0 select-none items-center justify-between px-4"
         onMouseDown={startWindowDrag}
       >
-        <div className="min-w-0 flex-1" data-tauri-drag-region>
-          <h2 className="truncate text-sm font-semibold text-ink">Run Context</h2>
-          <p className="truncate text-xs text-ink-muted">
-            {activeThread ? activeThread.title : "No active thread"}
-          </p>
+        <div className="relative inline-block max-w-full">
+          <label className="sr-only" htmlFor="context-panel-view">Context panel view</label>
+          <select
+            id="context-panel-view"
+            className="h-8 w-fit min-w-24 max-w-full appearance-none rounded-md border border-line-soft bg-surface py-0 pl-3 pr-8 text-sm font-normal text-ink outline-none transition-colors hover:border-line focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+            value={activeTab}
+            onChange={event => onTabChange(event.target.value as ContextTab)}
+          >
+            {tabs.map(tab => (
+              <option key={tab.value} value={tab.value}>{tab.label}</option>
+            ))}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-ink-muted" />
         </div>
         <IconButton
           icon={<PanelRightClose className="size-3.5" />}
@@ -179,38 +180,25 @@ export function ContextPanel({
           onClick={onToggleExpanded}
         />
       </header>
-      <div className="shrink-0 px-4 pb-3 pt-1">
-        <Tabs
-          className="overflow-x-auto rounded-lg bg-surface/70 p-1"
-          items={tabs}
-          value={activeTab}
-          onChange={onTabChange}
-        />
-      </div>
-      <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 pt-1">
+      <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 pt-2">
         {showInitialLoading ? <div className="py-4 text-sm text-ink-muted">Loading context...</div> : null}
         {!showInitialLoading && !activeThread ? <EmptyState title="No thread selected" /> : null}
         {!showInitialLoading && activeThread && activeTab === "runs"
           ? (
               <RunsPanel
-                eventsByRun={eventsByRun}
-                outputsByTool={outputsByTool}
                 runs={runs}
                 toolsByRun={toolsByRun}
+                onClearFinished={handleClearFinishedRuns}
+                onTerminateRun={handleTerminateRun}
               />
             )
           : null}
-        {!showInitialLoading && activeThread && activeTab === "approvals"
+        {!showInitialLoading && activeThread && activeTab === "review" && isGitWorkspace
           ? (
-              <ApprovalsPanel approvals={approvals} onDecision={refreshContext} />
+              <ReviewPanel review={gitReview} />
             )
           : null}
-        {!showInitialLoading && activeThread && activeTab === "review"
-          ? (
-              <ReviewPanel changesets={changesets} filesByChangeset={filesByChangeset} />
-            )
-          : null}
-        {!showInitialLoading && activeThread && activeTab === "artifacts"
+        {!showInitialLoading && activeThread && activeTab === "artifacts" && !isGitWorkspace
           ? (
               <ArtifactsPanel artifacts={artifacts} onChanged={refreshContext} />
             )
@@ -218,4 +206,23 @@ export function ContextPanel({
       </div>
     </aside>
   );
+}
+
+function upsertContextReferences(
+  workspaceId: string | null,
+  {
+    artifacts,
+    runs,
+    tools,
+  }: {
+    artifacts: StoredArtifact[];
+    runs: StoredRun[];
+    tools: StoredToolCall[];
+  },
+) {
+  upsertFutureReferenceEntries(workspaceId, [
+    ...runs.map(run => ({ data: run, targetId: run.id, targetType: "run" as const })),
+    ...tools.map(tool => ({ data: tool, targetId: tool.id, targetType: "tool" as const })),
+    ...artifacts.map(artifact => ({ data: artifact, targetId: artifact.id, targetType: "artifact" as const })),
+  ]);
 }

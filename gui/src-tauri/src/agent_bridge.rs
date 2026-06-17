@@ -2,15 +2,17 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::time::{timeout, Duration};
 
 use crate::{
     agent_proto::{image_content, FutureAgentClient, ImageContent, RpcCommand, StreamRequest},
-    store,
+    git_review, store,
 };
+
+const AGENT_EVENT_STREAM_TIMEOUT_SECS: u64 = 600;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,6 +87,7 @@ pub async fn agent_prompt(
         .await
         .map_err(|error| format!("Unable to connect to Future Agent at {endpoint}: {error}"))?;
     ensure_agent_session(&mut command_client, &session_id, &cwd, force_reset_session).await?;
+    set_agent_permission_level(&mut command_client, &session_id, "workspace").await?;
 
     let mut event_client = FutureAgentClient::connect(endpoint.clone())
         .await
@@ -185,6 +188,31 @@ pub async fn notify_agent_approval_decision(
     }
 }
 
+pub async fn abort_agent_thread(thread_id: &str) -> Result<(), String> {
+    let thread =
+        store::get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
+    let endpoint = agent_endpoint();
+    let mut client = FutureAgentClient::connect(endpoint.clone())
+        .await
+        .map_err(|error| format!("Unable to connect to Future Agent at {endpoint}: {error}"))?;
+    let response = client
+        .execute_command(base_command(
+            "abort",
+            thread.agent_session_id.unwrap_or(thread.id),
+        ))
+        .await
+        .map_err(|error| format!("Unable to abort Future Agent run: {error}"))?
+        .into_inner();
+
+    if response.success {
+        Ok(())
+    } else if response.error.is_empty() {
+        Err("Future Agent rejected the abort request.".to_string())
+    } else {
+        Err(response.error)
+    }
+}
+
 async fn ensure_agent_session(
     client: &mut FutureAgentClient<tonic::transport::Channel>,
     session_id: &str,
@@ -241,6 +269,29 @@ async fn create_agent_session(
     }
 }
 
+async fn set_agent_permission_level(
+    client: &mut FutureAgentClient<tonic::transport::Channel>,
+    session_id: &str,
+    level: &str,
+) -> Result<(), String> {
+    let response = client
+        .execute_command(set_permission_level_command(
+            level.to_string(),
+            session_id.to_string(),
+        ))
+        .await
+        .map_err(|error| format!("Unable to set Future Agent permission level: {error}"))?
+        .into_inner();
+
+    if response.success {
+        Ok(())
+    } else if response.error.is_empty() {
+        Err("Future Agent rejected the permission level selection.".to_string())
+    } else {
+        Err(response.error)
+    }
+}
+
 fn prior_user_message_count(thread_id: &str) -> Result<usize, String> {
     let messages = store::list_messages(thread_id)?;
     let user_message_count = messages
@@ -290,6 +341,13 @@ fn set_thinking_level_command(level: String, session_id: String) -> RpcCommand {
     RpcCommand {
         level,
         ..base_command("set_thinking_level", session_id)
+    }
+}
+
+fn set_permission_level_command(level: String, session_id: String) -> RpcCommand {
+    RpcCommand {
+        level,
+        ..base_command("set_permission_level", session_id)
     }
 }
 
@@ -389,56 +447,72 @@ async fn collect_agent_response(
 ) -> Result<String, String> {
     let mut content = String::new();
     let mut saw_agent_end = false;
+    let mut waiting_for_approval = false;
     let mut sequence = 0_i64;
 
-    let result = timeout(Duration::from_secs(600), async {
-        while let Some(event) = stream
-            .message()
+    loop {
+        let next_event = if waiting_for_approval {
+            stream
+                .message()
+                .await
+                .map_err(|error| format!("Future Agent event stream failed: {error}"))?
+        } else {
+            match timeout(
+                Duration::from_secs(AGENT_EVENT_STREAM_TIMEOUT_SECS),
+                stream.message(),
+            )
             .await
-            .map_err(|error| format!("Future Agent event stream failed: {error}"))?
-        {
-            persist_run_event(run_id, &event.r#type, &event.data, sequence);
-            sequence += 1;
-
-            match event.r#type.as_str() {
-                "text_chunk" => {
-                    if let Some(text) = event_text(&event.data) {
-                        content.push_str(&text);
-                    }
+            {
+                Ok(result) => {
+                    result.map_err(|error| format!("Future Agent event stream failed: {error}"))?
                 }
-                "agent_end" => {
-                    saw_agent_end = true;
-                    break;
+                Err(_) => {
+                    persist_run_event(
+                        run_id,
+                        "timeout",
+                        r#"{"error":"Future Agent response timed out."}"#,
+                        sequence,
+                    );
+                    return Err("Future Agent response timed out.".to_string());
                 }
-                "error" => {
-                    return Err(event_error(&event.data)
-                        .unwrap_or_else(|| "Future Agent returned an error event.".to_string()));
-                }
-                _ => {}
             }
-        }
-        Ok::<(), String>(())
-    })
-    .await;
+        };
 
-    match result {
-        Ok(Ok(())) => {
-            if content.trim().is_empty() && !saw_agent_end {
-                Err("Future Agent finished without returning any text.".to_string())
-            } else {
-                Ok(content)
+        let Some(event) = next_event else {
+            break;
+        };
+
+        persist_run_event(run_id, &event.r#type, &event.data, sequence);
+        sequence += 1;
+
+        match event.r#type.as_str() {
+            "approval_request" => {
+                waiting_for_approval = true;
             }
+            "approval_decision" => {
+                waiting_for_approval = false;
+            }
+            "text_chunk" => {
+                if let Some(text) = event_text(&event.data) {
+                    content.push_str(&text);
+                }
+            }
+            "agent_end" => {
+                saw_agent_end = true;
+                break;
+            }
+            "error" => {
+                return Err(event_error(&event.data)
+                    .unwrap_or_else(|| "Future Agent returned an error event.".to_string()));
+            }
+            _ => {}
         }
-        Ok(Err(error)) => Err(error),
-        Err(_) => {
-            persist_run_event(
-                run_id,
-                "timeout",
-                r#"{"error":"Future Agent response timed out."}"#,
-                sequence,
-            );
-            Err("Future Agent response timed out.".to_string())
-        }
+    }
+
+    if content.trim().is_empty() && !saw_agent_end {
+        Err("Future Agent finished without returning any text.".to_string())
+    } else {
+        Ok(content)
     }
 }
 
@@ -481,15 +555,7 @@ fn persist_agent_tool_projection(run_id: &str, event_type: &str, payload: &str, 
 
     match event_type {
         "approval_request" => persist_approval_request(run_id, &value),
-        "approval_decision" => {
-            if let Err(error) = store::update_run_status(store::UpdateRunStatusInput {
-                run_id: run_id.to_string(),
-                status: "running".to_string(),
-                error_message: None,
-            }) {
-                eprintln!("FutureOS run approval decision status update failed: {error}");
-            }
-        }
+        "approval_decision" => persist_approval_decision(run_id, &value),
         "tool_start" | "toolcall_start" => persist_tool_start(run_id, &value, sequence),
         "tool_end" | "tool_result" => persist_tool_end(run_id, &value, sequence),
         "artifact_created" | "artifact.created" => persist_artifact(run_id, &value),
@@ -532,6 +598,32 @@ fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
         error_message: None,
     }) {
         eprintln!("FutureOS run approval status update failed: {error}");
+    }
+}
+
+fn persist_approval_decision(run_id: &str, value: &serde_json::Value) {
+    let Some(approval_request_id) =
+        value_string(value, &["approval_request_id", "approvalRequestId"])
+    else {
+        return;
+    };
+    let status = value_string(value, &["status"]).unwrap_or_else(|| "cancelled".to_string());
+    let note = value_string(value, &["note"]);
+
+    if let Err(error) = store::decide_approval_request(store::DecideApprovalRequestInput {
+        approval_request_id,
+        status,
+        decision_note: note,
+    }) {
+        eprintln!("FutureOS approval decision persistence failed: {error}");
+    }
+
+    if let Err(error) = store::update_run_status(store::UpdateRunStatusInput {
+        run_id: run_id.to_string(),
+        status: "running".to_string(),
+        error_message: None,
+    }) {
+        eprintln!("FutureOS run approval decision status update failed: {error}");
     }
 }
 
@@ -579,25 +671,99 @@ fn persist_tool_end(run_id: &str, value: &serde_json::Value, sequence: i64) {
     let error = value_string(value, &["error", "errorText"]);
     let output_content =
         value_string(value, &["text", "result"]).or_else(|| value.get("output").map(compact_json));
+    let status = if error.as_deref().unwrap_or_default().is_empty() {
+        "completed".to_string()
+    } else {
+        "failed".to_string()
+    };
+    let output_kind = if status == "completed" {
+        "text".to_string()
+    } else {
+        "error".to_string()
+    };
+    let final_output = error.or(output_content);
+
+    if status == "completed" {
+        persist_written_file_artifact(run_id, &tool_name, final_output.as_deref());
+    }
 
     if let Err(error) = store::complete_tool_call(store::CompleteToolCallInput {
         run_id: run_id.to_string(),
         tool_call_id,
         name: tool_name,
-        status: if error.as_deref().unwrap_or_default().is_empty() {
-            "completed".to_string()
-        } else {
-            "failed".to_string()
-        },
-        output_kind: if error.as_deref().unwrap_or_default().is_empty() {
-            "text".to_string()
-        } else {
-            "error".to_string()
-        },
-        output_content: error.or(output_content),
+        status,
+        output_kind,
+        output_content: final_output,
     }) {
         eprintln!("FutureOS tool output persistence failed: {error}");
     }
+}
+
+fn persist_written_file_artifact(run_id: &str, tool_name: &str, output: Option<&str>) {
+    if tool_name != "write" {
+        return;
+    }
+
+    let Some(path) = output.and_then(written_path_from_tool_output) else {
+        return;
+    };
+    match path_is_inside_run_workspace(run_id, &path) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            eprintln!("FutureOS write artifact workspace check failed: {error}");
+            return;
+        }
+    }
+
+    let path_ref = Path::new(&path);
+    let title = path_ref
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("Written file")
+        .to_string();
+    let artifact_type = artifact_type_from_path(path_ref);
+
+    if let Err(error) = store::ensure_artifact(store::EnsureArtifactInput {
+        run_id: run_id.to_string(),
+        title,
+        artifact_type,
+        path: Some(path),
+        content: None,
+        content_storage: Some("file".to_string()),
+        summary: Some("Written by Agent.".to_string()),
+    }) {
+        eprintln!("FutureOS write artifact persistence failed: {error}");
+    }
+}
+
+fn path_is_inside_run_workspace(run_id: &str, path: &str) -> Result<bool, String> {
+    let run = store::get_run(run_id)?.ok_or_else(|| "Run could not be loaded.".to_string())?;
+    let thread = store::get_thread(&run.thread_id)?
+        .ok_or_else(|| "Thread could not be loaded.".to_string())?;
+    let workspace = store::get_workspace(&thread.workspace_id)?
+        .ok_or_else(|| "Workspace could not be loaded.".to_string())?;
+    if git_review::is_git_workspace(Path::new(&workspace.path)) {
+        return Ok(false);
+    }
+
+    let workspace_path = canonical_or_raw(&workspace.path);
+    let candidate_path = canonical_or_raw(path);
+    Ok(candidate_path.starts_with(workspace_path))
+}
+
+fn canonical_or_raw(path: &str) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
+}
+
+fn written_path_from_tool_output(output: &str) -> Option<String> {
+    output
+        .trim()
+        .strip_prefix("Written to ")
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
 }
 
 fn persist_artifact(run_id: &str, value: &serde_json::Value) {
@@ -640,6 +806,27 @@ fn value_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
 
 fn compact_json(value: &serde_json::Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
+}
+
+fn artifact_type_from_path(path: &Path) -> String {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    match extension.as_str() {
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "svg" | "bmp" | "tif" | "tiff" => "image",
+        "pdf" => "pdf",
+        "doc" | "docx" | "md" | "rtf" | "txt" => "document",
+        "csv" | "tsv" | "xls" | "xlsx" => "spreadsheet",
+        "json" | "jsonl" | "parquet" | "sqlite" | "db" => "data",
+        "py" | "rs" | "ts" | "tsx" | "js" | "jsx" | "go" | "java" | "c" | "cpp" | "h" | "hpp" => {
+            "code"
+        }
+        _ => "file",
+    }
+    .to_string()
 }
 
 fn review_shape_for_tool(
