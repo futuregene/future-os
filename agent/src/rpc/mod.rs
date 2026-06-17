@@ -10,7 +10,7 @@ use crate::events::EventBus;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-pub use approval::{ApprovalDecision, ApprovalGate};
+pub use approval::{ApprovalDecision, ApprovalDecisionStatus, ApprovalGate};
 pub use commands::handle_command_internal;
 pub use protocol::{RpcCommand, RpcResponse, SseBroadcaster, SseEvent};
 pub use session::ServerSession;

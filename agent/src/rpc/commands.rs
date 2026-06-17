@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use super::{
-    generate_session_html, get_state_internal, AppState, ApprovalDecision, RpcCommand, RpcResponse,
-    ServerSession, SseBroadcaster,
+    generate_session_html, get_state_internal, AppState, ApprovalDecision, ApprovalDecisionStatus,
+    RpcCommand, RpcResponse, ServerSession, SseBroadcaster,
 };
 
 pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
@@ -53,12 +53,17 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             if let Ok(sess) = session.try_write() {
                 sess.abort();
             }
+            let session_id = session.read().unwrap().session_id.clone();
+            state
+                .approval_gate
+                .cancel_session(&session_id, "Cancelled because the run was terminated.");
             RpcResponse::ok(id, "abort", serde_json::json!({}))
         }
         "approval_decision" => {
-            let approved = match cmd.mode.as_str() {
-                "approved" => true,
-                "rejected" | "cancelled" => false,
+            let (approved, status) = match cmd.mode.as_str() {
+                "approved" => (true, ApprovalDecisionStatus::Approved),
+                "rejected" => (false, ApprovalDecisionStatus::Rejected),
+                "cancelled" => (false, ApprovalDecisionStatus::Cancelled),
                 _ => {
                     return RpcResponse::build_fail(
                         id,
@@ -72,6 +77,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 ApprovalDecision {
                     approved,
                     note: cmd.message.clone(),
+                    status,
                 },
             ) {
                 Ok(()) => RpcResponse::ok(

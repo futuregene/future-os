@@ -1,8 +1,10 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::time::{timeout, Duration};
@@ -13,6 +15,7 @@ use crate::{
 };
 
 const AGENT_EVENT_STREAM_TIMEOUT_SECS: u64 = 600;
+static ACTIVE_AGENT_PROMPTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,10 +78,38 @@ pub async fn agent_prompt(
     model_id: Option<String>,
     thinking_level: Option<String>,
 ) -> Result<AgentPromptResponse, String> {
+    let result = agent_prompt_inner(
+        message,
+        image_paths,
+        thread_id,
+        session_id,
+        run_id.clone(),
+        model_id,
+        thinking_level,
+    )
+    .await;
+
+    if let Err(error) = &result {
+        mark_run_failed_if_active(run_id.as_deref(), error);
+    }
+
+    result
+}
+
+async fn agent_prompt_inner(
+    message: String,
+    image_paths: Option<Vec<String>>,
+    thread_id: String,
+    session_id: Option<String>,
+    run_id: Option<String>,
+    model_id: Option<String>,
+    thinking_level: Option<String>,
+) -> Result<AgentPromptResponse, String> {
     let endpoint = agent_endpoint();
     let session_id = session_id
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| thread_id.clone());
+    let _prompt_guard = PromptSessionGuard::acquire(&session_id)?;
     let cwd = workspace_path_for_thread(&thread_id)?;
     let prior_user_message_count = prior_user_message_count(&thread_id)?;
     let force_reset_session = prior_user_message_count == 0;
@@ -156,6 +187,54 @@ pub async fn agent_prompt(
 
     let content = collect_agent_response(&mut event_stream, run_id.as_deref()).await?;
     Ok(AgentPromptResponse { content })
+}
+
+struct PromptSessionGuard {
+    session_id: String,
+}
+
+impl PromptSessionGuard {
+    fn acquire(session_id: &str) -> Result<Self, String> {
+        let active = ACTIVE_AGENT_PROMPTS.get_or_init(|| Mutex::new(HashSet::new()));
+        let mut guard = active
+            .lock()
+            .map_err(|_| "Unable to lock active Agent prompt registry.".to_string())?;
+        if !guard.insert(session_id.to_string()) {
+            return Err("Future Agent is already running for this session.".to_string());
+        }
+        Ok(Self {
+            session_id: session_id.to_string(),
+        })
+    }
+}
+
+impl Drop for PromptSessionGuard {
+    fn drop(&mut self) {
+        if let Some(active) = ACTIVE_AGENT_PROMPTS.get() {
+            if let Ok(mut guard) = active.lock() {
+                guard.remove(&self.session_id);
+            }
+        }
+    }
+}
+
+fn mark_run_failed_if_active(run_id: Option<&str>, error: &str) {
+    let Some(run_id) = run_id else {
+        return;
+    };
+    let Ok(Some(run)) = store::get_run(run_id) else {
+        return;
+    };
+    if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+        return;
+    }
+    if let Err(update_error) = store::update_run_status(store::UpdateRunStatusInput {
+        run_id: run_id.to_string(),
+        status: "failed".to_string(),
+        error_message: Some(error.to_string()),
+    }) {
+        eprintln!("FutureOS run failure status update failed: {update_error}");
+    }
 }
 
 pub async fn notify_agent_approval_decision(

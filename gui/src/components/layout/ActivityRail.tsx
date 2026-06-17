@@ -463,26 +463,15 @@ function ThreadRunIndicator({ status }: { status?: StoredRun["status"] }) {
     );
   }
 
-  if (status === "completed") {
+  if (status === "completed" || status === "failed" || status === "cancelled") {
+    const label = status === "completed" ? "Completed" : status === "failed" ? "Failed" : "Cancelled";
     return (
       <span
-        aria-label="Completed"
+        aria-label={label}
         className="inline-flex size-5 shrink-0 items-center justify-center group-hover/thread:hidden"
-        title="Completed"
+        title={label}
       >
-        <span className="size-2 rounded-full bg-green-500" />
-      </span>
-    );
-  }
-
-  if (status === "failed") {
-    return (
-      <span
-        aria-label="Failed"
-        className="inline-flex size-5 shrink-0 items-center justify-center group-hover/thread:hidden"
-        title="Failed"
-      >
-        <span className="size-2 rounded-full bg-red-500" />
+        <span className="size-2 rounded-full bg-ink-muted/70" />
       </span>
     );
   }

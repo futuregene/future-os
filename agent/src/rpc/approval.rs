@@ -8,13 +8,26 @@ use super::{SseBroadcaster, SseEvent};
 
 #[derive(Clone, Default)]
 pub struct ApprovalGate {
-    pending: Arc<Mutex<HashMap<String, mpsc::Sender<ApprovalDecision>>>>,
+    pending: Arc<Mutex<HashMap<String, PendingApproval>>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ApprovalDecision {
     pub approved: bool,
     pub note: String,
+    pub status: ApprovalDecisionStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalDecisionStatus {
+    Approved,
+    Rejected,
+    Cancelled,
+}
+
+struct PendingApproval {
+    session_id: String,
+    tx: mpsc::Sender<ApprovalDecision>,
 }
 
 impl ApprovalGate {
@@ -33,7 +46,13 @@ impl ApprovalGate {
 
         let request_id = format!("approval_{}", crate::utils::generate_entry_id());
         let (tx, rx) = mpsc::channel::<ApprovalDecision>();
-        self.pending.lock().unwrap().insert(request_id.clone(), tx);
+        self.pending.lock().unwrap().insert(
+            request_id.clone(),
+            PendingApproval {
+                session_id: session_id.to_string(),
+                tx,
+            },
+        );
 
         broadcaster.broadcast(SseEvent::new(
             "approval_request",
@@ -68,6 +87,24 @@ impl ApprovalGate {
                     }),
                 ));
                 None
+            }
+            Ok(decision) if decision.status == ApprovalDecisionStatus::Cancelled => {
+                broadcaster.broadcast(SseEvent::new(
+                    "approval_decision",
+                    serde_json::json!({
+                        "type": "approval_decision",
+                        "approval_request_id": request_id,
+                        "tool_id": tool_id,
+                        "status": "cancelled",
+                        "note": decision.note,
+                    }),
+                ));
+                Some(crate::types::ToolCallResult {
+                    result: format!(
+                        "Tool call `{tool_name}` was cancelled because the approval request ended."
+                    ),
+                    is_error: true,
+                })
             }
             Ok(decision) => {
                 broadcaster.broadcast(SseEvent::new(
@@ -116,13 +153,44 @@ impl ApprovalGate {
     }
 
     pub fn decide(&self, request_id: &str, decision: ApprovalDecision) -> Result<(), String> {
-        let tx = self
+        let pending = self
             .pending
             .lock()
             .unwrap()
             .remove(request_id)
             .ok_or_else(|| format!("approval request `{request_id}` is not pending"))?;
-        tx.send(decision).map_err(|error| error.to_string())
+        pending.tx.send(decision).map_err(|error| error.to_string())
+    }
+
+    pub fn cancel_session(&self, session_id: &str, note: &str) -> usize {
+        let pending = {
+            let mut guard = self.pending.lock().unwrap();
+            let request_ids = guard
+                .iter()
+                .filter_map(|(request_id, pending)| {
+                    (pending.session_id == session_id).then(|| request_id.clone())
+                })
+                .collect::<Vec<_>>();
+            request_ids
+                .into_iter()
+                .filter_map(|request_id| {
+                    guard
+                        .remove(&request_id)
+                        .map(|pending| (request_id, pending))
+                })
+                .collect::<Vec<_>>()
+        };
+        let count = pending.len();
+
+        for (_, pending) in pending {
+            let _ = pending.tx.send(ApprovalDecision {
+                approved: false,
+                note: note.to_string(),
+                status: ApprovalDecisionStatus::Cancelled,
+            });
+        }
+
+        count
     }
 }
 

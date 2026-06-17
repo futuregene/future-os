@@ -10,7 +10,6 @@ import type {
 } from "../../integrations/storage/types";
 import type { FutureReference, InlineNode, MarkdownNode } from "./futureMarkdownTypes";
 import { useMemo } from "react";
-import { referenceKey } from "./futureMarkdownTypes";
 import { useFutureReference, useFutureReferences } from "./futureReferenceStore";
 import { parseFutureMarkdown } from "./parseFutureMarkdown";
 import { ArtifactEmbed } from "./renderers/ArtifactEmbed";
@@ -55,7 +54,7 @@ function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined,
             : "list-disc space-y-1 pl-5"}
           key={key}
         >
-          {withStableKeys(node.items, key, item => `${item.checked ?? "plain"}:${inlineSignature(item.children)}`).map(({ item, key: itemKey }) => (
+          {withStableKeys(node.items, key).map(({ item, key: itemKey }) => (
             <li className="pl-1" key={itemKey}>
               <ListItemContent item={item} itemKey={itemKey} workspaceId={workspaceId} />
             </li>
@@ -86,7 +85,7 @@ function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined,
           <table className="min-w-full border-separate border-spacing-0 overflow-hidden rounded-md border border-line-soft text-sm">
             <thead className="bg-surface-subtle text-ink">
               <tr>
-                {withStableKeys(node.headers, `${key}:h`, inlineSignature).map(({ item: header, key: headerKey, ordinal: column }) => (
+                {withStableKeys(node.headers, `${key}:h`).map(({ item: header, key: headerKey, ordinal: column }) => (
                   <th
                     className="border-b border-line-soft px-3 py-2 text-left font-semibold"
                     key={headerKey}
@@ -98,9 +97,9 @@ function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined,
               </tr>
             </thead>
             <tbody>
-              {withStableKeys(node.rows, `${key}:r`, row => row.map(inlineSignature).join("|")).map(({ item: row, key: rowKey }) => (
+              {withStableKeys(node.rows, `${key}:r`).map(({ item: row, key: rowKey }) => (
                 <tr className="odd:bg-surface even:bg-surface-subtle/60" key={rowKey}>
-                  {withStableKeys(row, `${rowKey}:c`, inlineSignature).map(({ item: cell, key: cellKey, ordinal: column }) => (
+                  {withStableKeys(row, `${rowKey}:c`).map(({ item: cell, key: cellKey, ordinal: column }) => (
                     <td
                       className="border-b border-line-soft px-3 py-2 align-top text-ink-soft last:border-b-0"
                       key={cellKey}
@@ -197,44 +196,12 @@ function tableTextAlign(alignment: "center" | "left" | "right" | null | undefine
   return alignment ?? "left";
 }
 
-function withStableKeys<T>(items: T[], seed: string, signature: (item: T) => string) {
-  const seen = new Map<string, number>();
-  return items.map((item, ordinal) => {
-    const base = stableKeyPart(signature(item));
-    const count = seen.get(base) ?? 0;
-    seen.set(base, count + 1);
-    return {
-      item,
-      key: `${seed}:${base}:${count}`,
-      ordinal,
-    };
-  });
-}
-
-function stableKeyPart(value: string) {
-  let hash = 5381;
-  for (let index = 0; index < value.length; index += 1) {
-    hash = (hash * 33) ^ value.charCodeAt(index);
-  }
-  return (hash >>> 0).toString(36);
-}
-
-function inlineSignature(nodes: InlineNode[]): string {
-  return nodes.map((node) => {
-    if (node.type === "futureReference")
-      return `future:${referenceKey(node.reference)}:${node.reference.view}:${node.reference.label ?? ""}`;
-    if (node.type === "strong" || node.type === "italic" || node.type === "delete")
-      return `${node.type}:${inlineSignature(node.children)}`;
-    if (node.type === "link")
-      return `link:${node.href}:${inlineSignature(node.children)}`;
-    if (node.type === "image")
-      return `image:${node.src}:${node.alt}:${node.title ?? ""}`;
-    if (node.type === "code")
-      return `code:${node.code}`;
-    if (node.type === "break")
-      return "break";
-    return `${node.type}:${node.text}`;
-  }).join("\u001F");
+function withStableKeys<T>(items: T[], seed: string) {
+  return items.map((item, ordinal) => ({
+    item,
+    key: `${seed}:${ordinal}`,
+    ordinal,
+  }));
 }
 
 function FutureReferenceChip({

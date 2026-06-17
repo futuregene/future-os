@@ -78,9 +78,8 @@ pub fn clear_finished_runs(thread_id: &str) -> Result<usize, String> {
     initialize_app_store()?;
     let mut conn = connect()?;
     let tx = conn.transaction().map_err(|error| error.to_string())?;
-    let changed = tx
-        .execute(
-            "UPDATE messages
+    tx.execute(
+        "UPDATE messages
              SET run_id = NULL
              WHERE thread_id = ?1
                AND run_id IN (
@@ -88,9 +87,9 @@ pub fn clear_finished_runs(thread_id: &str) -> Result<usize, String> {
                  WHERE thread_id = ?1
                    AND status IN ('completed', 'failed', 'cancelled')
                )",
-            params![thread_id],
-        )
-        .map_err(|error| error.to_string())?;
+        params![thread_id],
+    )
+    .map_err(|error| error.to_string())?;
     tx.execute(
         "UPDATE artifacts
          SET run_id = NULL
@@ -169,13 +168,14 @@ pub fn clear_finished_runs(thread_id: &str) -> Result<usize, String> {
         params![thread_id],
     )
     .map_err(|error| error.to_string())?;
-    tx.execute(
-        "DELETE FROM runs
+    let deleted_runs = tx
+        .execute(
+            "DELETE FROM runs
          WHERE thread_id = ?1
            AND status IN ('completed', 'failed', 'cancelled')",
-        params![thread_id],
-    )
-    .map_err(|error| error.to_string())?;
+            params![thread_id],
+        )
+        .map_err(|error| error.to_string())?;
     tx.commit().map_err(|error| error.to_string())?;
-    Ok(changed)
+    Ok(deleted_runs)
 }

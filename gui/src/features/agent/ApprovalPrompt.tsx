@@ -33,6 +33,8 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
     function handleKeyDown(event: KeyboardEvent) {
       if (deciding)
         return;
+      if (isEditableTarget(event.target))
+        return;
 
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
         event.preventDefault();
@@ -96,6 +98,17 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
       </div>
     </section>
   );
+}
+
+function isEditableTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement))
+    return false;
+
+  const tagName = target.tagName.toLowerCase();
+  return target.isContentEditable
+    || tagName === "input"
+    || tagName === "textarea"
+    || tagName === "select";
 }
 
 function formatRequestedAction(action: string | null | undefined) {

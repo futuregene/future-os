@@ -12,7 +12,8 @@ pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), 
         .query_row(
             "SELECT id
              FROM approval_requests
-             WHERE (?1 IS NOT NULL AND id = ?1) OR (tool_call_id = ?2 AND kind = ?3)
+             WHERE (?1 IS NOT NULL AND id = ?1)
+                OR (?1 IS NULL AND tool_call_id = ?2 AND kind = ?3)
              LIMIT 1",
             params![input.approval_request_id, input.tool_call_id, input.kind],
             |row| row.get(0),
