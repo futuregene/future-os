@@ -52,6 +52,7 @@ type ModelConfig = {
     input?: number;
     output?: number;
     cache_read?: number;
+    cache_write?: number;
   };
 };
 
@@ -320,18 +321,32 @@ function costFromModel(model: Record<string, unknown>): ModelConfig["cost"] | un
       directCost.cacheRead,
       directCost.input_cache_read,
     );
-    return compactCost(input, output, cacheRead);
+    const cacheWrite = firstNumber(
+      directCost.cache_write,
+      directCost.cacheWrite,
+      directCost.input_cache_write,
+    );
+    return compactCost(input, output, cacheRead, cacheWrite);
   }
 
   const pricing = getRecord(model.pricing);
   if (!pricing) {
     return undefined;
   }
+  const prices = Array.isArray(pricing.prices) ? pricing.prices : undefined;
+  const basePrice = prices ? getRecord(prices[0]) : pricing;
+  if (!basePrice) {
+    return undefined;
+  }
+  const priceUnit = firstNumber(pricing.price_unit, pricing.priceUnit) ?? 1;
 
   return compactCost(
-    perTokenPriceToPerMillion(pricing.prompt),
-    perTokenPriceToPerMillion(pricing.completion),
-    perTokenPriceToPerMillion(pricing.input_cache_read),
+    priceToPerMillion(basePrice.input, priceUnit) ??
+      perTokenPriceToPerMillion(basePrice.prompt),
+    priceToPerMillion(basePrice.output, priceUnit) ??
+      perTokenPriceToPerMillion(basePrice.completion),
+    priceToPerMillion(basePrice.input_cache_read, priceUnit),
+    priceToPerMillion(basePrice.input_cache_write, priceUnit),
   );
 }
 
@@ -339,11 +354,13 @@ function compactCost(
   input: number | undefined,
   output: number | undefined,
   cacheRead: number | undefined,
+  cacheWrite?: number | undefined,
 ): ModelConfig["cost"] | undefined {
   const cost: NonNullable<ModelConfig["cost"]> = {};
   if (input !== undefined) cost.input = input;
   if (output !== undefined) cost.output = output;
   if (cacheRead !== undefined) cost.cache_read = cacheRead;
+  if (cacheWrite !== undefined) cost.cache_write = cacheWrite;
   return Object.keys(cost).length > 0 ? cost : undefined;
 }
 
@@ -378,6 +395,11 @@ function numberFromUnknown(value: unknown): number | undefined {
 function perTokenPriceToPerMillion(value: unknown): number | undefined {
   const price = numberFromUnknown(value);
   return price === undefined ? undefined : price * 1_000_000;
+}
+
+function priceToPerMillion(value: unknown, priceUnit: number): number | undefined {
+  const price = numberFromUnknown(value);
+  return price === undefined || priceUnit <= 0 ? undefined : (price * 1_000_000) / priceUnit;
 }
 
 async function loadModelsFile(): Promise<ModelsFile> {
