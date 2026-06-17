@@ -141,8 +141,9 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
     return { structuredContent: { endpoint, status: "already_running" } };
   }
 
-  const executablePath = stringArg(args, "executablePath") ?? findBrowserExecutable();
-  if (!executablePath) {
+  const executablePath = stringArg(args, "executablePath");
+  const launcher = findBrowserLauncher(executablePath);
+  if (!launcher) {
     throw new Error("Could not find Chrome or Edge. Pass executablePath to browser_start.");
   }
 
@@ -151,13 +152,14 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
   await mkdir(profileDir, { recursive: true });
   await mkdir(BROWSER_DIR, { recursive: true });
 
-  const child = spawn(executablePath, [
+  const chromeArgs = [
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${profileDir}`,
     "--no-first-run",
     "--no-default-browser-check",
     url,
-  ], {
+  ];
+  const child = spawn(launcher.command, [...launcher.args, ...chromeArgs], {
     detached: true,
     stdio: "ignore",
   });
@@ -170,7 +172,7 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
       return {
         structuredContent: {
           endpoint,
-          executablePath,
+          launcher,
           profileDir,
           status: "started",
         },
@@ -183,7 +185,7 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
   return {
     structuredContent: {
       endpoint,
-      executablePath,
+      launcher,
       profileDir,
       status: "starting",
       note: "Browser was launched, but the debugging endpoint did not answer within 10 seconds.",
@@ -237,13 +239,14 @@ async function withBrowser(
     );
   }
 
-  const browser = await chromium.connectOverCDP(endpoint);
+  const browser = await chromium.connectOverCDP(endpoint, { timeout: 5000 });
   const config = await loadConfig();
   const page = await activePage(browser, config);
+  page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(15_000);
   await installConsoleHook(page);
 
-  const result = await fn({ browser, page, config });
-  return result;
+  return fn({ browser, page, config });
 }
 
 async function browserTabs(ctx: BrowserContext, args: Record<string, unknown>): Promise<LocalToolResult> {
@@ -608,26 +611,35 @@ async function saveConfig(config: BrowserConfig): Promise<void> {
   await writeFile(CONFIG_FILE, `${JSON.stringify(config, null, 2)}\n`);
 }
 
-function findBrowserExecutable(): string | null {
+interface BrowserLauncher {
+  command: string;
+  args: string[];
+}
+
+function findBrowserLauncher(executablePath?: string): BrowserLauncher | null {
+  if (executablePath) return { command: executablePath, args: [] };
+
   if (platform() === "darwin") {
-    return [
-      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-      "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    ].find((candidate) => existsSync(candidate)) ?? null;
+    for (const appName of ["Google Chrome", "Microsoft Edge", "Chromium"]) {
+      if (existsSync(`/Applications/${appName}.app`)) {
+        return { command: "/usr/bin/open", args: ["-na", appName, "--args"] };
+      }
+    }
+    return null;
   }
   if (platform() === "win32") {
     const local = process.env["LOCALAPPDATA"];
     const programFiles = process.env["PROGRAMFILES"];
     const programFilesX86 = process.env["PROGRAMFILES(X86)"];
-    return [
+    const command = [
       local ? join(local, "Google", "Chrome", "Application", "chrome.exe") : "",
       programFiles ? join(programFiles, "Google", "Chrome", "Application", "chrome.exe") : "",
       programFilesX86 ? join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe") : "",
       programFiles ? join(programFiles, "Microsoft", "Edge", "Application", "msedge.exe") : "",
-    ].filter(Boolean).find((candidate) => existsSync(candidate)) ?? null;
+    ].filter(Boolean).find((candidate) => existsSync(candidate));
+    return command ? { command, args: [] } : null;
   }
-  return process.env["CHROME_PATH"] ?? "google-chrome";
+  return { command: process.env["CHROME_PATH"] ?? "google-chrome", args: [] };
 }
 
 function stringArg(args: Record<string, unknown>, key: string): string | undefined {

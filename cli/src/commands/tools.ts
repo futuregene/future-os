@@ -378,13 +378,17 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     toolArgs = await resolveLocalPaths(toolArgs);
 
     if (isBrowserTool(toolName)) {
-      const result = await callBrowserTool(toolName, toolArgs);
-      if (result.structuredContent && Object.keys(result.structuredContent).length > 0) {
-        console.log(JSON.stringify(result.structuredContent, null, 2));
-      } else {
-        console.log(result.text ?? "");
+      try {
+        const result = await callBrowserTool(toolName, toolArgs);
+        const output = result.structuredContent && Object.keys(result.structuredContent).length > 0
+          ? JSON.stringify(result.structuredContent, null, 2)
+          : result.text ?? "";
+        await writeStdout(`${output}\n`);
+        process.exit(0);
+      } catch (error) {
+        await writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
+        process.exit(1);
       }
-      return;
     }
 
     const apiKey = await loadApiKey();
@@ -412,4 +416,12 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     }
     return;
   }
+}
+
+function writeStdout(text: string): Promise<void> {
+  return new Promise((resolve) => process.stdout.write(text, () => resolve()));
+}
+
+function writeStderr(text: string): Promise<void> {
+  return new Promise((resolve) => process.stderr.write(text, () => resolve()));
 }
