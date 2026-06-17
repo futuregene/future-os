@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 
 import { getRecord, isRecord, isNodeError } from "../utils/object.js";
 import { mcpPost, mcpUrl, initializeSession } from "./mcp.js";
+import { BROWSER_TOOL_CATALOG, callBrowserTool, isBrowserTool } from "./browser-tools.js";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -20,6 +21,7 @@ interface ToolEntry {
 }
 
 export const TOOL_CATALOG: Record<string, ToolEntry> = {
+  ...BROWSER_TOOL_CATALOG,
   case_searcher: {
     description: "Search similar rare disease cases by patient phenotypes.",
     args: {
@@ -314,11 +316,25 @@ async function resolveLocalPaths(args: Record<string, unknown>): Promise<Record<
 // ── Public command entry ────────────────────────────────────────────────────
 
 export async function tools(command: ToolsCommand, args: string[]): Promise<void> {
-  const apiKey = await loadApiKey();
-
   if (command === "list") {
     const jsonFlag = args.includes("--json");
-    const tools = await listRemoteTools(apiKey);
+    let tools: Array<{ name: string; description: string }> = Object.entries(BROWSER_TOOL_CATALOG)
+      .map(([name, entry]) => ({ name, description: entry.description }));
+
+    try {
+      const apiKey = await loadApiKey();
+      tools = [...tools, ...await listRemoteTools(apiKey)];
+    } catch (error) {
+      if (jsonFlag) {
+        tools = tools.map((tool) => ({ ...tool }));
+      } else {
+        console.error(
+          `Remote tools unavailable: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        console.error("Showing local tools only.\n");
+      }
+    }
+
     if (jsonFlag) {
       console.log(JSON.stringify(tools, null, 2));
     } else {
@@ -361,6 +377,17 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     // Resolve image_path / doc_path → base64 before sending to API
     toolArgs = await resolveLocalPaths(toolArgs);
 
+    if (isBrowserTool(toolName)) {
+      const result = await callBrowserTool(toolName, toolArgs);
+      if (result.structuredContent && Object.keys(result.structuredContent).length > 0) {
+        console.log(JSON.stringify(result.structuredContent, null, 2));
+      } else {
+        console.log(result.text ?? "");
+      }
+      return;
+    }
+
+    const apiKey = await loadApiKey();
     const result = await callRemoteTool(apiKey, toolName, toolArgs);
 
     // Output structured content as JSON when available (primary data for agent consumption).
