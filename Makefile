@@ -15,6 +15,7 @@ install-skills:
 	rsync -a skills/future-image/ ~/.agents/skills/future-image/
 	rsync -a skills/future-document/ ~/.agents/skills/future-document/
 	rsync -a skills/future-hand-drawn-slides/ ~/.agents/skills/future-hand-drawn-slides/
+	rsync -a skills/future-hand-drawn-posters/ ~/.agents/skills/future-hand-drawn-posters/
 	rsync -a skills/future-browser/ ~/.agents/skills/future-browser/
 
 install-gui:
