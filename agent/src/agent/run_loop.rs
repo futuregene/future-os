@@ -204,8 +204,8 @@ impl Loop {
                         bus.emit(agent_end("error", None));
                     }
                     let err = last_error.unwrap();
-                    eprintln!("[agent] LLM call failed: {}", err);
-                    return Err(err.context("turn 0"));
+                    eprintln!("[agent] LLM call failed: {:#}", err);
+                    return Err(err);
                 }
             };
 

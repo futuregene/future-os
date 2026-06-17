@@ -406,14 +406,15 @@ impl ServerSession {
                     is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
                 Ok(Err(e)) => {
-                    eprintln!("Agent loop error: {}", e);
+                    let full_error = format!("{:#}", e);
+                    eprintln!("Agent loop error: {}", full_error);
                     broadcaster.broadcast(crate::rpc::SseEvent {
                         event_type: "error".to_string(),
-                        data: serde_json::json!({"error": e.to_string()}).to_string(),
+                        data: serde_json::json!({"error": &full_error}).to_string(),
                     });
                     broadcaster.broadcast(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),
-                        data: serde_json::json!({"type": "agent_end", "error": e.to_string()})
+                        data: serde_json::json!({"type": "agent_end", "error": &full_error})
                             .to_string(),
                     });
                     is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
