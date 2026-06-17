@@ -1,8 +1,8 @@
 import type { AgentModelOption } from "../../integrations/agent/models";
-import type { StoredThread } from "../../integrations/storage/threadStore";
+import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { MessageAttachment } from "./types";
-import { useEffect, useState } from "react";
 import { cn } from "../../lib/cn";
+import { ApprovalPrompt } from "./ApprovalPrompt";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { ThreadHeader } from "./ThreadHeader";
@@ -16,13 +16,11 @@ interface AgentThreadProps {
   modelOptions: AgentModelOption[];
   onModelChange: (modelId: string) => void;
   pendingPrompt: { attachments?: MessageAttachment[]; id: string; content: string } | null;
-  onArchiveThread: () => void;
-  onDeleteThread: () => void;
+  activeApproval?: StoredApprovalRequest | null;
+  onApprovalDecision: (approval: StoredApprovalRequest, status: "approved" | "rejected") => Promise<void>;
   onPromptConsumed: (id: string) => void;
-  onRenameThread: () => void;
   onThreadActivity: () => void;
   onToggleLeftPanel: () => void;
-  onTogglePinThread: () => void;
 }
 
 export function AgentThread({
@@ -33,15 +31,12 @@ export function AgentThread({
   modelOptions,
   onModelChange,
   pendingPrompt,
-  onArchiveThread,
-  onDeleteThread,
+  activeApproval,
+  onApprovalDecision,
   onPromptConsumed,
-  onRenameThread,
   onThreadActivity,
   onToggleLeftPanel,
-  onTogglePinThread,
 }: AgentThreadProps) {
-  const [threadMenuOpen, setThreadMenuOpen] = useState(false);
   const {
     handleScroll,
     handleSend,
@@ -59,27 +54,20 @@ export function AgentThread({
     onThreadActivity,
   });
 
-  useEffect(() => {
-    setThreadMenuOpen(false);
-  }, [thread?.id]);
-
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
       <ThreadHeader
         leftPanelExpanded={leftPanelExpanded}
-        menuOpen={threadMenuOpen}
         thread={thread}
-        onArchiveThread={onArchiveThread}
-        onDeleteThread={onDeleteThread}
-        onMenuOpenChange={setThreadMenuOpen}
-        onRenameThread={onRenameThread}
         onToggleLeftPanel={onToggleLeftPanel}
-        onTogglePinThread={onTogglePinThread}
       />
       <div className="relative min-h-0 flex-1 overflow-hidden">
         <div
           ref={scrollRef}
-          className="floating-scrollbar h-full overflow-auto overscroll-none px-8 pb-48 pt-6"
+          className={cn(
+            "floating-scrollbar h-full overflow-auto overscroll-none px-8 pt-6",
+            activeApproval ? "pb-[28rem]" : "pb-48",
+          )}
           data-chat-scroll="true"
           onScroll={handleScroll}
         >
@@ -93,7 +81,7 @@ export function AgentThread({
                       <div className="py-8 text-sm text-ink-soft">No active thread.</div>
                     )
                   : (
-                      <MessageList messages={messages} />
+                      <MessageList messages={messages} workspaceId={thread?.workspaceId} />
                     )}
           </div>
         </div>
@@ -108,14 +96,25 @@ export function AgentThread({
           }}
         />
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-8 pb-5">
-          <div className="mx-auto w-full max-w-4xl">
+          <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
+            {activeApproval
+              ? (
+                  <div className="pointer-events-auto mx-auto w-full max-w-3xl">
+                    <ApprovalPrompt
+                      approval={activeApproval}
+                      onDecision={onApprovalDecision}
+                    />
+                  </div>
+                )
+              : null}
             <Composer
-              className="pointer-events-auto mx-auto max-w-3xl"
+              className="pointer-events-auto mx-auto w-full max-w-3xl"
               disabled={!thread || loadingThread || loadingStore}
               modelId={modelId}
               modelOptions={modelOptions}
               onModelChange={onModelChange}
               onSend={handleSend}
+              workspaceId={thread?.workspaceId}
             />
           </div>
         </div>

@@ -548,7 +548,11 @@ impl Loop {
                     "[agent] turn={} executing {} tools: {}",
                     turn,
                     tool_calls.len(),
-                    tool_calls.iter().map(|t| t.function.name.as_str()).collect::<Vec<_>>().join(", ")
+                    tool_calls
+                        .iter()
+                        .map(|t| t.function.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 );
             }
             self.execute_tools(turn, &tool_calls, &mut messages).await;

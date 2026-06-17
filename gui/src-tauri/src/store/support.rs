@@ -79,7 +79,7 @@ pub(super) fn get_message(id: &str) -> Result<Option<MessageRecord>, String> {
     .map_err(|error| error.to_string())
 }
 
-pub(super) fn get_run(id: &str) -> Result<Option<RunRecord>, String> {
+pub fn get_run(id: &str) -> Result<Option<RunRecord>, String> {
     let conn = connect()?;
     conn.query_row(
         "SELECT id, thread_id, trigger_message_id, status, model_provider, model_id,

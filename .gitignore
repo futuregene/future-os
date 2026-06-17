@@ -33,6 +33,7 @@ gui/.vite/
 
 # FutureOS local app data
 .future/
+.logs/
 *.db
 *.db-shm
 *.db-wal

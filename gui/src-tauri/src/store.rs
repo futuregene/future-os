@@ -1,5 +1,6 @@
 mod artifacts;
 mod cleanup;
+mod markdown_refs;
 mod models;
 mod research;
 mod review;
@@ -12,15 +13,20 @@ use std::fs;
 pub use artifacts::{
     create_artifact, delete_artifact, ensure_artifact, import_attachment_artifact, list_artifacts,
 };
-pub use cleanup::get_thread_cleanup_summary;
+pub use cleanup::{
+    cancel_stale_approval_requests, clear_finished_runs, get_thread_cleanup_summary,
+};
+pub use markdown_refs::{
+    resolve_markdown_references, search_reference_targets, sync_message_markdown_references,
+};
 pub use models::*;
 pub use research::{list_research_resources, promote_artifact_to_research};
 pub use review::{
     decide_approval_request, ensure_approval_request, ensure_review_change, list_approval_requests,
     list_review_changesets, list_review_file_changes,
 };
-pub use support::get_approval_request;
 use support::*;
+pub use support::{get_approval_request, get_run};
 
 pub fn app_data_path() -> Result<AppDataPath, String> {
     Ok(AppDataPath {
@@ -384,6 +390,7 @@ pub fn append_message(input: AppendMessageInput) -> Result<MessageRecord, String
         params![now, input.thread_id],
     )
     .map_err(|error| error.to_string())?;
+    let _ = sync_message_markdown_references(&conn, &id, &input.thread_id, &input.content);
 
     get_message(&id)?.ok_or_else(|| "Created message could not be loaded.".to_string())
 }
@@ -452,6 +459,28 @@ pub fn update_run_status(input: UpdateRunStatusInput) -> Result<RunRecord, Strin
         ],
     )
     .map_err(|error| error.to_string())?;
+    if input.status == "cancelled" {
+        conn.execute(
+            "UPDATE approval_requests
+             SET status = 'cancelled',
+                 decision_note = COALESCE(decision_note, 'Cancelled because the run was terminated.'),
+                 decided_at = COALESCE(decided_at, ?1),
+                 updated_at = ?1
+             WHERE run_id = ?2
+               AND status = 'pending'",
+            params![now, input.run_id],
+        )
+        .map_err(|error| error.to_string())?;
+        conn.execute(
+            "UPDATE tool_calls
+             SET status = 'cancelled',
+                 ended_at = COALESCE(ended_at, ?1)
+             WHERE run_id = ?2
+               AND status = 'running'",
+            params![now, input.run_id],
+        )
+        .map_err(|error| error.to_string())?;
+    }
     get_run(&input.run_id)?.ok_or_else(|| "Updated run could not be loaded.".to_string())
 }
 

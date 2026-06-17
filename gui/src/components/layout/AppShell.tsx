@@ -1,20 +1,21 @@
 import type { NewConversationStart } from "../../features/agent/NewConversation";
 import type { MessageAttachment } from "../../features/agent/types";
 import type { AgentModelOption } from "../../integrations/agent/models";
-import type { StoredRun, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
+import type { StoredApprovalRequest, StoredRun, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { DeleteDialogState, RenameDialogState } from "./AppShellDialogs";
 import type { ContextTab } from "./ContextPanel";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { ResearchView } from "../../features/research/ResearchView";
 import { defaultAgentModelId, defaultModelId, loadAgentModelOptions } from "../../integrations/agent/models";
 import {
-  archiveThread,
+  cancelStaleApprovalRequests,
   createDefaultChatThread,
   createThread,
   createWorkspace,
+  decideApprovalRequest,
   deleteThread,
   getRecentThread,
   getThreadCleanupSummary,
@@ -51,7 +52,7 @@ export function AppShell() {
   const [leftOverlayOpen, setLeftOverlayOpen] = useState(false);
   const [rightExpanded, setRightExpanded] = useState(false);
   const [contextTab, setContextTab] = useState<ContextTab>("runs");
-  const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
+  const [pendingApprovals, setPendingApprovals] = useState<StoredApprovalRequest[]>([]);
   const [modelOptions, setModelOptions] = useState<AgentModelOption[]>([]);
   const [selectedModelId, setSelectedModelId] = useState(defaultAgentModelId);
   const [threads, setThreads] = useState<StoredThread[]>([]);
@@ -64,7 +65,6 @@ export function AppShell() {
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
   const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState | null>(null);
   const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null);
-  const hadPendingApprovalsRef = useRef(false);
 
   const activeThread = useMemo(
     () => threads.find(thread => thread.id === activeThreadId) ?? null,
@@ -76,6 +76,13 @@ export function AppShell() {
       ?? workspaces.find(workspace => workspace.kind === "user")
       ?? null,
     [activeThread?.workspaceId, workspaces],
+  );
+  const activeApproval = useMemo(
+    () =>
+      [...pendingApprovals]
+        .filter(approval => approval.status === "pending")
+        .sort((left, right) => left.createdAt - right.createdAt)[0] ?? null,
+    [pendingApprovals],
   );
 
   const refreshThreadRunStatuses = useCallback(async (nextThreads: StoredThread[]) => {
@@ -112,6 +119,7 @@ export function AppShell() {
       setLoadingStore(true);
       try {
         await initializeAppStore();
+        await cancelStaleApprovalRequests();
         const recentThread = (await getRecentThread()) ?? (await createDefaultChatThread());
         const [nextThreads, nextWorkspaces] = await Promise.all([listThreads(), listWorkspaces()]);
         if (cancelled)
@@ -196,12 +204,9 @@ export function AppShell() {
 
   useEffect(() => {
     let cancelled = false;
-    hadPendingApprovalsRef.current = false;
-
     async function refreshPendingApprovals() {
       if (!activeThreadIdForApprovals) {
-        setPendingApprovalCount(0);
-        hadPendingApprovalsRef.current = false;
+        setPendingApprovals([]);
         return;
       }
 
@@ -209,18 +214,12 @@ export function AppShell() {
         const approvals = await listApprovalRequests(activeThreadIdForApprovals);
         if (cancelled)
           return;
-        const pendingCount = approvals.filter(approval => approval.status === "pending").length;
-        setPendingApprovalCount(pendingCount);
-        if (pendingCount > 0 && !hadPendingApprovalsRef.current) {
-          setRightExpanded(true);
-          setContextTab("approvals");
-        }
-        hadPendingApprovalsRef.current = pendingCount > 0;
+        const pending = approvals.filter(approval => approval.status === "pending");
+        setPendingApprovals(pending);
       }
       catch {
         if (!cancelled) {
-          setPendingApprovalCount(0);
-          hadPendingApprovalsRef.current = false;
+          setPendingApprovals([]);
         }
       }
     }
@@ -305,12 +304,6 @@ export function AppShell() {
     });
   }
 
-  function handleRenameActiveThread() {
-    if (!activeThread)
-      return;
-    handleRenameThread(activeThread);
-  }
-
   async function handleConfirmRenameThread() {
     if (!renameDialog || renameDialog.submitting)
       return;
@@ -349,12 +342,6 @@ export function AppShell() {
     await refreshStore(thread.id);
   }
 
-  async function handleTogglePinActiveThread() {
-    if (!activeThread)
-      return;
-    await handleTogglePinThread(activeThread);
-  }
-
   async function handleModelChange(modelId: string) {
     setSelectedModelId(modelId);
     if (!activeThread)
@@ -367,18 +354,21 @@ export function AppShell() {
     await refreshStore(activeThread.id);
   }
 
-  async function handleArchiveActiveThread() {
-    if (!activeThread)
-      return;
-
-    await archiveThread(activeThread.id);
-    await refreshStore();
-  }
-
-  function handleDeleteActiveThread() {
-    if (!activeThread)
-      return;
-    handleDeleteThread(activeThread);
+  async function handleApprovalDecision(
+    approval: StoredApprovalRequest,
+    status: "approved" | "rejected",
+  ) {
+    await decideApprovalRequest({
+      approvalRequestId: approval.id,
+      decisionNote: status === "approved" ? "Approved in GUI." : "Rejected in GUI.",
+      status,
+    });
+    if (activeThreadIdForApprovals) {
+      const approvals = await listApprovalRequests(activeThreadIdForApprovals);
+      const pending = approvals.filter(item => item.status === "pending");
+      setPendingApprovals(pending);
+    }
+    await refreshStore(activeThread?.id ?? undefined);
   }
 
   function handleDeleteThread(thread: StoredThread) {
@@ -528,18 +518,16 @@ export function AppShell() {
                   )
                 : (
                     <AgentThread
+                      activeApproval={activeApproval}
                       loadingStore={loadingStore}
                       modelId={activeThread?.modelId ?? selectedModelId}
                       modelOptions={modelOptions}
                       onModelChange={handleModelChange}
                       pendingPrompt={pendingPrompt}
                       thread={activeThread}
-                      onArchiveThread={handleArchiveActiveThread}
-                      onDeleteThread={handleDeleteActiveThread}
+                      onApprovalDecision={handleApprovalDecision}
                       leftPanelExpanded={leftExpanded}
-                      onRenameThread={handleRenameActiveThread}
                       onToggleLeftPanel={handleToggleLeftPanel}
-                      onTogglePinThread={handleTogglePinActiveThread}
                       onPromptConsumed={(id) => {
                         setPendingPrompt(current => (current?.id === id ? null : current));
                       }}
@@ -551,9 +539,9 @@ export function AppShell() {
       </main>
       <ContextPanel
         activeThread={activeThread}
+        activeWorkspace={activeWorkspace}
         activeTab={contextTab}
         expanded={rightExpanded}
-        pendingApprovalCount={pendingApprovalCount}
         onTabChange={setContextTab}
         onToggleExpanded={() => setRightExpanded(value => !value)}
       />

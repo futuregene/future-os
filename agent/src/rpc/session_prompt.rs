@@ -44,7 +44,7 @@ impl ServerSession {
                 skills,
                 agent_content,
                 prompt_guidelines: vec![
-                    "When asked to create, save, write, or modify a file, use an available tool to do it. Only describe file changes after the tool succeeds.".to_string(),
+                    "When asked to create, save, write, or modify a normal file, prefer the write or edit tool. Bash redirection, heredocs, tee, or cat > file remain available when they are the better fit. Only describe file changes after the tool succeeds.".to_string(),
                 ],
                 ..Default::default()
             });
@@ -178,10 +178,17 @@ impl ServerSession {
                 let approval_session_id = session_id.clone();
                 let approval_cwd = session_cwd.clone();
                 let permission_level = self.permission_level.clone();
-                r#loop.config.before_tool_call =
-                    Some(Arc::new(move |tool_name, tool_id, arguments| {
+                r#loop.config.before_tool_call = Some(Arc::new(
+                    move |tool_name, tool_id, arguments| {
                         match permission_level.as_str() {
-                            "all" => None, // no restrictions
+                            "all" => {
+                                approve_tool_path_if_present(
+                                    &approval_cwd,
+                                    tool_name,
+                                    arguments,
+                                );
+                                None
+                            }
                             "none" => Some(crate::types::ToolCallResult {
                                 result: format!("Tool call `{tool_name}` denied: permission level is set to 'none'."),
                                 is_error: true,
@@ -195,7 +202,8 @@ impl ServerSession {
                                 arguments,
                             ),
                         }
-                    }));
+                    },
+                ));
                 let prepare_cwd = session_cwd.clone();
                 r#loop.config.prepare_tool_call = Some(Arc::new(move |tool_name, arguments| {
                     prepare_session_tool_call(&prepare_cwd, tool_name, arguments)
@@ -221,108 +229,101 @@ impl ServerSession {
         // Spawn background task to run agent loop
         let perm = self.permission_level.clone();
         tokio::spawn(async move {
-            // Run with timeout — generous limit for complex multi-turn tasks
             let result = crate::tools::with_workspace_scope(session_cwd.clone(), perm, async {
-                tokio::time::timeout(std::time::Duration::from_secs(3600), async {
-                    let mut current_messages = initial_messages;
-                    let mut current_interrupt_rx = Some(interrupt_rx);
+                let mut current_messages = initial_messages;
+                let mut current_interrupt_rx = Some(interrupt_rx);
 
-                    loop {
-                        let bt = broadcaster.clone();
-                        let be = broadcaster.clone();
-                        let r#loop = agent_loop.write().await;
+                loop {
+                    let bt = broadcaster.clone();
+                    let be = broadcaster.clone();
+                    let r#loop = agent_loop.write().await;
 
-                        match r#loop
-                            .run_streaming_with_messages(
-                                current_messages,
-                                move |text| {
-                                    bt.broadcast(crate::rpc::SseEvent {
-                                        event_type: "text_chunk".to_string(),
-                                        data: serde_json::json!({"text": text}).to_string(),
-                                    });
-                                },
-                                move |event| {
-                                    let mut data = serde_json::Map::new();
+                    match r#loop
+                        .run_streaming_with_messages(
+                            current_messages,
+                            move |text| {
+                                bt.broadcast(crate::rpc::SseEvent {
+                                    event_type: "text_chunk".to_string(),
+                                    data: serde_json::json!({"text": text}).to_string(),
+                                });
+                            },
+                            move |event| {
+                                let mut data = serde_json::Map::new();
+                                data.insert(
+                                    "type".to_string(),
+                                    serde_json::json!(&event.event_type),
+                                );
+                                if !event.text.is_empty() {
+                                    data.insert("text".to_string(), serde_json::json!(&event.text));
+                                }
+                                if !event.tool_name.is_empty() {
                                     data.insert(
-                                        "type".to_string(),
-                                        serde_json::json!(&event.event_type),
+                                        "tool_name".to_string(),
+                                        serde_json::json!(&event.tool_name),
                                     );
-                                    if !event.text.is_empty() {
-                                        data.insert(
-                                            "text".to_string(),
-                                            serde_json::json!(&event.text),
-                                        );
-                                    }
-                                    if !event.tool_name.is_empty() {
-                                        data.insert(
-                                            "tool_name".to_string(),
-                                            serde_json::json!(&event.tool_name),
-                                        );
-                                    }
-                                    if !event.tool_id.is_empty() {
-                                        data.insert(
-                                            "tool_id".to_string(),
-                                            serde_json::json!(&event.tool_id),
-                                        );
-                                    }
-                                    if !event.error_text.is_empty() {
-                                        data.insert(
-                                            "error".to_string(),
-                                            serde_json::json!(&event.error_text),
-                                        );
-                                    }
-                                    if !event.stop_reason.is_empty() {
-                                        data.insert(
-                                            "stopReason".to_string(),
-                                            serde_json::json!(&event.stop_reason),
-                                        );
-                                    }
-                                    if let Some(usage) = &event.usage {
-                                        data.insert("usage".to_string(), serde_json::json!(usage));
-                                    }
-                                    if let Some(ref tc) = event.tool_call {
-                                        data.insert(
-                                            "tool_args".to_string(),
-                                            tc.function.arguments.clone(),
-                                        );
-                                    }
-                                    be.broadcast(crate::rpc::SseEvent {
-                                        event_type: event.event_type.clone(),
-                                        data: serde_json::to_string(&data).unwrap_or_default(),
-                                    });
-                                },
-                                current_interrupt_rx.take(),
-                            )
-                            .await
-                        {
-                            Ok((_, final_messages)) => {
-                                current_messages = final_messages;
-
-                                let follow_ups = r#loop.follow_up_queue.drain();
-                                drop(r#loop);
-
-                                if follow_ups.is_empty() {
-                                    return Ok(current_messages);
                                 }
-                                for msg in follow_ups {
-                                    current_messages.push(crate::types::AgentMessage::new_user(
-                                        "user",
-                                        serde_json::json!([{"type": "text", "text": msg}]),
-                                    ));
+                                if !event.tool_id.is_empty() {
+                                    data.insert(
+                                        "tool_id".to_string(),
+                                        serde_json::json!(&event.tool_id),
+                                    );
                                 }
-                                // No interrupt channel for follow-up re-runs
-                                current_interrupt_rx = None;
+                                if !event.error_text.is_empty() {
+                                    data.insert(
+                                        "error".to_string(),
+                                        serde_json::json!(&event.error_text),
+                                    );
+                                }
+                                if !event.stop_reason.is_empty() {
+                                    data.insert(
+                                        "stopReason".to_string(),
+                                        serde_json::json!(&event.stop_reason),
+                                    );
+                                }
+                                if let Some(usage) = &event.usage {
+                                    data.insert("usage".to_string(), serde_json::json!(usage));
+                                }
+                                if let Some(ref tc) = event.tool_call {
+                                    data.insert(
+                                        "tool_args".to_string(),
+                                        tc.function.arguments.clone(),
+                                    );
+                                }
+                                be.broadcast(crate::rpc::SseEvent {
+                                    event_type: event.event_type.clone(),
+                                    data: serde_json::to_string(&data).unwrap_or_default(),
+                                });
+                            },
+                            current_interrupt_rx.take(),
+                        )
+                        .await
+                    {
+                        Ok((_, final_messages)) => {
+                            current_messages = final_messages;
+
+                            let follow_ups = r#loop.follow_up_queue.drain();
+                            drop(r#loop);
+
+                            if follow_ups.is_empty() {
+                                return Ok(current_messages);
                             }
-                            Err(e) => return Err(e),
+                            for msg in follow_ups {
+                                current_messages.push(crate::types::AgentMessage::new_user(
+                                    "user",
+                                    serde_json::json!([{"type": "text", "text": msg}]),
+                                ));
+                            }
+                            // No interrupt channel for follow-up re-runs
+                            current_interrupt_rx = None;
                         }
+                        Err(e) => return Err(e),
                     }
-                })
-                .await
+                }
             })
             .await;
 
             match result {
-                Ok(Ok(final_messages)) => {
+                Ok(final_messages) => {
                     // Update shared messages so next prompt includes the full context
                     match messages_arc.write() {
                         Ok(mut msgs) => {
@@ -405,7 +406,7 @@ impl ServerSession {
                     });
                     is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
-                Ok(Err(e)) => {
+                Err(e) => {
                     let full_error = format!("{:#}", e);
                     eprintln!("Agent loop error: {}", full_error);
                     broadcaster.broadcast(crate::rpc::SseEvent {
@@ -415,19 +416,6 @@ impl ServerSession {
                     broadcaster.broadcast(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),
                         data: serde_json::json!({"type": "agent_end", "error": &full_error})
-                            .to_string(),
-                    });
-                    is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
-                }
-                Err(_timeout) => {
-                    eprintln!("Agent loop timed out after 1 hour");
-                    broadcaster.broadcast(crate::rpc::SseEvent {
-                        event_type: "error".to_string(),
-                        data: serde_json::json!({"error": "The request took too long (1 hour timeout). Try a simpler prompt, or break the task into smaller steps."}).to_string(),
-                    });
-                    broadcaster.broadcast(crate::rpc::SseEvent {
-                        event_type: "agent_end".to_string(),
-                        data: serde_json::json!({"type": "agent_end", "error": "Request timed out after 1 hour."})
                             .to_string(),
                     });
                     is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -462,6 +450,32 @@ fn prepare_session_tool_call(
     }
 
     normalized
+}
+
+fn approve_tool_path_if_present(cwd: &str, tool_name: &str, arguments: &serde_json::Value) {
+    if !matches!(tool_name, "write" | "edit") {
+        return;
+    }
+
+    let Some(path) = argument_path(arguments) else {
+        return;
+    };
+
+    crate::tools::approve_outside_path(&resolve_workspace_path(cwd, &path));
+}
+
+fn argument_path(arguments: &serde_json::Value) -> Option<String> {
+    let normalized = match arguments {
+        serde_json::Value::String(raw) => {
+            serde_json::from_str::<serde_json::Value>(raw).unwrap_or(arguments.clone())
+        }
+        _ => arguments.clone(),
+    };
+
+    ["path", "file_path", "filePath"]
+        .iter()
+        .find_map(|key| normalized.get(*key).and_then(|value| value.as_str()))
+        .map(str::to_string)
 }
 
 fn rewrite_path_field(cwd: &str, arguments: &mut serde_json::Value, key: &str) {
@@ -615,19 +629,23 @@ mod tests {
         });
         let agent_loop = Loop::new(provider, "mock").with_tools(coding_tools());
 
-        crate::tools::with_workspace_scope(workspace.to_string_lossy().to_string(), "workspace".to_string(), async {
-            let _ = agent_loop
-                .run_streaming_with_messages(
-                    vec![AgentMessage::new_user(
-                        "user",
-                        serde_json::json!([{"type": "text", "text": "write outside"}]),
-                    )],
-                    |_| {},
-                    |_| {},
-                    None,
-                )
-                .await;
-        })
+        crate::tools::with_workspace_scope(
+            workspace.to_string_lossy().to_string(),
+            "workspace".to_string(),
+            async {
+                let _ = agent_loop
+                    .run_streaming_with_messages(
+                        vec![AgentMessage::new_user(
+                            "user",
+                            serde_json::json!([{"type": "text", "text": "write outside"}]),
+                        )],
+                        |_| {},
+                        |_| {},
+                        None,
+                    )
+                    .await;
+            },
+        )
         .await;
 
         assert!(!outside.exists());

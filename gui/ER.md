@@ -204,6 +204,9 @@ Run 表示一次 Agent 执行，通常由用户消息触发。
 说明：
 
 - Run 是 GUI 展示计划、工具调用、状态和失败恢复的核心对象。
+- Run 在当前 GUI 中以“后台程序”列表呈现：运行中、排队中、等待审批显示为活动程序；完成、失败、取消显示为已结束程序。
+- 日常 Runs 面板只展示程序摘要和结果状态，不承载完整 event timeline、长 stdout/stderr、tool payload 或审批历史。这些内容应进入后续专门 Debug / Inspect / Review 视图。
+- 运行中 Run 可以被用户终止；终止后状态进入 `cancelled`，并同步取消该 Run 下仍然 pending 的 Approval Request。
 - 长任务恢复时，Thread 可以通过最近 Run 恢复上下文展示。
 
 ### 4.5 Run Event
@@ -230,15 +233,19 @@ Run Event 表示 Run 过程中的结构化事件。
 - `tool.output`
 - `tool.completed`
 - `approval.requested`
+- `approval.decided`
+- `approval.cancelled`
 - `file.changed`
 - `artifact.created`
 - `review.created`
+- `run.cancelled`
 - `run.completed`
 - `run.failed`
 
 说明：
 
 - GUI 可根据 Run Event 渲染过程卡片、时间线、工具调用和状态变化。
+- 当前右侧 Runs 面板不直接展示完整 Run Event；Run Event 主要服务对话投影、调试视图和后续 timeline / review 能力。
 - CLI 后续可以复用 Run Event 输出 JSON 或 NDJSON。
 
 ### 4.6 Tool Call
@@ -300,7 +307,7 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
 | `run_id` | 来源 Run |
 | `tool_call_id` | 来源 Tool Call，可为空 |
 | `kind` | `shell_command`、`file_write`、`file_delete`、`network_access`、`data_access`、`batch_operation`、`external_workspace_read` |
-| `status` | `pending`、`approved`、`rejected`、`expired` |
+| `status` | `pending`、`approved`、`rejected`、`cancelled` |
 | `title` | 标题 |
 | `summary` | 摘要 |
 | `risk_level` | `low`、`medium`、`high` |
@@ -317,9 +324,14 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
 
 说明：
 
-- 第一版审批界面需要展示操作类型、影响范围、修改摘要、批准、拒绝、查看详情。
+- 审批界面属于中间对话区的即时交互层，显示在 composer 上方；右侧上下文面板不承载审批操作，也不提供审批历史 tab。
+- UI 同时只展示一个 `pending` Approval Request。Agent 当前审批未决时应停在对应危险操作处等待用户明确允许或拒绝，不设置审批超时。
+- 第一版审批界面需要展示操作类型、影响范围、修改摘要、拒绝、允许一次、查看详情。
+- 审批支持键盘快捷操作：`Esc` 拒绝，`Cmd/Ctrl + Enter` 允许一次。
+- `requested_action` 预览需要可读化展示；内容过长时 UI 内部滚动，最大高度不超过窗口高度的三分之一。
 - 批量操作使用 `batch_operation`，用于一组文件写入、批量删除、批量命令或跨多个资源的高风险动作。
 - 超出当前 workspace 范围的读取使用 `external_workspace_read`，例如 Agent 需要读取当前 workspace 之外的本地文件或目录。
+- GUI 或 Agent 重启后遗留的 `pending` 审批应标记为 `cancelled`，防止旧审批继续显示为可操作状态。
 - 如果审批通过后产生文件变更，再由 Review Changeset 展示实际修改对比。
 
 ### 4.9 Review Changeset
@@ -354,7 +366,10 @@ Review Changeset 表示一组可供用户 review 的变更集合。
 说明：
 
 - Review Changeset 不表示审批请求。
-- 用户可以在 Review 中查看代码 diff、文件变更，以及文本类 artifact 的变更摘要。
+- 第一版右侧 Review 面板只在 Git workspace 中展示，数据来源可以是实时 `git diff HEAD`，不要求先落库为 Review Changeset。
+- 无 Git 的 workspace 不展示 Review 入口；普通 Chat / 非 Git workspace 产生的文件进入 Artifact 管理。
+- Git workspace 不展示 Artifacts 入口，文件变更由 Git 和 Review 管理，避免同一文件同时进入 Git diff 和 Artifact 两套语义。
+- 用户可以在 Review 中查看代码 diff、文件变更，以及后续文本类 artifact 的变更摘要。
 - `ready` 表示变更已生成但用户还没有打开 review。
 - `viewed` 表示用户已经看过，但没有应用、撤销或丢弃，适合表示“不置可否”的中间状态。
 - `applied` 表示这组变更已经被应用或接受。
@@ -392,7 +407,8 @@ Review File Change 表示某个文件或 artifact 的具体变更。
 说明：
 
 - 第一版针对代码和文本文件可以保存文本 diff。
-- 第一版针对 markdown、文档、表格等文本类 artifact，只做文本 diff 和摘要审查。
+- Git workspace 的 Review File Change 优先对应 Git 工作树文件。
+- 非 Git workspace / 普通 Chat 后续针对 markdown、文档、表格等文本类 artifact，只做文本 diff 和摘要审查。
 - `additions` 和 `deletions` 只记录 Git diff 风格的简单行级统计，不做复杂行级实体建模。
 - 大型 diff 后续可以落文件，数据库保存引用。
 
@@ -617,7 +633,7 @@ Reference Target 是统一引用对象的索引层。
 | 字段 | 说明 |
 | --- | --- |
 | `id` | Reference Target 唯一标识 |
-| `target_type` | `artifact`、`research_resource`、`workspace_file`、`data_source`、`skill` |
+| `target_type` | `artifact`、`run`、`tool_call`、`approval_request`、`review_changeset`、`research_resource`、`workspace_file`、`data_source`、`skill` |
 | `target_id` | 目标对象 id |
 | `scope` | `global` 或 `workspace` |
 | `workspace_id` | 所属 Workspace，可为空 |
@@ -629,7 +645,7 @@ Reference Target 是统一引用对象的索引层。
 
 关系：
 
-- Artifact、Research Resource、Workspace File、Data Source、Skill 都可以注册为 Reference Target。
+- Artifact、Run、Tool Call、Approval Request、Review Changeset、Research Resource、Workspace File、Data Source、Skill 都可以注册为 Reference Target。
 - Message、Review File Change 等对象可以通过 Object Reference 指向 Reference Target。
 
 说明：
@@ -716,7 +732,7 @@ Review 解决“改了什么”的问题。
 
 ### 6.4 引用对象独立建模
 
-Research Resource、Artifact、Workspace File、Data Source、Skill 都可以被 `@` 引用。
+Research Resource、Artifact、Run、Tool Call、Approval Request、Review Changeset、Workspace File、Data Source、Skill 都可以被 `@` 引用或被 markdown 中的 `futureos://` 链接引用。
 
 为了避免每种对象分别实现搜索和引用，建议通过 Reference Target 做统一索引，再通过 Object Reference 记录引用关系。
 

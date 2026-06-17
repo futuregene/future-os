@@ -123,6 +123,8 @@ fn build_identity_section(opts: &PromptOptions) -> String {
     // Default behavioral guidelines (always appended last)
     guidelines.push("Be concise in your responses".to_string());
     guidelines.push("Show file paths clearly when working with files".to_string());
+    guidelines.push("Write ordinary responses in standard Markdown. When you know a FutureOS object id, reference it with FutureOS Markdown instead of pasting large content inline: [label](futureos://artifact/<id>), [label](futureos://run/<id>), [label](futureos://tool/<id>), [label](futureos://approval/<id>), [label](futureos://review/<id>), or [label](futureos://research/<id>).".to_string());
+    guidelines.push("For block-level FutureOS objects, use fenced directives with language names such as `futureos-artifact`, `futureos-run`, `futureos-tool`, `futureos-approval`, `futureos-review`, or `futureos-research`, and include id and view fields. Do not embed long stdout, full diffs, or large file contents directly in the assistant message when an object reference is available.".to_string());
     let deduped = dedup(guidelines);
     if !deduped.is_empty() {
         let lines: Vec<String> = deduped.iter().map(|g| format!("- {}", g)).collect();
@@ -142,7 +144,10 @@ fn build_dynamic_tool_guidelines(tool_names: &[&str]) -> Vec<String> {
     let mut guidelines = vec![];
 
     if has_bash && !has_grep && !has_find && !has_ls {
-        guidelines.push("Use bash for file operations like ls, rg, find".to_string());
+        guidelines.push(
+            "Use bash for command-line exploration such as ls, rg, and find; prefer write/edit tools for ordinary file writes."
+                .to_string(),
+        );
     } else if has_bash && (has_grep || has_find || has_ls) {
         guidelines.push(
             "Prefer grep/find/ls tools over bash for file exploration (faster, respects .gitignore)"

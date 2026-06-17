@@ -234,6 +234,7 @@ export function NewConversation({
               onSend={handleSend}
               placeholder="随心输入"
               textareaClassName="h-16 text-base leading-6"
+              workspaceId={mode === "workspace" ? activeWorkspace?.id : null}
             />
             <div className="relative flex flex-wrap items-center gap-1.5 rounded-b-lg bg-surface-subtle/80 p-1.5">
               <div className="relative" ref={workspaceMenuRef}>

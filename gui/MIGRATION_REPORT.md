@@ -208,8 +208,8 @@ GUI 运行关系：
 
 影响：
 
-- GUI 的 approvals panel 可以展示待审批工具调用。
-- 用户审批后 agent run 可以继续执行。
+- GUI 可以展示待审批工具调用，并通过 approval decision 让 agent run 继续执行。
+- 当前产品规范已将审批操作从右侧 approvals panel 移到 composer 上方即时审批卡片；右侧面板不再承载审批操作或审批历史。
 
 ### 7. build.rs 的 protoc fallback
 

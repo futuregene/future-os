@@ -1,4 +1,6 @@
 import type {
+  GitReview,
+  ReferenceTargetSearchResult,
   StoredApprovalRequest,
   StoredArtifact,
   StoredMessage,
@@ -16,6 +18,8 @@ import type {
 import { invoke } from "@tauri-apps/api/core";
 
 export type {
+  GitReview,
+  ReferenceTargetSearchResult,
   StoredApprovalRequest,
   StoredArtifact,
   StoredMessage,
@@ -33,6 +37,14 @@ export type {
 
 export async function initializeAppStore() {
   await invoke("initialize_app_store");
+}
+
+export async function cancelStaleApprovalRequests() {
+  return invoke<number>("cancel_stale_approval_requests");
+}
+
+export async function clearFinishedRuns(threadId: string) {
+  return invoke<number>("clear_finished_runs", { threadId });
 }
 
 export async function getRecentThread() {
@@ -153,6 +165,13 @@ export async function updateRunStatus(input: {
   return invoke<StoredRun>("update_run_status", { input });
 }
 
+export async function abortRun(input: {
+  threadId: string;
+  runId: string;
+}) {
+  return invoke<StoredRun>("abort_run", input);
+}
+
 export async function listRunEvents(runId: string) {
   return invoke<StoredRunEvent[]>("list_run_events", { runId });
 }
@@ -183,6 +202,10 @@ export async function listReviewChangesets(threadId: string) {
 
 export async function listReviewFileChanges(changesetId: string) {
   return invoke<StoredReviewFileChange[]>("list_review_file_changes", { changesetId });
+}
+
+export async function getGitReview(workspaceId: string) {
+  return invoke<GitReview>("get_git_review", { workspaceId });
 }
 
 export async function listArtifacts(threadId: string) {
@@ -220,6 +243,14 @@ export async function promoteArtifactToResearch(artifactId: string) {
 
 export async function listResearchResources(workspaceId: string) {
   return invoke<StoredResearchResource[]>("list_research_resources", { workspaceId });
+}
+
+export async function searchReferenceTargets(input: {
+  workspaceId: string;
+  query?: string | null;
+  limit?: number | null;
+}) {
+  return invoke<ReferenceTargetSearchResult[]>("search_reference_targets", { input });
 }
 
 export function storedTimeToIso(value: number) {

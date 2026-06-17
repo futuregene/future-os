@@ -805,7 +805,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 );
             }
             session.write().unwrap().set_permission_level(&cmd.level);
-            RpcResponse::ok(id, "set_permission_level", serde_json::json!({"permissionLevel": cmd.level}))
+            RpcResponse::ok(
+                id,
+                "set_permission_level",
+                serde_json::json!({"permissionLevel": cmd.level}),
+            )
         }
         _ => RpcResponse::build_fail(id, cmd_type, &format!("unknown command: {}", cmd_type)),
     }

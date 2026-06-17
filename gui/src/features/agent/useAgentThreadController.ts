@@ -15,6 +15,7 @@ import {
   listRuns,
   storedTimeToIso,
 } from "../../integrations/storage/threadStore";
+import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
 import { buildAssistantRunProjection, thinkingActivity } from "./agentActivity";
 import {
   buildAgentFailureContent,
@@ -23,6 +24,7 @@ import {
   updateRunStatusSafe,
 } from "./agentThreadUtils";
 import { buildPromptWithAttachments, imageAttachmentPaths, stringifyMessageContent } from "./attachments";
+import { buildPromptWithReferenceContext } from "./referencePromptContext";
 
 interface UseAgentThreadControllerInput {
   thread: StoredThread | null;
@@ -83,10 +85,13 @@ export function useAgentThreadController({
     }, 1200);
   }, [updateFloatingScrollbar]);
 
-  const refreshRecentRun = useCallback(async (threadId: string) => {
+  const refreshRecentRun = useCallback(async (threadId: string, workspaceId?: string | null) => {
     const runs = await listRuns(threadId);
     const latestRun = runs[0] ?? null;
     setRecentRun(latestRun);
+    if (latestRun) {
+      upsertFutureReferenceData(workspaceId, "run", latestRun.id, latestRun);
+    }
     if (latestRun?.status === "waiting_approval") {
       setMessages(current =>
         current.map(message =>
@@ -142,7 +147,11 @@ export function useAgentThreadController({
       const messageContent = importedAttachments.length > 0
         ? stringifyMessageContent(content, importedAttachments)
         : content;
-      const promptContent = buildPromptWithAttachments(content, importedAttachments);
+      const promptContent = await buildPromptWithReferenceContext(
+        thread.workspaceId,
+        content,
+        buildPromptWithAttachments(content, importedAttachments),
+      );
 
       setMessages(current =>
         current.map(message =>
@@ -177,6 +186,7 @@ export function useAgentThreadController({
         modelId,
       });
       setRecentRun(run);
+      upsertFutureReferenceData(thread.workspaceId, "run", run.id, run);
       setRecentRunEventCount(0);
       setMessages(current =>
         current.map(message =>
@@ -207,7 +217,7 @@ export function useAgentThreadController({
         streamTimer = null;
       }
       await updateRunStatusSafe(run.id, "completed");
-      await refreshRecentRun(thread.id);
+      await refreshRecentRun(thread.id, thread.workspaceId);
       const storedAssistantMessage = await appendMessage({
         threadId: thread.id,
         runId: run.id,
@@ -239,7 +249,7 @@ export function useAgentThreadController({
       const message = error instanceof Error ? error.message : String(error);
       if (run) {
         await updateRunStatusSafe(run.id, "failed", message);
-        await refreshRecentRun(thread.id);
+        await refreshRecentRun(thread.id, thread.workspaceId);
       }
       const storedAssistantMessage = run
         ? await appendMessage({
@@ -304,7 +314,7 @@ export function useAgentThreadController({
 
       setLoadingThread(true);
       try {
-        const [storedMessages] = await Promise.all([listMessages(threadId), refreshRecentRun(threadId)]);
+        const [storedMessages] = await Promise.all([listMessages(threadId), refreshRecentRun(threadId, thread?.workspaceId)]);
         const agentMessages = storedMessages.map(toAgentMessage);
         const restoredMessages = await restoreMessageActivities(agentMessages);
         if (!cancelled) {
@@ -337,18 +347,18 @@ export function useAgentThreadController({
     return () => {
       cancelled = true;
     };
-  }, [refreshRecentRun, threadId]);
+  }, [refreshRecentRun, thread?.workspaceId, threadId]);
 
   useEffect(() => {
     if (!threadId || !recentRun || matchesSettledRun(recentRun.status))
       return;
 
     const timer = window.setInterval(() => {
-      void refreshRecentRun(threadId);
+      void refreshRecentRun(threadId, thread?.workspaceId);
     }, 1500);
 
     return () => window.clearInterval(timer);
-  }, [recentRun, refreshRecentRun, threadId]);
+  }, [recentRun, refreshRecentRun, thread?.workspaceId, threadId]);
 
   useEffect(() => {
     if (!thread || loadingThread || loadingStore || !pendingPrompt)

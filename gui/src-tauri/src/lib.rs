@@ -1,5 +1,6 @@
 mod agent_bridge;
 mod agent_proto;
+mod git_review;
 mod store;
 
 #[tauri::command]
@@ -15,6 +16,16 @@ fn app_data_path() -> Result<store::AppDataPath, String> {
 #[tauri::command]
 fn initialize_app_store() -> Result<(), String> {
     store::initialize_app_store()
+}
+
+#[tauri::command]
+fn cancel_stale_approval_requests() -> Result<usize, String> {
+    store::cancel_stale_approval_requests()
+}
+
+#[tauri::command]
+fn clear_finished_runs(thread_id: String) -> Result<usize, String> {
+    store::clear_finished_runs(&thread_id)
 }
 
 #[tauri::command]
@@ -118,6 +129,18 @@ fn update_run_status(input: store::UpdateRunStatusInput) -> Result<store::RunRec
 }
 
 #[tauri::command]
+async fn abort_run(thread_id: String, run_id: String) -> Result<store::RunRecord, String> {
+    if let Err(error) = agent_bridge::abort_agent_thread(&thread_id).await {
+        eprintln!("FutureOS agent abort failed: {error}");
+    }
+    store::update_run_status(store::UpdateRunStatusInput {
+        run_id,
+        status: "cancelled".to_string(),
+        error_message: Some("Terminated by user.".to_string()),
+    })
+}
+
+#[tauri::command]
 fn list_run_events(run_id: String) -> Result<Vec<store::RunEventRecord>, String> {
     store::list_run_events(&run_id)
 }
@@ -144,7 +167,16 @@ async fn decide_approval_request(
     let current = store::get_approval_request(&input.approval_request_id)?
         .ok_or_else(|| "Approval request could not be loaded.".to_string())?;
     if current.status == "pending" {
-        agent_bridge::notify_agent_approval_decision(&current, &input).await?;
+        if let Err(error) = agent_bridge::notify_agent_approval_decision(&current, &input).await {
+            if is_stale_approval_error(&error) {
+                return store::decide_approval_request(store::DecideApprovalRequestInput {
+                    approval_request_id: input.approval_request_id,
+                    status: "cancelled".to_string(),
+                    decision_note: Some("Cancelled because the approval request is no longer active in Future Agent.".to_string()),
+                });
+            }
+            return Err(error);
+        }
     }
     let updated = store::decide_approval_request(input)?;
     if let Some(run_id) = &updated.run_id {
@@ -157,6 +189,11 @@ async fn decide_approval_request(
     Ok(updated)
 }
 
+fn is_stale_approval_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("approval request") && normalized.contains("not pending")
+}
+
 #[tauri::command]
 fn list_review_changesets(thread_id: String) -> Result<Vec<store::ReviewChangesetRecord>, String> {
     store::list_review_changesets(&thread_id)
@@ -167,6 +204,11 @@ fn list_review_file_changes(
     changeset_id: String,
 ) -> Result<Vec<store::ReviewFileChangeRecord>, String> {
     store::list_review_file_changes(&changeset_id)
+}
+
+#[tauri::command]
+fn get_git_review(workspace_id: String) -> Result<git_review::GitReview, String> {
+    git_review::get_git_review(workspace_id)
 }
 
 #[tauri::command]
@@ -203,6 +245,20 @@ fn list_research_resources(
     workspace_id: String,
 ) -> Result<Vec<store::ResearchResourceRecord>, String> {
     store::list_research_resources(&workspace_id)
+}
+
+#[tauri::command]
+fn resolve_markdown_references(
+    input: store::ResolveMarkdownReferencesInput,
+) -> Result<Vec<store::ResolvedMarkdownReference>, String> {
+    store::resolve_markdown_references(input)
+}
+
+#[tauri::command]
+fn search_reference_targets(
+    input: store::SearchReferenceTargetsInput,
+) -> Result<Vec<store::ReferenceTargetSearchResult>, String> {
+    store::search_reference_targets(input)
 }
 
 #[tauri::command]
@@ -247,6 +303,8 @@ pub fn run() {
             app_version,
             app_data_path,
             initialize_app_store,
+            cancel_stale_approval_requests,
+            clear_finished_runs,
             list_threads,
             list_workspaces,
             create_workspace,
@@ -266,6 +324,7 @@ pub fn run() {
             create_run,
             list_runs,
             update_run_status,
+            abort_run,
             list_run_events,
             list_tool_calls,
             list_tool_outputs,
@@ -273,12 +332,15 @@ pub fn run() {
             decide_approval_request,
             list_review_changesets,
             list_review_file_changes,
+            get_git_review,
             list_artifacts,
             create_artifact,
             import_attachment_artifact,
             delete_artifact,
             promote_artifact_to_research,
             list_research_resources,
+            resolve_markdown_references,
+            search_reference_targets,
             list_agent_models,
             agent_prompt
         ])

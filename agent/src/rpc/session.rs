@@ -6,6 +6,8 @@ use std::{collections::HashMap, sync::Arc};
 
 use super::{ApprovalGate, SseBroadcaster};
 
+const DEFAULT_PERMISSION_LEVEL: &str = "workspace";
+
 // ─── ServerSession ────────────────────────────────────────────────────────
 
 pub struct ServerSession {
@@ -114,7 +116,7 @@ impl ServerSession {
             follow_up_tx: ftx,
             interrupt_tx: None,
             approval_gate,
-            permission_level: "all".to_string(),
+            permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
         }
     }
 
@@ -164,7 +166,7 @@ impl ServerSession {
             follow_up_tx: ftx,
             interrupt_tx: None,
             approval_gate,
-            permission_level: "all".to_string(),
+            permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
         }
     }
 
@@ -576,5 +578,62 @@ impl ServerSession {
             .rfind(|m| m.role == "assistant")
             .map(|m| m.text())
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        agent::Loop,
+        types::{LLMProvider, Message, StreamEvent, ToolDef},
+    };
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::ReceiverStream;
+
+    struct EmptyProvider;
+
+    #[async_trait::async_trait]
+    impl LLMProvider for EmptyProvider {
+        async fn stream_chat(
+            &self,
+            _model: String,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDef>,
+            _system_prompt: String,
+        ) -> anyhow::Result<ReceiverStream<StreamEvent>> {
+            let (_tx, rx) = mpsc::channel(1);
+            Ok(ReceiverStream::new(rx))
+        }
+    }
+
+    fn test_workspace() -> String {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!("futureos-session-default-permission-{stamp}"))
+            .to_string_lossy()
+            .to_string()
+    }
+
+    #[test]
+    fn new_sessions_default_to_workspace_permission() {
+        let cwd = test_workspace();
+        let session = ServerSession::new(
+            "session_test".to_string(),
+            Arc::new(tokio::sync::RwLock::new(Loop::new(
+                Arc::new(EmptyProvider),
+                "mock",
+            ))),
+            Arc::new(Manager::default_for(&cwd)),
+            &cwd,
+            Arc::new(EventBus::new()),
+            Arc::new(SseBroadcaster::new()),
+            ApprovalGate::default(),
+        );
+
+        assert_eq!(session.get_permission_level(), "workspace");
     }
 }
