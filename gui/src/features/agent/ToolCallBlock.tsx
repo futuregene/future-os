@@ -1,6 +1,6 @@
 import type { ToolCall } from "./types";
 import { ChevronDown, ChevronRight, TerminalSquare } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Badge } from "../../components/ui/Badge";
 import { cn } from "../../lib/cn";
 
@@ -11,6 +11,12 @@ interface ToolCallBlockProps {
 export function ToolCallBlock({ tool }: ToolCallBlockProps) {
   const [open, setOpen] = useState(tool.status !== "completed");
   const tone = tool.status === "completed" ? "success" : tool.status === "failed" ? "danger" : "accent";
+
+  useEffect(() => {
+    if (tool.status === "completed") {
+      setOpen(false);
+    }
+  }, [tool.status]);
 
   return (
     <div className="mt-3 rounded-lg border border-line-soft bg-white">

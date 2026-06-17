@@ -53,6 +53,8 @@ export function useAgentThreadController({
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const consumedPromptRef = useRef<string | null>(null);
+  const sendGenerationRef = useRef(0);
+  const streamTimerRef = useRef<number | null>(null);
   const threadId = thread?.id ?? null;
 
   const updateFloatingScrollbar = useCallback((visible: boolean) => {
@@ -98,7 +100,7 @@ export function useAgentThreadController({
           message.id.startsWith("pending_")
             ? {
                 ...message,
-                content: "正在等待你审批一个操作。请在右侧 Approvals 中查看并决定是否继续。",
+                content: "正在等待你审批一个操作。请在输入框上方查看并决定是否继续。",
               }
             : message,
         ),
@@ -118,8 +120,17 @@ export function useAgentThreadController({
     if (!thread)
       return;
 
-    const optimisticUserId = `pending_user_${Date.now()}`;
-    const pendingId = `pending_${Date.now()}`;
+    const sendGeneration = sendGenerationRef.current + 1;
+    sendGenerationRef.current = sendGeneration;
+    const isCurrentSend = () => sendGenerationRef.current === sendGeneration;
+    const clearStreamTimer = () => {
+      if (streamTimerRef.current !== null) {
+        window.clearInterval(streamTimerRef.current);
+        streamTimerRef.current = null;
+      }
+    };
+    const optimisticUserId = clientId("pending_user");
+    const pendingId = clientId("pending");
     const optimisticUserMessage: AgentMessage = {
       id: optimisticUserId,
       role: "user",
@@ -140,10 +151,10 @@ export function useAgentThreadController({
     onThreadActivity();
 
     let run: StoredRun | null = null;
-    let streamTimer: number | null = null;
 
     try {
       const importedAttachments = await importChatAttachments(thread, attachments);
+
       const messageContent = importedAttachments.length > 0
         ? stringifyMessageContent(content, importedAttachments)
         : content;
@@ -153,13 +164,15 @@ export function useAgentThreadController({
         buildPromptWithAttachments(content, importedAttachments),
       );
 
-      setMessages(current =>
-        current.map(message =>
-          message.id === optimisticUserId
-            ? { ...message, attachments: importedAttachments }
-            : message,
-        ),
-      );
+      if (isCurrentSend()) {
+        setMessages(current =>
+          current.map(message =>
+            message.id === optimisticUserId
+              ? { ...message, attachments: importedAttachments }
+              : message,
+          ),
+        );
+      }
 
       const storedUserMessage = await appendMessage({
         threadId: thread.id,
@@ -168,39 +181,48 @@ export function useAgentThreadController({
         content: messageContent,
         status: "complete",
       });
-      setMessages(current =>
-        current.map(message =>
-          message.id === optimisticUserId
-            ? {
-                ...message,
-                id: storedUserMessage.id,
-                createdAt: storedTimeToIso(storedUserMessage.createdAt),
-              }
-            : message,
-        ),
-      );
+
+      if (isCurrentSend()) {
+        setMessages(current =>
+          current.map(message =>
+            message.id === optimisticUserId
+              ? {
+                  ...message,
+                  id: storedUserMessage.id,
+                  createdAt: storedTimeToIso(storedUserMessage.createdAt),
+                }
+              : message,
+          ),
+        );
+      }
 
       run = await createRun({
         threadId: thread.id,
         triggerMessageId: storedUserMessage.id,
         modelId,
       });
-      setRecentRun(run);
-      upsertFutureReferenceData(thread.workspaceId, "run", run.id, run);
-      setRecentRunEventCount(0);
-      setMessages(current =>
-        current.map(message =>
-          message.id === pendingId
-            ? { ...message, runId: run?.id ?? null }
-            : message,
-        ),
-      );
 
-      streamTimer = window.setInterval(() => {
-        if (run) {
-          void updatePendingMessageFromRunEvents(run.id, pendingId, setMessages);
-        }
-      }, 220);
+      if (isCurrentSend()) {
+        setRecentRun(run);
+        upsertFutureReferenceData(thread.workspaceId, "run", run.id, run);
+        setRecentRunEventCount(0);
+        setMessages(current =>
+          current.map(message =>
+            message.id === pendingId
+              ? { ...message, runId: run?.id ?? null }
+              : message,
+          ),
+        );
+      }
+
+      clearStreamTimer();
+      if (isCurrentSend()) {
+        streamTimerRef.current = window.setInterval(() => {
+          if (run && isCurrentSend()) {
+            void updatePendingMessageFromRunEvents(run.id, pendingId, setMessages, isCurrentSend);
+          }
+        }, 220);
+      }
 
       const agentSessionId = thread.agentSessionId?.trim() || thread.id;
       const reply = await sendPromptToFutureAgent(
@@ -212,12 +234,16 @@ export function useAgentThreadController({
         modelSupportsImages(modelId, modelOptions) ? imageAttachmentPaths(importedAttachments) : [],
         modelThinkingLevel(modelId, modelOptions),
       );
-      if (streamTimer !== null) {
-        window.clearInterval(streamTimer);
-        streamTimer = null;
+      clearStreamTimer();
+
+      const currentRun = await loadCurrentRun(thread.id, run.id);
+      if (currentRun && matchesSettledRun(currentRun.status)) {
+        return;
       }
       await updateRunStatusSafe(run.id, "completed");
-      await refreshRecentRun(thread.id, thread.workspaceId);
+      if (isCurrentSend()) {
+        await refreshRecentRun(thread.id, thread.workspaceId);
+      }
       const storedAssistantMessage = await appendMessage({
         threadId: thread.id,
         runId: run.id,
@@ -226,30 +252,36 @@ export function useAgentThreadController({
         content: reply.trim() || "Future Agent 已完成，但没有返回文本。",
         status: "complete",
       });
-      setMessages(current =>
-        current.map(message =>
-          message.id === pendingId
-            ? {
-                ...message,
-                id: storedAssistantMessage.id,
-                runId: storedAssistantMessage.runId,
-                content: storedAssistantMessage.content,
-                createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
-              }
-            : message,
-        ),
-      );
-      onThreadActivity();
+
+      if (isCurrentSend()) {
+        setMessages(current =>
+          current.map(message =>
+            message.id === pendingId
+              ? {
+                  ...message,
+                  id: storedAssistantMessage.id,
+                  runId: storedAssistantMessage.runId,
+                  content: storedAssistantMessage.content,
+                  createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
+                }
+              : message,
+          ),
+        );
+        onThreadActivity();
+      }
     }
     catch (error) {
-      if (streamTimer !== null) {
-        window.clearInterval(streamTimer);
-        streamTimer = null;
-      }
+      clearStreamTimer();
+
       const message = error instanceof Error ? error.message : String(error);
       if (run) {
-        await updateRunStatusSafe(run.id, "failed", message);
-        await refreshRecentRun(thread.id, thread.workspaceId);
+        const currentRun = await loadCurrentRun(thread.id, run.id);
+        if (!currentRun || !matchesSettledRun(currentRun.status)) {
+          await updateRunStatusSafe(run.id, "failed", message);
+        }
+        if (isCurrentSend()) {
+          await refreshRecentRun(thread.id, thread.workspaceId);
+        }
       }
       const storedAssistantMessage = run
         ? await appendMessage({
@@ -261,22 +293,24 @@ export function useAgentThreadController({
             status: "failed",
           })
         : null;
-      setMessages(current =>
-        current.map(item =>
-          item.id === pendingId
-            ? {
-                ...item,
-                id: storedAssistantMessage?.id ?? item.id,
-                runId: storedAssistantMessage?.runId ?? item.runId,
-                content: storedAssistantMessage?.content ?? buildAgentFailureContent(message),
-                createdAt: storedAssistantMessage
-                  ? storedTimeToIso(storedAssistantMessage.createdAt)
-                  : item.createdAt,
-              }
-            : item,
-        ),
-      );
-      onThreadActivity();
+      if (isCurrentSend()) {
+        setMessages(current =>
+          current.map(item =>
+            item.id === pendingId
+              ? {
+                  ...item,
+                  id: storedAssistantMessage?.id ?? item.id,
+                  runId: storedAssistantMessage?.runId ?? item.runId,
+                  content: storedAssistantMessage?.content ?? buildAgentFailureContent(message),
+                  createdAt: storedAssistantMessage
+                    ? storedTimeToIso(storedAssistantMessage.createdAt)
+                    : item.createdAt,
+                }
+              : item,
+          ),
+        );
+        onThreadActivity();
+      }
     }
   }, [modelId, modelOptions, onThreadActivity, refreshRecentRun, thread]);
 
@@ -301,6 +335,16 @@ export function useAgentThreadController({
       }
     };
   }, [updateFloatingScrollbar]);
+
+  useEffect(() => {
+    return () => {
+      sendGenerationRef.current += 1;
+      if (streamTimerRef.current !== null) {
+        window.clearInterval(streamTimerRef.current);
+        streamTimerRef.current = null;
+      }
+    };
+  }, [threadId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -387,9 +431,13 @@ async function updatePendingMessageFromRunEvents(
   runId: string,
   pendingId: string,
   setMessages: Dispatch<SetStateAction<AgentMessage[]>>,
+  shouldApply: () => boolean = () => true,
 ) {
   try {
     const events = await listRunEvents(runId);
+    if (!shouldApply())
+      return;
+
     const projection = buildAssistantRunProjection(events);
 
     if (!projection.content.trim() && projection.activityItems.length === 0)
@@ -410,6 +458,23 @@ async function updatePendingMessageFromRunEvents(
   catch {
     // Streaming preview is best-effort. The final assistant message still
     // lands when the command returns.
+  }
+}
+
+let clientIdCounter = 0;
+
+function clientId(prefix: string) {
+  clientIdCounter += 1;
+  return `${prefix}_${Date.now()}_${clientIdCounter}`;
+}
+
+async function loadCurrentRun(threadId: string, runId: string) {
+  try {
+    const runs = await listRuns(threadId);
+    return runs.find(run => run.id === runId) ?? null;
+  }
+  catch {
+    return null;
   }
 }
 

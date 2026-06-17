@@ -284,7 +284,7 @@ export function AppShell() {
     setCenterMode("thread");
     setPendingPrompt({
       attachments: input.attachments,
-      id: `${thread.id}:${Date.now()}`,
+      id: newPendingPromptId(thread.id),
       content: input.content,
     });
   }
@@ -580,4 +580,11 @@ function deriveThreadTitle(content: string) {
   if (!compact)
     return "New Chat";
   return compact.length > 28 ? `${compact.slice(0, 28)}...` : compact;
+}
+
+let pendingPromptCounter = 0;
+
+function newPendingPromptId(threadId: string) {
+  pendingPromptCounter += 1;
+  return `${threadId}:${Date.now()}:${pendingPromptCounter}`;
 }

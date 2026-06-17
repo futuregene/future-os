@@ -1,7 +1,9 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
+    collections::HashSet,
     fs,
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -30,8 +32,12 @@ pub(super) fn ensure_app_dirs() -> Result<(), String> {
 pub(super) fn connect() -> Result<Connection, String> {
     ensure_app_dirs()?;
     let conn = Connection::open(db_path()?).map_err(|error| error.to_string())?;
-    conn.execute_batch("PRAGMA foreign_keys = ON;")
-        .map_err(|error| error.to_string())?;
+    conn.execute_batch(
+        "PRAGMA foreign_keys = ON;
+         PRAGMA busy_timeout = 5000;
+         PRAGMA journal_mode = WAL;",
+    )
+    .map_err(|error| error.to_string())?;
     Ok(conn)
 }
 
@@ -436,11 +442,13 @@ pub(super) fn workspace_name_from_path(path: &std::path::Path) -> String {
 }
 
 pub(super) fn create_id(prefix: &str) -> String {
+    static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
-    format!("{prefix}_{nanos}")
+    let counter = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}_{nanos}_{counter}")
 }
 
 pub(super) fn now_millis() -> i64 {
@@ -460,11 +468,19 @@ pub(super) fn count_workspace_files(path: &str) -> Result<i64, String> {
     }
 
     let mut count = 0_i64;
+    let mut visited_dirs = HashSet::new();
     let mut stack = vec![root];
     while let Some(dir) = stack.pop() {
+        let canonical_dir = fs::canonicalize(&dir).map_err(|error| error.to_string())?;
+        if !visited_dirs.insert(canonical_dir) {
+            continue;
+        }
         for entry in fs::read_dir(&dir).map_err(|error| error.to_string())? {
             let entry = entry.map_err(|error| error.to_string())?;
             let file_type = entry.file_type().map_err(|error| error.to_string())?;
+            if file_type.is_symlink() {
+                continue;
+            }
             if file_type.is_dir() {
                 stack.push(entry.path());
             } else if file_type.is_file() {

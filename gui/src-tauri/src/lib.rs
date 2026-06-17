@@ -180,11 +180,15 @@ async fn decide_approval_request(
     }
     let updated = store::decide_approval_request(input)?;
     if let Some(run_id) = &updated.run_id {
-        let _ = store::update_run_status(store::UpdateRunStatusInput {
-            run_id: run_id.clone(),
-            status: "running".to_string(),
-            error_message: None,
-        });
+        if let Ok(Some(run)) = store::get_run(run_id) {
+            if !matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+                let _ = store::update_run_status(store::UpdateRunStatusInput {
+                    run_id: run_id.clone(),
+                    status: "running".to_string(),
+                    error_message: None,
+                });
+            }
+        }
     }
     Ok(updated)
 }

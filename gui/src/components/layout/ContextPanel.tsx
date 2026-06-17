@@ -29,6 +29,10 @@ const fileTabs = [
   { value: "artifacts", label: "Artifacts" },
 ] satisfies Array<{ value: ContextTab; label: string }>;
 
+const pendingTabs = [
+  { value: "runs", label: "Runs" },
+] satisfies Array<{ value: ContextTab; label: string }>;
+
 interface ContextPanelProps {
   activeThread: StoredThread | null;
   activeWorkspace: StoredWorkspace | null;
@@ -53,12 +57,13 @@ export function ContextPanel({
   const [loading, setLoading] = useState(false);
   const activeThreadId = activeThread?.id ?? null;
   const activeWorkspaceId = activeWorkspace?.id ?? activeThread?.workspaceId ?? null;
+  const workspaceKindPending = activeThreadId !== null && activeWorkspaceId !== null && gitReview === null;
   const isGitWorkspace = gitReview?.isGitWorkspace ?? false;
-  const tabs = isGitWorkspace ? gitTabs : fileTabs;
+  const tabs = workspaceKindPending ? pendingTabs : isGitWorkspace ? gitTabs : fileTabs;
   const hasContextData = runs.length > 0
     || artifacts.length > 0
     || (gitReview?.files.length ?? 0) > 0;
-  const showInitialLoading = loading && !hasContextData;
+  const showInitialLoading = loading && (!hasContextData || workspaceKindPending);
 
   const refreshContext = useCallback(async (options?: { showLoading?: boolean }) => {
     if (!activeThreadId) {

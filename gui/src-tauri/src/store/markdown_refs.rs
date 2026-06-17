@@ -532,7 +532,7 @@ fn extract_futureos_links(content: &str) -> Vec<MarkdownObjectReference> {
             continue;
         };
 
-        let target_id = rest
+        let raw_target_id = rest
             .split(|character: char| {
                 character == ')'
                     || character == ']'
@@ -543,8 +543,8 @@ fn extract_futureos_links(content: &str) -> Vec<MarkdownObjectReference> {
                     || character == '#'
             })
             .next()
-            .unwrap_or_default()
-            .trim();
+            .unwrap_or_default();
+        let target_id = raw_target_id.trim();
 
         if !target_id.is_empty() {
             references.push(MarkdownObjectReference {
@@ -553,7 +553,7 @@ fn extract_futureos_links(content: &str) -> Vec<MarkdownObjectReference> {
             });
         }
 
-        remaining = &rest[target_id.len()..];
+        remaining = &rest[raw_target_id.len()..];
     }
 
     references

@@ -445,8 +445,9 @@ pub fn update_run_status(input: UpdateRunStatusInput) -> Result<RunRecord, Strin
     } else {
         None
     };
-    let conn = connect()?;
-    conn.execute(
+    let mut conn = connect()?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    tx.execute(
         "UPDATE runs
          SET status = ?1, error_message = ?2, ended_at = COALESCE(?3, ended_at), updated_at = ?4
          WHERE id = ?5",
@@ -460,7 +461,7 @@ pub fn update_run_status(input: UpdateRunStatusInput) -> Result<RunRecord, Strin
     )
     .map_err(|error| error.to_string())?;
     if input.status == "cancelled" {
-        conn.execute(
+        tx.execute(
             "UPDATE approval_requests
              SET status = 'cancelled',
                  decision_note = COALESCE(decision_note, 'Cancelled because the run was terminated.'),
@@ -471,7 +472,7 @@ pub fn update_run_status(input: UpdateRunStatusInput) -> Result<RunRecord, Strin
             params![now, input.run_id],
         )
         .map_err(|error| error.to_string())?;
-        conn.execute(
+        tx.execute(
             "UPDATE tool_calls
              SET status = 'cancelled',
                  ended_at = COALESCE(ended_at, ?1)
@@ -481,6 +482,7 @@ pub fn update_run_status(input: UpdateRunStatusInput) -> Result<RunRecord, Strin
         )
         .map_err(|error| error.to_string())?;
     }
+    tx.commit().map_err(|error| error.to_string())?;
     get_run(&input.run_id)?.ok_or_else(|| "Updated run could not be loaded.".to_string())
 }
 

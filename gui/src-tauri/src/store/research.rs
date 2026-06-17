@@ -1,10 +1,12 @@
 use rusqlite::{params, OptionalExtension};
 
 use super::artifacts::get_artifact;
+use super::initialize_app_store;
 use super::models::*;
 use super::support::*;
 
 pub fn list_research_resources(workspace_id: &str) -> Result<Vec<ResearchResourceRecord>, String> {
+    initialize_app_store()?;
     let conn = connect()?;
     let mut stmt = conn
         .prepare(
@@ -25,6 +27,7 @@ pub fn list_research_resources(workspace_id: &str) -> Result<Vec<ResearchResourc
 }
 
 pub fn promote_artifact_to_research(artifact_id: &str) -> Result<ResearchResourceRecord, String> {
+    initialize_app_store()?;
     let artifact =
         get_artifact(artifact_id)?.ok_or_else(|| "Artifact could not be loaded.".to_string())?;
     if artifact.deleted_at.is_some() {

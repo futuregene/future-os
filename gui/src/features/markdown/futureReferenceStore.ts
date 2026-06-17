@@ -17,6 +17,7 @@ interface ReferenceStoreEntry extends ReferenceIdentity {
 const records = new Map<string, ResolvedMarkdownReference>();
 const listeners = new Set<() => void>();
 const pendingLoads = new Map<string, Map<string, ReferenceIdentity>>();
+const maxReferenceRecords = 1000;
 let pendingFlush: ReturnType<typeof setTimeout> | undefined;
 
 export function useFutureReferences(workspaceId: string | null | undefined, references: FutureReference[]) {
@@ -88,6 +89,7 @@ export function upsertFutureReferenceEntries(
       targetType: entry.targetType,
     });
   }
+  pruneReferenceRecords();
   notifyFutureReferenceSubscribers();
 }
 
@@ -133,7 +135,17 @@ async function resolveAndStoreReferences(workspaceId: string, references: Refere
   for (const reference of resolved) {
     records.set(storeKey(workspaceId, reference.targetType, reference.targetId), reference);
   }
+  pruneReferenceRecords();
   notifyFutureReferenceSubscribers();
+}
+
+function pruneReferenceRecords() {
+  while (records.size > maxReferenceRecords) {
+    const oldest = records.keys().next().value;
+    if (!oldest)
+      return;
+    records.delete(oldest);
+  }
 }
 
 function notifyFutureReferenceSubscribers() {
