@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { homedir, platform } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -133,7 +134,8 @@ export async function callBrowserTool(name: string, args: Record<string, unknown
 }
 
 async function browserStart(args: Record<string, unknown>): Promise<LocalToolResult> {
-  const port = numberArg(args, "port") ?? 9222;
+  const requestedPort = numberArg(args, "port") ?? 9222;
+  const port = await resolveBrowserPort(requestedPort);
   const endpoint = `http://127.0.0.1:${port}`;
 
   if (await endpointReachable(endpoint)) {
@@ -147,7 +149,7 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
     throw new Error("Could not find Chrome or Edge. Pass executablePath to browser_start.");
   }
 
-  const profileDir = stringArg(args, "profileDir") ?? DEFAULT_PROFILE_DIR;
+  const profileDir = stringArg(args, "profileDir") ?? (port === requestedPort ? DEFAULT_PROFILE_DIR : join(BROWSER_DIR, `profile-${port}`));
   const url = stringArg(args, "url") ?? "about:blank";
   await mkdir(profileDir, { recursive: true });
   await mkdir(BROWSER_DIR, { recursive: true });
@@ -174,6 +176,8 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
           endpoint,
           launcher,
           profileDir,
+          port,
+          requestedPort,
           status: "started",
         },
       };
@@ -187,6 +191,8 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
       endpoint,
       launcher,
       profileDir,
+      port,
+      requestedPort,
       status: "starting",
       note: "Browser was launched, but the debugging endpoint did not answer within 10 seconds.",
     },
@@ -230,16 +236,17 @@ async function withBrowser(
   fn: (ctx: BrowserContext) => Promise<LocalToolResult>,
 ): Promise<LocalToolResult> {
   const { chromium } = await import("playwright-core");
-  const endpoint = await endpointFor(args);
-
-  if (!await endpointReachable(endpoint)) {
-    throw new Error(
-      `Local browser endpoint is not reachable: ${endpoint}. Run ` +
-        `future tools call browser_start --args '{}' first, or start Chrome with --remote-debugging-port=9222.`,
-    );
+  let endpoint = await ensureBrowser(args);
+  let browser: import("playwright-core").Browser;
+  try {
+    browser = await chromium.connectOverCDP(endpoint, { timeout: 5000 });
+  } catch (error) {
+    if (stringArg(args, "endpoint")) throw error;
+    const fallbackPort = (portFromEndpoint(endpoint) ?? 9222) + 1;
+    await browserStart({ ...args, port: fallbackPort });
+    endpoint = await waitForSavedEndpoint(`http://127.0.0.1:${fallbackPort}`, 10_000);
+    browser = await chromium.connectOverCDP(endpoint, { timeout: 5000 });
   }
-
-  const browser = await chromium.connectOverCDP(endpoint, { timeout: 5000 });
   const config = await loadConfig();
   const page = await activePage(browser, config);
   page.setDefaultTimeout(5000);
@@ -587,6 +594,41 @@ async function endpointFor(args: Record<string, unknown>): Promise<string> {
   return stringArg(args, "endpoint") ?? (await loadConfig()).endpoint ?? DEFAULT_ENDPOINT;
 }
 
+function portFromEndpoint(endpoint: string): number | null {
+  try {
+    const port = Number(new URL(endpoint).port);
+    return Number.isFinite(port) ? port : null;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureBrowser(args: Record<string, unknown>): Promise<string> {
+  const explicitEndpoint = stringArg(args, "endpoint");
+  const endpoint = await endpointFor(args);
+  if (await endpointReachable(endpoint)) return endpoint;
+
+  if (explicitEndpoint) {
+    throw new Error(
+      `Local browser endpoint is not reachable: ${explicitEndpoint}. Check the browser was started with a reachable remote debugging endpoint.`,
+    );
+  }
+
+  await browserStart(args);
+  return waitForSavedEndpoint(DEFAULT_ENDPOINT, 10_000);
+}
+
+async function waitForSavedEndpoint(fallbackEndpoint: string, timeoutMs: number): Promise<string> {
+  const startedEndpoint = (await loadConfig()).endpoint ?? fallbackEndpoint;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await endpointReachable(startedEndpoint)) return startedEndpoint;
+    await sleep(250);
+  }
+
+  throw new Error(`Local browser endpoint is not reachable after auto-start: ${startedEndpoint}.`);
+}
+
 async function endpointReachable(endpoint: string): Promise<boolean> {
   try {
     const response = await fetch(new URL("/json/version", endpoint), { signal: AbortSignal.timeout(1000) });
@@ -594,6 +636,34 @@ async function endpointReachable(endpoint: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function resolveBrowserPort(requestedPort: number): Promise<number> {
+  const endpoint = `http://127.0.0.1:${requestedPort}`;
+  if (await endpointReachable(endpoint)) return requestedPort;
+  if (!await portHasListener(requestedPort)) return requestedPort;
+
+  for (let port = requestedPort + 1; port < requestedPort + 50; port += 1) {
+    if (!await portHasListener(port)) return port;
+  }
+
+  throw new Error(`No available browser debugging port found near ${requestedPort}.`);
+}
+
+function portHasListener(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ host: "127.0.0.1", port });
+    socket.setTimeout(500);
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("timeout", () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once("error", () => resolve(false));
+  });
 }
 
 async function loadConfig(): Promise<BrowserConfig> {
@@ -620,10 +690,14 @@ function findBrowserLauncher(executablePath?: string): BrowserLauncher | null {
   if (executablePath) return { command: executablePath, args: [] };
 
   if (platform() === "darwin") {
-    for (const appName of ["Google Chrome", "Microsoft Edge", "Chromium"]) {
-      if (existsSync(`/Applications/${appName}.app`)) {
-        return { command: "/usr/bin/open", args: ["-na", appName, "--args"] };
-      }
+    const apps = [
+      ["Google Chrome", "Google Chrome"],
+      ["Microsoft Edge", "Microsoft Edge"],
+      ["Chromium", "Chromium"],
+    ];
+    for (const [appName, executableName] of apps) {
+      const executable = `/Applications/${appName}.app/Contents/MacOS/${executableName}`;
+      if (existsSync(executable)) return { command: executable, args: [] };
     }
     return null;
   }

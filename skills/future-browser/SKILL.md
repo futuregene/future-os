@@ -10,9 +10,11 @@ Use this skill when the user asks you to open, inspect, test, click, type, scree
 
 The browser tools run through the Future CLI and connect to a local visible Chrome/Edge browser over the Chrome DevTools Protocol. They do not require Future API login.
 
+Most browser actions auto-start a Future-managed browser when no reachable debugging endpoint exists. Use `browser_start` only when you want to prewarm the browser or pass a custom `port`, `profileDir`, `executablePath`, or initial `url`.
+
 ## Start Or Check Browser
 
-Start a Future-managed visible local browser:
+Start a Future-managed visible local browser when you need explicit startup control:
 
 ```bash
 future tools call browser_start --args '{}'
@@ -29,6 +31,8 @@ Open a URL:
 ```bash
 future tools call browser_open --args '{"url":"http://localhost:3000"}'
 ```
+
+For a normal first action, call `browser_open` directly; it will start the browser if needed.
 
 If the user already started Chrome/Edge with a remote debugging port, pass the endpoint:
 
@@ -63,7 +67,7 @@ After a click, type, press, navigation, or tab switch, call `browser_snapshot` a
 ## Available Tools
 
 ### browser_start
-Start a visible Chrome/Edge browser with a remote debugging port.
+Start a visible Chrome/Edge browser with a remote debugging port. If the requested port is occupied but not reachable as a Chrome DevTools endpoint, the tool may choose a nearby available port and save that endpoint for later calls.
 
 Arguments: `{"port": 9222, "profileDir": "optional path", "executablePath": "optional path", "url": "optional URL"}`
 
