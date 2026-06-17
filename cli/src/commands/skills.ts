@@ -70,7 +70,20 @@ async function listSkills(): Promise<void> {
     return;
   }
 
-  if (entries.length === 0) {
+  const skillNames: string[] = [];
+  for (const entry of entries) {
+    const skillDir = join(src, entry);
+    try {
+      const info = await stat(skillDir);
+      if (!info.isDirectory()) continue;
+      await stat(join(skillDir, "SKILL.md"));
+      skillNames.push(entry);
+    } catch {
+      // Ignore non-skill files and incomplete directories.
+    }
+  }
+
+  if (skillNames.length === 0) {
     console.log("No skills available.");
     return;
   }
@@ -83,11 +96,11 @@ async function listSkills(): Promise<void> {
     // Hermes skills dir doesn't exist yet — none installed
   }
 
-  for (const name of entries.sort()) {
+  for (const name of skillNames.sort()) {
     const marker = installed.has(name) ? "[installed]" : "";
     console.log(`  ${name.padEnd(30)} ${marker}`);
   }
-  console.log(`\n${entries.length} skills available. Use "future skills install <name>" to install.`);
+  console.log(`\n${skillNames.length} skills available. Use "future skills install <name>" to install.`);
 }
 
 async function installSkill(name: string): Promise<void> {

@@ -14,6 +14,7 @@ install-skills:
 	rsync -a skills/future-web/ ~/.agents/skills/future-web/
 	rsync -a skills/future-image/ ~/.agents/skills/future-image/
 	rsync -a skills/future-document/ ~/.agents/skills/future-document/
+	rsync -a skills/future-hand-drawn-slides/ ~/.agents/skills/future-hand-drawn-slides/
 
 install-gui:
 	cd gui && npm install
