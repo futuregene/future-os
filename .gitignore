@@ -5,6 +5,7 @@
 /pi-web
 *.exe
 *.test
+**/.DS_Store
 
 # Go
 *.out
