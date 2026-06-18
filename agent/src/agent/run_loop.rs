@@ -188,6 +188,40 @@ impl Loop {
                     if self.config.max_retries > 0
                         && retry_attempt < self.config.max_retries as usize
                     {
+                        // If this looks like a context-length error, try
+                        // compacting before the next retry. Auto-compaction
+                        // only runs BEFORE a turn (based on last turn's token
+                        // count), so it can't help on the first call.
+                        let err_msg = format!("{}", last_error.as_ref().unwrap());
+                        if err_msg.contains("maximum context")
+                            || err_msg.contains("context_length")
+                            || err_msg.contains("reduce the length")
+                            || err_msg.contains("too long")
+                        {
+                            if let Some(ref bus) = self.event_bus {
+                                bus.emit(events::compaction_start("auto"));
+                            }
+                            let context_window = 200000i32;
+                            let reserve = ((context_window as f64 * 0.1) as i32).max(16384);
+                            let (compacted, compact_result) = crate::compaction::compact(
+                                ConvertToLLM(&messages),
+                                &crate::compaction::CompactOptions {
+                                    reserve_tokens: reserve,
+                                    keep_recent_tokens: reserve,
+                                    context_window,
+                                    tokens_before: 999999, // force compaction
+                                },
+                            );
+                            messages = ConvertFromLLM(compacted);
+                            if let Some(r) = compact_result {
+                                *self.last_compaction_result.lock().unwrap() = Some(r);
+                            }
+                            if let Some(ref bus) = self.event_bus {
+                                bus.emit(events::compaction_end(
+                                    0, "", false, "auto",
+                                ));
+                            }
+                        }
                         retry_attempt += 1;
                         let delay_ms = 2000 * (1 << (retry_attempt - 1));
                         if let Some(ref bus) = self.event_bus {

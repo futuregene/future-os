@@ -420,9 +420,18 @@ impl Loop {
         } else {
             result.to_string()
         };
+        // Cap tool result at 100K chars (~25K tokens) to avoid
+        // a single oversized result blowing past the context window.
+        // Compaction can trim old messages but can't split one message.
+        let capped = if text.len() > 100_000 {
+            let start = text.ceil_char_boundary(text.len() - 100_000);
+            format!("...(truncated, showing last 100K chars)\n{}", &text[start..])
+        } else {
+            text
+        };
         AgentMessage {
             role: "tool".to_string(),
-            content: vec![ContentBlock::text(&text)],
+            content: vec![ContentBlock::text(&capped)],
             tool_call_id: call_id.to_string(),
             ..Default::default()
         }
