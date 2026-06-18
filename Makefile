@@ -41,11 +41,11 @@ build-cli:
 build-gui:
 	cd gui && npm run build
 
-build-channel:
-	cd channel && cargo build
+build-channels:
+	cd channels && cargo build
 
-build-channel-release:
-	cd channel && cargo build --release
+build-channels-release:
+	cd channels && cargo build --release
 
 # ─── Test ───────────────────────────────────────────────────────────────────
 
@@ -96,8 +96,8 @@ run-gui: install-gui
 package-gui:
 	cd gui && npm run tauri:build
 
-run-channel:
-	cd channel && cargo run
+run-channels:
+	cd channels && cargo run
 
 # ─── Generate ───────────────────────────────────────────────────────────────
 
@@ -111,7 +111,7 @@ generate-proto:
 
 clean:
 	rm -rf agent/target
-	rm -rf channel/target
+	rm -rf channels/target
 	rm -rf tui/dist
 	rm -rf tui/node_modules
 	rm -f tui/future-tui
@@ -133,8 +133,8 @@ help:
 	@echo "  build-tui-single   Build standalone TUI binary (via bun build --compile)"
 	@echo "  build-cli          Build TypeScript CLI"
 	@echo "  build-gui          Build React/Tauri GUI frontend"
-	@echo "  build-channel      Build channel bridge"
-	@echo "  build-channel-release  Build channel bridge (optimized)"
+	@echo "  build-channels      Build channel bridge"
+	@echo "  build-channels-release  Build channel bridge (optimized)"
 	@echo "  test               Run Rust tests"
 	@echo "  lint               Lint Rust + TypeScript"
 	@echo "  fmt                Format Rust code"
@@ -143,7 +143,7 @@ help:
 	@echo "  run-cli            Run CLI in dev mode"
 	@echo "  run-gui            Run GUI in Tauri dev mode"
 	@echo "  package-gui        Build GUI desktop bundles"
-	@echo "  run-channel        Build and run channel bridge"
+	@echo "  run-channels        Build and run channel bridge"
 	@echo "  generate-models    Fetch model data and regenerate models_generated.rs"
 	@echo "  generate-proto     Compile proto/future.proto to Rust gRPC code"
 	@echo "  clean              Remove build artifacts"

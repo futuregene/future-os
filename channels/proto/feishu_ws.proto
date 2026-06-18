@@ -1,0 +1,24 @@
+// Feishu/Lark WebSocket binary frame protocol (pbbp2).
+// Matches the Frame definition from larksuite/oapi-sdk-go/ws/pbbp2.pb.go.
+// Field numbers and types MUST match exactly for wire compatibility.
+
+syntax = "proto3";
+
+package feishu_ws;
+
+message WsFrame {
+  int64 seq_id = 1;            // Go: uint64 SeqID
+  int64 log_id = 2;            // Go: uint64 LogID
+  int32 service = 3;           // Go: int32 Service
+  int32 method = 4;            // Go: int32 Method (0=CONTROL, 1=DATA)
+  repeated Header headers = 5; // Go: []Header
+  string payload_encoding = 6; // Go: string PayloadEncoding
+  string payload_type = 7;     // Go: string PayloadType
+  bytes payload = 8;           // Go: []byte Payload
+  string log_id_new = 9;       // Go: string LogIDNew
+}
+
+message Header {
+  string key = 1;
+  string value = 2;
+}
