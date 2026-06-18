@@ -13,7 +13,7 @@ vendor/
 
 # Rust
 agent/target/
-channel/target/
+channels/target/
 gui/src-tauri/target/
 gui/src-tauri/gen/
 *.app/

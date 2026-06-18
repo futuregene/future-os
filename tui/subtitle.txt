@@ -1,0 +1,1462 @@
+[0:00] You know, I thought where we would start
+[0:01] Ali is you know, a lot of
+[0:03] talk right before you joined about
+[0:06] there&#39;s world&#39;s moving fast.
+[0:08] &gt;&gt; Mhm.
+[0:08] &gt;&gt; XAI, cursor, open AI fighting anthropic.
+[0:12] You know, you guys have done such a
+[0:13] great job of stacking, you know, going
+[0:15] from a data business to a lakehouse
+[0:16] business to now an AI business. Just
+[0:18] state of the union.
+[0:19] &gt;&gt; Mhm.
+[0:19] &gt;&gt; View from the top. What do you What are
+[0:21] you seeing? Like frame the landscape for
+[0:23] us. Um what are the biggest things that
+[0:25] you are thinking about?
+[0:26] &gt;&gt; Mhm.
+[0:27] &gt;&gt; And you know, I&#39;ve got a bunch of
+[0:28] questions that we can talk about. I
+[0:29] thought we&#39;d just open it up to like
+[0:30] what is the biggest thing on your mind
+[0:31] as you as you think about AI?
+[0:33] &gt;&gt; Yeah, I think that uh you know, I think
+[0:35] you guys can chill out. Don&#39;t be
+[0:36] stressed.
+[0:37] You know, I think times are crazy and uh
+[0:40] I think it&#39;s not warranted basically.
+[0:42] And I think the stress uh makes people
+[0:44] do stupid things and chase just uh
+[0:47] you know, whatever happens to be the
+[0:49] crazy thing that everybody&#39;s talking
+[0:50] about on Twitter. Uh I think it makes
+[0:52] people have tunnel vision and not work
+[0:55] on the right stuff. Yeah. Uh and I think
+[0:57] that&#39;s what I see with like the current
+[0:58] generation. Like every year we have
+[0:59] interns coming to Databricks and the
+[1:00] interns I do always like a session with
+[1:03] them an hour 90 minutes or something
+[1:04] they can ask questions. And last two
+[1:07] years have been just insane. Before they
+[1:09] would ask for like good career advice
+[1:10] and you would give them good career
+[1:11] advice. Now they&#39;re like 22-year-olds
+[1:13] who are like, &quot;Oh my god, should I like
+[1:15] start start my own company and be a CEO?
+[1:17] Or if I like delay that by 6 months
+[1:19] working on something, have I ruined my
+[1:20] career and life is over and you know,
+[1:23] AGI is going to happen and I&#39;m going to
+[1:24] miss the boat and like what am I going
+[1:25] to do?&quot; I&#39;m like So I&#39;m like just trying
+[1:28] to tell people like calm down, take a
+[1:29] deep breath. Things take time.
+[1:31] &gt;&gt; Yeah.
+[1:31] &gt;&gt; You know, so that&#39;s what I would say. I
+[1:33] would say actually I think also in
+[1:35] Silicon Valley, if you think about it
+[1:36] right now, what&#39;s happening is I think
+[1:38] uh and you might disagree with some of
+[1:40] this, so feel free to push back. You
+[1:41] guys can might disagree too. You can
+[1:42] push back as well. Uh but there&#39;s this
+[1:44] quest for super intelligence which I
+[1:46] think is unwarranted.
+[1:48] &gt;&gt; Yeah.
+[1:48] &gt;&gt; Because first of all, they&#39;re not even
+[1:50] defining what super intelligence is.
+[1:52] &gt;&gt; Mhm.
+[1:52] &gt;&gt; But it&#39;s this kind of like god-like, you
+[1:53] know, it&#39;s like I think people reading
+[1:55] Kurzweil and you know, it&#39;s take off
+[1:57] singularity, you know, this thing that
+[1:59] comes and like you know, recursive
+[2:01] self-improvement and you know, cures all
+[2:04] the diseases and GDP jumps by like 10%
+[2:07] and unemployment goes to 20% and there&#39;s
+[2:09] no more jobs and
+[2:11] UBI to everyone and so on. No, I think
+[2:12] they believe it. I think it&#39;s not
+[2:14] needed. I think we already have AGI. So,
+[2:17] we already have artificial general
+[2:18] intelligence.
+[2:20] You know,
+[2:22] okay, this is always equally fun. How
+[2:24] many people think we have AGI already?
+[2:27] Okay, it&#39;s always the same. It&#39;s always
+[2:28] like 10%. Okay.
+[2:30] How many of you think that a lot of
+[2:32] people that you interact with are not as
+[2:34] smart as the smartest models that you
+[2:35] use?
+[2:38] Okay, now let&#39;s start all over. How many
+[2:40] of you think we don&#39;t have AGI yet?
+[2:45] By the way, it always works. It&#39;s like,
+[2:47] you know, see, it&#39;s like the hypnosis is
+[2:49] working. For some reason,
+[2:51] they&#39;ve gotten the whole world to
+[2:52] believe we don&#39;t have AGI. But it&#39;s like
+[2:54] you just answered it that you have it,
+[2:56] right?
+[2:57] But yet, no.
+[2:59] You want to move the goal post. By the
+[3:00] way, I was at the research lab in 2009
+[3:02] at UC Berkeley called AMP Lab. It was
+[3:04] probably the biggest, uh, most active,
+[3:07] kind of important AI lab of its time in
+[3:09] 2009. And, uh,
+[3:12] you know, the
+[3:14] you know, the god of AI was working in
+[3:16] that lab, which is Michael Jordan. His
+[3:17] name is actually that. So, he was like
+[3:18] the Michael Jordan of AI.
+[3:21] And, uh,
+[3:22] back then our definition of AGI,
+[3:24] artificial general intelligence,
+[3:26] um, you know, we&#39;ve hit that.
+[3:29] Like anything we imagined would be AGI,
+[3:31] we already hit that. And those were all
+[3:32] the leading AI researchers in the United
+[3:33] States. Many of them were working in
+[3:35] that lab. But I was just I wanted to see
+[3:37] like if I&#39;m just full of it. So, I went
+[3:39] and asked some of those people that were
+[3:40] there at the time and I asked them as,
+[3:41] &quot;Hey, do you agree?&quot; And they all said,
+[3:43] &quot;Yeah, according to that definition in
+[3:44] 2009, for sure we&#39;ve hit that. But, you
+[3:47] know,&quot; and then there was also some, you
+[3:48] know, stupid but. We moved the goal post
+[3:50] or we want to change it or we want to
+[3:51] have some other definition or it it&#39;s or
+[3:54] the AI at some there&#39;s some example
+[3:55] that, you know, it couldn&#39;t count the
+[3:56] number of Rs in strawberry or something.
+[3:58] So, therefore, we don&#39;t have AGI. Um
+[4:01] we already have AGI. Okay? It&#39;s already
+[4:03] smarter than many of the people that you
+[4:05] interact with. That is general
+[4:06] intelligence. It is artificial. It&#39;s not
+[4:08] exactly a human. It&#39;s not the way human
+[4:09] brain works. So, we already have that.
+[4:11] So, in some sense,
+[4:14] uh you know, blowing a lot of money on
+[4:15] GPUs and data centers and all of that
+[4:17] kind of stuff is not really needed.
+[4:19] Okay? Then there&#39;s at the same time, so
+[4:21] &gt;&gt; You asked for the state of the union.
+[4:23] &gt;&gt; Yeah.
+[4:23] &gt;&gt; On the other hand, you have like the MIT
+[4:25] tech report that says that 95% of the
+[4:26] POCs are failing.
+[4:28] &gt;&gt; Right.
+[4:28] &gt;&gt; Uh it&#39;s kind of right directionally. I
+[4:29] don&#39;t know if the 95% might be wrong.
+[4:31] Maybe it&#39;s just 75%. Who knows?
+[4:32] &gt;&gt; Interesting.
+[4:33] &gt;&gt; Uh but if you go inside of an enterprise
+[4:35] and or inside of an organization, you go
+[4:36] into any company and you look at how
+[4:38] they&#39;re using stuff,
+[4:40] the reality is that
+[4:42] there&#39;s no like lots of agentic
+[4:44] co-workers running around doing all the
+[4:46] work, you know, blending with humans.
+[4:48] That&#39;s not happening.
+[4:50] Okay? It&#39;s just humans shuffling TPS
+[4:52] reports.
+[4:53] Okay? It&#39;s like Office the QA the movie
+[4:55] is like Office the movie the Office
+[4:57] Space the movie is still like
+[4:59] how the world runs.
+[5:00] &gt;&gt; Yeah.
+[5:00] &gt;&gt; It&#39;s the reality. It&#39;s just the truth.
+[5:02] Like
+[5:03] &gt;&gt; Yeah.
+[5:03] &gt;&gt; even inside the AI companies, that&#39;s how
+[5:04] they run them. It&#39;s like they they like
+[5:05] to think, but they&#39;re hiring sales
+[5:07] people from old school companies and
+[5:08] they&#39;re running things in old school
+[5:09] ways and I don&#39;t see like that
+[5:11] futuristic thing. So, then what&#39;s going
+[5:13] on? We have AGI, but on the other hand,
+[5:17] none of this is working and no company&#39;s
+[5:18] using it. What the hell is going on?
+[5:19] &gt;&gt; Yeah.
+[5:20] &gt;&gt; Uh I think it&#39;s very simple. Um
+[5:23] if you don&#39;t get all the context that
+[5:24] exists inside of these organizations and
+[5:26] how humans work and everything all the
+[5:27] context we have in our heads, if you
+[5:29] don&#39;t get that to the models and the
+[5:31] agents, they&#39;re going to do lots of
+[5:33] stupid mistakes and they&#39;re useless. And
+[5:35] that&#39;s what&#39;s happening right now. The
+[5:36] models just don&#39;t have or the agents
+[5:38] don&#39;t have the context that humans have
+[5:40] inside of organizations. Therefore,
+[5:42] they&#39;re useless. They do stupid mistakes
+[5:44] because they don&#39;t know all the stuff
+[5:45] that we know.
+[5:45] &gt;&gt; Mhm.
+[5:46] &gt;&gt; You know, inside of every company, there
+[5:47] is always like this one guy or this one
+[5:49] gal
+[5:50] &gt;&gt; Mhm.
+[5:50] &gt;&gt; who&#39;s like, &quot;Oh, go ask John or Jane.&quot;
+[5:52] Like, she knows everything, you know,
+[5:53] and then everybody&#39;s like tapping on
+[5:55] that person&#39;s, you know, and that&#39;s the
+[5:56] one person you can&#39;t lose in the
+[5:57] company. If you lose that person, the
+[5:58] whole company collapses.
+[5:59] &gt;&gt; Yeah.
+[6:00] &gt;&gt; That one person has a That one person
+[6:02] exists in every department, in every
+[6:03] company, in every organization. And that
+[6:05] one person has all the context in their
+[6:06] head.
+[6:07] &gt;&gt; Mhm.
+[6:07] &gt;&gt; And that person, what they have in their
+[6:09] head is not inside of the model.
+[6:10] &gt;&gt; Mhm.
+[6:11] &gt;&gt; So, therefore, the model can&#39;t operate.
+[6:12] It just doesn&#39;t know a lot of the stuff
+[6:14] that&#39;s sort of
+[6:16] Usually, John or Jane in that company
+[6:17] have been there for 10 years, 15 years,
+[6:19] 20 years, sometimes 30, 40 years. Um
+[6:22] you need to get that transferred to the
+[6:23] AI. If you don&#39;t, the AI&#39;s doesn&#39;t
+[6:26] matter if you get super intelligence and
+[6:27] you can solve really difficult, you
+[6:30] know, math questions. Um uh you know,
+[6:33] and if you can get that context into the
+[6:34] AI&#39;s, we already have AGI and they can
+[6:36] already crack the problem. So, my uh
+[6:39] urge to you guys would be
+[6:41] uh
+[6:42] you know, if you want to have impact in
+[6:43] the world, figure out how to get that
+[6:44] context into the AI&#39;s uh inside of an or
+[6:48] like take an organization, how do you
+[6:50] transform how old-school business is
+[6:52] happening and how do you get those
+[6:54] processes into the agents, then you will
+[6:56] have massive impact cuz AGI is already
+[6:58] here.
+[6:58] &gt;&gt; Yeah.
+[6:59] &gt;&gt; That&#39;s my state of the union.
+[7:00] &gt;&gt; AGI is already here.
+[7:01] &gt;&gt; You got to download the brain into the
+[7:03] silicon.
+[7:04] &gt;&gt; Yes.
+[7:04] &gt;&gt; carbon to talk to the silicon.
+[7:06] &gt;&gt; Yes.
+[7:07] &gt;&gt; You know what, actually we were just
+[7:08] talking about this.
+[7:08] &gt;&gt; And by the way, queue up your your like
+[7:10] pushbacks. I&#39;m very curious to hear.
+[7:12] &gt;&gt; Yeah.
+[7:12] &gt;&gt; I&#39;m sure a majority disagrees. How many
+[7:14] disagree with this?
+[7:16] Oh, not that many. I was hoping Okay.
+[7:18] I&#39;m going to be more provocative, okay?
+[7:20] We need We need more pushback, okay?
+[7:22] &gt;&gt; So, you know, before we before we go
+[7:23] into AI, you know, there&#39;s a shadow of
+[7:25] AI.
+[7:26] &gt;&gt; Uh-huh.
+[7:26] &gt;&gt; Software is dead.
+[7:27] &gt;&gt; Mhm.
+[7:28] &gt;&gt; Software&#39;s been dead for a while. We&#39;ve
+[7:29] had this four times. It happens. Every
+[7:31] time it happens, it bounces back.
+[7:33] &gt;&gt; Yeah.
+[7:34] &gt;&gt; Some macro reason
+[7:36] Brexit, taper tantrum, inflation. This
+[7:38] time it&#39;s AI.
+[7:40] And the question the class is asking is
+[7:42] should we be loading up on on software
+[7:43] stocks?
+[7:45] So so is software dead?
+[7:47] Is this a buy the dip situation? Uh and
+[7:50] you know I can&#39;t think of a better
+[7:51] person to ask because depending on the
+[7:53] day you ask there&#39;s like software&#39;s you
+[7:55] know we&#39;re an AI company software
+[7:56] company.
+[7:57] Speak about that. Is software dead?
+[7:59] &gt;&gt; I think you know better you&#39;re an
+[7:59] investor I&#39;m not an investor. Also I
+[8:01] don&#39;t give financial advice.
+[8:03] Uh but
+[8:06] having said that if all software is dead
+[8:08] then isn&#39;t OpenAI and Anthropic dead?
+[8:10] They&#39;re just software companies with a
+[8:11] bunch of researchers writing software.
+[8:14] So those companies would be dead too,
+[8:16] right? So they shouldn&#39;t have
+[8:17] trillion-dollar valuations. SpaceX might
+[8:19] make sense cuz they make rockets but
+[8:21] everybody else should be dead. Uh Nvidia
+[8:24] should be dead cuz they just have really
+[8:26] smart people who create chip designs
+[8:29] humans that use some software to create
+[8:31] chip designs and then they ship them
+[8:32] over the internet probably over to TSMC
+[8:35] which is a real company creating actual
+[8:36] chips. But then Nvidia would be dead as
+[8:38] well. So the world&#39;s most valuable
+[8:40] company should be dead as well cuz
+[8:41] software is dead, right? So
+[8:43] software obviously isn&#39;t dead and it&#39;s
+[8:45] not going to be dead and Nvidia and
+[8:46] OpenAI and Anthropic are not going to be
+[8:47] dead companies
+[8:48] uh you know because of whatever SaaS
+[8:50] apocalypse or whatever you want to call
+[8:52] it.
+[8:53] &gt;&gt; Yeah.
+[8:53] &gt;&gt; Um but um I do think two things are
+[8:56] true. I think that
+[8:59] um
+[8:59] two
+[9:00] uh big changes have happened which is
+[9:02] one is barriers to entry
+[9:04] &gt;&gt; Mhm.
+[9:04] &gt;&gt; have significantly gone down and then
+[9:06] switching costs have significantly gone
+[9:08] down. So let&#39;s talk about those. Um
+[9:11] barriers to entry because it&#39;s easier
+[9:12] than ever to write software.
+[9:14] &gt;&gt; Mhm.
+[9:15] &gt;&gt; Um
+[9:16] so that&#39;s like a new weapon.
+[9:17] &gt;&gt; Yeah.
+[9:17] &gt;&gt; Anyone can produce software
+[9:19] uh very cheaply.
+[9:20] &gt;&gt; Mhm.
+[9:21] &gt;&gt; Almost at zero cost. It&#39;s not quite zero
+[9:22] cost and you know it will never be zero
+[9:24] cost but much much cheaper than before.
+[9:25] &gt;&gt; Mhm.
+[9:26] &gt;&gt; But that weapon is available to
+[9:27] everyone.
+[9:27] &gt;&gt; Mhm.
+[9:28] &gt;&gt; So also the people that create software
+[9:29] now also have that weapon. It&#39;s not like
+[9:31] only
+[9:32] some some new players have that.
+[9:34] Everyone now.
+[9:35] &gt;&gt; Mhm.
+[9:35] &gt;&gt; So including Databricks. Like we&#39;re a
+[9:37] software company but we have that
+[9:38] weapon, and it&#39;s an awesome weapon.
+[9:39] We&#39;re using it.
+[9:39] &gt;&gt; used that weapon and
+[9:41] substituted any of your core software
+[9:43] expenses like your CRM, your IT help
+[9:45] desk, your office of the CFO software?
+[9:48] &gt;&gt; No, I think that&#39;s stupid. Also, I think
+[9:49] switching costs are lowered because it&#39;s
+[9:51] easier to switch between UIs. You know,
+[9:54] humans get locked into software. They
+[9:55] get You know, I don&#39;t know if you&#39;re Are
+[9:57] you How many use Android?
+[9:59] Oh, no one. Okay. Wow. How many use
+[10:02] iPhone?
+[10:02] &gt;&gt; Two guys.
+[10:03] &gt;&gt; Okay. Wow.
+[10:04] Okay.
+[10:05] All right.
+[10:07] Um you don&#39;t want to switch to Android.
+[10:09] Why? You don&#39;t know the UI. You don&#39;t
+[10:10] know how to use it, right? It&#39;s like a
+[10:12] different UI. You would have to also
+[10:13] transfer all your data, your phone
+[10:15] contacts, all that. It&#39;s too much
+[10:17] inertia switching cost. That&#39;s a
+[10:18] switching cost, right? But, if in the
+[10:20] future you&#39;re just talking to an agent,
+[10:22] that switching cost gets eliminated cuz
+[10:23] you&#39;re just talking to an agent. So, who
+[10:25] cares if the agent is instrumenting your
+[10:27] Android or your iPhone or your Gmail or
+[10:30] Outlook or your Salesforce or the
+[10:32] competitor or whatever it is. So, that&#39;s
+[10:34] like the switching cost coming down as
+[10:35] well. Um
+[10:37] So, yeah, I think it&#39;s going to be more
+[10:38] competition.
+[10:38] &gt;&gt; Yeah.
+[10:39] &gt;&gt; Um so, I think software companies will
+[10:41] have to run more efficiently.
+[10:42] &gt;&gt; Yeah.
+[10:43] &gt;&gt; Uh that I think is going to happen.
+[10:45] Um
+[10:46] but, software is not the only moat.
+[10:47] There&#39;s a good book you should read
+[10:49] that&#39;s called The Seven Powers. How many
+[10:50] of you have read The Seven Powers?
+[10:52] Okay, a bunch of people here. Okay.
+[10:53] Yeah, so there&#39;s like there are moats
+[10:54] that are not just software, right? I
+[10:56] mean, like economies of scale. If you
+[10:58] can do things at scale better than
+[11:00] anyone else, uh so that you can afford
+[11:03] crazy fixed costs cuz you&#39;re amortizing
+[11:05] them away because of your scale, you
+[11:07] know, Amazon, AWS, um you know, uh
+[11:11] then that&#39;s a moat.
+[11:13] &gt;&gt; Yeah.
+[11:13] &gt;&gt; Uh if you have a brand like Ferrari or
+[11:15] Rolex, you know, that&#39;s a that&#39;s a moat.
+[11:19] People writing cheap software can&#39;t just
+[11:20] come replace that brand. People care
+[11:21] about that brand.
+[11:23] Uh trust, you know, like I&#39;m the only
+[11:25] one providing You can trust my company.
+[11:28] We don&#39;t get hacked. We have like really
+[11:29] secure software. We have special
+[11:31] certification. Maybe we have patents.
+[11:33] That remains a moat. That you cannot
+[11:35] break that that easily. So,
+[11:37] all these remain
+[11:39] There&#39;s a bunch of other ones, switching
+[11:40] costs and all that and so on. So,
+[11:42] data is a big moat. If you have special
+[11:44] data that no one else has um that only
+[11:47] you have
+[11:48] that&#39;s a moat. It doesn&#39;t matter if they
+[11:49] can write cheap software. So, so I think
+[11:52] it&#39;s the answer is in between.
+[11:54] &gt;&gt; Yeah.
+[11:55] &gt;&gt; The way I say it is if if a company has
+[11:58] uh been around for 10 years and they
+[11:59] have not innovated, their software looks
+[12:01] the same as 10 years ago, but their
+[12:02] revenue&#39;s been going up
+[12:03] &gt;&gt; Yeah.
+[12:04] &gt;&gt; they should be worried.
+[12:05] &gt;&gt; Yeah.
+[12:05] &gt;&gt; Cuz they have not been innovating and
+[12:07] it&#39;s probably easier for a company that
+[12:08] starts today to then
+[12:11] with you know, barriers of entry being
+[12:12] lower, write software quickly. That&#39;s
+[12:14] much better than that company cuz that
+[12:16] company hasn&#39;t done anything for 10
+[12:17] years.
+[12:17] &gt;&gt; Yeah.
+[12:18] &gt;&gt; They should be really afraid.
+[12:19] &gt;&gt; Yeah.
+[12:20] &gt;&gt; Uh and probably they don&#39;t even have the
+[12:21] innovation muscle anymore cuz they, you
+[12:23] know, they&#39;re not innovating. So,
+[12:25] obviously they&#39;re not they don&#39;t have
+[12:26] innovators. Um those kind of companies
+[12:28] are going to be wiped out.
+[12:29] &gt;&gt; Yeah.
+[12:30] &gt;&gt; But there&#39;s going to be other companies
+[12:31] that have been innovating the last 10
+[12:32] years and they&#39;re software companies or
+[12:34] companies that now get their
+[12:36] together cuz they&#39;re nervous.
+[12:37] &gt;&gt; Yeah.
+[12:37] &gt;&gt; And they&#39;ll be fine, too.
+[12:39] &gt;&gt; Perfect.
+[12:39] &gt;&gt; So, what do you think? I mean, you&#39;re an
+[12:40] investor.
+[12:41] &gt;&gt; I mean, I think um there&#39;s a grain,
+[12:43] exactly as you said. Like if I was to
+[12:45] give the grades to types of software
+[12:47] companies, I would say if you have got a
+[12:49] lot of data, like you said, you&#39;ve got
+[12:51] you know, some cyber like you&#39;re like in
+[12:54] some core loop, you&#39;re probably most
+[12:55] robust and immune from it. Somewhere in
+[12:58] the middle is all the workflow software,
+[12:59] like where it has not innovated. The UX
+[13:01] still looks same and you&#39;re like
+[13:02] scrunching down on your shoulder and
+[13:03] typing in I met Ali Goatsy today, these
+[13:05] are the notes. Like that stuff&#39;s
+[13:06] probably gone.
+[13:08] &gt;&gt; Yeah.
+[13:08] &gt;&gt; If you were exactly as you said, no
+[13:10] innovation, you were a part of the old
+[13:13] habit.
+[13:14] &gt;&gt; But any one of those, they have
+[13:15] customers, they have data.
+[13:17] If they build great AI and start
+[13:18] innovating they can keep the keep keep
+[13:21] on going. They might have to change
+[13:22] their pricing structure and their cost
+[13:24] basis, but they&#39;ll be fine.
+[13:25] In fact, they have a lot of advantages
+[13:27] against incumbents. They have data, they
+[13:29] have customers, and they have some
+[13:31] scale. So, they have some economies of
+[13:32] scale going. But, they do have to get
+[13:34] their together. And that&#39;s, you
+[13:36] know, easier said than done.
+[13:37] &gt;&gt; Yeah. Yeah. Yeah. I&#39;ll
+[13:39] flash a chart. Have you guys seen this
+[13:41] chart from Ethan Malik?
+[13:43] He talks about AI is very good at some
+[13:46] things. And he called it the jagged
+[13:47] frontier.
+[13:49] This is
+[13:50] customer support, software engineering
+[13:53] would be like this would be the frontier
+[13:54] of like maybe software engineering.
+[13:56] Maybe this is customer support or
+[13:57] whatever.
+[13:58] But, then there&#39;s a lot of stuff that&#39;s
+[13:59] like terrible at.
+[14:00] Like like this scale or this scale or
+[14:03] and so on. And
+[14:04] you know, you Ali, you see a lot of
+[14:07] &gt;&gt; We&#39;re here, man. We&#39;re here AGI already.
+[14:10] We&#39;re here. We&#39;re here.
+[14:12] &gt;&gt; Um
+[14:12] &gt;&gt; They kind of admitted it to it.
+[14:13] &gt;&gt; That&#39;s right. That&#39;s right. That&#39;s
+[14:15] &gt;&gt; Reluctantly.
+[14:16] &gt;&gt; Yeah. Yeah.
+[14:17] So, you know, you you&#39;ve got what like
+[14:19] 6,000, 7,000 customers? Those are 10,000
+[14:22] customers.
+[14:22] &gt;&gt; No, we have probably 20,000 customers.
+[14:23] &gt;&gt; Sorry. 20,000 customers.
+[14:25] &gt;&gt; Sorry.
+[14:26] &gt;&gt; As you see this and you have that&#39;s a
+[14:27] very good sample of the entire universe
+[14:29] of what&#39;s happening. So, in that sample
+[14:31] of 20,000 customers, what are what are
+[14:34] areas where AI is like hitting home runs
+[14:36] and like working as advertised?
+[14:39] &gt;&gt; Yep.
+[14:40] &gt;&gt; And what what are areas where the
+[14:41] frontier is still rough and it&#39;s not
+[14:44] working, the POCs are failing?
+[14:46] &gt;&gt; Yeah. Look, it&#39;s not AI&#39;s fault. I mean,
+[14:47] most companies are somewhere here.
+[14:49] I think we have AGI. But, I think most
+[14:51] companies, if you look at how much are
+[14:52] they Maybe they&#39;re having AIs helping me
+[14:54] in some tasks. That&#39;s what most
+[14:56] companies are doing. That&#39;s just how it
+[14:58] is.
+[14:58] &gt;&gt; Mhm.
+[14:59] &gt;&gt; And
+[15:00] it&#39;s because that context isn&#39;t there in
+[15:02] the model. So, the model can&#39;t do it.
+[15:04] Take support, which everybody said,
+[15:06] &quot;Okay, that&#39;s going to be dead. Support
+[15:07] is like gone.&quot;
+[15:08] &gt;&gt; Yeah.
+[15:08] &gt;&gt; Right? Support is very hard.
+[15:09] &gt;&gt; Mhm.
+[15:10] &gt;&gt; Support are literally the things that
+[15:11] humans don&#39;t know what to do. Like they
+[15:13] they get stuck. So, take Databricks.
+[15:15] Databricks offers support.
+[15:16] &gt;&gt; Mhm.
+[15:16] &gt;&gt; Databricks is a company that offers It&#39;s
+[15:19] a platform advanced platform where you
+[15:20] can do data science, machine learning.
+[15:22] You can do advanced things on the
+[15:23] platform. These are smart people who
+[15:25] make, you know, big salaries. They have
+[15:27] education, you know, they they have data
+[15:29] science education. They&#39;re trying to use
+[15:30] Databricks and maybe they get stuck. So,
+[15:32] their machine learning models doesn&#39;t
+[15:33] have,
+[15:34] you know, the right
+[15:36] It&#39;s not getting the right F1 score or,
+[15:38] you know, something like that. And
+[15:39] they&#39;re stuck. And they&#39;ve tried
+[15:40] everything. They call our support.
+[15:42] &gt;&gt; Mhm.
+[15:43] &gt;&gt; So, it&#39;s pretty hard to automate that.
+[15:45] You can&#39;t actually give it to it. None
+[15:46] of the current support automation, we
+[15:48] tried them all.
+[15:49] &gt;&gt; Mhm.
+[15:49] &gt;&gt; companies, all of them immediately, even
+[15:51] actually when they start talking to us.
+[15:53] As soon as they know who we are, we&#39;re
+[15:54] like, &quot;Whoa, whoa, whoa, whoa, whoa.
+[15:55] We can&#39;t help you. Like, you go to the
+[15:58] Get out of here, you know.&quot;
+[16:00] Uh so, uh so, yeah, most of the world is
+[16:02] over here. But, it&#39;s because we don&#39;t
+[16:04] have the context. If the AI could have
+[16:06] all the context of how our support
+[16:08] engineers at Databricks operate,
+[16:09] &gt;&gt; Yeah.
+[16:10] &gt;&gt; then the AI could do it.
+[16:11] &gt;&gt; Yeah.
+[16:11] &gt;&gt; It just doesn&#39;t have it.
+[16:12] &gt;&gt; Yeah, you know, one of the things we
+[16:13] used to say at Palantir is your AI
+[16:15] strategy starts at your data strategy.
+[16:16] Yes. You got to get the roads paved and
+[16:19] have the data flowing and Yeah. It is
+[16:21] that, you know, if you were to bucket
+[16:23] the best enterprises who are like maybe
+[16:25] like starting to head towards the right
+[16:26] in your customer base of 20,000,
+[16:29] what is common between the ones who are
+[16:31] making it work
+[16:32] &gt;&gt; Uh-huh.
+[16:32] &gt;&gt; and the Ferraris are flying
+[16:34] um and and and and ones where I&#39;m I&#39;m
+[16:37] guessing it&#39;s a context problem for the
+[16:38] ones that it&#39;s not working. And what
+[16:40] does it take to get the context working?
+[16:42] &gt;&gt; Yeah, it&#39;s very hard. It&#39;s a human
+[16:43] problem.
+[16:44] Like, it&#39;s not AI problem. We already
+[16:45] have AGI. It&#39;s a human problem. I don&#39;t
+[16:47] see anyone really doing an ex- excellent
+[16:49] job at this.
+[16:50] &gt;&gt; Mhm.
+[16:50] &gt;&gt; You have to kind of rewire all your
+[16:51] processes in the organization
+[16:52] &gt;&gt; Mhm.
+[16:53] &gt;&gt; uh to to be able to do it. This is like
+[16:55] well known. I mean, my favorite is
+[16:57] there&#39;s an article actually that I
+[16:58] recommend people reading from 1990 uh
+[17:01] produced by actually Stanford professor
+[17:02] uh or researcher. Um
+[17:04] it&#39;s called, I think, um you know, from
+[17:07] the dynamo to the computer.
+[17:09] &gt;&gt; Mhm.
+[17:09] &gt;&gt; Okay? Check it out. So, dynamo to
+[17:11] computer. And it looks at different uh
+[17:13] sort of uh technological revolutions and
+[17:16] how long it ha- how long it took for
+[17:18] them to have impact on productivity of
+[17:20] the
+[17:20] of the economy. And it&#39;s just you know,
+[17:24] tech just forever. Like when the PCs
+[17:26] came out, the joke was the Nobel
+[17:27] laureate economist
+[17:30] you know, uh um
+[17:32] Richard Solow said that
+[17:34] computers or PCs you can find them
+[17:36] everywhere except in the productivity
+[17:39] statistics.
+[17:41] You know, like
+[17:42] it&#39;s like it just doesn&#39;t show up in the
+[17:43] statistics.
+[17:45] Um
+[17:46] Why? People were buying PCs and they
+[17:48] were using them as typewriters. So, they
+[17:50] would have people type on PCs, but then
+[17:52] print out the sheets and then put them
+[17:54] in folders and then have assistants that
+[17:57] like index them and do things. So, like
+[17:59] you didn&#39;t see any productivity gains
+[18:00] from it.
+[18:01] And same thing with if you look at the
+[18:03] Industrial Revolution, same thing
+[18:05] happened.
+[18:06] Um you know, we had these steam engines
+[18:09] and the steam factories were sort of
+[18:11] super dense and they were running like
+[18:13] with these, you know, they were called
+[18:15] the line
+[18:16] shafts which were like these things that
+[18:18] rotate.
+[18:19] When the electric engine came, that&#39;s a
+[18:21] dynamo, uh
+[18:22] it took 40 years before they saw any
+[18:24] productivity gains in the in the
+[18:26] economy. Yeah, check it out. This is
+[18:29] another article. It took from 1880
+[18:30] &gt;&gt; The diffusion took 40 years.
+[18:32] &gt;&gt; From that 1880 to 1920 when the electric
+[18:34] engine came uh to see impact. So, what
+[18:37] they were doing is they were going to
+[18:38] these factories that already were these
+[18:39] line shaft factories that were these
+[18:42] dense factories where you have a steam
+[18:43] engine that&#39;s rotating this line shaft
+[18:45] and it&#39;s rotating these belts and then
+[18:47] everything is working you have these
+[18:48] multiple stories
+[18:50] um and all they did is just like the PC
+[18:53] they used it as a typewriter they would
+[18:54] replace the steam engine with an
+[18:55] electric engine.
+[18:57] And that doesn&#39;t just like replacing the
+[18:58] PC with a you don&#39;t get any
+[19:01] um productivity gains. It took till 1920
+[19:04] but maybe it was 1915 but I&#39;m roughly
+[19:06] right
+[19:07] um until they realized wait, we have to
+[19:08] change the whole factory floor.
+[19:10] We have to move the factories out of the
+[19:12] cities. We have to have like floor plans
+[19:14] that are much bigger cuz now we can
+[19:17] distribute the electricity. Electricity
+[19:19] is much more it doesn&#39;t you know it&#39;s
+[19:21] not like the
+[19:23] the torque that has you know
+[19:25] inefficiency. We can spread it out. We
+[19:27] can have floor plans that are big and we
+[19:28] can run different parts of the factory
+[19:30] at different rates. Unit drive versus
+[19:32] group drive.
+[19:33] Took a very long time.
+[19:34] &gt;&gt; Yeah.
+[19:35] &gt;&gt; That&#39;s what&#39;s going to happen. Same same
+[19:36] thing now. Rewiring I know it because I
+[19:38] have 20,000 customers and I talked to
+[19:40] them. I was late to this meeting cuz I
+[19:41] was meeting one of the CEOs of one of
+[19:42] the big banks and same problem. He has
+[19:46] the same problem. All the organizations
+[19:47] I work with have the same problem.
+[19:49] They&#39;re like I&#39;m not seeing any advance
+[19:51] like I don&#39;t see They&#39;re all like AI is
+[19:53] amazing. It&#39;s coming. It&#39;s like I need
+[19:54] it. I need it but they&#39;re like I don&#39;t
+[19:56] see any productivity gains in my
+[19:57] organization. You know, what the hell am
+[19:59] I doing wrong? And I tell them we have
+[20:00] AGI and they&#39;re like what? Like that is
+[20:04] not true. Like we don&#39;t see anything.
+[20:05] It&#39;s what they
+[20:05] &gt;&gt; It&#39;s a very tough problem cuz you&#39;re
+[20:07] like hey I got the brain but I got to
+[20:09] rebuild a human body.
+[20:10] &gt;&gt; Yeah.
+[20:10] &gt;&gt; The hands, the legs.
+[20:11] &gt;&gt; Yeah. Let me give you Let me give you
+[20:13] Yeah, let me give you an example from
+[20:14] Databricks.
+[20:15] So Databricks helps you get data from
+[20:17] all the different systems like
+[20:18] Salesforce, Workday and so on. Collect
+[20:20] them in one place,
+[20:21] secure it and then do AI on it. Like you
+[20:24] can do predictions. You can do
+[20:25] predictive models. That&#39;s what
+[20:26] Databricks is. So we built connectors to
+[20:28] all these systems. These connectors are
+[20:31] It would take us three quarters to build
+[20:32] a production connector. We&#39;re good at
+[20:34] this. It&#39;s what we do for a living. We
+[20:35] build these connectors. Like we can
+[20:36] build a connector from Databricks to
+[20:37] Salesforce production ready. It would
+[20:40] take us three quarters so nine months to
+[20:42] do that. Ship secure
+[20:44] &gt;&gt; Nice.
+[20:44] &gt;&gt; with so on. That&#39;s like that&#39;s what we
+[20:46] did.
+[20:47] So you know as you know the LLMs got
+[20:50] faster and faster and faster I started
+[20:51] sort of experimenting with this myself
+[20:53] and I was like oh I could write a
+[20:54] connector in two days.
+[20:56] So I went to the team that builds this
+[20:59] and I was like hey I can do this in two
+[21:00] days. How come it takes you guys three
+[21:02] quarters? They&#39;re like okay great point.
+[21:04] Let us come back to you. So they they
+[21:05] went and they thought about it and they
+[21:07] came back in 2 weeks and they said,
+[21:09] &quot;Okay, you&#39;re right.
+[21:11] It&#39;s but you&#39;re also not right. We
+[21:13] looked at it and yeah, this AI is
+[21:15] useful. We can compress it down from 3/4
+[21:18] by 1 and 1/2 month. So, we can get it
+[21:20] from 9 months to 7 and 1/2 months.
+[21:22] That&#39;s it. That&#39;s it.&quot; And I&#39;m like,
+[21:24] &quot;Well, I can do it in 2 days.&quot; And
+[21:26] they&#39;re like, &quot;No, no, no. No offense to
+[21:27] you, but you know, this is production
+[21:29] code and it really actually works and
+[21:31] you know, we have like customer feedback
+[21:34] and you know, it&#39;s like secure and you
+[21:36] know, you wrote some toy. God knows what
+[21:38] that I mean, no offense. You&#39;re great,
+[21:40] but you know, let us let let us try.&quot;
+[21:42] &gt;&gt; missing link?
+[21:43] &gt;&gt; Uh so, I was like, &quot;God, man. This is
+[21:44] kind of depressing, but yeah, I&#39;ll take
+[21:46] the 1 and 1/2 month improvement and you
+[21:47] know, maybe it&#39;s something, but maybe
+[21:48] I&#39;m just stupid and I don&#39;t get it.&quot;
+[21:50] &gt;&gt; Yeah.
+[21:50] &gt;&gt; Then I found another guy in the company.
+[21:52] We went to him and we sort of said,
+[21:54] &quot;Hey, can you look at this problem?&quot; And
+[21:55] he&#39;s very first principles. He&#39;s a very
+[21:57] smart guy and he doesn&#39;t care about all
+[21:59] this like, you know, fluff. He&#39;s like he
+[22:01] cuts through the fluff and he cut
+[22:02] through the fluff and he worked with the
+[22:05] team and they came back and they said,
+[22:07] &quot;Hey, after looking at the problem, we
+[22:09] can do seven connectors in one quarter.&quot;
+[22:11] Boom. Yeah.
+[22:13] &gt;&gt; Let&#39;s go. What is the difference?
+[22:14] &gt;&gt; So, what&#39;s the difference? Okay. So,
+[22:15] what he did is he he went from first
+[22:17] principles with some team members and
+[22:18] they looked at it and they said, &quot;Okay,
+[22:20] first quarter,
+[22:21] they&#39;re just sending our very expensive,
+[22:23] very smart, Stanford educated product
+[22:26] managers out to the customers to talk to
+[22:28] the customers and collect feedback. What
+[22:30] exactly is your requirement? How do you
+[22:31] use Salesforce and so on? That takes a
+[22:33] full quarter. At the end of that
+[22:34] quarter, our amazing, smart
+[22:37] product managers come back with like a
+[22:38] 60, 70, 80 page super nice report on
+[22:41] exactly all the requirements.&quot;
+[22:42] &gt;&gt; Mhm.
+[22:43] &gt;&gt; Okay. So, you&#39;re blocked for a whole
+[22:44] quarter. So, for sure you can&#39;t Amdahl&#39;s
+[22:46] law, you can&#39;t compress it below below
+[22:48] that.
+[22:48] &gt;&gt; Mhm.
+[22:49] &gt;&gt; Then code writing starts. We have to
+[22:51] test this stuff. So, testing requires
+[22:52] you to set up Salesforce, Workday,
+[22:53] NetSuite, but those are not software by
+[22:56] Databricks. So, we&#39;re not very good at
+[22:57] that. That takes a very long time and
+[22:58] it&#39;s hard to find people to do that
+[23:00] Databricks. So, that again is like a
+[23:01] process that takes a long time for us to
+[23:04] stand up and it&#39;s very error-prone. So,
+[23:06] we couldn&#39;t do that either.
+[23:08] And then we have one person for each
+[23:10] connector.
+[23:11] They go on vacation, they get sick, you
+[23:13] know, so on, so all of that. So, what he
+[23:15] did is he just from first principles
+[23:16] looked at it and said we&#39;re going to
+[23:17] just rewire all of this. And lots of
+[23:19] people didn&#39;t like this. They were
+[23:20] unhappy about it, but he said that
+[23:22] you know, the product requirements
+[23:25] instead of one quarter, we&#39;re just going
+[23:26] to take one week and quickly write down
+[23:28] whatever we have. We might get things
+[23:29] wrong, but because the software is so
+[23:31] fast to write, we can rewrite it again.
+[23:33] So, let&#39;s iterate faster.
+[23:36] The standing up the Salesforce
+[23:37] instances, let&#39;s outsource that to firms
+[23:39] that can do that for us and we can just
+[23:40] pay them a lot and they do it in
+[23:42] parallel. So, we can shrink that as
+[23:44] well. And then one person per connector,
+[23:45] let&#39;s change it. Let&#39;s have seven
+[23:46] people, seven connectors and then they
+[23:48] all work on all the connectors together.
+[23:50] So, we don&#39;t have what&#39;s called, you
+[23:52] know, bus factor one. If someone is hit
+[23:53] by a bus, the whole project is not
+[23:55] stopped, right?
+[23:57] So,
+[23:59] so yeah, so
+[24:00] got it all done into one quarter and
+[24:01] seven seven connectors shipped and you
+[24:04] know, so but
+[24:06] this had nothing to do with
+[24:08] like really didn&#39;t have anything to do
+[24:09] with AI or AGI or smarter models or
+[24:12] super intelligence or giant gigantic
+[24:15] like you can have the the next like
+[24:17] GPT-7 or Opus-6 would not have helped us
+[24:21] do this better. We needed to do those
+[24:23] make those changes and that&#39;s like a
+[24:25] human refactoring problem and process
+[24:27] change and
+[24:28] so this is what the whole world is going
+[24:29] through. So, that&#39;s what you need to do
+[24:31] well if you want to if you want to
+[24:33] succeed. Some are doing it better,
+[24:35] others are not.
+[24:36] &gt;&gt; Hamilton Helmer actually talks about
+[24:37] this quite a bit actually. So, for all
+[24:39] of you who are picking assignment
+[24:42] option one and want to be investors,
+[24:44] Hamilton Helmer&#39;s book is a must read on
+[24:47] process power. We were debating this
+[24:49] before this. If I only you had
+[24:51] $100 to invest across what Jensen calls
+[24:54] the five-layer stack, energy, chips,
+[24:57] infra, model, and apps.
+[25:01] Where does value accrue?
+[25:03] If you were to put 100 bucks in the in
+[25:05] in the index of energy and chips and
+[25:06] infra and and so on, uh with let&#39;s say
+[25:09] long-term time frame,
+[25:11] where does where where would you put it?
+[25:13] How would you allocate the $100?
+[25:15] Um
+[25:16] and why?
+[25:16] &gt;&gt; I&#39;m a computer scientist. I&#39;m not an
+[25:17] investor.
+[25:18] I don&#39;t give financial advice.
+[25:20] &gt;&gt; Yeah.
+[25:20] &gt;&gt; But you&#39;re allocating
+[25:22] You know, you&#39;re you&#39;re
+[25:23] &gt;&gt; If I have $100
+[25:24] &gt;&gt; Yeah, you are allocating
+[25:24] &gt;&gt; money
+[25:25] &gt;&gt; Data Bricks time, right? Data Bricks is
+[25:26] across three of these.
+[25:27] &gt;&gt; Yeah. I I would I would just say, look,
+[25:29] it&#39;s obvious that the applications are
+[25:30] going to be the winners.
+[25:31] Right?
+[25:32] &gt;&gt; Yeah.
+[25:32] &gt;&gt; So, I would put put it in the top. Uh
+[25:35] it&#39;s kind of like uh and I&#39;ll give you
+[25:37] some some guesses that, you know, but
+[25:38] who knows actually. It&#39;s very hard to
+[25:40] predict. So, we&#39;d have to kind of
+[25:42] have a
+[25:43] I would go early stage. And I would have
+[25:45] a seed strategy and I would invest in
+[25:47] many many startups. And I would get most
+[25:49] of them wrong, but a few would actually
+[25:50] make it and they would be the next
+[25:51] Google or whatever. Um but, you know, in
+[25:55] 1990 Like when I did my PhD,
+[25:59] um in the early 2000,
+[26:00] &gt;&gt; Mhm.
+[26:01] &gt;&gt; um
+[26:02] I was in the networking field.
+[26:04] Networking was like the cool thing to
+[26:05] do. It was the the advanced thing cuz
+[26:06] the internet was like, you want to work
+[26:08] on it? Like, the internet was the big
+[26:09] thing at the time and you want to and
+[26:11] the cool coolest thing on the internet
+[26:12] was
+[26:14] uh networking.
+[26:15] &gt;&gt; Yeah.
+[26:15] &gt;&gt; And the hardest problem, like the
+[26:18] smartest math brains were working on at
+[26:20] the time. We all knew what the future
+[26:21] would look like.
+[26:22] &gt;&gt; Mhm.
+[26:23] &gt;&gt; The future, everybody knew what the most
+[26:24] important problem everyone&#39;s going to
+[26:25] work on is the what&#39;s called the
+[26:26] multicast problem.
+[26:27] &gt;&gt; Mhm.
+[26:28] &gt;&gt; Which is Yeah. See.
+[26:31] Problematic that no one knows what that
+[26:32] is today. We were we were clearly wrong.
+[26:34] So, multicast is, you know, you want to
+[26:37] broadcast from one source, let&#39;s say a
+[26:39] soccer game or a football game or
+[26:41] basketball into the whole world cuz
+[26:42] everybody wants to watch it at the same
+[26:43] time.
+[26:44] We didn&#39;t know how to solve that
+[26:45] efficiently. So, all of the smartest
+[26:47] brains in the world were trying to work
+[26:48] on this problem. And bandwidth was
+[26:50] scarce.
+[26:51] While we were doing this, and by the
+[26:52] way, we actually you know, had pretty
+[26:54] good problems and I started the company
+[26:55] on this. Uh and we had a great solution.
+[26:59] Unfortunately, the cost of bandwidth
+[27:01] just plummeted and they just deployed so
+[27:03] much fiber that no one This problem was
+[27:05] not a problem ever.
+[27:07] So, no one needed to buy this software.
+[27:08] So, it was a complete waste of time. Uh
+[27:10] and at that time we thought the hardest
+[27:12] problems, the most interesting things to
+[27:13] work on are Cisco routers, routing, BGP
+[27:16] border gateway protocol, internet
+[27:18] protocol, like, you know, queuing
+[27:20] theory, quality of service, these kind
+[27:21] of things. Those are like the most
+[27:22] interesting things you can cuz we had
+[27:24] tunnel vision on the internet. And the
+[27:27] What is the internet? Well, at the time
+[27:28] it was the internet protocols and those
+[27:30] things. No apps really existed. So, we
+[27:33] were all focused on that. And today
+[27:34] everybody&#39;s focused, I would say, on
+[27:36] &gt;&gt; Chips.
+[27:37] &gt;&gt; Like, you know, I think chips and, you
+[27:39] know, I think infrastructure
+[27:41] Yeah, I think people are really right
+[27:42] now the hot new thing is like Nvidia,
+[27:45] OpenAI, Anthropic, DeepMind. These are
+[27:47] the things everybody&#39;s focused on, AGI,
+[27:48] super intelligence.
+[27:50] What I said at the beginning. But,
+[27:52] uh on the internet there were like
+[27:54] really weird things
+[27:55] &gt;&gt; Yeah.
+[27:55] &gt;&gt; that took off. The really weird things
+[27:57] that took off were like taxi business,
+[28:01] you know, which is Uber. Uber, yeah. Uh
+[28:03] or selling books,
+[28:05] which is the lamest thing ever. But,
+[28:07] that became Amazon,
+[28:08] which became AWS.
+[28:09] &gt;&gt; Yeah.
+[28:10] &gt;&gt; You know,
+[28:11] uh or uh renting your bedroom to people,
+[28:14] like, you know, that&#39;s Airbnb.
+[28:16] Uh and or
+[28:18] um sending people short text,
+[28:21] &gt;&gt; Right.
+[28:21] &gt;&gt; Twitter.
+[28:22] &gt;&gt; Right.
+[28:22] &gt;&gt; You know,
+[28:23] &gt;&gt; Right.
+[28:23] &gt;&gt; uh These are like And if you said them
+[28:25] in those words in 2000 to people, people
+[28:27] would say, &quot;You&#39;re out of your mind.
+[28:29] Like, you&#39;re insane. You&#39;re full of it.&quot;
+[28:31] Uh but, that&#39;s Those were the great
+[28:32] ideas of the time. Those are the ones
+[28:33] that became So, I think it&#39;s the same
+[28:34] thing here.
+[28:35] &gt;&gt; Right.
+[28:35] &gt;&gt; Uh to throw a few of them out there, um
+[28:38] I think healthcare is like 17% of US
+[28:40] GDP.
+[28:41] &gt;&gt; Yeah.
+[28:42] &gt;&gt; Um
+[28:43] you know,
+[28:44] we we we all still, unfortunately, will
+[28:47] die and we all care about our health and
+[28:50] the health of our loved ones. I think
+[28:52] there&#39;s huge we have, you know,
+[28:55] the propensity to pay for this. Like
+[28:56] we&#39;d pay anything to be able to save
+[28:59] lives or of our loved ones or our own
+[29:01] lives or our own health issues. And it&#39;s
+[29:04] not particularly well done today.
+[29:06] Surprise, surprise. You know, health
+[29:07] care is not like awesome.
+[29:09] So, imagine a company that has seen
+[29:11] billion patients.
+[29:12] &gt;&gt; Yeah.
+[29:12] &gt;&gt; Like I have seen 100 million patients
+[29:15] with your kind of genetic composition
+[29:17] and the kind of issues that you might
+[29:18] have in the future and I can help you.
+[29:20] &gt;&gt; Mhm.
+[29:20] &gt;&gt; But what are you willing to pay?
+[29:21] &gt;&gt; Mhm.
+[29:22] &gt;&gt; For me to help you with that.
+[29:23] &gt;&gt; Mhm.
+[29:23] &gt;&gt; That could be a company that&#39;s trillions
+[29:25] of dollars worth.
+[29:25] &gt;&gt; Right.
+[29:26] &gt;&gt; To take something out of left field that
+[29:28] I think people think is really,
+[29:31] you know, not interesting and not, but
+[29:33] take education.
+[29:34] &gt;&gt; Mhm.
+[29:34] &gt;&gt; Education actually in in VC space people
+[29:37] the consensus has always been education
+[29:38] is like a terrible investment, right?
+[29:40] Like we see people say always like I
+[29:42] never invest in education is like
+[29:43] &gt;&gt; What&#39;s the last public market company
+[29:45] you know?
+[29:45] &gt;&gt; Yeah.
+[29:46] &gt;&gt; Yeah, what&#39;s the last trillion dollar
+[29:47] education company?
+[29:48] &gt;&gt; Not even 100 billion, yeah.
+[29:49] &gt;&gt; Yeah. Yeah, anything, right?
+[29:51] So, but
+[29:53] most people have kids.
+[29:54] &gt;&gt; Yeah.
+[29:55] &gt;&gt; And, you know, more kids are produced
+[29:57] and they do they do need to go through
+[29:59] and get to get an education, whether
+[30:01] people believe it or not.
+[30:02] &gt;&gt; Yeah.
+[30:03] &gt;&gt; And
+[30:05] and people do care actually if the
+[30:06] education for their kids are good or
+[30:07] not. Elections are won and lost. There&#39;s
+[30:10] cultural issues on these things like,
+[30:11] you know, of what you you&#39;re allowed to
+[30:13] teach my kids or not.
+[30:15] &gt;&gt; Mhm.
+[30:15] &gt;&gt; Right? Elections are won and lost on
+[30:16] that. Not because it&#39;s a stupid topic,
+[30:18] because it matters. Like what are you
+[30:19] teaching my kids matters. And are my
+[30:21] kids being brainwashed to do the right
+[30:23] thing or the wrong thing or are they
+[30:24] going to be do the are they, you know,
+[30:26] well equipped to get the jobs of the
+[30:27] future?
+[30:28] &gt;&gt; Yeah.
+[30:28] &gt;&gt; I think if if there is a company that
+[30:30] can provide amazing education,
+[30:32] &gt;&gt; Right.
+[30:32] &gt;&gt; using AI,
+[30:34] I think
+[30:35] &gt;&gt; Right.
+[30:36] &gt;&gt; people a lot of people will pay for
+[30:37] that. And if it&#39;s like proven that that
+[30:39] does a better job than
+[30:42] than than, you know, whatever they&#39;re
+[30:43] getting right now. Uh
+[30:45] Just two flavors of like obvious
+[30:47] companies that I think will exist and
+[30:48] they could be trillion dollar companies
+[30:50] if they do it well. They will have data
+[30:51] modes.
+[30:52] &gt;&gt; Yeah.
+[30:53] &gt;&gt; They will have economies of scale modes.
+[30:56] There&#39;s like winner takes it all kind of
+[30:58] a dynamics in those markets at least in
+[31:00] countries and geos.
+[31:02] &gt;&gt; Yeah.
+[31:02] &gt;&gt; So so I think the value accrues to the
+[31:04] top.
+[31:05] &gt;&gt; Yeah.
+[31:06] We can&#39;t wait for that to happen.
+[31:07] &gt;&gt; Yeah, we can&#39;t wait for that to happen.
+[31:09] &gt;&gt; Will you push back?
+[31:10] &gt;&gt; No, I think I mean look I&#39;ve I&#39;ve
+[31:11] written extensively about this eagerly
+[31:14] waiting for this what I call the blue
+[31:15] triangle to to invert. I don&#39;t know if
+[31:18] you&#39;ve seen this but basically this is
+[31:20] uh
+[31:21] all of the money in AI
+[31:22] &gt;&gt; Yeah.
+[31:22] &gt;&gt; is with one guy.
+[31:24] &gt;&gt; Yeah.
+[31:24] &gt;&gt; That&#39;s why Jensen&#39;s so happy all the
+[31:26] time as you as as you know.
+[31:27] &gt;&gt; Yeah.
+[31:28] &gt;&gt; Um
+[31:30] These guys are fighting for
+[31:32] &gt;&gt; Yeah.
+[31:32] &gt;&gt; dollars. There&#39;s like no money there.
+[31:34] There&#39;s very little money here. I mean
+[31:35] if people are making some money here and
+[31:37] uh so we&#39;ll see but but that&#39;s the bet.
+[31:39] The bet is that this thing will look
+[31:40] like a more sustainable
+[31:41] &gt;&gt; Yeah, it will go that way. I mean it&#39;s
+[31:43] all value in Silicon Valley and in tech
+[31:46] and in technology moves up the stack all
+[31:48] the time.
+[31:48] &gt;&gt; Yeah.
+[31:49] &gt;&gt; Like you know even look at the greatest
+[31:50] companies like okay, the company that
+[31:52] created the PCs IBM was like the
+[31:54] greatest market cap and all the value
+[31:55] accrued there. But then that became
+[31:56] commoditized then it became the software
+[31:58] on top of it which is like the operating
+[31:59] systems and the Microsofts of the world
+[32:02] and so on. Then you know here at
+[32:03] Stanford actually a while back it was
+[32:05] like 20 years ago VMware which is how do
+[32:07] you virtualize that software and then
+[32:09] that became commoditized
+[32:10] &gt;&gt; Yeah.
+[32:10] &gt;&gt; like you know so it keeps moving up the
+[32:11] stack all the time.
+[32:12] &gt;&gt; Yeah.
+[32:13] &gt;&gt; That&#39;s how it that&#39;s that&#39;s how it&#39;s
+[32:14] going to be here too.
+[32:15] &gt;&gt; 100% and you know the big one of the
+[32:16] forces that is commoditizing this you&#39;ve
+[32:18] spoken about this is open source.
+[32:20] &gt;&gt; Mhm.
+[32:20] &gt;&gt; Open source is getting pretty good.
+[32:22] &gt;&gt; Yep.
+[32:22] &gt;&gt; This blue line is open source.
+[32:24] &gt;&gt; Yeah.
+[32:25] &gt;&gt; The the gap is closing. This is like
+[32:26] what? Three three four months?
+[32:28] &gt;&gt; Yeah.
+[32:28] &gt;&gt; This gap is now like a month.
+[32:30] &gt;&gt; Yeah.
+[32:31] &gt;&gt; And but still people are spending so
+[32:34] much money on these frontier models.
+[32:36] &gt;&gt; Yeah.
+[32:36] &gt;&gt; People cannot wait to get their hands on
+[32:38] 47 from open from from Claude or 55 from
+[32:42] GPT, but
+[32:44] then there&#39;s this whole economy of of
+[32:45] very good open source models.
+[32:47] &gt;&gt; Yeah.
+[32:48] &gt;&gt; What what do you make of all this? Like
+[32:49] you on one side you&#39;ve got people
+[32:51] earning what 30 billion now or maybe 40
+[32:53] billion at Anthropic or
+[32:55] but on the other side this open source
+[32:56] stuff is like nearly free. Obviously
+[32:58] you&#39;ve got to pay the hosting.
+[32:59] &gt;&gt; Yeah.
+[33:00] &gt;&gt; How do you think this shakes out?
+[33:01] Will will that model layer that the
+[33:03] proprietary model layer accrue any
+[33:05] value?
+[33:06] &gt;&gt; No, I think it&#39;s going to be valuable
+[33:07] and I think people will want it whether
+[33:09] it&#39;s open source or not let&#39;s put that
+[33:10] aside for a second. I think there will
+[33:11] be token factories which serve this
+[33:13] stuff up. It&#39;s just like the cloud.
+[33:15] &gt;&gt; Right.
+[33:15] &gt;&gt; I don&#39;t think
+[33:16] &gt;&gt; inference
+[33:16] &gt;&gt; Like I think before I should say you all
+[33:18] will have your own little mini data
+[33:19] center in your living rooms and you&#39;re
+[33:22] going to run you know your own PCs and
+[33:24] you&#39;re going to insert GPU cards that
+[33:25] you buy at home and you&#39;re going to run
+[33:27] this yourself.
+[33:27] &gt;&gt; Or on your phone or MacBook or the edge
+[33:29] in the
+[33:29] &gt;&gt; Some of that might be will exist. It
+[33:30] will come to the edges, but I do think
+[33:32] there&#39;ll be like big
+[33:33] &gt;&gt; Yeah.
+[33:33] &gt;&gt; centralized data centers where this
+[33:35] happens.
+[33:36] But we haven&#39;t discussed are they
+[33:37] running open source models already
+[33:38] running proprietary models and
+[33:41] and here&#39;s a fun fact. So Moonshot the
+[33:44] Chinese company released Kimi
+[33:46] &gt;&gt; Yeah.
+[33:46] &gt;&gt; uh 2.6
+[33:47] &gt;&gt; Very good model.
+[33:48] &gt;&gt; 2 days 2 days ago or 3 days ago
+[33:49] &gt;&gt; Tuesday
+[33:50] &gt;&gt; Yeah, Tuesday.
+[33:51] Uh so 2 days ago they released 3 days 2
+[33:53] days ago they released 2.6. In January
+[33:56] they released 2.5.
+[33:57] &gt;&gt; Mhm.
+[33:58] &gt;&gt; And here&#39;s a fun fact. 2.6 that they
+[34:00] released on Tuesday is the best model
+[34:02] ever in the history of mankind ever
+[34:04] produced frontier non-frontier if it
+[34:06] just had been released in January.
+[34:08] &gt;&gt; Yeah.
+[34:08] &gt;&gt; But open source will be here
+[34:10] &gt;&gt; Yeah.
+[34:10] &gt;&gt; and it will apply pricing pressure and
+[34:13] this business of frontier models
+[34:15] &gt;&gt; Yeah.
+[34:15] &gt;&gt; that core business of providing frontier
+[34:17] models is going to be economies of scale
+[34:19] game and you will have to
+[34:22] do it at small margins. It&#39;s like an
+[34:24] amazon.com book selling business.
+[34:27] &gt;&gt; That&#39;s what it&#39;s going to look like in
+[34:28] the future. Therefore they&#39;re not going
+[34:29] to be that many people doing it.
+[34:30] &gt;&gt; Yeah.
+[34:31] &gt;&gt; Uh it&#39;s like an amazon.com and gross
+[34:34] margins are going to be tiny and
+[34:36] operating margins are going to be small.
+[34:37] That&#39;s my
+[34:38] &gt;&gt; Yeah.
+[34:38] &gt;&gt; take.
+[34:39] &gt;&gt; Yeah, yeah. I think so, too. Um
+[34:41] three rapid-fire questions before we uh
+[34:44] wrap.
+[34:44] &gt;&gt; Mhm.
+[34:45] &gt;&gt; Your favorite AI product that you use
+[34:47] every day.
+[34:48] &gt;&gt; I don&#39;t know. That&#39;s a tough one.
+[34:51] Um I mean, I use all of these.
+[34:52] &gt;&gt; Yeah.
+[34:53] &gt;&gt; You know, actually I personally I know
+[34:55] that&#39;s like everybody loves cloud code.
+[34:57] I like the diffs and how how how it
+[34:58] works. So, like I&#39;m coding I use like a
+[35:00] combo of those. I still kind of like it.
+[35:02] Yeah.
+[35:03] &gt;&gt; Are you still using it after Elon owns
+[35:04] it?
+[35:05] &gt;&gt; No, I stopped. No, of course.
+[35:08] Yeah.
+[35:08] &gt;&gt; Cuz you wouldn&#39;t lose access to
+[35:10] Anthropic and OpenAI tokens through
+[35:11] Cursor, I presume.
+[35:13] &gt;&gt; Yeah. Yeah, man. Awesome. It&#39;s great.
+[35:15] Yeah.
+[35:15] &gt;&gt; Good. Good. Good. Good supporter.
+[35:17] &gt;&gt; Yeah.
+[35:19] &gt;&gt; You&#39;ve been
+[35:19] &gt;&gt; The truth is I do use Databricks as
+[35:21] Genie product. This is the truth. Cuz
+[35:22] you know, it&#39;s just most of my
+[35:25] inside Databricks, most of my decisions
+[35:26] are like numerical and quantitative in
+[35:28] nature. Like should we do this? What&#39;s
+[35:30] the ROI on this? What&#39;s the cost on
+[35:31] that? What it&#39;s going to cost us? What&#39;s
+[35:33] the So, I need something that can
+[35:34] understand numerical data and time
+[35:36] series data. So, Genie is like really
+[35:38] good for that. So, that&#39;s that&#39;s what I
+[35:40] honestly go to quite a bit quite often.
+[35:42] &gt;&gt; Right.
+[35:43] Um
+[35:44] future for Databricks. You&#39;ve been at
+[35:46] this for for 15 years or so. Um
+[35:49] what is your vision for the next decade
+[35:51] for Databricks?
+[35:52] &gt;&gt; Well, I think the cost of software is
+[35:53] going down and so barriers to entry and
+[35:57] switching costs are going down. So,
+[35:58] there is an a SaaS apocalypse of sorts,
+[36:01] but not all software is going to be
+[36:02] dead.
+[36:03] &gt;&gt; Yeah.
+[36:03] &gt;&gt; Uh
+[36:04] we would love to partake in that and
+[36:05] &gt;&gt; Right.
+[36:06] &gt;&gt; kill some software.
+[36:07] &gt;&gt; Right.
+[36:07] &gt;&gt; Yeah.
+[36:07] &gt;&gt; Right. Right. Any advice for students in
+[36:10] the room who are about to make career
+[36:13] decisions?
+[36:15] &gt;&gt; Yeah, I think don&#39;t don&#39;t be worried
+[36:16] about the fear-mongering. Don&#39;t be
+[36:18] stressed out.
+[36:19] Take it easy.
+[36:21] Um I think that
+[36:23] that that those I was very stressed
+[36:25] doing my PhD in the early 2000s. I
+[36:26] thought like the world is ending with
+[36:27] the internet and everything. And uh you
+[36:29] know, working on this most important
+[36:31] problem that we all knew was the most
+[36:32] important problem, which was the
+[36:33] multicast problem. Which none of you
+[36:35] Which
+[36:36] none of you have heard of.
+[36:38] &gt;&gt; Yeah.
+[36:39] &gt;&gt; Turned out not to be a problem.
+[36:41] But I think one interesting thing is
+[36:42] that in 2000 we had the internet.
+[36:44] In 2009 Airbnb was started.
+[36:47] &gt;&gt; Right.
+[36:47] &gt;&gt; Okay? But there&#39;s no reason why Airbnb
+[36:49] should start in 2009. Airbnb could have
+[36:51] started I&#39;ve made this argument to you.
+[36:53] Airbnb could have started in 2001.
+[36:54] &gt;&gt; Yeah.
+[36:55] &gt;&gt; There&#39;s nothing like we needed something
+[36:56] additional to happen in the world.
+[36:58] &gt;&gt; You know?
+[37:00] Airbnb could have happened and disrupted
+[37:02] hotel businesses in 2001.
+[37:03] &gt;&gt; Yeah.
+[37:04] &gt;&gt; Yet it took 9 years for someone to have
+[37:05] that idea.
+[37:06] &gt;&gt; Right.
+[37:06] &gt;&gt; And that was Brian. And by the way,
+[37:08] Brian is not like he sat there and he
+[37:09] was taking a Stanford class thinking
+[37:11] about like case study project. Brian
+[37:14] needed like bed and breakfast.
+[37:15] &gt;&gt; Right.
+[37:16] &gt;&gt; And like he was like it sucks.
+[37:17] &gt;&gt; or something.
+[37:18] &gt;&gt; Yeah, it was at some conference and he&#39;s
+[37:18] like, why is it so hard? Like can&#39;t I
+[37:20] just solve this myself? So it took 9
+[37:22] years to come up with that good idea.
+[37:23] &gt;&gt; Yeah.
+[37:24] &gt;&gt; So I think good ideas are very hard to
+[37:26] come by actually. I think humans are
+[37:28] very bad at coming up with great ideas.
+[37:30] &gt;&gt; Right.
+[37:30] &gt;&gt; And we have like this tunnel vision and
+[37:33] we focus on the wrong problems like we
+[37:34] did with multicast in my earlier, you
+[37:36] know, my PhD was
+[37:39] really stupid. So
+[37:42] chill out and take a long-term
+[37:45] perspective and
+[37:47] you know, work on the things that you
+[37:48] think will have long-term good impact. I
+[37:51] think Jeff Bezos did it pretty well
+[37:53] when he was an investment banker in Wall
+[37:55] Street.
+[37:56] &gt;&gt; Mhm.
+[37:56] &gt;&gt; And
+[37:58] and he said, &quot;Hey, zooming out, what&#39;s
+[38:00] like the big thing that&#39;s happening?
+[38:01] It&#39;s the internet.&quot;
+[38:02] &gt;&gt; Yeah.
+[38:03] &gt;&gt; And then he said, &quot;Hey, let&#39;s just make
+[38:04] a secular bet on internet&#39;s going to
+[38:05] there&#39;s going to be more and more
+[38:06] internet.&quot;
+[38:07] &gt;&gt; Mhm.
+[38:07] &gt;&gt; So it&#39;s going to slowly over time
+[38:08] disrupt things.
+[38:09] &gt;&gt; Mhm.
+[38:10] &gt;&gt; So then he said, &quot;Okay, can we in the
+[38:12] long run probably purchasing can move
+[38:14] more to the net. Maybe not right now.&quot;
+[38:16] And then he started with he was very
+[38:18] modest and he started with kind of the
+[38:19] dumbest thing you could possibly No one
+[38:21] is like the un-sexist thing which was a
+[38:23] complete commodity that looks identical
+[38:25] and there&#39;s no differentiation which is
+[38:26] books.
+[38:26] &gt;&gt; Yeah.
+[38:27] &gt;&gt; And he just started with that.
+[38:29] And he just bet on that secular trend
+[38:30] and every year it was more and more
+[38:31] right. And you know, and now it&#39;s like
+[38:34] everything on the planet. It&#39;s the
+[38:35] everything store. So kind of think long
+[38:37] term like that and don&#39;t be swayed by
+[38:39] the coolest thing that everybody&#39;s like
+[38:41] right now
+[38:42] um
+[38:43] sort of making lots of noise on Twitter
+[38:44] on because chances are it&#39;s probably
+[38:47] something like multicast.
+[38:50] Yeah. Awesome. Well, thank you so much
+[38:52] for staying longer folks. Thank you Ali.
+[38:54] &gt;&gt; Thank you. Bye.
+[38:55] &gt;&gt; Appreciate it.
+[38:55] &gt;&gt; Awesome. Thank you so much.
+[38:57] &gt;&gt; Thank you. Appreciate you doing it.
