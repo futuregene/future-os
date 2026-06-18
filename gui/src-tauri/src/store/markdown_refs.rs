@@ -887,7 +887,9 @@ fn get_approval_request_in_workspace(
     conn.query_row(
         "SELECT a.id, a.thread_id, a.run_id, a.tool_call_id, a.kind, a.status,
                 a.title, a.summary, a.risk_level, a.requested_action, a.decision_note,
-                a.decided_at, a.created_at, a.updated_at
+                a.decided_at, a.created_at, a.updated_at,
+                a.action_category, a.action_payload, a.sandbox_boundary,
+                a.reviewer, a.decision_scope, a.decision_source
          FROM approval_requests a
          JOIN threads t ON t.id = a.thread_id
          WHERE a.id = ?1 AND t.workspace_id = ?2",

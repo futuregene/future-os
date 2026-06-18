@@ -1,6 +1,6 @@
 import type { StoredRun } from "../../../integrations/storage/types";
 import type { FutureReference } from "../futureMarkdownTypes";
-import { PlayCircle } from "lucide-react";
+import { Maximize2, PlayCircle } from "lucide-react";
 import { formatRunStatus, runTone, shortId } from "../../../components/layout/context-panel/contextPanelFormatters";
 import { Badge } from "../../../components/ui/Badge";
 import { storedTimeToIso } from "../../../integrations/storage/threadStore";
@@ -13,6 +13,12 @@ export function RunEmbed({
   reference: FutureReference;
   run: StoredRun;
 }) {
+  function inspectRun() {
+    window.dispatchEvent(new CustomEvent("futureos:inspect-run", {
+      detail: { runId: run.id },
+    }));
+  }
+
   return (
     <article className="rounded-md border border-line-soft bg-surface p-3">
       <div className="flex items-start gap-2">
@@ -38,6 +44,14 @@ export function RunEmbed({
           {run.errorMessage
             ? <p className="mt-2 rounded-md bg-red-50 p-2 text-xs leading-5 text-red-700">{run.errorMessage}</p>
             : null}
+          <button
+            className="mt-3 inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+            onClick={inspectRun}
+            type="button"
+          >
+            <Maximize2 className="size-3.5" />
+            Inspect
+          </button>
         </div>
       </div>
     </article>

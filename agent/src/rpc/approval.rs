@@ -5,6 +5,7 @@ use std::{
 };
 
 use super::{SseBroadcaster, SseEvent};
+use super::approval_policy::{evaluate_policy, PolicyDecision};
 
 #[derive(Clone, Default)]
 pub struct ApprovalGate {
@@ -44,6 +45,27 @@ impl ApprovalGate {
             return None;
         };
 
+        // Policy evaluation hook (stub). Today this always returns AskUser.
+        // Future: rule-based auto-approve / auto-reject lives here without
+        // touching the rest of this function.
+        match evaluate_policy(cwd, tool_name, arguments, &shape) {
+            PolicyDecision::AskUser => {}
+            PolicyDecision::AutoApprove => {
+                if let Some(path) = approved_argument_path(cwd, arguments) {
+                    crate::tools::approve_outside_path(&path);
+                }
+                return None;
+            }
+            PolicyDecision::AutoReject(reason) => {
+                return Some(crate::types::ToolCallResult {
+                    result: format!(
+                        "Tool call `{tool_name}` was rejected by policy: {reason}"
+                    ),
+                    is_error: true,
+                });
+            }
+        }
+
         let request_id = format!("approval_{}", crate::utils::generate_entry_id());
         let (tx, rx) = mpsc::channel::<ApprovalDecision>();
         self.pending.lock().unwrap().insert(
@@ -67,6 +89,9 @@ impl ApprovalGate {
                 "title": shape.title,
                 "summary": shape.summary,
                 "requested_action": normalize_requested_action(arguments),
+                "action": shape.action,
+                "sandbox_boundary": shape.sandbox_boundary,
+                "reviewer": "user",
             }),
         ));
 
@@ -194,11 +219,13 @@ impl ApprovalGate {
     }
 }
 
-struct ApprovalShape {
-    kind: &'static str,
-    risk_level: &'static str,
-    title: String,
-    summary: String,
+pub(super) struct ApprovalShape {
+    pub kind: &'static str,
+    pub risk_level: &'static str,
+    pub title: String,
+    pub summary: String,
+    pub action: serde_json::Value,
+    pub sandbox_boundary: serde_json::Value,
 }
 
 fn approval_shape(
@@ -207,21 +234,103 @@ fn approval_shape(
     arguments: &serde_json::Value,
 ) -> Option<ApprovalShape> {
     match tool_name {
-        "bash" if bash_requires_approval(cwd, arguments) => Some(ApprovalShape {
-            kind: "shell_command",
-            risk_level: "high",
-            title: "Approve shell command".to_string(),
-            summary: "Agent wants to run a shell command.".to_string(),
-        }),
+        "bash" if bash_requires_approval(cwd, arguments) => {
+            let command = argument_command(arguments).unwrap_or_default();
+            let action = serde_json::json!({
+                "tool": "bash",
+                "category": "shell_command",
+                "summary": command_summary(&command),
+                "command": command,
+                "scope": {
+                    "cwd": cwd,
+                    "inside_workspace": true,
+                    "estimated_blast_radius": "high"
+                }
+            });
+            let sandbox_boundary = serde_json::json!({
+                "mode": "workspace-write",
+                "inside_sandbox": false,
+                "violation": "shell_command_not_in_allowlist",
+                "cwd": cwd,
+                "writable_roots": [cwd]
+            });
+            Some(ApprovalShape {
+                kind: "shell_command",
+                risk_level: "high",
+                title: "Approve shell command".to_string(),
+                summary: "Agent wants to run a shell command.".to_string(),
+                action,
+                sandbox_boundary,
+            })
+        }
         "bash" => None,
-        "write" | "edit" if path_is_outside_workspace(cwd, arguments) => Some(ApprovalShape {
-            kind: "outside_workspace_write",
-            risk_level: "medium",
-            title: "Approve outside-workspace write".to_string(),
-            summary: "Agent wants to modify a file outside the current workspace.".to_string(),
-        }),
+        "write" | "edit" if path_is_outside_workspace(cwd, arguments) => {
+            let path = argument_path(arguments).unwrap_or_default();
+            let preview = argument_write_preview(arguments);
+            let category = if tool_name == "write" { "file_write" } else { "file_write" };
+            let action = serde_json::json!({
+                "tool": tool_name,
+                "category": category,
+                "summary": format!("Modify {}", path),
+                "paths": [path.clone()],
+                "writes": [{
+                    "path": path,
+                    "preview": preview,
+                }],
+                "scope": {
+                    "cwd": cwd,
+                    "inside_workspace": false,
+                    "estimated_blast_radius": "medium"
+                }
+            });
+            let sandbox_boundary = serde_json::json!({
+                "mode": "workspace-write",
+                "inside_sandbox": false,
+                "violation": "outside_workspace_write",
+                "cwd": cwd,
+                "writable_roots": [cwd]
+            });
+            Some(ApprovalShape {
+                kind: "outside_workspace_write",
+                risk_level: "medium",
+                title: "Approve outside-workspace write".to_string(),
+                summary: "Agent wants to modify a file outside the current workspace.".to_string(),
+                action,
+                sandbox_boundary,
+            })
+        }
         _ => None,
     }
+}
+
+fn command_summary(command: &str) -> String {
+    let trimmed = command.trim();
+    if trimmed.len() <= 200 {
+        trimmed.to_string()
+    } else {
+        let mut head: String = trimmed.chars().take(200).collect();
+        head.push_str("\u{2026}");
+        head
+    }
+}
+
+fn argument_write_preview(arguments: &serde_json::Value) -> Option<String> {
+    let normalized = match arguments {
+        serde_json::Value::String(raw) => serde_json::from_str(raw)
+            .ok()
+            .or_else(|| repair_partial_json_object(raw)),
+        _ => Some(arguments.clone()),
+    }?;
+    for key in ["content", "newText", "text"] {
+        if let Some(value) = normalized.get(key).and_then(|v| v.as_str()) {
+            let mut head: String = value.chars().take(200).collect();
+            if value.chars().count() > 200 {
+                head.push_str("\u{2026}");
+            }
+            return Some(head);
+        }
+    }
+    None
 }
 
 fn bash_requires_approval(cwd: &str, arguments: &serde_json::Value) -> bool {
@@ -452,4 +561,126 @@ fn normalize_path(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+#[cfg(test)]
+mod structured_tests {
+    use super::*;
+
+    fn temp_path(name: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("futureos-approval-{name}-{stamp}"))
+    }
+
+    #[test]
+    fn shell_command_action_is_structured() {
+        let workspace = temp_path("workspace");
+        let args = serde_json::json!({
+            "command": "rm -rf node_modules"
+        });
+
+        let shape = approval_shape(workspace.to_string_lossy().as_ref(), "bash", &args)
+            .expect("rm should require approval");
+
+        assert_eq!(shape.action["tool"], "bash");
+        assert_eq!(shape.action["category"], "shell_command");
+        assert_eq!(shape.action["command"], "rm -rf node_modules");
+        assert_eq!(shape.action["scope"]["inside_workspace"], true);
+        assert_eq!(shape.action["scope"]["estimated_blast_radius"], "high");
+    }
+
+    #[test]
+    fn shell_command_sandbox_boundary_is_structured() {
+        let workspace = temp_path("workspace");
+        let args = serde_json::json!({
+            "command": "rm -rf node_modules"
+        });
+
+        let shape = approval_shape(workspace.to_string_lossy().as_ref(), "bash", &args)
+            .expect("rm should require approval");
+
+        assert_eq!(shape.sandbox_boundary["mode"], "workspace-write");
+        assert_eq!(shape.sandbox_boundary["inside_sandbox"], false);
+        assert_eq!(shape.sandbox_boundary["violation"], "shell_command_not_in_allowlist");
+        assert_eq!(shape.sandbox_boundary["cwd"], workspace.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn file_write_action_is_structured() {
+        let workspace = temp_path("workspace");
+        let outside = temp_path("outside.txt");
+        let args = serde_json::json!({
+            "path": outside.to_string_lossy(),
+            "content": "hello world"
+        });
+
+        let shape = approval_shape(workspace.to_string_lossy().as_ref(), "write", &args)
+            .expect("outside workspace write should require approval");
+
+        assert_eq!(shape.action["tool"], "write");
+        assert_eq!(shape.action["category"], "file_write");
+        assert_eq!(shape.action["paths"][0], outside.to_string_lossy().to_string());
+        assert_eq!(shape.action["writes"][0]["path"], outside.to_string_lossy().to_string());
+        assert_eq!(shape.action["writes"][0]["preview"], "hello world");
+        assert_eq!(shape.action["scope"]["inside_workspace"], false);
+        assert_eq!(shape.action["scope"]["estimated_blast_radius"], "medium");
+    }
+
+    #[test]
+    fn file_write_sandbox_boundary_is_structured() {
+        let workspace = temp_path("workspace");
+        let outside = temp_path("outside.txt");
+        let args = serde_json::json!({
+            "path": outside.to_string_lossy(),
+            "content": "hello"
+        });
+
+        let shape = approval_shape(workspace.to_string_lossy().as_ref(), "write", &args)
+            .expect("outside workspace write should require approval");
+
+        assert_eq!(shape.sandbox_boundary["mode"], "workspace-write");
+        assert_eq!(shape.sandbox_boundary["inside_sandbox"], false);
+        assert_eq!(shape.sandbox_boundary["violation"], "outside_workspace_write");
+    }
+
+    #[test]
+    fn write_preview_truncates_long_content() {
+        let workspace = temp_path("workspace");
+        let outside = temp_path("outside.txt");
+        let long_content = "x".repeat(300);
+        let args = serde_json::json!({
+            "path": outside.to_string_lossy(),
+            "content": long_content
+        });
+
+        let shape = approval_shape(workspace.to_string_lossy().as_ref(), "write", &args)
+            .expect("outside workspace write should require approval");
+
+        let preview = shape.action["writes"][0]["preview"].as_str().unwrap();
+        assert_eq!(preview.chars().count(), 201); // 200 chars + ellipsis
+        assert!(preview.ends_with("…"));
+    }
+
+    #[test]
+    fn policy_evaluator_returns_ask_user_by_default() {
+        let workspace = temp_path("workspace");
+        let args = serde_json::json!({
+            "command": "rm -rf node_modules"
+        });
+
+        let shape = approval_shape(workspace.to_string_lossy().as_ref(), "bash", &args)
+            .expect("rm should require approval");
+
+        let decision = evaluate_policy(
+            workspace.to_string_lossy().as_ref(),
+            "bash",
+            &args,
+            &shape,
+        );
+
+        assert!(matches!(decision, PolicyDecision::AskUser));
+    }
 }

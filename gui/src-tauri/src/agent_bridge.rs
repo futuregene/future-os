@@ -228,13 +228,83 @@ fn mark_run_failed_if_active(run_id: Option<&str>, error: &str) {
     if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
         return;
     }
+    let error_type = classify_run_error(error);
     if let Err(update_error) = store::update_run_status(store::UpdateRunStatusInput {
         run_id: run_id.to_string(),
         status: "failed".to_string(),
         error_message: Some(error.to_string()),
+        error_type: Some(error_type.to_string()),
     }) {
         eprintln!("FutureOS run failure status update failed: {update_error}");
     }
+}
+
+/// Classify a raw error message string into a structured category that the UI
+/// can use to render targeted recovery hints. Returns one of:
+/// `stream_disconnected`, `command_failed`, `model_failed`, `abort_requested`,
+/// `timeout`, or `unknown`.
+///
+/// The classification is intentionally conservative: when in doubt we return
+/// `unknown` so the UI shows the generic error message without a misleading
+/// category. Keep the patterns ordered from most-specific to most-generic; an
+/// abort-induced timeout, for example, must be classified as `abort_requested`
+/// rather than `timeout`.
+pub(crate) fn classify_run_error(error: &str) -> &'static str {
+    let lower = error.to_lowercase();
+
+    // User-initiated abort wins over every other category, including timeouts
+    // that may be reported as a side effect of cancellation.
+    if lower.contains("interrupted")
+        || lower.contains("aborted")
+        || lower.contains("terminated by user")
+        || lower.contains("cancelled")
+        || lower.contains("canceled")
+    {
+        return "abort_requested";
+    }
+
+    if lower.contains("timed out") || lower.contains("timeout") {
+        return "timeout";
+    }
+
+    // gRPC / transport / streaming layer failures.
+    if lower.contains("unable to connect to future agent")
+        || lower.contains("transport error")
+        || lower.contains("broken pipe")
+        || lower.contains("connection")
+        || lower.contains("stream")
+        || lower.contains("eof")
+    {
+        return "stream_disconnected";
+    }
+
+    // LLM / model-side failures. Check before generic `command failed` because
+    // some providers report rate limit errors that mention "request" but are
+    // model errors, not bash failures.
+    if lower.contains("model")
+        || lower.contains("llm")
+        || lower.contains("provider")
+        || lower.contains("api key")
+        || lower.contains("rate limit")
+        || lower.contains("unauthorized")
+        || lower.contains("forbidden")
+        || lower.contains("openai")
+        || lower.contains("anthropic")
+    {
+        return "model_failed";
+    }
+
+    // Tool / shell command failures. We anchor on bash/exit-code phrasing the
+    // agent itself emits to avoid mis-classifying generic "command" mentions.
+    if lower.contains("bash command")
+        || lower.contains("exit code")
+        || lower.contains("failed to run bash")
+        || lower.contains("tool execution")
+    {
+        return "command_failed";
+    }
+
+    "unknown"
 }
 
 pub async fn notify_agent_approval_decision(
@@ -659,6 +729,19 @@ fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
         .or_else(|| value.get("tool_args"))
         .map(compact_json);
 
+    // P2: structured action and sandbox boundary, persisted as JSON strings.
+    let action_value = value.get("action").or_else(|| value.get("actionPayload"));
+    let action_payload = action_value.map(compact_json);
+    let action_category = action_value
+        .and_then(|action| action.get("category"))
+        .and_then(|category| category.as_str())
+        .map(|category| category.to_string());
+    let sandbox_boundary = value
+        .get("sandbox_boundary")
+        .or_else(|| value.get("sandboxBoundary"))
+        .map(compact_json);
+    let reviewer = value_string(value, &["reviewer"]);
+
     if let Err(error) = store::ensure_approval_request(store::EnsureApprovalRequestInput {
         approval_request_id: Some(approval_request_id),
         run_id: run_id.to_string(),
@@ -668,6 +751,10 @@ fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
         summary: value_string(value, &["summary"]),
         risk_level: value_string(value, &["risk_level", "riskLevel"]),
         requested_action,
+        action_category,
+        action_payload,
+        sandbox_boundary,
+        reviewer,
     }) {
         eprintln!("FutureOS approval persistence failed: {error}");
     }
@@ -675,6 +762,7 @@ fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
         run_id: run_id.to_string(),
         status: "waiting_approval".to_string(),
         error_message: None,
+        error_type: None,
     }) {
         eprintln!("FutureOS run approval status update failed: {error}");
     }
@@ -691,19 +779,46 @@ fn persist_approval_decision(run_id: &str, value: &serde_json::Value) {
 
     if let Err(error) = store::decide_approval_request(store::DecideApprovalRequestInput {
         approval_request_id,
-        status,
+        status: status.clone(),
         decision_note: note,
     }) {
         eprintln!("FutureOS approval decision persistence failed: {error}");
     }
 
-    if let Err(error) = store::update_run_status(store::UpdateRunStatusInput {
-        run_id: run_id.to_string(),
-        status: "running".to_string(),
-        error_message: None,
-    }) {
+    if status == "cancelled" {
+        if let Err(error) = update_run_status_if_active(
+            run_id,
+            "cancelled",
+            Some("Approval request was cancelled.".to_string()),
+        ) {
+            eprintln!("FutureOS run approval cancellation status update failed: {error}");
+        }
+        return;
+    }
+
+    if let Err(error) = update_run_status_if_active(run_id, "running", None) {
         eprintln!("FutureOS run approval decision status update failed: {error}");
     }
+}
+
+fn update_run_status_if_active(
+    run_id: &str,
+    status: &str,
+    error_message: Option<String>,
+) -> Result<(), String> {
+    let Some(run) = store::get_run(run_id)? else {
+        return Ok(());
+    };
+    if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+        return Ok(());
+    }
+    store::update_run_status(store::UpdateRunStatusInput {
+        run_id: run_id.to_string(),
+        status: status.to_string(),
+        error_message,
+        error_type: None,
+    })?;
+    Ok(())
 }
 
 fn persist_tool_start(run_id: &str, value: &serde_json::Value, sequence: i64) {
@@ -850,6 +965,14 @@ fn persist_artifact(run_id: &str, value: &serde_json::Value) {
     let artifact_type = value_string(value, &["type", "artifact_type", "artifactType"])
         .unwrap_or_else(|| "document".to_string());
     let path = value_string(value, &["path", "file_path", "filePath"]);
+    match artifact_is_allowed_for_run(run_id, path.as_deref()) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            eprintln!("FutureOS artifact workspace check failed: {error}");
+            return;
+        }
+    }
     let content = value_string(value, &["content", "text"]);
     let content_storage = value_string(value, &["content_storage", "contentStorage"])
         .or_else(|| path.as_ref().map(|_| "file".to_string()))
@@ -866,6 +989,24 @@ fn persist_artifact(run_id: &str, value: &serde_json::Value) {
     }) {
         eprintln!("FutureOS artifact persistence failed: {error}");
     }
+}
+
+fn artifact_is_allowed_for_run(run_id: &str, path: Option<&str>) -> Result<bool, String> {
+    let run = store::get_run(run_id)?.ok_or_else(|| "Run could not be loaded.".to_string())?;
+    let thread = store::get_thread(&run.thread_id)?
+        .ok_or_else(|| "Thread could not be loaded.".to_string())?;
+    let workspace = store::get_workspace(&thread.workspace_id)?
+        .ok_or_else(|| "Workspace could not be loaded.".to_string())?;
+    if git_review::is_git_workspace(Path::new(&workspace.path)) {
+        return Ok(false);
+    }
+
+    let Some(path) = path else {
+        return Ok(true);
+    };
+    let workspace_path = canonical_or_raw(&workspace.path);
+    let candidate_path = canonical_or_raw(path);
+    Ok(candidate_path.starts_with(workspace_path))
 }
 
 fn event_value(payload: &str) -> Option<serde_json::Value> {
@@ -947,4 +1088,64 @@ fn command_id() -> String {
         .map(|duration| duration.as_millis())
         .unwrap_or_default();
     format!("gui_{millis}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_run_error;
+
+    #[test]
+    fn test_classify_abort_requested() {
+        assert_eq!(classify_run_error("Bash command interrupted by abort"), "abort_requested");
+        assert_eq!(classify_run_error("Interrupted"), "abort_requested");
+        assert_eq!(classify_run_error("Terminated by user."), "abort_requested");
+        assert_eq!(classify_run_error("aborted"), "abort_requested");
+        assert_eq!(classify_run_error("cancelled"), "abort_requested");
+        assert_eq!(classify_run_error("canceled"), "abort_requested");
+    }
+
+    #[test]
+    fn test_classify_timeout() {
+        assert_eq!(classify_run_error("Bash command timed out after 60 seconds"), "timeout");
+        assert_eq!(classify_run_error("timeout"), "timeout");
+        assert_eq!(classify_run_error("Timed out"), "timeout");
+    }
+
+    #[test]
+    fn test_classify_stream_disconnected() {
+        assert_eq!(classify_run_error("Unable to connect to Future Agent at 127.0.0.1:50051"), "stream_disconnected");
+        assert_eq!(classify_run_error("Transport error: broken pipe"), "stream_disconnected");
+        assert_eq!(classify_run_error("connection closed"), "stream_disconnected");
+        assert_eq!(classify_run_error("Stream error: unexpected EOF"), "stream_disconnected");
+    }
+
+    #[test]
+    fn test_classify_model_failed() {
+        assert_eq!(classify_run_error("Model returned error: unauthorized"), "model_failed");
+        assert_eq!(classify_run_error("LLM provider failed: rate limit exceeded"), "model_failed");
+        assert_eq!(classify_run_error("api key is invalid"), "model_failed");
+        assert_eq!(classify_run_error("forbidden"), "model_failed");
+        assert_eq!(classify_run_error("OpenAI API error"), "model_failed");
+        assert_eq!(classify_run_error("Anthropic API error"), "model_failed");
+    }
+
+    #[test]
+    fn test_classify_command_failed() {
+        assert_eq!(classify_run_error("Bash command exited with code 1"), "command_failed");
+        assert_eq!(classify_run_error("Failed to run bash command: no such file"), "command_failed");
+        assert_eq!(classify_run_error("exit code: 127"), "command_failed");
+    }
+
+    #[test]
+    fn test_classify_unknown() {
+        assert_eq!(classify_run_error("Something unexpected happened"), "unknown");
+        assert_eq!(classify_run_error(""), "unknown");
+    }
+
+    #[test]
+    fn test_classify_abort_beats_timeout() {
+        // Interrupt aborts take priority over timeout mentions
+        assert_eq!(classify_run_error("Bash command interrupted: timed out"), "abort_requested");
+        assert_eq!(classify_run_error("Timed out (user aborted)"), "abort_requested");
+    }
 }

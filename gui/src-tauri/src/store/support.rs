@@ -8,7 +8,7 @@ use std::{
 };
 
 use super::models::*;
-use super::schema::{INITIAL_MIGRATION, INITIAL_SCHEMA};
+use super::schema::MIGRATIONS;
 use super::{get_thread, get_workspace, initialize_app_store};
 
 pub(super) fn app_dir() -> Result<PathBuf, String> {
@@ -50,23 +50,25 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
 
-    let applied: Option<String> = conn
-        .query_row(
-            "SELECT version FROM schema_migrations WHERE version = ?1",
-            params![INITIAL_MIGRATION],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|error| error.to_string())?;
-
-    if applied.is_none() {
-        conn.execute_batch(INITIAL_SCHEMA)
+    for (version, migration) in MIGRATIONS {
+        let applied: Option<String> = conn
+            .query_row(
+                "SELECT version FROM schema_migrations WHERE version = ?1",
+                params![version],
+                |row| row.get(0),
+            )
+            .optional()
             .map_err(|error| error.to_string())?;
-        conn.execute(
-            "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-            params![INITIAL_MIGRATION, now_millis()],
-        )
-        .map_err(|error| error.to_string())?;
+
+        if applied.is_none() {
+            conn.execute_batch(migration)
+                .map_err(|error| error.to_string())?;
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+                params![version, now_millis()],
+            )
+            .map_err(|error| error.to_string())?;
+        }
     }
 
     Ok(())
@@ -89,7 +91,7 @@ pub fn get_run(id: &str) -> Result<Option<RunRecord>, String> {
     let conn = connect()?;
     conn.query_row(
         "SELECT id, thread_id, trigger_message_id, status, model_provider, model_id,
-                started_at, ended_at, error_message, created_at, updated_at
+                started_at, ended_at, error_message, error_type, created_at, updated_at
          FROM runs
          WHERE id = ?1",
         params![id],
@@ -125,7 +127,8 @@ pub fn get_approval_request(id: &str) -> Result<Option<ApprovalRequestRecord>, S
     let conn = connect()?;
     conn.query_row(
         "SELECT id, thread_id, run_id, tool_call_id, kind, status, title, summary,
-                risk_level, requested_action, decision_note, decided_at, created_at, updated_at
+                risk_level, requested_action, decision_note, decided_at, created_at, updated_at,
+                action_category, action_payload, sandbox_boundary, reviewer, decision_scope, decision_source
          FROM approval_requests
          WHERE id = ?1",
         params![id],
@@ -241,8 +244,9 @@ pub(super) fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRecor
         started_at: row.get(6)?,
         ended_at: row.get(7)?,
         error_message: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        error_type: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
     })
 }
 
@@ -316,6 +320,12 @@ pub(super) fn approval_request_from_row(
         decided_at: row.get(11)?,
         created_at: row.get(12)?,
         updated_at: row.get(13)?,
+        action_category: row.get(14)?,
+        action_payload: row.get(15)?,
+        sandbox_boundary: row.get(16)?,
+        reviewer: row.get(17)?,
+        decision_scope: row.get(18)?,
+        decision_source: row.get(19)?,
     })
 }
 

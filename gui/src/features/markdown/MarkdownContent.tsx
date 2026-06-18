@@ -9,7 +9,9 @@ import type {
   StoredToolCall,
 } from "../../integrations/storage/types";
 import type { FutureReference, InlineNode, MarkdownNode } from "./futureMarkdownTypes";
-import { useMemo } from "react";
+import { Check, Clipboard } from "lucide-react";
+import { useMemo, useState } from "react";
+import { copyText } from "../../lib/clipboard";
 import { useFutureReference, useFutureReferences } from "./futureReferenceStore";
 import { parseFutureMarkdown } from "./parseFutureMarkdown";
 import { ArtifactEmbed } from "./renderers/ArtifactEmbed";
@@ -17,6 +19,7 @@ import { MissingReference } from "./renderers/MissingReference";
 import { ApprovalEmbed, ResearchEmbed, ReviewEmbed, ToolEmbed } from "./renderers/ObjectEmbed";
 import { ReferenceChip } from "./renderers/ReferenceChip";
 import { RunEmbed } from "./renderers/RunEmbed";
+import { useCodeHighlighter } from "./useCodeHighlighter";
 
 interface MarkdownContentProps {
   content: string;
@@ -63,12 +66,7 @@ function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined,
       );
     }
     case "code":
-      return (
-        <pre className="overflow-auto rounded-lg bg-slate-100 p-3 text-xs leading-5 text-ink" key={key}>
-          {node.language ? <div className="mb-2 text-[11px] text-ink-muted">{node.language}</div> : null}
-          <code>{node.code}</code>
-        </pre>
-      );
+      return <CodeBlock code={node.code} key={key} language={node.language} />;
     case "futureEmbed":
       return <FutureEmbedView key={key} reference={node.reference} workspaceId={workspaceId} />;
     case "blockquote":
@@ -123,6 +121,87 @@ function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined,
         </p>
       );
   }
+}
+
+function CodeBlock({
+  code,
+  language,
+}: {
+  code: string;
+  language?: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const { highlight, isLoaded } = useCodeHighlighter();
+  const highlighted = useMemo(() => highlight(code, language), [highlight, code, language]);
+
+  async function handleCopy() {
+    await copyText(code);
+    setCopied(true);
+    window.setTimeout(setCopied, 1400, false);
+  }
+
+  // Fallback to plain text if highlighter not loaded or language not supported
+  if (!isLoaded || !highlighted) {
+    return (
+      <div className="relative">
+        <button
+          aria-label="Copy code"
+          className="absolute right-1.5 top-1.5 inline-flex size-7 items-center justify-center rounded-md bg-white/90 text-ink-muted shadow-sm ring-1 ring-line-soft transition-colors hover:text-ink"
+          onClick={() => void handleCopy()}
+          title="Copy code"
+          type="button"
+        >
+          {copied ? <Check className="size-3.5" /> : <Clipboard className="size-3.5" />}
+        </button>
+        <pre className="overflow-auto rounded-lg bg-slate-100 p-3 pr-11 text-xs leading-5 text-ink">
+          {language ? <div className="mb-2 text-[11px] text-ink-muted">{language}</div> : null}
+          <code>{code}</code>
+        </pre>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative">
+      <button
+        aria-label="Copy code"
+        className="absolute right-1.5 top-1.5 z-10 inline-flex size-7 items-center justify-center rounded-md bg-white/90 text-ink-muted shadow-sm ring-1 ring-line-soft transition-colors hover:text-ink"
+        onClick={() => void handleCopy()}
+        title="Copy code"
+        type="button"
+      >
+        {copied ? <Check className="size-3.5" /> : <Clipboard className="size-3.5" />}
+      </button>
+      <pre
+        className="overflow-auto rounded-lg p-3 pr-11 text-xs leading-5"
+        style={{ backgroundColor: highlighted.bgColor, color: highlighted.fgColor }}
+      >
+        {language ? <div className="mb-2 text-[11px] opacity-60">{language}</div> : null}
+        <code>
+          {highlighted.lines.map((line, lineIndex) => (
+            <div key={lineIndex} className="flex">
+              <span className="mr-4 inline-block w-8 select-none text-right opacity-40">
+                {lineIndex + 1}
+              </span>
+              <span className="flex-1">
+                {line.tokens.map((token, tokenIndex) => (
+                  <span
+                    key={tokenIndex}
+                    style={{
+                      color: token.color,
+                      fontStyle: token.fontStyle ? (token.fontStyle & 1 ? "italic" : "normal") : undefined,
+                    }}
+                  >
+                    {token.content}
+                  </span>
+                ))}
+              </span>
+            </div>
+          ))}
+        </code>
+      </pre>
+    </div>
+  );
 }
 
 function renderInline(nodes: InlineNode[], workspaceId: string | null | undefined, parentKey: string) {
@@ -298,8 +377,9 @@ function SafeLink({
     <a
       className="font-medium text-accent underline-offset-2 hover:underline"
       href={safeHref}
-      rel="noreferrer"
+      rel="noopener noreferrer"
       target="_blank"
+      title={href}
     >
       {children}
     </a>
@@ -315,15 +395,24 @@ function SafeImage({
   src: string;
   title?: string;
 }) {
+  const [failed, setFailed] = useState(false);
   const safeSrc = safeExternalUrl(src, ["http:", "https:"]);
-  if (!safeSrc) {
-    return <span className="text-sm text-ink-muted" title={src}>{alt || "Image omitted"}</span>;
+  if (!safeSrc || failed) {
+    return (
+      <span
+        className="inline-flex max-w-full items-center rounded-md border border-dashed border-line-soft bg-surface-subtle px-2 py-1 text-sm text-ink-muted"
+        title={src}
+      >
+        {alt || "Image unavailable"}
+      </span>
+    );
   }
 
   return (
     <img
       alt={alt}
       className="my-2 max-h-80 max-w-full rounded-md border border-line-soft object-contain"
+      onError={() => setFailed(true)}
       src={safeSrc}
       title={title}
     />

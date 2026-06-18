@@ -36,6 +36,7 @@ export function toAgentMessage(message: StoredMessage): AgentMessage {
     role: message.role === "user" ? "user" : "assistant",
     author: message.role === "user" ? "You" : "Research Copilot",
     content: content.text,
+    status: message.status,
     createdAt: storedTimeToIso(message.createdAt),
     attachments: content.attachments,
   };

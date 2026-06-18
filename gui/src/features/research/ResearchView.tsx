@@ -1,6 +1,6 @@
 import type { StoredResearchResource } from "../../integrations/storage/threadStore";
-import { BookOpen, FileText } from "lucide-react";
-import { useEffect, useState } from "react";
+import { BookOpen, FileText, LocateFixed } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { Badge } from "../../components/ui/Badge";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { listResearchResources, storedTimeToIso } from "../../integrations/storage/threadStore";
@@ -8,14 +8,19 @@ import { formatTime } from "../../lib/date";
 import { startWindowDrag } from "../../lib/windowDrag";
 
 interface ResearchViewProps {
+  selectedResourceId?: string | null;
   workspaceId: string | null;
   workspaceName: string;
 }
 
-export function ResearchView({ workspaceId, workspaceName }: ResearchViewProps) {
+export function ResearchView({ selectedResourceId, workspaceId, workspaceName }: ResearchViewProps) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [resources, setResources] = useState<StoredResearchResource[]>([]);
+  const selectedResource = useMemo(
+    () => selectedResourceId ? resources.find(resource => resource.id === selectedResourceId) ?? null : null,
+    [resources, selectedResourceId],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -95,7 +100,23 @@ export function ResearchView({ workspaceId, workspaceName }: ResearchViewProps) 
           {resources.length > 0
             ? (
                 <div className="grid gap-3">
-                  {resources.map(resource => <ResearchResourceCard key={resource.id} resource={resource} />)}
+                  {selectedResource
+                    ? (
+                        <section className="rounded-md border border-blue-200 bg-blue-50 p-3">
+                          <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-blue-700">
+                            <LocateFixed className="size-3.5" />
+                            Selected from chat
+                          </div>
+                          <ResearchResourceCard highlighted resource={selectedResource} />
+                        </section>
+                      )
+                    : null}
+                  {resources.filter(resource => resource.id !== selectedResourceId).map(resource => (
+                    <ResearchResourceCard
+                      key={resource.id}
+                      resource={resource}
+                    />
+                  ))}
                 </div>
               )
             : null}
@@ -105,9 +126,15 @@ export function ResearchView({ workspaceId, workspaceName }: ResearchViewProps) 
   );
 }
 
-function ResearchResourceCard({ resource }: { resource: StoredResearchResource }) {
+function ResearchResourceCard({
+  highlighted,
+  resource,
+}: {
+  highlighted?: boolean;
+  resource: StoredResearchResource;
+}) {
   return (
-    <article className="rounded-lg border border-line-soft bg-white p-4">
+    <article className={highlighted ? "rounded-lg border border-blue-200 bg-white p-4 shadow-sm" : "rounded-lg border border-line-soft bg-white p-4"}>
       <div className="flex items-start gap-3">
         {resource.sourceArtifactId
           ? <FileText className="mt-0.5 size-4 shrink-0 text-accent" />
@@ -129,6 +156,13 @@ function ResearchResourceCard({ resource }: { resource: StoredResearchResource }
                 <div className="mt-3 truncate rounded-md bg-surface-subtle px-2 py-1.5 text-xs text-ink-muted" title={resource.sourceUri}>
                   {resource.sourceUri}
                 </div>
+              )
+            : null}
+          {resource.content
+            ? (
+                <pre className="mt-3 max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-surface-subtle p-2 text-xs leading-5 text-ink-soft">
+                  <code>{resource.content}</code>
+                </pre>
               )
             : null}
         </div>

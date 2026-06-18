@@ -136,6 +136,7 @@ export function useAgentThreadController({
       role: "user",
       author: "You",
       content,
+      status: "complete",
       createdAt: new Date().toISOString(),
       attachments,
     };
@@ -144,6 +145,7 @@ export function useAgentThreadController({
       role: "assistant",
       author: "Research Copilot",
       content: "",
+      status: "streaming",
       createdAt: new Date().toISOString(),
       activityItems: thinkingActivity(),
     };
@@ -262,6 +264,7 @@ export function useAgentThreadController({
                   id: storedAssistantMessage.id,
                   runId: storedAssistantMessage.runId,
                   content: storedAssistantMessage.content,
+                  status: storedAssistantMessage.status,
                   createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
                 }
               : message,
@@ -302,6 +305,7 @@ export function useAgentThreadController({
                   id: storedAssistantMessage?.id ?? item.id,
                   runId: storedAssistantMessage?.runId ?? item.runId,
                   content: storedAssistantMessage?.content ?? buildAgentFailureContent(message),
+                  status: storedAssistantMessage?.status ?? "failed",
                   createdAt: storedAssistantMessage
                     ? storedTimeToIso(storedAssistantMessage.createdAt)
                     : item.createdAt,

@@ -4,15 +4,20 @@ use anyhow::{anyhow, Result};
 use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::process::Command;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ToolExecutionScope {
     workspace: PathBuf,
     approved_outside_paths: Arc<Mutex<Vec<PathBuf>>>,
     /// "all" | "workspace" | "none" — controls workspace boundary enforcement
     permission_level: String,
+    /// Interrupt flag for cooperative cancellation of long-running tool operations
+    /// (e.g., bash commands). When set, in-flight tool work returns an "interrupted"
+    /// error promptly and child processes are dropped (kill_on_drop).
+    interrupt_flag: Arc<AtomicBool>,
 }
 
 tokio::task_local! {
@@ -27,10 +32,29 @@ pub async fn with_workspace_scope<F>(
 where
     F: Future,
 {
+    with_workspace_scope_with_interrupt(
+        workspace,
+        permission_level,
+        Arc::new(AtomicBool::new(false)),
+        future,
+    )
+    .await
+}
+
+pub async fn with_workspace_scope_with_interrupt<F>(
+    workspace: String,
+    permission_level: String,
+    interrupt_flag: Arc<AtomicBool>,
+    future: F,
+) -> F::Output
+where
+    F: Future,
+{
     let scope = ToolExecutionScope {
         workspace: normalize_path(&PathBuf::from(workspace)),
         approved_outside_paths: Arc::new(Mutex::new(vec![])),
         permission_level,
+        interrupt_flag,
     };
     TOOL_SCOPE.scope(scope, future).await
 }
@@ -377,6 +401,17 @@ pub fn all_tools() -> Vec<AgentTool> {
 
 // ─── Tool runners (async, using tokio) ─────────────────────────────────────
 
+/// Polls the interrupt flag every 50ms. Returns when the flag is set to true.
+/// Used by tokio::select! to cooperatively cancel long-running operations.
+async fn wait_for_interrupt(flag: Arc<AtomicBool>) {
+    loop {
+        if flag.load(Ordering::SeqCst) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 async fn run_bash(command: &str, timeout_secs: u64) -> Result<String> {
     let cwd = active_workspace()?;
     let mut child = Command::new("bash");
@@ -385,18 +420,35 @@ async fn run_bash(command: &str, timeout_secs: u64) -> Result<String> {
         .current_dir(&cwd)
         .env("PWD", &cwd);
     child.kill_on_drop(true);
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs.max(1)),
-        child.output(),
-    )
-    .await
-    .map_err(|_| {
-        anyhow!(
-            "Bash command timed out after {} seconds",
-            timeout_secs.max(1)
-        )
-    })?
-    .map_err(|e| anyhow!("Failed to run bash command: {}", e))?;
+
+    // Get interrupt flag from task-local scope
+    let interrupt_flag = TOOL_SCOPE
+        .try_with(|scope| scope.interrupt_flag.clone())
+        .unwrap_or_else(|_| Arc::new(AtomicBool::new(false)));
+
+    // Use tokio::select! to race between:
+    // 1. Command completion
+    // 2. Timeout
+    // 3. Interrupt signal (abort)
+    let output = tokio::select! {
+        result = tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs.max(1)),
+            child.output(),
+        ) => {
+            match result {
+                Ok(Ok(output)) => output,
+                Ok(Err(e)) => return Err(anyhow!("Failed to run bash command: {}", e)),
+                Err(_) => return Err(anyhow!(
+                    "Bash command timed out after {} seconds",
+                    timeout_secs.max(1)
+                )),
+            }
+        }
+        _ = wait_for_interrupt(interrupt_flag.clone()) => {
+            // Interrupt received, child will be dropped and killed via kill_on_drop
+            return Err(anyhow!("Bash command interrupted by abort"));
+        }
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -695,5 +747,37 @@ mod tests {
 
         assert!(result.is_err());
         assert!(!outside.exists());
+    }
+
+    #[tokio::test]
+    async fn run_bash_abort_interrupt() {
+        let workspace = test_path("abort-test");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace_string = workspace.to_string_lossy().to_string();
+        let interrupt_flag = Arc::new(AtomicBool::new(false));
+
+        let flag_clone = interrupt_flag.clone();
+        let bash_task = tokio::spawn(async move {
+            with_workspace_scope_with_interrupt(
+                workspace_string,
+                "all".to_string(),
+                flag_clone,
+                async {
+                    run_bash("sleep 30", 60).await
+                },
+            )
+            .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        interrupt_flag.store(true, Ordering::SeqCst);
+
+        let result = bash_task.await.unwrap();
+        assert!(result.is_err(), "run_bash should return Err when interrupted");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("interrupted") || err.contains("Interrupted") || err.contains("abort"),
+            "Error message should mention interruption: got '{err}'"
+        );
     }
 }

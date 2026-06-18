@@ -1,5 +1,5 @@
 import type { AgentMessage } from "./types";
-import { Paperclip } from "lucide-react";
+import { Paperclip, RotateCcw, StepForward } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { formatTime } from "../../lib/date";
 import { AgentActivityList } from "./AgentActivityList";
@@ -8,11 +8,21 @@ import { PlanBlock } from "./PlanBlock";
 
 interface MessageBlockProps {
   message: AgentMessage;
+  recoverySource?: AgentMessage | null;
+  onContinue?: (message: AgentMessage) => void;
+  onRetry?: (message: AgentMessage, source: AgentMessage) => void;
   workspaceId?: string | null;
 }
 
-export function MessageBlock({ message, workspaceId }: MessageBlockProps) {
+export function MessageBlock({
+  message,
+  recoverySource,
+  onContinue,
+  onRetry,
+  workspaceId,
+}: MessageBlockProps) {
   const isUser = message.role === "user";
+  const canRecover = !isUser && message.status === "failed";
 
   return (
     <article className="flex justify-center">
@@ -52,6 +62,36 @@ export function MessageBlock({ message, workspaceId }: MessageBlockProps) {
             : null}
           {message.plan ? <PlanBlock steps={message.plan} /> : null}
           {!isUser ? <AgentActivityList items={message.activityItems} /> : null}
+          {canRecover
+            ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {recoverySource && onRetry
+                    ? (
+                        <button
+                          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+                          onClick={() => onRetry(message, recoverySource)}
+                          type="button"
+                        >
+                          <RotateCcw className="size-3.5" />
+                          Retry
+                        </button>
+                      )
+                    : null}
+                  {onContinue
+                    ? (
+                        <button
+                          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+                          onClick={() => onContinue(message)}
+                          type="button"
+                        >
+                          <StepForward className="size-3.5" />
+                          Continue
+                        </button>
+                      )
+                    : null}
+                </div>
+              )
+            : null}
         </div>
       </div>
     </article>

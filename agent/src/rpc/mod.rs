@@ -1,6 +1,7 @@
 //! RPC Server - Command handling for gRPC
 
 mod approval;
+mod approval_policy;
 mod commands;
 mod protocol;
 mod session;

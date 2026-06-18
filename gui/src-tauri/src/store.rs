@@ -1,3 +1,4 @@
+mod approval_config;
 mod artifacts;
 mod cleanup;
 mod markdown_refs;
@@ -23,7 +24,7 @@ pub use models::*;
 pub use research::{list_research_resources, promote_artifact_to_research};
 pub use review::{
     decide_approval_request, ensure_approval_request, ensure_review_change, list_approval_requests,
-    list_review_changesets, list_review_file_changes,
+    list_review_changesets, list_review_file_changes, update_review_changeset_status,
 };
 use support::*;
 pub use support::{get_approval_request, get_run};
@@ -424,7 +425,7 @@ pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, thread_id, trigger_message_id, status, model_provider, model_id,
-                    started_at, ended_at, error_message, created_at, updated_at
+                    started_at, ended_at, error_message, error_type, created_at, updated_at
              FROM runs
              WHERE thread_id = ?1
              ORDER BY created_at DESC",
@@ -449,11 +450,16 @@ pub fn update_run_status(input: UpdateRunStatusInput) -> Result<RunRecord, Strin
     let tx = conn.transaction().map_err(|error| error.to_string())?;
     tx.execute(
         "UPDATE runs
-         SET status = ?1, error_message = ?2, ended_at = COALESCE(?3, ended_at), updated_at = ?4
-         WHERE id = ?5",
+         SET status = ?1,
+             error_message = ?2,
+             error_type = COALESCE(?3, error_type),
+             ended_at = COALESCE(?4, ended_at),
+             updated_at = ?5
+         WHERE id = ?6",
         params![
             input.status,
             input.error_message,
+            input.error_type,
             ended_at,
             now,
             input.run_id

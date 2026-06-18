@@ -15,6 +15,8 @@ pub struct GitReview {
     workspace_path: String,
     branch: Option<String>,
     upstream: Option<String>,
+    diff_base: Option<String>,
+    diff_base_label: Option<String>,
     additions: i64,
     deletions: i64,
     files: Vec<GitReviewFile>,
@@ -30,7 +32,11 @@ pub struct GitReviewFile {
     diff: String,
 }
 
-pub fn get_git_review(workspace_id: String) -> Result<GitReview, String> {
+pub fn get_git_review(
+    workspace_id: String,
+    base: Option<String>,
+    custom_base: Option<String>,
+) -> Result<GitReview, String> {
     let workspace = store::get_workspace(&workspace_id)?
         .ok_or_else(|| "Workspace could not be loaded.".to_string())?;
     let workspace_path = PathBuf::from(&workspace.path);
@@ -40,6 +46,8 @@ pub fn get_git_review(workspace_id: String) -> Result<GitReview, String> {
             workspace_path: workspace.path,
             branch: None,
             upstream: None,
+            diff_base: None,
+            diff_base_label: None,
             additions: 0,
             deletions: 0,
             files: Vec::new(),
@@ -58,9 +66,15 @@ pub fn get_git_review(workspace_id: String) -> Result<GitReview, String> {
     .ok()
     .filter(|value| !value.trim().is_empty())
     .map(|value| value.trim().to_string());
+    let diff_base = resolve_diff_base(
+        &workspace_path,
+        base.as_deref(),
+        custom_base.as_deref(),
+        upstream.as_deref(),
+    );
 
     let status_by_path = git_status_by_path(&workspace_path);
-    let mut files = tracked_diff_files(&workspace_path, &status_by_path);
+    let mut files = tracked_diff_files(&workspace_path, &status_by_path, &diff_base.reference);
     append_untracked_files(&workspace_path, &mut files, &status_by_path);
     files.sort_by(|left, right| left.path.cmp(&right.path));
 
@@ -72,6 +86,8 @@ pub fn get_git_review(workspace_id: String) -> Result<GitReview, String> {
         workspace_path: workspace.path,
         branch,
         upstream,
+        diff_base: Some(diff_base.reference),
+        diff_base_label: Some(diff_base.label),
         additions,
         deletions,
         files,
@@ -95,12 +111,13 @@ fn canonical_or_raw(path: impl AsRef<Path>) -> PathBuf {
 fn tracked_diff_files(
     workspace_path: &Path,
     status_by_path: &HashMap<String, String>,
+    base_ref: &str,
 ) -> Vec<GitReviewFile> {
     let numstat =
-        git_output(workspace_path, ["diff", "--numstat", "HEAD", "--"]).unwrap_or_default();
+        git_output(workspace_path, ["diff", "--numstat", base_ref, "--"]).unwrap_or_default();
     let diff = git_output(
         workspace_path,
-        ["diff", "--no-color", "--unified=80", "HEAD", "--"],
+        ["diff", "--no-color", "--unified=80", base_ref, "--"],
     )
     .unwrap_or_default();
     let diff_by_path = split_git_diff_by_path(&diff);
@@ -128,6 +145,63 @@ fn tracked_diff_files(
             })
         })
         .collect()
+}
+
+struct DiffBase {
+    label: String,
+    reference: String,
+}
+
+fn resolve_diff_base(
+    workspace_path: &Path,
+    base: Option<&str>,
+    custom_base: Option<&str>,
+    upstream: Option<&str>,
+) -> DiffBase {
+    match base.unwrap_or("head") {
+        "upstream" => upstream
+            .filter(|value| !value.trim().is_empty())
+            .map(|reference| DiffBase {
+                label: format!("upstream ({reference})"),
+                reference: reference.to_string(),
+            })
+            .unwrap_or_else(head_diff_base),
+        "merge-base" => upstream
+            .and_then(|reference| {
+                git_output(workspace_path, ["merge-base", "HEAD", reference])
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+            })
+            .map(|reference| DiffBase {
+                label: "merge-base".to_string(),
+                reference,
+            })
+            .unwrap_or_else(head_diff_base),
+        "custom" => custom_base
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .and_then(|reference| {
+                git_output(
+                    workspace_path,
+                    ["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
+                )
+                .ok()
+                .map(|_| DiffBase {
+                    label: format!("custom ({reference})"),
+                    reference: reference.to_string(),
+                })
+            })
+            .unwrap_or_else(head_diff_base),
+        _ => head_diff_base(),
+    }
+}
+
+fn head_diff_base() -> DiffBase {
+    DiffBase {
+        label: "HEAD".to_string(),
+        reference: "HEAD".to_string(),
+    }
 }
 
 fn append_untracked_files(

@@ -43,6 +43,7 @@ export interface AgentMessage {
   role: MessageRole;
   author: string;
   content: string;
+  status?: "complete" | "streaming" | "failed";
   createdAt: string;
   activityItems?: AgentActivityItem[];
   attachments?: MessageAttachment[];

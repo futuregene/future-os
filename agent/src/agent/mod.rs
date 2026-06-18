@@ -31,7 +31,7 @@ pub struct Loop {
     pub steering_queue: PendingMessageQueue,
     pub follow_up_queue: PendingMessageQueue,
     pub parallel_tools: bool,
-    pub(crate) interrupt_flag: AtomicBool,
+    pub(crate) interrupt_flag: Arc<AtomicBool>,
     pub(crate) last_compaction_result: Arc<Mutex<Option<crate::compaction::CompactionResult>>>,
     pub tool_event_callback: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
     pub cumulative_input_tokens: Arc<std::sync::atomic::AtomicI64>,
@@ -56,7 +56,7 @@ impl Loop {
             steering_queue: PendingMessageQueue::new(64, "all"),
             follow_up_queue: PendingMessageQueue::new(64, "all"),
             parallel_tools: false,
-            interrupt_flag: AtomicBool::new(false),
+            interrupt_flag: Arc::new(AtomicBool::new(false)),
             last_compaction_result: Arc::new(Mutex::new(None)),
             tool_event_callback: None,
             cumulative_input_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
@@ -372,6 +372,12 @@ impl Loop {
 
     pub fn clear_interrupt(&self) {
         self.interrupt_flag.store(false, Ordering::SeqCst);
+    }
+
+    /// Returns a clone of the Arc-wrapped interrupt flag for sharing
+    /// with cooperative cancellation points (e.g., bash tool).
+    pub fn interrupt_flag(&self) -> Arc<AtomicBool> {
+        self.interrupt_flag.clone()
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

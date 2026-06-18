@@ -1,7 +1,9 @@
 import type { StoredArtifact } from "../../../integrations/storage/types";
 import type { FutureReference } from "../futureMarkdownTypes";
-import { BookMarked, FileText } from "lucide-react";
-import { storedTimeToIso } from "../../../integrations/storage/threadStore";
+import { Check, Clipboard, ExternalLink, FileText, Maximize2 } from "lucide-react";
+import { useState } from "react";
+import { openPath, storedTimeToIso } from "../../../integrations/storage/threadStore";
+import { copyText } from "../../../lib/clipboard";
 import { formatTime } from "../../../lib/date";
 
 export function ArtifactEmbed({
@@ -11,6 +13,23 @@ export function ArtifactEmbed({
   artifact: StoredArtifact;
   reference: FutureReference;
 }) {
+  const [copied, setCopied] = useState(false);
+
+  function inspectArtifact() {
+    window.dispatchEvent(new CustomEvent("futureos:inspect-artifact", {
+      detail: { artifactId: artifact.id },
+    }));
+  }
+
+  async function copyPath() {
+    if (!artifact.path)
+      return;
+
+    await copyText(artifact.path);
+    setCopied(true);
+    window.setTimeout(setCopied, 1400, false);
+  }
+
   return (
     <article className="rounded-md border border-line-soft bg-surface p-3">
       <div className="flex items-start gap-2">
@@ -38,8 +57,41 @@ export function ArtifactEmbed({
                 </pre>
               )
             : null}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+              onClick={inspectArtifact}
+              type="button"
+            >
+              <Maximize2 className="size-3.5" />
+              Details
+            </button>
+            {artifact.path
+              ? (
+                  <button
+                    className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+                    onClick={() => void copyPath()}
+                    type="button"
+                  >
+                    {copied ? <Check className="size-3.5" /> : <Clipboard className="size-3.5" />}
+                    Copy path
+                  </button>
+                )
+              : null}
+            {artifact.path
+              ? (
+                  <button
+                    className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+                    onClick={() => void openPath(artifact.path ?? "")}
+                    type="button"
+                  >
+                    <ExternalLink className="size-3.5" />
+                    Open
+                  </button>
+                )
+              : null}
+          </div>
         </div>
-        <BookMarked className="mt-0.5 size-4 shrink-0 text-ink-muted" />
       </div>
     </article>
   );
