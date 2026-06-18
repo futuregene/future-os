@@ -302,7 +302,6 @@ impl crate::types::LLMProvider for Client {
             let mut in_thinking = false;
             let mut in_tool_call = false;
             let mut buffer = String::new();
-            let mut pending: Vec<u8> = Vec::new();
             let mut last_sse_event_at = std::time::Instant::now();
 
             // Helper to emit events from a parsed SSE data line, handling
@@ -484,31 +483,12 @@ impl crate::types::LLMProvider for Client {
                         if let Some(ref cb) = on_payload {
                             cb(&bytes);
                         }
-                        // Find \n\n at byte level first so SSE framing is
-                        // never affected by UTF-8 decoding issues.
-                        pending.extend_from_slice(&bytes);
-                        while let Some(pos) = pending.windows(2).position(|w| w == b"\n\n") {
-                            let frame_bytes = pending[..pos].to_vec();
-                            pending.drain(..pos + 2);
-                            // Decode frame, keeping trailing incomplete UTF-8
-                            // bytes in pending for the next chunk.
-                            let valid_up_to = match std::str::from_utf8(&frame_bytes) {
-                                Ok(_) => frame_bytes.len(),
-                                Err(e) => e.valid_up_to(),
-                            };
-                            if valid_up_to > 0 {
-                                buffer.push_str(
-                                    std::str::from_utf8(&frame_bytes[..valid_up_to]).unwrap_or(""),
-                                );
-                            }
-                            // Re-insert incomplete trailing bytes for next time
-                            if valid_up_to < frame_bytes.len() {
-                                let tail: Vec<u8> = frame_bytes[valid_up_to..].iter().copied().collect();
-                                pending.splice(0..0, tail);
-                            }
-                        }
+                        // Use from_utf8_lossy — SSE structure is ASCII so \n\n
+                        // delimiters are never affected by replacement chars.
+                        buffer.push_str(&String::from_utf8_lossy(&bytes));
 
-                        // Process complete SSE events in buffer.
+                        // Process complete SSE events (delimited by \n\n).
+                        // Keep trailing partial event in buffer for next chunk.
                         while let Some(pos) = buffer.find("\n\n") {
                             let event_block = buffer[..pos].to_string();
                             buffer = buffer[pos + 2..].to_string();

@@ -299,6 +299,10 @@ impl Loop {
                 };
                 on_event(event.clone());
 
+                if self.verbose && !matches!(event.event_type.as_str(), "thinking_delta" | "text_delta") {
+                    eprintln!("[EVENT] {} len={}", event.event_type, event.text.len());
+                }
+
                 match event.event_type.as_str() {
                     "thinking_start" => {
                         if self.verbose {
