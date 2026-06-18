@@ -1,6 +1,6 @@
 //! FutureAgent Channel Bridge — unified binary for all channels.
 //!
-//! Reads ~/.future/channel/config.json and starts enabled channels.
+//! Reads ~/.future/channels/config.json and starts enabled channels.
 //! Each channel connects to the FutureAgent via gRPC.
 
 #![allow(dead_code)]
@@ -8,6 +8,7 @@
 mod config;
 mod grpc_client;
 mod feishu;
+mod dingtalk;
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -54,6 +55,25 @@ async fn main() -> Result<()> {
             handles.push(tokio::spawn(async move {
                 if let Err(e) = feishu::FeishuChannel::run(agent, fcfg, sd).await {
                     tracing::error!("Feishu channel exited: {}", e);
+                }
+            }));
+        }
+    }
+
+    // ── DingTalk ──────────────────────────────────────────────────────
+
+    if let Some(ref dt_cfg) = config.dingtalk {
+        if dt_cfg.enabled {
+            if dt_cfg.client_id.is_empty() || dt_cfg.client_secret.is_empty() {
+                anyhow::bail!("DingTalk channel enabled but client_id/client_secret missing");
+            }
+            info!("Starting DingTalk channel...");
+            let agent = agent_cfg.clone();
+            let dcfg = dt_cfg.clone();
+            let sd = shutdown.clone();
+            handles.push(tokio::spawn(async move {
+                if let Err(e) = dingtalk::DingtalkChannel::run(agent, dcfg, sd).await {
+                    tracing::error!("DingTalk channel exited: {}", e);
                 }
             }));
         }

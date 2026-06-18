@@ -1,5 +1,5 @@
 //! Unified channel configuration.
-//! Reads from ~/.future/channel/config.json
+//! Reads from ~/.future/channels/config.json
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -10,6 +10,8 @@ pub struct ChannelConfig {
     pub agent: AgentConfig,
     #[serde(default)]
     pub feishu: Option<FeishuChannelConfig>,
+    #[serde(default)]
+    pub dingtalk: Option<DingtalkChannelConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -50,6 +52,31 @@ pub struct FeishuChannelConfig {
     pub typing_indicator: bool,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DingtalkChannelConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: String,
+    #[serde(default = "default_dingtalk_domain")]
+    pub domain: String,
+}
+
+fn default_dingtalk_domain() -> String { "api.dingtalk.com".into() }
+
+impl Default for DingtalkChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            client_id: String::new(),
+            client_secret: String::new(),
+            domain: default_dingtalk_domain(),
+        }
+    }
+}
+
 // ─── Defaults ──────────────────────────────────────────────────────────────
 
 fn default_grpc_addr() -> String { "http://127.0.0.1:50051".into() }
@@ -66,7 +93,7 @@ fn default_max_image_mb() -> u64 { 10 }
 
 impl ChannelConfig {
     pub fn default_path() -> PathBuf {
-        home_dir().join(".future").join("channel").join("config.json")
+        home_dir().join(".future").join("channels").join("config.json")
     }
 
     pub fn load() -> anyhow::Result<Self> {
@@ -98,6 +125,7 @@ impl Default for ChannelConfig {
         Self {
             agent: AgentConfig::default(),
             feishu: None,
+            dingtalk: None,
         }
     }
 }
