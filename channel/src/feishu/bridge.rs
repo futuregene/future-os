@@ -350,20 +350,42 @@ impl Bridge {
                 }
             }
 
-            "/status" => {
+            "/status" | "/stop" if arg.is_empty() => {
                 let session_id = self.sessions.get(chat_id, thread_id);
                 match session_id {
                     Some(sid) => {
                         let mut agent = self.agent.write().await;
                         match agent.get_state(&sid).await {
                             Ok(state) => {
-                                let status = card::status_card(
-                                    &state.model, state.image_support, &state.thinking_level,
+                                let model_info = match agent.get_available_models(&sid).await {
+                                    Ok(models) => models.iter().find(|m| m.id == state.model).map(|m| {
+                                        format!("**Provider:** {}\n**Reasoning:** {}\n**Image:** {}\n**Context:** {}K\n**Max output:** {}",
+                                            m.provider,
+                                            if m.reasoning { "yes" } else { "no" },
+                                            if m.image { "yes" } else { "no" },
+                                            m.context_window / 1000,
+                                            if m.max_tokens > 0 { format!("{}K", m.max_tokens / 1000) } else { "unlimited".to_string() },
+                                        )
+                                    }).unwrap_or_default(),
+                                    Err(_) => String::new(),
+                                };
+                                let text = format!(
+                                    "**Model:** {} ({})\n{}\n\n**Session:** {}\n**CWD:** {}\n**Thinking:** {}\n**Messages:** {}\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n**Tokens:** {} in / {} out\n**Cost:** ${:.4}",
+                                    state.model,
+                                    if state.image_support { "🖼️" } else { "" },
+                                    model_info,
+                                    state.session_id,
+                                    state.cwd,
+                                    state.thinking_level,
+                                    state.message_count,
+                                    if state.auto_compaction { "on" } else { "off" },
                                     state.context_tokens, state.context_window,
-                                    state.tokens_in, state.tokens_out, state.message_count,
+                                    if state.context_window > 0 { (state.context_tokens as f64 / state.context_window as f64) * 100.0 } else { 0.0 },
+                                    state.tokens_in, state.tokens_out,
+                                    state.total_cost,
                                 );
-                                self.feishu.reply_message(message_id, "interactive",
-                                    &card::card_content(&status)).await?;
+                                self.feishu.reply_message(message_id, "text",
+                                    &serde_json::json!({"text": text}).to_string()).await?;
                             }
                             Err(e) => {
                                 self.feishu.reply_message(message_id, "text",
@@ -440,6 +462,29 @@ impl Bridge {
                     Err(e) => {
                         self.feishu.reply_message(message_id, "text",
                             &serde_json::json!({"text": format!("Error: {}", e)}).to_string()).await?;
+                    }
+                }
+            }
+
+            "/stop" => {
+                let session_id = self.sessions.get(chat_id, thread_id);
+                match session_id {
+                    Some(sid) => {
+                        let mut agent = self.agent.write().await;
+                        match agent.abort(&sid).await {
+                            Ok(()) => {
+                                self.feishu.reply_message(message_id, "text",
+                                    &serde_json::json!({"text": "Stopped current generation."}).to_string()).await?;
+                            }
+                            Err(e) => {
+                                self.feishu.reply_message(message_id, "text",
+                                    &serde_json::json!({"text": format!("Failed to stop: {}", e)}).to_string()).await?;
+                            }
+                        }
+                    }
+                    None => {
+                        self.feishu.reply_message(message_id, "text",
+                            &serde_json::json!({"text": "No active session to stop."}).to_string()).await?;
                     }
                 }
             }

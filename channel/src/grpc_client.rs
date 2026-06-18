@@ -137,6 +137,9 @@ impl AgentClient {
             session_id: resp["sessionId"].as_str().unwrap_or("").to_string(),
             session_name: resp["sessionName"].as_str().unwrap_or("").to_string(),
             cwd: resp["cwd"].as_str().unwrap_or("").to_string(),
+            auto_compaction: resp["autoCompactionEnabled"].as_bool().unwrap_or(true),
+            total_cost: resp["totalCost"].as_f64().unwrap_or(0.0),
+            permission_level: resp["permissionLevel"].as_str().unwrap_or("all").to_string(),
         })
     }
 
@@ -149,6 +152,7 @@ impl AgentClient {
                 name: m["name"].as_str().unwrap_or("?").to_string(),
                 provider: m["provider"].as_str().unwrap_or("").to_string(),
                 image: m["image"].as_bool().unwrap_or(false),
+                reasoning: m["reasoning"].as_bool().unwrap_or(false),
                 context_window: m["contextWindow"].as_i64().unwrap_or(0),
                 max_tokens: m["maxTokens"].as_i64().unwrap_or(0),
             }).collect()
@@ -304,6 +308,9 @@ pub struct SessionState {
     pub session_id: String,
     pub session_name: String,
     pub cwd: String,
+    pub auto_compaction: bool,
+    pub total_cost: f64,
+    pub permission_level: String,
 }
 
 #[derive(Debug, Clone)]
@@ -312,6 +319,7 @@ pub struct ModelInfo {
     pub name: String,
     pub provider: String,
     pub image: bool,
+    pub reasoning: bool,
     pub context_window: i64,
     pub max_tokens: i64,
 }

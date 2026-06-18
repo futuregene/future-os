@@ -81,6 +81,8 @@ export class App extends Container {
     { value: "/cwd", label: "/cwd", description: "change working directory" },
     { value: "/approve", label: "/approve", description: "approve pending tool execution" },
     { value: "/reject", label: "/reject", description: "reject pending tool execution" },
+    { value: "/stop", label: "/stop", description: "stop current generation" },
+    { value: "/status", label: "/status", description: "show session and model info" },
     { value: "/model", label: "/model", description: "select model", takesModelArg: true },
     { value: "/sessions", label: "/sessions", description: "browse sessions" },
     { value: "/new", label: "/new", description: "new session" },
@@ -1197,6 +1199,69 @@ export class App extends Container {
             id: crypto.randomUUID(),
             role: "system",
             content: `Failed to reject: ${err}`,
+          });
+        }
+        return;
+      }
+
+      if (cmd === "stop") {
+        try {
+          await this.client.abort();
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: "Stopped current generation.",
+          });
+        } catch (err) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: `Failed to stop: ${err}`,
+          });
+        }
+        return;
+      }
+
+      if (cmd === "status") {
+        try {
+          const s = await this.client.getState();
+          const models = await this.client.getAvailableModels();
+          const currentModel = models.models.find((m) => m.id === s.model);
+          const modelInfo = currentModel
+            ? [
+                `**Model:** ${currentModel.name} (\`${currentModel.id}\`)`,
+                `**Provider:** ${currentModel.provider}`,
+                `**Reasoning:** ${currentModel.reasoning ? "yes" : "no"}`,
+                `**Image support:** ${currentModel.image ? "yes" : "no"}`,
+                `**Context window:** ${(currentModel.contextWindow / 1000).toFixed(0)}K`,
+                `**Max output tokens:** ${currentModel.maxTokens ? (currentModel.maxTokens / 1000).toFixed(0) + "K" : "unlimited"}`,
+              ]
+            : [`**Model:** ${s.model || "(unknown)"}`];
+          const lines = [
+            ...modelInfo,
+            "",
+            `**Session:** ${s.sessionId || "(none)"}`,
+            `**CWD:** ${s.cwd || "(none)"}`,
+            `**Thinking:** ${s.thinkingLevel}`,
+            `**Permission:** ${s.permissionLevel ?? "all"}`,
+            `**Messages:** ${s.messageCount}`,
+            `**Auto compaction:** ${s.autoCompactionEnabled ? "on" : "off"}`,
+            `**Streaming:** ${s.isStreaming ? "yes" : "no"}`,
+            "",
+            `**Context:** ${s.contextTokens ?? 0} / ${s.contextWindow ?? 0} (${(s.contextPercent ?? 0).toFixed(1)}%)`,
+            `**Tokens:** ${s.tokensIn ?? 0} in / ${s.tokensOut ?? 0} out`,
+            `**Cost:** $${(s.totalCost ?? 0).toFixed(4)}`,
+          ];
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: lines.join("\n"),
+          });
+        } catch (err) {
+          this.chat.addMessage({
+            id: crypto.randomUUID(),
+            role: "system",
+            content: `Failed to get status: ${err}`,
           });
         }
         return;

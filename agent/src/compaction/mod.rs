@@ -176,10 +176,14 @@ pub fn compact(
     messages: Vec<Message>,
     opts: &CompactOptions,
 ) -> (Vec<Message>, Option<CompactionResult>) {
+    // Use API-reported count when available, but never let it go below the
+    // heuristic estimate. Tool results added since the last LLM call may
+    // have pushed the real context far beyond what the API last reported.
+    let estimated = estimate_context_tokens(&messages);
     let tokens_before = if opts.tokens_before > 0 {
-        opts.tokens_before
+        opts.tokens_before.max(estimated)
     } else {
-        estimate_context_tokens(&messages)
+        estimated
     };
     let context_window = if opts.context_window > 0 {
         opts.context_window

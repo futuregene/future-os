@@ -103,11 +103,13 @@ impl ServerSession {
                         .resolve(&comp_model)
                         .map(|m| m.context_window)
                         .unwrap_or(200000);
+                    // Compact when context usage exceeds 90% (10% reserve, min 16K)
+                    let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
                     let (compacted, result) = crate::compaction::compact(
                         msgs,
                         &crate::compaction::CompactOptions {
-                            reserve_tokens: 16384,
-                            keep_recent_tokens: 20000,
+                            reserve_tokens,
+                            keep_recent_tokens: reserve_tokens,
                             context_window,
                             tokens_before: context_tokens,
                         },
