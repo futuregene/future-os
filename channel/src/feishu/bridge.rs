@@ -541,6 +541,29 @@ impl Bridge {
                 }
             }
 
+            "/compact" => {
+                let session_id = self.sessions.get(chat_id, thread_id);
+                match session_id {
+                    Some(sid) => {
+                        let mut agent = self.agent.write().await;
+                        match agent.compact(&sid).await {
+                            Ok(()) => {
+                                self.feishu.reply_message(message_id, "text",
+                                    &serde_json::json!({"text": "Context compacted."}).to_string()).await?;
+                            }
+                            Err(e) => {
+                                self.feishu.reply_message(message_id, "text",
+                                    &serde_json::json!({"text": format!("Failed to compact: {}", e)}).to_string()).await?;
+                            }
+                        }
+                    }
+                    None => {
+                        self.feishu.reply_message(message_id, "text",
+                            &serde_json::json!({"text": "No active session to compact."}).to_string()).await?;
+                    }
+                }
+            }
+
             "/help" => {
                 let help = card::help_card();
                 self.feishu.reply_message(message_id, "interactive",

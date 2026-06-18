@@ -186,6 +186,12 @@ impl AgentClient {
         Ok(())
     }
 
+    /// Compact the current session context.
+    pub async fn compact(&mut self, session_id: &str) -> Result<()> {
+        self.call("compact", session_id, Default::default()).await?;
+        Ok(())
+    }
+
     /// Set thinking level.
     pub async fn set_thinking_level(&mut self, session_id: &str, level: &str) -> Result<()> {
         self.call("set_thinking_level", session_id, RpcCommand {
