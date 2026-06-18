@@ -302,6 +302,7 @@ impl crate::types::LLMProvider for Client {
             let mut in_thinking = false;
             let mut in_tool_call = false;
             let mut buffer = String::new();
+            let mut raw_buffer: Vec<u8> = Vec::new();
             let mut last_sse_event_at = std::time::Instant::now();
 
             // Helper to emit events from a parsed SSE data line, handling
@@ -483,9 +484,24 @@ impl crate::types::LLMProvider for Client {
                         if let Some(ref cb) = on_payload {
                             cb(&bytes);
                         }
-                        // Use from_utf8_lossy — SSE structure is ASCII so \n\n
-                        // delimiters are never affected by replacement chars.
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
+                        // Append raw bytes to a byte buffer, then decode only the
+                        // complete UTF-8 prefix. This avoids splitting multi-byte
+                        // characters across HTTP chunk boundaries (which would
+                        // produce � replacement chars with from_utf8_lossy).
+                        raw_buffer.extend_from_slice(&bytes);
+
+                        // Find the trailing incomplete UTF-8 sequence and keep it
+                        // in the buffer for the next chunk.
+                        let valid_up_to = match std::str::from_utf8(&raw_buffer) {
+                            Ok(_) => raw_buffer.len(),
+                            Err(e) => e.valid_up_to(),
+                        };
+                        if valid_up_to > 0 {
+                            let valid = String::from_utf8(raw_buffer[..valid_up_to].to_vec())
+                                .unwrap_or_default();
+                            raw_buffer.drain(..valid_up_to);
+                            buffer.push_str(&valid);
+                        }
 
                         // Process complete SSE events (delimited by \n\n).
                         // Keep trailing partial event in buffer for next chunk.
