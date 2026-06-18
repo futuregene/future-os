@@ -469,18 +469,16 @@ impl Loop {
             }
 
             // Check for stream errors before processing results
-            if let Some(err) = stream_error {
-                last_error = Some(err);
+            if let Some(_err) = stream_error {
                 // If steering messages are pending, drain and restart
                 if !self.steering_queue.is_empty() {
                     messages = self.drain_steering(messages);
-                    last_error = None;
                     continue;
                 }
                 if let Some(ref bus) = self.event_bus {
-                    bus.emit(agent_end("error", None));
+                    bus.emit(agent_end("interrupted", None));
                 }
-                return Err(last_error.unwrap());
+                return Ok((String::new(), messages));
             }
 
             // Check for pending interrupt (may have arrived during API call
@@ -493,7 +491,7 @@ impl Loop {
                         if let Some(ref bus) = self.event_bus {
                             bus.emit(agent_end("interrupted", None));
                         }
-                        return Err(anyhow!("interrupted"));
+                        return Ok((String::new(), messages));
                     }
                     messages = self.drain_steering(messages);
                 }

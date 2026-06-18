@@ -161,9 +161,12 @@ impl Loop {
     ) {
         let tools = &self.tools;
         let config = &self.config;
+        let mut interrupted = false;
+        let mut executed = 0usize;
         for tc in tool_calls {
             // Check for abort between tool executions
             if self.is_interrupted() {
+                interrupted = true;
                 break;
             }
             let start = Instant::now();
@@ -222,6 +225,18 @@ impl Loop {
 
             let tool_msg = self.new_tool_result(&tc.id, &result, err_str.as_deref());
             messages.push(tool_msg);
+            executed += 1;
+        }
+
+        // Inject placeholder results for tools that were skipped due to interrupt
+        if interrupted {
+            for tc in tool_calls.iter().skip(executed) {
+                let cancelled = format!(
+                    "[Tool execution cancelled — {} was skipped due to user interrupt]",
+                    tc.function.name
+                );
+                messages.push(self.new_tool_result(&tc.id, &cancelled, Some(&cancelled)));
+            }
         }
     }
 
