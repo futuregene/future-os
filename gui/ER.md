@@ -306,12 +306,18 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
 | `thread_id` | 所属 Thread |
 | `run_id` | 来源 Run |
 | `tool_call_id` | 来源 Tool Call，可为空 |
-| `kind` | `shell_command`、`file_write`、`file_delete`、`network_access`、`data_access`、`batch_operation`、`external_workspace_read` |
+| `kind` | `shell_command`、`file_write`、`file_delete`、`network_access`、`data_access`、`batch_operation`、`outside_workspace_write`、`outside_workspace_read` |
 | `status` | `pending`、`approved`、`rejected`、`cancelled` |
 | `title` | 标题 |
 | `summary` | 摘要 |
 | `risk_level` | `low`、`medium`、`high` |
-| `requested_action` | 准备执行的操作 |
+| `requested_action` | 准备执行的操作（原始 JSON，向后兼容） |
+| `action_category` | P2 结构化字段：操作类别 |
+| `action_payload` | P2 结构化字段：完整 action JSON |
+| `sandbox_boundary` | P2 结构化字段：沙盒边界信息 JSON |
+| `reviewer` | 审查者，`user` 或 `auto_review`（预留） |
+| `decision_scope` | 决策范围，`once`、`session`、`always`（预留），当前仅 `once` |
+| `decision_source` | 决策来源，`user`、`rule`（预留）、`sandbox`（预留） |
 | `decision_note` | 用户决策备注，可为空 |
 | `decided_at` | 用户决策时间 |
 | `created_at` | 创建时间 |
@@ -333,6 +339,8 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
 - 超出当前 workspace 范围的读取使用 `external_workspace_read`，例如 Agent 需要读取当前 workspace 之外的本地文件或目录。
 - GUI 或 Agent 重启后遗留的 `pending` 审批应标记为 `cancelled`，防止旧审批继续显示为可操作状态。
 - 如果审批通过后产生文件变更，再由 Review Changeset 展示实际修改对比。
+- P2 引入结构化 `action_payload` 和 `sandbox_boundary` 字段，详见 `gui/P2_APPROVAL_MODEL.md`。
+- P2 预留了 `sandbox_config`、`approval_policy_config`、`approval_rules` 三张配置表，当前未启用。
 
 ### 4.9 Review Changeset
 

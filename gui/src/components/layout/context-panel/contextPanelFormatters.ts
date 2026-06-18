@@ -42,3 +42,21 @@ export function summarizePayload(payload: string) {
     return payload.slice(0, 1200);
   }
 }
+
+export type RunErrorType = NonNullable<StoredRun["errorType"]>;
+
+export function formatErrorType(errorType?: RunErrorType | null): { label: string; icon: string; color: string } | null {
+  if (!errorType)
+    return null;
+
+  const errorTypes = {
+    stream_disconnected: { label: "Stream disconnected", icon: "🔌", color: "text-orange-600" },
+    command_failed: { label: "Command failed", icon: "⚠️", color: "text-red-600" },
+    model_failed: { label: "Model failed", icon: "🤖", color: "text-purple-600" },
+    abort_requested: { label: "Aborted by user", icon: "⏹️", color: "text-gray-600" },
+    timeout: { label: "Timeout", icon: "⏰", color: "text-yellow-600" },
+    unknown: { label: "Unknown error", icon: "❓", color: "text-gray-600" },
+  };
+
+  return errorTypes[errorType as keyof typeof errorTypes] || null;
+}

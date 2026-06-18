@@ -220,9 +220,14 @@ impl ServerSession {
         // Ctrl+C / abort sets interrupt_flag=true on the shared agent_loop.
         // Without clearing it, the spawned task's first loop iteration would
         // exit immediately without calling the LLM.
-        if let Ok(r#loop) = self.agent_loop.try_read() {
+        let shared_interrupt_flag = if let Ok(r#loop) = self.agent_loop.try_read() {
             r#loop.clear_interrupt();
-        }
+            r#loop.interrupt_flag()
+        } else {
+            // Fallback: if we can't acquire the lock, create a fresh flag.
+            // This path is unlikely in practice because we hold no concurrent writers here.
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))
+        };
 
         // Create interrupt channel so steer()/abort() can stop the current stream
         let (interrupt_tx, interrupt_rx) = tokio::sync::mpsc::channel::<()>(1);
@@ -231,7 +236,11 @@ impl ServerSession {
         // Spawn background task to run agent loop
         let perm = self.permission_level.clone();
         tokio::spawn(async move {
-            let result = crate::tools::with_workspace_scope(session_cwd.clone(), perm, async {
+            let result = crate::tools::with_workspace_scope_with_interrupt(
+                session_cwd.clone(),
+                perm,
+                shared_interrupt_flag,
+                async {
                 let mut current_messages = initial_messages;
                 let mut current_interrupt_rx = Some(interrupt_rx);
 
@@ -321,7 +330,8 @@ impl ServerSession {
                         Err(e) => return Err(e),
                     }
                 }
-            })
+            },
+            )
             .await;
 
             match result {

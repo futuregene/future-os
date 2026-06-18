@@ -6,7 +6,7 @@ import type {
   StoredToolCall,
 } from "../../../integrations/storage/types";
 import type { FutureReference } from "../futureMarkdownTypes";
-import { AlertTriangle, Beaker, FileDiff, Microscope } from "lucide-react";
+import { AlertTriangle, Beaker, FileDiff, Maximize2, Microscope } from "lucide-react";
 import { Badge } from "../../../components/ui/Badge";
 
 export function ApprovalEmbed({
@@ -42,6 +42,12 @@ export function ReviewEmbed({
   reference: FutureReference;
   review: StoredReviewChangeset;
 }) {
+  function openReview() {
+    window.dispatchEvent(new CustomEvent("futureos:open-review", {
+      detail: { reviewId: review.id },
+    }));
+  }
+
   return (
     <ObjectFrame
       icon={<FileDiff className="mt-0.5 size-4 shrink-0 text-accent" />}
@@ -50,6 +56,14 @@ export function ReviewEmbed({
       title={review.title || reference.label || review.id}
     >
       {review.summary ? <p className="text-sm leading-5 text-ink-soft">{review.summary}</p> : null}
+      <button
+        className="mt-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+        onClick={openReview}
+        type="button"
+      >
+        <Maximize2 className="size-3.5" />
+        Open Review
+      </button>
     </ObjectFrame>
   );
 }
@@ -61,6 +75,12 @@ export function ResearchEmbed({
   reference: FutureReference;
   resource: StoredResearchResource;
 }) {
+  function openResearch() {
+    window.dispatchEvent(new CustomEvent("futureos:open-research-resource", {
+      detail: { resourceId: resource.id },
+    }));
+  }
+
   return (
     <ObjectFrame
       icon={<Microscope className="mt-0.5 size-4 shrink-0 text-accent" />}
@@ -68,6 +88,14 @@ export function ResearchEmbed({
       title={resource.title || reference.label || resource.id}
     >
       {resource.summary ? <p className="text-sm leading-5 text-ink-soft">{resource.summary}</p> : null}
+      <button
+        className="mt-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+        onClick={openResearch}
+        type="button"
+      >
+        <Maximize2 className="size-3.5" />
+        Open Research
+      </button>
     </ObjectFrame>
   );
 }
@@ -79,6 +107,14 @@ export function ToolEmbed({
   reference: FutureReference;
   tool: StoredToolCall;
 }) {
+  function inspectRun() {
+    window.dispatchEvent(new CustomEvent("futureos:inspect-run", {
+      detail: { runId: tool.runId },
+    }));
+  }
+
+  const command = toolCommand(tool.input);
+
   return (
     <ObjectFrame
       icon={<Beaker className="mt-0.5 size-4 shrink-0 text-accent" />}
@@ -89,10 +125,18 @@ export function ToolEmbed({
       {tool.input
         ? (
             <pre className="max-h-32 overflow-auto rounded-md bg-surface-subtle p-2 text-xs leading-5 text-ink-soft">
-              <code>{tool.input}</code>
+              <code>{command ?? tool.input}</code>
             </pre>
           )
         : null}
+      <button
+        className="mt-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+        onClick={inspectRun}
+        type="button"
+      >
+        <Maximize2 className="size-3.5" />
+        Inspect run
+      </button>
     </ObjectFrame>
   );
 }
@@ -125,4 +169,32 @@ function ObjectFrame({
       </div>
     </article>
   );
+}
+
+function toolCommand(input: string | null | undefined) {
+  if (!input)
+    return null;
+
+  let current: unknown = input;
+  for (let index = 0; index < 3; index += 1) {
+    if (isRecord(current)) {
+      const value = current.command;
+      return typeof value === "string" && value.trim() ? value : null;
+    }
+    if (typeof current !== "string")
+      return null;
+
+    try {
+      current = JSON.parse(current) as unknown;
+    }
+    catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

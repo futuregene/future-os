@@ -3,6 +3,20 @@ mod agent_proto;
 mod git_review;
 mod store;
 
+use std::{
+    fs::{self, File},
+    io::Read,
+    process::Command,
+};
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TextFilePreview {
+    content: String,
+    size: u64,
+    truncated: bool,
+}
+
 #[tauri::command]
 fn app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -11,6 +25,108 @@ fn app_version() -> &'static str {
 #[tauri::command]
 fn app_data_path() -> Result<store::AppDataPath, String> {
     store::app_data_path()
+}
+
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("path cannot be empty.".to_string());
+    }
+
+    open_path_with_system(trimmed)
+}
+
+#[tauri::command]
+fn read_text_file_preview(
+    path: String,
+    max_bytes: Option<usize>,
+) -> Result<TextFilePreview, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("path cannot be empty.".to_string());
+    }
+
+    let limit = max_bytes.unwrap_or(200 * 1024).clamp(1, 1024 * 1024);
+    let mut file = File::open(trimmed).map_err(|error| error.to_string())?;
+    let size = file.metadata().map_err(|error| error.to_string())?.len();
+    let mut buffer = vec![0_u8; limit.saturating_add(1)];
+    let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
+    let truncated = read > limit || size > limit as u64;
+    buffer.truncate(read.min(limit));
+
+    Ok(TextFilePreview {
+        content: String::from_utf8_lossy(&buffer).to_string(),
+        size,
+        truncated,
+    })
+}
+
+#[tauri::command]
+fn export_artifact_file(
+    destination_path: String,
+    source_path: Option<String>,
+    content: Option<String>,
+) -> Result<(), String> {
+    let destination = destination_path.trim();
+    if destination.is_empty() {
+        return Err("destinationPath cannot be empty.".to_string());
+    }
+
+    if let Some(content) = content {
+        fs::write(destination, content).map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    let source = source_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "sourcePath or content is required.".to_string())?;
+    fs::copy(source, destination).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn open_path_with_system(path: &str) -> Result<(), String> {
+    Command::new("open")
+        .arg(path)
+        .status()
+        .map_err(|error| error.to_string())
+        .and_then(|status| {
+            status
+                .success()
+                .then_some(())
+                .ok_or_else(|| format!("open exited with status {status}"))
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn open_path_with_system(path: &str) -> Result<(), String> {
+    Command::new("cmd")
+        .args(["/C", "start", "", path])
+        .status()
+        .map_err(|error| error.to_string())
+        .and_then(|status| {
+            status
+                .success()
+                .then_some(())
+                .ok_or_else(|| format!("start exited with status {status}"))
+        })
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_path_with_system(path: &str) -> Result<(), String> {
+    Command::new("xdg-open")
+        .arg(path)
+        .status()
+        .map_err(|error| error.to_string())
+        .and_then(|status| {
+            status
+                .success()
+                .then_some(())
+                .ok_or_else(|| format!("xdg-open exited with status {status}"))
+        })
 }
 
 #[tauri::command]
@@ -131,12 +247,16 @@ fn update_run_status(input: store::UpdateRunStatusInput) -> Result<store::RunRec
 #[tauri::command]
 async fn abort_run(thread_id: String, run_id: String) -> Result<store::RunRecord, String> {
     if let Err(error) = agent_bridge::abort_agent_thread(&thread_id).await {
-        eprintln!("FutureOS agent abort failed: {error}");
+        if !is_agent_unavailable_error(&error) {
+            return Err(error);
+        }
+        eprintln!("FutureOS agent abort skipped because agent is unavailable: {error}");
     }
     store::update_run_status(store::UpdateRunStatusInput {
         run_id,
         status: "cancelled".to_string(),
         error_message: Some("Terminated by user.".to_string()),
+        error_type: Some("abort_requested".to_string()),
     })
 }
 
@@ -186,6 +306,7 @@ async fn decide_approval_request(
                     run_id: run_id.clone(),
                     status: "running".to_string(),
                     error_message: None,
+                    error_type: None,
                 });
             }
         }
@@ -198,9 +319,20 @@ fn is_stale_approval_error(error: &str) -> bool {
     normalized.contains("approval request") && normalized.contains("not pending")
 }
 
+fn is_agent_unavailable_error(error: &str) -> bool {
+    error.starts_with("Unable to connect to Future Agent")
+}
+
 #[tauri::command]
 fn list_review_changesets(thread_id: String) -> Result<Vec<store::ReviewChangesetRecord>, String> {
     store::list_review_changesets(&thread_id)
+}
+
+#[tauri::command]
+fn update_review_changeset_status(
+    input: store::UpdateReviewChangesetStatusInput,
+) -> Result<store::ReviewChangesetRecord, String> {
+    store::update_review_changeset_status(input)
 }
 
 #[tauri::command]
@@ -211,8 +343,12 @@ fn list_review_file_changes(
 }
 
 #[tauri::command]
-fn get_git_review(workspace_id: String) -> Result<git_review::GitReview, String> {
-    git_review::get_git_review(workspace_id)
+fn get_git_review(
+    workspace_id: String,
+    base: Option<String>,
+    custom_base: Option<String>,
+) -> Result<git_review::GitReview, String> {
+    git_review::get_git_review(workspace_id, base, custom_base)
 }
 
 #[tauri::command]
@@ -306,6 +442,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_version,
             app_data_path,
+            open_path,
+            read_text_file_preview,
+            export_artifact_file,
             initialize_app_store,
             cancel_stale_approval_requests,
             clear_finished_runs,
@@ -335,6 +474,7 @@ pub fn run() {
             list_approval_requests,
             decide_approval_request,
             list_review_changesets,
+            update_review_changeset_status,
             list_review_file_changes,
             get_git_review,
             list_artifacts,

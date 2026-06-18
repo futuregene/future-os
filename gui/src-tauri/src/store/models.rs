@@ -71,6 +71,11 @@ pub struct RunRecord {
     pub started_at: Option<i64>,
     pub ended_at: Option<i64>,
     pub error_message: Option<String>,
+    /// Structured error classification. One of:
+    /// 'stream_disconnected', 'command_failed', 'model_failed',
+    /// 'abort_requested', 'timeout', 'unknown'. NULL when the run did not
+    /// fail or the error type is unknown.
+    pub error_type: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -127,6 +132,13 @@ pub struct ApprovalRequestRecord {
     pub decided_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
+    // P2: structured action and sandbox boundary
+    pub action_category: Option<String>,
+    pub action_payload: Option<String>,
+    pub sandbox_boundary: Option<String>,
+    pub reviewer: String,
+    pub decision_scope: String,
+    pub decision_source: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -297,6 +309,11 @@ pub struct EnsureApprovalRequestInput {
     pub summary: Option<String>,
     pub risk_level: Option<String>,
     pub requested_action: Option<String>,
+    // P2: structured fields. Default to None / "user" / "once" when absent.
+    pub action_category: Option<String>,
+    pub action_payload: Option<String>,
+    pub sandbox_boundary: Option<String>,
+    pub reviewer: Option<String>,
 }
 
 #[derive(Debug)]
@@ -388,6 +405,17 @@ pub struct UpdateRunStatusInput {
     pub run_id: String,
     pub status: String,
     pub error_message: Option<String>,
+    /// Optional structured error classification. See RunRecord::error_type.
+    /// When None, the existing error_type column is preserved.
+    #[serde(default)]
+    pub error_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateReviewChangesetStatusInput {
+    pub changeset_id: String,
+    pub status: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -427,4 +455,47 @@ pub struct UpdateThreadModelInput {
 pub struct PinThreadInput {
     pub thread_id: String,
     pub pinned: bool,
+}
+
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub struct SandboxConfigRecord {
+    pub id: String,
+    pub workspace_id: Option<String>,
+    pub mode: String,
+    pub writable_roots: Option<String>,
+    pub network_access: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub struct ApprovalPolicyConfigRecord {
+    pub id: String,
+    pub workspace_id: Option<String>,
+    pub policy: String,
+    pub reviewer: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub struct ApprovalRuleRecord {
+    pub id: String,
+    pub workspace_id: Option<String>,
+    pub scope: String,
+    pub match_kind: String,
+    pub match_value: String,
+    pub decision: String,
+    pub enabled: bool,
+    pub created_at: i64,
+    pub expires_at: Option<i64>,
 }

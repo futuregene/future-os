@@ -1,18 +1,21 @@
 import type { StoredRun, StoredToolCall } from "../../../integrations/storage/threadStore";
-import { CircleStop, Trash2 } from "lucide-react";
+import { CircleStop, Maximize2, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { EmptyState } from "./ContextEmptyState";
+import { formatErrorType } from "./contextPanelFormatters";
 
 interface RunsPanelProps {
   runs: StoredRun[];
   toolsByRun: Record<string, StoredToolCall[]>;
   onClearFinished: () => Promise<void>;
+  onInspectRun: (runId: string) => void;
   onTerminateRun: (run: StoredRun) => Promise<void>;
 }
 
-export function RunsPanel({ onClearFinished, onTerminateRun, runs, toolsByRun }: RunsPanelProps) {
+export function RunsPanel({ onClearFinished, onInspectRun, onTerminateRun, runs, toolsByRun }: RunsPanelProps) {
   const [confirmRunId, setConfirmRunId] = useState<string | null>(null);
   const [busyRunId, setBusyRunId] = useState<string | null>(null);
+  const [actionErrors, setActionErrors] = useState<Record<string, string | undefined>>({});
   const [clearing, setClearing] = useState(false);
   const visibleRuns = useMemo(
     () => runs.filter(run => commandToolCall(toolsByRun[run.id] ?? [])),
@@ -34,9 +37,16 @@ export function RunsPanel({ onClearFinished, onTerminateRun, runs, toolsByRun }:
 
   async function terminate(run: StoredRun) {
     setBusyRunId(run.id);
+    setActionErrors(current => ({ ...current, [run.id]: undefined }));
     try {
       await onTerminateRun(run);
       setConfirmRunId(null);
+    }
+    catch (error) {
+      setActionErrors(current => ({
+        ...current,
+        [run.id]: error instanceof Error ? error.message : String(error),
+      }));
     }
     finally {
       setBusyRunId(null);
@@ -85,8 +95,10 @@ export function RunsPanel({ onClearFinished, onTerminateRun, runs, toolsByRun }:
             confirming={confirmRunId === run.id}
             key={run.id}
             run={run}
+            actionError={actionErrors[run.id]}
             tools={toolsByRun[run.id] ?? []}
             onCancelConfirm={() => setConfirmRunId(null)}
+            onInspect={() => onInspectRun(run.id)}
             onRequestTerminate={() => setConfirmRunId(run.id)}
             onTerminate={() => void terminate(run)}
           />
@@ -99,15 +111,19 @@ export function RunsPanel({ onClearFinished, onTerminateRun, runs, toolsByRun }:
 function RunRow({
   busy,
   confirming,
+  actionError,
   onCancelConfirm,
+  onInspect,
   onRequestTerminate,
   onTerminate,
   run,
   tools,
 }: {
+  actionError?: string;
   busy: boolean;
   confirming: boolean;
   onCancelConfirm: () => void;
+  onInspect: () => void;
   onRequestTerminate: () => void;
   onTerminate: () => void;
   run: StoredRun;
@@ -133,12 +149,24 @@ function RunRow({
             >
               {command}
             </div>
+            <button
+              aria-label="Inspect run"
+              className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
+              onClick={onInspect}
+              title="Inspect run"
+              type="button"
+            >
+              <Maximize2 className="size-3.5" />
+            </button>
           </div>
           <div className="mt-2 text-xs font-medium text-ink-muted">
             {toolMeta}
           </div>
           {run.errorMessage && !active
-            ? <div className="mt-2 line-clamp-2 text-xs leading-5 text-red-600">{run.errorMessage}</div>
+            ? <RunErrorSummary errorMessage={run.errorMessage} errorType={run.errorType} />
+            : null}
+          {actionError
+            ? <div className="mt-2 line-clamp-3 text-xs leading-5 text-red-600">{actionError}</div>
             : null}
           {active
             ? (
@@ -277,4 +305,26 @@ function stringField(record: Record<string, unknown> | null, key: string) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+interface RunErrorSummaryProps {
+  errorMessage: string;
+  errorType?: StoredRun["errorType"];
+}
+
+function RunErrorSummary({ errorMessage, errorType }: RunErrorSummaryProps) {
+  const meta = formatErrorType(errorType);
+  return (
+    <div className="mt-2">
+      {meta
+        ? (
+            <div className={`flex items-center gap-1.5 text-xs font-medium ${meta.color}`}>
+              <span>{meta.icon}</span>
+              <span>{meta.label}</span>
+            </div>
+          )
+        : null}
+      <div className="line-clamp-2 text-xs leading-5 text-red-600">{errorMessage}</div>
+    </div>
+  );
 }

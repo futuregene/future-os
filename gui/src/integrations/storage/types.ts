@@ -52,6 +52,7 @@ export interface StoredRun {
   startedAt?: number | null;
   endedAt?: number | null;
   errorMessage?: string | null;
+  errorType?: "stream_disconnected" | "command_failed" | "model_failed" | "abort_requested" | "timeout" | "unknown" | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -100,6 +101,38 @@ export interface StoredApprovalRequest {
   decidedAt?: number | null;
   createdAt: number;
   updatedAt: number;
+  // P2: structured action and sandbox boundary
+  actionCategory?: string | null;
+  actionPayload?: string | null;
+  sandboxBoundary?: string | null;
+  reviewer: string;
+  decisionScope: string;
+  decisionSource: string;
+}
+
+// P2: structured action payload (parsed from actionPayload JSON)
+export interface ApprovalAction {
+  tool: string;
+  category: string;
+  summary?: string;
+  command?: string;
+  paths?: string[];
+  writes?: Array<{ path: string; preview?: string }>;
+  deletes?: Array<{ path: string }>;
+  scope?: {
+    cwd: string;
+    insideWorkspace: boolean;
+    estimatedBlastRadius: "low" | "medium" | "high";
+  };
+}
+
+// P2: sandbox boundary info (parsed from sandboxBoundary JSON)
+export interface SandboxBoundary {
+  mode: string;
+  insideSandbox: boolean;
+  violation?: string | null;
+  cwd: string;
+  writableRoots?: string[];
 }
 
 export interface StoredReviewChangeset {
@@ -109,7 +142,7 @@ export interface StoredReviewChangeset {
   toolCallId?: string | null;
   title: string;
   summary?: string | null;
-  status: string;
+  status: "applied" | "discarded" | "pending" | string;
   filesChanged: number;
   additions: number;
   deletions: number;
@@ -139,6 +172,8 @@ export interface GitReview {
   workspacePath: string;
   branch?: string | null;
   upstream?: string | null;
+  diffBase?: string | null;
+  diffBaseLabel?: string | null;
   additions: number;
   deletions: number;
   files: GitReviewFile[];

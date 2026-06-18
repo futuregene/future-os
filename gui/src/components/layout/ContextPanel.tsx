@@ -1,6 +1,6 @@
 import type { GitReview, StoredArtifact, StoredRun, StoredThread, StoredToolCall, StoredWorkspace } from "../../integrations/storage/threadStore";
 import { ChevronDown, PanelRightClose, PanelRightOpen } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { upsertFutureReferenceEntries } from "../../features/markdown/futureReferenceStore";
 import {
   abortRun,
@@ -12,12 +12,15 @@ import {
 } from "../../integrations/storage/threadStore";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { IconButton } from "../ui/IconButton";
+import { ArtifactDetailPanel } from "./context-panel/ArtifactDetailPanel";
 import { ArtifactsPanel } from "./context-panel/ArtifactsPanel";
 import { EmptyState } from "./context-panel/ContextEmptyState";
 import { ReviewPanel } from "./context-panel/ReviewPanel";
+import { RunInspectPanel } from "./context-panel/RunInspectPanel";
 import { RunsPanel } from "./context-panel/RunsPanel";
 
 export type ContextTab = "runs" | "review" | "artifacts";
+export type ReviewBase = "custom" | "head" | "merge-base" | "upstream";
 
 const gitTabs = [
   { value: "runs", label: "Runs" },
@@ -54,7 +57,13 @@ export function ContextPanel({
   const [toolsByRun, setToolsByRun] = useState<Record<string, StoredToolCall[]>>({});
   const [artifacts, setArtifacts] = useState<StoredArtifact[]>([]);
   const [gitReview, setGitReview] = useState<GitReview | null>(null);
+  const [reviewBase, setReviewBase] = useState<ReviewBase>("head");
+  const [reviewCustomBase, setReviewCustomBase] = useState("");
+  const [selectedReviewId, setSelectedReviewId] = useState<string | null>(null);
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const refreshGenerationRef = useRef(0);
   const activeThreadId = activeThread?.id ?? null;
   const activeWorkspaceId = activeWorkspace?.id ?? activeThread?.workspaceId ?? null;
   const workspaceKindPending = activeThreadId !== null && activeWorkspaceId !== null && gitReview === null;
@@ -64,8 +73,18 @@ export function ContextPanel({
     || artifacts.length > 0
     || (gitReview?.files.length ?? 0) > 0;
   const showInitialLoading = loading && (!hasContextData || workspaceKindPending);
+  const selectedArtifact = selectedArtifactId
+    ? artifacts.find(artifact => artifact.id === selectedArtifactId) ?? null
+    : null;
+  const selectedRun = selectedRunId
+    ? runs.find(run => run.id === selectedRunId) ?? null
+    : null;
 
   const refreshContext = useCallback(async (options?: { showLoading?: boolean }) => {
+    const refreshGeneration = refreshGenerationRef.current + 1;
+    refreshGenerationRef.current = refreshGeneration;
+    const isCurrentRefresh = () => refreshGenerationRef.current === refreshGeneration;
+
     if (!activeThreadId) {
       setRuns([]);
       setToolsByRun({});
@@ -86,11 +105,20 @@ export function ContextPanel({
     try {
       const [nextRuns, nextGitReview] = await Promise.all([
         listRuns(activeThreadId),
-        activeWorkspaceId ? getGitReview(activeWorkspaceId) : Promise.resolve(null),
+        activeWorkspaceId
+          ? getGitReview({
+              base: reviewBase,
+              customBase: reviewCustomBase,
+              workspaceId: activeWorkspaceId,
+            })
+          : Promise.resolve(null),
       ]);
       const nextArtifacts = nextGitReview?.isGitWorkspace ? [] : await listArtifacts(activeThreadId);
       const toolEntries = await Promise.all(nextRuns.map(async run => [run.id, await listToolCalls(run.id)] as const));
       const toolCalls = toolEntries.flatMap(([, tools]) => tools);
+
+      if (!isCurrentRefresh())
+        return;
 
       setRuns(nextRuns);
       setToolsByRun(Object.fromEntries(toolEntries));
@@ -102,12 +130,20 @@ export function ContextPanel({
         tools: toolCalls,
       });
     }
+    catch {
+      if (isCurrentRefresh()) {
+        setRuns([]);
+        setToolsByRun({});
+        setArtifacts([]);
+        setGitReview(null);
+      }
+    }
     finally {
-      if (showLoading) {
+      if (showLoading && isCurrentRefresh()) {
         setLoading(false);
       }
     }
-  }, [activeThreadId, activeWorkspaceId]);
+  }, [activeThreadId, activeWorkspaceId, reviewBase, reviewCustomBase]);
 
   useEffect(() => {
     if (!tabs.some(tab => tab.value === activeTab)) {
@@ -131,9 +167,74 @@ export function ContextPanel({
     await refreshContext();
   }
 
+  const handleSelectRun = useCallback((runId: string) => {
+    setSelectedRunId(runId);
+    setSelectedArtifactId(null);
+    if (activeTab !== "runs") {
+      onTabChange("runs");
+    }
+  }, [activeTab, onTabChange]);
+
+  const handleSelectArtifact = useCallback((artifactId: string) => {
+    setSelectedArtifactId(artifactId);
+    setSelectedRunId(null);
+    if (activeTab !== "artifacts") {
+      onTabChange("artifacts");
+    }
+  }, [activeTab, onTabChange]);
+
   useEffect(() => {
     void refreshContext({ showLoading: true });
   }, [refreshContext]);
+
+  useEffect(() => {
+    setSelectedArtifactId(null);
+    setSelectedRunId(null);
+  }, [activeThreadId]);
+
+  useEffect(() => {
+    function handleInspectRun(event: Event) {
+      const detail = (event as CustomEvent<{ runId?: string }>).detail;
+      if (!detail?.runId)
+        return;
+
+      handleSelectRun(detail.runId);
+      if (!expanded) {
+        onToggleExpanded();
+      }
+    }
+
+    function handleInspectArtifact(event: Event) {
+      const detail = (event as CustomEvent<{ artifactId?: string }>).detail;
+      if (!detail?.artifactId)
+        return;
+
+      handleSelectArtifact(detail.artifactId);
+      if (!expanded) {
+        onToggleExpanded();
+      }
+    }
+
+    function handleOpenReview(event: Event) {
+      const detail = (event as CustomEvent<{ reviewId?: string }>).detail;
+      setSelectedReviewId(detail?.reviewId ?? null);
+      setSelectedArtifactId(null);
+      setSelectedRunId(null);
+      onTabChange("review");
+      if (!expanded) {
+        onToggleExpanded();
+      }
+    }
+
+    window.addEventListener("futureos:inspect-run", handleInspectRun);
+    window.addEventListener("futureos:inspect-artifact", handleInspectArtifact);
+    window.addEventListener("futureos:open-review", handleOpenReview);
+    return () => {
+      window.removeEventListener("futureos:inspect-run", handleInspectRun);
+      window.removeEventListener("futureos:inspect-artifact", handleInspectArtifact);
+      window.removeEventListener("futureos:open-review", handleOpenReview);
+    };
+  }, [expanded, handleSelectArtifact, handleSelectRun, onTabChange, onToggleExpanded]);
 
   useEffect(() => {
     if (!activeThreadId || !expanded) {
@@ -189,24 +290,53 @@ export function ContextPanel({
         {showInitialLoading ? <div className="py-4 text-sm text-ink-muted">Loading context...</div> : null}
         {!showInitialLoading && !activeThread ? <EmptyState title="No thread selected" /> : null}
         {!showInitialLoading && activeThread && activeTab === "runs"
-          ? (
-              <RunsPanel
-                runs={runs}
-                toolsByRun={toolsByRun}
-                onClearFinished={handleClearFinishedRuns}
-                onTerminateRun={handleTerminateRun}
-              />
-            )
+          ? selectedRun
+            ? (
+                <RunInspectPanel
+                  run={selectedRun}
+                  tools={toolsByRun[selectedRun.id] ?? []}
+                  onBack={() => setSelectedRunId(null)}
+                />
+              )
+            : (
+                <RunsPanel
+                  runs={runs}
+                  toolsByRun={toolsByRun}
+                  onClearFinished={handleClearFinishedRuns}
+                  onInspectRun={handleSelectRun}
+                  onTerminateRun={handleTerminateRun}
+                />
+              )
           : null}
         {!showInitialLoading && activeThread && activeTab === "review" && isGitWorkspace
           ? (
-              <ReviewPanel review={gitReview} />
+              <ReviewPanel
+                customBase={reviewCustomBase}
+                review={gitReview}
+                reviewBase={reviewBase}
+                selectedReviewId={selectedReviewId}
+                threadId={activeThread.id}
+                onCustomBaseChange={setReviewCustomBase}
+                onReviewBaseChange={setReviewBase}
+              />
             )
           : null}
         {!showInitialLoading && activeThread && activeTab === "artifacts" && !isGitWorkspace
-          ? (
-              <ArtifactsPanel artifacts={artifacts} onChanged={refreshContext} />
-            )
+          ? selectedArtifact
+            ? (
+                <ArtifactDetailPanel
+                  artifact={selectedArtifact}
+                  onBack={() => setSelectedArtifactId(null)}
+                  onChanged={refreshContext}
+                />
+              )
+            : (
+                <ArtifactsPanel
+                  artifacts={artifacts}
+                  onChanged={refreshContext}
+                  onSelectArtifact={handleSelectArtifact}
+                />
+              )
           : null}
       </div>
     </aside>

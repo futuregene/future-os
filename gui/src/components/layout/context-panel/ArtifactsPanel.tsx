@@ -1,5 +1,5 @@
 import type { StoredArtifact } from "../../../integrations/storage/threadStore";
-import { BookMarked, FileText, Trash2 } from "lucide-react";
+import { BookMarked, FileText, Maximize2, Trash2 } from "lucide-react";
 import { deleteArtifact, promoteArtifactToResearch, storedTimeToIso } from "../../../integrations/storage/threadStore";
 import { formatTime } from "../../../lib/date";
 import { Badge } from "../../ui/Badge";
@@ -8,9 +8,11 @@ import { EmptyState } from "./ContextEmptyState";
 export function ArtifactsPanel({
   artifacts,
   onChanged,
+  onSelectArtifact,
 }: {
   artifacts: StoredArtifact[];
   onChanged: () => void;
+  onSelectArtifact: (artifactId: string) => void;
 }) {
   if (artifacts.length === 0) {
     return <EmptyState title="No artifacts yet" detail="Generated reports, summaries, tables, and files will appear here." />;
@@ -19,7 +21,12 @@ export function ArtifactsPanel({
   return (
     <div className="space-y-3">
       {artifacts.map(artifact => (
-        <ArtifactCard artifact={artifact} key={artifact.id} onChanged={onChanged} />
+        <ArtifactCard
+          artifact={artifact}
+          key={artifact.id}
+          onChanged={onChanged}
+          onSelectArtifact={onSelectArtifact}
+        />
       ))}
     </div>
   );
@@ -28,9 +35,11 @@ export function ArtifactsPanel({
 function ArtifactCard({
   artifact,
   onChanged,
+  onSelectArtifact,
 }: {
   artifact: StoredArtifact;
   onChanged: () => void;
+  onSelectArtifact: (artifactId: string) => void;
 }) {
   async function handlePromote() {
     await promoteArtifactToResearch(artifact.id);
@@ -55,6 +64,15 @@ function ArtifactCard({
                 <span className="text-xs text-ink-muted">{formatTime(storedTimeToIso(artifact.createdAt))}</span>
               </div>
             </div>
+            <button
+              aria-label={`View artifact ${artifact.title}`}
+              className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
+              onClick={() => onSelectArtifact(artifact.id)}
+              title="View details"
+              type="button"
+            >
+              <Maximize2 className="size-3.5" />
+            </button>
             <button
               aria-label={`Add artifact ${artifact.title} to Research`}
               className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-accent-soft hover:text-accent"

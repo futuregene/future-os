@@ -124,13 +124,25 @@ async function resolveAndStoreReferences(workspaceId: string, references: Refere
   if (references.length === 0)
     return;
 
-  const resolved = await resolveMarkdownReferences(
-    workspaceId,
-    references.map(reference => ({
+  let resolved: ResolvedMarkdownReference[];
+  try {
+    resolved = await resolveMarkdownReferences(
+      workspaceId,
+      references.map(reference => ({
+        targetId: reference.targetId,
+        targetType: reference.targetType,
+      })),
+    );
+  }
+  catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    resolved = references.map(reference => ({
+      error: message,
+      status: "failed",
       targetId: reference.targetId,
       targetType: reference.targetType,
-    })),
-  );
+    }));
+  }
 
   for (const reference of resolved) {
     records.set(storeKey(workspaceId, reference.targetType, reference.targetId), reference);

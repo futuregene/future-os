@@ -48,3 +48,5 @@ gui/.vite/
 bin/
 /log
 # Python cache
+channel/
+*.orig

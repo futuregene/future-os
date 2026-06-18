@@ -33,6 +33,13 @@ import { ActivityRail } from "./ActivityRail";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
 
+export interface AgentConnectionState {
+  status: "checking" | "connected" | "disconnected";
+  error?: string | null;
+  kind?: "agent_unavailable" | "model_error" | "unknown" | null;
+  checkedAt?: number | null;
+}
+
 interface PendingPrompt {
   attachments?: MessageAttachment[];
   id: string;
@@ -45,6 +52,21 @@ interface WorkspaceCreateRequest {
   createDirectory: boolean;
 }
 
+function classifyAgentConnectionError(message: string): AgentConnectionState["kind"] {
+  const normalized = message.toLowerCase();
+  if (normalized.includes("unable to connect to future agent")) {
+    return "agent_unavailable";
+  }
+  if (
+    normalized.includes("unable to load future agent models")
+    || normalized.includes("model")
+    || normalized.includes("list_models")
+  ) {
+    return "model_error";
+  }
+  return "unknown";
+}
+
 export function AppShell() {
   const [section, setSection] = useState<ActivitySection>("chat");
   const [centerMode, setCenterMode] = useState<"thread" | "new-chat">("thread");
@@ -53,6 +75,7 @@ export function AppShell() {
   const [rightExpanded, setRightExpanded] = useState(false);
   const [contextTab, setContextTab] = useState<ContextTab>("runs");
   const [pendingApprovals, setPendingApprovals] = useState<StoredApprovalRequest[]>([]);
+  const [agentConnection, setAgentConnection] = useState<AgentConnectionState>({ status: "checking" });
   const [modelOptions, setModelOptions] = useState<AgentModelOption[]>([]);
   const [selectedModelId, setSelectedModelId] = useState(defaultAgentModelId);
   const [threads, setThreads] = useState<StoredThread[]>([]);
@@ -60,6 +83,7 @@ export function AppShell() {
   const [workspaces, setWorkspaces] = useState<StoredWorkspace[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [newChatWorkspaceId, setNewChatWorkspaceId] = useState<string | null>(null);
+  const [selectedResearchResourceId, setSelectedResearchResourceId] = useState<string | null>(null);
   const [loadingStore, setLoadingStore] = useState(true);
   const [storeError, setStoreError] = useState<string | null>(null);
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
@@ -149,38 +173,56 @@ export function AppShell() {
     };
   }, [refreshThreadRunStatuses]);
 
+  const refreshAgentModels = useCallback(async () => {
+    setAgentConnection(current => current.status === "connected"
+      ? current
+      : { ...current, status: "checking" });
+    try {
+      const nextModels = await loadAgentModelOptions();
+      setModelOptions(nextModels);
+      setSelectedModelId(current =>
+        nextModels.some(model => model.id === current)
+          ? current
+          : defaultModelId(nextModels),
+      );
+      setAgentConnection({
+        checkedAt: Date.now(),
+        error: null,
+        kind: null,
+        status: "connected",
+      });
+    }
+    catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setModelOptions([]);
+      setAgentConnection({
+        checkedAt: Date.now(),
+        error: message,
+        kind: classifyAgentConnectionError(message),
+        status: "disconnected",
+      });
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
-    async function refreshAgentModels() {
-      try {
-        const nextModels = await loadAgentModelOptions();
-        if (cancelled)
-          return;
-        setModelOptions(nextModels);
-        setSelectedModelId(current =>
-          nextModels.some(model => model.id === current)
-            ? current
-            : defaultModelId(nextModels),
-        );
-      }
-      catch {
-        if (!cancelled) {
-          setModelOptions([]);
-        }
+    async function refreshIfMounted() {
+      if (!cancelled) {
+        await refreshAgentModels();
       }
     }
 
-    void refreshAgentModels();
+    void refreshIfMounted();
     const timer = window.setInterval(() => {
-      void refreshAgentModels();
+      void refreshIfMounted();
     }, 10000);
 
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [refreshAgentModels]);
 
   const activeThreads = useMemo(
     () => threads.filter(thread => thread.status === "active"),
@@ -234,6 +276,19 @@ export function AppShell() {
       window.clearInterval(timer);
     };
   }, [activeThreadIdForApprovals]);
+
+  useEffect(() => {
+    function handleOpenResearchResource(event: Event) {
+      const detail = (event as CustomEvent<{ resourceId?: string }>).detail;
+      setSelectedResearchResourceId(detail?.resourceId ?? null);
+      setSection("research");
+      setCenterMode("thread");
+      setNewChatWorkspaceId(null);
+    }
+
+    window.addEventListener("futureos:open-research-resource", handleOpenResearchResource);
+    return () => window.removeEventListener("futureos:open-research-resource", handleOpenResearchResource);
+  }, []);
 
   function handleSectionChange(nextSection: ActivitySection) {
     setSection(nextSection);
@@ -501,6 +556,7 @@ export function AppShell() {
           : section === "research"
             ? (
                 <ResearchView
+                  selectedResourceId={selectedResearchResourceId}
                   workspaceId={activeWorkspace?.id ?? null}
                   workspaceName={activeWorkspace?.name ?? "No workspace selected"}
                 />
@@ -519,6 +575,7 @@ export function AppShell() {
                 : (
                     <AgentThread
                       activeApproval={activeApproval}
+                      agentConnection={agentConnection}
                       loadingStore={loadingStore}
                       modelId={activeThread?.modelId ?? selectedModelId}
                       modelOptions={modelOptions}
@@ -527,6 +584,7 @@ export function AppShell() {
                       thread={activeThread}
                       onApprovalDecision={handleApprovalDecision}
                       leftPanelExpanded={leftExpanded}
+                      onRetryAgentConnection={() => void refreshAgentModels()}
                       onToggleLeftPanel={handleToggleLeftPanel}
                       onPromptConsumed={(id) => {
                         setPendingPrompt(current => (current?.id === id ? null : current));

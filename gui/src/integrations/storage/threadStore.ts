@@ -39,6 +39,32 @@ export async function initializeAppStore() {
   await invoke("initialize_app_store");
 }
 
+export async function openPath(path: string) {
+  return invoke<void>("open_path", { path });
+}
+
+export async function readTextFilePreview(input: {
+  path: string;
+  maxBytes?: number | null;
+}) {
+  return invoke<{ content: string; size: number; truncated: boolean }>("read_text_file_preview", {
+    maxBytes: input.maxBytes ?? null,
+    path: input.path,
+  });
+}
+
+export async function exportArtifactFile(input: {
+  destinationPath: string;
+  sourcePath?: string | null;
+  content?: string | null;
+}) {
+  return invoke<void>("export_artifact_file", {
+    content: input.content ?? null,
+    destinationPath: input.destinationPath,
+    sourcePath: input.sourcePath ?? null,
+  });
+}
+
 export async function cancelStaleApprovalRequests() {
   return invoke<number>("cancel_stale_approval_requests");
 }
@@ -200,12 +226,27 @@ export async function listReviewChangesets(threadId: string) {
   return invoke<StoredReviewChangeset[]>("list_review_changesets", { threadId });
 }
 
+export async function updateReviewChangesetStatus(input: {
+  changesetId: string;
+  status: "applied" | "discarded" | "pending";
+}) {
+  return invoke<StoredReviewChangeset>("update_review_changeset_status", { input });
+}
+
 export async function listReviewFileChanges(changesetId: string) {
   return invoke<StoredReviewFileChange[]>("list_review_file_changes", { changesetId });
 }
 
-export async function getGitReview(workspaceId: string) {
-  return invoke<GitReview>("get_git_review", { workspaceId });
+export async function getGitReview(input: {
+  workspaceId: string;
+  base?: "custom" | "head" | "merge-base" | "upstream";
+  customBase?: string | null;
+}) {
+  return invoke<GitReview>("get_git_review", {
+    base: input.base ?? "head",
+    customBase: input.customBase ?? null,
+    workspaceId: input.workspaceId,
+  });
 }
 
 export async function listArtifacts(threadId: string) {

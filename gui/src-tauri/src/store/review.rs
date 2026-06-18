@@ -26,11 +26,15 @@ pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), 
     }
 
     let now = now_millis();
+    let reviewer = input.reviewer.unwrap_or_else(|| "user".to_string());
     conn.execute(
         "INSERT INTO approval_requests (
              id, thread_id, run_id, tool_call_id, kind, status, title, summary,
-             risk_level, requested_action, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8, ?9, ?10, ?10)",
+             risk_level, requested_action, created_at, updated_at,
+             action_category, action_payload, sandbox_boundary,
+             reviewer, decision_scope, decision_source
+         ) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8, ?9, ?10, ?10,
+                   ?11, ?12, ?13, ?14, 'once', 'user')",
         params![
             input
                 .approval_request_id
@@ -43,7 +47,11 @@ pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), 
             input.summary,
             input.risk_level,
             input.requested_action,
-            now
+            now,
+            input.action_category,
+            input.action_payload,
+            input.sandbox_boundary,
+            reviewer,
         ],
     )
     .map_err(|error| error.to_string())?;
@@ -139,8 +147,9 @@ pub fn list_approval_requests(thread_id: &str) -> Result<Vec<ApprovalRequestReco
     let mut stmt = conn
         .prepare(
             "SELECT id, thread_id, run_id, tool_call_id, kind, status, title, summary,
-                    risk_level, requested_action, decision_note, decided_at, created_at, updated_at
-             FROM approval_requests
+                risk_level, requested_action, decision_note, decided_at, created_at, updated_at,
+                action_category, action_payload, sandbox_boundary, reviewer, decision_scope, decision_source
+         FROM approval_requests
              WHERE thread_id = ?1
              ORDER BY created_at DESC",
         )
@@ -191,6 +200,41 @@ pub fn list_review_changesets(thread_id: &str) -> Result<Vec<ReviewChangesetReco
         .map_err(|error| error.to_string())?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|error| error.to_string())
+}
+
+pub fn update_review_changeset_status(
+    input: UpdateReviewChangesetStatusInput,
+) -> Result<ReviewChangesetRecord, String> {
+    initialize_app_store()?;
+    let status = match input.status.as_str() {
+        "applied" | "discarded" | "pending" => input.status,
+        _ => {
+            return Err(
+                "review changeset status must be pending, applied, or discarded.".to_string(),
+            )
+        }
+    };
+    let now = now_millis();
+    let conn = connect()?;
+    conn.execute(
+        "UPDATE review_changesets
+         SET status = ?1, updated_at = ?2
+         WHERE id = ?3",
+        params![status, now, input.changeset_id],
+    )
+    .map_err(|error| error.to_string())?;
+
+    conn.query_row(
+        "SELECT id, thread_id, run_id, tool_call_id, title, summary, status,
+                files_changed, additions, deletions, created_at, updated_at
+         FROM review_changesets
+         WHERE id = ?1",
+        params![input.changeset_id],
+        review_changeset_from_row,
+    )
+    .optional()
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "Review changeset could not be loaded.".to_string())
 }
 
 pub fn list_review_file_changes(changeset_id: &str) -> Result<Vec<ReviewFileChangeRecord>, String> {
