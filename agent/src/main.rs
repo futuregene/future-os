@@ -136,12 +136,16 @@ async fn main() -> Result<()> {
         })
         .unwrap_or_default();
 
-    // Cap max_tokens at 32000
-    let max_tokens = model_config.as_ref().and_then(|m| {
+    // Cap max_tokens at 32000. For reasoning models without an explicit
+    // max_tokens, default to 32000 so thinking has room to breathe without
+    // starving the visible output.
+    let max_tokens = model_config.as_ref().map(|m| {
         if m.max_tokens > 0 {
-            Some(std::cmp::min(m.max_tokens, 32000))
+            std::cmp::min(m.max_tokens, 32000)
+        } else if m.reasoning {
+            32000
         } else {
-            None
+            4096
         }
     });
 
@@ -176,14 +180,6 @@ async fn main() -> Result<()> {
             .and_then(|m| m.compat.get("maxTokensField"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .or_else(|| {
-                let m = model_config.as_ref()?;
-                if m.reasoning && !m.compat.contains_key("thinkingFormat") {
-                    Some("max_completion_tokens".to_string())
-                } else {
-                    None
-                }
-            })
             .unwrap_or_default(),
         compaction_reserve_tokens: settings.compaction_reserve_tokens(),
         compaction_keep_recent_tokens: settings.compaction_keep_recent_tokens(),

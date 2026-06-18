@@ -6,7 +6,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use super::{ApprovalGate, SseBroadcaster};
 
-const DEFAULT_PERMISSION_LEVEL: &str = "workspace";
+const DEFAULT_PERMISSION_LEVEL: &str = "all";
 
 // ─── ServerSession ────────────────────────────────────────────────────────
 
@@ -296,13 +296,6 @@ impl ServerSession {
                     .and_then(|v| v.as_str())
                 {
                     loop_.provider.update_max_tokens_field(field);
-                } else if model_config.reasoning
-                    && !model_config.compat.contains_key("thinkingFormat")
-                {
-                    // Fallback: reasoning models without thinkingFormat need max_completion_tokens
-                    loop_
-                        .provider
-                        .update_max_tokens_field("max_completion_tokens");
                 } else {
                     loop_.provider.update_max_tokens_field("max_tokens");
                 }
