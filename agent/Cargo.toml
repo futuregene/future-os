@@ -16,7 +16,7 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_with = "3"
-reqwest = { version = "0.12", features = ["stream", "json", "native-tls"] }
+reqwest = { version = "0.12", features = ["stream", "json", "native-tls", "blocking"] }
 futures = "0.3"
 futures-util = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }

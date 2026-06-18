@@ -6,6 +6,13 @@ pub mod generated;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Default Future API base URL
+const DEFAULT_FUTURE_BASE_URL: &str = "http://api.westlakefuturegene.com";
+
+/// Cache TTL in seconds (1 hour)
+const FUTURE_MODELS_CACHE_TTL: u64 = 3600;
 
 /// Model represents a single model in the catalog.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -91,6 +98,270 @@ pub fn settings_path() -> String {
         .map(|h| h.join(".future/agent/settings.json"))
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp/.future/agent/settings.json"));
     home.to_string_lossy().to_string()
+}
+
+/// FutureModelsCachePath returns ~/.future/agent/.future-models-cache.json.
+fn future_models_cache_path() -> String {
+    let home = dirs::home_dir()
+        .map(|h| h.join(".future/agent/.future-models-cache.json"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/.future/agent/.future-models-cache.json"));
+    home.to_string_lossy().to_string()
+}
+
+/// Future models cache format
+#[derive(Debug, Serialize, Deserialize)]
+struct FutureModelsCache {
+    fetched_at: u64,
+    models: Vec<Model>,
+}
+
+/// Resolve Future provider base URL from auth.json or default
+fn resolve_future_base_url() -> String {
+    // Try to read base_url from auth.json
+    let auth_path = dirs::home_dir()
+        .map(|h| h.join(".future/agent/auth.json"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/.future/agent/auth.json"));
+
+    if let Ok(contents) = std::fs::read_to_string(&auth_path) {
+        if let Ok(auth) = serde_json::from_str::<HashMap<String, serde_json::Value>>(&contents) {
+            if let Some(future) = auth.get("future") {
+                if let Some(base_url) = future.get("base_url").and_then(|v| v.as_str()) {
+                    return base_url.trim_end_matches('/').to_string();
+                }
+            }
+        }
+    }
+
+    DEFAULT_FUTURE_BASE_URL.to_string()
+}
+
+/// Response format from Future server /openai/v1/models endpoint
+#[derive(Debug, Deserialize)]
+struct FutureModelsResponse {
+    data: Option<Vec<FutureModelEntry>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FutureModelEntry {
+    id: String,
+    name: Option<String>,
+    context_length: Option<i64>,
+    architecture: Option<FutureArchitecture>,
+    pricing: Option<FuturePricing>,
+    supported_parameters: Option<Vec<String>>,
+    #[allow(dead_code)]
+    knowledge_cutoff: Option<String>,
+    #[allow(dead_code)]
+    provider: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FutureArchitecture {
+    modality: Option<String>,
+    #[allow(dead_code)]
+    tokenizer: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FuturePricing {
+    #[allow(dead_code)]
+    currency: Option<String>,
+    price_unit: Option<i64>,
+    prices: Option<Vec<FuturePriceRule>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FuturePriceRule {
+    input: Option<String>,
+    output: Option<String>,
+    input_cache_read: Option<String>,
+    input_cache_write: Option<String>,
+}
+
+/// Fetch models from Future server
+fn fetch_future_models(api_key: &str, base_url: &str) -> Option<Vec<Model>> {
+    let url = format!("{}/openai/v1/models", base_url.trim_end_matches('/'));
+
+    let response = reqwest::blocking::Client::new()
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .ok()?;
+
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let body: serde_json::Value = response.json().ok()?;
+
+    // Handle both array response and {data: [...]} response
+    let entries: Vec<FutureModelEntry> = if let Ok(resp) = serde_json::from_value::<FutureModelsResponse>(body.clone()) {
+        resp.data.unwrap_or_default()
+    } else if let Ok(arr) = serde_json::from_value::<Vec<FutureModelEntry>>(body) {
+        arr
+    } else {
+        return None;
+    };
+
+    let models_url = format!("{}/openai/v1", base_url.trim_end_matches('/'));
+
+    let models: Vec<Model> = entries
+        .into_iter()
+        .map(|entry| convert_future_model(entry, &models_url))
+        .collect();
+
+    Some(models)
+}
+
+/// Convert Future server model entry to agent Model
+fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
+    let supported_params = entry.supported_parameters.unwrap_or_default();
+    let reasoning = supported_params
+        .iter()
+        .any(|p| p == "reasoning" || p == "include_reasoning");
+
+    let input = entry
+        .architecture
+        .as_ref()
+        .and_then(|a| a.modality.as_ref())
+        .map(|m| {
+            let input_side = m.split("->").next().unwrap_or(m);
+            input_side
+                .split('+')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_else(|| vec!["text".to_string()]);
+
+    let context_window = entry
+        .context_length
+        .map(|v| v as i32)
+        .unwrap_or(128000);
+
+    // Parse pricing
+    let (cost_input, cost_output, cost_cache_read, cost_cache_write) = entry
+        .pricing
+        .as_ref()
+        .and_then(|p| p.prices.as_ref())
+        .and_then(|prices| prices.first())
+        .map(|rule| {
+            let price_unit = entry.pricing.as_ref()
+                .and_then(|p| p.price_unit)
+                .unwrap_or(1)
+                .max(1) as f64;
+            (
+                parse_price_string(&rule.input, price_unit),
+                parse_price_string(&rule.output, price_unit),
+                parse_price_string(&rule.input_cache_read, price_unit),
+                parse_price_string(&rule.input_cache_write, price_unit),
+            )
+        })
+        .unwrap_or((0.0, 0.0, 0.0, 0.0));
+
+    let name = entry.name.unwrap_or_else(|| entry.id.clone());
+
+    Model {
+        id: entry.id,
+        name: name.clone(),
+        provider: "future".to_string(),
+        api: "openai-completions".to_string(),
+        base_url: base_url.to_string(),
+        api_key: String::new(), // Will be resolved from auth_store at runtime
+        reasoning,
+        input,
+        context_window,
+        max_tokens: 16384,
+        cost: Cost {
+            input: cost_input,
+            output: cost_output,
+            cache_read: cost_cache_read,
+            cache_write: cost_cache_write,
+        },
+        compat: HashMap::new(),
+        thinking_level_map: HashMap::new(),
+        headers: HashMap::new(),
+    }
+}
+
+/// Parse price string to per-million-tokens cost
+fn parse_price_string(value: &Option<String>, price_unit: f64) -> f64 {
+    value
+        .as_ref()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|v| v * 1_000_000.0 / price_unit)
+        .unwrap_or(0.0)
+}
+
+/// Load cached future models
+fn load_future_models_cache() -> Option<FutureModelsCache> {
+    let path = future_models_cache_path();
+    let contents = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&contents).ok()
+}
+
+/// Save future models to cache
+fn save_future_models_cache(models: &[Model]) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let cache = FutureModelsCache {
+        fetched_at: now,
+        models: models.to_vec(),
+    };
+
+    if let Ok(json) = serde_json::to_string_pretty(&cache) {
+        let path = future_models_cache_path();
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+/// Get future models with caching logic
+/// 1. Check if cache exists and is fresh (within TTL)
+/// 2. If fresh, return cached models
+/// 3. Otherwise, fetch from server
+/// 4. On success, update cache
+/// 5. On failure, return stale cache if available
+fn get_future_models_with_cache(api_key: &str, base_url: &str) -> Vec<Model> {
+    // Check cache first
+    if let Some(cache) = load_future_models_cache() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        if now.saturating_sub(cache.fetched_at) < FUTURE_MODELS_CACHE_TTL {
+            return cache.models;
+        }
+
+        // Cache expired, try to refresh
+        if let Some(models) = fetch_future_models(api_key, base_url) {
+            save_future_models_cache(&models);
+            return models;
+        }
+
+        // Refresh failed, return stale cache
+        eprintln!(
+            "[future-models] Failed to refresh models from {}, using cached models",
+            base_url
+        );
+        return cache.models;
+    }
+
+    // No cache, fetch fresh
+    if let Some(models) = fetch_future_models(api_key, base_url) {
+        save_future_models_cache(&models);
+        return models;
+    }
+
+    eprintln!(
+        "[future-models] Failed to fetch models from {}",
+        base_url
+    );
+    Vec::new()
 }
 
 /// Settings represents the FutureAgent settings.json format.
@@ -306,10 +577,45 @@ impl Registry {
     pub fn new() -> Self {
         let (user_models, overrides) =
             load_user_models_with_overrides(&user_models_path()).unwrap_or_default();
+
+        let mut builtin = builtin_models();
+
+        // Load Future provider models dynamically if auth is available
+        let auth_store = crate::AuthStore::load();
+        let future_provider_override = if let Some(future_key) = auth_store.get("future") {
+            let base_url = resolve_future_base_url();
+            let future_models = get_future_models_with_cache(&future_key, &base_url);
+
+            // Add future models to builtin (they override same-ID builtin models)
+            for fm in future_models {
+                if let Some(idx) = builtin.iter().position(|m| m.id == fm.id) {
+                    builtin[idx] = fm;
+                } else {
+                    builtin.push(fm);
+                }
+            }
+
+            // Return provider override for "future" provider
+            Some((
+                "future".to_string(),
+                ProviderOverride {
+                    base_url: Some(format!("{}/openai/v1", base_url)),
+                    api_key: Some(future_key),
+                },
+            ))
+        } else {
+            None
+        };
+
+        let mut final_overrides = overrides;
+        if let Some((name, ov)) = future_provider_override {
+            final_overrides.insert(name, ov);
+        }
+
         Self {
-            builtin: builtin_models(),
+            builtin,
             user: user_models,
-            provider_overrides: overrides,
+            provider_overrides: final_overrides,
         }
     }
 
