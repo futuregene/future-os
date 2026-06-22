@@ -1,14 +1,15 @@
 import type { NewConversationStart } from "../../features/agent/NewConversation";
 import type { MessageAttachment } from "../../features/agent/types";
 import type { AgentModelOption } from "../../integrations/agent/models";
-import type { StoredApprovalRequest, StoredRun, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
+import type { AppSettings, StoredApprovalRequest, StoredRun, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { DeleteDialogState, RenameDialogState } from "./AppShellDialogs";
 import type { ContextTab } from "./ContextPanel";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { ResearchView } from "../../features/research/ResearchView";
+import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { defaultAgentModelId, defaultModelId, loadAgentModelOptions } from "../../integrations/agent/models";
 import {
   cancelStaleApprovalRequests,
@@ -17,6 +18,7 @@ import {
   createWorkspace,
   decideApprovalRequest,
   deleteThread,
+  getAppSettings,
   getRecentThread,
   getThreadCleanupSummary,
   initializeAppStore,
@@ -27,6 +29,7 @@ import {
   pinThread,
   renameThread,
   restoreThread,
+  updateAppSettings,
   updateThreadModel,
 } from "../../integrations/storage/threadStore";
 import { ActivityRail } from "./ActivityRail";
@@ -89,6 +92,8 @@ export function AppShell() {
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
   const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState | null>(null);
   const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [appSettings, setAppSettings] = useState<AppSettings>({ autoApprove: false, hiddenModels: [] });
 
   const activeThread = useMemo(
     () => threads.find(thread => thread.id === activeThreadId) ?? null,
@@ -144,6 +149,11 @@ export function AppShell() {
       try {
         await initializeAppStore();
         await cancelStaleApprovalRequests();
+        getAppSettings().then((settings) => {
+          if (!cancelled) {
+            setAppSettings(settings);
+          }
+        }).catch(() => undefined);
         const recentThread = (await getRecentThread()) ?? (await createDefaultChatThread());
         const [nextThreads, nextWorkspaces] = await Promise.all([listThreads(), listWorkspaces()]);
         if (cancelled)
@@ -277,6 +287,38 @@ export function AppShell() {
     };
   }, [activeThreadIdForApprovals]);
 
+  const autoApprovingRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!appSettings.autoApprove) {
+      return;
+    }
+    for (const approval of pendingApprovals) {
+      if (autoApprovingRef.current.has(approval.id)) {
+        continue;
+      }
+      autoApprovingRef.current.add(approval.id);
+      void decideApprovalRequest({
+        approvalRequestId: approval.id,
+        decisionNote: "Auto-approved by settings.",
+        status: "approved",
+      })
+        .catch(() => undefined)
+        .finally(() => {
+          autoApprovingRef.current.delete(approval.id);
+          if (activeThreadIdForApprovals) {
+            void listApprovalRequests(activeThreadIdForApprovals)
+              .then(approvals => setPendingApprovals(approvals.filter(item => item.status === "pending")))
+              .catch(() => undefined);
+          }
+        });
+    }
+  }, [activeThreadIdForApprovals, appSettings.autoApprove, pendingApprovals]);
+
+  const visibleModelOptions = useMemo(
+    () => modelOptions.filter(model => !appSettings.hiddenModels.includes(`${model.provider}/${model.id}`)),
+    [appSettings.hiddenModels, modelOptions],
+  );
+
   useEffect(() => {
     function handleOpenResearchResource(event: Event) {
       const detail = (event as CustomEvent<{ resourceId?: string }>).detail;
@@ -291,9 +333,24 @@ export function AppShell() {
   }, []);
 
   function handleSectionChange(nextSection: ActivitySection) {
+    if (nextSection === "settings") {
+      setSettingsOpen(true);
+      return;
+    }
     setSection(nextSection);
     setCenterMode("thread");
     setNewChatWorkspaceId(null);
+  }
+
+  async function handleChangeSettings(patch: Partial<AppSettings>) {
+    setAppSettings(current => ({ ...current, ...patch }));
+    try {
+      const next = await updateAppSettings(patch);
+      setAppSettings(next);
+    }
+    catch {
+      // Keep the optimistic value; a later load will reconcile.
+    }
   }
 
   function handleSelectThread(thread: StoredThread) {
@@ -545,7 +602,7 @@ export function AppShell() {
                 initialWorkspaceId={newChatWorkspaceId}
                 leftPanelExpanded={leftExpanded}
                 modelId={selectedModelId}
-                modelOptions={modelOptions}
+                modelOptions={visibleModelOptions}
                 onAddWorkspace={handleAddWorkspace}
                 onModelChange={setSelectedModelId}
                 onStart={handleStartNewConversation}
@@ -561,7 +618,7 @@ export function AppShell() {
                   workspaceName={activeWorkspace?.name ?? "No workspace selected"}
                 />
               )
-            : section === "data" || section === "skill" || section === "settings"
+            : section === "data" || section === "skill"
               ? (
                   <ModulePlaceholder section={section} />
                 )
@@ -578,7 +635,7 @@ export function AppShell() {
                       agentConnection={agentConnection}
                       loadingStore={loadingStore}
                       modelId={activeThread?.modelId ?? selectedModelId}
-                      modelOptions={modelOptions}
+                      modelOptions={visibleModelOptions}
                       onModelChange={handleModelChange}
                       pendingPrompt={pendingPrompt}
                       thread={activeThread}
@@ -611,17 +668,22 @@ export function AppShell() {
         onConfirmDeleteThread={() => void handleConfirmDeleteThread()}
         onConfirmRenameThread={() => void handleConfirmRenameThread()}
       />
+      <SettingsDialog
+        appSettings={appSettings}
+        modelOptions={modelOptions}
+        onChangeSettings={patch => void handleChangeSettings(patch)}
+        onClose={() => setSettingsOpen(false)}
+        open={settingsOpen}
+      />
     </div>
   );
 }
 
-function ModulePlaceholder({ section }: { section: ActivitySection }) {
-  const title = section === "data" ? "Data" : section === "skill" ? "Skill" : "Settings";
+function ModulePlaceholder({ section }: { section: "data" | "skill" }) {
+  const title = section === "data" ? "Data" : "Skill";
   const detail = section === "data"
     ? "Data sources and credentials are planned as the next resource module."
-    : section === "skill"
-      ? "Skills will manage built-in and workspace-level agent capabilities."
-      : "Application and model preferences will live here.";
+    : "Skills will manage built-in and workspace-level agent capabilities.";
 
   return (
     <section className="flex h-full min-h-0 items-center justify-center bg-surface p-8">

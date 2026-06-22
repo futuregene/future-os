@@ -1,3 +1,4 @@
+mod app_settings;
 mod approval_config;
 mod artifacts;
 mod cleanup;
@@ -11,6 +12,9 @@ mod support;
 use rusqlite::{params, OptionalExtension};
 use std::fs;
 
+pub use app_settings::{
+    get_app_settings, update_app_settings, AppSettings, UpdateAppSettingsInput,
+};
 pub use artifacts::{
     create_artifact, delete_artifact, ensure_artifact, import_attachment_artifact, list_artifacts,
 };
@@ -39,7 +43,7 @@ pub fn app_data_path() -> Result<AppDataPath, String> {
 pub fn initialize_app_store() -> Result<(), String> {
     ensure_app_dirs()?;
     let conn = connect()?;
-    run_migrations(&conn)?;
+    apply_schema(&conn)?;
     Ok(())
 }
 

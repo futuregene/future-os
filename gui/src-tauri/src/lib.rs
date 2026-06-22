@@ -1,5 +1,6 @@
 mod agent_bridge;
 mod agent_proto;
+mod agent_providers;
 mod git_review;
 mod store;
 
@@ -140,6 +141,33 @@ fn cancel_stale_approval_requests() -> Result<usize, String> {
 }
 
 #[tauri::command]
+fn list_agent_providers() -> Result<agent_providers::ProvidersView, String> {
+    agent_providers::list_agent_providers()
+}
+
+#[tauri::command]
+fn upsert_custom_provider(
+    input: agent_providers::UpsertCustomProviderInput,
+) -> Result<agent_providers::ProvidersView, String> {
+    agent_providers::upsert_custom_provider(input)
+}
+
+#[tauri::command]
+fn delete_custom_provider(id: String) -> Result<agent_providers::ProvidersView, String> {
+    agent_providers::delete_custom_provider(id)
+}
+
+#[tauri::command]
+fn get_app_settings() -> Result<store::AppSettings, String> {
+    store::get_app_settings()
+}
+
+#[tauri::command]
+fn update_app_settings(input: store::UpdateAppSettingsInput) -> Result<store::AppSettings, String> {
+    store::update_app_settings(input)
+}
+
+#[tauri::command]
 fn clear_finished_runs(thread_id: String) -> Result<usize, String> {
     store::clear_finished_runs(&thread_id)
 }
@@ -177,12 +205,7 @@ fn save_pasted_image(bytes: Vec<u8>, extension: Option<String>) -> Result<SavedA
         return Err("Pasted image is empty.".to_string());
     }
     let ext = extension
-        .map(|value| {
-            value
-                .trim()
-                .trim_start_matches('.')
-                .to_ascii_lowercase()
-        })
+        .map(|value| value.trim().trim_start_matches('.').to_ascii_lowercase())
         .filter(|value| !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric()))
         .unwrap_or_else(|| "png".to_string());
 
@@ -518,6 +541,11 @@ pub fn run() {
             export_artifact_file,
             initialize_app_store,
             cancel_stale_approval_requests,
+            get_app_settings,
+            update_app_settings,
+            list_agent_providers,
+            upsert_custom_provider,
+            delete_custom_provider,
             clear_finished_runs,
             list_threads,
             list_workspaces,

@@ -9,35 +9,32 @@
 
 use rusqlite::{params, OptionalExtension};
 
-
 use super::models::*;
 
 use super::{connect, initialize_app_store};
 
 // ─── Sandbox Configuration ─────────────────────────────────────────────
 
-pub fn get_sandbox_config(workspace_id: Option<&str>) -> Result<Option<SandboxConfigRecord>, String> {
+pub fn get_sandbox_config(
+    workspace_id: Option<&str>,
+) -> Result<Option<SandboxConfigRecord>, String> {
     initialize_app_store()?;
     let conn = connect()?;
     let query = match workspace_id {
         Some(_) => "SELECT id, workspace_id, mode, writable_roots, network_access, created_at, updated_at FROM sandbox_config WHERE workspace_id = ?1",
         None => "SELECT id, workspace_id, mode, writable_roots, network_access, created_at, updated_at FROM sandbox_config WHERE workspace_id IS NULL",
     };
-    conn.query_row(
-        query,
-        params![workspace_id],
-        |row| {
-            Ok(SandboxConfigRecord {
-                id: row.get(0)?,
-                workspace_id: row.get(1)?,
-                mode: row.get(2)?,
-                writable_roots: row.get(3)?,
-                network_access: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-            })
-        },
-    )
+    conn.query_row(query, params![workspace_id], |row| {
+        Ok(SandboxConfigRecord {
+            id: row.get(0)?,
+            workspace_id: row.get(1)?,
+            mode: row.get(2)?,
+            writable_roots: row.get(3)?,
+            network_access: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+        })
+    })
     .optional()
     .map_err(|e| e.to_string())
 }
@@ -69,27 +66,25 @@ pub fn upsert_sandbox_config(config: &SandboxConfigRecord) -> Result<(), String>
 
 // ─── Approval Policy Configuration ─────────────────────────────────────
 
-pub fn get_approval_policy_config(workspace_id: Option<&str>) -> Result<Option<ApprovalPolicyConfigRecord>, String> {
+pub fn get_approval_policy_config(
+    workspace_id: Option<&str>,
+) -> Result<Option<ApprovalPolicyConfigRecord>, String> {
     initialize_app_store()?;
     let conn = connect()?;
     let query = match workspace_id {
         Some(_) => "SELECT id, workspace_id, policy, reviewer, created_at, updated_at FROM approval_policy_config WHERE workspace_id = ?1",
         None => "SELECT id, workspace_id, policy, reviewer, created_at, updated_at FROM approval_policy_config WHERE workspace_id IS NULL",
     };
-    conn.query_row(
-        query,
-        params![workspace_id],
-        |row| {
-            Ok(ApprovalPolicyConfigRecord {
-                id: row.get(0)?,
-                workspace_id: row.get(1)?,
-                policy: row.get(2)?,
-                reviewer: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-            })
-        },
-    )
+    conn.query_row(query, params![workspace_id], |row| {
+        Ok(ApprovalPolicyConfigRecord {
+            id: row.get(0)?,
+            workspace_id: row.get(1)?,
+            policy: row.get(2)?,
+            reviewer: row.get(3)?,
+            created_at: row.get(4)?,
+            updated_at: row.get(5)?,
+        })
+    })
     .optional()
     .map_err(|e| e.to_string())
 }
@@ -142,7 +137,8 @@ pub fn list_approval_rules(workspace_id: Option<&str>) -> Result<Vec<ApprovalRul
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 pub fn insert_approval_rule(rule: &ApprovalRuleRecord) -> Result<(), String> {

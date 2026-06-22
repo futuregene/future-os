@@ -457,7 +457,6 @@ pub struct PinThreadInput {
     pub pinned: bool,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
@@ -471,7 +470,6 @@ pub struct SandboxConfigRecord {
     pub updated_at: i64,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
@@ -483,7 +481,6 @@ pub struct ApprovalPolicyConfigRecord {
     pub created_at: i64,
     pub updated_at: i64,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

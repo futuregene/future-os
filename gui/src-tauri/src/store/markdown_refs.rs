@@ -1004,12 +1004,11 @@ fn short_id(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::schema::INITIAL_SCHEMA;
+    use crate::store::schema::SCHEMA;
 
     fn test_conn() -> Connection {
         let conn = Connection::open_in_memory().expect("open in-memory database");
-        conn.execute_batch(INITIAL_SCHEMA)
-            .expect("initialize test schema");
+        conn.execute_batch(SCHEMA).expect("initialize test schema");
         conn
     }
 

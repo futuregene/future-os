@@ -1,71 +1,9 @@
-pub(super) const INITIAL_MIGRATION: &str = "001_initial_schema";
-pub(super) const ADD_ERROR_TYPE_MIGRATION: &str = "002_add_error_type";
-pub(super) const APPROVAL_MODEL_V2_MIGRATION: &str = "003_approval_model_v2";
-
-pub(super) const MIGRATIONS: &[(&str, &str)] = &[
-    (INITIAL_MIGRATION, INITIAL_SCHEMA),
-    (ADD_ERROR_TYPE_MIGRATION, ADD_ERROR_TYPE_SQL),
-    (APPROVAL_MODEL_V2_MIGRATION, APPROVAL_MODEL_V2_SQL),
-];
-
-/// Adds error_type column to runs table for structured error classification.
-/// Values: 'stream_disconnected', 'command_failed', 'model_failed',
-///         'abort_requested', 'timeout', 'unknown'.
-/// NULL is allowed for runs that ended successfully or were created before
-/// this migration.
-pub(super) const ADD_ERROR_TYPE_SQL: &str = r#"
-ALTER TABLE runs ADD COLUMN error_type TEXT;
-"#;
-
-/// P2 Approval model upgrade.
+/// Full database schema for the desktop GUI store.
 ///
-/// Adds structured action payload, sandbox boundary, reviewer and decision
-/// scope/source columns to `approval_requests`. Also creates placeholder
-/// tables for sandbox configuration, approval policy configuration and
-/// approval rules. The placeholder tables are not yet read or written by
-/// the agent or GUI; they reserve schema space for future sandbox
-/// enforcement, automatic approval policies and rule-based shortcuts.
-pub(super) const APPROVAL_MODEL_V2_SQL: &str = r#"
-ALTER TABLE approval_requests ADD COLUMN action_category TEXT;
-ALTER TABLE approval_requests ADD COLUMN action_payload TEXT;
-ALTER TABLE approval_requests ADD COLUMN sandbox_boundary TEXT;
-ALTER TABLE approval_requests ADD COLUMN reviewer TEXT NOT NULL DEFAULT 'user';
-ALTER TABLE approval_requests ADD COLUMN decision_scope TEXT NOT NULL DEFAULT 'once';
-ALTER TABLE approval_requests ADD COLUMN decision_source TEXT NOT NULL DEFAULT 'user';
-
-CREATE TABLE IF NOT EXISTS sandbox_config (
-    id TEXT PRIMARY KEY,
-    workspace_id TEXT REFERENCES workspaces(id),
-    mode TEXT NOT NULL DEFAULT 'workspace-write',
-    writable_roots TEXT,
-    network_access INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS approval_policy_config (
-    id TEXT PRIMARY KEY,
-    workspace_id TEXT REFERENCES workspaces(id),
-    policy TEXT NOT NULL DEFAULT 'on-request',
-    reviewer TEXT NOT NULL DEFAULT 'user',
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS approval_rules (
-    id TEXT PRIMARY KEY,
-    workspace_id TEXT REFERENCES workspaces(id),
-    scope TEXT NOT NULL,
-    match_kind TEXT NOT NULL,
-    match_value TEXT NOT NULL,
-    decision TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    created_at INTEGER NOT NULL,
-    expires_at INTEGER
-);
-"#;
-
-pub(super) const INITIAL_SCHEMA: &str = r#"
+/// The app is pre-release, so there is no incremental migration history: this
+/// is the single source of truth and is applied idempotently (every statement
+/// uses `IF NOT EXISTS`). Change tables/columns here directly.
+pub(super) const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -122,6 +60,7 @@ CREATE TABLE IF NOT EXISTS runs (
     started_at INTEGER,
     ended_at INTEGER,
     error_message TEXT,
+    error_type TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -168,8 +107,45 @@ CREATE TABLE IF NOT EXISTS approval_requests (
     requested_action TEXT,
     decision_note TEXT,
     decided_at INTEGER,
+    action_category TEXT,
+    action_payload TEXT,
+    sandbox_boundary TEXT,
+    reviewer TEXT NOT NULL DEFAULT 'user',
+    decision_scope TEXT NOT NULL DEFAULT 'once',
+    decision_source TEXT NOT NULL DEFAULT 'user',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sandbox_config (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT REFERENCES workspaces(id),
+    mode TEXT NOT NULL DEFAULT 'workspace-write',
+    writable_roots TEXT,
+    network_access INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS approval_policy_config (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT REFERENCES workspaces(id),
+    policy TEXT NOT NULL DEFAULT 'on-request',
+    reviewer TEXT NOT NULL DEFAULT 'user',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS approval_rules (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT REFERENCES workspaces(id),
+    scope TEXT NOT NULL,
+    match_kind TEXT NOT NULL,
+    match_value TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS review_changesets (
@@ -316,6 +292,12 @@ CREATE TABLE IF NOT EXISTS object_references (
     source_id TEXT NOT NULL,
     reference_target_id TEXT NOT NULL REFERENCES reference_targets(id),
     created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_threads_workspace ON threads(workspace_id);
