@@ -31,9 +31,10 @@
 
 - [x] providers 命令 + 接口移到 `integrations/agent/providers.ts`(修正"providers 放在 storage"的错位)
 - [x] appSettings 命令 + `AppSettings` 接口移到 `integrations/storage/appSettings.ts`
-- [ ] **剩余**:把 `threadStore.ts` 其余按域拆:`threads/runs/review/artifacts/research.ts`(可保留 barrel 兼容)
+- [x] 把 `threadStore.ts` 按域拆成 `app/files/threads/runs/review/artifacts.ts`;`threadStore.ts` 改为 barrel re-export(call site 零改动)
 - [ ] **剩余**:统一 typed `invoke` 包装层(集中错误归一化);`markdownReferences` 并入
 - [ ] **剩余**:统一 Tauri 命令参数形状约定(结构化→`{input}`,单标量→具名键)
+- [ ] **剩余(可选)**:把 barrel `threadStore.ts` 重命名/让 call site 直接 import 域模块
 
 ## Batch 4 — `AppShell` 拆分
 
