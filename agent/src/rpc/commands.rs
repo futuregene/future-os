@@ -473,7 +473,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             ];
             let skills = crate::skills::discover_skills(&skill_dirs).unwrap_or_default();
 
-            let commands: Vec<serde_json::Value> = skills
+            let mut commands: Vec<serde_json::Value> = skills
                 .into_iter()
                 .map(|s| {
                     serde_json::json!({
@@ -483,6 +483,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     })
                 })
                 .collect();
+            commands.sort_by(|a, b| {
+                a["name"].as_str().unwrap_or("")
+                    .cmp(b["name"].as_str().unwrap_or(""))
+            });
 
             RpcResponse::ok(
                 id,
@@ -576,12 +580,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "get_available_models" => {
             let registry = crate::models::Registry::new();
             let auth = crate::AuthStore::load();
-            let models: Vec<serde_json::Value> = registry
+            let mut models: Vec<serde_json::Value> = registry
                 .all_models()
                 .into_iter()
                 .filter(|m| {
-                    // Model is available only if its specific provider has an API key in auth.json,
-                    // or the model itself has an API key set (from models.json).
                     !m.api_key.is_empty() || auth.get(&m.provider).is_some()
                 })
                 .map(|m| {
@@ -597,6 +599,15 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     })
                 })
                 .collect();
+            models.sort_by(|a, b| {
+                let key_a = format!("{}/{}",
+                    a["provider"].as_str().unwrap_or(""),
+                    a["id"].as_str().unwrap_or(""));
+                let key_b = format!("{}/{}",
+                    b["provider"].as_str().unwrap_or(""),
+                    b["id"].as_str().unwrap_or(""));
+                key_a.cmp(&key_b)
+            });
             // Include current enabled_models from settings so the TUI knows the scope
             let settings_path = std::path::PathBuf::from(crate::models::settings_path());
             let settings = crate::config::load_settings(&settings_path).unwrap_or_default();
