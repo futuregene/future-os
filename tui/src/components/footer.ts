@@ -109,7 +109,7 @@ export class Footer implements Component {
 
     // Cost
     if (this.data.totalCost !== undefined && this.data.totalCost > 0) {
-      rightParts.push(colorFg(COST_FG, `$${this.data.totalCost.toFixed(3)}`));
+      rightParts.push(colorFg(COST_FG, `¥${this.data.totalCost.toFixed(3)}`));
     }
 
     // Context usage: tokenCount/contextWindow (color based on percent fill)

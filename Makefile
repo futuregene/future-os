@@ -5,7 +5,7 @@
 install:
 	cd tui && npm install
 
-install-cli: install-skills
+install-cli: install-skills build-tui
 	cd cli && npm install && npm run build && chmod +x dist/index.js && npm link
 
 install-skills:
