@@ -63,7 +63,8 @@
 - [ ] `store/support.rs` 拆 `db.rs`/`util.rs`;`*_from_row` 与 record 同处
 - [x] `store/models.rs` → `records.rs`(消除与 LLM "models" 撞名)
 - [ ] **剩余**:`store/review.rs` → `approvals.rs`
-- [ ] **剩余**:`store/markdown_refs.rs` → 目录 `{resolve,search,extract,sync,tests}.rs`
+- [x] `store/markdown_refs.rs` → 目录;抽出 `markdown_refs/extract.rs`(纯解析 `futureos://` link/fence + percent_decode + 对应测试,1224→1035)
+- [ ] **剩余**:`markdown_refs/mod.rs` 再拆 resolve/search/sync(DB 耦合、共享 helper)
 
 ## Batch 7 — 跨切面清理(Rust)
 
