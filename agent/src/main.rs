@@ -22,8 +22,20 @@ struct Cli {
     verbose: bool,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // Build model registry BEFORE tokio runtime starts.
+    // Registry::new() uses reqwest::blocking::Client internally,
+    // which creates a nested runtime that cannot be dropped in async context.
+    let model_registry = ModelRegistry::new();
+
+    // Launch async portion
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async_main(model_registry))
+}
+
+async fn async_main(model_registry: ModelRegistry) -> Result<()> {
     let cli = Cli::parse();
 
     let cwd = dirs::home_dir()
@@ -31,8 +43,6 @@ async fn main() -> Result<()> {
         .to_string_lossy()
         .to_string();
 
-    // Initialize model registry
-    let model_registry = ModelRegistry::new();
     let all_models = model_registry.all_models();
 
     // Load settings
