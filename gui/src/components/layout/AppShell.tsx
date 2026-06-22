@@ -1,40 +1,33 @@
 import type { MessageAttachment } from "../../features/agent/agentThreadTypes";
 import type { NewConversationStart } from "../../features/agent/NewConversation";
 import type { AppSettings } from "../../integrations/storage/appSettings";
-import type { StoredApprovalRequest, StoredRun, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
+import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { DeleteDialogState, RenameDialogState } from "./AppShellDialogs";
 import type { ContextTab } from "./ContextPanel";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { ResearchView } from "../../features/research/ResearchView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { getAppSettings, updateAppSettings } from "../../integrations/storage/appSettings";
 import {
-  cancelStaleApprovalRequests,
-  createDefaultChatThread,
   createThread,
   createWorkspace,
   decideApprovalRequest,
   deleteThread,
-  getRecentThread,
   getThreadCleanupSummary,
-  initializeAppStore,
-  listRuns,
-  listThreads,
-  listWorkspaces,
   pinThread,
   renameThread,
   restoreThread,
   updateThreadModel,
 } from "../../integrations/storage/threadStore";
-import { usePolling } from "../../lib/usePolling";
 import { ActivityRail } from "./ActivityRail";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
 import { useAgentConnection } from "./hooks/useAgentConnection";
 import { useApprovals } from "./hooks/useApprovals";
+import { useThreadStore } from "./hooks/useThreadStore";
 
 export type { AgentConnectionState } from "./hooks/useAgentConnection";
 
@@ -57,31 +50,26 @@ export function AppShell() {
   const [leftOverlayOpen, setLeftOverlayOpen] = useState(false);
   const [rightExpanded, setRightExpanded] = useState(false);
   const [contextTab, setContextTab] = useState<ContextTab>("runs");
-  const [threads, setThreads] = useState<StoredThread[]>([]);
-  const [threadRunStatuses, setThreadRunStatuses] = useState<Record<string, StoredRun["status"] | undefined>>({});
-  const [workspaces, setWorkspaces] = useState<StoredWorkspace[]>([]);
-  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [newChatWorkspaceId, setNewChatWorkspaceId] = useState<string | null>(null);
   const [selectedResearchResourceId, setSelectedResearchResourceId] = useState<string | null>(null);
-  const [loadingStore, setLoadingStore] = useState(true);
-  const [storeError, setStoreError] = useState<string | null>(null);
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
   const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState | null>(null);
   const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [appSettings, setAppSettings] = useState<AppSettings>({ autoApprove: false, hiddenModels: [] });
 
-  const activeThread = useMemo(
-    () => threads.find(thread => thread.id === activeThreadId) ?? null,
-    [activeThreadId, threads],
-  );
-  const activeWorkspace = useMemo(
-    () =>
-      workspaces.find(workspace => workspace.id === activeThread?.workspaceId)
-      ?? workspaces.find(workspace => workspace.kind === "user")
-      ?? null,
-    [activeThread?.workspaceId, workspaces],
-  );
+  const {
+    threads,
+    workspaces,
+    activeThread,
+    activeWorkspace,
+    activeThreadId,
+    setActiveThreadId,
+    threadRunStatuses,
+    loadingStore,
+    storeError,
+    refreshStore,
+  } = useThreadStore();
   const { activeApproval, reloadApprovals } = useApprovals(
     activeThread?.id ?? null,
     appSettings.autoApprove,
@@ -95,88 +83,19 @@ export function AppShell() {
     refreshAgentModels,
   } = useAgentConnection(appSettings.hiddenModels);
 
-  const refreshThreadRunStatuses = useCallback(async (nextThreads: StoredThread[]) => {
-    const entries = await Promise.all(
-      nextThreads.map(async (thread) => {
-        const runs = await listRuns(thread.id);
-        return [thread.id, runs[0]?.status] as const;
-      }),
-    );
-    setThreadRunStatuses(Object.fromEntries(entries));
-  }, []);
-
-  const refreshStore = useCallback(async (nextActiveThreadId?: string) => {
-    const [nextThreads, nextWorkspaces] = await Promise.all([listThreads(), listWorkspaces()]);
-    const selectableThreads = nextThreads.filter(thread => thread.status === "active");
-    setThreads(nextThreads);
-    setWorkspaces(nextWorkspaces);
-    void refreshThreadRunStatuses(selectableThreads);
-    if (nextActiveThreadId && selectableThreads.some(thread => thread.id === nextActiveThreadId)) {
-      setActiveThreadId(nextActiveThreadId);
-    }
-    else if (activeThreadId && selectableThreads.some(thread => thread.id === activeThreadId)) {
-      setActiveThreadId(activeThreadId);
-    }
-    else {
-      setActiveThreadId(selectableThreads[0]?.id ?? null);
-    }
-  }, [activeThreadId, refreshThreadRunStatuses]);
-
   useEffect(() => {
     let cancelled = false;
-
-    async function bootstrapStore() {
-      setLoadingStore(true);
-      try {
-        await initializeAppStore();
-        await cancelStaleApprovalRequests();
-        getAppSettings().then((settings) => {
-          if (!cancelled) {
-            setAppSettings(settings);
-          }
-        }).catch(() => undefined);
-        const recentThread = (await getRecentThread()) ?? (await createDefaultChatThread());
-        const [nextThreads, nextWorkspaces] = await Promise.all([listThreads(), listWorkspaces()]);
-        if (cancelled)
-          return;
-        setThreads(nextThreads);
-        setWorkspaces(nextWorkspaces);
-        void refreshThreadRunStatuses(nextThreads.filter(thread => thread.status === "active"));
-        setActiveThreadId(recentThread.id);
-        setStoreError(null);
-      }
-      catch (error) {
+    getAppSettings()
+      .then((settings) => {
         if (!cancelled) {
-          setStoreError(error instanceof Error ? error.message : String(error));
+          setAppSettings(settings);
         }
-      }
-      finally {
-        if (!cancelled) {
-          setLoadingStore(false);
-        }
-      }
-    }
-
-    void bootstrapStore();
-
+      })
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [refreshThreadRunStatuses]);
-
-  const activeThreads = useMemo(
-    () => threads.filter(thread => thread.status === "active"),
-    [threads],
-  );
-  usePolling(() => refreshThreadRunStatuses(activeThreads), 1500, {
-    enabled: activeThreads.length > 0,
-    deps: [activeThreads, refreshThreadRunStatuses],
-  });
-  useEffect(() => {
-    if (activeThreads.length === 0) {
-      setThreadRunStatuses({});
-    }
-  }, [activeThreads.length]);
+  }, []);
 
   useEffect(() => {
     function handleOpenResearchResource(event: Event) {
