@@ -25,6 +25,7 @@
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
     "shiki": "^4.2.0",
+    "tailwind-merge": "^3.6.0",
     "unified": "^11.0.5"
   },
   "devDependencies": {
