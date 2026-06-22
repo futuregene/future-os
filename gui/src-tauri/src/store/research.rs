@@ -2,7 +2,7 @@ use rusqlite::{params, OptionalExtension};
 
 use super::artifacts::get_artifact;
 use super::initialize_app_store;
-use super::models::*;
+use super::records::*;
 use super::support::*;
 
 pub fn list_research_resources(workspace_id: &str) -> Result<Vec<ResearchResourceRecord>, String> {

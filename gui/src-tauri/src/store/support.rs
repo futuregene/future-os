@@ -7,7 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use super::models::*;
+use super::records::*;
 use super::schema::SCHEMA;
 use super::{get_thread, get_workspace, initialize_app_store};
 

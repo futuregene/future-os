@@ -152,7 +152,7 @@ pub fn is_git_workspace(path: &Path) -> bool {
     root == workspace
 }
 
-fn canonical_or_raw(path: impl AsRef<Path>) -> PathBuf {
+pub(crate) fn canonical_or_raw(path: impl AsRef<Path>) -> PathBuf {
     let path = path.as_ref();
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }

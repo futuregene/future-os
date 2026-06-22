@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     fs,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -917,7 +917,7 @@ fn persist_written_file_artifact(run_id: &str, tool_name: &str, output: Option<&
         .filter(|name| !name.trim().is_empty())
         .unwrap_or("Written file")
         .to_string();
-    let artifact_type = artifact_type_from_path(path_ref);
+    let artifact_type = crate::store::artifact_type_from_path(path_ref);
 
     if let Err(error) = store::ensure_artifact(store::EnsureArtifactInput {
         run_id: run_id.to_string(),
@@ -942,13 +942,9 @@ fn path_is_inside_run_workspace(run_id: &str, path: &str) -> Result<bool, String
         return Ok(false);
     }
 
-    let workspace_path = canonical_or_raw(&workspace.path);
-    let candidate_path = canonical_or_raw(path);
+    let workspace_path = git_review::canonical_or_raw(&workspace.path);
+    let candidate_path = git_review::canonical_or_raw(path);
     Ok(candidate_path.starts_with(workspace_path))
-}
-
-fn canonical_or_raw(path: &str) -> PathBuf {
-    fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
 }
 
 fn written_path_from_tool_output(output: &str) -> Option<String> {
@@ -1004,8 +1000,8 @@ fn artifact_is_allowed_for_run(run_id: &str, path: Option<&str>) -> Result<bool,
     let Some(path) = path else {
         return Ok(true);
     };
-    let workspace_path = canonical_or_raw(&workspace.path);
-    let candidate_path = canonical_or_raw(path);
+    let workspace_path = git_review::canonical_or_raw(&workspace.path);
+    let candidate_path = git_review::canonical_or_raw(path);
     Ok(candidate_path.starts_with(workspace_path))
 }
 
@@ -1026,27 +1022,6 @@ fn value_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
 
 fn compact_json(value: &serde_json::Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
-}
-
-fn artifact_type_from_path(path: &Path) -> String {
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-
-    match extension.as_str() {
-        "jpg" | "jpeg" | "png" | "gif" | "webp" | "svg" | "bmp" | "tif" | "tiff" => "image",
-        "pdf" => "pdf",
-        "doc" | "docx" | "md" | "rtf" | "txt" => "document",
-        "csv" | "tsv" | "xls" | "xlsx" => "spreadsheet",
-        "json" | "jsonl" | "parquet" | "sqlite" | "db" => "data",
-        "py" | "rs" | "ts" | "tsx" | "js" | "jsx" | "go" | "java" | "c" | "cpp" | "h" | "hpp" => {
-            "code"
-        }
-        _ => "file",
-    }
-    .to_string()
 }
 
 fn review_shape_for_tool(

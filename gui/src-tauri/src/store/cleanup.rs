@@ -1,6 +1,6 @@
 use rusqlite::params;
 
-use super::models::ThreadCleanupSummary;
+use super::records::ThreadCleanupSummary;
 use super::support::{connect, count_workspace_files, now_millis};
 use super::{get_thread, get_workspace, initialize_app_store};
 
