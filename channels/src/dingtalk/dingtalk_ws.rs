@@ -17,9 +17,14 @@ pub struct DingtalkEvent {
     pub chat_id: Option<String>,
     pub chat_type: Option<String>,
     pub sender_id: Option<String>,
+    pub sender_name: Option<String>,
     pub msg_type: Option<String>,
     pub content: Option<String>,
     pub create_time_ms: Option<i64>,
+    /// URL for replying to this message (POST to this URL with access token).
+    pub session_webhook: Option<String>,
+    /// The bot's own user ID in this conversation.
+    pub chatbot_user_id: Option<String>,
     pub raw: Value,
 }
 
@@ -319,9 +324,21 @@ fn parse_dingtalk_event(msg: &Value) -> Option<DingtalkEvent> {
         .get("messageId")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let sender_name = body
+        .get("senderNick")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let create_time_ms = body
         .get("createAt")
         .and_then(|v| v.as_i64());
+    let session_webhook = body
+        .get("sessionWebhook")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let chatbot_user_id = body
+        .get("chatbotUserId")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     Some(DingtalkEvent {
         event_type,
@@ -329,9 +346,12 @@ fn parse_dingtalk_event(msg: &Value) -> Option<DingtalkEvent> {
         chat_id,
         chat_type,
         sender_id,
+        sender_name,
         msg_type,
         content,
         create_time_ms,
+        session_webhook,
+        chatbot_user_id,
         raw: msg.clone(),
     })
 }
