@@ -8,7 +8,7 @@ use std::{
 };
 
 use super::models::*;
-use super::schema::MIGRATIONS;
+use super::schema::SCHEMA;
 use super::{get_thread, get_workspace, initialize_app_store};
 
 pub(super) fn app_dir() -> Result<PathBuf, String> {
@@ -41,37 +41,9 @@ pub(super) fn connect() -> Result<Connection, String> {
     Ok(conn)
 }
 
-pub(super) fn run_migrations(conn: &Connection) -> Result<(), String> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS schema_migrations (
-            version TEXT PRIMARY KEY,
-            applied_at INTEGER NOT NULL
-        );",
-    )
-    .map_err(|error| error.to_string())?;
-
-    for (version, migration) in MIGRATIONS {
-        let applied: Option<String> = conn
-            .query_row(
-                "SELECT version FROM schema_migrations WHERE version = ?1",
-                params![version],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|error| error.to_string())?;
-
-        if applied.is_none() {
-            conn.execute_batch(migration)
-                .map_err(|error| error.to_string())?;
-            conn.execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-                params![version, now_millis()],
-            )
-            .map_err(|error| error.to_string())?;
-        }
-    }
-
-    Ok(())
+pub(super) fn apply_schema(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(SCHEMA)
+        .map_err(|error| error.to_string())
 }
 
 pub(super) fn get_message(id: &str) -> Result<Option<MessageRecord>, String> {

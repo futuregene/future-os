@@ -1096,7 +1096,10 @@ mod tests {
 
     #[test]
     fn test_classify_abort_requested() {
-        assert_eq!(classify_run_error("Bash command interrupted by abort"), "abort_requested");
+        assert_eq!(
+            classify_run_error("Bash command interrupted by abort"),
+            "abort_requested"
+        );
         assert_eq!(classify_run_error("Interrupted"), "abort_requested");
         assert_eq!(classify_run_error("Terminated by user."), "abort_requested");
         assert_eq!(classify_run_error("aborted"), "abort_requested");
@@ -1106,23 +1109,44 @@ mod tests {
 
     #[test]
     fn test_classify_timeout() {
-        assert_eq!(classify_run_error("Bash command timed out after 60 seconds"), "timeout");
+        assert_eq!(
+            classify_run_error("Bash command timed out after 60 seconds"),
+            "timeout"
+        );
         assert_eq!(classify_run_error("timeout"), "timeout");
         assert_eq!(classify_run_error("Timed out"), "timeout");
     }
 
     #[test]
     fn test_classify_stream_disconnected() {
-        assert_eq!(classify_run_error("Unable to connect to Future Agent at 127.0.0.1:50051"), "stream_disconnected");
-        assert_eq!(classify_run_error("Transport error: broken pipe"), "stream_disconnected");
-        assert_eq!(classify_run_error("connection closed"), "stream_disconnected");
-        assert_eq!(classify_run_error("Stream error: unexpected EOF"), "stream_disconnected");
+        assert_eq!(
+            classify_run_error("Unable to connect to Future Agent at 127.0.0.1:50051"),
+            "stream_disconnected"
+        );
+        assert_eq!(
+            classify_run_error("Transport error: broken pipe"),
+            "stream_disconnected"
+        );
+        assert_eq!(
+            classify_run_error("connection closed"),
+            "stream_disconnected"
+        );
+        assert_eq!(
+            classify_run_error("Stream error: unexpected EOF"),
+            "stream_disconnected"
+        );
     }
 
     #[test]
     fn test_classify_model_failed() {
-        assert_eq!(classify_run_error("Model returned error: unauthorized"), "model_failed");
-        assert_eq!(classify_run_error("LLM provider failed: rate limit exceeded"), "model_failed");
+        assert_eq!(
+            classify_run_error("Model returned error: unauthorized"),
+            "model_failed"
+        );
+        assert_eq!(
+            classify_run_error("LLM provider failed: rate limit exceeded"),
+            "model_failed"
+        );
         assert_eq!(classify_run_error("api key is invalid"), "model_failed");
         assert_eq!(classify_run_error("forbidden"), "model_failed");
         assert_eq!(classify_run_error("OpenAI API error"), "model_failed");
@@ -1131,21 +1155,36 @@ mod tests {
 
     #[test]
     fn test_classify_command_failed() {
-        assert_eq!(classify_run_error("Bash command exited with code 1"), "command_failed");
-        assert_eq!(classify_run_error("Failed to run bash command: no such file"), "command_failed");
+        assert_eq!(
+            classify_run_error("Bash command exited with code 1"),
+            "command_failed"
+        );
+        assert_eq!(
+            classify_run_error("Failed to run bash command: no such file"),
+            "command_failed"
+        );
         assert_eq!(classify_run_error("exit code: 127"), "command_failed");
     }
 
     #[test]
     fn test_classify_unknown() {
-        assert_eq!(classify_run_error("Something unexpected happened"), "unknown");
+        assert_eq!(
+            classify_run_error("Something unexpected happened"),
+            "unknown"
+        );
         assert_eq!(classify_run_error(""), "unknown");
     }
 
     #[test]
     fn test_classify_abort_beats_timeout() {
         // Interrupt aborts take priority over timeout mentions
-        assert_eq!(classify_run_error("Bash command interrupted: timed out"), "abort_requested");
-        assert_eq!(classify_run_error("Timed out (user aborted)"), "abort_requested");
+        assert_eq!(
+            classify_run_error("Bash command interrupted: timed out"),
+            "abort_requested"
+        );
+        assert_eq!(
+            classify_run_error("Timed out (user aborted)"),
+            "abort_requested"
+        );
     }
 }
