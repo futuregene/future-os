@@ -181,10 +181,11 @@ export class SlashCommandProvider implements AutocompleteProvider {
     const spaceIdx = text.indexOf(" ");
 
     if (spaceIdx === -1) {
-      // Complete command name
+      // Complete command name, sorted alphabetically
       const prefix = ctx.token.toLowerCase();
       return this.commands
         .filter((c) => c.label.toLowerCase().includes(prefix))
+        .sort((a, b) => a.label.localeCompare(b.label))
         .map((c) => ({ value: c.value, label: c.label, description: c.description }));
     }
 
