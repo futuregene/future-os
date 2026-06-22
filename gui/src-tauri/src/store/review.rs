@@ -1,7 +1,7 @@
 use rusqlite::{params, OptionalExtension};
 
 use super::initialize_app_store;
-use super::models::*;
+use super::records::*;
 use super::support::*;
 
 pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), String> {

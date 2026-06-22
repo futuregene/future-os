@@ -9,7 +9,7 @@
 
 use rusqlite::{params, OptionalExtension};
 
-use super::models::*;
+use super::records::*;
 
 use super::{connect, initialize_app_store};
 

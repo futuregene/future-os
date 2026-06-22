@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::models::*;
+use super::records::*;
 use super::support::*;
 use super::{get_thread, initialize_app_store};
 
@@ -164,7 +164,7 @@ pub fn ensure_artifact(input: EnsureArtifactInput) -> Result<(), String> {
     Ok(())
 }
 
-fn artifact_type_from_path(path: &Path) -> String {
+pub fn artifact_type_from_path(path: &Path) -> String {
     let extension = path
         .extension()
         .and_then(|value| value.to_str())

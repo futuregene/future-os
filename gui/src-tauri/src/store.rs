@@ -3,7 +3,7 @@ mod approval_config;
 mod artifacts;
 mod cleanup;
 mod markdown_refs;
-mod models;
+mod records;
 mod research;
 mod review;
 mod schema;
@@ -16,7 +16,8 @@ pub use app_settings::{
     get_app_settings, update_app_settings, AppSettings, UpdateAppSettingsInput,
 };
 pub use artifacts::{
-    create_artifact, delete_artifact, ensure_artifact, import_attachment_artifact, list_artifacts,
+    artifact_type_from_path, create_artifact, delete_artifact, ensure_artifact,
+    import_attachment_artifact, list_artifacts,
 };
 pub use cleanup::{
     cancel_stale_approval_requests, clear_finished_runs, get_thread_cleanup_summary,
@@ -24,7 +25,7 @@ pub use cleanup::{
 pub use markdown_refs::{
     resolve_markdown_references, search_reference_targets, sync_message_markdown_references,
 };
-pub use models::*;
+pub use records::*;
 pub use research::{list_research_resources, promote_artifact_to_research};
 pub use review::{
     decide_approval_request, ensure_approval_request, ensure_review_change, list_approval_requests,

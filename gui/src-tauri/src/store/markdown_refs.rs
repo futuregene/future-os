@@ -2,7 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashSet;
 
 use super::initialize_app_store;
-use super::models::*;
+use super::records::*;
 use super::support::{
     approval_request_from_row, artifact_from_row, create_id, now_millis,
     research_resource_from_row, review_changeset_from_row, run_from_row, tool_call_from_row,

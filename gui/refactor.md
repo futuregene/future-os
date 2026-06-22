@@ -58,15 +58,16 @@
 - [ ] `agent_bridge.rs` → 目录 `{mod,client,stream,persist,error}.rs`
 - [ ] `store.rs` 根的 threads/workspaces/messages/runs 抽到独立模块(对齐已有按域拆分)
 - [ ] `store/support.rs` 拆 `db.rs`/`util.rs`;`*_from_row` 与 record 同处
-- [ ] `store/models.rs` → `records.rs`(消除与 LLM "models" 撞名);`store/review.rs` → `approvals.rs`
-- [ ] `store/markdown_refs.rs` → 目录 `{resolve,search,extract,sync,tests}.rs`
+- [x] `store/models.rs` → `records.rs`(消除与 LLM "models" 撞名)
+- [ ] **剩余**:`store/review.rs` → `approvals.rs`
+- [ ] **剩余**:`store/markdown_refs.rs` → 目录 `{resolve,search,extract,sync,tests}.rs`
 
 ## Batch 7 — 跨切面清理(Rust)
 
 - [ ] 去掉每次 store 调用的 `initialize_app_store()`(启动时一次);共享连接 `with_conn`
 - [ ] 引入 `AppError`(`thiserror`),消除满屏 `.map_err(|e| e.to_string())` 与错误子串反解
-- [ ] 合并重复 helper:`artifact_type_from_path`(agent_bridge/artifacts)、`canonical_or_raw`(agent_bridge/git_review)
-- [ ] 删除/标注死模块 `store/approval_config.rs`(全 `#[allow(dead_code)]`);统一闭包名 `|error|`
+- [x] 合并重复 helper:`artifact_type_from_path`(→ `store::artifact_type_from_path`)、`canonical_or_raw`(→ `git_review::canonical_or_raw`)
+- [ ] ~~删除死模块 `store/approval_config.rs`~~ —— 经判断是 P2 审批模型的**有意保留脚手架**(schema 表已就位),不删,留待后续接入
 
 ---
 
