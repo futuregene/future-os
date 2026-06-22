@@ -32,6 +32,7 @@ import {
   restoreThread,
   updateThreadModel,
 } from "../../integrations/storage/threadStore";
+import { usePolling } from "../../lib/usePolling";
 import { ActivityRail } from "./ActivityRail";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
@@ -214,25 +215,7 @@ export function AppShell() {
     }
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function refreshIfMounted() {
-      if (!cancelled) {
-        await refreshAgentModels();
-      }
-    }
-
-    void refreshIfMounted();
-    const timer = window.setInterval(() => {
-      void refreshIfMounted();
-    }, 10000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [refreshAgentModels]);
+  usePolling(refreshAgentModels, 10000, { deps: [refreshAgentModels] });
 
   const activeThreads = useMemo(
     () => threads.filter(thread => thread.status === "active"),
@@ -240,19 +223,15 @@ export function AppShell() {
   );
   const activeThreadIdForApprovals = activeThread?.id ?? null;
 
+  usePolling(() => refreshThreadRunStatuses(activeThreads), 1500, {
+    enabled: activeThreads.length > 0,
+    deps: [activeThreads, refreshThreadRunStatuses],
+  });
   useEffect(() => {
     if (activeThreads.length === 0) {
       setThreadRunStatuses({});
-      return;
     }
-
-    void refreshThreadRunStatuses(activeThreads);
-    const timer = window.setInterval(() => {
-      void refreshThreadRunStatuses(activeThreads);
-    }, 1500);
-
-    return () => window.clearInterval(timer);
-  }, [activeThreads, refreshThreadRunStatuses]);
+  }, [activeThreads.length]);
 
   useEffect(() => {
     let cancelled = false;
