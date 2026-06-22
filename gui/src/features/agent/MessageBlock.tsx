@@ -1,4 +1,4 @@
-import type { AgentMessage } from "./types";
+import type { AgentMessage } from "./agentThreadTypes";
 import { Paperclip, RotateCcw, StepForward } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { formatTime } from "../../lib/date";

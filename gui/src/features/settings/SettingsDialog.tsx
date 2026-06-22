@@ -1,9 +1,9 @@
-import type { AgentModelOption } from "../../integrations/agent/models";
+import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { AppSettings } from "../../integrations/storage/appSettings";
-import { invoke } from "@tauri-apps/api/core";
 import { Boxes, Settings2, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Overlay } from "../../components/ui/Overlay";
+import { invokeCommand } from "../../integrations/tauri/invoke";
 import { cn } from "../../lib/cn";
 import { GeneralPage } from "./GeneralPage";
 import { ModelsPage } from "./ModelsPage";
@@ -51,7 +51,7 @@ export function SettingsDialog({
     if (!open || version) {
       return;
     }
-    void invoke<string>("app_version").then(setVersion).catch(() => undefined);
+    void invokeCommand<string>("app_version").then(setVersion).catch(() => undefined);
   }, [open, version]);
 
   return (

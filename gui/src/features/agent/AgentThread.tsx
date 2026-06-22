@@ -1,7 +1,7 @@
 import type { AgentConnectionState } from "../../components/layout/AppShell";
-import type { AgentModelOption } from "../../integrations/agent/models";
+import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { StoredApprovalRequest, StoredRunEvent, StoredThread, StoredToolCall, StoredToolOutput } from "../../integrations/storage/threadStore";
-import type { AgentMessage, MessageAttachment } from "./types";
+import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { useCallback, useEffect } from "react";
 import { listRunEvents, listToolCalls, listToolOutputs } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
@@ -9,7 +9,7 @@ import { ApprovalPrompt } from "./ApprovalPrompt";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { ThreadHeader } from "./ThreadHeader";
-import { useAgentThreadController } from "./useAgentThreadController";
+import { useAgentThreadState } from "./useAgentThreadState";
 
 interface AgentThreadProps {
   thread: StoredThread | null;
@@ -51,7 +51,7 @@ export function AgentThread({
     messages,
     scrollRef,
     scrollbar,
-  } = useAgentThreadController({
+  } = useAgentThreadState({
     thread,
     loadingStore,
     modelId,

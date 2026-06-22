@@ -1,4 +1,4 @@
-import type { AgentActivityItem, AgentActivityKind } from "./types";
+import type { AgentActivityItem, AgentActivityKind } from "./agentThreadTypes";
 import { Brain, FileText, Pencil, TerminalSquare } from "lucide-react";
 import { cn } from "../../lib/cn";
 

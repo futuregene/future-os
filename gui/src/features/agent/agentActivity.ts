@@ -1,5 +1,5 @@
 import type { StoredRunEvent } from "../../integrations/storage/threadStore";
-import type { AgentActivityItem, AgentActivityKind } from "./types";
+import type { AgentActivityItem, AgentActivityKind } from "./agentThreadTypes";
 
 interface AssistantRunProjection {
   activityItems: AgentActivityItem[];

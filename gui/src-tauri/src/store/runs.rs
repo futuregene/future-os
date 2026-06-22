@@ -1,11 +1,10 @@
 use rusqlite::params;
 
-use super::initialize_app_store;
+use super::db::*;
 use super::records::*;
-use super::support::*;
+use super::util::*;
 
-pub fn create_run(input: CreateRunInput) -> Result<RunRecord, String> {
-    initialize_app_store()?;
+pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::AppError> {
     let id = create_id("run");
     let now = now_millis();
     let conn = connect()?;
@@ -22,32 +21,25 @@ pub fn create_run(input: CreateRunInput) -> Result<RunRecord, String> {
             input.model_id,
             now
         ],
-    )
-    .map_err(|error| error.to_string())?;
-    get_run(&id)?.ok_or_else(|| "Created run could not be loaded.".to_string())
+    )?;
+    get_run(&id)?.ok_or_else(|| "Created run could not be loaded.".to_string().into())
 }
 
-pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, String> {
-    initialize_app_store()?;
+pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, thread_id, trigger_message_id, status, model_provider, model_id,
+    let mut stmt = conn.prepare(
+        "SELECT id, thread_id, trigger_message_id, status, model_provider, model_id,
                     started_at, ended_at, error_message, error_type, created_at, updated_at
              FROM runs
              WHERE thread_id = ?1
              ORDER BY created_at DESC",
-        )
-        .map_err(|error| error.to_string())?;
-    let rows = stmt
-        .query_map(params![thread_id], run_from_row)
-        .map_err(|error| error.to_string())?;
+    )?;
+    let rows = stmt.query_map(params![thread_id], run_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())
+        .map_err(crate::AppError::from)
 }
 
-pub fn update_run_status(input: UpdateRunStatusInput) -> Result<RunRecord, String> {
-    initialize_app_store()?;
+pub fn update_run_status(input: UpdateRunStatusInput) -> Result<RunRecord, crate::AppError> {
     let now = now_millis();
     let ended_at = if matches!(input.status.as_str(), "completed" | "failed" | "cancelled") {
         Some(now)
@@ -55,7 +47,7 @@ pub fn update_run_status(input: UpdateRunStatusInput) -> Result<RunRecord, Strin
         None
     };
     let mut conn = connect()?;
-    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let tx = conn.transaction()?;
     tx.execute(
         "UPDATE runs
          SET status = ?1,
@@ -72,8 +64,7 @@ pub fn update_run_status(input: UpdateRunStatusInput) -> Result<RunRecord, Strin
             now,
             input.run_id
         ],
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
     if input.status == "cancelled" {
         tx.execute(
             "UPDATE approval_requests
@@ -85,7 +76,7 @@ pub fn update_run_status(input: UpdateRunStatusInput) -> Result<RunRecord, Strin
                AND status = 'pending'",
             params![now, input.run_id],
         )
-        .map_err(|error| error.to_string())?;
+        ?;
         tx.execute(
             "UPDATE tool_calls
              SET status = 'cancelled',
@@ -93,33 +84,26 @@ pub fn update_run_status(input: UpdateRunStatusInput) -> Result<RunRecord, Strin
              WHERE run_id = ?2
                AND status = 'running'",
             params![now, input.run_id],
-        )
-        .map_err(|error| error.to_string())?;
+        )?;
     }
-    tx.commit().map_err(|error| error.to_string())?;
-    get_run(&input.run_id)?.ok_or_else(|| "Updated run could not be loaded.".to_string())
+    tx.commit()?;
+    get_run(&input.run_id)?.ok_or_else(|| "Updated run could not be loaded.".to_string().into())
 }
 
-pub fn list_run_events(run_id: &str) -> Result<Vec<RunEventRecord>, String> {
-    initialize_app_store()?;
+pub fn list_run_events(run_id: &str) -> Result<Vec<RunEventRecord>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, run_id, type, payload, sequence, created_at
+    let mut stmt = conn.prepare(
+        "SELECT id, run_id, type, payload, sequence, created_at
              FROM run_events
              WHERE run_id = ?1
              ORDER BY sequence ASC, created_at ASC",
-        )
-        .map_err(|error| error.to_string())?;
-    let rows = stmt
-        .query_map(params![run_id], run_event_from_row)
-        .map_err(|error| error.to_string())?;
+    )?;
+    let rows = stmt.query_map(params![run_id], run_event_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())
+        .map_err(crate::AppError::from)
 }
 
-pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, String> {
-    initialize_app_store()?;
+pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, crate::AppError> {
     let id = create_id("event");
     let now = now_millis();
     let conn = connect()?;
@@ -134,50 +118,38 @@ pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, St
             input.sequence,
             now
         ],
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
 
-    get_run_event(&id)?.ok_or_else(|| "Created run event could not be loaded.".to_string())
+    get_run_event(&id)?.ok_or_else(|| "Created run event could not be loaded.".to_string().into())
 }
 
-pub fn list_tool_calls(run_id: &str) -> Result<Vec<ToolCallRecord>, String> {
-    initialize_app_store()?;
+pub fn list_tool_calls(run_id: &str) -> Result<Vec<ToolCallRecord>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, run_id, name, kind, input, status, started_at, ended_at, created_at
+    let mut stmt = conn.prepare(
+        "SELECT id, run_id, name, kind, input, status, started_at, ended_at, created_at
              FROM tool_calls
              WHERE run_id = ?1
              ORDER BY COALESCE(started_at, created_at) ASC",
-        )
-        .map_err(|error| error.to_string())?;
-    let rows = stmt
-        .query_map(params![run_id], tool_call_from_row)
-        .map_err(|error| error.to_string())?;
+    )?;
+    let rows = stmt.query_map(params![run_id], tool_call_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())
+        .map_err(crate::AppError::from)
 }
 
-pub fn list_tool_outputs(tool_call_id: &str) -> Result<Vec<ToolOutputRecord>, String> {
-    initialize_app_store()?;
+pub fn list_tool_outputs(tool_call_id: &str) -> Result<Vec<ToolOutputRecord>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, tool_call_id, kind, content, created_at
+    let mut stmt = conn.prepare(
+        "SELECT id, tool_call_id, kind, content, created_at
              FROM tool_outputs
              WHERE tool_call_id = ?1
              ORDER BY created_at ASC",
-        )
-        .map_err(|error| error.to_string())?;
-    let rows = stmt
-        .query_map(params![tool_call_id], tool_output_from_row)
-        .map_err(|error| error.to_string())?;
+    )?;
+    let rows = stmt.query_map(params![tool_call_id], tool_output_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())
+        .map_err(crate::AppError::from)
 }
 
-pub fn upsert_tool_call(input: UpsertToolCallInput) -> Result<(), String> {
-    initialize_app_store()?;
+pub fn upsert_tool_call(input: UpsertToolCallInput) -> Result<(), crate::AppError> {
     let now = now_millis();
     let conn = connect()?;
     conn.execute(
@@ -199,13 +171,11 @@ pub fn upsert_tool_call(input: UpsertToolCallInput) -> Result<(), String> {
             input.status,
             now
         ],
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
     Ok(())
 }
 
-pub fn complete_tool_call(input: CompleteToolCallInput) -> Result<(), String> {
-    initialize_app_store()?;
+pub fn complete_tool_call(input: CompleteToolCallInput) -> Result<(), crate::AppError> {
     let now = now_millis();
     let conn = connect()?;
     conn.execute(
@@ -223,8 +193,7 @@ pub fn complete_tool_call(input: CompleteToolCallInput) -> Result<(), String> {
             input.status,
             now
         ],
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
 
     conn.execute(
         "INSERT INTO tool_outputs (id, tool_call_id, kind, content, created_at)
@@ -236,7 +205,6 @@ pub fn complete_tool_call(input: CompleteToolCallInput) -> Result<(), String> {
             input.output_content,
             now
         ],
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
     Ok(())
 }

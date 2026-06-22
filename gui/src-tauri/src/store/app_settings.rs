@@ -1,8 +1,8 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-use super::initialize_app_store;
-use super::support::*;
+use super::db::*;
+use super::util::*;
 
 /// Desktop-app preferences stored locally in the GUI database. These are
 /// distinct from the agent's own configuration (models/providers/auth).
@@ -25,14 +25,12 @@ pub struct UpdateAppSettingsInput {
 const KEY_AUTO_APPROVE: &str = "auto_approve";
 const KEY_HIDDEN_MODELS: &str = "hidden_models";
 
-pub fn get_app_settings() -> Result<AppSettings, String> {
-    initialize_app_store()?;
+pub fn get_app_settings() -> Result<AppSettings, crate::AppError> {
     let conn = connect()?;
     read_app_settings(&conn)
 }
 
-pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings, String> {
-    initialize_app_store()?;
+pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings, crate::AppError> {
     let conn = connect()?;
     let now = now_millis();
 
@@ -45,14 +43,14 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
         )?;
     }
     if let Some(hidden_models) = input.hidden_models {
-        let json = serde_json::to_string(&hidden_models).map_err(|error| error.to_string())?;
+        let json = serde_json::to_string(&hidden_models)?;
         write_value(&conn, KEY_HIDDEN_MODELS, &json, now)?;
     }
 
     read_app_settings(&conn)
 }
 
-fn read_app_settings(conn: &Connection) -> Result<AppSettings, String> {
+fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> {
     let auto_approve = read_value(conn, KEY_AUTO_APPROVE)?
         .map(|value| value == "true")
         .unwrap_or(false);
@@ -65,22 +63,21 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, String> {
     })
 }
 
-fn read_value(conn: &Connection, key: &str) -> Result<Option<String>, String> {
+fn read_value(conn: &Connection, key: &str) -> Result<Option<String>, crate::AppError> {
     conn.query_row(
         "SELECT value FROM app_settings WHERE key = ?1",
         params![key],
         |row| row.get(0),
     )
     .optional()
-    .map_err(|error| error.to_string())
+    .map_err(crate::AppError::from)
 }
 
-fn write_value(conn: &Connection, key: &str, value: &str, now: i64) -> Result<(), String> {
+fn write_value(conn: &Connection, key: &str, value: &str, now: i64) -> Result<(), crate::AppError> {
     conn.execute(
         "INSERT INTO app_settings (key, value, updated_at) VALUES (?1, ?2, ?3)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
         params![key, value, now],
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
     Ok(())
 }

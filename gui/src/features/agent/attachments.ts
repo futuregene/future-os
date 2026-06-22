@@ -1,4 +1,4 @@
-import type { MessageAttachment } from "./types";
+import type { MessageAttachment } from "./agentThreadTypes";
 
 export const MAX_ATTACHMENTS_PER_TURN = 4;
 

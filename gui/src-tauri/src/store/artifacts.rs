@@ -4,44 +4,39 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::db::*;
+use super::get_thread;
 use super::records::*;
-use super::support::*;
-use super::{get_thread, initialize_app_store};
+use super::util::*;
 
-pub fn list_artifacts(thread_id: &str) -> Result<Vec<ArtifactRecord>, String> {
-    initialize_app_store()?;
+pub fn list_artifacts(thread_id: &str) -> Result<Vec<ArtifactRecord>, crate::AppError> {
     let thread = get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
     let conn = connect()?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, workspace_id, thread_id, run_id, title, type, path, content,
+    let mut stmt = conn.prepare(
+        "SELECT id, workspace_id, thread_id, run_id, title, type, path, content,
                     content_storage, summary, created_at, updated_at, deleted_at
              FROM artifacts
              WHERE deleted_at IS NULL
                AND workspace_id = ?1
                AND (?2 = 'workspace' OR thread_id = ?3)
              ORDER BY created_at DESC",
-        )
-        .map_err(|error| error.to_string())?;
-    let rows = stmt
-        .query_map(
-            params![thread.workspace_id, thread.mode, thread.id],
-            artifact_from_row,
-        )
-        .map_err(|error| error.to_string())?;
+    )?;
+    let rows = stmt.query_map(
+        params![thread.workspace_id, thread.mode, thread.id],
+        artifact_from_row,
+    )?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())
+        .map_err(crate::AppError::from)
 }
 
-pub fn create_artifact(input: CreateArtifactInput) -> Result<ArtifactRecord, String> {
-    initialize_app_store()?;
+pub fn create_artifact(input: CreateArtifactInput) -> Result<ArtifactRecord, crate::AppError> {
     let title = input.title.trim();
     if title.is_empty() {
-        return Err("artifact title cannot be empty.".to_string());
+        return Err("artifact title cannot be empty.".to_string().into());
     }
     let artifact_type = input.artifact_type.trim();
     if artifact_type.is_empty() {
-        return Err("artifact type cannot be empty.".to_string());
+        return Err("artifact type cannot be empty.".to_string().into());
     }
 
     let id = create_id("artifact");
@@ -65,25 +60,27 @@ pub fn create_artifact(input: CreateArtifactInput) -> Result<ArtifactRecord, Str
             input.summary,
             now
         ],
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
 
-    get_artifact(&id)?.ok_or_else(|| "Created artifact could not be loaded.".to_string())
+    get_artifact(&id)?.ok_or_else(|| "Created artifact could not be loaded.".to_string().into())
 }
 
 pub fn import_attachment_artifact(
     input: ImportAttachmentArtifactInput,
-) -> Result<ArtifactRecord, String> {
-    initialize_app_store()?;
+) -> Result<ArtifactRecord, crate::AppError> {
     let thread =
         get_thread(&input.thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
     if thread.mode != "chat" {
-        return Err("Attachments are only auto-saved as artifacts for Chat threads.".to_string());
+        return Err(
+            "Attachments are only auto-saved as artifacts for Chat threads."
+                .to_string()
+                .into(),
+        );
     }
 
     let source_path = PathBuf::from(&input.path);
     if !source_path.is_file() {
-        return Err("Attachment path is not a file.".to_string());
+        return Err("Attachment path is not a file.".to_string().into());
     }
 
     let file_name = source_path
@@ -92,11 +89,11 @@ pub fn import_attachment_artifact(
         .ok_or_else(|| "Attachment file name could not be read.".to_string())?;
     let safe_file_name = sanitize_file_name(file_name);
     let artifact_dir = chat_workspace_path(&thread.id)?.join("attachments");
-    fs::create_dir_all(&artifact_dir).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&artifact_dir)?;
 
     let now = now_millis();
     let target_path = unique_attachment_path(&artifact_dir, now, &safe_file_name);
-    fs::copy(&source_path, &target_path).map_err(|error| error.to_string())?;
+    fs::copy(&source_path, &target_path)?;
 
     create_artifact(CreateArtifactInput {
         workspace_id: thread.workspace_id,
@@ -111,17 +108,14 @@ pub fn import_attachment_artifact(
     })
 }
 
-pub fn ensure_artifact(input: EnsureArtifactInput) -> Result<(), String> {
-    initialize_app_store()?;
+pub fn ensure_artifact(input: EnsureArtifactInput) -> Result<(), crate::AppError> {
     let conn = connect()?;
     let thread_id = run_thread_id(&conn, &input.run_id)?;
-    let workspace_id: String = conn
-        .query_row(
-            "SELECT workspace_id FROM threads WHERE id = ?1",
-            params![thread_id],
-            |row| row.get(0),
-        )
-        .map_err(|error| error.to_string())?;
+    let workspace_id: String = conn.query_row(
+        "SELECT workspace_id FROM threads WHERE id = ?1",
+        params![thread_id],
+        |row| row.get(0),
+    )?;
     let existing: Option<String> = conn
         .query_row(
             "SELECT id
@@ -134,8 +128,7 @@ pub fn ensure_artifact(input: EnsureArtifactInput) -> Result<(), String> {
             params![input.run_id, input.title, input.path],
             |row| row.get(0),
         )
-        .optional()
-        .map_err(|error| error.to_string())?;
+        .optional()?;
     if existing.is_some() {
         return Ok(());
     }
@@ -159,8 +152,7 @@ pub fn ensure_artifact(input: EnsureArtifactInput) -> Result<(), String> {
             input.summary,
             now
         ],
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
     Ok(())
 }
 
@@ -212,8 +204,7 @@ fn unique_attachment_path(dir: &Path, now: i64, file_name: &str) -> PathBuf {
     candidate
 }
 
-pub fn get_artifact(id: &str) -> Result<Option<ArtifactRecord>, String> {
-    initialize_app_store()?;
+pub fn get_artifact(id: &str) -> Result<Option<ArtifactRecord>, crate::AppError> {
     let conn = connect()?;
     conn.query_row(
         "SELECT id, workspace_id, thread_id, run_id, title, type, path, content,
@@ -224,11 +215,10 @@ pub fn get_artifact(id: &str) -> Result<Option<ArtifactRecord>, String> {
         artifact_from_row,
     )
     .optional()
-    .map_err(|error| error.to_string())
+    .map_err(crate::AppError::from)
 }
 
-pub fn delete_artifact(id: &str) -> Result<ArtifactRecord, String> {
-    initialize_app_store()?;
+pub fn delete_artifact(id: &str) -> Result<ArtifactRecord, crate::AppError> {
     let now = now_millis();
     let conn = connect()?;
     conn.execute(
@@ -236,8 +226,7 @@ pub fn delete_artifact(id: &str) -> Result<ArtifactRecord, String> {
          SET deleted_at = ?1, updated_at = ?1
          WHERE id = ?2 AND deleted_at IS NULL",
         params![now, id],
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
 
-    get_artifact(id)?.ok_or_else(|| "Artifact could not be loaded.".to_string())
+    get_artifact(id)?.ok_or_else(|| "Artifact could not be loaded.".to_string().into())
 }

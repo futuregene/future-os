@@ -11,14 +11,13 @@ use rusqlite::{params, OptionalExtension};
 
 use super::records::*;
 
-use super::{connect, initialize_app_store};
+use super::connect;
 
 // ─── Sandbox Configuration ─────────────────────────────────────────────
 
 pub fn get_sandbox_config(
     workspace_id: Option<&str>,
-) -> Result<Option<SandboxConfigRecord>, String> {
-    initialize_app_store()?;
+) -> Result<Option<SandboxConfigRecord>, crate::AppError> {
     let conn = connect()?;
     let query = match workspace_id {
         Some(_) => "SELECT id, workspace_id, mode, writable_roots, network_access, created_at, updated_at FROM sandbox_config WHERE workspace_id = ?1",
@@ -36,11 +35,10 @@ pub fn get_sandbox_config(
         })
     })
     .optional()
-    .map_err(|e| e.to_string())
+    .map_err(crate::AppError::from)
 }
 
-pub fn upsert_sandbox_config(config: &SandboxConfigRecord) -> Result<(), String> {
-    initialize_app_store()?;
+pub fn upsert_sandbox_config(config: &SandboxConfigRecord) -> Result<(), crate::AppError> {
     let conn = connect()?;
     conn.execute(
         "INSERT INTO sandbox_config (id, workspace_id, mode, writable_roots, network_access, created_at, updated_at)
@@ -60,7 +58,7 @@ pub fn upsert_sandbox_config(config: &SandboxConfigRecord) -> Result<(), String>
             config.updated_at,
         ],
     )
-    .map_err(|e| e.to_string())?;
+    ?;
     Ok(())
 }
 
@@ -68,8 +66,7 @@ pub fn upsert_sandbox_config(config: &SandboxConfigRecord) -> Result<(), String>
 
 pub fn get_approval_policy_config(
     workspace_id: Option<&str>,
-) -> Result<Option<ApprovalPolicyConfigRecord>, String> {
-    initialize_app_store()?;
+) -> Result<Option<ApprovalPolicyConfigRecord>, crate::AppError> {
     let conn = connect()?;
     let query = match workspace_id {
         Some(_) => "SELECT id, workspace_id, policy, reviewer, created_at, updated_at FROM approval_policy_config WHERE workspace_id = ?1",
@@ -86,11 +83,12 @@ pub fn get_approval_policy_config(
         })
     })
     .optional()
-    .map_err(|e| e.to_string())
+    .map_err(crate::AppError::from)
 }
 
-pub fn upsert_approval_policy_config(config: &ApprovalPolicyConfigRecord) -> Result<(), String> {
-    initialize_app_store()?;
+pub fn upsert_approval_policy_config(
+    config: &ApprovalPolicyConfigRecord,
+) -> Result<(), crate::AppError> {
     let conn = connect()?;
     conn.execute(
         "INSERT INTO approval_policy_config (id, workspace_id, policy, reviewer, created_at, updated_at)
@@ -108,41 +106,39 @@ pub fn upsert_approval_policy_config(config: &ApprovalPolicyConfigRecord) -> Res
             config.updated_at,
         ],
     )
-    .map_err(|e| e.to_string())?;
+    ?;
     Ok(())
 }
 
 // ─── Approval Rules ────────────────────────────────────────────────────
 
-pub fn list_approval_rules(workspace_id: Option<&str>) -> Result<Vec<ApprovalRuleRecord>, String> {
-    initialize_app_store()?;
+pub fn list_approval_rules(
+    workspace_id: Option<&str>,
+) -> Result<Vec<ApprovalRuleRecord>, crate::AppError> {
     let conn = connect()?;
     let query = match workspace_id {
         Some(_) => "SELECT id, workspace_id, scope, match_kind, match_value, decision, enabled, created_at, expires_at FROM approval_rules WHERE workspace_id = ?1 ORDER BY created_at",
         None => "SELECT id, workspace_id, scope, match_kind, match_value, decision, enabled, created_at, expires_at FROM approval_rules WHERE workspace_id IS NULL ORDER BY created_at",
     };
-    let mut stmt = conn.prepare(query).map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![workspace_id], |row| {
-            Ok(ApprovalRuleRecord {
-                id: row.get(0)?,
-                workspace_id: row.get(1)?,
-                scope: row.get(2)?,
-                match_kind: row.get(3)?,
-                match_value: row.get(4)?,
-                decision: row.get(5)?,
-                enabled: row.get(6)?,
-                created_at: row.get(7)?,
-                expires_at: row.get(8)?,
-            })
+    let mut stmt = conn.prepare(query)?;
+    let rows = stmt.query_map(params![workspace_id], |row| {
+        Ok(ApprovalRuleRecord {
+            id: row.get(0)?,
+            workspace_id: row.get(1)?,
+            scope: row.get(2)?,
+            match_kind: row.get(3)?,
+            match_value: row.get(4)?,
+            decision: row.get(5)?,
+            enabled: row.get(6)?,
+            created_at: row.get(7)?,
+            expires_at: row.get(8)?,
         })
-        .map_err(|e| e.to_string())?;
+    })?;
     rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
+        .map_err(crate::AppError::from)
 }
 
-pub fn insert_approval_rule(rule: &ApprovalRuleRecord) -> Result<(), String> {
-    initialize_app_store()?;
+pub fn insert_approval_rule(rule: &ApprovalRuleRecord) -> Result<(), crate::AppError> {
     let conn = connect()?;
     conn.execute(
         "INSERT INTO approval_rules (id, workspace_id, scope, match_kind, match_value, decision, enabled, created_at, expires_at)
@@ -159,14 +155,12 @@ pub fn insert_approval_rule(rule: &ApprovalRuleRecord) -> Result<(), String> {
             rule.expires_at,
         ],
     )
-    .map_err(|e| e.to_string())?;
+    ?;
     Ok(())
 }
 
-pub fn delete_approval_rule(id: &str) -> Result<(), String> {
-    initialize_app_store()?;
+pub fn delete_approval_rule(id: &str) -> Result<(), crate::AppError> {
     let conn = connect()?;
-    conn.execute("DELETE FROM approval_rules WHERE id = ?1", params![id])
-        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM approval_rules WHERE id = ?1", params![id])?;
     Ok(())
 }

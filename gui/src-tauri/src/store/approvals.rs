@@ -1,11 +1,10 @@
 use rusqlite::{params, OptionalExtension};
 
-use super::initialize_app_store;
+use super::db::*;
 use super::records::*;
-use super::support::*;
+use super::util::*;
 
-pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), String> {
-    initialize_app_store()?;
+pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), crate::AppError> {
     let conn = connect()?;
     let thread_id = run_thread_id(&conn, &input.run_id)?;
     let existing: Option<String> = conn
@@ -18,8 +17,7 @@ pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), 
             params![input.approval_request_id, input.tool_call_id, input.kind],
             |row| row.get(0),
         )
-        .optional()
-        .map_err(|error| error.to_string())?;
+        .optional()?;
 
     if existing.is_some() {
         return Ok(());
@@ -53,13 +51,11 @@ pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), 
             input.sandbox_boundary,
             reviewer,
         ],
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
     Ok(())
 }
 
-pub fn ensure_review_change(input: EnsureReviewChangeInput) -> Result<(), String> {
-    initialize_app_store()?;
+pub fn ensure_review_change(input: EnsureReviewChangeInput) -> Result<(), crate::AppError> {
     let conn = connect()?;
     let thread_id = run_thread_id(&conn, &input.run_id)?;
     let now = now_millis();
@@ -72,8 +68,7 @@ pub fn ensure_review_change(input: EnsureReviewChangeInput) -> Result<(), String
             params![input.tool_call_id],
             |row| row.get(0),
         )
-        .optional()
-        .map_err(|error| error.to_string())?;
+        .optional()?;
 
     let changeset_id = if let Some(id) = changeset_id {
         id
@@ -93,8 +88,7 @@ pub fn ensure_review_change(input: EnsureReviewChangeInput) -> Result<(), String
                 input.summary,
                 now
             ],
-        )
-        .map_err(|error| error.to_string())?;
+        )?;
         id
     };
 
@@ -108,8 +102,7 @@ pub fn ensure_review_change(input: EnsureReviewChangeInput) -> Result<(), String
                 params![changeset_id, path],
                 |row| row.get(0),
             )
-            .optional()
-            .map_err(|error| error.to_string())?;
+            .optional()?;
 
         if existing.is_none() {
             conn.execute(
@@ -125,24 +118,23 @@ pub fn ensure_review_change(input: EnsureReviewChangeInput) -> Result<(), String
                     input.summary,
                     now
                 ],
-            )
-            .map_err(|error| error.to_string())?;
+            )?;
 
             conn.execute(
                 "UPDATE review_changesets
                  SET files_changed = files_changed + 1, updated_at = ?1
                  WHERE id = ?2",
                 params![now, changeset_id],
-            )
-            .map_err(|error| error.to_string())?;
+            )?;
         }
     }
 
     Ok(())
 }
 
-pub fn list_approval_requests(thread_id: &str) -> Result<Vec<ApprovalRequestRecord>, String> {
-    initialize_app_store()?;
+pub fn list_approval_requests(
+    thread_id: &str,
+) -> Result<Vec<ApprovalRequestRecord>, crate::AppError> {
     let conn = connect()?;
     let mut stmt = conn
         .prepare(
@@ -153,21 +145,22 @@ pub fn list_approval_requests(thread_id: &str) -> Result<Vec<ApprovalRequestReco
              WHERE thread_id = ?1
              ORDER BY created_at DESC",
         )
-        .map_err(|error| error.to_string())?;
-    let rows = stmt
-        .query_map(params![thread_id], approval_request_from_row)
-        .map_err(|error| error.to_string())?;
+        ?;
+    let rows = stmt.query_map(params![thread_id], approval_request_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())
+        .map_err(crate::AppError::from)
 }
 
 pub fn decide_approval_request(
     input: DecideApprovalRequestInput,
-) -> Result<ApprovalRequestRecord, String> {
-    initialize_app_store()?;
+) -> Result<ApprovalRequestRecord, crate::AppError> {
     let status = match input.status.as_str() {
         "approved" | "rejected" | "cancelled" => input.status,
-        _ => return Err("approval status must be approved, rejected, or cancelled.".to_string()),
+        _ => {
+            return Err("approval status must be approved, rejected, or cancelled."
+                .to_string()
+                .into())
+        }
     };
     let now = now_millis();
     let conn = connect()?;
@@ -176,41 +169,38 @@ pub fn decide_approval_request(
          SET status = ?1, decision_note = ?2, decided_at = ?3, updated_at = ?3
          WHERE id = ?4",
         params![status, input.decision_note, now, input.approval_request_id],
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
 
     get_approval_request(&input.approval_request_id)?
-        .ok_or_else(|| "Approval request could not be loaded.".to_string())
+        .ok_or_else(|| "Approval request could not be loaded.".to_string().into())
 }
 
-pub fn list_review_changesets(thread_id: &str) -> Result<Vec<ReviewChangesetRecord>, String> {
-    initialize_app_store()?;
+pub fn list_review_changesets(
+    thread_id: &str,
+) -> Result<Vec<ReviewChangesetRecord>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, thread_id, run_id, tool_call_id, title, summary, status,
+    let mut stmt = conn.prepare(
+        "SELECT id, thread_id, run_id, tool_call_id, title, summary, status,
                     files_changed, additions, deletions, created_at, updated_at
              FROM review_changesets
              WHERE thread_id = ?1
              ORDER BY created_at DESC",
-        )
-        .map_err(|error| error.to_string())?;
-    let rows = stmt
-        .query_map(params![thread_id], review_changeset_from_row)
-        .map_err(|error| error.to_string())?;
+    )?;
+    let rows = stmt.query_map(params![thread_id], review_changeset_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())
+        .map_err(crate::AppError::from)
 }
 
 pub fn update_review_changeset_status(
     input: UpdateReviewChangesetStatusInput,
-) -> Result<ReviewChangesetRecord, String> {
-    initialize_app_store()?;
+) -> Result<ReviewChangesetRecord, crate::AppError> {
     let status = match input.status.as_str() {
         "applied" | "discarded" | "pending" => input.status,
         _ => {
             return Err(
-                "review changeset status must be pending, applied, or discarded.".to_string(),
+                "review changeset status must be pending, applied, or discarded."
+                    .to_string()
+                    .into(),
             )
         }
     };
@@ -221,8 +211,7 @@ pub fn update_review_changeset_status(
          SET status = ?1, updated_at = ?2
          WHERE id = ?3",
         params![status, now, input.changeset_id],
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
 
     conn.query_row(
         "SELECT id, thread_id, run_id, tool_call_id, title, summary, status,
@@ -232,27 +221,23 @@ pub fn update_review_changeset_status(
         params![input.changeset_id],
         review_changeset_from_row,
     )
-    .optional()
-    .map_err(|error| error.to_string())?
-    .ok_or_else(|| "Review changeset could not be loaded.".to_string())
+    .optional()?
+    .ok_or_else(|| "Review changeset could not be loaded.".to_string().into())
 }
 
-pub fn list_review_file_changes(changeset_id: &str) -> Result<Vec<ReviewFileChangeRecord>, String> {
-    initialize_app_store()?;
+pub fn list_review_file_changes(
+    changeset_id: &str,
+) -> Result<Vec<ReviewFileChangeRecord>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, changeset_id, target_type, target_id, path, change_type,
+    let mut stmt = conn.prepare(
+        "SELECT id, changeset_id, target_type, target_id, path, change_type,
                     before_ref, after_ref, diff, summary, additions, deletions,
                     created_at, updated_at
              FROM review_file_changes
              WHERE changeset_id = ?1
              ORDER BY created_at ASC",
-        )
-        .map_err(|error| error.to_string())?;
-    let rows = stmt
-        .query_map(params![changeset_id], review_file_change_from_row)
-        .map_err(|error| error.to_string())?;
+    )?;
+    let rows = stmt.query_map(params![changeset_id], review_file_change_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())
+        .map_err(crate::AppError::from)
 }

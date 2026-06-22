@@ -1,8 +1,8 @@
 import type { FormEvent } from "react";
-import type { AgentModelOption } from "../../integrations/agent/models";
+import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { StoredWorkspace } from "../../integrations/storage/threadStore";
+import type { MessageAttachment } from "./agentThreadTypes";
 import type { ComposerSendPayload } from "./Composer";
-import type { MessageAttachment } from "./types";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   Bell,
@@ -18,7 +18,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
 import { IconButton } from "../../components/ui/IconButton";
-import { defaultAgentModelId } from "../../integrations/agent/models";
+import { defaultAgentModelId } from "../../integrations/agent/agentClient";
 import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { startWindowDrag } from "../../lib/windowDrag";

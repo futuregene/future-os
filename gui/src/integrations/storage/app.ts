@@ -1,7 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "../tauri/invoke";
 
 export async function initializeAppStore() {
-  await invoke("initialize_app_store");
+  await invokeCommand("initialize_app_store");
 }
 
 export function storedTimeToIso(value: number) {
