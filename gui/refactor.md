@@ -32,9 +32,9 @@
 - [x] providers 命令 + 接口移到 `integrations/agent/providers.ts`(修正"providers 放在 storage"的错位)
 - [x] appSettings 命令 + `AppSettings` 接口移到 `integrations/storage/appSettings.ts`
 - [x] 把 `threadStore.ts` 按域拆成 `app/files/threads/runs/review/artifacts.ts`;`threadStore.ts` 改为 barrel re-export(call site 零改动)
-- [ ] **剩余**:统一 typed `invoke` 包装层(集中错误归一化);`markdownReferences` 并入
-- [ ] **剩余**:统一 Tauri 命令参数形状约定(结构化→`{input}`,单标量→具名键)
-- [ ] **剩余(可选)**:把 barrel `threadStore.ts` 重命名/让 call site 直接 import 域模块
+- [x] 统一 typed `invoke` 包装层 `integrations/tauri/invoke.ts`(集中错误归一化 `normalizeInvokeError`);`markdownReferences` 并入,所有 call site 迁移
+- [x] 统一 Tauri 命令参数形状约定(结构化→`{input}`,单标量→具名键:`abort_run`/`get_or_create_chat_workspace`/`save_pasted_image`)
+- [ ] **剩余(可选)**:把 barrel `threadStore.ts` 重命名/让 call site 直接 import 域模块 —— 评估为低收益高 churn(barrel 本身无问题),暂不做
 
 ## Batch 4 — `AppShell` 拆分
 
@@ -46,11 +46,11 @@
 
 ## Batch 5 — 模块归位与命名(前端)
 
-- [ ] `components/layout/context-panel/` → `features/{runs,review,artifacts}/`;`contextPanelFormatters` 提为中性 `runDisplayFormatters`
+- [x] `components/layout/context-panel/` → `features/{runs,review,artifacts}/`(RunsPanel/RunInspectPanel/runDisplayFormatters→runs、ReviewPanel→review、Artifacts*/PdfPreview→artifacts);`contextPanelFormatters` → 中性 `runDisplayFormatters`;删 `ContextEmptyState` shim(直接用 `ui/EmptyState`);`ReviewBase` 类型反转下放到 `ReviewPanel`(layout 反向依赖 feature);`ContextPanel` 留 layout 仅作容器
 - [x] 删除 `features/agent/MarkdownContent.tsx` shim,MessageBlock 改直接 import
 - [x] `formatRunStatus` 二义性:`agentThreadUtils` 里那份是**死代码**,直接删除(clash 消除)
-- [ ] 重命名:`useAgentThreadController`→`useAgentThreadState`、`agentThreadUtils`→`agentMessageFormatters`、`referencePromptContext`→`buildReferencePrompt`、`features/agent/types`→`agentThreadTypes`
-- [ ] `integrations/agent`:合并 `futureAgentClient`+`models` → `agentClient.ts`,删死导出
+- [x] 重命名:`useAgentThreadController`→`useAgentThreadState`、`agentThreadUtils`→`agentMessageFormatters`、`referencePromptContext`→`buildReferencePrompt`、`features/agent/types`→`agentThreadTypes`
+- [x] `integrations/agent`:合并 `futureAgentClient`+`models` → `agentClient.ts`,删死导出
 - [ ] 引入 typed event bus(替换 window CustomEvent)
 
 ## Batch 6 — Rust 后端拆分
@@ -63,7 +63,7 @@
 - [x] `store.rs` 根的 threads/workspaces/messages/runs 抽到独立模块(638→61 行,facade only;对齐已有按域拆分)
 - [x] `store/support.rs` 拆 `db.rs`(连接基础设施 app_dir/db_path/connect/apply_schema + 杂项跨域查询 get_run/get_approval_request/get_message/...)/`util.rs`(纯工具 create_id/now_millis/expand_tilde/count_workspace_files/...);13 个 `*_from_row` 移入 `records.rs`(与 record 同文件);删 support.rs,各模块 `use super::support::*` → `super::db::*` + 由 `super::records::*` 覆盖 from_row
 - [x] `store/models.rs` → `records.rs`(消除与 LLM "models" 撞名)
-- [ ] **剩余**:`store/review.rs` → `approvals.rs`
+- [x] `store/review.rs` → `approvals.rs`(approval_requests + review_changesets 同域)
 - [x] `store/markdown_refs.rs` → 目录;抽出 `markdown_refs/extract.rs`(纯解析 `futureos://` link/fence + percent_decode + 对应测试,1224→1035)
 - [x] `markdown_refs/mod.rs` 再拆 `resolve.rs`(读侧:references→records + get_*_in_workspace)/`search.rs`(@-mention 搜索 + compact_search_text/reference_matches)/`sync.rs`(denormalized 表同步 + metadata/upsert);`short_id` 留 mod.rs 共享,测试留 mod.rs(import 两个被测内部 fn)。1035→183 行 facade(extract 201 / resolve 235 / search 333 / sync 328)
 

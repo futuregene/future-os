@@ -1,8 +1,9 @@
-import type { StoredArtifact } from "../../../integrations/storage/threadStore";
+import type { StoredArtifact } from "../../integrations/storage/threadStore";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, BookMarked, Check, Clipboard, Download, ExternalLink, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { Badge } from "../../components/ui/Badge";
 import {
   deleteArtifact,
   exportArtifactFile,
@@ -10,10 +11,9 @@ import {
   promoteArtifactToResearch,
   readTextFilePreview,
   storedTimeToIso,
-} from "../../../integrations/storage/threadStore";
-import { copyText } from "../../../lib/clipboard";
-import { formatTime } from "../../../lib/date";
-import { Badge } from "../../ui/Badge";
+} from "../../integrations/storage/threadStore";
+import { copyText } from "../../lib/clipboard";
+import { formatTime } from "../../lib/date";
 import { PdfPreview } from "./PdfPreview";
 
 interface ArtifactDetailPanelProps {

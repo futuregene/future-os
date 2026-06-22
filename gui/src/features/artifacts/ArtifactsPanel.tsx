@@ -1,9 +1,9 @@
-import type { StoredArtifact } from "../../../integrations/storage/threadStore";
+import type { StoredArtifact } from "../../integrations/storage/threadStore";
 import { BookMarked, FileText, Maximize2, Trash2 } from "lucide-react";
-import { deleteArtifact, promoteArtifactToResearch, storedTimeToIso } from "../../../integrations/storage/threadStore";
-import { formatTime } from "../../../lib/date";
-import { Badge } from "../../ui/Badge";
-import { EmptyState } from "./ContextEmptyState";
+import { Badge } from "../../components/ui/Badge";
+import { EmptyState } from "../../components/ui/EmptyState";
+import { deleteArtifact, promoteArtifactToResearch, storedTimeToIso } from "../../integrations/storage/threadStore";
+import { formatTime } from "../../lib/date";
 
 export function ArtifactsPanel({
   artifacts,

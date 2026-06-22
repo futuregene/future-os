@@ -1,8 +1,8 @@
-import type { StoredRun, StoredToolCall } from "../../../integrations/storage/threadStore";
+import type { StoredRun, StoredToolCall } from "../../integrations/storage/threadStore";
 import { CircleStop, Maximize2, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { EmptyState } from "./ContextEmptyState";
-import { formatErrorType } from "./contextPanelFormatters";
+import { EmptyState } from "../../components/ui/EmptyState";
+import { formatErrorType } from "./runDisplayFormatters";
 
 interface RunsPanelProps {
   runs: StoredRun[];

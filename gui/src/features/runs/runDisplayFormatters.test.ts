@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatErrorType } from "./contextPanelFormatters";
+import { formatErrorType } from "./runDisplayFormatters";
 
 describe("formatErrorType", () => {
   it("returns null for null or undefined", () => {
