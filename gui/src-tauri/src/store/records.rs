@@ -496,3 +496,229 @@ pub struct ApprovalRuleRecord {
     pub created_at: i64,
     pub expires_at: Option<i64>,
 }
+
+// ── Row mappers ─────────────────────────────────────────────────────────────
+// `*_from_row` converters live next to the records they build. Column order
+// must match the `SELECT` lists in the query modules.
+
+pub(super) fn thread_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadRecord> {
+    Ok(ThreadRecord {
+        id: row.get(0)?,
+        workspace_id: row.get(1)?,
+        mode: row.get(2)?,
+        title: row.get(3)?,
+        status: row.get(4)?,
+        pinned: row.get::<_, i64>(5)? != 0,
+        readonly: row.get::<_, i64>(6)? != 0,
+        model_provider: row.get(7)?,
+        model_id: row.get(8)?,
+        agent_session_id: row.get(9)?,
+        last_message_at: row.get(10)?,
+        last_opened_at: row.get(11)?,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
+        archived_at: row.get(14)?,
+        deleted_at: row.get(15)?,
+    })
+}
+
+pub(super) fn message_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRecord> {
+    Ok(MessageRecord {
+        id: row.get(0)?,
+        thread_id: row.get(1)?,
+        run_id: row.get(2)?,
+        role: row.get(3)?,
+        content_type: row.get(4)?,
+        content: row.get(5)?,
+        status: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
+}
+
+pub(super) fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRecord> {
+    Ok(RunRecord {
+        id: row.get(0)?,
+        thread_id: row.get(1)?,
+        trigger_message_id: row.get(2)?,
+        status: row.get(3)?,
+        model_provider: row.get(4)?,
+        model_id: row.get(5)?,
+        started_at: row.get(6)?,
+        ended_at: row.get(7)?,
+        error_message: row.get(8)?,
+        error_type: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
+    })
+}
+
+pub(super) fn workspace_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceRecord> {
+    Ok(WorkspaceRecord {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        kind: row.get(2)?,
+        path: row.get(3)?,
+        description: row.get(4)?,
+        cleanup_status: row.get(5)?,
+        cleanup_requested_at: row.get(6)?,
+        cleaned_at: row.get(7)?,
+        last_opened_at: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+        deleted_at: row.get(11)?,
+    })
+}
+
+pub(super) fn run_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunEventRecord> {
+    Ok(RunEventRecord {
+        id: row.get(0)?,
+        run_id: row.get(1)?,
+        event_type: row.get(2)?,
+        payload: row.get(3)?,
+        sequence: row.get(4)?,
+        created_at: row.get(5)?,
+    })
+}
+
+pub(super) fn tool_call_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolCallRecord> {
+    Ok(ToolCallRecord {
+        id: row.get(0)?,
+        run_id: row.get(1)?,
+        name: row.get(2)?,
+        kind: row.get(3)?,
+        input: row.get(4)?,
+        status: row.get(5)?,
+        started_at: row.get(6)?,
+        ended_at: row.get(7)?,
+        created_at: row.get(8)?,
+    })
+}
+
+pub(super) fn tool_output_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolOutputRecord> {
+    Ok(ToolOutputRecord {
+        id: row.get(0)?,
+        tool_call_id: row.get(1)?,
+        kind: row.get(2)?,
+        content: row.get(3)?,
+        created_at: row.get(4)?,
+    })
+}
+
+pub(super) fn approval_request_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ApprovalRequestRecord> {
+    Ok(ApprovalRequestRecord {
+        id: row.get(0)?,
+        thread_id: row.get(1)?,
+        run_id: row.get(2)?,
+        tool_call_id: row.get(3)?,
+        kind: row.get(4)?,
+        status: row.get(5)?,
+        title: row.get(6)?,
+        summary: row.get(7)?,
+        risk_level: row.get(8)?,
+        requested_action: row.get(9)?,
+        decision_note: row.get(10)?,
+        decided_at: row.get(11)?,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
+        action_category: row.get(14)?,
+        action_payload: row.get(15)?,
+        sandbox_boundary: row.get(16)?,
+        reviewer: row.get(17)?,
+        decision_scope: row.get(18)?,
+        decision_source: row.get(19)?,
+    })
+}
+
+pub(super) fn review_changeset_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ReviewChangesetRecord> {
+    Ok(ReviewChangesetRecord {
+        id: row.get(0)?,
+        thread_id: row.get(1)?,
+        run_id: row.get(2)?,
+        tool_call_id: row.get(3)?,
+        title: row.get(4)?,
+        summary: row.get(5)?,
+        status: row.get(6)?,
+        files_changed: row.get(7)?,
+        additions: row.get(8)?,
+        deletions: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
+    })
+}
+
+pub(super) fn review_file_change_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ReviewFileChangeRecord> {
+    Ok(ReviewFileChangeRecord {
+        id: row.get(0)?,
+        changeset_id: row.get(1)?,
+        target_type: row.get(2)?,
+        target_id: row.get(3)?,
+        path: row.get(4)?,
+        change_type: row.get(5)?,
+        before_ref: row.get(6)?,
+        after_ref: row.get(7)?,
+        diff: row.get(8)?,
+        summary: row.get(9)?,
+        additions: row.get(10)?,
+        deletions: row.get(11)?,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
+    })
+}
+
+pub(super) fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtifactRecord> {
+    Ok(ArtifactRecord {
+        id: row.get(0)?,
+        workspace_id: row.get(1)?,
+        thread_id: row.get(2)?,
+        run_id: row.get(3)?,
+        title: row.get(4)?,
+        artifact_type: row.get(5)?,
+        path: row.get(6)?,
+        content: row.get(7)?,
+        content_storage: row.get(8)?,
+        summary: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
+        deleted_at: row.get(12)?,
+    })
+}
+
+pub(super) fn research_collection_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ResearchCollectionRecord> {
+    Ok(ResearchCollectionRecord {
+        id: row.get(0)?,
+        workspace_id: row.get(1)?,
+        name: row.get(2)?,
+        description: row.get(3)?,
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
+    })
+}
+
+pub(super) fn research_resource_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ResearchResourceRecord> {
+    Ok(ResearchResourceRecord {
+        id: row.get(0)?,
+        collection_id: row.get(1)?,
+        workspace_id: row.get(2)?,
+        source_artifact_id: row.get(3)?,
+        title: row.get(4)?,
+        resource_type: row.get(5)?,
+        source_uri: row.get(6)?,
+        content: row.get(7)?,
+        content_storage: row.get(8)?,
+        summary: row.get(9)?,
+        metadata: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+    })
+}

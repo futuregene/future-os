@@ -1,10 +1,10 @@
 import type { ReferenceTargetSearchResult, StoredArtifact, StoredResearchResource } from "./types";
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "../tauri/invoke";
 
 // ─── Artifacts ───────────────────────────────────────────────────────────
 
 export async function listArtifacts(threadId: string) {
-  return invoke<StoredArtifact[]>("list_artifacts", { threadId });
+  return invokeCommand<StoredArtifact[]>("list_artifacts", { threadId });
 }
 
 export async function createArtifact(input: {
@@ -18,25 +18,25 @@ export async function createArtifact(input: {
   contentStorage?: string | null;
   summary?: string | null;
 }) {
-  return invoke<StoredArtifact>("create_artifact", { input });
+  return invokeCommand<StoredArtifact>("create_artifact", { input });
 }
 
 export async function importAttachmentArtifact(input: { threadId: string; path: string }) {
-  return invoke<StoredArtifact>("import_attachment_artifact", { input });
+  return invokeCommand<StoredArtifact>("import_attachment_artifact", { input });
 }
 
 export async function deleteArtifact(artifactId: string) {
-  return invoke<StoredArtifact>("delete_artifact", { artifactId });
+  return invokeCommand<StoredArtifact>("delete_artifact", { artifactId });
 }
 
 // ─── Research ─────────────────────────────────────────────────────────────
 
 export async function promoteArtifactToResearch(artifactId: string) {
-  return invoke<StoredResearchResource>("promote_artifact_to_research", { artifactId });
+  return invokeCommand<StoredResearchResource>("promote_artifact_to_research", { artifactId });
 }
 
 export async function listResearchResources(workspaceId: string) {
-  return invoke<StoredResearchResource[]>("list_research_resources", { workspaceId });
+  return invokeCommand<StoredResearchResource[]>("list_research_resources", { workspaceId });
 }
 
 // ─── References ──────────────────────────────────────────────────────────
@@ -46,5 +46,5 @@ export async function searchReferenceTargets(input: {
   query?: string | null;
   limit?: number | null;
 }) {
-  return invoke<ReferenceTargetSearchResult[]>("search_reference_targets", { input });
+  return invokeCommand<ReferenceTargetSearchResult[]>("search_reference_targets", { input });
 }

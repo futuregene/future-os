@@ -1,4 +1,4 @@
-import type { ToolCall } from "./types";
+import type { ToolCall } from "./agentThreadTypes";
 import { ChevronDown, ChevronRight, TerminalSquare } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Badge } from "../../components/ui/Badge";

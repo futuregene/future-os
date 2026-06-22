@@ -1,12 +1,12 @@
 import type { ChangeEvent, ClipboardEvent, FormEvent, KeyboardEvent } from "react";
-import type { AgentModelOption } from "../../integrations/agent/models";
+import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ReferenceTargetSearchResult } from "../../integrations/storage/threadStore";
-import type { MessageAttachment } from "./types";
+import type { MessageAttachment } from "./agentThreadTypes";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { AlertTriangle, ArrowUp, Beaker, Box, Check, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { modelLabel } from "../../integrations/agent/models";
+import { modelLabel } from "../../integrations/agent/agentClient";
 import { savePastedImage, searchReferenceTargets } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";

@@ -1,5 +1,5 @@
 import type { StoredMessage, StoredRun } from "../../integrations/storage/threadStore";
-import type { AgentMessage } from "./types";
+import type { AgentMessage } from "./agentThreadTypes";
 import {
   storedTimeToIso,
   updateRunStatus,

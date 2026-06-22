@@ -180,9 +180,18 @@ else
     exit 1
   fi
   echo "Starting future-agent..."
+  AGENT_BIN="$AGENT_DIR/target/debug/future-agent"
+  if [[ ! -x "$AGENT_BIN" ]]; then
+    echo "Agent binary not found at $AGENT_BIN."
+    echo "Build it first (BUILD_AGENT defaults to 1) or run with BUILD_AGENT=1."
+    exit 1
+  fi
+  # exec the built binary directly instead of `cargo run`, so $! is the agent's
+  # own pid rather than the cargo wrapper's. Otherwise killing the recorded pid
+  # leaves the orphaned future-agent child holding the gRPC port.
   (
     cd "$AGENT_DIR"
-    cargo run
+    exec "$AGENT_BIN"
   ) >"$AGENT_LOG" 2>&1 &
   STARTED_AGENT_PID="$!"
   echo "$STARTED_AGENT_PID" >"$AGENT_PID_FILE"

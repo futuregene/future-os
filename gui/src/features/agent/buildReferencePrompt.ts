@@ -10,7 +10,7 @@ import { referenceKey } from "../markdown/futureMarkdownTypes";
 import { parseFutureMarkdown } from "../markdown/parseFutureMarkdown";
 import { resolveFutureReferences } from "../markdown/resolveFutureReferences";
 
-export async function buildPromptWithReferenceContext(workspaceId: string, markdown: string, prompt: string) {
+export async function buildReferencePrompt(workspaceId: string, markdown: string, prompt: string) {
   const document = parseFutureMarkdown(markdown);
   if (document.references.length === 0)
     return prompt;

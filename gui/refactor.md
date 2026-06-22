@@ -56,21 +56,23 @@
 ## Batch 6 — Rust 后端拆分
 
 - [x] 抽 `fs_commands.rs`(open_path/read_text_file_preview/export_artifact_file/save_pasted_image + helpers)出 lib.rs(594→444 行)
-- [ ] **剩余**:其余命令按域拆到 `commands/*.rs`;`decide_approval`/`abort_run` 编排下沉到 agent_bridge
+- [x] 其余命令按域拆到 `commands/*.rs`(app/providers/settings/workspaces/threads/messages/runs/approvals/review/artifacts/references/agent + fs_commands→commands/files);`commands/mod.rs` flat re-export 供 `generate_handler!` 用裸名;`decide_approval`/`abort_run` 编排(+ is_stale_approval_error/is_agent_unavailable_error)下沉到 agent_bridge。lib.rs 446→80 行(仅 run() + 模块接线)
 - [x] 从 `agent_bridge.rs` 抽出 `run_error.rs`(classify_run_error + 全部相关测试,1165→1009 行)
 - [x] `agent_bridge.rs` → 目录;抽出 `agent_bridge/client.rs`(RpcCommand 构造 + endpoint + 图片编码 + command_id,1009→872)
-- [ ] **剩余**:`agent_bridge/mod.rs` 再拆 stream/persist(共享 event_value/value_string/compact_json,intricate)
+- [x] `agent_bridge/mod.rs` 再拆 `stream.rs`(collect_agent_response + event_text/event_error)/`persist.rs`(全部 persist_* 投影 + event_value/value_string/compact_json + review_shape_for_tool);mod.rs 收敛为连接/会话编排(872→395 行)。顺手删了误挂在 notify_agent_approval_decision 上的 classify_run_error 陈旧文档
 - [x] `store.rs` 根的 threads/workspaces/messages/runs 抽到独立模块(638→61 行,facade only;对齐已有按域拆分)
-- [ ] `store/support.rs` 拆 `db.rs`/`util.rs`;`*_from_row` 与 record 同处
+- [x] `store/support.rs` 拆 `db.rs`(连接基础设施 app_dir/db_path/connect/apply_schema + 杂项跨域查询 get_run/get_approval_request/get_message/...)/`util.rs`(纯工具 create_id/now_millis/expand_tilde/count_workspace_files/...);13 个 `*_from_row` 移入 `records.rs`(与 record 同文件);删 support.rs,各模块 `use super::support::*` → `super::db::*` + 由 `super::records::*` 覆盖 from_row
 - [x] `store/models.rs` → `records.rs`(消除与 LLM "models" 撞名)
 - [ ] **剩余**:`store/review.rs` → `approvals.rs`
 - [x] `store/markdown_refs.rs` → 目录;抽出 `markdown_refs/extract.rs`(纯解析 `futureos://` link/fence + percent_decode + 对应测试,1224→1035)
-- [ ] **剩余**:`markdown_refs/mod.rs` 再拆 resolve/search/sync(DB 耦合、共享 helper)
+- [x] `markdown_refs/mod.rs` 再拆 `resolve.rs`(读侧:references→records + get_*_in_workspace)/`search.rs`(@-mention 搜索 + compact_search_text/reference_matches)/`sync.rs`(denormalized 表同步 + metadata/upsert);`short_id` 留 mod.rs 共享,测试留 mod.rs(import 两个被测内部 fn)。1035→183 行 facade(extract 201 / resolve 235 / search 333 / sync 328)
 
 ## Batch 7 — 跨切面清理(Rust)
 
-- [ ] 去掉每次 store 调用的 `initialize_app_store()`(启动时一次);共享连接 `with_conn`
-- [ ] 引入 `AppError`(`thiserror`),消除满屏 `.map_err(|e| e.to_string())` 与错误子串反解
+- [x] 去掉每次 store 调用的 `initialize_app_store()`(53 处:启动时 `setup` 已初始化一次,函数体内不再重跑建表);各模块失效的 `use ...initialize_app_store` 一并清理
+  - 注:**未**引入全局共享连接/`with_conn` 包裹 —— 评估后认为当前「每调用一个轻量 `connect()`」语义无需改变,把 50+ 函数体重写成闭包是高 churn 低收益,故有意不做(如需池化可后续单独立项)
+- [x] 引入 `AppError`(`thiserror`,`src/error.rs`):`From<rusqlite/io/serde_json/String/&str>` 让 `?` 自动转换,**序列化为 string**(命令边界 `Result<T, AppError>` → 前端仍是 `string`,前端 0 改动)。全 crate `Result<_, String>` → `Result<_, AppError>`,`.map_err(|e| e.to_string())` 由 174 → 0。保留的 `.map_err`:`|_| "..."`(lock poison 等无信息错误)与 `|error| format!("...{error}")`(远端 gRPC 错误带上下文)
+  - 子串反解:本地错误已结构化;`run_error::classify_run_error` 和 agent_bridge 的 `is_stale_approval_error`/`is_agent_unavailable_error` 反解的是**远端 agent 经 gRPC 返回的错误文本**,本质是字符串,有意保留(调用点 `&error.to_string()` 喂入)
 - [x] 合并重复 helper:`artifact_type_from_path`(→ `store::artifact_type_from_path`)、`canonical_or_raw`(→ `git_review::canonical_or_raw`)
 - [ ] ~~删除死模块 `store/approval_config.rs`~~ —— 经判断是 P2 审批模型的**有意保留脚手架**(schema 表已就位),不删,留待后续接入
 

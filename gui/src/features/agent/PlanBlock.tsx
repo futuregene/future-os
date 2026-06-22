@@ -1,4 +1,4 @@
-import type { AgentPlanStep } from "./types";
+import type { AgentPlanStep } from "./agentThreadTypes";
 import { Check, Circle, Loader2 } from "lucide-react";
 import { cn } from "../../lib/cn";
 

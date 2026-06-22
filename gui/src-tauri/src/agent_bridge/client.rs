@@ -57,7 +57,7 @@ pub(super) fn prompt_command(
     message: String,
     session_id: String,
     image_paths: Vec<String>,
-) -> Result<RpcCommand, String> {
+) -> Result<RpcCommand, crate::AppError> {
     Ok(RpcCommand {
         message,
         images: encode_image_paths(image_paths)?,
@@ -108,7 +108,7 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
     }
 }
 
-fn encode_image_paths(paths: Vec<String>) -> Result<Vec<ImageContent>, String> {
+fn encode_image_paths(paths: Vec<String>) -> Result<Vec<ImageContent>, crate::AppError> {
     paths
         .into_iter()
         .map(|path| {

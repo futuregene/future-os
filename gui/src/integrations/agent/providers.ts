@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "../tauri/invoke";
 
 export interface BuiltinProvider {
   id: string;
@@ -27,7 +27,7 @@ export interface ProvidersView {
 }
 
 export async function listAgentProviders() {
-  return invoke<ProvidersView>("list_agent_providers");
+  return invokeCommand<ProvidersView>("list_agent_providers");
 }
 
 export async function upsertCustomProvider(input: {
@@ -38,9 +38,9 @@ export async function upsertCustomProvider(input: {
   apiKey?: string | null;
   models: CustomProviderModel[];
 }) {
-  return invoke<ProvidersView>("upsert_custom_provider", { input });
+  return invokeCommand<ProvidersView>("upsert_custom_provider", { input });
 }
 
 export async function deleteCustomProvider(id: string) {
-  return invoke<ProvidersView>("delete_custom_provider", { id });
+  return invokeCommand<ProvidersView>("delete_custom_provider", { id });
 }

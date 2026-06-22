@@ -36,7 +36,7 @@ pub fn get_git_review(
     workspace_id: String,
     base: Option<String>,
     custom_base: Option<String>,
-) -> Result<GitReview, String> {
+) -> Result<GitReview, crate::AppError> {
     let workspace = store::get_workspace(&workspace_id)?
         .ok_or_else(|| "Workspace could not be loaded.".to_string())?;
     let workspace_path = PathBuf::from(&workspace.path);
@@ -407,16 +407,21 @@ fn parse_numstat(value: &str) -> i64 {
     value.parse::<i64>().unwrap_or(0)
 }
 
-fn git_output<const N: usize>(workspace_path: &Path, args: [&str; N]) -> Result<String, String> {
+fn git_output<const N: usize>(
+    workspace_path: &Path,
+    args: [&str; N],
+) -> Result<String, crate::AppError> {
     let output = Command::new("git")
         .arg("-C")
         .arg(workspace_path)
         .args(args)
-        .output()
-        .map_err(|error| error.to_string())?;
+        .output()?;
 
     if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        return Err(String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .to_string()
+            .into());
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())

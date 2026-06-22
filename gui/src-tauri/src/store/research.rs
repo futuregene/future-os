@@ -1,37 +1,37 @@
 use rusqlite::{params, OptionalExtension};
 
 use super::artifacts::get_artifact;
-use super::initialize_app_store;
+use super::db::*;
 use super::records::*;
-use super::support::*;
+use super::util::*;
 
-pub fn list_research_resources(workspace_id: &str) -> Result<Vec<ResearchResourceRecord>, String> {
-    initialize_app_store()?;
+pub fn list_research_resources(
+    workspace_id: &str,
+) -> Result<Vec<ResearchResourceRecord>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT r.id, r.collection_id, c.workspace_id, r.source_artifact_id, r.title, r.type,
+    let mut stmt = conn.prepare(
+        "SELECT r.id, r.collection_id, c.workspace_id, r.source_artifact_id, r.title, r.type,
                     r.source_uri, r.content, r.content_storage, r.summary, r.metadata,
                     r.created_at, r.updated_at
              FROM research_resources r
              JOIN research_collections c ON c.id = r.collection_id
              WHERE c.workspace_id = ?1
              ORDER BY r.created_at DESC",
-        )
-        .map_err(|error| error.to_string())?;
-    let rows = stmt
-        .query_map(params![workspace_id], research_resource_from_row)
-        .map_err(|error| error.to_string())?;
+    )?;
+    let rows = stmt.query_map(params![workspace_id], research_resource_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())
+        .map_err(crate::AppError::from)
 }
 
-pub fn promote_artifact_to_research(artifact_id: &str) -> Result<ResearchResourceRecord, String> {
-    initialize_app_store()?;
+pub fn promote_artifact_to_research(
+    artifact_id: &str,
+) -> Result<ResearchResourceRecord, crate::AppError> {
     let artifact =
         get_artifact(artifact_id)?.ok_or_else(|| "Artifact could not be loaded.".to_string())?;
     if artifact.deleted_at.is_some() {
-        return Err("deleted artifacts cannot be added to Research.".to_string());
+        return Err("deleted artifacts cannot be added to Research."
+            .to_string()
+            .into());
     }
 
     let collection = get_or_create_default_research_collection(&artifact.workspace_id)?;
@@ -49,8 +49,7 @@ pub fn promote_artifact_to_research(artifact_id: &str) -> Result<ResearchResourc
             params![artifact.id, artifact.workspace_id],
             research_resource_from_row,
         )
-        .optional()
-        .map_err(|error| error.to_string())?;
+        .optional()?;
     if let Some(resource) = existing {
         return Ok(resource);
     }
@@ -75,14 +74,16 @@ pub fn promote_artifact_to_research(artifact_id: &str) -> Result<ResearchResourc
             None::<String>,
             now
         ],
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
 
-    get_research_resource(&id)?
-        .ok_or_else(|| "Created research resource could not be loaded.".to_string())
+    get_research_resource(&id)?.ok_or_else(|| {
+        "Created research resource could not be loaded."
+            .to_string()
+            .into()
+    })
 }
 
-fn get_research_resource(id: &str) -> Result<Option<ResearchResourceRecord>, String> {
+fn get_research_resource(id: &str) -> Result<Option<ResearchResourceRecord>, crate::AppError> {
     let conn = connect()?;
     conn.query_row(
         "SELECT r.id, r.collection_id, c.workspace_id, r.source_artifact_id, r.title, r.type,
@@ -95,12 +96,12 @@ fn get_research_resource(id: &str) -> Result<Option<ResearchResourceRecord>, Str
         research_resource_from_row,
     )
     .optional()
-    .map_err(|error| error.to_string())
+    .map_err(crate::AppError::from)
 }
 
 fn get_or_create_default_research_collection(
     workspace_id: &str,
-) -> Result<ResearchCollectionRecord, String> {
+) -> Result<ResearchCollectionRecord, crate::AppError> {
     let conn = connect()?;
     let existing = conn
         .query_row(
@@ -111,8 +112,7 @@ fn get_or_create_default_research_collection(
             params![workspace_id],
             research_collection_from_row,
         )
-        .optional()
-        .map_err(|error| error.to_string())?;
+        .optional()?;
     if let Some(collection) = existing {
         return Ok(collection);
     }
@@ -129,8 +129,7 @@ fn get_or_create_default_research_collection(
             Some("Default research resources".to_string()),
             now
         ],
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
 
     conn.query_row(
         "SELECT id, workspace_id, name, description, created_at, updated_at
@@ -139,5 +138,5 @@ fn get_or_create_default_research_collection(
         params![id],
         research_collection_from_row,
     )
-    .map_err(|error| error.to_string())
+    .map_err(crate::AppError::from)
 }

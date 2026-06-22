@@ -69,7 +69,7 @@ pub struct UpsertCustomProviderInput {
     pub models: Vec<CustomProviderModel>,
 }
 
-pub fn list_agent_providers() -> Result<ProvidersView, String> {
+pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
     let models = read_json(&models_json_path()?);
     let auth = read_json(&auth_json_path()?);
 
@@ -131,23 +131,31 @@ pub fn list_agent_providers() -> Result<ProvidersView, String> {
     Ok(ProvidersView { builtin, custom })
 }
 
-pub fn upsert_custom_provider(input: UpsertCustomProviderInput) -> Result<ProvidersView, String> {
+pub fn upsert_custom_provider(
+    input: UpsertCustomProviderInput,
+) -> Result<ProvidersView, crate::AppError> {
     let id = input.id.trim().to_string();
     if id.is_empty() {
-        return Err("Provider id is required.".to_string());
+        return Err("Provider id is required.".to_string().into());
     }
     if id == FUTURE_PROVIDER_ID {
-        return Err("`future` is reserved for the built-in FutureGene provider.".to_string());
+        return Err("`future` is reserved for the built-in FutureGene provider."
+            .to_string()
+            .into());
     }
     if !id
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
     {
-        return Err("Provider id may only contain letters, numbers, '-', '_' and '.'.".to_string());
+        return Err(
+            "Provider id may only contain letters, numbers, '-', '_' and '.'."
+                .to_string()
+                .into(),
+        );
     }
     let base_url = input.base_url.trim();
     if base_url.is_empty() {
-        return Err("Base URL is required.".to_string());
+        return Err("Base URL is required.".to_string().into());
     }
 
     let api = {
@@ -233,10 +241,10 @@ pub fn upsert_custom_provider(input: UpsertCustomProviderInput) -> Result<Provid
     list_agent_providers()
 }
 
-pub fn delete_custom_provider(id: String) -> Result<ProvidersView, String> {
+pub fn delete_custom_provider(id: String) -> Result<ProvidersView, crate::AppError> {
     let id = id.trim().to_string();
     if id.is_empty() {
-        return Err("Provider id is required.".to_string());
+        return Err("Provider id is required.".to_string().into());
     }
 
     let models_path = models_json_path()?;
@@ -276,16 +284,16 @@ fn auth_has_key(auth: &Value, id: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn agent_dir() -> Result<PathBuf, String> {
+fn agent_dir() -> Result<PathBuf, crate::AppError> {
     let home = std::env::var("HOME").map_err(|_| "HOME environment variable is not set.")?;
     Ok(PathBuf::from(home).join(".future").join("agent"))
 }
 
-fn models_json_path() -> Result<PathBuf, String> {
+fn models_json_path() -> Result<PathBuf, crate::AppError> {
     Ok(agent_dir()?.join("models.json"))
 }
 
-fn auth_json_path() -> Result<PathBuf, String> {
+fn auth_json_path() -> Result<PathBuf, crate::AppError> {
     Ok(agent_dir()?.join("auth.json"))
 }
 
@@ -296,10 +304,10 @@ fn read_json(path: &PathBuf) -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
-fn write_json(path: &PathBuf, value: &Value) -> Result<(), String> {
+fn write_json(path: &PathBuf, value: &Value) -> Result<(), crate::AppError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(parent)?;
     }
-    let serialized = serde_json::to_string_pretty(value).map_err(|error| error.to_string())?;
-    std::fs::write(path, serialized).map_err(|error| error.to_string())
+    let serialized = serde_json::to_string_pretty(value)?;
+    std::fs::write(path, serialized).map_err(crate::AppError::from)
 }

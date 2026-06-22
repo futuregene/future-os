@@ -6,7 +6,7 @@ import type {
   StoredRun,
   StoredToolCall,
 } from "./types";
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "../tauri/invoke";
 
 export type FutureReferenceType = "approval" | "artifact" | "research" | "review" | "run" | "tool";
 
@@ -27,7 +27,7 @@ export async function resolveMarkdownReferences(workspaceId: string, references:
   if (references.length === 0)
     return [];
 
-  return invoke<ResolvedMarkdownReference[]>("resolve_markdown_references", {
+  return invokeCommand<ResolvedMarkdownReference[]>("resolve_markdown_references", {
     input: { references, workspaceId },
   });
 }

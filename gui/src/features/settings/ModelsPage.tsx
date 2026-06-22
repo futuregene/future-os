@@ -1,4 +1,4 @@
-import type { AgentModelOption } from "../../integrations/agent/models";
+import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import { useMemo, useState } from "react";
 import { TextInput } from "../../components/ui/TextInput";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";

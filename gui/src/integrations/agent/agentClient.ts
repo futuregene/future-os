@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "../tauri/invoke";
 
 export interface AgentModelOption {
   id: string;
@@ -10,14 +10,38 @@ export interface AgentModelOption {
   isDefault?: boolean;
 }
 
-export const agentModelOptions: AgentModelOption[] = [];
-export const defaultAgentModelId = "";
-
-export async function loadAgentModelOptions() {
-  return normalizeAgentModelOptions(await invoke<AgentModelOption[]>("list_agent_models"));
+interface AgentPromptResponse {
+  content: string;
 }
 
-export function normalizeAgentModelOptions(models: AgentModelOption[]) {
+export const defaultAgentModelId = "";
+
+export async function sendPromptToFutureAgent(
+  message: string,
+  threadId: string,
+  sessionId?: string | null,
+  runId?: string | null,
+  modelId?: string | null,
+  imagePaths?: string[],
+  thinkingLevel?: string | null,
+) {
+  const response = await invokeCommand<AgentPromptResponse>("agent_prompt", {
+    imagePaths: imagePaths ?? [],
+    message,
+    sessionId: sessionId ?? null,
+    threadId,
+    runId: runId ?? null,
+    modelId: modelId ?? null,
+    thinkingLevel: thinkingLevel ?? null,
+  });
+  return response.content;
+}
+
+export async function loadAgentModelOptions() {
+  return normalizeAgentModelOptions(await invokeCommand<AgentModelOption[]>("list_agent_models"));
+}
+
+function normalizeAgentModelOptions(models: AgentModelOption[]) {
   const seen = new Set<string>();
   return models
     .filter(model => model.id.trim().length > 0)

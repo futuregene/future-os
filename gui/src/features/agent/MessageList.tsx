@@ -1,4 +1,4 @@
-import type { AgentMessage } from "./types";
+import type { AgentMessage } from "./agentThreadTypes";
 import { MessageBlock } from "./MessageBlock";
 
 interface MessageListProps {

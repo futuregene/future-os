@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "../tauri/invoke";
 
 export interface AppSettings {
   autoApprove: boolean;
@@ -6,9 +6,9 @@ export interface AppSettings {
 }
 
 export async function getAppSettings() {
-  return invoke<AppSettings>("get_app_settings");
+  return invokeCommand<AppSettings>("get_app_settings");
 }
 
 export async function updateAppSettings(input: { autoApprove?: boolean; hiddenModels?: string[] }) {
-  return invoke<AppSettings>("update_app_settings", { input });
+  return invokeCommand<AppSettings>("update_app_settings", { input });
 }

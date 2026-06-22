@@ -1,11 +1,10 @@
 import type { Dispatch, SetStateAction } from "react";
-import type { AgentModelOption } from "../../integrations/agent/models";
+import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { StoredRun, StoredThread } from "../../integrations/storage/threadStore";
+import type { AgentActivityItem, AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import type { ComposerSendPayload } from "./Composer";
-import type { AgentActivityItem, AgentMessage, MessageAttachment } from "./types";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { sendPromptToFutureAgent } from "../../integrations/agent/futureAgentClient";
-import { modelSupportsImages, modelThinkingLevel } from "../../integrations/agent/models";
+import { modelSupportsImages, modelThinkingLevel, sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
 import {
   appendMessage,
   createRun,
@@ -22,11 +21,11 @@ import {
   matchesSettledRun,
   toAgentMessage,
   updateRunStatusSafe,
-} from "./agentThreadUtils";
+} from "./agentMessageFormatters";
 import { buildPromptWithAttachments, imageAttachmentPaths, stringifyMessageContent } from "./attachments";
-import { buildPromptWithReferenceContext } from "./referencePromptContext";
+import { buildReferencePrompt } from "./buildReferencePrompt";
 
-interface UseAgentThreadControllerInput {
+interface UseAgentThreadStateInput {
   thread: StoredThread | null;
   loadingStore: boolean;
   modelId: string;
@@ -36,7 +35,7 @@ interface UseAgentThreadControllerInput {
   onThreadActivity: () => void;
 }
 
-export function useAgentThreadController({
+export function useAgentThreadState({
   thread,
   loadingStore,
   modelId,
@@ -44,7 +43,7 @@ export function useAgentThreadController({
   pendingPrompt,
   onPromptConsumed,
   onThreadActivity,
-}: UseAgentThreadControllerInput) {
+}: UseAgentThreadStateInput) {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [loadingThread, setLoadingThread] = useState(true);
   const [recentRun, setRecentRun] = useState<StoredRun | null>(null);
@@ -160,7 +159,7 @@ export function useAgentThreadController({
       const messageContent = importedAttachments.length > 0
         ? stringifyMessageContent(content, importedAttachments)
         : content;
-      const promptContent = await buildPromptWithReferenceContext(
+      const promptContent = await buildReferencePrompt(
         thread.workspaceId,
         content,
         buildPromptWithAttachments(content, importedAttachments),
