@@ -38,11 +38,11 @@
 
 ## Batch 4 — `AppShell` 拆分
 
-- [ ] 抽 `useThreadStore`(线程/工作区数据 + rename/delete/pin/restore/model mutation + bootstrap)
-- [ ] 抽 `useAgentConnection`(modelOptions + 连接轮询 + `classifyAgentConnectionError`)
-- [ ] 抽 `useApprovals`(pendingApprovals + activeApproval + 1.5s 轮询 + 自动审批引擎)
-- [ ] 抽 `lib/useAsyncResource`(替换 9 处 cancelled-flag effect)与 `lib/usePolling`(替换 3+ 处轮询)
-- [ ] AppShell 收敛为布局编排
+- [x] 抽 `useThreadStore`(threads/workspaces + activeThread/activeWorkspace 派生 + bootstrap + run-status 1.5s 轮询 + refreshStore);同名解构 → AppShell handlers/render body 零改动;`appSettings` 加载从 bootstrap 拆为 AppShell 独立 effect
+- [x] 抽 `useAgentConnection`(modelOptions/visibleModelOptions + 10s 轮询 + selectedModelId + `classifyAgentConnectionError`,拥有并 re-export `AgentConnectionState`)
+- [x] 抽 `useApprovals`(pendingApprovals + activeApproval + 1.5s 轮询 + 自动审批引擎,基于 useAsyncResource)
+- [x] 抽 `lib/usePolling`(立即+interval+enabled+deps 重启)接入 3 处轮询;`lib/useAsyncResource`(取消安全的异步加载,供 useApprovals)。注:未把全部 9 处 cancelled-flag effect 都迁移(bootstrap 等多-state effect 不适合单资源模型,保留)
+- [x] AppShell 收敛为布局编排(710→484:UI state + 导航/dialog handlers + render)
 
 ## Batch 5 — 模块归位与命名(前端)
 
