@@ -1,5 +1,22 @@
 import type { MessageAttachment } from "./types";
 
+export const MAX_ATTACHMENTS_PER_TURN = 4;
+
+export const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"] as const;
+
+const IMAGE_MIME_EXTENSIONS: Record<string, string> = {
+  "image/bmp": "bmp",
+  "image/gif": "gif",
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/svg+xml": "svg",
+  "image/webp": "webp",
+};
+
+export function imageExtensionFromMime(mime: string) {
+  return IMAGE_MIME_EXTENSIONS[mime.toLowerCase()] ?? null;
+}
+
 interface StoredMixedMessage {
   attachments?: MessageAttachment[];
   text?: string;
@@ -57,6 +74,6 @@ export function imageAttachmentPaths(attachments: MessageAttachment[]) {
     .map(attachment => attachment.path);
 }
 
-function isImagePath(path: string) {
+export function isImagePath(path: string) {
   return /\.(?:jpe?g|png|gif|webp|bmp|svg)$/i.test(path);
 }

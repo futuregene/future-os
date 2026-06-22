@@ -102,6 +102,10 @@ export async function getOrCreateChatWorkspace(input: { threadId: string; title?
   return invoke<StoredWorkspace>("get_or_create_chat_workspace", input);
 }
 
+export async function ensureWorkspaceGit(workspaceId: string) {
+  return invoke<boolean>("ensure_workspace_git", { workspaceId });
+}
+
 export async function createDefaultChatThread() {
   return invoke<StoredThread>("create_thread", {
     input: {
@@ -272,6 +276,10 @@ export async function importAttachmentArtifact(input: {
   path: string;
 }) {
   return invoke<StoredArtifact>("import_attachment_artifact", { input });
+}
+
+export async function savePastedImage(input: { bytes: number[]; extension: string }) {
+  return invoke<{ name: string; path: string }>("save_pasted_image", input);
 }
 
 export async function deleteArtifact(artifactId: string) {

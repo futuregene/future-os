@@ -153,6 +153,30 @@ GUI 当前已具备：
 - 临时 workspace 删除前的清理摘要和保留 / 导出流程。
 - 文件缺失、过大时的更细恢复操作。
 
+### P4b: Attachments (Images)
+
+目标：输入框图片附件作为多模态输入，落盘与 Artifact 归属按对话类型判断（详见 PRODUCT.md 4.12）。
+
+产品规则：
+
+- 第一阶段只支持图片附件（jpg / jpeg / png / gif / webp / bmp / svg），非图片不进入附件。
+- 三种上传方式：附件按钮、复制粘贴、拖拽文件。
+- 每一轮对话最多附加 4 个文件。
+- 所有图片附件都作为多模态输入传给模型。
+- 普通 Chat：附件保存到临时工作目录并登记为 Artifact，同时传给模型。
+- Workspace 对话：附件不保存到工作目录、不创建 Artifact，只传给模型。
+
+已具备：
+
+- 落盘 / Artifact 归属按对话类型判定（`import_attachment_artifact` 对 Chat thread 落盘并登记 Artifact，Workspace 对话直传路径）。
+- 三种上传方式：附件按钮（图片过滤）、复制粘贴（图片写入临时文件取路径）、拖拽文件（Tauri DragDrop 取 OS 路径）。
+- 入口即限制图片类型；每轮最多 4 个文件。
+
+后续细化：
+
+- 粘贴 / 拖拽产生的临时图片文件的清理策略。
+- 超出 4 个或非图片时的更明确用户提示。
+
 ### P7: Markdown And Object Embeds
 
 当前阶段状态：主路径完成，代码高亮已实现。

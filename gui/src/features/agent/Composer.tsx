@@ -1,15 +1,16 @@
-import type { ChangeEvent, FormEvent, KeyboardEvent } from "react";
+import type { ChangeEvent, ClipboardEvent, FormEvent, KeyboardEvent } from "react";
 import type { AgentModelOption } from "../../integrations/agent/models";
 import type { ReferenceTargetSearchResult } from "../../integrations/storage/threadStore";
 import type { MessageAttachment } from "./types";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { AlertTriangle, ArrowUp, Beaker, Box, Check, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, Sparkles, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { modelLabel } from "../../integrations/agent/models";
-import { searchReferenceTargets } from "../../integrations/storage/threadStore";
+import { savePastedImage, searchReferenceTargets } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
-import { fileNameFromPath } from "./attachments";
+import { fileNameFromPath, IMAGE_EXTENSIONS, imageExtensionFromMime, isImagePath, MAX_ATTACHMENTS_PER_TURN } from "./attachments";
 
 export interface ComposerSendPayload {
   attachments: MessageAttachment[];
@@ -41,6 +42,7 @@ export function Composer({
 }: ComposerProps) {
   const [value, setValue] = useState("");
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
+  const [dropActive, setDropActive] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [caretPosition, setCaretPosition] = useState(0);
   const [referenceResults, setReferenceResults] = useState<ReferenceTargetSearchResult[]>([]);
@@ -165,37 +167,111 @@ export function Composer({
     });
   }
 
+  const addAttachmentPaths = useCallback((paths: string[]) => {
+    setAttachments((current) => {
+      const next = [...current];
+      for (const path of paths) {
+        if (next.length >= MAX_ATTACHMENTS_PER_TURN)
+          break;
+        if (!isImagePath(path))
+          continue;
+        if (next.some(attachment => attachment.path === path))
+          continue;
+
+        next.push({ name: fileNameFromPath(path), path });
+      }
+      return next;
+    });
+  }, []);
+
   async function handleAttachFiles() {
     if (disabled)
       return;
 
     const selected = await open({
+      filters: [{ extensions: [...IMAGE_EXTENSIONS], name: "Images" }],
       multiple: true,
-      title: "Attach files",
+      title: "Attach images",
     });
     const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
     if (paths.length === 0)
       return;
 
-    setAttachments(current => [
-      ...current,
-      ...paths
-        .filter(path => !current.some(attachment => attachment.path === path))
-        .map(path => ({
-          name: fileNameFromPath(path),
-          path,
-        })),
-    ]);
+    addAttachmentPaths(paths);
+  }
+
+  async function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    if (disabled)
+      return;
+
+    const imageItems = Array.from(event.clipboardData?.items ?? []).filter(
+      item => item.kind === "file" && item.type.startsWith("image/"),
+    );
+    if (imageItems.length === 0)
+      return;
+
+    event.preventDefault();
+    for (const item of imageItems) {
+      const file = item.getAsFile();
+      if (!file)
+        continue;
+
+      try {
+        const buffer = await file.arrayBuffer();
+        const saved = await savePastedImage({
+          bytes: Array.from(new Uint8Array(buffer)),
+          extension: imageExtensionFromMime(file.type) ?? "png",
+        });
+        addAttachmentPaths([saved.path]);
+      }
+      catch {
+        // Ignore a single failed paste; other clipboard items still attach.
+      }
+    }
   }
 
   function removeAttachment(path: string) {
     setAttachments(current => current.filter(attachment => attachment.path !== path));
   }
 
+  useEffect(() => {
+    if (disabled)
+      return;
+
+    let active = true;
+    let dispose: (() => void) | undefined;
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === "enter" || event.payload.type === "over") {
+          setDropActive(true);
+        }
+        else if (event.payload.type === "leave") {
+          setDropActive(false);
+        }
+        else if (event.payload.type === "drop") {
+          setDropActive(false);
+          addAttachmentPaths(event.payload.paths);
+        }
+      })
+      .then((unlisten) => {
+        if (active)
+          dispose = unlisten;
+        else
+          unlisten();
+      });
+
+    return () => {
+      active = false;
+      dispose?.();
+      setDropActive(false);
+    };
+  }, [addAttachmentPaths, disabled]);
+
   return (
     <form
       className={cn(
         "relative rounded-lg border border-line bg-white/95 p-2 shadow-panel backdrop-blur",
+        dropActive && "ring-2 ring-blue-300",
         className,
       )}
       onSubmit={handleSubmit}
@@ -220,6 +296,7 @@ export function Composer({
         disabled={disabled}
         onKeyDown={handleKeyDown}
         onChange={handleChange}
+        onPaste={handlePaste}
         onClick={updateCaret}
         onKeyUp={updateCaret}
         onSelect={updateCaret}
@@ -251,12 +328,12 @@ export function Composer({
       <div className="flex items-center justify-between pt-1">
         <div className="flex items-center gap-1">
           <button
-            className="inline-flex size-7 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
-            disabled={disabled}
+            className="inline-flex size-7 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={disabled || attachments.length >= MAX_ATTACHMENTS_PER_TURN}
             onClick={() => void handleAttachFiles()}
             type="button"
-            aria-label="Attach context"
-            title="Attach context"
+            aria-label="Attach images"
+            title={attachments.length >= MAX_ATTACHMENTS_PER_TURN ? "Attachment limit reached (4 per turn)" : "Attach images"}
           >
             <Paperclip className="size-3.5" />
           </button>
