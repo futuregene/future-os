@@ -3,7 +3,7 @@
 
 use super::config::DingtalkConfig;
 use super::dingtalk_rest::DingtalkRestClient;
-use super::dingtalk_ws::{extract_text_content, DingtalkEvent};
+use super::dingtalk_ws::DingtalkEvent;
 use crate::config::AgentConfig;
 use crate::grpc_client::{AgentClient, AgentEvent};
 use anyhow::Result;
@@ -77,10 +77,9 @@ impl DingtalkBridge {
             }
         }
 
-        let text = extract_text_content(
-            event.content.as_deref().unwrap_or(""),
-            event.msg_type.as_deref().unwrap_or("text"),
-        ).unwrap_or_default();
+        // CALLBACK data already has text extracted by parse_dingtalk_event.
+        // extract_text_content is for raw EVENT content JSON strings.
+        let text = event.content.clone().unwrap_or_default();
 
         info!("[DING RECV] sender={} name={} text=\"{}\" webhook={}",
             sender_id,
@@ -158,10 +157,12 @@ async fn run_prompt_loop(
         match parsed {
             Some(AgentEvent::AgentStart) | Some(AgentEvent::Ping) => {}
             Some(AgentEvent::ThinkingStart) => {
-                stream_text.push_str("\n\n💭 **Thinking...**\n\n");
+                stream_text.push_str("\n\n> 💭 **Thinking...**\n> \n> ");
             }
-            Some(AgentEvent::ThinkingDelta(t)) => { stream_text.push_str(&t); }
-            Some(AgentEvent::ThinkingEnd) => {}
+            Some(AgentEvent::ThinkingDelta(t)) => { stream_text.push_str(&t.replace('\n', "\n> ")); }
+            Some(AgentEvent::ThinkingEnd) => {
+                stream_text.push_str("\n\n---\n\n");
+            }
             Some(AgentEvent::TextChunk(chunk)) => { stream_text.push_str(&chunk); }
             Some(AgentEvent::ToolStart { tool_name, .. }) => {
                 stream_text.push_str(&format!("\n\n🔧 `{}`\n", tool_name));
@@ -177,7 +178,7 @@ async fn run_prompt_loop(
                 if let Some(err) = error {
                     if !err.contains("interrupted") && !err.contains("Interrupted") {
                         if let Some(ref wh) = webhook {
-                            dingtalk.reply_webhook(wh, &format!("Error: {}", err)).await?;
+                            dingtalk.reply_webhook_markdown(wh, "Error", &format!("**Error:** {}", err)).await?;
                         }
                     }
                 } else if !stream_text.trim().is_empty() {
@@ -185,7 +186,7 @@ async fn run_prompt_loop(
                         let preview = if stream_text.len() > 20000 {
                             format!("{}...", truncate_at_char(&stream_text, 20000))
                         } else { stream_text.clone() };
-                        dingtalk.reply_webhook(wh, &preview).await?;
+                        dingtalk.reply_webhook_markdown(wh, "Future OS", &preview).await?;
                     }
                 }
                 break;
@@ -193,7 +194,7 @@ async fn run_prompt_loop(
             Some(AgentEvent::Error(err)) => {
                 check_superseded!();
                 if let Some(ref wh) = webhook {
-                    dingtalk.reply_webhook(wh, &format!("Error: {}", err)).await?;
+                    dingtalk.reply_webhook_markdown(wh, "Error", &format!("**Error:** {}", err)).await?;
                 }
                 break;
             }

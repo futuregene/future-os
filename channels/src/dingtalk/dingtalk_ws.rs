@@ -61,7 +61,6 @@ impl DingtalkWsClient {
             "clientId": self.client_id,
             "clientSecret": self.client_secret,
             "subscriptions": [
-                {"type": "EVENT", "topic": "*"},
                 {"type": "CALLBACK", "topic": "/v1.0/im/bot/messages/get"}
             ],
             "ua": UA,
