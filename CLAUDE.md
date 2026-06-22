@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Rust (agent, channel) + TypeScript (TUI, CLI) + Tauri/React GUI. The Rust agent is the backend; the TS TUI provides the terminal interface. The TS CLI (`future-cli`) handles auth, service management, MCP tool calls, and skill bundle discovery. The GUI module (`gui/`) is a desktop app that connects to the agent over gRPC via its Tauri backend. The channel binary bridges external messaging platforms (Feishu/Lark) to the agent via gRPC.
+Rust (agent, channel) + TypeScript (TUI, CLI) + Tauri/React GUI. The Rust agent is the backend; the TS TUI provides the terminal interface. The TS CLI (`future-cli`) handles auth, service management, MCP tool calls, and skill bundle discovery. The GUI module (`gui/`) is a desktop app that connects to the agent over gRPC via its Tauri backend. The channel binary bridges external messaging platforms (Feishu, DingTalk) to the agent via gRPC.
 
 ## Build/Run/Test
 
@@ -85,11 +85,11 @@ On first run, `config.json` is created with defaults if it doesn't exist.
                                     │ gRPC (tonic)
                   ┌─────────────────┼─────────────────┐
                   │                 │                  │
-           TypeScript TUI     Channel bridge     TypeScript CLI
-           (tui/ via gRPC)   (channels/)          (cli/ future-cli)
-                              Feishu/Lark ←→      auth, service mgmt,
-                              WebSocket + REST     MCP tools, skills,
-                                                   launches TUI
+           TypeScript TUI     Channel bridge       TypeScript CLI
+           (tui/ via gRPC)   (channels/)            (cli/ future-cli)
+                              Feishu ←→ WS+REST     auth, service mgmt,
+                              DingTalk ←→ Stream    MCP tools, skills,
+                              Mode WebSocket         launches TUI
 ```
 
 ### Rust backend (`agent/src/`)
@@ -188,3 +188,23 @@ Entry point: `main.rs` — loads `config.json`, starts enabled channels as tokio
 **CardKit gotchas:** `update_multi` must stay `true` (cannot change to `false`, returns 300302). Settings API returns empty body on success (use HTTP status, not `.json()`). `config.summary.content` sets the message list preview text (first 120 chars of plain-text answer).
 
 **WebSocket:** Uses pbbp2 protobuf binary frames. Events filtered by `create_time` — messages older than 60s are skipped (stale reconnect replays). Message dedup via in-memory `HashSet` of processed message IDs.
+
+### DingTalk channel (`channels/src/dingtalk/`)
+
+Connects via Stream Mode (same as official `dingtalk-stream` Python SDK). No OAuth2 token needed — credentials go directly in the `open_connection` POST body.
+
+| Module | Role |
+|--------|------|
+| `mod.rs` | `DingtalkChannel::run()` — reconnect loop with exponential backoff |
+| `config.rs` | DingTalk-specific config (client_id, client_secret, domain defaults to `api.dingtalk.com`) |
+| `dingtalk_ws.rs` | Stream Mode WebSocket client. Opens connection via `POST /v1.0/gateway/connections/open`, connects WS with `?ticket=`, sends ACK responses matching SDK protocol, uses WebSocket-level ping for keepalive |
+| `dingtalk_rest.rs` | REST API client for sending replies. Access token auto-managed. Two reply modes: `reply_webhook()` (POST to sessionWebhook) and `reply_webhook_markdown()` (markdown format) |
+| `bridge.rs` | Core orchestration: DingTalk event → agent gRPC prompt → markdown response via sessionWebhook. Accumulates thinking as blockquote (`> 💭`) separated by `---` from main content |
+| `card.rs` | AI Card module: `create_ai_card()` / `stream_ai_card()` / `close_ai_card()` matching OpenClaw connector's card.ts API (template `02fcf2f4-...`). Currently standalone — not wired into bridge yet |
+
+**Stream Mode protocol (critical):**
+- Subscribe to `{"type": "CALLBACK", "topic": "/v1.0/im/bot/messages/get"}` — this is where bot messages arrive. Do NOT subscribe to `{"type": "EVENT", "topic": "*"}` — it prevents CALLBACK delivery.
+- ACK format: `{"code":200, "headers":{"messageId":"...","contentType":"application/json"}, "message":"", "data":"..."}`
+- The `data` field in CALLBACK frames is a JSON string (not an object). Parse it first, then extract text from `text.content`.
+- Reply by POSTing markdown to the `sessionWebhook` URL from the event (NOT the REST API).
+- Webhook replies create NEW messages each time — no in-place editing. For true streaming, AI Cards are needed (like Feishu CardKit).
