@@ -3,6 +3,7 @@ mod agent_proto;
 mod agent_providers;
 mod fs_commands;
 mod git_review;
+mod run_error;
 mod store;
 
 use fs_commands::{export_artifact_file, open_path, read_text_file_preview, save_pasted_image};
