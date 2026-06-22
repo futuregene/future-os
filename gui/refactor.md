@@ -57,7 +57,8 @@
 
 - [x] 抽 `fs_commands.rs`(open_path/read_text_file_preview/export_artifact_file/save_pasted_image + helpers)出 lib.rs(594→444 行)
 - [ ] **剩余**:其余命令按域拆到 `commands/*.rs`;`decide_approval`/`abort_run` 编排下沉到 agent_bridge
-- [ ] `agent_bridge.rs` → 目录 `{mod,client,stream,persist,error}.rs`
+- [x] 从 `agent_bridge.rs` 抽出 `run_error.rs`(classify_run_error + 全部相关测试,1165→1009 行)
+- [ ] **剩余**:`agent_bridge.rs` 进一步拆 client/stream/persist(共享 helper 多,较 intricate)
 - [x] `store.rs` 根的 threads/workspaces/messages/runs 抽到独立模块(638→61 行,facade only;对齐已有按域拆分)
 - [ ] `store/support.rs` 拆 `db.rs`/`util.rs`;`*_from_row` 与 record 同处
 - [x] `store/models.rs` → `records.rs`(消除与 LLM "models" 撞名)
