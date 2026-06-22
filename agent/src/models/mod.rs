@@ -135,7 +135,7 @@ fn resolve_future_base_url() -> String {
     DEFAULT_FUTURE_BASE_URL.to_string()
 }
 
-/// Response format from Future server /openai/v1/models endpoint
+/// Response format from Future server /v1/models endpoint
 #[derive(Debug, Deserialize)]
 struct FutureModelsResponse {
     data: Option<Vec<FutureModelEntry>>,
@@ -185,7 +185,7 @@ fn fetch_future_models(api_key: &str, base_url: &str) -> Option<Vec<Model>> {
     let base_url = base_url.to_string();
 
     std::thread::spawn(move || {
-        let url = format!("{}/openai/v1/models", base_url.trim_end_matches('/'));
+        let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
         let response = reqwest::blocking::Client::new()
             .get(&url)
             .header("Authorization", format!("Bearer {}", &api_key))
@@ -208,7 +208,7 @@ fn fetch_future_models(api_key: &str, base_url: &str) -> Option<Vec<Model>> {
         return None;
     };
 
-    let models_url = format!("{}/openai/v1", base_url.trim_end_matches('/'));
+    let models_url = format!("{}/v1", base_url.trim_end_matches('/'));
 
     let models: Vec<Model> = entries
         .into_iter()
@@ -604,7 +604,7 @@ impl Registry {
             Some((
                 "future".to_string(),
                 ProviderOverride {
-                    base_url: Some(format!("{}/openai/v1", base_url)),
+                    base_url: Some(format!("{}/v1", base_url)),
                     api_key: Some(future_key),
                 },
             ))

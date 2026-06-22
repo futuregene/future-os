@@ -21,12 +21,11 @@ npm run dev -- tui
 2. Opens the platform console verification URL returned by Future API in the browser.
 3. Polls Future API `/oauth/device/token`.
 4. Saves the returned API Key to the `future` entry in `~/.future/agent/auth.json`.
-5. Fetches `GET /openai/v1/models` with the saved API Key.
-6. Writes a `future` provider with those models to `~/.future/agent/models.json`.
+
+The agent reads the saved key on startup and dynamically fetches available models from Future API `/v1/models`.
 
 `auth logout` removes the saved Future API Key from the `future` entry in
 `~/.future/agent/auth.json` while leaving non-secret settings such as `base_url` intact.
-It also removes the `future` provider from `~/.future/agent/models.json`.
 
 By default, the CLI connects to Future API at `http://api.westlakefuturegene.com`.
 Set `future.base_url` in `~/.future/agent/auth.json` to use another API URL.
