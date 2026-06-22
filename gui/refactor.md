@@ -55,7 +55,8 @@
 
 ## Batch 6 — Rust 后端拆分
 
-- [ ] `lib.rs` → `commands/{fs,providers,settings,threads,runs,approvals,review,...}.rs`;`lib.rs` 只留 `run()`+注册表;`decide_approval`/`abort_run`/`ensure_workspace_git_repo` 编排下沉
+- [x] 抽 `fs_commands.rs`(open_path/read_text_file_preview/export_artifact_file/save_pasted_image + helpers)出 lib.rs(594→444 行)
+- [ ] **剩余**:其余命令按域拆到 `commands/*.rs`;`decide_approval`/`abort_run` 编排下沉到 agent_bridge
 - [ ] `agent_bridge.rs` → 目录 `{mod,client,stream,persist,error}.rs`
 - [x] `store.rs` 根的 threads/workspaces/messages/runs 抽到独立模块(638→61 行,facade only;对齐已有按域拆分)
 - [ ] `store/support.rs` 拆 `db.rs`/`util.rs`;`*_from_row` 与 record 同处

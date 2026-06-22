@@ -1,22 +1,11 @@
 mod agent_bridge;
 mod agent_proto;
 mod agent_providers;
+mod fs_commands;
 mod git_review;
 mod store;
 
-use std::{
-    fs::{self, File},
-    io::Read,
-    process::Command,
-};
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TextFilePreview {
-    content: String,
-    size: u64,
-    truncated: bool,
-}
+use fs_commands::{export_artifact_file, open_path, read_text_file_preview, save_pasted_image};
 
 #[tauri::command]
 fn app_version() -> &'static str {
@@ -26,108 +15,6 @@ fn app_version() -> &'static str {
 #[tauri::command]
 fn app_data_path() -> Result<store::AppDataPath, String> {
     store::app_data_path()
-}
-
-#[tauri::command]
-fn open_path(path: String) -> Result<(), String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return Err("path cannot be empty.".to_string());
-    }
-
-    open_path_with_system(trimmed)
-}
-
-#[tauri::command]
-fn read_text_file_preview(
-    path: String,
-    max_bytes: Option<usize>,
-) -> Result<TextFilePreview, String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return Err("path cannot be empty.".to_string());
-    }
-
-    let limit = max_bytes.unwrap_or(200 * 1024).clamp(1, 1024 * 1024);
-    let mut file = File::open(trimmed).map_err(|error| error.to_string())?;
-    let size = file.metadata().map_err(|error| error.to_string())?.len();
-    let mut buffer = vec![0_u8; limit.saturating_add(1)];
-    let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
-    let truncated = read > limit || size > limit as u64;
-    buffer.truncate(read.min(limit));
-
-    Ok(TextFilePreview {
-        content: String::from_utf8_lossy(&buffer).to_string(),
-        size,
-        truncated,
-    })
-}
-
-#[tauri::command]
-fn export_artifact_file(
-    destination_path: String,
-    source_path: Option<String>,
-    content: Option<String>,
-) -> Result<(), String> {
-    let destination = destination_path.trim();
-    if destination.is_empty() {
-        return Err("destinationPath cannot be empty.".to_string());
-    }
-
-    if let Some(content) = content {
-        fs::write(destination, content).map_err(|error| error.to_string())?;
-        return Ok(());
-    }
-
-    let source = source_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "sourcePath or content is required.".to_string())?;
-    fs::copy(source, destination).map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn open_path_with_system(path: &str) -> Result<(), String> {
-    Command::new("open")
-        .arg(path)
-        .status()
-        .map_err(|error| error.to_string())
-        .and_then(|status| {
-            status
-                .success()
-                .then_some(())
-                .ok_or_else(|| format!("open exited with status {status}"))
-        })
-}
-
-#[cfg(target_os = "windows")]
-fn open_path_with_system(path: &str) -> Result<(), String> {
-    Command::new("cmd")
-        .args(["/C", "start", "", path])
-        .status()
-        .map_err(|error| error.to_string())
-        .and_then(|status| {
-            status
-                .success()
-                .then_some(())
-                .ok_or_else(|| format!("start exited with status {status}"))
-        })
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn open_path_with_system(path: &str) -> Result<(), String> {
-    Command::new("xdg-open")
-        .arg(path)
-        .status()
-        .map_err(|error| error.to_string())
-        .and_then(|status| {
-            status
-                .success()
-                .then_some(())
-                .ok_or_else(|| format!("xdg-open exited with status {status}"))
-        })
 }
 
 #[tauri::command]
@@ -187,43 +74,6 @@ fn create_workspace(input: store::CreateWorkspaceInput) -> Result<store::Workspa
     let workspace = store::create_workspace(input)?;
     ensure_workspace_git_repo(&workspace);
     Ok(workspace)
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SavedAttachment {
-    path: String,
-    name: String,
-}
-
-/// Persist pasted image bytes to a temp file so the path can be attached and
-/// later read by the multimodal agent. Pasted/dropped clipboard images have no
-/// filesystem path of their own.
-#[tauri::command]
-fn save_pasted_image(bytes: Vec<u8>, extension: Option<String>) -> Result<SavedAttachment, String> {
-    if bytes.is_empty() {
-        return Err("Pasted image is empty.".to_string());
-    }
-    let ext = extension
-        .map(|value| value.trim().trim_start_matches('.').to_ascii_lowercase())
-        .filter(|value| !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric()))
-        .unwrap_or_else(|| "png".to_string());
-
-    let dir = std::env::temp_dir().join("futureos-attachments");
-    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|value| value.as_nanos())
-        .unwrap_or(0);
-    let name = format!("pasted-{nanos}.{ext}");
-    let path = dir.join(&name);
-    fs::write(&path, &bytes).map_err(|error| error.to_string())?;
-
-    Ok(SavedAttachment {
-        path: path.display().to_string(),
-        name,
-    })
 }
 
 /// Initialise git for a user workspace whose directory is not tracked yet.
