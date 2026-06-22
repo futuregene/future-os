@@ -57,7 +57,7 @@
 
 - [ ] `lib.rs` → `commands/{fs,providers,settings,threads,runs,approvals,review,...}.rs`;`lib.rs` 只留 `run()`+注册表;`decide_approval`/`abort_run`/`ensure_workspace_git_repo` 编排下沉
 - [ ] `agent_bridge.rs` → 目录 `{mod,client,stream,persist,error}.rs`
-- [ ] `store.rs` 根的 threads/workspaces/messages/runs 抽到独立模块(对齐已有按域拆分)
+- [x] `store.rs` 根的 threads/workspaces/messages/runs 抽到独立模块(638→61 行,facade only;对齐已有按域拆分)
 - [ ] `store/support.rs` 拆 `db.rs`/`util.rs`;`*_from_row` 与 record 同处
 - [x] `store/models.rs` → `records.rs`(消除与 LLM "models" 撞名)
 - [ ] **剩余**:`store/review.rs` → `approvals.rs`
