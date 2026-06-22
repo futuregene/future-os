@@ -140,7 +140,7 @@ export class SelectList implements Component {
     } else {
       const q = this.filter.toLowerCase();
       this.filteredItems = this.items.filter(
-        (item) => item.value.toLowerCase().startsWith(q)
+        (item) => item.value.toLowerCase().includes(q)
       );
     }
     if (this.selectedIndex >= this.filteredItems.length) {
