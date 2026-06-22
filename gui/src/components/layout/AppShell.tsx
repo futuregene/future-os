@@ -6,7 +6,7 @@ import type { StoredApprovalRequest, StoredRun, StoredThread, StoredWorkspace } 
 import type { ActivitySection } from "./ActivityRail";
 import type { DeleteDialogState, RenameDialogState } from "./AppShellDialogs";
 import type { ContextTab } from "./ContextPanel";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { ResearchView } from "../../features/research/ResearchView";
@@ -23,7 +23,6 @@ import {
   getRecentThread,
   getThreadCleanupSummary,
   initializeAppStore,
-  listApprovalRequests,
   listRuns,
   listThreads,
   listWorkspaces,
@@ -36,6 +35,7 @@ import { usePolling } from "../../lib/usePolling";
 import { ActivityRail } from "./ActivityRail";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
+import { useApprovals } from "./hooks/useApprovals";
 
 export interface AgentConnectionState {
   status: "checking" | "connected" | "disconnected";
@@ -78,7 +78,6 @@ export function AppShell() {
   const [leftOverlayOpen, setLeftOverlayOpen] = useState(false);
   const [rightExpanded, setRightExpanded] = useState(false);
   const [contextTab, setContextTab] = useState<ContextTab>("runs");
-  const [pendingApprovals, setPendingApprovals] = useState<StoredApprovalRequest[]>([]);
   const [agentConnection, setAgentConnection] = useState<AgentConnectionState>({ status: "checking" });
   const [modelOptions, setModelOptions] = useState<AgentModelOption[]>([]);
   const [selectedModelId, setSelectedModelId] = useState(defaultAgentModelId);
@@ -107,12 +106,9 @@ export function AppShell() {
       ?? null,
     [activeThread?.workspaceId, workspaces],
   );
-  const activeApproval = useMemo(
-    () =>
-      [...pendingApprovals]
-        .filter(approval => approval.status === "pending")
-        .sort((left, right) => left.createdAt - right.createdAt)[0] ?? null,
-    [pendingApprovals],
+  const { activeApproval, reloadApprovals } = useApprovals(
+    activeThread?.id ?? null,
+    appSettings.autoApprove,
   );
 
   const refreshThreadRunStatuses = useCallback(async (nextThreads: StoredThread[]) => {
@@ -221,8 +217,6 @@ export function AppShell() {
     () => threads.filter(thread => thread.status === "active"),
     [threads],
   );
-  const activeThreadIdForApprovals = activeThread?.id ?? null;
-
   usePolling(() => refreshThreadRunStatuses(activeThreads), 1500, {
     enabled: activeThreads.length > 0,
     deps: [activeThreads, refreshThreadRunStatuses],
@@ -232,66 +226,6 @@ export function AppShell() {
       setThreadRunStatuses({});
     }
   }, [activeThreads.length]);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function refreshPendingApprovals() {
-      if (!activeThreadIdForApprovals) {
-        setPendingApprovals([]);
-        return;
-      }
-
-      try {
-        const approvals = await listApprovalRequests(activeThreadIdForApprovals);
-        if (cancelled)
-          return;
-        const pending = approvals.filter(approval => approval.status === "pending");
-        setPendingApprovals(pending);
-      }
-      catch {
-        if (!cancelled) {
-          setPendingApprovals([]);
-        }
-      }
-    }
-
-    void refreshPendingApprovals();
-    const timer = window.setInterval(() => {
-      void refreshPendingApprovals();
-    }, 1500);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [activeThreadIdForApprovals]);
-
-  const autoApprovingRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    if (!appSettings.autoApprove) {
-      return;
-    }
-    for (const approval of pendingApprovals) {
-      if (autoApprovingRef.current.has(approval.id)) {
-        continue;
-      }
-      autoApprovingRef.current.add(approval.id);
-      void decideApprovalRequest({
-        approvalRequestId: approval.id,
-        decisionNote: "Auto-approved by settings.",
-        status: "approved",
-      })
-        .catch(() => undefined)
-        .finally(() => {
-          autoApprovingRef.current.delete(approval.id);
-          if (activeThreadIdForApprovals) {
-            void listApprovalRequests(activeThreadIdForApprovals)
-              .then(approvals => setPendingApprovals(approvals.filter(item => item.status === "pending")))
-              .catch(() => undefined);
-          }
-        });
-    }
-  }, [activeThreadIdForApprovals, appSettings.autoApprove, pendingApprovals]);
 
   const visibleModelOptions = useMemo(
     () => modelOptions.filter(model => !appSettings.hiddenModels.includes(`${model.provider}/${model.id}`)),
@@ -454,11 +388,7 @@ export function AppShell() {
       decisionNote: status === "approved" ? "Approved in GUI." : "Rejected in GUI.",
       status,
     });
-    if (activeThreadIdForApprovals) {
-      const approvals = await listApprovalRequests(activeThreadIdForApprovals);
-      const pending = approvals.filter(item => item.status === "pending");
-      setPendingApprovals(pending);
-    }
+    reloadApprovals();
     await refreshStore(activeThread?.id ?? undefined);
   }
 
