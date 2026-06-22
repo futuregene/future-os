@@ -2,8 +2,8 @@ import type { AgentMessage } from "./types";
 import { Paperclip, RotateCcw, StepForward } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { formatTime } from "../../lib/date";
+import { MarkdownContent } from "../markdown/MarkdownContent";
 import { AgentActivityList } from "./AgentActivityList";
-import { MarkdownContent } from "./MarkdownContent";
 import { PlanBlock } from "./PlanBlock";
 
 interface MessageBlockProps {

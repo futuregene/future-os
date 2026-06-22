@@ -1,8 +1,9 @@
 import type { AgentModelOption } from "../../integrations/agent/models";
-import type { AppSettings } from "../../integrations/storage/threadStore";
+import type { AppSettings } from "../../integrations/storage/appSettings";
 import { invoke } from "@tauri-apps/api/core";
 import { Boxes, Settings2, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
+import { Overlay } from "../../components/ui/Overlay";
 import { cn } from "../../lib/cn";
 import { GeneralPage } from "./GeneralPage";
 import { ModelsPage } from "./ModelsPage";
@@ -47,41 +48,18 @@ export function SettingsDialog({
   const [version, setVersion] = useState("");
 
   useEffect(() => {
-    if (!open) {
-      return;
-    }
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose, open]);
-
-  useEffect(() => {
     if (!open || version) {
       return;
     }
     void invoke<string>("app_version").then(setVersion).catch(() => undefined);
   }, [open, version]);
 
-  if (!open) {
-    return null;
-  }
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
-      <button
-        aria-label="关闭设置"
-        className="absolute inset-0 cursor-default bg-slate-900/20 backdrop-blur-[1px]"
-        onClick={onClose}
-        type="button"
-      />
+    <Overlay onClose={onClose} open={open}>
       <section
         aria-label="设置"
         aria-modal="true"
-        className="relative z-10 flex h-[560px] w-full max-w-3xl overflow-hidden rounded-xl border border-line-soft bg-white shadow-[0_24px_60px_rgba(15,23,42,0.18)]"
+        className="relative z-10 flex h-[560px] w-full max-w-3xl overflow-hidden rounded-xl border border-line-soft bg-white shadow-dialog"
         role="dialog"
       >
         <nav className="flex w-52 shrink-0 flex-col border-r border-line-soft bg-surface-subtle p-3">
@@ -148,6 +126,6 @@ export function SettingsDialog({
           </div>
         </div>
       </section>
-    </div>
+    </Overlay>
   );
 }

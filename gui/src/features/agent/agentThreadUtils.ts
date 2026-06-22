@@ -10,23 +10,6 @@ export function matchesSettledRun(status: StoredRun["status"]) {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
-export function formatRunStatus(status: StoredRun["status"]) {
-  switch (status) {
-    case "completed":
-      return "Completed";
-    case "failed":
-      return "Failed";
-    case "running":
-      return "Running";
-    case "waiting_approval":
-      return "Waiting approval";
-    case "cancelled":
-      return "Cancelled";
-    default:
-      return "Queued";
-  }
-}
-
 export function toAgentMessage(message: StoredMessage): AgentMessage {
   const content = parseMessageContent(message.content, message.contentType);
 

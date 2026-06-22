@@ -1,5 +1,6 @@
 import type { AgentModelOption } from "../../integrations/agent/models";
 import { useMemo, useState } from "react";
+import { TextInput } from "../../components/ui/TextInput";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
 
 function modelKey(model: { id: string; provider: string }) {
@@ -47,8 +48,7 @@ export function ModelsPage({
 
   return (
     <div className="space-y-6">
-      <input
-        className="h-9 w-full rounded-md border border-line-soft bg-white px-3 text-sm text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+      <TextInput
         onChange={event => setQuery(event.target.value)}
         placeholder="搜索模型…"
         value={query}

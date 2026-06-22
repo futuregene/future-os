@@ -282,64 +282,6 @@ export async function savePastedImage(input: { bytes: number[]; extension: strin
   return invoke<{ name: string; path: string }>("save_pasted_image", input);
 }
 
-export interface AppSettings {
-  autoApprove: boolean;
-  hiddenModels: string[];
-}
-
-export async function getAppSettings() {
-  return invoke<AppSettings>("get_app_settings");
-}
-
-export async function updateAppSettings(input: { autoApprove?: boolean; hiddenModels?: string[] }) {
-  return invoke<AppSettings>("update_app_settings", { input });
-}
-
-export interface BuiltinProvider {
-  id: string;
-  name: string;
-  baseUrl: string;
-  hasApiKey: boolean;
-}
-
-export interface CustomProviderModel {
-  id: string;
-  name: string;
-}
-
-export interface CustomProvider {
-  id: string;
-  name: string;
-  api: string;
-  baseUrl: string;
-  hasApiKey: boolean;
-  models: CustomProviderModel[];
-}
-
-export interface ProvidersView {
-  builtin: BuiltinProvider[];
-  custom: CustomProvider[];
-}
-
-export async function listAgentProviders() {
-  return invoke<ProvidersView>("list_agent_providers");
-}
-
-export async function upsertCustomProvider(input: {
-  id: string;
-  name: string;
-  api: string;
-  baseUrl: string;
-  apiKey?: string | null;
-  models: CustomProviderModel[];
-}) {
-  return invoke<ProvidersView>("upsert_custom_provider", { input });
-}
-
-export async function deleteCustomProvider(id: string) {
-  return invoke<ProvidersView>("delete_custom_provider", { id });
-}
-
 export async function deleteArtifact(artifactId: string) {
   return invoke<StoredArtifact>("delete_artifact", { artifactId });
 }

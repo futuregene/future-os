@@ -1,7 +1,8 @@
 import type { NewConversationStart } from "../../features/agent/NewConversation";
 import type { MessageAttachment } from "../../features/agent/types";
 import type { AgentModelOption } from "../../integrations/agent/models";
-import type { AppSettings, StoredApprovalRequest, StoredRun, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
+import type { AppSettings } from "../../integrations/storage/appSettings";
+import type { StoredApprovalRequest, StoredRun, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { DeleteDialogState, RenameDialogState } from "./AppShellDialogs";
 import type { ContextTab } from "./ContextPanel";
@@ -11,6 +12,7 @@ import { NewConversation } from "../../features/agent/NewConversation";
 import { ResearchView } from "../../features/research/ResearchView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { defaultAgentModelId, defaultModelId, loadAgentModelOptions } from "../../integrations/agent/models";
+import { getAppSettings, updateAppSettings } from "../../integrations/storage/appSettings";
 import {
   cancelStaleApprovalRequests,
   createDefaultChatThread,
@@ -18,7 +20,6 @@ import {
   createWorkspace,
   decideApprovalRequest,
   deleteThread,
-  getAppSettings,
   getRecentThread,
   getThreadCleanupSummary,
   initializeAppStore,
@@ -29,7 +30,6 @@ import {
   pinThread,
   renameThread,
   restoreThread,
-  updateAppSettings,
   updateThreadModel,
 } from "../../integrations/storage/threadStore";
 import { ActivityRail } from "./ActivityRail";

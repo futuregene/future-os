@@ -2,16 +2,17 @@ import type { PropsWithChildren } from "react";
 import { cn } from "../../lib/cn";
 
 interface BadgeProps {
-  tone?: "neutral" | "accent" | "success" | "warning" | "danger";
+  tone?: "neutral" | "accent" | "info" | "success" | "warning" | "danger";
   className?: string;
 }
 
 const tones = {
   neutral: "border-line bg-surface-subtle text-ink-soft",
-  accent: "border-blue-200 bg-accent-soft text-accent",
-  success: "border-green-200 bg-green-50 text-green-700",
-  warning: "border-amber-200 bg-amber-50 text-amber-700",
-  danger: "border-red-200 bg-red-50 text-red-700",
+  accent: "border-info-line bg-accent-soft text-accent",
+  info: "border-info-line bg-info-soft text-info",
+  success: "border-success-line bg-success-soft text-success",
+  warning: "border-warning-line bg-warning-soft text-warning",
+  danger: "border-danger-line bg-danger-soft text-danger",
 };
 
 export function Badge({

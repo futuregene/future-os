@@ -1,10 +1,12 @@
-import type { CustomProvider, ProvidersView } from "../../integrations/storage/threadStore";
+import type { CustomProvider, ProvidersView } from "../../integrations/agent/providers";
 import { useEffect, useState } from "react";
+import { Badge } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
 import {
   deleteCustomProvider,
   listAgentProviders,
   upsertCustomProvider,
-} from "../../integrations/storage/threadStore";
+} from "../../integrations/agent/providers";
 import { CustomProviderDialog } from "./CustomProviderDialog";
 import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
 
@@ -63,9 +65,9 @@ export function ProvidersPage() {
               title={provider.name}
               description={provider.baseUrl}
             >
-              <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${provider.hasApiKey ? "bg-emerald-50 text-emerald-700" : "bg-surface-subtle text-ink-muted"}`}>
+              <Badge tone={provider.hasApiKey ? "success" : "neutral"}>
                 {provider.hasApiKey ? "已配置密钥" : "未配置密钥"}
-              </span>
+              </Badge>
             </SettingsRow>
           ))}
         </SettingsList>
@@ -74,16 +76,16 @@ export function ProvidersPage() {
       <SettingsSection
         title="自定义"
         action={(
-          <button
-            className="h-8 rounded-md border border-line-soft bg-white px-3 text-xs font-medium text-ink transition-colors hover:bg-surface-subtle"
+          <Button
             onClick={() => {
               setEditing(null);
               setDialogOpen(true);
             }}
-            type="button"
+            size="sm"
+            variant="secondary"
           >
             + 添加自定义提供商
-          </button>
+          </Button>
         )}
       >
         {providers && providers.custom.length > 0
@@ -99,41 +101,34 @@ export function ProvidersPage() {
                       ? (
                           <div className="flex items-center gap-2">
                             <span className="text-xs text-ink-muted">确认移除？</span>
-                            <button
-                              className="h-8 rounded-md bg-red-600 px-3 text-xs font-medium text-white transition-colors hover:bg-red-700"
-                              onClick={() => void handleDelete(provider.id)}
-                              type="button"
-                            >
+                            <Button onClick={() => void handleDelete(provider.id)} size="sm" variant="danger">
                               移除
-                            </button>
-                            <button
-                              className="h-8 rounded-md border border-line-soft bg-white px-3 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle"
-                              onClick={() => setConfirmingDelete(null)}
-                              type="button"
-                            >
+                            </Button>
+                            <Button onClick={() => setConfirmingDelete(null)} size="sm" variant="secondary">
                               取消
-                            </button>
+                            </Button>
                           </div>
                         )
                       : (
                           <div className="flex items-center gap-2">
-                            <button
-                              className="h-8 rounded-md border border-line-soft bg-white px-3 text-xs font-medium text-ink transition-colors hover:bg-surface-subtle"
+                            <Button
                               onClick={() => {
                                 setEditing(provider);
                                 setDialogOpen(true);
                               }}
-                              type="button"
+                              size="sm"
+                              variant="secondary"
                             >
                               编辑
-                            </button>
-                            <button
-                              className="h-8 rounded-md border border-line-soft bg-white px-3 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-red-600"
+                            </Button>
+                            <Button
+                              className="text-ink-soft hover:text-danger"
                               onClick={() => setConfirmingDelete(provider.id)}
-                              type="button"
+                              size="sm"
+                              variant="secondary"
                             >
                               移除
-                            </button>
+                            </Button>
                           </div>
                         )}
                   </SettingsRow>
