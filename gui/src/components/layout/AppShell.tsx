@@ -1,6 +1,5 @@
 import type { MessageAttachment } from "../../features/agent/agentThreadTypes";
 import type { NewConversationStart } from "../../features/agent/NewConversation";
-import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { AppSettings } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredRun, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
@@ -11,7 +10,6 @@ import { AgentThread } from "../../features/agent/AgentThread";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { ResearchView } from "../../features/research/ResearchView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
-import { defaultAgentModelId, defaultModelId, loadAgentModelOptions } from "../../integrations/agent/agentClient";
 import { getAppSettings, updateAppSettings } from "../../integrations/storage/appSettings";
 import {
   cancelStaleApprovalRequests,
@@ -35,14 +33,10 @@ import { usePolling } from "../../lib/usePolling";
 import { ActivityRail } from "./ActivityRail";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
+import { useAgentConnection } from "./hooks/useAgentConnection";
 import { useApprovals } from "./hooks/useApprovals";
 
-export interface AgentConnectionState {
-  status: "checking" | "connected" | "disconnected";
-  error?: string | null;
-  kind?: "agent_unavailable" | "model_error" | "unknown" | null;
-  checkedAt?: number | null;
-}
+export type { AgentConnectionState } from "./hooks/useAgentConnection";
 
 interface PendingPrompt {
   attachments?: MessageAttachment[];
@@ -56,21 +50,6 @@ interface WorkspaceCreateRequest {
   createDirectory: boolean;
 }
 
-function classifyAgentConnectionError(message: string): AgentConnectionState["kind"] {
-  const normalized = message.toLowerCase();
-  if (normalized.includes("unable to connect to future agent")) {
-    return "agent_unavailable";
-  }
-  if (
-    normalized.includes("unable to load future agent models")
-    || normalized.includes("model")
-    || normalized.includes("list_models")
-  ) {
-    return "model_error";
-  }
-  return "unknown";
-}
-
 export function AppShell() {
   const [section, setSection] = useState<ActivitySection>("chat");
   const [centerMode, setCenterMode] = useState<"thread" | "new-chat">("thread");
@@ -78,9 +57,6 @@ export function AppShell() {
   const [leftOverlayOpen, setLeftOverlayOpen] = useState(false);
   const [rightExpanded, setRightExpanded] = useState(false);
   const [contextTab, setContextTab] = useState<ContextTab>("runs");
-  const [agentConnection, setAgentConnection] = useState<AgentConnectionState>({ status: "checking" });
-  const [modelOptions, setModelOptions] = useState<AgentModelOption[]>([]);
-  const [selectedModelId, setSelectedModelId] = useState(defaultAgentModelId);
   const [threads, setThreads] = useState<StoredThread[]>([]);
   const [threadRunStatuses, setThreadRunStatuses] = useState<Record<string, StoredRun["status"] | undefined>>({});
   const [workspaces, setWorkspaces] = useState<StoredWorkspace[]>([]);
@@ -110,6 +86,14 @@ export function AppShell() {
     activeThread?.id ?? null,
     appSettings.autoApprove,
   );
+  const {
+    agentConnection,
+    modelOptions,
+    visibleModelOptions,
+    selectedModelId,
+    setSelectedModelId,
+    refreshAgentModels,
+  } = useAgentConnection(appSettings.hiddenModels);
 
   const refreshThreadRunStatuses = useCallback(async (nextThreads: StoredThread[]) => {
     const entries = await Promise.all(
@@ -180,39 +164,6 @@ export function AppShell() {
     };
   }, [refreshThreadRunStatuses]);
 
-  const refreshAgentModels = useCallback(async () => {
-    setAgentConnection(current => current.status === "connected"
-      ? current
-      : { ...current, status: "checking" });
-    try {
-      const nextModels = await loadAgentModelOptions();
-      setModelOptions(nextModels);
-      setSelectedModelId(current =>
-        nextModels.some(model => model.id === current)
-          ? current
-          : defaultModelId(nextModels),
-      );
-      setAgentConnection({
-        checkedAt: Date.now(),
-        error: null,
-        kind: null,
-        status: "connected",
-      });
-    }
-    catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setModelOptions([]);
-      setAgentConnection({
-        checkedAt: Date.now(),
-        error: message,
-        kind: classifyAgentConnectionError(message),
-        status: "disconnected",
-      });
-    }
-  }, []);
-
-  usePolling(refreshAgentModels, 10000, { deps: [refreshAgentModels] });
-
   const activeThreads = useMemo(
     () => threads.filter(thread => thread.status === "active"),
     [threads],
@@ -226,11 +177,6 @@ export function AppShell() {
       setThreadRunStatuses({});
     }
   }, [activeThreads.length]);
-
-  const visibleModelOptions = useMemo(
-    () => modelOptions.filter(model => !appSettings.hiddenModels.includes(`${model.provider}/${model.id}`)),
-    [appSettings.hiddenModels, modelOptions],
-  );
 
   useEffect(() => {
     function handleOpenResearchResource(event: Event) {
