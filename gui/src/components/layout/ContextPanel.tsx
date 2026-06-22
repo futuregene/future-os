@@ -1,7 +1,13 @@
+import type { ReviewBase } from "../../features/review/ReviewPanel";
 import type { GitReview, StoredArtifact, StoredRun, StoredThread, StoredToolCall, StoredWorkspace } from "../../integrations/storage/threadStore";
 import { ChevronDown, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ArtifactDetailPanel } from "../../features/artifacts/ArtifactDetailPanel";
+import { ArtifactsPanel } from "../../features/artifacts/ArtifactsPanel";
 import { upsertFutureReferenceEntries } from "../../features/markdown/futureReferenceStore";
+import { ReviewPanel } from "../../features/review/ReviewPanel";
+import { RunInspectPanel } from "../../features/runs/RunInspectPanel";
+import { RunsPanel } from "../../features/runs/RunsPanel";
 import {
   abortRun,
   clearFinishedRuns,
@@ -12,16 +18,11 @@ import {
   listToolCalls,
 } from "../../integrations/storage/threadStore";
 import { startWindowDrag } from "../../lib/windowDrag";
+import { EmptyState } from "../ui/EmptyState";
 import { IconButton } from "../ui/IconButton";
-import { ArtifactDetailPanel } from "./context-panel/ArtifactDetailPanel";
-import { ArtifactsPanel } from "./context-panel/ArtifactsPanel";
-import { EmptyState } from "./context-panel/ContextEmptyState";
-import { ReviewPanel } from "./context-panel/ReviewPanel";
-import { RunInspectPanel } from "./context-panel/RunInspectPanel";
-import { RunsPanel } from "./context-panel/RunsPanel";
 
 export type ContextTab = "runs" | "review" | "artifacts";
-export type ReviewBase = "custom" | "head" | "merge-base" | "upstream";
+export type { ReviewBase };
 
 const gitTabs = [
   { value: "runs", label: "Runs" },

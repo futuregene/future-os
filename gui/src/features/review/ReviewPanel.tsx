@@ -3,18 +3,19 @@ import type {
   GitReviewFile,
   StoredReviewChangeset,
   StoredReviewFileChange,
-} from "../../../integrations/storage/types";
-import type { ReviewBase } from "../ContextPanel";
+} from "../../integrations/storage/types";
 import { Check, ChevronDown, ChevronRight, FileDiff, GitBranch, ListTree, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { EmptyState } from "../../components/ui/EmptyState";
 import {
   listReviewChangesets,
   listReviewFileChanges,
   storedTimeToIso,
   updateReviewChangesetStatus,
-} from "../../../integrations/storage/threadStore";
-import { formatTime } from "../../../lib/date";
-import { EmptyState } from "./ContextEmptyState";
+} from "../../integrations/storage/threadStore";
+import { formatTime } from "../../lib/date";
+
+export type ReviewBase = "custom" | "head" | "merge-base" | "upstream";
 
 type ReviewChangesetStatus = "applied" | "discarded" | "pending";
 

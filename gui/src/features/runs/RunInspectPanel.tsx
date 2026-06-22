@@ -3,19 +3,19 @@ import type {
   StoredRunEvent,
   StoredToolCall,
   StoredToolOutput,
-} from "../../../integrations/storage/threadStore";
+} from "../../integrations/storage/threadStore";
 import { ArrowLeft, Check, Clipboard, History, RotateCcw, Search, StepForward, Terminal, Wrench } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { Badge } from "../../components/ui/Badge";
 import {
   listRunEvents,
   listToolOutputs,
   storedTimeToIso,
-} from "../../../integrations/storage/threadStore";
-import { copyText } from "../../../lib/clipboard";
-import { cn } from "../../../lib/cn";
-import { formatTime } from "../../../lib/date";
-import { Badge } from "../../ui/Badge";
-import { formatErrorType, formatRunStatus, runTone, shortId, summarizePayload } from "./contextPanelFormatters";
+} from "../../integrations/storage/threadStore";
+import { copyText } from "../../lib/clipboard";
+import { cn } from "../../lib/cn";
+import { formatTime } from "../../lib/date";
+import { formatErrorType, formatRunStatus, runTone, shortId, summarizePayload } from "./runDisplayFormatters";
 
 interface RunInspectPanelProps {
   run: StoredRun;
