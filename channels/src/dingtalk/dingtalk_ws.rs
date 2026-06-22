@@ -61,7 +61,8 @@ impl DingtalkWsClient {
             "clientId": self.client_id,
             "clientSecret": self.client_secret,
             "subscriptions": [
-                {"type": "EVENT", "topic": "*"}
+                {"type": "EVENT", "topic": "*"},
+                {"type": "CALLBACK", "topic": "/v1.0/im/bot/messages/get"}
             ],
             "ua": UA,
             "localIp": "127.0.0.1",
@@ -183,13 +184,21 @@ impl DingtalkWsClient {
                                             }
                                         }
                                         "CALLBACK" => {
-                                            let headers = msg_data.get("headers");
-                                            let topic = headers
+                                            let topic = msg_data
+                                                .get("headers")
                                                 .and_then(|h| h.get("topic"))
                                                 .and_then(|v| v.as_str())
                                                 .unwrap_or("");
                                             info!("DingTalk CALLBACK topic={}", topic);
-                                            send_ack(&mut ws_stream, &msg_data, 200, "").await;
+                                            // Bot messages arrive via CALLBACK topic
+                                            if topic == "/v1.0/im/bot/messages/get" || topic == "/v1.0/im/bot/messages/delegate" {
+                                                if let Some(event) = parse_dingtalk_event(&msg_data) {
+                                                    on_event(event);
+                                                }
+                                                send_ack(&mut ws_stream, &msg_data, 200, "").await;
+                                            } else {
+                                                send_ack(&mut ws_stream, &msg_data, 200, "").await;
+                                            }
                                         }
                                         other => {
                                             debug!("DingTalk unknown type: {}", other);
@@ -281,67 +290,86 @@ async fn send_ack(
     }
 }
 
-/// Parse a DingTalk event from a Stream protocol EVENT frame.
+/// Parse a DingTalk event from a Stream protocol frame (EVENT or CALLBACK).
 /// The event data is nested: { headers: { eventType, ... }, data: "<JSON string>" }
 fn parse_dingtalk_event(msg: &Value) -> Option<DingtalkEvent> {
     let headers = msg.get("headers")?;
+    let msg_type_str = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+    // Data field is a JSON-encoded string containing the actual event/message body
+    let data_str = msg.get("data").and_then(|v| v.as_str()).unwrap_or("{}");
+    let body: Value = serde_json::from_str(data_str).unwrap_or_default();
+
     let event_type = headers
         .get("eventType")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
 
-    if event_type != "im.message.receive_v1" && event_type != "chat_update_title" {
-        debug!("DingTalk unhandled eventType: {}", event_type);
-    }
-
-    // Data field is a JSON-encoded string containing the actual event body
-    let data_str = msg.get("data").and_then(|v| v.as_str()).unwrap_or("{}");
-    let body: Value = serde_json::from_str(data_str).unwrap_or_default();
-
+    // For CALLBACK bot messages, extract fields from body directly (ChatbotMessage format)
     let sender_id = body
         .get("senderId")
-        .or_else(|| body.get("senderStaffId"))
+        .or_else(|| body.get("sender_id"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     let chat_id = body
         .get("conversationId")
+        .or_else(|| body.get("conversation_id"))
         .or_else(|| body.get("openConversationId"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     let chat_type = body
         .get("conversationType")
+        .or_else(|| body.get("conversation_type"))
         .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    // For CALLBACK: text can be {content: "..."} or a plain string
+    let text_content = body
+        .get("text")
+        .and_then(|v| v.get("content"))
+        .and_then(|v| v.as_str())
+        .or_else(|| body.get("text").and_then(|v| v.as_str()))
+        .or_else(|| body.get("content").and_then(|v| {
+            if let Some(s) = v.as_str() { Some(s) } else { None }
+        }))
         .map(|s| s.to_string());
     let msg_type = body
         .get("msgType")
+        .or_else(|| body.get("msgtype"))
+        .or_else(|| body.get("message_type"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let content = body.get("content").map(|v| {
+    let content = text_content.or_else(|| body.get("content").map(|v| {
         if let Some(s) = v.as_str() { s.to_string() } else { v.to_string() }
-    });
+    }));
     let message_id = headers
         .get("messageId")
         .and_then(|v| v.as_str())
+        .or_else(|| body.get("messageId").and_then(|v| v.as_str()))
+        .or_else(|| body.get("message_id").and_then(|v| v.as_str()))
         .map(|s| s.to_string());
     let sender_name = body
         .get("senderNick")
+        .or_else(|| body.get("sender_nick"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     let create_time_ms = body
         .get("createAt")
+        .or_else(|| body.get("create_at"))
         .and_then(|v| v.as_i64());
     let session_webhook = body
         .get("sessionWebhook")
+        .or_else(|| body.get("session_webhook"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     let chatbot_user_id = body
         .get("chatbotUserId")
+        .or_else(|| body.get("chatbot_user_id"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
     Some(DingtalkEvent {
-        event_type,
+        event_type: if event_type.is_empty() { msg_type_str.to_string() } else { event_type },
         message_id,
         chat_id,
         chat_type,
