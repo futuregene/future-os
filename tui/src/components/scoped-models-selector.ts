@@ -42,7 +42,13 @@ export class ScopedModelsSelector implements Component {
   private originalEnabled: Set<string>; // for discard on cancel
 
   constructor(options: ScopedModelsSelectorOptions) {
-    this.models = options.allModels;
+    this.models = options.allModels
+      .slice()
+      .sort((a, b) => {
+        const fullA = a.provider ? `${a.provider}/${a.id}` : a.id;
+        const fullB = b.provider ? `${b.provider}/${b.id}` : b.id;
+        return fullA.localeCompare(fullB);
+      });
     this.enabledSet = new Set(options.enabledModelIds);
     this.originalEnabled = new Set(options.enabledModelIds);
     this.maxVisible = options.maxVisible ?? 12;
@@ -158,8 +164,9 @@ export class ScopedModelsSelector implements Component {
       const status = isEnabled
         ? `${CSI}38;5;${THEME.success}m ✓${RESET}`
         : `${CSI}38;5;${THEME.dimFg}m ✗${RESET}`;
-      const labelPart = truncateToWidth(item.id, maxLabelW);
-      const descPart = truncateToWidth(`[${item.provider}]`, maxDescW);
+      const fullId = item.provider ? `${item.provider}/${item.id}` : item.id;
+      const labelPart = truncateToWidth(fullId, maxLabelW);
+      const descPart = truncateToWidth(item.name, maxDescW);
 
       if (selected) {
         const prefix = `${CSI}38;5;${THEME.selectedFg}m${CSI}48;5;${THEME.selectedBg}m ▶ ${status} `;

@@ -370,7 +370,7 @@ impl Bridge {
                                     Err(_) => String::new(),
                                 };
                                 let text = format!(
-                                    "**Model:** {} ({})\n{}\n\n**Session:** {}\n**CWD:** {}\n**Thinking:** {}\n**Messages:** {}\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n**Tokens:** {} in / {} out\n**Cost:** ${:.4}",
+                                    "**Model:** {} ({})\n{}\n\n**Session:** {}\n**CWD:** {}\n**Thinking:** {}\n**Messages:** {}\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n**Tokens:** {} in / {} out\n**Cost:** ¥{:.4}",
                                     state.model,
                                     if state.image_support { "🖼️" } else { "" },
                                     model_info,

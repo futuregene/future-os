@@ -1250,7 +1250,7 @@ export class App extends Container {
             "",
             `**Context:** ${s.contextTokens ?? 0} / ${s.contextWindow ?? 0} (${(s.contextPercent ?? 0).toFixed(1)}%)`,
             `**Tokens:** ${s.tokensIn ?? 0} in / ${s.tokensOut ?? 0} out`,
-            `**Cost:** $${(s.totalCost ?? 0).toFixed(4)}`,
+            `**Cost:** ¥${(s.totalCost ?? 0).toFixed(4)}`,
           ];
           this.chat.addMessage({
             id: crypto.randomUUID(),
@@ -1439,7 +1439,9 @@ export class App extends Container {
     let models: string[] = [];
     try {
       const r = await this.client.getAvailableModels();
-      models = r.models.map((m) => m.id);
+      models = r.models
+        .map((m) => m.provider ? `${m.provider}/${m.id}` : m.id)
+        .sort((a, b) => a.localeCompare(b));
     } catch (err) {
       this.chat.addMessage({
         id: crypto.randomUUID(),
