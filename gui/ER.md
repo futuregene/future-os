@@ -456,6 +456,7 @@ Artifact 表示工作过程中产生的可复用产物。
 - 普通 Chat 产生的 Artifact 存在临时 Workspace 下。
 - 清理普通 Chat 时，用户可以下载 Artifact，或将 Artifact 转入 Research。
 - 转入 Research 后不保留原始对话引用。
+- 用户在普通 Chat 上传的图片附件会保存到临时工作目录并登记为 Artifact（`type = image`，`content_storage = file`），同时作为多模态输入传给模型。Workspace 对话上传的图片附件不落盘、不创建 Artifact，只传给模型，避免污染用户项目目录。
 
 ### 4.12 Research Collection
 

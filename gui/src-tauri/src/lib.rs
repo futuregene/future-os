@@ -156,7 +156,72 @@ fn list_workspaces() -> Result<Vec<store::WorkspaceRecord>, String> {
 
 #[tauri::command]
 fn create_workspace(input: store::CreateWorkspaceInput) -> Result<store::WorkspaceRecord, String> {
-    store::create_workspace(input)
+    let workspace = store::create_workspace(input)?;
+    ensure_workspace_git_repo(&workspace);
+    Ok(workspace)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedAttachment {
+    path: String,
+    name: String,
+}
+
+/// Persist pasted image bytes to a temp file so the path can be attached and
+/// later read by the multimodal agent. Pasted/dropped clipboard images have no
+/// filesystem path of their own.
+#[tauri::command]
+fn save_pasted_image(bytes: Vec<u8>, extension: Option<String>) -> Result<SavedAttachment, String> {
+    if bytes.is_empty() {
+        return Err("Pasted image is empty.".to_string());
+    }
+    let ext = extension
+        .map(|value| {
+            value
+                .trim()
+                .trim_start_matches('.')
+                .to_ascii_lowercase()
+        })
+        .filter(|value| !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric()))
+        .unwrap_or_else(|| "png".to_string());
+
+    let dir = std::env::temp_dir().join("futureos-attachments");
+    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or(0);
+    let name = format!("pasted-{nanos}.{ext}");
+    let path = dir.join(&name);
+    fs::write(&path, &bytes).map_err(|error| error.to_string())?;
+
+    Ok(SavedAttachment {
+        path: path.display().to_string(),
+        name,
+    })
+}
+
+/// Initialise git for a user workspace whose directory is not tracked yet.
+/// No-op for temporary chat workspaces and when git is not installed.
+fn ensure_workspace_git_repo(workspace: &store::WorkspaceRecord) {
+    if workspace.kind != "user" {
+        return;
+    }
+    git_review::ensure_git_init(std::path::Path::new(&workspace.path));
+}
+
+#[tauri::command]
+fn ensure_workspace_git(workspace_id: String) -> Result<bool, String> {
+    let workspace = store::get_workspace(&workspace_id)?
+        .ok_or_else(|| "Workspace could not be loaded.".to_string())?;
+    if workspace.kind != "user" {
+        return Ok(false);
+    }
+    Ok(git_review::ensure_git_init(std::path::Path::new(
+        &workspace.path,
+    )))
 }
 
 #[tauri::command]
@@ -179,7 +244,13 @@ fn get_recent_thread() -> Result<Option<store::ThreadRecord>, String> {
 
 #[tauri::command]
 fn create_thread(input: store::CreateThreadInput) -> Result<store::ThreadRecord, String> {
-    store::create_thread(input)
+    let thread = store::create_thread(input)?;
+    if thread.mode == "workspace" {
+        if let Ok(Some(workspace)) = store::get_workspace(&thread.workspace_id) {
+            ensure_workspace_git_repo(&workspace);
+        }
+    }
+    Ok(thread)
 }
 
 #[tauri::command]
@@ -451,6 +522,8 @@ pub fn run() {
             list_threads,
             list_workspaces,
             create_workspace,
+            ensure_workspace_git,
+            save_pasted_image,
             get_or_create_chat_workspace,
             get_thread,
             get_recent_thread,

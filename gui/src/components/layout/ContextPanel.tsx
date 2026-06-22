@@ -5,6 +5,7 @@ import { upsertFutureReferenceEntries } from "../../features/markdown/futureRefe
 import {
   abortRun,
   clearFinishedRuns,
+  ensureWorkspaceGit,
   getGitReview,
   listArtifacts,
   listRuns,
@@ -65,6 +66,7 @@ export function ContextPanel({
   const [loading, setLoading] = useState(false);
   const refreshGenerationRef = useRef(0);
   const activeThreadId = activeThread?.id ?? null;
+  const activeThreadMode = activeThread?.mode ?? null;
   const activeWorkspaceId = activeWorkspace?.id ?? activeThread?.workspaceId ?? null;
   const workspaceKindPending = activeThreadId !== null && activeWorkspaceId !== null && gitReview === null;
   const isGitWorkspace = gitReview?.isGitWorkspace ?? false;
@@ -80,7 +82,7 @@ export function ContextPanel({
     ? runs.find(run => run.id === selectedRunId) ?? null
     : null;
 
-  const refreshContext = useCallback(async (options?: { showLoading?: boolean }) => {
+  const refreshContext = useCallback(async (options?: { showLoading?: boolean; ensureGit?: boolean }) => {
     const refreshGeneration = refreshGenerationRef.current + 1;
     refreshGenerationRef.current = refreshGeneration;
     const isCurrentRefresh = () => refreshGenerationRef.current === refreshGeneration;
@@ -102,6 +104,22 @@ export function ContextPanel({
       setGitReview(null);
       setLoading(true);
     }
+
+    // When a workspace thread is opened, make sure its directory is under git
+    // before the review query runs, so the Review tab and branch changes show
+    // up on first load instead of after the next poll. Best-effort: a missing
+    // git binary or a temporary chat workspace is a no-op on the backend.
+    if (options?.ensureGit && activeWorkspaceId && activeThreadMode === "workspace") {
+      try {
+        await ensureWorkspaceGit(activeWorkspaceId);
+      }
+      catch {
+        // git is optional; fall through to the review query regardless.
+      }
+      if (!isCurrentRefresh())
+        return;
+    }
+
     try {
       const [nextRuns, nextGitReview] = await Promise.all([
         listRuns(activeThreadId),
@@ -143,7 +161,7 @@ export function ContextPanel({
         setLoading(false);
       }
     }
-  }, [activeThreadId, activeWorkspaceId, reviewBase, reviewCustomBase]);
+  }, [activeThreadId, activeThreadMode, activeWorkspaceId, reviewBase, reviewCustomBase]);
 
   useEffect(() => {
     if (!tabs.some(tab => tab.value === activeTab)) {
@@ -184,7 +202,7 @@ export function ContextPanel({
   }, [activeTab, onTabChange]);
 
   useEffect(() => {
-    void refreshContext({ showLoading: true });
+    void refreshContext({ showLoading: true, ensureGit: true });
   }, [refreshContext]);
 
   useEffect(() => {
