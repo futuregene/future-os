@@ -4,6 +4,7 @@
 //! forwards them to FutureAgent via gRPC, and streams responses back.
 
 pub mod bridge;
+pub mod card;
 pub mod config;
 pub mod dingtalk_rest;
 pub mod dingtalk_ws;

@@ -178,22 +178,26 @@ struct FuturePriceRule {
     input_cache_write: Option<String>,
 }
 
-/// Fetch models from Future server
+/// Fetch models from Future server.
+/// Runs in a dedicated thread to isolate reqwest::blocking's internal runtime.
 fn fetch_future_models(api_key: &str, base_url: &str) -> Option<Vec<Model>> {
-    let url = format!("{}/openai/v1/models", base_url.trim_end_matches('/'));
+    let api_key = api_key.to_string();
+    let base_url = base_url.to_string();
 
-    let response = reqwest::blocking::Client::new()
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .ok()?;
+    std::thread::spawn(move || {
+        let url = format!("{}/openai/v1/models", base_url.trim_end_matches('/'));
+        let response = reqwest::blocking::Client::new()
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", &api_key))
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .ok()?;
 
-    if !response.status().is_success() {
-        return None;
-    }
+        if !response.status().is_success() {
+            return None;
+        }
 
-    let body: serde_json::Value = response.json().ok()?;
+        let body: serde_json::Value = response.json().ok()?;
 
     // Handle both array response and {data: [...]} response
     let entries: Vec<FutureModelEntry> = if let Ok(resp) = serde_json::from_value::<FutureModelsResponse>(body.clone()) {
@@ -212,6 +216,7 @@ fn fetch_future_models(api_key: &str, base_url: &str) -> Option<Vec<Model>> {
         .collect();
 
     Some(models)
+    }).join().ok()?
 }
 
 /// Convert Future server model entry to agent Model

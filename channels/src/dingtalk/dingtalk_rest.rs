@@ -49,17 +49,50 @@ impl DingtalkRestClient {
         Ok(t)
     }
 
-    /// Send a text message to a DingTalk conversation.
-    pub async fn send_text(&self, chat_id: &str, text: &str) -> Result<Value> {
+    /// Get a fresh access token (for AI Card usage).
+    pub async fn get_token_internal(&self) -> Result<String> {
+        self.get_token().await
+    }
+
+    /// Get the client ID / robot code.
+    pub fn client_id(&self) -> &str {
+        &self.client_id
+    }
+
+    /// Reply via a sessionWebhook URL (DingTalk Stream mode provides this
+    /// in each message event). This is the ONLY way to reply in Stream mode.
+    pub async fn reply_webhook(&self, webhook_url: &str, text: &str) -> Result<()> {
         let token = self.get_token().await?;
         let client = reqwest::Client::new();
-        let url = format!("https://{}/v1.0/robot/groupMessages/send", self.domain);
         let body = json!({
-            "robotCode": self.client_id,
-            "msgParam": {"content": text},
-            "msgKey": "sampleText",
-            "openConversationId": chat_id,
+            "msgtype": "text",
+            "text": {"content": text},
         });
-        Ok(client.post(&url).header("x-acs-dingtalk-access-token", &token).json(&body).send().await?.json().await?)
+        client
+            .post(webhook_url)
+            .header("x-acs-dingtalk-access-token", &token)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+        Ok(())
+    }
+
+    /// Reply via a sessionWebhook with markdown content.
+    pub async fn reply_webhook_markdown(&self, webhook_url: &str, title: &str, markdown: &str) -> Result<()> {
+        let token = self.get_token().await?;
+        let client = reqwest::Client::new();
+        let body = json!({
+            "msgtype": "markdown",
+            "markdown": {"title": title, "text": markdown},
+        });
+        client
+            .post(webhook_url)
+            .header("x-acs-dingtalk-access-token", &token)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+        Ok(())
     }
 }
