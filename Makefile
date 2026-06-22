@@ -10,14 +10,11 @@ install-cli: install-skills build-tui
 
 install-skills:
 	@mkdir -p ~/.agents/skills
-	rsync -a skills/future-paper/ ~/.agents/skills/future-paper/
-	rsync -a skills/future-web/ ~/.agents/skills/future-web/
-	rsync -a skills/future-image/ ~/.agents/skills/future-image/
-	rsync -a skills/future-document/ ~/.agents/skills/future-document/
-	rsync -a skills/future-skill-creator/ ~/.agents/skills/future-skill-creator/
-	rsync -a skills/future-hand-drawn-slides/ ~/.agents/skills/future-hand-drawn-slides/
-	rsync -a skills/future-hand-drawn-posters/ ~/.agents/skills/future-hand-drawn-posters/
-	rsync -a skills/future-browser/ ~/.agents/skills/future-browser/
+	@for dir in skills/*/; do \
+		name=$$(basename "$$dir"); \
+		echo "  installing $$name"; \
+		rsync -a "$$dir" ~/.agents/skills/"$$name"/; \
+	done
 
 install-gui:
 	cd gui && npm install
