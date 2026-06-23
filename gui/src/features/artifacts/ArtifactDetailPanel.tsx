@@ -1,8 +1,9 @@
-import type { StoredArtifact } from "../../../integrations/storage/threadStore";
+import type { StoredArtifact } from "../../integrations/storage/threadStore";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft, BookMarked, Check, Clipboard, Download, ExternalLink, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { Badge } from "../../components/ui/Badge";
 import {
   deleteArtifact,
   exportArtifactFile,
@@ -10,10 +11,9 @@ import {
   promoteArtifactToResearch,
   readTextFilePreview,
   storedTimeToIso,
-} from "../../../integrations/storage/threadStore";
-import { copyText } from "../../../lib/clipboard";
-import { formatTime } from "../../../lib/date";
-import { Badge } from "../../ui/Badge";
+} from "../../integrations/storage/threadStore";
+import { copyText } from "../../lib/clipboard";
+import { formatTime } from "../../lib/date";
 import { PdfPreview } from "./PdfPreview";
 
 interface ArtifactDetailPanelProps {
@@ -143,7 +143,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
                 <span className="min-w-0 flex-1 break-words" title={artifact.path}>{artifact.path}</span>
                 <button
                   aria-label="Copy artifact path"
-                  className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-white hover:text-ink"
+                  className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface hover:text-ink"
                   onClick={() => void handleCopy("path", artifact.path ?? "")}
                   title="Copy path"
                   type="button"
@@ -158,7 +158,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
               <div className="relative mt-3">
                 <button
                   aria-label="Copy artifact content"
-                  className="absolute right-1.5 top-1.5 inline-flex size-6 items-center justify-center rounded-md bg-white/90 text-ink-muted shadow-sm ring-1 ring-line-soft transition-colors hover:text-ink"
+                  className="absolute right-1.5 top-1.5 inline-flex size-6 items-center justify-center rounded-md bg-surface/90 text-ink-muted shadow-sm ring-1 ring-line-soft transition-colors hover:text-ink"
                   onClick={() => void handleCopy("content", artifact.content ?? "")}
                   title="Copy content"
                   type="button"
@@ -197,7 +197,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
               <div className="relative mt-3">
                 <button
                   aria-label="Copy artifact preview"
-                  className="absolute right-1.5 top-1.5 inline-flex size-6 items-center justify-center rounded-md bg-white/90 text-ink-muted shadow-sm ring-1 ring-line-soft transition-colors hover:text-ink"
+                  className="absolute right-1.5 top-1.5 inline-flex size-6 items-center justify-center rounded-md bg-surface/90 text-ink-muted shadow-sm ring-1 ring-line-soft transition-colors hover:text-ink"
                   onClick={() => void handleCopy("content", filePreview.content)}
                   title="Copy preview"
                   type="button"
@@ -241,7 +241,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
         {artifact.path
           ? (
               <button
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-white hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
                 disabled={busyAction !== null}
                 onClick={() => void runAction("open", () => openPath(artifact.path ?? ""))}
                 type="button"
@@ -252,7 +252,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
             )
           : null}
         <button
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-white hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
           disabled={busyAction !== null}
           onClick={() => void runAction("promote", async () => {
             await promoteArtifactToResearch(artifact.id);
@@ -263,7 +263,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
           {busyAction === "promote" ? "Adding" : "Add to Research"}
         </button>
         <button
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-white hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
           disabled={busyAction !== null || (!artifact.path && !artifact.content && !filePreview)}
           onClick={() => void handleExport()}
           type="button"

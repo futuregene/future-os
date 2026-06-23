@@ -270,7 +270,7 @@ export function Composer({
   return (
     <form
       className={cn(
-        "relative rounded-lg border border-line bg-white/95 p-2 shadow-panel backdrop-blur",
+        "relative rounded-lg border border-line bg-surface/95 p-2 shadow-panel backdrop-blur",
         dropActive && "ring-2 ring-blue-300",
         className,
       )}
@@ -314,7 +314,7 @@ export function Composer({
                   <span className="truncate">{attachment.name}</span>
                   <button
                     aria-label={`Remove ${attachment.name}`}
-                    className="inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-white hover:text-ink"
+                    className="inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface hover:text-ink"
                     onClick={() => removeAttachment(attachment.path)}
                     type="button"
                   >
@@ -359,7 +359,7 @@ export function Composer({
             </button>
             {modelMenuOpen
               ? (
-                  <div className="absolute bottom-9 right-0 z-30 w-56 rounded-lg border border-line-soft bg-white p-1 shadow-panel">
+                  <div className="absolute bottom-9 right-0 z-30 w-56 rounded-lg border border-line-soft bg-surface p-1 shadow-panel">
                     {modelOptions.length === 0
                       ? (
                           <div className="px-2 py-2 text-sm text-ink-muted">Start Future Agent to load models.</div>
@@ -411,7 +411,7 @@ function ReferenceSearchMenu({
   selectedIndex: number;
 }) {
   return (
-    <div className="absolute bottom-full left-2 z-30 mb-2 w-[min(30rem,calc(100%-1rem))] rounded-lg border border-line-soft bg-white p-1 shadow-panel">
+    <div className="absolute bottom-full left-2 z-30 mb-2 w-[min(30rem,calc(100%-1rem))] rounded-lg border border-line-soft bg-surface p-1 shadow-panel">
       {results.length === 0
         ? <div className="px-2 py-2 text-sm text-ink-muted">No references found.</div>
         : null}

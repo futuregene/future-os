@@ -1,47 +1,36 @@
 import type { MessageAttachment } from "../../features/agent/agentThreadTypes";
 import type { NewConversationStart } from "../../features/agent/NewConversation";
-import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { AppSettings } from "../../integrations/storage/appSettings";
-import type { StoredApprovalRequest, StoredRun, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
+import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { DeleteDialogState, RenameDialogState } from "./AppShellDialogs";
 import type { ContextTab } from "./ContextPanel";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { ResearchView } from "../../features/research/ResearchView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
-import { defaultAgentModelId, defaultModelId, loadAgentModelOptions } from "../../integrations/agent/agentClient";
 import { getAppSettings, updateAppSettings } from "../../integrations/storage/appSettings";
 import {
-  cancelStaleApprovalRequests,
-  createDefaultChatThread,
   createThread,
   createWorkspace,
   decideApprovalRequest,
   deleteThread,
-  getRecentThread,
   getThreadCleanupSummary,
-  initializeAppStore,
-  listApprovalRequests,
-  listRuns,
-  listThreads,
-  listWorkspaces,
   pinThread,
   renameThread,
   restoreThread,
   updateThreadModel,
 } from "../../integrations/storage/threadStore";
+import { onFutureEvent } from "../../lib/futureEvents";
 import { ActivityRail } from "./ActivityRail";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
+import { useAgentConnection } from "./hooks/useAgentConnection";
+import { useApprovals } from "./hooks/useApprovals";
+import { useThreadStore } from "./hooks/useThreadStore";
 
-export interface AgentConnectionState {
-  status: "checking" | "connected" | "disconnected";
-  error?: string | null;
-  kind?: "agent_unavailable" | "model_error" | "unknown" | null;
-  checkedAt?: number | null;
-}
+export type { AgentConnectionState } from "./hooks/useAgentConnection";
 
 interface PendingPrompt {
   attachments?: MessageAttachment[];
@@ -55,21 +44,6 @@ interface WorkspaceCreateRequest {
   createDirectory: boolean;
 }
 
-function classifyAgentConnectionError(message: string): AgentConnectionState["kind"] {
-  const normalized = message.toLowerCase();
-  if (normalized.includes("unable to connect to future agent")) {
-    return "agent_unavailable";
-  }
-  if (
-    normalized.includes("unable to load future agent models")
-    || normalized.includes("model")
-    || normalized.includes("list_models")
-  ) {
-    return "model_error";
-  }
-  return "unknown";
-}
-
 export function AppShell() {
   const [section, setSection] = useState<ActivitySection>("chat");
   const [centerMode, setCenterMode] = useState<"thread" | "new-chat">("thread");
@@ -77,260 +51,59 @@ export function AppShell() {
   const [leftOverlayOpen, setLeftOverlayOpen] = useState(false);
   const [rightExpanded, setRightExpanded] = useState(false);
   const [contextTab, setContextTab] = useState<ContextTab>("runs");
-  const [pendingApprovals, setPendingApprovals] = useState<StoredApprovalRequest[]>([]);
-  const [agentConnection, setAgentConnection] = useState<AgentConnectionState>({ status: "checking" });
-  const [modelOptions, setModelOptions] = useState<AgentModelOption[]>([]);
-  const [selectedModelId, setSelectedModelId] = useState(defaultAgentModelId);
-  const [threads, setThreads] = useState<StoredThread[]>([]);
-  const [threadRunStatuses, setThreadRunStatuses] = useState<Record<string, StoredRun["status"] | undefined>>({});
-  const [workspaces, setWorkspaces] = useState<StoredWorkspace[]>([]);
-  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [newChatWorkspaceId, setNewChatWorkspaceId] = useState<string | null>(null);
   const [selectedResearchResourceId, setSelectedResearchResourceId] = useState<string | null>(null);
-  const [loadingStore, setLoadingStore] = useState(true);
-  const [storeError, setStoreError] = useState<string | null>(null);
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
   const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState | null>(null);
   const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [appSettings, setAppSettings] = useState<AppSettings>({ autoApprove: false, hiddenModels: [] });
 
-  const activeThread = useMemo(
-    () => threads.find(thread => thread.id === activeThreadId) ?? null,
-    [activeThreadId, threads],
+  const {
+    threads,
+    workspaces,
+    activeThread,
+    activeWorkspace,
+    activeThreadId,
+    setActiveThreadId,
+    threadRunStatuses,
+    loadingStore,
+    storeError,
+    refreshStore,
+  } = useThreadStore();
+  const { activeApproval, reloadApprovals } = useApprovals(
+    activeThread?.id ?? null,
+    appSettings.autoApprove,
   );
-  const activeWorkspace = useMemo(
-    () =>
-      workspaces.find(workspace => workspace.id === activeThread?.workspaceId)
-      ?? workspaces.find(workspace => workspace.kind === "user")
-      ?? null,
-    [activeThread?.workspaceId, workspaces],
-  );
-  const activeApproval = useMemo(
-    () =>
-      [...pendingApprovals]
-        .filter(approval => approval.status === "pending")
-        .sort((left, right) => left.createdAt - right.createdAt)[0] ?? null,
-    [pendingApprovals],
-  );
-
-  const refreshThreadRunStatuses = useCallback(async (nextThreads: StoredThread[]) => {
-    const entries = await Promise.all(
-      nextThreads.map(async (thread) => {
-        const runs = await listRuns(thread.id);
-        return [thread.id, runs[0]?.status] as const;
-      }),
-    );
-    setThreadRunStatuses(Object.fromEntries(entries));
-  }, []);
-
-  const refreshStore = useCallback(async (nextActiveThreadId?: string) => {
-    const [nextThreads, nextWorkspaces] = await Promise.all([listThreads(), listWorkspaces()]);
-    const selectableThreads = nextThreads.filter(thread => thread.status === "active");
-    setThreads(nextThreads);
-    setWorkspaces(nextWorkspaces);
-    void refreshThreadRunStatuses(selectableThreads);
-    if (nextActiveThreadId && selectableThreads.some(thread => thread.id === nextActiveThreadId)) {
-      setActiveThreadId(nextActiveThreadId);
-    }
-    else if (activeThreadId && selectableThreads.some(thread => thread.id === activeThreadId)) {
-      setActiveThreadId(activeThreadId);
-    }
-    else {
-      setActiveThreadId(selectableThreads[0]?.id ?? null);
-    }
-  }, [activeThreadId, refreshThreadRunStatuses]);
+  const {
+    agentConnection,
+    modelOptions,
+    visibleModelOptions,
+    selectedModelId,
+    setSelectedModelId,
+    refreshAgentModels,
+  } = useAgentConnection(appSettings.hiddenModels);
 
   useEffect(() => {
     let cancelled = false;
-
-    async function bootstrapStore() {
-      setLoadingStore(true);
-      try {
-        await initializeAppStore();
-        await cancelStaleApprovalRequests();
-        getAppSettings().then((settings) => {
-          if (!cancelled) {
-            setAppSettings(settings);
-          }
-        }).catch(() => undefined);
-        const recentThread = (await getRecentThread()) ?? (await createDefaultChatThread());
-        const [nextThreads, nextWorkspaces] = await Promise.all([listThreads(), listWorkspaces()]);
-        if (cancelled)
-          return;
-        setThreads(nextThreads);
-        setWorkspaces(nextWorkspaces);
-        void refreshThreadRunStatuses(nextThreads.filter(thread => thread.status === "active"));
-        setActiveThreadId(recentThread.id);
-        setStoreError(null);
-      }
-      catch (error) {
+    getAppSettings()
+      .then((settings) => {
         if (!cancelled) {
-          setStoreError(error instanceof Error ? error.message : String(error));
+          setAppSettings(settings);
         }
-      }
-      finally {
-        if (!cancelled) {
-          setLoadingStore(false);
-        }
-      }
-    }
-
-    void bootstrapStore();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshThreadRunStatuses]);
-
-  const refreshAgentModels = useCallback(async () => {
-    setAgentConnection(current => current.status === "connected"
-      ? current
-      : { ...current, status: "checking" });
-    try {
-      const nextModels = await loadAgentModelOptions();
-      setModelOptions(nextModels);
-      setSelectedModelId(current =>
-        nextModels.some(model => model.id === current)
-          ? current
-          : defaultModelId(nextModels),
-      );
-      setAgentConnection({
-        checkedAt: Date.now(),
-        error: null,
-        kind: null,
-        status: "connected",
-      });
-    }
-    catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setModelOptions([]);
-      setAgentConnection({
-        checkedAt: Date.now(),
-        error: message,
-        kind: classifyAgentConnectionError(message),
-        status: "disconnected",
-      });
-    }
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function refreshIfMounted() {
-      if (!cancelled) {
-        await refreshAgentModels();
-      }
-    }
-
-    void refreshIfMounted();
-    const timer = window.setInterval(() => {
-      void refreshIfMounted();
-    }, 10000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [refreshAgentModels]);
-
-  const activeThreads = useMemo(
-    () => threads.filter(thread => thread.status === "active"),
-    [threads],
-  );
-  const activeThreadIdForApprovals = activeThread?.id ?? null;
-
-  useEffect(() => {
-    if (activeThreads.length === 0) {
-      setThreadRunStatuses({});
-      return;
-    }
-
-    void refreshThreadRunStatuses(activeThreads);
-    const timer = window.setInterval(() => {
-      void refreshThreadRunStatuses(activeThreads);
-    }, 1500);
-
-    return () => window.clearInterval(timer);
-  }, [activeThreads, refreshThreadRunStatuses]);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function refreshPendingApprovals() {
-      if (!activeThreadIdForApprovals) {
-        setPendingApprovals([]);
-        return;
-      }
-
-      try {
-        const approvals = await listApprovalRequests(activeThreadIdForApprovals);
-        if (cancelled)
-          return;
-        const pending = approvals.filter(approval => approval.status === "pending");
-        setPendingApprovals(pending);
-      }
-      catch {
-        if (!cancelled) {
-          setPendingApprovals([]);
-        }
-      }
-    }
-
-    void refreshPendingApprovals();
-    const timer = window.setInterval(() => {
-      void refreshPendingApprovals();
-    }, 1500);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [activeThreadIdForApprovals]);
-
-  const autoApprovingRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    if (!appSettings.autoApprove) {
-      return;
-    }
-    for (const approval of pendingApprovals) {
-      if (autoApprovingRef.current.has(approval.id)) {
-        continue;
-      }
-      autoApprovingRef.current.add(approval.id);
-      void decideApprovalRequest({
-        approvalRequestId: approval.id,
-        decisionNote: "Auto-approved by settings.",
-        status: "approved",
       })
-        .catch(() => undefined)
-        .finally(() => {
-          autoApprovingRef.current.delete(approval.id);
-          if (activeThreadIdForApprovals) {
-            void listApprovalRequests(activeThreadIdForApprovals)
-              .then(approvals => setPendingApprovals(approvals.filter(item => item.status === "pending")))
-              .catch(() => undefined);
-          }
-        });
-    }
-  }, [activeThreadIdForApprovals, appSettings.autoApprove, pendingApprovals]);
-
-  const visibleModelOptions = useMemo(
-    () => modelOptions.filter(model => !appSettings.hiddenModels.includes(`${model.provider}/${model.id}`)),
-    [appSettings.hiddenModels, modelOptions],
-  );
-
-  useEffect(() => {
-    function handleOpenResearchResource(event: Event) {
-      const detail = (event as CustomEvent<{ resourceId?: string }>).detail;
-      setSelectedResearchResourceId(detail?.resourceId ?? null);
-      setSection("research");
-      setCenterMode("thread");
-      setNewChatWorkspaceId(null);
-    }
-
-    window.addEventListener("futureos:open-research-resource", handleOpenResearchResource);
-    return () => window.removeEventListener("futureos:open-research-resource", handleOpenResearchResource);
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  useEffect(() => onFutureEvent("open-research-resource", (detail) => {
+    setSelectedResearchResourceId(detail.resourceId);
+    setSection("research");
+    setCenterMode("thread");
+    setNewChatWorkspaceId(null);
+  }), []);
 
   function handleSectionChange(nextSection: ActivitySection) {
     if (nextSection === "settings") {
@@ -475,11 +248,7 @@ export function AppShell() {
       decisionNote: status === "approved" ? "Approved in GUI." : "Rejected in GUI.",
       status,
     });
-    if (activeThreadIdForApprovals) {
-      const approvals = await listApprovalRequests(activeThreadIdForApprovals);
-      const pending = approvals.filter(item => item.status === "pending");
-      setPendingApprovals(pending);
-    }
+    reloadApprovals();
     await refreshStore(activeThread?.id ?? undefined);
   }
 

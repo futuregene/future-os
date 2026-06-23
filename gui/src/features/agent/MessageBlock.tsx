@@ -49,7 +49,7 @@ export function MessageBlock({
                 <div className={cn("mt-2 flex flex-wrap gap-1.5", isUser && "justify-end")}>
                   {message.attachments.map(attachment => (
                     <span
-                      className="inline-flex max-w-72 items-center gap-1.5 rounded-md bg-white px-2 py-1 text-xs text-ink-soft ring-1 ring-line-soft"
+                      className="inline-flex max-w-72 items-center gap-1.5 rounded-md bg-surface px-2 py-1 text-xs text-ink-soft ring-1 ring-line-soft"
                       key={`${message.id}:${attachment.path}`}
                       title={attachment.path}
                     >

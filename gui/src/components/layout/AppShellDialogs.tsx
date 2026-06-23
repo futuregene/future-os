@@ -68,7 +68,7 @@ export function AppShellDialogs({
         </label>
         <input
           autoFocus
-          className="mt-2 h-10 w-full rounded-md border border-line bg-white px-3 text-sm text-ink outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15"
+          className="mt-2 h-10 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15"
           disabled={renameDialog?.submitting}
           id="thread-title"
           onChange={event =>
@@ -127,7 +127,7 @@ export function AppShellDialogs({
 
 function ArtifactCount({ count }: { count: number }) {
   return (
-    <div className="flex items-center justify-between rounded-md border border-line-soft bg-white px-3 py-2 text-sm">
+    <div className="flex items-center justify-between rounded-md border border-line-soft bg-surface px-3 py-2 text-sm">
       <span className="text-ink-soft">Artifacts</span>
       <span className="font-semibold text-ink">{count}</span>
     </div>

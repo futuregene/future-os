@@ -161,7 +161,7 @@ export function PdfPreview({ path }: PdfPreviewProps) {
       </div>
       <div
         ref={containerRef}
-        className="overflow-auto rounded-md border border-line bg-white"
+        className="overflow-auto rounded-md border border-line bg-surface"
         style={{ maxHeight: "600px" }}
       />
     </div>

@@ -4,7 +4,7 @@ export { Switch } from "../../components/ui/Switch";
 
 export function SettingsList({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-lg border border-line-soft bg-white px-4 [&>*+*]:border-t [&>*+*]:border-line-soft">
+    <div className="rounded-lg border border-line-soft bg-surface px-4 [&>*+*]:border-t [&>*+*]:border-line-soft">
       {children}
     </div>
   );

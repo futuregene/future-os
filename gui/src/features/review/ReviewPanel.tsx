@@ -3,18 +3,21 @@ import type {
   GitReviewFile,
   StoredReviewChangeset,
   StoredReviewFileChange,
-} from "../../../integrations/storage/types";
-import type { ReviewBase } from "../ContextPanel";
+} from "../../integrations/storage/types";
 import { Check, ChevronDown, ChevronRight, FileDiff, GitBranch, ListTree, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { Badge } from "../../components/ui/Badge";
+import { DiffView } from "../../components/ui/DiffView";
+import { EmptyState } from "../../components/ui/EmptyState";
 import {
   listReviewChangesets,
   listReviewFileChanges,
   storedTimeToIso,
   updateReviewChangesetStatus,
-} from "../../../integrations/storage/threadStore";
-import { formatTime } from "../../../lib/date";
-import { EmptyState } from "./ContextEmptyState";
+} from "../../integrations/storage/threadStore";
+import { formatTime } from "../../lib/date";
+
+export type ReviewBase = "custom" | "head" | "merge-base" | "upstream";
 
 type ReviewChangesetStatus = "applied" | "discarded" | "pending";
 
@@ -329,9 +332,9 @@ function RunChangesetsReview({
       {selectedChangeset
         ? (
             <div className="flex flex-wrap items-center gap-2">
-              <span className={reviewChangesetStatusClass(selectedStatus)}>
+              <Badge className="h-8" tone={reviewChangesetStatusTone(selectedStatus)}>
                 {reviewChangesetStatusLabel(selectedStatus)}
-              </span>
+              </Badge>
               {selectedStatus !== "applied"
                 ? (
                     <button
@@ -394,13 +397,12 @@ function reviewChangesetStatusLabel(status: ReviewChangesetStatus) {
   return "Pending";
 }
 
-function reviewChangesetStatusClass(status: ReviewChangesetStatus) {
-  const base = "inline-flex h-8 items-center rounded-md border px-2.5 text-xs font-medium";
+function reviewChangesetStatusTone(status: ReviewChangesetStatus): "success" | "danger" | "warning" {
   if (status === "applied")
-    return `${base} border-green-200 bg-green-50 text-green-700`;
+    return "success";
   if (status === "discarded")
-    return `${base} border-red-200 bg-red-50 text-red-700`;
-  return `${base} border-amber-200 bg-amber-50 text-amber-700`;
+    return "danger";
+  return "warning";
 }
 
 function ChangesetFileChange({ file }: { file: StoredReviewFileChange }) {
@@ -417,7 +419,7 @@ function ChangesetFileChange({ file }: { file: StoredReviewFileChange }) {
           {file.diff
             ? (
                 <div className="mt-2 border-t border-line-soft pt-2">
-                  <DiffBlock diff={file.diff} />
+                  <DiffView diff={file.diff} />
                 </div>
               )
             : null}
@@ -577,131 +579,11 @@ function GitFileDiff({
         ? (
             <div className="border-t border-line-soft">
               {file.diff
-                ? <DiffBlock diff={file.diff} />
+                ? <DiffView diff={file.diff} />
                 : <div className="px-3 py-3 text-xs text-ink-muted">No textual diff available.</div>}
             </div>
           )
         : null}
     </section>
   );
-}
-
-function DiffBlock({ diff }: { diff: string }) {
-  const rows = diffRows(diff);
-
-  return (
-    <div className="max-h-[70vh] overflow-auto bg-white font-mono text-[12px] leading-5">
-      {rows.map(row => (
-        <DiffLine
-          key={row.key}
-          line={row.line}
-          newLineNumber={row.newLineNumber}
-          oldLineNumber={row.oldLineNumber}
-        />
-      ))}
-    </div>
-  );
-}
-
-function DiffLine({
-  line,
-  newLineNumber,
-  oldLineNumber,
-}: {
-  line: string;
-  newLineNumber?: number;
-  oldLineNumber?: number;
-}) {
-  const kind = diffLineKind(line);
-  const content = line.length === 0 ? " " : line;
-
-  return (
-    <div className={diffLineClass(kind)}>
-      <span className="w-16 shrink-0 select-none border-r border-white/70 px-1.5 text-right text-ink-muted">
-        {oldLineNumber ?? ""}
-        <span className="inline-block w-2" />
-        {newLineNumber ?? ""}
-      </span>
-      <code className="min-w-0 flex-1 whitespace-pre-wrap break-words px-3">{content}</code>
-    </div>
-  );
-}
-
-function diffRows(diff: string) {
-  const seen = new Map<string, number>();
-  let oldLine = 0;
-  let newLine = 0;
-  return diff
-    .split("\n")
-    .filter(line => !line.startsWith("diff --git ") && !line.startsWith("index "))
-    .map((line) => {
-      const count = (seen.get(line) ?? 0) + 1;
-      seen.set(line, count);
-      const hunk = parseHunkHeader(line);
-      if (hunk) {
-        oldLine = hunk.oldStart;
-        newLine = hunk.newStart;
-      }
-
-      let oldLineNumber: number | undefined;
-      let newLineNumber: number | undefined;
-      const kind = diffLineKind(line);
-      if (kind === "add") {
-        newLineNumber = newLine;
-        newLine += 1;
-      }
-      else if (kind === "delete") {
-        oldLineNumber = oldLine;
-        oldLine += 1;
-      }
-      else if (kind === "context") {
-        oldLineNumber = oldLine;
-        newLineNumber = newLine;
-        oldLine += 1;
-        newLine += 1;
-      }
-      return {
-        key: `${count}:${line}`,
-        line,
-        newLineNumber,
-        oldLineNumber,
-      };
-    });
-}
-
-function parseHunkHeader(line: string) {
-  const match = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-  if (!match)
-    return null;
-  return {
-    newStart: Number.parseInt(match[2], 10),
-    oldStart: Number.parseInt(match[1], 10),
-  };
-}
-
-function diffLineKind(line: string) {
-  if (line.startsWith("@@") || line.startsWith("---") || line.startsWith("+++") || line.startsWith("new file")) {
-    return "meta";
-  }
-  if (line.startsWith("+")) {
-    return "add";
-  }
-  if (line.startsWith("-")) {
-    return "delete";
-  }
-  return "context";
-}
-
-function diffLineClass(kind: string) {
-  const base = "flex min-w-0 border-l-2";
-  switch (kind) {
-    case "add":
-      return `${base} border-green-500 bg-green-50 text-green-900`;
-    case "delete":
-      return `${base} border-red-500 bg-red-50 text-red-900`;
-    case "meta":
-      return `${base} border-transparent bg-surface-subtle text-ink-muted`;
-    default:
-      return `${base} border-transparent text-ink-soft`;
-  }
 }

@@ -1,7 +1,13 @@
+import type { ReviewBase } from "../../features/review/ReviewPanel";
 import type { GitReview, StoredArtifact, StoredRun, StoredThread, StoredToolCall, StoredWorkspace } from "../../integrations/storage/threadStore";
 import { ChevronDown, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ArtifactDetailPanel } from "../../features/artifacts/ArtifactDetailPanel";
+import { ArtifactsPanel } from "../../features/artifacts/ArtifactsPanel";
 import { upsertFutureReferenceEntries } from "../../features/markdown/futureReferenceStore";
+import { ReviewPanel } from "../../features/review/ReviewPanel";
+import { RunInspectPanel } from "../../features/runs/RunInspectPanel";
+import { RunsPanel } from "../../features/runs/RunsPanel";
 import {
   abortRun,
   clearFinishedRuns,
@@ -11,17 +17,13 @@ import {
   listRuns,
   listToolCalls,
 } from "../../integrations/storage/threadStore";
+import { onFutureEvent } from "../../lib/futureEvents";
 import { startWindowDrag } from "../../lib/windowDrag";
+import { EmptyState } from "../ui/EmptyState";
 import { IconButton } from "../ui/IconButton";
-import { ArtifactDetailPanel } from "./context-panel/ArtifactDetailPanel";
-import { ArtifactsPanel } from "./context-panel/ArtifactsPanel";
-import { EmptyState } from "./context-panel/ContextEmptyState";
-import { ReviewPanel } from "./context-panel/ReviewPanel";
-import { RunInspectPanel } from "./context-panel/RunInspectPanel";
-import { RunsPanel } from "./context-panel/RunsPanel";
 
 export type ContextTab = "runs" | "review" | "artifacts";
-export type ReviewBase = "custom" | "head" | "merge-base" | "upstream";
+export type { ReviewBase };
 
 const gitTabs = [
   { value: "runs", label: "Runs" },
@@ -211,47 +213,30 @@ export function ContextPanel({
   }, [activeThreadId]);
 
   useEffect(() => {
-    function handleInspectRun(event: Event) {
-      const detail = (event as CustomEvent<{ runId?: string }>).detail;
-      if (!detail?.runId)
-        return;
-
-      handleSelectRun(detail.runId);
-      if (!expanded) {
-        onToggleExpanded();
-      }
-    }
-
-    function handleInspectArtifact(event: Event) {
-      const detail = (event as CustomEvent<{ artifactId?: string }>).detail;
-      if (!detail?.artifactId)
-        return;
-
-      handleSelectArtifact(detail.artifactId);
-      if (!expanded) {
-        onToggleExpanded();
-      }
-    }
-
-    function handleOpenReview(event: Event) {
-      const detail = (event as CustomEvent<{ reviewId?: string }>).detail;
-      setSelectedReviewId(detail?.reviewId ?? null);
-      setSelectedArtifactId(null);
-      setSelectedRunId(null);
-      onTabChange("review");
-      if (!expanded) {
-        onToggleExpanded();
-      }
-    }
-
-    window.addEventListener("futureos:inspect-run", handleInspectRun);
-    window.addEventListener("futureos:inspect-artifact", handleInspectArtifact);
-    window.addEventListener("futureos:open-review", handleOpenReview);
-    return () => {
-      window.removeEventListener("futureos:inspect-run", handleInspectRun);
-      window.removeEventListener("futureos:inspect-artifact", handleInspectArtifact);
-      window.removeEventListener("futureos:open-review", handleOpenReview);
-    };
+    const unsubscribers = [
+      onFutureEvent("inspect-run", (detail) => {
+        handleSelectRun(detail.runId);
+        if (!expanded) {
+          onToggleExpanded();
+        }
+      }),
+      onFutureEvent("inspect-artifact", (detail) => {
+        handleSelectArtifact(detail.artifactId);
+        if (!expanded) {
+          onToggleExpanded();
+        }
+      }),
+      onFutureEvent("open-review", (detail) => {
+        setSelectedReviewId(detail.reviewId);
+        setSelectedArtifactId(null);
+        setSelectedRunId(null);
+        onTabChange("review");
+        if (!expanded) {
+          onToggleExpanded();
+        }
+      }),
+    ];
+    return () => unsubscribers.forEach(unsubscribe => unsubscribe());
   }, [expanded, handleSelectArtifact, handleSelectRun, onTabChange, onToggleExpanded]);
 
   useEffect(() => {

@@ -211,7 +211,7 @@ export function ActivityRail({
                           : null}
                         <span
                           aria-label={`New chat in ${workspace.name}`}
-                          className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-white hover:text-ink-soft group-hover:opacity-100"
+                          className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-surface hover:text-ink-soft group-hover:opacity-100"
                           onClick={(event) => {
                             event.stopPropagation();
                             onNewChat(workspace.id);
@@ -385,7 +385,7 @@ function ThreadListItem({
       className={cn(
         "group/thread relative flex w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface",
         compact ? "h-7" : "h-8 gap-2",
-        active && "bg-white text-ink shadow-sm",
+        active && "bg-surface text-ink shadow-sm",
       )}
     >
       {!compact ? <MessageSquare className="size-4 shrink-0 text-ink-soft" /> : null}
@@ -404,7 +404,7 @@ function ThreadListItem({
       <button
         aria-label={`Thread actions for ${thread.title}`}
         className={cn(
-          "hidden size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-white hover:text-ink-soft group-hover/thread:inline-flex",
+          "hidden size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface hover:text-ink-soft group-hover/thread:inline-flex",
           menuOpen && "inline-flex",
         )}
         onClick={(event) => {
@@ -497,7 +497,7 @@ function ThreadItemMenu({
   onTogglePin: () => void;
 }) {
   return (
-    <div className="absolute right-1 top-7 z-40 w-36 rounded-lg border border-line-soft bg-white p-1 shadow-panel">
+    <div className="absolute right-1 top-7 z-40 w-36 rounded-lg border border-line-soft bg-surface p-1 shadow-panel">
       {archived
         ? (
             <ThreadMenuItem icon={<Archive className="size-3.5" />} onClick={onRestore} onClose={onClose}>
