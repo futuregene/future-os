@@ -1,250 +1,185 @@
 import type {
   GitReview,
   GitReviewFile,
-  StoredReviewChangeset,
+  RunReview,
   StoredReviewFileChange,
 } from "../../integrations/storage/types";
-import { Check, ChevronDown, ChevronRight, FileDiff, GitBranch, ListTree, Search } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import { Badge } from "../../components/ui/Badge";
+import { AlertTriangle, ChevronDown, ChevronRight, FileDiff, GitBranch } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import { DiffView } from "../../components/ui/DiffView";
 import { EmptyState } from "../../components/ui/EmptyState";
-import {
-  listReviewChangesets,
-  listReviewFileChanges,
-  storedTimeToIso,
-  updateReviewChangesetStatus,
-} from "../../integrations/storage/threadStore";
+import { getLastRunReview, retryRunReview, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { formatTime } from "../../lib/date";
+import { onFutureEvent } from "../../lib/futureEvents";
 
 export type ReviewBase = "custom" | "head" | "merge-base" | "upstream";
 
-type ReviewChangesetStatus = "applied" | "discarded" | "pending";
+type ReviewView = "git_changes" | "last_run";
 
 export function ReviewPanel({
+  changePreview = "ready",
   customBase,
   onCustomBaseChange,
   onReviewBaseChange,
   review,
   reviewBase,
-  selectedReviewId,
   threadId,
 }: {
+  changePreview?: "ready" | "unsupported_too_large";
   customBase: string;
   onCustomBaseChange: (value: string) => void;
   onReviewBaseChange: (value: ReviewBase) => void;
   review: GitReview | null;
   reviewBase: ReviewBase;
-  selectedReviewId?: string | null;
   threadId: string;
 }) {
-  const [query, setQuery] = useState("");
-  const [reviewMode, setReviewMode] = useState<"changesets" | "working-tree">("working-tree");
-  const [changesets, setChangesets] = useState<StoredReviewChangeset[]>([]);
-  const [changesetFiles, setChangesetFiles] = useState<StoredReviewFileChange[]>([]);
-  const [changesetsError, setChangesetsError] = useState<string | null>(null);
-  const [loadingChangesets, setLoadingChangesets] = useState(false);
-  const [selectedChangesetId, setSelectedChangesetId] = useState<string | null>(selectedReviewId ?? null);
-  const [updatingChangesetId, setUpdatingChangesetId] = useState<string | null>(null);
-  const [viewedFiles, setViewedFiles] = useState<Record<string, boolean>>({});
-  const reviewFiles = review?.files;
-  const filteredFiles = useMemo(
-    () => (reviewFiles ?? []).filter(file => reviewFileMatches(file, query)),
-    [query, reviewFiles],
-  );
-  const selectedChangeset = selectedChangesetId
-    ? changesets.find(changeset => changeset.id === selectedChangesetId) ?? null
-    : changesets[0] ?? null;
+  const isGit = review?.isGitWorkspace ?? false;
+  const [activeView, setActiveView] = useState<ReviewView>(isGit ? "git_changes" : "last_run");
+  const [runReview, setRunReview] = useState<RunReview | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
+  const [loadingRun, setLoadingRun] = useState(false);
+  const [retrying, setRetrying] = useState(false);
 
+  // A non-git Workspace only ever shows the last-run view.
   useEffect(() => {
-    let cancelled = false;
+    if (!isGit)
+      setActiveView("last_run");
+  }, [isGit]);
 
-    async function loadChangesets() {
-      setLoadingChangesets(true);
-      setChangesetsError(null);
-      try {
-        const nextChangesets = await listReviewChangesets(threadId);
-        if (!cancelled) {
-          setChangesets(nextChangesets);
-          setSelectedChangesetId(current =>
-            current && nextChangesets.some(changeset => changeset.id === current)
-              ? current
-              : selectedReviewId ?? nextChangesets[0]?.id ?? null,
-          );
-        }
-      }
-      catch (error) {
-        if (!cancelled) {
-          setChangesetsError(error instanceof Error ? error.message : String(error));
-        }
-      }
-      finally {
-        if (!cancelled) {
-          setLoadingChangesets(false);
-        }
-      }
-    }
-
-    void loadChangesets();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedReviewId, threadId]);
-
-  useEffect(() => {
-    if (!selectedReviewId)
+  const loadRunReview = useCallback(async () => {
+    if (changePreview === "unsupported_too_large") {
+      setRunReview(null);
       return;
-
-    setSelectedChangesetId(selectedReviewId);
-    setReviewMode("changesets");
-  }, [selectedReviewId]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadChangesetFiles() {
-      if (!selectedChangeset?.id) {
-        setChangesetFiles([]);
-        return;
-      }
-
-      try {
-        const nextFiles = await listReviewFileChanges(selectedChangeset.id);
-        if (!cancelled) {
-          setChangesetFiles(nextFiles);
-        }
-      }
-      catch (error) {
-        if (!cancelled) {
-          setChangesetsError(error instanceof Error ? error.message : String(error));
-          setChangesetFiles([]);
-        }
-      }
     }
-
-    void loadChangesetFiles();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedChangeset?.id]);
-
-  async function handleChangesetStatusChange(changesetId: string, status: ReviewChangesetStatus) {
-    setUpdatingChangesetId(changesetId);
-    setChangesetsError(null);
+    setLoadingRun(true);
+    setRunError(null);
     try {
-      const updated = await updateReviewChangesetStatus({ changesetId, status });
-      setChangesets(current =>
-        current.map(changeset => changeset.id === updated.id ? updated : changeset),
-      );
+      setRunReview(await getLastRunReview(threadId));
     }
     catch (error) {
-      setChangesetsError(error instanceof Error ? error.message : String(error));
+      setRunError(error instanceof Error ? error.message : String(error));
     }
     finally {
-      setUpdatingChangesetId(null);
+      setLoadingRun(false);
+    }
+  }, [threadId, changePreview]);
+
+  // Initial load + reload when the thread or capability changes.
+  useEffect(() => {
+    void loadRunReview();
+  }, [loadRunReview]);
+
+  // Refresh when a Run on this thread finishes (its changeset just landed).
+  useEffect(() => onFutureEvent("review-updated", (detail) => {
+    if (detail.threadId === threadId)
+      void loadRunReview();
+  }), [threadId, loadRunReview]);
+
+  async function handleRetry() {
+    const runId = runReview?.run?.id ?? runReview?.changeset.runId;
+    if (!runId)
+      return;
+    setRetrying(true);
+    setRunError(null);
+    try {
+      const next = await retryRunReview(runId);
+      setRunReview(next);
+    }
+    catch (error) {
+      setRunError(error instanceof Error ? error.message : String(error));
+    }
+    finally {
+      setRetrying(false);
     }
   }
 
-  if (!review?.isGitWorkspace) {
-    return <EmptyState title="No Git workspace" detail="Review is available for Git-backed workspaces." />;
+  const lastRun = (
+    <LastRunReview
+      changePreview={changePreview}
+      error={runError}
+      loading={loadingRun}
+      retrying={retrying}
+      review={runReview}
+      onRetry={handleRetry}
+    />
+  );
+
+  // Non-git Workspace: just the last-run view under a static heading (§3.2).
+  if (!isGit) {
+    return (
+      <div className="space-y-3">
+        <div className="border-b border-line-soft pb-3 text-xs font-medium text-ink-muted">上一轮变更</div>
+        {lastRun}
+      </div>
+    );
   }
 
-  const viewedCount = review.files.filter(file => viewedFiles[file.path]).length;
+  const reviewData = review!;
 
   return (
     <div className="space-y-3">
-      <ReviewHeader
-        customBase={customBase}
-        review={review}
-        reviewBase={reviewBase}
-        viewedCount={viewedCount}
-        onCustomBaseChange={onCustomBaseChange}
-        onReviewBaseChange={onReviewBaseChange}
-      />
-      <div className="grid grid-cols-2 gap-1 rounded-md bg-surface p-1">
-        <button
-          className={reviewMode === "working-tree"
-            ? "h-8 rounded bg-surface-subtle text-sm font-medium text-ink"
-            : "h-8 rounded text-sm font-medium text-ink-muted transition-colors hover:text-ink"}
-          onClick={() => setReviewMode("working-tree")}
-          type="button"
-        >
-          Working tree
-        </button>
-        <button
-          className={reviewMode === "changesets"
-            ? "h-8 rounded bg-surface-subtle text-sm font-medium text-ink"
-            : "h-8 rounded text-sm font-medium text-ink-muted transition-colors hover:text-ink"}
-          onClick={() => setReviewMode("changesets")}
-          type="button"
-        >
-          Run changes
-        </button>
-      </div>
-      {reviewMode === "changesets"
+      {activeView === "git_changes"
         ? (
-            <RunChangesetsReview
-              changesetFiles={changesetFiles}
-              changesets={changesets}
-              error={changesetsError}
-              loading={loadingChangesets}
-              selectedChangeset={selectedChangeset}
-              updatingChangesetId={updatingChangesetId}
-              onSelectChangeset={setSelectedChangesetId}
-              onStatusChange={handleChangesetStatusChange}
+            <ReviewHeader
+              customBase={customBase}
+              review={reviewData}
+              reviewBase={reviewBase}
+              onCustomBaseChange={onCustomBaseChange}
+              onReviewBaseChange={onReviewBaseChange}
             />
           )
-        : (
-            <WorkingTreeReview
-              filteredFiles={filteredFiles}
-              query={query}
-              viewedFiles={viewedFiles}
-              onQueryChange={setQuery}
-              onViewedChange={(filePath, viewed) => {
-                setViewedFiles(current => ({ ...current, [filePath]: viewed }));
-              }}
-            />
-          )}
+        : null}
+      <div className="grid grid-cols-2 gap-1 rounded-md bg-surface p-1">
+        <ViewTab active={activeView === "git_changes"} label="Git changes" onClick={() => setActiveView("git_changes")} />
+        <ViewTab active={activeView === "last_run"} label="上一轮变更" onClick={() => setActiveView("last_run")} />
+      </div>
+      {activeView === "last_run"
+        ? lastRun
+        : <WorkingTreeReview files={reviewData.files} />}
     </div>
   );
 }
 
-function WorkingTreeReview({
-  filteredFiles,
-  onQueryChange,
-  onViewedChange,
-  query,
-  viewedFiles,
-}: {
-  filteredFiles: GitReviewFile[];
-  onQueryChange: (query: string) => void;
-  onViewedChange: (path: string, viewed: boolean) => void;
-  query: string;
-  viewedFiles: Record<string, boolean>;
-}) {
+function ViewTab({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
+  return (
+    <button
+      className={active
+        ? "h-8 rounded bg-surface-subtle text-sm font-medium text-ink"
+        : "h-8 rounded text-sm font-medium text-ink-muted transition-colors hover:text-ink"}
+      onClick={onClick}
+      type="button"
+    >
+      {label}
+    </button>
+  );
+}
+
+function WorkingTreeReview({ files }: { files: GitReviewFile[] }) {
+  // Files default collapsed; open state is keyed by path.
+  const [openFiles, setOpenFiles] = useState<Record<string, boolean>>({});
+  const allOpen = files.length > 0 && files.every(file => openFiles[file.path]);
+
   return (
     <>
-      <label className="relative block">
-        <span className="sr-only">Search changed files</span>
-        <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-ink-muted" />
-        <input
-          className="h-8 w-full rounded-md border border-line-soft bg-surface pl-8 pr-2 text-sm text-ink outline-none transition-colors placeholder:text-ink-muted hover:border-line focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
-          onChange={event => onQueryChange(event.target.value)}
-          placeholder="Search files or diff..."
-          value={query}
-        />
-      </label>
+      {files.length > 0
+        ? (
+            <ExpandCollapseAll
+              allOpen={allOpen}
+              onToggle={() => setOpenFiles(
+                allOpen ? {} : Object.fromEntries(files.map(file => [file.path, true])),
+              )}
+            />
+          )
+        : null}
       <div className="space-y-3">
-        {filteredFiles.length === 0
-          ? <EmptyState title="No matching changes" detail="Try a different file name or diff search." />
-          : filteredFiles.map(file => (
+        {files.length === 0
+          ? <EmptyState title="工作树没有未提交变化" detail="当前分支相对所选 base 没有变化。" />
+          : files.map(file => (
               <GitFileDiff
                 file={file}
                 key={file.path}
-                viewed={viewedFiles[file.path] ?? false}
-                onViewedChange={(viewed) => {
-                  onViewedChange(file.path, viewed);
-                }}
+                open={openFiles[file.path] ?? false}
+                onToggle={() => setOpenFiles(current => ({ ...current, [file.path]: !(current[file.path] ?? false) }))}
               />
             ))}
       </div>
@@ -252,191 +187,250 @@ function WorkingTreeReview({
   );
 }
 
-function RunChangesetsReview({
-  changesetFiles,
-  changesets,
+function ExpandCollapseAll({ allOpen, onToggle }: { allOpen: boolean; onToggle: () => void }) {
+  return (
+    <div className="flex items-center justify-end">
+      <button className="text-xs text-ink-muted transition-colors hover:text-ink" onClick={onToggle} type="button">
+        {allOpen ? "全部收起" : "全部展开"}
+      </button>
+    </div>
+  );
+}
+
+function LastRunReview({
+  changePreview,
   error,
   loading,
-  onSelectChangeset,
-  onStatusChange,
-  selectedChangeset,
-  updatingChangesetId,
+  onRetry,
+  retrying,
+  review,
 }: {
-  changesetFiles: StoredReviewFileChange[];
-  changesets: StoredReviewChangeset[];
+  changePreview: "ready" | "unsupported_too_large";
   error: string | null;
   loading: boolean;
-  onSelectChangeset: (changesetId: string) => void;
-  onStatusChange: (changesetId: string, status: ReviewChangesetStatus) => void;
-  selectedChangeset: StoredReviewChangeset | null;
-  updatingChangesetId: string | null;
+  onRetry: () => void;
+  retrying: boolean;
+  review: RunReview | null;
 }) {
-  if (loading) {
-    return <div className="rounded-md border border-line-soft bg-surface p-3 text-sm text-ink-muted">Loading run changes...</div>;
-  }
+  // Files default collapsed; open state is keyed by file-change id.
+  const [openFiles, setOpenFiles] = useState<Record<string, boolean>>({});
 
-  if (changesets.length === 0) {
-    return (
-      <div className="space-y-3">
-        {error ? <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div> : null}
-        <EmptyState title="No run changesets" detail="Write and edit operations will appear here after agent runs." />
-      </div>
-    );
-  }
+  if (changePreview === "unsupported_too_large")
+    return <EmptyState title="目录过大，已关闭改动预览" detail="该 Workspace 文件过多，暂不生成改动预览。" />;
 
-  const selectedStatus = selectedChangeset
-    ? normalizeReviewChangesetStatus(selectedChangeset.status)
-    : "pending";
-  const isUpdating = selectedChangeset ? updatingChangesetId === selectedChangeset.id : false;
+  if (loading && !review)
+    return <div className="rounded-md border border-line-soft bg-surface p-3 text-sm text-ink-muted">加载上一轮变更…</div>;
 
+  if (error)
+    return <div className="rounded-md border border-danger-line bg-danger-soft p-3 text-sm text-danger">{error}</div>;
+
+  if (!review)
+    return <EmptyState title="还没有可供审查的上一轮运行" detail="完成一轮 Agent 运行后，文件变化会显示在这里。" />;
+
+  const { changeset, files } = review;
   return (
     <div className="space-y-3">
-      {error ? <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div> : null}
-      <label className="grid gap-1">
-        <span className="text-xs font-medium text-ink-muted">Run changeset</span>
-        <select
-          className="h-8 rounded-md border border-line-soft bg-surface px-2 text-sm text-ink-soft outline-none transition-colors hover:border-line focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
-          value={selectedChangeset?.id ?? ""}
-          onChange={event => onSelectChangeset(event.target.value)}
-        >
-          {changesets.map(changeset => (
-            <option key={changeset.id} value={changeset.id}>
-              {changeset.title || changeset.id}
-            </option>
-          ))}
-        </select>
-      </label>
-      {selectedChangeset
+      <RunReviewBanners review={review} retrying={retrying} onRetry={onRetry} />
+      <section className="rounded-md border border-line-soft bg-surface p-3">
+        <div className="text-sm font-semibold text-ink">{changeset.title}</div>
+        <div className="mt-1 text-xs text-ink-muted">
+          {formatTime(storedTimeToIso(changeset.createdAt))}
+          {" · "}
+          {changeset.filesChanged}
+          {" 个文件 "}
+          <span className="text-success">{`+${changeset.additions}`}</span>
+          {" "}
+          <span className="text-danger">{`-${changeset.deletions}`}</span>
+        </div>
+      </section>
+      {files.length > 0
         ? (
-            <section className="rounded-md border border-line-soft bg-surface p-3">
-              <div className="flex items-start gap-2">
-                <ListTree className="mt-0.5 size-4 shrink-0 text-accent" />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-semibold text-ink">{selectedChangeset.title}</div>
-                  <div className="mt-1 text-xs text-ink-muted">
-                    {formatTime(storedTimeToIso(selectedChangeset.createdAt))}
-                    {" "}
-                    ·
-                    {" "}
-                    {selectedChangeset.filesChanged}
-                    {" "}
-                    files
-                    {selectedChangeset.runId ? ` · ${selectedChangeset.runId}` : ""}
-                  </div>
-                  {selectedChangeset.summary ? <p className="mt-2 text-sm leading-5 text-ink-soft">{selectedChangeset.summary}</p> : null}
-                </div>
-              </div>
-            </section>
-          )
-        : null}
-      {selectedChangeset
-        ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge className="h-8" tone={reviewChangesetStatusTone(selectedStatus)}>
-                {reviewChangesetStatusLabel(selectedStatus)}
-              </Badge>
-              {selectedStatus !== "applied"
-                ? (
-                    <button
-                      className="h-8 rounded-md border border-line-soft bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:border-green-300 hover:text-green-700 disabled:cursor-not-allowed disabled:opacity-60"
-                      disabled={isUpdating}
-                      onClick={() => onStatusChange(selectedChangeset.id, "applied")}
-                      type="button"
-                    >
-                      Mark applied
-                    </button>
-                  )
-                : null}
-              {selectedStatus !== "discarded"
-                ? (
-                    <button
-                      className="h-8 rounded-md border border-line-soft bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:border-red-300 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-60"
-                      disabled={isUpdating}
-                      onClick={() => onStatusChange(selectedChangeset.id, "discarded")}
-                      type="button"
-                    >
-                      Discard
-                    </button>
-                  )
-                : null}
-              {selectedStatus !== "pending"
-                ? (
-                    <button
-                      className="h-8 rounded-md border border-line-soft bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:border-blue-300 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-                      disabled={isUpdating}
-                      onClick={() => onStatusChange(selectedChangeset.id, "pending")}
-                      type="button"
-                    >
-                      Reset
-                    </button>
-                  )
-                : null}
-            </div>
+            <ExpandCollapseAll
+              allOpen={files.every(file => openFiles[file.id])}
+              onToggle={() => setOpenFiles(
+                files.every(file => openFiles[file.id])
+                  ? {}
+                  : Object.fromEntries(files.map(file => [file.id, true])),
+              )}
+            />
           )
         : null}
       <div className="space-y-2">
-        {changesetFiles.length === 0
-          ? <EmptyState title="No files recorded" detail="This changeset does not have file-level details yet." />
-          : changesetFiles.map(file => <ChangesetFileChange file={file} key={file.id} />)}
+        {files.length === 0
+          ? <EmptyState title="上一轮没有文件变化" detail="该轮运行没有产生工作区文件变化。" />
+          : files.map(file => (
+              <ChangesetFileChange
+                file={file}
+                key={file.id}
+                open={openFiles[file.id] ?? false}
+                onToggle={() => setOpenFiles(current => ({ ...current, [file.id]: !(current[file.id] ?? false) }))}
+              />
+            ))}
       </div>
     </div>
   );
 }
 
-function normalizeReviewChangesetStatus(status: string): ReviewChangesetStatus {
-  if (status === "applied" || status === "discarded" || status === "pending")
-    return status;
-  return "pending";
-}
+function RunReviewBanners({
+  onRetry,
+  retrying,
+  review,
+}: {
+  onRetry: () => void;
+  retrying: boolean;
+  review: RunReview;
+}) {
+  const banners: Array<{ key: string; text: string; retry?: boolean }> = [];
+  if (review.overlapped)
+    banners.push({ key: "overlapped", text: "本轮运行期间该 Workspace 有其他运行，部分变更可能来自并发运行" });
+  if (review.confidence === "recovered")
+    banners.push({ key: "recovered", text: "应用重启后恢复的快照，变更归属可能不精确" });
+  if (review.snapshotStatus === "partial")
+    banners.push({ key: "partial", text: "部分文件因大小限制未生成 diff" });
+  if (review.snapshotStatus === "incomplete")
+    banners.push({ key: "incomplete", text: "本轮快照不完整，可点击重试", retry: true });
+  if (review.snapshotStatus === "unavailable")
+    banners.push({ key: "unavailable", text: "本轮变更快照不可用" });
 
-function reviewChangesetStatusLabel(status: ReviewChangesetStatus) {
-  if (status === "applied")
-    return "Applied";
-  if (status === "discarded")
-    return "Discarded";
-  return "Pending";
-}
+  if (banners.length === 0)
+    return null;
 
-function reviewChangesetStatusTone(status: ReviewChangesetStatus): "success" | "danger" | "warning" {
-  if (status === "applied")
-    return "success";
-  if (status === "discarded")
-    return "danger";
-  return "warning";
-}
-
-function ChangesetFileChange({ file }: { file: StoredReviewFileChange }) {
   return (
-    <section className="rounded-md border border-line-soft bg-surface p-3">
-      <div className="flex items-start gap-2">
-        <FileDiff className="mt-0.5 size-4 shrink-0 text-orange-500" />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-2">
-            <div className="truncate text-sm font-medium text-ink-soft">{file.path ?? file.targetId ?? "Unknown file"}</div>
-            <span className="shrink-0 rounded bg-surface-subtle px-1.5 py-0.5 text-[11px] text-ink-muted">{file.changeType}</span>
-          </div>
-          {file.summary ? <p className="mt-2 text-xs leading-5 text-ink-soft">{file.summary}</p> : null}
-          {file.diff
+    <div className="space-y-2">
+      {banners.map(banner => (
+        <div
+          className="flex items-start gap-2 rounded-md border border-warning-line bg-warning-soft p-2.5 text-xs text-warning"
+          key={banner.key}
+        >
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">{banner.text}</span>
+          {banner.retry
             ? (
-                <div className="mt-2 border-t border-line-soft pt-2">
-                  <DiffView diff={file.diff} />
-                </div>
+                <button
+                  className="shrink-0 rounded border border-warning-line px-1.5 py-0.5 font-medium transition-colors hover:bg-surface disabled:opacity-60"
+                  disabled={retrying}
+                  onClick={onRetry}
+                  type="button"
+                >
+                  {retrying ? "重试中…" : "重试"}
+                </button>
               )
             : null}
         </div>
-      </div>
+      ))}
+    </div>
+  );
+}
+
+function ChangesetFileChange({
+  file,
+  onToggle,
+  open,
+}: {
+  file: StoredReviewFileChange;
+  onToggle: () => void;
+  open: boolean;
+}) {
+  return (
+    <section className="overflow-hidden rounded-md border border-line-soft bg-surface">
+      <button
+        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
+        onClick={onToggle}
+        type="button"
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          <FileDiff className="size-4 shrink-0 text-orange-500" />
+          <span className="min-w-0 truncate text-sm font-medium text-ink-soft">
+            {file.previousPath ? `${file.previousPath} → ` : ""}
+            {file.path ?? "Unknown file"}
+          </span>
+        </span>
+        <span className="flex shrink-0 items-center gap-2 text-xs">
+          <span className="rounded bg-surface-subtle px-1.5 py-0.5 text-[11px] text-ink-muted">
+            {changeTypeLabel(file)}
+          </span>
+          {!file.binary
+            ? (
+                <>
+                  <span className="text-success">{`+${file.additions}`}</span>
+                  <span className="text-danger">{`-${file.deletions}`}</span>
+                </>
+              )
+            : null}
+          {open ? <ChevronDown className="size-4 text-ink-muted" /> : <ChevronRight className="size-4 text-ink-muted" />}
+        </span>
+      </button>
+      {open
+        ? (
+            <div className="border-t border-line-soft">
+              {file.omissionReason === "sensitive"
+                ? <div className="px-3 py-3 text-xs text-warning">敏感文件发生变化，内容未保存。</div>
+                : file.binary
+                  ? <BinaryFileDetail file={file} />
+                  : file.diff
+                    ? <DiffView diff={file.diff} />
+                    : <div className="px-3 py-3 text-xs text-ink-muted">无文本 diff。</div>}
+              {file.diffTruncated
+                ? <div className="px-3 py-2 text-xs text-warning">diff 过大，已截断显示。</div>
+                : null}
+            </div>
+          )
+        : null}
     </section>
   );
 }
 
-function reviewFileMatches(file: GitReviewFile, query: string) {
-  const normalized = query.trim().toLowerCase();
-  if (!normalized)
-    return true;
+function BinaryFileDetail({ file }: { file: StoredReviewFileChange }) {
+  return (
+    <div className="space-y-1 px-3 py-3 text-xs text-ink-muted">
+      <div>二进制文件，不支持文本 diff。</div>
+      {file.mime
+        ? (
+            <div>
+              类型：
+              {file.mime}
+            </div>
+          )
+        : null}
+      <div>
+        大小：
+        {formatBytes(file.beforeSize)}
+        {" → "}
+        {formatBytes(file.afterSize)}
+      </div>
+    </div>
+  );
+}
 
-  return file.path.toLowerCase().includes(normalized)
-    || file.status.toLowerCase().includes(normalized)
-    || file.diff.toLowerCase().includes(normalized);
+function changeTypeLabel(file: StoredReviewFileChange) {
+  if (file.omissionReason === "sensitive")
+    return "敏感文件";
+  if (file.binary)
+    return "二进制";
+  switch (file.changeType) {
+    case "A":
+      return "已添加";
+    case "M":
+      return "已修改";
+    case "D":
+      return "已删除";
+    case "R":
+      return "已重命名";
+    case "C":
+      return "已复制";
+    default:
+      return file.changeType;
+  }
+}
+
+function formatBytes(size?: number | null) {
+  if (size == null)
+    return "—";
+  if (size < 1024)
+    return `${size} B`;
+  if (size < 1024 * 1024)
+    return `${(size / 1024).toFixed(1)} KiB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function ReviewHeader({
@@ -445,41 +439,25 @@ function ReviewHeader({
   onReviewBaseChange,
   review,
   reviewBase,
-  viewedCount,
 }: {
   customBase: string;
   onCustomBaseChange: (value: string) => void;
   onReviewBaseChange: (value: ReviewBase) => void;
   review: GitReview;
   reviewBase: ReviewBase;
-  viewedCount: number;
 }) {
   return (
     <div className="space-y-2 border-b border-line-soft pb-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="text-xs font-medium text-ink-muted">Working tree review</div>
-        {review.files.length > 0
-          ? (
-              <div className="text-xs text-ink-muted">
-                {viewedCount}
-                /
-                {review.files.length}
-                {" "}
-                viewed
-              </div>
-            )
-          : null}
-      </div>
       <div className="flex items-center gap-3 text-sm">
         <div className="inline-flex min-w-0 items-center gap-2 text-ink">
           <GitBranch className="size-4 shrink-0 text-ink-soft" />
           <span className="truncate">{review.branch ?? "HEAD"}</span>
         </div>
-        <span className="font-medium text-green-700">
+        <span className="font-medium text-success">
           +
           {review.additions.toLocaleString()}
         </span>
-        <span className="font-medium text-red-600">
+        <span className="font-medium text-danger">
           -
           {review.deletions.toLocaleString()}
         </span>
@@ -518,11 +496,6 @@ function ReviewHeader({
               />
             )
           : null}
-        <div className="truncate text-xs text-ink-muted" title={review.diffBase ?? undefined}>
-          Current base:
-          {" "}
-          {review.diffBaseLabel ?? review.diffBase ?? "HEAD"}
-        </div>
       </div>
     </div>
   );
@@ -530,20 +503,18 @@ function ReviewHeader({
 
 function GitFileDiff({
   file,
-  onViewedChange,
-  viewed,
+  onToggle,
+  open,
 }: {
   file: GitReviewFile;
-  onViewedChange: (viewed: boolean) => void;
-  viewed: boolean;
+  onToggle: () => void;
+  open: boolean;
 }) {
-  const [open, setOpen] = useState(true);
-
   return (
     <section className="overflow-hidden rounded-md border border-line-soft bg-surface">
       <button
         className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
-        onClick={() => setOpen(value => !value)}
+        onClick={onToggle}
         type="button"
       >
         <span className="flex min-w-0 items-center gap-2">
@@ -551,30 +522,17 @@ function GitFileDiff({
           <span className="min-w-0 truncate text-sm font-medium text-ink-soft">{file.path}</span>
         </span>
         <span className="flex shrink-0 items-center gap-2 text-xs">
-          <span className="text-green-700">
+          <span className="text-success">
             +
             {file.additions}
           </span>
-          <span className="text-red-600">
+          <span className="text-danger">
             -
             {file.deletions}
           </span>
           {open ? <ChevronDown className="size-4 text-ink-muted" /> : <ChevronRight className="size-4 text-ink-muted" />}
         </span>
       </button>
-      <div className="flex items-center justify-between gap-3 border-t border-line-soft px-3 py-2">
-        <div className="text-xs text-ink-muted">{file.status}</div>
-        <button
-          className={viewed
-            ? "inline-flex h-7 items-center gap-1.5 rounded-md bg-green-50 px-2 text-xs font-medium text-green-700 ring-1 ring-green-200"
-            : "inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"}
-          onClick={() => onViewedChange(!viewed)}
-          type="button"
-        >
-          {viewed ? <Check className="size-3.5" /> : null}
-          {viewed ? "Viewed" : "Mark viewed"}
-        </button>
-      </div>
       {open
         ? (
             <div className="border-t border-line-soft">

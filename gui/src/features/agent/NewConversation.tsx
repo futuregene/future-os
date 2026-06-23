@@ -46,6 +46,8 @@ interface WorkspaceCreateRequest {
 }
 
 interface NewConversationProps {
+  initialCreateWorkspace?: boolean;
+  initialMode?: ConversationMode;
   initialWorkspaceId?: string | null;
   leftPanelExpanded: boolean;
   modelId: string;
@@ -58,6 +60,8 @@ interface NewConversationProps {
 }
 
 export function NewConversation({
+  initialCreateWorkspace,
+  initialMode,
   initialWorkspaceId,
   leftPanelExpanded,
   modelId,
@@ -78,10 +82,12 @@ export function NewConversation({
     [workspaces],
   );
   const initialWorkspace = workspaceOptions.find(workspace => workspace.id === initialWorkspaceId);
-  const [mode, setMode] = useState<ConversationMode>(initialWorkspace ? "workspace" : workspaceOptions.length > 0 ? "workspace" : "chat");
+  const [mode, setMode] = useState<ConversationMode>(
+    initialMode ?? (initialWorkspace ? "workspace" : workspaceOptions.length > 0 ? "workspace" : "chat"),
+  );
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [selectedWorkspace, setSelectedWorkspace] = useState(initialWorkspace?.id ?? workspaceOptions[0]?.id ?? "");
-  const [workspaceFormMode, setWorkspaceFormMode] = useState<WorkspaceFormMode>(null);
+  const [workspaceFormMode, setWorkspaceFormMode] = useState<WorkspaceFormMode>(initialCreateWorkspace ? "create" : null);
   const [workspaceName, setWorkspaceName] = useState("");
   const [workspaceDisplayName, setWorkspaceDisplayName] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");

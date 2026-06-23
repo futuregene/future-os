@@ -94,55 +94,6 @@ pub fn get_git_review(
     })
 }
 
-/// Ensure a workspace directory is under git version control.
-///
-/// Returns `true` when the directory is inside a git work tree after the call.
-/// Does nothing and returns `false` when the path is missing or when the `git`
-/// binary is not installed, so callers can treat git as an optional feature.
-///
-/// The directory is left untouched when it is already inside any git work tree,
-/// so we never create a nested repository inside an existing one.
-pub fn ensure_git_init(path: &Path) -> bool {
-    if !path.is_dir() {
-        return false;
-    }
-    match git_inside_work_tree(path) {
-        // Already tracked by git (its own repo or a parent repo): leave it.
-        Some(true) => true,
-        // git is available but the directory is not tracked: initialise it.
-        Some(false) => run_git_init(path),
-        // git binary is unavailable: silently skip.
-        None => false,
-    }
-}
-
-/// `Some(true/false)` reports whether `path` is inside a git work tree when the
-/// `git` binary can be run; `None` means git is not installed / cannot spawn.
-fn git_inside_work_tree(path: &Path) -> Option<bool> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .output()
-        .ok()?;
-    if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).trim() == "true")
-    } else {
-        // git ran but the directory is not a repository (exit code != 0).
-        Some(false)
-    }
-}
-
-fn run_git_init(path: &Path) -> bool {
-    Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .arg("init")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
-
 pub fn is_git_workspace(path: &Path) -> bool {
     let Ok(root) = git_output(path, ["rev-parse", "--show-toplevel"]) else {
         return false;
