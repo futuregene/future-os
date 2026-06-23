@@ -5,6 +5,7 @@
 use anyhow::{anyhow, Result};
 use futures::{SinkExt, StreamExt};
 use serde_json::Value;
+use std::sync::Arc;
 use tokio::time::Duration;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 use tracing::{debug, info, warn};
@@ -30,7 +31,7 @@ pub struct DingtalkEvent {
     pub raw: Value,
 }
 
-const PING_INTERVAL_SECS: u64 = 60;
+const PING_INTERVAL_SECS: u64 = 20;
 /// UA string sent when opening the connection.
 const UA: &str = "future-os/1.0 dingtalk-stream-sdk/1.0";
 
@@ -118,100 +119,125 @@ impl DingtalkWsClient {
         );
         info!("DingTalk WebSocket connecting: {}", ws_url);
 
-        let (mut ws_stream, _response) = connect_async(&ws_url)
+        let (ws_stream, _response) = connect_async(&ws_url)
             .await
             .map_err(|e| anyhow!("DingTalk WebSocket connection failed: {}", e))?;
 
         info!("DingTalk WebSocket connected.");
 
-        // Keepalive: send WebSocket protocol ping every 60s.
-        // Matches official SDK's keepalive(ws, ping_interval=60) which uses ws.ping().
-        let mut ping_timer = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
+        // Split so keepalive and ACK sends don't block the read loop.
+        // Matches official SDK: keepalive is a separate asyncio.Task,
+        // and ACKs are sent from background_task coroutines.
+        let (ws_sink, mut ws_stream) = ws_stream.split();
+        let ws_sink = Arc::new(tokio::sync::Mutex::new(ws_sink));
 
-        loop {
-            tokio::select! {
-                _ = ping_timer.tick() => {
-                    if let Err(e) = ws_stream.send(WsMessage::Ping(vec![])).await {
-                        warn!("DingTalk ping failed: {}", e);
-                        return Err(anyhow!("DingTalk WebSocket send error: {}", e));
-                    }
-                }
-
-                msg = ws_stream.next() => {
-                    match msg {
-                        Some(Ok(WsMessage::Text(text))) => {
-                            match serde_json::from_str::<Value>(&text) {
-                                Ok(msg_data) => {
-                                    let msg_type = msg_data
-                                        .get("type")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("");
-
-                                    info!("DingTalk WS raw: {}", text);
-                                    match msg_type {
-                                        "PONG" => debug!("DingTalk pong"),
-                                        "SYSTEM" => {
-                                            let headers = msg_data.get("headers");
-                                            let topic = headers
-                                                .and_then(|h| h.get("topic"))
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("");
-                                            info!("DingTalk SYSTEM topic={}", topic);
-                                            send_ack(&mut ws_stream, &msg_data, 200, "").await;
-                                            if topic == "disconnect" {
-                                                info!("DingTalk server requested disconnect");
-                                                return Ok(());
-                                            }
-                                        }
-                                        "EVENT" => {
-                                            if let Some(event) = parse_dingtalk_event(&msg_data) {
-                                                on_event(event);
-                                            }
-                                            send_ack(&mut ws_stream, &msg_data, 200, "").await;
-                                        }
-                                        "CALLBACK" => {
-                                            let topic = msg_data
-                                                .get("headers")
-                                                .and_then(|h| h.get("topic"))
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("");
-                                            info!("DingTalk CALLBACK topic={}", topic);
-                                            if topic == "/v1.0/im/bot/messages/get" || topic == "/v1.0/im/bot/messages/delegate" {
-                                                if let Some(event) = parse_dingtalk_event(&msg_data) {
-                                                    on_event(event);
-                                                }
-                                                send_ack(&mut ws_stream, &msg_data, 200, "").await;
-                                            } else {
-                                                send_ack(&mut ws_stream, &msg_data, 200, "").await;
-                                            }
-                                        }
-                                        other => {
-                                            debug!("DingTalk unknown type: {}", other);
-                                        }
-                                    }
-                                }
-                                Err(e) => warn!("DingTalk JSON parse error: {}", e),
-                            }
-                        }
-                        Some(Ok(WsMessage::Ping(data))) => {
-                            let _ = ws_stream.send(WsMessage::Pong(data)).await;
-                        }
-                        Some(Ok(WsMessage::Close(_))) => {
-                            info!("DingTalk WebSocket closed by server");
-                            return Ok(());
-                        }
-                        Some(Err(e)) => {
-                            return Err(anyhow!("DingTalk WebSocket error: {}", e));
-                        }
-                        None => {
-                            info!("DingTalk WebSocket stream ended");
-                            return Ok(());
-                        }
-                        _ => {}
-                    }
+        // Spawn keepalive — matches SDK's create_task(self.keepalive(websocket))
+        // plus Python websockets library built-in ping_interval=20.
+        let keepalive_sink = ws_sink.clone();
+        let keepalive = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(PING_INTERVAL_SECS)).await;
+                let mut sink = keepalive_sink.lock().await;
+                if sink.send(WsMessage::Ping(vec![])).await.is_err() {
+                    break;
                 }
             }
+        });
+
+        while let Some(msg) = ws_stream.next().await {
+            match msg {
+                Ok(WsMessage::Text(text)) => {
+                    match serde_json::from_str::<Value>(&text) {
+                        Ok(msg_data) => {
+                            let msg_type = msg_data
+                                .get("type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+
+                            info!("DingTalk WS raw: {}", text);
+                            match msg_type {
+                                "PONG" => debug!("DingTalk pong"),
+                                "SYSTEM" => {
+                                    let headers = msg_data.get("headers");
+                                    let topic = headers
+                                        .and_then(|h| h.get("topic"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    info!("DingTalk SYSTEM topic={}", topic);
+                                    // Spawn ACK to avoid blocking read loop (matches SDK's background_task).
+                                    let ack_sink = ws_sink.clone();
+                                    let ack_data = msg_data.clone();
+                                    tokio::spawn(async move {
+                                        let mut sink = ack_sink.lock().await;
+                                        let _ = send_ack_inner(&mut *sink, &ack_data, 200, "").await;
+                                    });
+                                    if topic == "disconnect" {
+                                        info!("DingTalk server requested disconnect");
+                                        keepalive.abort();
+                                        return Ok(());
+                                    }
+                                }
+                                "EVENT" => {
+                                    if let Some(event) = parse_dingtalk_event(&msg_data) {
+                                        on_event(event);
+                                    }
+                                    let ack_sink = ws_sink.clone();
+                                    let ack_data = msg_data.clone();
+                                    tokio::spawn(async move {
+                                        let mut sink = ack_sink.lock().await;
+                                        let _ = send_ack_inner(&mut *sink, &ack_data, 200, "").await;
+                                    });
+                                }
+                                "CALLBACK" => {
+                                    let topic = msg_data
+                                        .get("headers")
+                                        .and_then(|h| h.get("topic"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    info!("DingTalk CALLBACK topic={}", topic);
+                                    if topic == "/v1.0/im/bot/messages/get" || topic == "/v1.0/im/bot/messages/delegate" {
+                                        if let Some(event) = parse_dingtalk_event(&msg_data) {
+                                            on_event(event);
+                                        }
+                                    }
+                                    let ack_sink = ws_sink.clone();
+                                    let ack_data = msg_data.clone();
+                                    tokio::spawn(async move {
+                                        let mut sink = ack_sink.lock().await;
+                                        let _ = send_ack_inner(&mut *sink, &ack_data, 200, "").await;
+                                    });
+                                }
+                                other => {
+                                    debug!("DingTalk unknown type: {}", other);
+                                }
+                            }
+                        }
+                        Err(e) => warn!("DingTalk JSON parse error: {}", e),
+                    }
+                }
+                Ok(WsMessage::Ping(data)) => {
+                    let pong_sink = ws_sink.clone();
+                    tokio::spawn(async move {
+                        let mut sink = pong_sink.lock().await;
+                        let _ = sink.send(WsMessage::Pong(data)).await;
+                    });
+                }
+                Ok(WsMessage::Close(_)) => {
+                    info!("DingTalk WebSocket closed by server");
+                    keepalive.abort();
+                    return Ok(());
+                }
+                Err(e) => {
+                    keepalive.abort();
+                    return Err(anyhow!("DingTalk WebSocket error: {}", e));
+                }
+                _ => {}
+            }
         }
+
+        keepalive.abort();
+        info!("DingTalk WebSocket stream ended");
+        Ok(())
     }
 }
 
@@ -243,7 +269,7 @@ fn hex_char(b: u8) -> char {
 
 /// Send an ACK response back to DingTalk Stream.
 /// The ACK must include messageId and contentType in headers (matching Python SDK).
-async fn send_ack(
+async fn send_ack_inner(
     ws: &mut (impl futures::Sink<WsMessage, Error = tokio_tungstenite::tungstenite::Error> + Unpin),
     msg: &Value,
     code: u32,
