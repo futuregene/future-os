@@ -15,6 +15,7 @@ import {
 import { copyText } from "../../lib/clipboard";
 import { cn } from "../../lib/cn";
 import { formatTime } from "../../lib/date";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { formatErrorType, formatRunStatus, runTone, shortId, summarizePayload } from "./runDisplayFormatters";
 
 interface RunInspectPanelProps {
@@ -320,13 +321,7 @@ function canRecoverRun(run: StoredRun) {
 }
 
 function dispatchRunRecovery(run: StoredRun, action: "continue" | "retry") {
-  window.dispatchEvent(new CustomEvent("futureos:recover-run", {
-    detail: {
-      action,
-      runId: run.id,
-      triggerMessageId: run.triggerMessageId,
-    },
-  }));
+  emitFutureEvent("recover-run", { action, runId: run.id, triggerMessageId: run.triggerMessageId });
 }
 
 function ToolCallDetail({

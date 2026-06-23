@@ -22,6 +22,7 @@ import {
   restoreThread,
   updateThreadModel,
 } from "../../integrations/storage/threadStore";
+import { onFutureEvent } from "../../lib/futureEvents";
 import { ActivityRail } from "./ActivityRail";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
@@ -97,18 +98,12 @@ export function AppShell() {
     };
   }, []);
 
-  useEffect(() => {
-    function handleOpenResearchResource(event: Event) {
-      const detail = (event as CustomEvent<{ resourceId?: string }>).detail;
-      setSelectedResearchResourceId(detail?.resourceId ?? null);
-      setSection("research");
-      setCenterMode("thread");
-      setNewChatWorkspaceId(null);
-    }
-
-    window.addEventListener("futureos:open-research-resource", handleOpenResearchResource);
-    return () => window.removeEventListener("futureos:open-research-resource", handleOpenResearchResource);
-  }, []);
+  useEffect(() => onFutureEvent("open-research-resource", (detail) => {
+    setSelectedResearchResourceId(detail.resourceId);
+    setSection("research");
+    setCenterMode("thread");
+    setNewChatWorkspaceId(null);
+  }), []);
 
   function handleSectionChange(nextSection: ActivitySection) {
     if (nextSection === "settings") {
