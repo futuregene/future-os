@@ -59,25 +59,6 @@ impl DingtalkRestClient {
         &self.client_id
     }
 
-    /// Reply via a sessionWebhook URL (DingTalk Stream mode provides this
-    /// in each message event). This is the ONLY way to reply in Stream mode.
-    pub async fn reply_webhook(&self, webhook_url: &str, text: &str) -> Result<()> {
-        let token = self.get_token().await?;
-        let client = reqwest::Client::new();
-        let body = json!({
-            "msgtype": "text",
-            "text": {"content": text},
-        });
-        client
-            .post(webhook_url)
-            .header("x-acs-dingtalk-access-token", &token)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-        Ok(())
-    }
-
     /// Reply via a sessionWebhook with markdown content.
     pub async fn reply_webhook_markdown(&self, webhook_url: &str, title: &str, markdown: &str) -> Result<()> {
         let token = self.get_token().await?;
