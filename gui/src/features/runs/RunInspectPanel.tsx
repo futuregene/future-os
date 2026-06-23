@@ -4,15 +4,15 @@ import type {
   StoredToolCall,
   StoredToolOutput,
 } from "../../integrations/storage/threadStore";
-import { ArrowLeft, Check, Clipboard, History, RotateCcw, Search, StepForward, Terminal, Wrench } from "lucide-react";
+import { ArrowLeft, History, RotateCcw, Search, StepForward, Terminal, Wrench } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Badge } from "../../components/ui/Badge";
+import { CopyablePre } from "../../components/ui/CopyablePre";
 import {
   listRunEvents,
   listToolOutputs,
   storedTimeToIso,
 } from "../../integrations/storage/threadStore";
-import { copyText } from "../../lib/clipboard";
 import { cn } from "../../lib/cn";
 import { formatTime } from "../../lib/date";
 import { emitFutureEvent } from "../../lib/futureEvents";
@@ -557,41 +557,6 @@ function formatDuration(milliseconds: number) {
   const minutes = Math.floor(milliseconds / 60_000);
   const seconds = Math.round((milliseconds % 60_000) / 1000);
   return `${minutes}m ${seconds}s`;
-}
-
-function CopyablePre({
-  className,
-  maxHeightClassName,
-  text,
-}: {
-  className?: string;
-  maxHeightClassName: string;
-  text: string;
-}) {
-  const [copied, setCopied] = useState(false);
-
-  async function handleCopy() {
-    await copyText(text);
-    setCopied(true);
-    window.setTimeout(setCopied, 1400, false);
-  }
-
-  return (
-    <div className={`relative ${className ?? ""}`}>
-      <button
-        aria-label="Copy content"
-        className="absolute right-1.5 top-1.5 inline-flex size-6 items-center justify-center rounded-md bg-white/90 text-ink-muted shadow-sm ring-1 ring-line-soft transition-colors hover:text-ink"
-        onClick={() => void handleCopy()}
-        title="Copy"
-        type="button"
-      >
-        {copied ? <Check className="size-3.5" /> : <Clipboard className="size-3.5" />}
-      </button>
-      <pre className={`${maxHeightClassName} overflow-auto whitespace-pre-wrap rounded-md bg-surface-subtle p-2 pr-9 text-[11px] leading-4 text-ink-soft`}>
-        <code>{text}</code>
-      </pre>
-    </div>
-  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
