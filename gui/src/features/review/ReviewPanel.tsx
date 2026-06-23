@@ -6,6 +6,7 @@ import type {
 } from "../../integrations/storage/types";
 import { Check, ChevronDown, ChevronRight, FileDiff, GitBranch, ListTree, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { Badge } from "../../components/ui/Badge";
 import { DiffView } from "../../components/ui/DiffView";
 import { EmptyState } from "../../components/ui/EmptyState";
 import {
@@ -331,9 +332,9 @@ function RunChangesetsReview({
       {selectedChangeset
         ? (
             <div className="flex flex-wrap items-center gap-2">
-              <span className={reviewChangesetStatusClass(selectedStatus)}>
+              <Badge className="h-8" tone={reviewChangesetStatusTone(selectedStatus)}>
                 {reviewChangesetStatusLabel(selectedStatus)}
-              </span>
+              </Badge>
               {selectedStatus !== "applied"
                 ? (
                     <button
@@ -396,13 +397,12 @@ function reviewChangesetStatusLabel(status: ReviewChangesetStatus) {
   return "Pending";
 }
 
-function reviewChangesetStatusClass(status: ReviewChangesetStatus) {
-  const base = "inline-flex h-8 items-center rounded-md border px-2.5 text-xs font-medium";
+function reviewChangesetStatusTone(status: ReviewChangesetStatus): "success" | "danger" | "warning" {
   if (status === "applied")
-    return `${base} border-green-200 bg-green-50 text-green-700`;
+    return "success";
   if (status === "discarded")
-    return `${base} border-red-200 bg-red-50 text-red-700`;
-  return `${base} border-amber-200 bg-amber-50 text-amber-700`;
+    return "danger";
+  return "warning";
 }
 
 function ChangesetFileChange({ file }: { file: StoredReviewFileChange }) {
