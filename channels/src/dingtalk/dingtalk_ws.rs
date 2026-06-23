@@ -22,8 +22,6 @@ pub struct DingtalkEvent {
     pub msg_type: Option<String>,
     pub content: Option<String>,
     pub create_time_ms: Option<i64>,
-    /// DingTalk message ID for emoji reactions (from body.msgId, NOT headers.messageId).
-    pub dingtalk_msg_id: Option<String>,
     /// URL for replying to this message (POST to this URL with access token).
     pub session_webhook: Option<String>,
     /// The bot's own user ID in this conversation.
@@ -378,10 +376,6 @@ fn parse_dingtalk_event(msg: &Value) -> Option<DingtalkEvent> {
         .or_else(|| body.get("chatbot_user_id"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let dingtalk_msg_id = body
-        .get("msgId")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
 
     Some(DingtalkEvent {
         event_type: if event_type.is_empty() { msg_type_str.to_string() } else { event_type },
@@ -395,7 +389,6 @@ fn parse_dingtalk_event(msg: &Value) -> Option<DingtalkEvent> {
         create_time_ms,
         session_webhook,
         chatbot_user_id,
-        dingtalk_msg_id,
         raw: msg.clone(),
     })
 }

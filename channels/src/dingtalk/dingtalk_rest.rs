@@ -5,7 +5,6 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
 
 #[derive(Clone)]
 pub struct DingtalkRestClient {
@@ -94,64 +93,6 @@ impl DingtalkRestClient {
             .json(&body)
             .send()
             .await?;
-        Ok(())
-    }
-
-    /// Add an emoji reaction to a message.
-    pub async fn add_reaction(&self, open_msg_id: &str, open_conversation_id: &str, emoji: &str) -> Result<()> {
-        let token = self.get_token().await?;
-        let client = reqwest::Client::new();
-        let url = format!("https://{}/v1.0/robot/replyEmotion", self.domain);
-        let body = json!({
-            "robotCode": self.client_id,
-            "openMsgId": open_msg_id,
-            "openConversationId": open_conversation_id,
-            "textEmotion": {
-                "emotionId": "2659900",
-                "emotionName": emoji,
-                "text": emoji,
-                "backgroundId": "im_bg_1",
-            },
-        });
-        let resp = client.post(&url)
-            .header("x-acs-dingtalk-access-token", &token)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-        let status = resp.status();
-        let resp_body = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            warn!("DingTalk add_reaction failed (HTTP {}): {}", status.as_u16(), resp_body);
-        } else {
-            info!("DingTalk add_reaction ok: {} status={}", emoji, status.as_u16());
-        }
-        Ok(())
-    }
-
-    /// Remove an emoji reaction from a message.
-    pub async fn remove_reaction(&self, open_msg_id: &str, open_conversation_id: &str) -> Result<()> {
-        let token = self.get_token().await?;
-        let client = reqwest::Client::new();
-        let url = format!("https://{}/v1.0/robot/recallEmotion", self.domain);
-        let body = json!({
-            "robotCode": self.client_id,
-            "openMsgId": open_msg_id,
-            "openConversationId": open_conversation_id,
-        });
-        let resp = client.post(&url)
-            .header("x-acs-dingtalk-access-token", &token)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-        let status = resp.status();
-        let resp_body = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            warn!("DingTalk remove_reaction failed (HTTP {}): {}", status.as_u16(), resp_body);
-        } else {
-            info!("DingTalk remove_reaction ok status={}", status.as_u16());
-        }
         Ok(())
     }
 }
