@@ -95,4 +95,48 @@ impl DingtalkRestClient {
             .await?;
         Ok(())
     }
+
+    /// Add an emoji reaction to a message.
+    pub async fn add_reaction(&self, open_msg_id: &str, open_conversation_id: &str, emoji: &str) -> Result<()> {
+        let token = self.get_token().await?;
+        let client = reqwest::Client::new();
+        let url = format!("https://{}/v1.0/robot/replyEmotion", self.domain);
+        let body = json!({
+            "robotCode": self.client_id,
+            "openMsgId": open_msg_id,
+            "openConversationId": open_conversation_id,
+            "textEmotion": {
+                "emotionId": "2659900",
+                "emotionName": emoji,
+                "text": emoji,
+                "backgroundId": "im_bg_1",
+            },
+        });
+        client.post(&url)
+            .header("x-acs-dingtalk-access-token", &token)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+        Ok(())
+    }
+
+    /// Remove an emoji reaction from a message.
+    pub async fn remove_reaction(&self, open_msg_id: &str, open_conversation_id: &str) -> Result<()> {
+        let token = self.get_token().await?;
+        let client = reqwest::Client::new();
+        let url = format!("https://{}/v1.0/robot/recallEmotion", self.domain);
+        let body = json!({
+            "robotCode": self.client_id,
+            "openMsgId": open_msg_id,
+            "openConversationId": open_conversation_id,
+        });
+        client.post(&url)
+            .header("x-acs-dingtalk-access-token", &token)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+        Ok(())
+    }
 }
