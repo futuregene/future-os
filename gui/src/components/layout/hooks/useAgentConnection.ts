@@ -49,9 +49,10 @@ export function useAgentConnection(hiddenModels: string[]): AgentConnection {
   const [selectedModelId, setSelectedModelId] = useState(defaultAgentModelId);
 
   const refreshAgentModels = useCallback(async () => {
-    setAgentConnection(current => current.status === "connected"
-      ? current
-      : { ...current, status: "checking" });
+    // Don't flip to "checking" on every poll/retry — that flips the status to
+    // disconnected→checking→disconnected each tick and makes the offline notice
+    // flash. The initial "checking" comes from the initial state; subsequent
+    // refreshes silently keep the last status until a new result lands.
     try {
       const nextModels = await loadAgentModelOptions();
       setModelOptions(nextModels);
