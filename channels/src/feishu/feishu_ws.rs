@@ -71,11 +71,15 @@ struct ClientConfig {
     reconnect_count: Option<i64>,
 }
 
-/// Default heartbeat interval (seconds, overridden by server ClientConfig).
-const DEFAULT_PING_INTERVAL: u64 = 90;
+/// Default keepalive ping interval (seconds).  Feishu server idle timeout
+/// is typically ~90 s; we ping well inside that window.  The server may also
+/// send a ``ping_interval`` hint in the bootstrap response — if it does we
+/// honour it, clamped to a safe maximum.
+const DEFAULT_PING_INTERVAL: u64 = 30;
 
-/// Time without any frame before reconnection.
-const HEARTBEAT_TIMEOUT: u64 = 300;
+/// Maximum time without receiving *any* frame before declaring the connection
+/// dead and reconnecting.
+const HEARTBEAT_TIMEOUT: u64 = 120;
 
 pub struct FeishuWsClient {
     app_id: String,
@@ -135,12 +139,13 @@ impl FeishuWsClient {
         // Bootstrap: get WebSocket URL from /callback/ws/endpoint
         let (ws_url, client_config) = self.bootstrap_ws().await?;
 
-        // Apply server-provided client config
+        // Apply server-provided client config, clamped to reasonable bounds.
         if let Some(ref cfg) = client_config {
             if let Some(pi) = cfg.ping_interval {
                 if pi > 0 {
-                    *self.ping_interval.write().await = pi as u64;
-                    info!("Server ping interval: {}s", pi);
+                    let clamped = (pi as u64).max(15).min(60);
+                    *self.ping_interval.write().await = clamped;
+                    info!("Server ping interval: {}s (clamped to {}s)", pi, clamped);
                 }
             }
         }
@@ -162,36 +167,30 @@ impl FeishuWsClient {
         loop {
             tokio::select! {
                 _ = ping_timer.tick() => {
-                    let _interval_secs = *ping_interval_arc.read().await;
                     if last_recv.elapsed().as_secs() > HEARTBEAT_TIMEOUT {
                         return Err(anyhow!("WebSocket heartbeat timeout"));
                     }
-                    seq_id += 1;
-                    let ping_frame = WsFrame {
-                        seq_id,
-                        log_id: 0,
-                        service: 0,
-                        method: 0, // CONTROL
-                        headers: vec![
-                            Header { key: "type".into(), value: "ping".into() },
-                        ],
-                        payload: vec![],
-                        payload_encoding: String::new(),
-                        payload_type: String::new(),
-                        log_id_new: String::new(),
-                    };
-                    let mut buf = Vec::new();
-                    ping_frame.encode(&mut buf)?;
-                    if let Err(e) = ws_stream.send(WsMessage::Binary(buf.into())).await {
+                    // Use WebSocket protocol ping (matches lark_oapi SDK which
+                    // delegates to Python websockets library ping_interval=20).
+                    // The server's WS stack responds with a protocol pong
+                    // automatically — no pbbp2 frame encoding needed.
+                    if let Err(e) = ws_stream.send(WsMessage::Ping(vec![])).await {
                         warn!("Failed to send ping: {}", e);
                         return Err(anyhow!("WebSocket send error: {}", e));
                     }
-                    // Note: don't reset ping_timer — interval.tick() fires at
-                    // the configured period automatically after the first tick.
                 }
 
                 msg = ws_stream.next() => {
                     match msg {
+                        Some(Ok(WsMessage::Ping(data))) => {
+                            // Auto-respond to server WS protocol pings.
+                            last_recv = Instant::now();
+                            let _ = ws_stream.send(WsMessage::Pong(data)).await;
+                        }
+                        Some(Ok(WsMessage::Pong(_))) => {
+                            last_recv = Instant::now();
+                            debug!("Received WS pong");
+                        }
                         Some(Ok(WsMessage::Binary(data))) => {
                             last_recv = Instant::now();
 
