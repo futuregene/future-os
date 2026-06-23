@@ -5,7 +5,7 @@
 use anyhow::{anyhow, Result};
 use futures::{SinkExt, StreamExt};
 use serde_json::Value;
-use tokio::time::{interval, Duration, Instant};
+use tokio::time::Duration;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 use tracing::{debug, info, warn};
 
@@ -30,8 +30,7 @@ pub struct DingtalkEvent {
     pub raw: Value,
 }
 
-const PING_INTERVAL_SECS: u64 = 30;
-const HEARTBEAT_TIMEOUT_SECS: u64 = 90;
+const PING_INTERVAL_SECS: u64 = 60;
 /// UA string sent when opening the connection.
 const UA: &str = "future-os/1.0 dingtalk-stream-sdk/1.0";
 
@@ -125,18 +124,14 @@ impl DingtalkWsClient {
 
         info!("DingTalk WebSocket connected.");
 
-        let mut ping_timer = interval(Duration::from_secs(PING_INTERVAL_SECS));
-        let mut last_recv = Instant::now();
+        // Keepalive: send WebSocket protocol ping every 60s.
+        // Matches official SDK's keepalive(ws, ping_interval=60) which uses ws.ping().
+        let mut ping_timer = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
 
         loop {
             tokio::select! {
                 _ = ping_timer.tick() => {
-                    if last_recv.elapsed().as_secs() > HEARTBEAT_TIMEOUT_SECS {
-                        return Err(anyhow!("DingTalk WebSocket heartbeat timeout"));
-                    }
-                    // Send application-level JSON PING (DingTalk Stream protocol).
-                    // WebSocket-level Ping frames are NOT recognized as keepalive by the server.
-                    if let Err(e) = ws_stream.send(WsMessage::Text(r#"{"type":"PING"}"#.into())).await {
+                    if let Err(e) = ws_stream.send(WsMessage::Ping(vec![])).await {
                         warn!("DingTalk ping failed: {}", e);
                         return Err(anyhow!("DingTalk WebSocket send error: {}", e));
                     }
@@ -145,7 +140,6 @@ impl DingtalkWsClient {
                 msg = ws_stream.next() => {
                     match msg {
                         Some(Ok(WsMessage::Text(text))) => {
-                            last_recv = Instant::now();
                             match serde_json::from_str::<Value>(&text) {
                                 Ok(msg_data) => {
                                     let msg_type = msg_data
@@ -153,7 +147,6 @@ impl DingtalkWsClient {
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("");
 
-                                    // Log ALL raw WebSocket messages at info level for debugging
                                     info!("DingTalk WS raw: {}", text);
                                     match msg_type {
                                         "PONG" => debug!("DingTalk pong"),
@@ -171,18 +164,10 @@ impl DingtalkWsClient {
                                             }
                                         }
                                         "EVENT" => {
-                                            let message_id = msg_data
-                                                .get("headers")
-                                                .and_then(|h| h.get("messageId"))
-                                                .and_then(|v| v.as_str())
-                                                .map(|s| s.to_string());
                                             if let Some(event) = parse_dingtalk_event(&msg_data) {
                                                 on_event(event);
                                             }
                                             send_ack(&mut ws_stream, &msg_data, 200, "").await;
-                                            if let Some(ref mid) = message_id {
-                                                debug!("DingTalk EVENT ack'd message_id={}", mid);
-                                            }
                                         }
                                         "CALLBACK" => {
                                             let topic = msg_data
@@ -191,7 +176,6 @@ impl DingtalkWsClient {
                                                 .and_then(|v| v.as_str())
                                                 .unwrap_or("");
                                             info!("DingTalk CALLBACK topic={}", topic);
-                                            // Bot messages arrive via CALLBACK topic
                                             if topic == "/v1.0/im/bot/messages/get" || topic == "/v1.0/im/bot/messages/delegate" {
                                                 if let Some(event) = parse_dingtalk_event(&msg_data) {
                                                     on_event(event);
