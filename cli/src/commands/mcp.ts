@@ -1,6 +1,5 @@
 // Shared MCP protocol helpers used by tools.ts and skills.ts.
 import { readFile } from "node:fs/promises";
-import { request as httpRequest } from "node:http";
 import { AUTH_FILE, DEFAULT_API_URL, FUTURE_AUTH_PROVIDER } from "../constants.js";
 
 async function resolveMcpUrl(): Promise<string> {
@@ -28,7 +27,7 @@ export interface McpResponse {
   sessionId: string | null;
 }
 
-export function mcpPost(
+export async function mcpPost(
   url: string,
   method: string,
   params: Record<string, unknown>,
@@ -43,65 +42,51 @@ export function mcpPost(
   };
   if (id !== undefined) body.id = id;
 
-  const payload = JSON.stringify(body);
-  const urlObj = new URL(url);
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/json, text/event-stream",
+    Authorization: `Bearer ${apiKey}`,
+  };
+  if (sessionId) headers["Mcp-Session-Id"] = sessionId;
 
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      req.destroy(new Error(`MCP request timed out after 60s`));
-    }, 60_000);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60_000);
 
-    const req = httpRequest(
-      {
-        hostname: urlObj.hostname,
-        port: urlObj.port || 80,
-        path: urlObj.pathname + urlObj.search,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json, text/event-stream",
-          Authorization: `Bearer ${apiKey}`,
-          ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
-          "Content-Length": Buffer.byteLength(payload).toString(),
-        },
-        agent: false,
-      },
-      (res) => {
-        clearTimeout(timeout);
-        if (res.statusCode && res.statusCode >= 400) {
-          let body = "";
-          res.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-          res.on("end", () => reject(new Error(
-            `MCP request failed: HTTP ${res.statusCode}${body ? " — " + body.slice(0, 200) : ""}`
-          )));
-          return;
-        }
-        const sid = res.headers["mcp-session-id"] as string | undefined;
-        let data = "";
-        res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
-        res.on("end", () => {
-          for (const line of data.split("\n")) {
-            if (line.startsWith("data:")) {
-              const p = line.slice(5).trim();
-              if (p) {
-                try {
-                  resolve({ body: JSON.parse(p) as Record<string, unknown>, sessionId: sid ?? null });
-                  return;
-                } catch {
-                  reject(new Error(`Invalid JSON in SSE: ${p}`));
-                  return;
-                }
-              }
-            }
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(
+        `MCP request failed: HTTP ${response.status}${text ? " — " + text.slice(0, 200) : ""}`
+      );
+    }
+
+    const sid = response.headers.get("mcp-session-id") ?? undefined;
+    const data = await response.text();
+
+    // Parse SSE stream: look for `data:` lines
+    for (const line of data.split("\n")) {
+      if (line.startsWith("data:")) {
+        const p = line.slice(5).trim();
+        if (p) {
+          try {
+            return { body: JSON.parse(p) as Record<string, unknown>, sessionId: sid ?? null };
+          } catch {
+            throw new Error(`Invalid JSON in SSE: ${p}`);
           }
-          resolve({ body: {}, sessionId: sid ?? null });
-        });
-      },
-    );
-    req.on("error", (err) => { clearTimeout(timeout); reject(err); });
-    req.write(payload);
-    req.end();
-  });
+        }
+      }
+    }
+    return { body: {}, sessionId: sid ?? null };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export function mcpNotify(
@@ -111,31 +96,21 @@ export function mcpNotify(
   apiKey: string,
   sessionId: string,
 ): Promise<void> {
-  const payload = JSON.stringify({ jsonrpc: "2.0", method, params });
-  const urlObj = new URL(url);
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/json, text/event-stream",
+    Authorization: `Bearer ${apiKey}`,
+    "Mcp-Session-Id": sessionId,
+  };
 
-  return new Promise((resolve) => {
-    const req = httpRequest(
-      {
-        hostname: urlObj.hostname,
-        port: urlObj.port || 80,
-        path: urlObj.pathname + urlObj.search,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json, text/event-stream",
-          Authorization: `Bearer ${apiKey}`,
-          "Mcp-Session-Id": sessionId,
-          "Content-Length": Buffer.byteLength(payload).toString(),
-        },
-        agent: false,
-      },
-      () => resolve(),
-    );
-    req.on("error", () => resolve());
-    req.write(payload);
-    req.end();
-  });
+  return fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ jsonrpc: "2.0", method, params }),
+  }).then(
+    () => {},
+    () => {}, // swallow errors, fire-and-forget
+  );
 }
 
 export async function initializeSession(apiKey: string): Promise<string> {
