@@ -39,7 +39,7 @@ type AuthFile = Record<string, unknown>;
 export async function login(): Promise<void> {
   const authFile = await loadAuthFile();
   const apiUrl = resolveApiUrl(authFile);
-  const device = await post<DeviceCodeResponse>(apiUrl, "/oauth/device/code", {
+  const device = await post<DeviceCodeResponse>(apiUrl, "/v1/oauth/device/code", {
     client_name: "Future OS CLI",
   });
 
@@ -56,7 +56,7 @@ export async function login(): Promise<void> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < device.expires_in * 1000) {
     await sleep(device.interval * 1000);
-    const response = await fetch(`${apiUrl}/oauth/device/token`, {
+    const response = await fetch(`${apiUrl}/v1/oauth/device/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ device_code: device.device_code }),

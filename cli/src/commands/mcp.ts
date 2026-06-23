@@ -5,7 +5,7 @@ import { DEFAULT_API_URL } from "../constants.js";
 function resolveMcpUrl(): string {
   if (process.env["FUTURE_MCP_URL"]) return process.env["FUTURE_MCP_URL"];
   const apiBase = process.env["FUTURE_API_BASE"] ?? DEFAULT_API_URL;
-  return `${apiBase}/mcp`;
+  return `${apiBase}/v1/mcp`;
 }
 
 export function mcpUrl(): string {

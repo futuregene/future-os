@@ -17,9 +17,9 @@ npm run dev -- tui
 
 `auth login` starts a device flow against Future API:
 
-1. Requests a device code from Future API `/oauth/device/code`.
+1. Requests a device code from Future API `/v1/oauth/device/code`.
 2. Opens the platform console verification URL returned by Future API in the browser.
-3. Polls Future API `/oauth/device/token`.
+3. Polls Future API `/v1/oauth/device/token`.
 4. Saves the returned API Key to the `future` entry in `~/.future/agent/auth.json`.
 
 The agent reads the saved key on startup and dynamically fetches available models from Future API `/v1/models`.
