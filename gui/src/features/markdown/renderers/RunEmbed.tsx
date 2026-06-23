@@ -1,10 +1,11 @@
 import type { StoredRun } from "../../../integrations/storage/types";
 import type { FutureReference } from "../futureMarkdownTypes";
 import { Maximize2, PlayCircle } from "lucide-react";
-import { formatRunStatus, runTone, shortId } from "../../../components/layout/context-panel/contextPanelFormatters";
 import { Badge } from "../../../components/ui/Badge";
 import { storedTimeToIso } from "../../../integrations/storage/threadStore";
 import { formatTime } from "../../../lib/date";
+import { emitFutureEvent } from "../../../lib/futureEvents";
+import { formatRunStatus, runTone, shortId } from "../../runs/runDisplayFormatters";
 
 export function RunEmbed({
   reference,
@@ -14,9 +15,7 @@ export function RunEmbed({
   run: StoredRun;
 }) {
   function inspectRun() {
-    window.dispatchEvent(new CustomEvent("futureos:inspect-run", {
-      detail: { runId: run.id },
-    }));
+    emitFutureEvent("inspect-run", { runId: run.id });
   }
 
   return (

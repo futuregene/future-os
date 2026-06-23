@@ -146,7 +146,7 @@ function CodeBlock({
       <div className="relative">
         <button
           aria-label="Copy code"
-          className="absolute right-1.5 top-1.5 inline-flex size-7 items-center justify-center rounded-md bg-white/90 text-ink-muted shadow-sm ring-1 ring-line-soft transition-colors hover:text-ink"
+          className="absolute right-1.5 top-1.5 inline-flex size-7 items-center justify-center rounded-md bg-surface/90 text-ink-muted shadow-sm ring-1 ring-line-soft transition-colors hover:text-ink"
           onClick={() => void handleCopy()}
           title="Copy code"
           type="button"
@@ -165,7 +165,7 @@ function CodeBlock({
     <div className="relative">
       <button
         aria-label="Copy code"
-        className="absolute right-1.5 top-1.5 z-10 inline-flex size-7 items-center justify-center rounded-md bg-white/90 text-ink-muted shadow-sm ring-1 ring-line-soft transition-colors hover:text-ink"
+        className="absolute right-1.5 top-1.5 z-10 inline-flex size-7 items-center justify-center rounded-md bg-surface/90 text-ink-muted shadow-sm ring-1 ring-line-soft transition-colors hover:text-ink"
         onClick={() => void handleCopy()}
         title="Copy code"
         type="button"

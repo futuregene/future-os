@@ -1,8 +1,8 @@
-import type { StoredRun, StoredToolCall } from "../../../integrations/storage/threadStore";
+import type { StoredRun, StoredToolCall } from "../../integrations/storage/threadStore";
 import { CircleStop, Maximize2, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { EmptyState } from "./ContextEmptyState";
-import { formatErrorType } from "./contextPanelFormatters";
+import { EmptyState } from "../../components/ui/EmptyState";
+import { formatErrorType } from "./runDisplayFormatters";
 
 interface RunsPanelProps {
   runs: StoredRun[];
@@ -79,7 +79,7 @@ export function RunsPanel({ onClearFinished, onInspectRun, onTerminateRun, runs,
           finished
         </div>
         <button
-          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-white hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
           disabled={clearing || finishedRuns.length === 0}
           onClick={() => void clearFinished()}
           type="button"

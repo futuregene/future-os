@@ -67,9 +67,9 @@ function AgentConnectionBadge({
     <div
       className={cn(
         "inline-flex h-8 items-center gap-1.5 rounded-md border px-2 text-xs font-medium",
-        connected && "border-green-200 bg-green-50 text-green-700",
-        checking && "border-blue-200 bg-blue-50 text-blue-700",
-        !connected && !checking && "border-red-200 bg-red-50 text-red-700",
+        connected && "border-success-line bg-success-soft text-success",
+        checking && "border-info-line bg-info-soft text-info",
+        !connected && !checking && "border-danger-line bg-danger-soft text-danger",
       )}
       title={title}
     >
@@ -83,7 +83,7 @@ function AgentConnectionBadge({
         ? (
             <button
               aria-label="Retry Future Agent connection"
-              className="ml-0.5 inline-flex size-5 items-center justify-center rounded text-red-700 transition-colors hover:bg-white"
+              className="ml-0.5 inline-flex size-5 items-center justify-center rounded text-danger transition-colors hover:bg-surface"
               onClick={onRetry}
               title="Retry connection"
               type="button"

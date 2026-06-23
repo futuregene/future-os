@@ -5,6 +5,7 @@ import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { useCallback, useEffect } from "react";
 import { listRunEvents, listToolCalls, listToolOutputs } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
+import { onFutureEvent } from "../../lib/futureEvents";
 import { ApprovalPrompt } from "./ApprovalPrompt";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
@@ -96,26 +97,13 @@ export function AgentThread({
     });
   }, [handleSend, messages]);
 
-  useEffect(() => {
-    function handleRunRecovery(event: Event) {
-      const detail = (event as CustomEvent<{
-        action?: "continue" | "retry";
-        runId?: string;
-        triggerMessageId?: string | null;
-      }>).detail;
-      if (!detail?.runId)
-        return;
-
-      if (detail.action === "retry") {
-        handleRetryRun(detail.runId, detail.triggerMessageId);
-        return;
-      }
-      void handleContinueRun(detail.runId);
+  useEffect(() => onFutureEvent("recover-run", (detail) => {
+    if (detail.action === "retry") {
+      handleRetryRun(detail.runId, detail.triggerMessageId);
+      return;
     }
-
-    window.addEventListener("futureos:recover-run", handleRunRecovery);
-    return () => window.removeEventListener("futureos:recover-run", handleRunRecovery);
-  }, [handleContinueRun, handleRetryRun]);
+    void handleContinueRun(detail.runId);
+  }), [handleContinueRun, handleRetryRun]);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
@@ -213,7 +201,7 @@ function AgentConnectionNotice({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-medium">{agentConnectionNoticeTitle(connection)}</span>
         <button
-          className="h-7 rounded-md bg-white px-2 text-xs font-medium text-amber-800 ring-1 ring-amber-200 transition-colors hover:bg-amber-100"
+          className="h-7 rounded-md bg-surface px-2 text-xs font-medium text-amber-800 ring-1 ring-amber-200 transition-colors hover:bg-amber-100"
           onClick={onRetry}
           type="button"
         >

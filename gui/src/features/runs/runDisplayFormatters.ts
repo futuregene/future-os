@@ -1,4 +1,4 @@
-import type { StoredRun } from "../../../integrations/storage/threadStore";
+import type { StoredRun } from "../../integrations/storage/threadStore";
 
 export function formatRunStatus(status: StoredRun["status"]) {
   switch (status) {
