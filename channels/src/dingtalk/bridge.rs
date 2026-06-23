@@ -3,7 +3,7 @@
 
 use super::config::DingtalkConfig;
 use super::dingtalk_rest::DingtalkRestClient;
-use super::dingtalk_ws::{extract_text_content, DingtalkEvent};
+use super::dingtalk_ws::DingtalkEvent;
 use crate::config::AgentConfig;
 use crate::grpc_client::{AgentClient, AgentEvent};
 use anyhow::Result;
@@ -67,10 +67,7 @@ impl DingtalkBridge {
             if (now_ms - create_ms) / 1000 > 60 { return Ok(()); }
         }
 
-        let text = extract_text_content(
-            event.content.as_deref().unwrap_or(""),
-            event.msg_type.as_deref().unwrap_or("text"),
-        ).unwrap_or_default();
+        let text = event.content.clone().unwrap_or_default();
 
         info!("[DING RECV] sender={} name={} text=\"{}\"",
             sender_id, event.sender_name.as_deref().unwrap_or("?"),
