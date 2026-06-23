@@ -19,6 +19,9 @@ pub struct DingtalkBridge {
     agent_cfg: Arc<AgentConfig>,
     gen_counters: RwLock<HashMap<String, Arc<AtomicU64>>>,
     processed: RwLock<HashSet<String>>,
+    /// Cached session ID so slash commands can reuse the last prompt session
+    /// instead of calling new_session() (which fails when agent is busy).
+    session_id: RwLock<Option<String>>,
 }
 
 impl DingtalkBridge {
@@ -35,6 +38,7 @@ impl DingtalkBridge {
             agent_cfg,
             gen_counters: RwLock::new(HashMap::new()),
             processed: RwLock::new(HashSet::new()),
+            session_id: RwLock::new(None),
         })
     }
 
@@ -100,16 +104,21 @@ impl DingtalkBridge {
             "/new" => {
                 let mut agent = self.agent.write().await;
                 match agent.new_session(&self.agent_cfg.cwd).await {
-                    Ok(sid) => reply_md("New Session", &format!("**Session:** `{}`", sid)),
+                    Ok(sid) => {
+                        *self.session_id.write().await = Some(sid.clone());
+                        reply_md("New Session", &format!("**Session:** `{}`", sid));
+                    }
                     Err(e) => reply_md("Error", &format!("**Error:** {}", e)),
                 }
             }
             "/status" | "/stop" | "/abort" | "/model" | "/models" | "/compact" | "/effort" => {
-                let mut agent = self.agent.write().await;
-                let sid = match agent.new_session(&self.agent_cfg.cwd).await {
+                // Reuse cached session (from last prompt) instead of creating a new
+                // one — new_session() fails when the agent is busy.
+                let sid = match self.get_or_create_session().await {
                     Ok(s) => s,
                     Err(e) => { reply_md("Error", &format!("**Error:** {}", e)); return Ok(()); }
                 };
+                let mut agent = self.agent.write().await;
 
                 match cmd.as_str() {
                     "/status" => {
@@ -177,11 +186,24 @@ impl DingtalkBridge {
         Ok(())
     }
 
+    /// Return cached session ID (from last prompt), or create a new one as fallback.
+    async fn get_or_create_session(&self) -> Result<String> {
+        if let Some(ref sid) = *self.session_id.read().await {
+            return Ok(sid.clone());
+        }
+        let mut agent = self.agent.write().await;
+        let sid = agent.new_session(&self.agent_cfg.cwd).await?;
+        *self.session_id.write().await = Some(sid.clone());
+        Ok(sid)
+    }
+
     async fn process_prompt(&self, text: &str, webhook: Option<String>) -> Result<()> {
         let session_id = {
             let mut agent = self.agent.write().await;
             agent.new_session(&self.agent_cfg.cwd).await?
         };
+        // Cache for subsequent slash commands
+        *self.session_id.write().await = Some(session_id.clone());
         let agent = self.agent.clone();
         let dingtalk = self.dingtalk.clone();
         let text = text.to_string();
