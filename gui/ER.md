@@ -420,6 +420,31 @@ Review File Change 表示某个文件或 artifact 的具体变更。
 - `additions` 和 `deletions` 只记录 Git diff 风格的简单行级统计，不做复杂行级实体建模。
 - 大型 diff 后续可以落文件，数据库保存引用。
 
+#### Shadow Review 扩展（详见 `SHADOW_REVIEW_DESIGN.md`）
+
+「上一轮变更」由 FutureOS 影子仓库的 before/after 快照 diff 生成，`source_kind = 'run_snapshot'`。相关 schema 变更：
+
+**新增 `review_snapshots`**（§8.1）：记录每个 Run 的 before/after 快照。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 快照唯一标识 |
+| `workspace_id` / `thread_id` / `run_id` | 归属 |
+| `phase` | `before` / `after` |
+| `commit_id` / `tree_id` | 影子仓 commit / tree（可丢弃缓存，非真源） |
+| `status` | `complete` / `partial` / `failed` |
+| `file_count` / `total_bytes` / `ignored_count` / `omitted_count` | 快照统计 |
+| `error_message` | 失败原因 |
+| `created_at` | 创建时间 |
+
+`UNIQUE(run_id, phase)`。
+
+**扩展 `review_changesets`**（§8.2）：`source_kind`、`workspace_id`、`before_snapshot_id`、`after_snapshot_id`、`binary_files`、`omitted_files`、`completeness`（`complete`/`partial`）、`confidence`（`normal`/`recovered`）、`overlapped`（0/1）、`error_message`。`run_snapshot` changeset 不参与 apply/discard，旧 `status` 列对它仅写哨兵值、不使用（§8.5）。
+
+**扩展 `review_file_changes`**（§8.3）：`previous_path`、`binary`、`before_size`、`after_size`、`mime`、`diff_truncated`、`omission_reason`。新模型里 `diff` 列在 after 固化时写入，是「上一轮变更」的真源（§7.1）。
+
+> `snapshotStatus`（`complete`/`partial`/`incomplete`/`unavailable`）是 API 层从快照状态 + completeness 派生，不落库（§8.5）。
+
 ### 4.11 Artifact
 
 Artifact 表示工作过程中产生的可复用产物。

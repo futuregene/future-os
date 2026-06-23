@@ -1,5 +1,6 @@
 import type { ReviewBase } from "../../features/review/ReviewPanel";
 import type { GitReview, StoredArtifact, StoredRun, StoredThread, StoredToolCall, StoredWorkspace } from "../../integrations/storage/threadStore";
+import type { WorkspaceReviewCapabilities } from "../../integrations/storage/types";
 import { ChevronDown, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArtifactDetailPanel } from "../../features/artifacts/ArtifactDetailPanel";
@@ -13,6 +14,7 @@ import {
   clearFinishedRuns,
   ensureWorkspaceGit,
   getGitReview,
+  getWorkspaceReviewCapabilities,
   listArtifacts,
   listRuns,
   listToolCalls,
@@ -60,9 +62,9 @@ export function ContextPanel({
   const [toolsByRun, setToolsByRun] = useState<Record<string, StoredToolCall[]>>({});
   const [artifacts, setArtifacts] = useState<StoredArtifact[]>([]);
   const [gitReview, setGitReview] = useState<GitReview | null>(null);
+  const [reviewCapabilities, setReviewCapabilities] = useState<WorkspaceReviewCapabilities | null>(null);
   const [reviewBase, setReviewBase] = useState<ReviewBase>("head");
   const [reviewCustomBase, setReviewCustomBase] = useState("");
-  const [selectedReviewId, setSelectedReviewId] = useState<string | null>(null);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -70,9 +72,12 @@ export function ContextPanel({
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadMode = activeThread?.mode ?? null;
   const activeWorkspaceId = activeWorkspace?.id ?? activeThread?.workspaceId ?? null;
-  const workspaceKindPending = activeThreadId !== null && activeWorkspaceId !== null && gitReview === null;
-  const isGitWorkspace = gitReview?.isGitWorkspace ?? false;
-  const tabs = workspaceKindPending ? pendingTabs : isGitWorkspace ? gitTabs : fileTabs;
+  // Workspace-mode threads (git or not) show Review (§14.6); chat keeps Artifacts.
+  // Tab choice is driven by capabilities (cheap), not the whole-tree git diff (C3).
+  const isWorkspaceThread = activeThreadMode === "workspace";
+  const workspaceKindPending = activeThreadId !== null && isWorkspaceThread && reviewCapabilities === null;
+  const tabs = workspaceKindPending ? pendingTabs : isWorkspaceThread ? gitTabs : fileTabs;
+  const changePreview = reviewCapabilities?.changePreview ?? "ready";
   const hasContextData = runs.length > 0
     || artifacts.length > 0
     || (gitReview?.files.length ?? 0) > 0;
@@ -123,17 +128,22 @@ export function ContextPanel({
     }
 
     try {
-      const [nextRuns, nextGitReview] = await Promise.all([
+      const [nextRuns, nextGitReview, nextCapabilities] = await Promise.all([
         listRuns(activeThreadId),
-        activeWorkspaceId
+        // C3: only run the whole-tree git diff while the Review tab is showing it.
+        activeWorkspaceId && activeTab === "review"
           ? getGitReview({
               base: reviewBase,
               customBase: reviewCustomBase,
               workspaceId: activeWorkspaceId,
             })
           : Promise.resolve(null),
+        activeWorkspaceId && activeThreadMode === "workspace"
+          ? getWorkspaceReviewCapabilities(activeWorkspaceId)
+          : Promise.resolve(null),
       ]);
-      const nextArtifacts = nextGitReview?.isGitWorkspace ? [] : await listArtifacts(activeThreadId);
+      // Only chat threads use Artifacts; workspace threads show Review (§14.6).
+      const nextArtifacts = activeThreadMode === "workspace" ? [] : await listArtifacts(activeThreadId);
       const toolEntries = await Promise.all(nextRuns.map(async run => [run.id, await listToolCalls(run.id)] as const));
       const toolCalls = toolEntries.flatMap(([, tools]) => tools);
 
@@ -144,6 +154,7 @@ export function ContextPanel({
       setToolsByRun(Object.fromEntries(toolEntries));
       setArtifacts(nextArtifacts);
       setGitReview(nextGitReview);
+      setReviewCapabilities(nextCapabilities);
       upsertContextReferences(activeWorkspaceId, {
         artifacts: nextArtifacts,
         runs: nextRuns,
@@ -163,7 +174,7 @@ export function ContextPanel({
         setLoading(false);
       }
     }
-  }, [activeThreadId, activeThreadMode, activeWorkspaceId, reviewBase, reviewCustomBase]);
+  }, [activeTab, activeThreadId, activeThreadMode, activeWorkspaceId, reviewBase, reviewCustomBase]);
 
   useEffect(() => {
     if (!tabs.some(tab => tab.value === activeTab)) {
@@ -226,8 +237,7 @@ export function ContextPanel({
           onToggleExpanded();
         }
       }),
-      onFutureEvent("open-review", (detail) => {
-        setSelectedReviewId(detail.reviewId);
+      onFutureEvent("open-review", () => {
         setSelectedArtifactId(null);
         setSelectedRunId(null);
         onTabChange("review");
@@ -311,20 +321,20 @@ export function ContextPanel({
                 />
               )
           : null}
-        {!showInitialLoading && activeThread && activeTab === "review" && isGitWorkspace
+        {!showInitialLoading && activeThread && activeTab === "review"
           ? (
               <ReviewPanel
+                changePreview={changePreview}
                 customBase={reviewCustomBase}
                 review={gitReview}
                 reviewBase={reviewBase}
-                selectedReviewId={selectedReviewId}
                 threadId={activeThread.id}
                 onCustomBaseChange={setReviewCustomBase}
                 onReviewBaseChange={setReviewBase}
               />
             )
           : null}
-        {!showInitialLoading && activeThread && activeTab === "artifacts" && !isGitWorkspace
+        {!showInitialLoading && activeThread && activeTab === "artifacts"
           ? selectedArtifact
             ? (
                 <ArtifactDetailPanel
