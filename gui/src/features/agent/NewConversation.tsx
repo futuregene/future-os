@@ -227,7 +227,7 @@ export function NewConversation({
           <h1 className="mb-8 text-center text-3xl font-semibold tracking-normal text-ink">欢迎使用</h1>
           <div className="w-full max-w-3xl">
             <Composer
-              className="w-full rounded-b-none bg-white"
+              className="w-full rounded-b-none bg-surface"
               modelId={modelId}
               modelOptions={modelOptions}
               onModelChange={onModelChange}
@@ -242,8 +242,8 @@ export function NewConversation({
                   className={cn(
                     "inline-flex h-8 max-w-64 items-center gap-2 rounded-md px-2.5 text-sm font-medium transition-colors",
                     mode === "workspace"
-                      ? "bg-white text-ink shadow-sm"
-                      : "text-ink-soft hover:bg-white/70 hover:text-ink",
+                      ? "bg-surface text-ink shadow-sm"
+                      : "text-ink-soft hover:bg-surface/70 hover:text-ink",
                   )}
                   onClick={() => {
                     setMode("workspace");
@@ -256,7 +256,7 @@ export function NewConversation({
                 </button>
                 {workspaceMenuOpen
                   ? (
-                      <div className="absolute left-0 top-9 z-30 w-72 rounded-lg border border-line-soft bg-white p-1.5 shadow-panel">
+                      <div className="absolute left-0 top-9 z-30 w-72 rounded-lg border border-line-soft bg-surface p-1.5 shadow-panel">
                         <div className="flex h-8 items-center gap-2 rounded-md px-2 text-sm text-ink-muted">
                           <Search className="size-3.5" />
                           <span>Search workspace</span>
@@ -324,8 +324,8 @@ export function NewConversation({
                 className={cn(
                   "inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors",
                   mode === "chat"
-                    ? "bg-white text-ink shadow-sm"
-                    : "text-ink-soft hover:bg-white/70 hover:text-ink",
+                    ? "bg-surface text-ink shadow-sm"
+                    : "text-ink-soft hover:bg-surface/70 hover:text-ink",
                 )}
                 onClick={() => {
                   setMode("chat");
@@ -398,7 +398,7 @@ function WorkspaceModal({
 
   return (
     <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/10 px-6">
-      <form className="w-full max-w-md rounded-lg border border-line-soft bg-white p-4 shadow-panel" onSubmit={onSubmit}>
+      <form className="w-full max-w-md rounded-lg border border-line-soft bg-surface p-4 shadow-panel" onSubmit={onSubmit}>
         <div className="mb-3">
           <div className="text-sm font-semibold text-ink">
             {mode === "open" ? "Open Existing Workspace" : "Create New Workspace"}
@@ -410,7 +410,7 @@ function WorkspaceModal({
           </div>
         </div>
         <div className="space-y-2">
-          <div className="flex h-9 overflow-hidden rounded-md border border-line-soft bg-white">
+          <div className="flex h-9 overflow-hidden rounded-md border border-line-soft bg-surface">
             <button
               aria-label={mode === "create" ? "Choose parent workspace" : "Choose workspace"}
               className="inline-flex h-full w-10 shrink-0 items-center justify-center border-r border-line-soft text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
@@ -436,7 +436,7 @@ function WorkspaceModal({
                       /
                     </div>
                     <input
-                      className="h-full min-w-0 flex-[0.55] border-0 bg-white px-2 text-sm text-ink outline-none placeholder:text-ink-muted"
+                      className="h-full min-w-0 flex-[0.55] border-0 bg-surface px-2 text-sm text-ink outline-none placeholder:text-ink-muted"
                       onChange={event => onDirectoryNameChange(event.target.value)}
                       placeholder="Workspace directory"
                       value={directoryName}
@@ -446,7 +446,7 @@ function WorkspaceModal({
               : null}
           </div>
           <input
-            className="h-9 w-full rounded-md border border-line-soft bg-white px-2 text-sm text-ink outline-none focus:border-accent"
+            className="h-9 w-full rounded-md border border-line-soft bg-surface px-2 text-sm text-ink outline-none focus:border-accent"
             onChange={event => onDisplayNameChange(event.target.value)}
             placeholder={
               mode === "create"

@@ -438,7 +438,7 @@ function ToolOutputPreview({ output }: { output: StoredToolOutput }) {
         {long
           ? (
               <button
-                className="h-6 rounded px-1.5 text-[11px] font-medium text-ink-muted transition-colors hover:bg-white hover:text-ink"
+                className="h-6 rounded px-1.5 text-[11px] font-medium text-ink-muted transition-colors hover:bg-surface hover:text-ink"
                 onClick={() => setExpanded(value => !value)}
                 type="button"
               >

@@ -19,7 +19,7 @@ export function ToolCallBlock({ tool }: ToolCallBlockProps) {
   }, [tool.status]);
 
   return (
-    <div className="mt-3 rounded-lg border border-line-soft bg-white">
+    <div className="mt-3 rounded-lg border border-line-soft bg-surface">
       <button
         className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
         onClick={() => setOpen(value => !value)}

@@ -27,7 +27,7 @@ export function Dialog({
         aria-labelledby="dialog-title"
         aria-modal="true"
         className={cn(
-          "relative z-10 w-full max-w-md rounded-xl border border-line-soft bg-white p-5 shadow-dialog",
+          "relative z-10 w-full max-w-md rounded-xl border border-line-soft bg-surface p-5 shadow-dialog",
           className,
         )}
         role="dialog"
