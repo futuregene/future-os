@@ -258,9 +258,7 @@ async fn run_prompt_loop(
             }
             Some(AgentEvent::ToolEnd { text: result, .. }) => {
                 if let Some(r) = result {
-                    let preview = if r.len() > 3000 {
-                        format!("{}...\\n_(truncated)_", truncate_at_char(&r, 3000))
-                    } else { r.to_string() };
+                    let preview = truncate_tool_output(&r);
                     stream_text.push_str(&preview);
                 }
                 stream_text.push_str("\n```\n");
@@ -301,4 +299,38 @@ async fn run_prompt_loop(
 
 fn truncate_at_char(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
+}
+
+/// Truncate tool output to max 5 lines or 500 chars (Unicode-aware), whichever is smaller.
+fn truncate_tool_output(s: &str) -> String {
+    const MAX_LINES: usize = 5;
+    const MAX_CHARS: usize = 500;
+
+    let char_count = s.chars().count();
+    let line_count = s.lines().count();
+
+    if line_count <= MAX_LINES && char_count <= MAX_CHARS {
+        return s.to_string();
+    }
+
+    let mut truncated = String::new();
+    let mut lines = 0;
+    let mut chars = 0;
+
+    for ch in s.chars() {
+        if ch == '\n' {
+            lines += 1;
+            if lines >= MAX_LINES {
+                break;
+            }
+        }
+        truncated.push(ch);
+        chars += 1;
+        if chars >= MAX_CHARS {
+            break;
+        }
+    }
+
+    truncated.push_str("...\n_(truncated)_");
+    truncated
 }
