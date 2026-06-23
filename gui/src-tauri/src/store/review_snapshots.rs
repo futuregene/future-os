@@ -1,4 +1,4 @@
-//! Store CRUD for the shadow review pipeline (SHADOW_REVIEW_DESIGN §8):
+//! Store CRUD for the shadow review pipeline (see gui/ER.md §4.10):
 //! before/after snapshots, the per-Run `run_snapshot` changeset, its file
 //! rows, the "latest ended Run" lookup, and concurrency overlap marking.
 

@@ -146,7 +146,7 @@ export interface StoredReviewChangeset {
   filesChanged: number;
   additions: number;
   deletions: number;
-  // Shadow review (source_kind = 'run_snapshot') fields — see SHADOW_REVIEW_DESIGN §8.2.
+  // Shadow review (source_kind = 'run_snapshot') fields — see gui/ER.md §4.10.
   sourceKind: string;
   workspaceId?: string | null;
   beforeSnapshotId?: string | null;
@@ -174,7 +174,7 @@ export interface StoredReviewFileChange {
   summary?: string | null;
   additions: number;
   deletions: number;
-  // Shadow review fields — see SHADOW_REVIEW_DESIGN §8.3.
+  // Shadow review fields — see gui/ER.md §4.10.
   previousPath?: string | null;
   binary: boolean;
   beforeSize?: number | null;

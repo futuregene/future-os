@@ -352,7 +352,7 @@ pub struct EnsureApprovalRequestInput {
     pub reviewer: Option<String>,
 }
 
-/// Insert a before/after shadow snapshot row (SHADOW_REVIEW_DESIGN §8.1).
+/// Insert a before/after shadow snapshot row (see gui/ER.md §4.10).
 #[derive(Debug, Default)]
 pub struct CreateReviewSnapshotInput {
     pub workspace_id: String,

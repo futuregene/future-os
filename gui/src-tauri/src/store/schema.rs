@@ -178,7 +178,7 @@ CREATE TABLE IF NOT EXISTS review_changesets (
     files_changed INTEGER NOT NULL DEFAULT 0,
     additions INTEGER NOT NULL DEFAULT 0,
     deletions INTEGER NOT NULL DEFAULT 0,
-    -- Shadow review (source_kind = 'run_snapshot') columns; see SHADOW_REVIEW_DESIGN §8.2.
+    -- Shadow review (source_kind = 'run_snapshot') columns; see gui/ER.md §4.10.
     source_kind TEXT NOT NULL DEFAULT 'run_snapshot',
     workspace_id TEXT REFERENCES workspaces(id),
     before_snapshot_id TEXT REFERENCES review_snapshots(id),
@@ -206,7 +206,7 @@ CREATE TABLE IF NOT EXISTS review_file_changes (
     summary TEXT,
     additions INTEGER NOT NULL DEFAULT 0,
     deletions INTEGER NOT NULL DEFAULT 0,
-    -- Shadow review columns; see SHADOW_REVIEW_DESIGN §8.3.
+    -- Shadow review columns; see gui/ER.md §4.10.
     previous_path TEXT,
     binary INTEGER NOT NULL DEFAULT 0,
     before_size INTEGER,
