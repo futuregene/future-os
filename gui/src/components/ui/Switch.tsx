@@ -26,7 +26,7 @@ export function Switch({
     >
       <span
         className={cn(
-          "inline-block size-5 transform rounded-full bg-white shadow-sm transition-transform",
+          "inline-block size-5 transform rounded-full bg-surface shadow-sm transition-transform",
           checked ? "translate-x-[18px]" : "translate-x-[2px]",
         )}
       />

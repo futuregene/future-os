@@ -66,7 +66,7 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
   }, [decide, deciding]);
 
   return (
-    <section className="rounded-lg border border-line bg-white/95 p-4 shadow-panel backdrop-blur">
+    <section className="rounded-lg border border-line bg-surface/95 p-4 shadow-panel backdrop-blur">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <span className="size-2 shrink-0 rounded-full bg-amber-500" />
@@ -106,7 +106,7 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
         : null}
       <div className="mt-4 flex items-center justify-between gap-3">
         <button
-          className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink-soft shadow-sm transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-surface px-3 text-sm font-medium text-ink-soft shadow-sm transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
           disabled={deciding !== null}
           onClick={() => void decide("rejected")}
           type="button"

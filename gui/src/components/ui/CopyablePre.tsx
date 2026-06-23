@@ -27,7 +27,7 @@ export function CopyablePre({
     <div className={`relative ${className ?? ""}`}>
       <button
         aria-label="Copy content"
-        className="absolute right-1.5 top-1.5 inline-flex size-6 items-center justify-center rounded-md bg-white/90 text-ink-muted shadow-sm ring-1 ring-line-soft transition-colors hover:text-ink"
+        className="absolute right-1.5 top-1.5 inline-flex size-6 items-center justify-center rounded-md bg-surface/90 text-ink-muted shadow-sm ring-1 ring-line-soft transition-colors hover:text-ink"
         onClick={() => void handleCopy()}
         title="Copy"
         type="button"

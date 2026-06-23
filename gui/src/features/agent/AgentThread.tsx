@@ -201,7 +201,7 @@ function AgentConnectionNotice({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-medium">{agentConnectionNoticeTitle(connection)}</span>
         <button
-          className="h-7 rounded-md bg-white px-2 text-xs font-medium text-amber-800 ring-1 ring-amber-200 transition-colors hover:bg-amber-100"
+          className="h-7 rounded-md bg-surface px-2 text-xs font-medium text-amber-800 ring-1 ring-amber-200 transition-colors hover:bg-amber-100"
           onClick={onRetry}
           type="button"
         >

@@ -59,7 +59,7 @@ export function SettingsDialog({
       <section
         aria-label="设置"
         aria-modal="true"
-        className="relative z-10 flex h-[560px] w-full max-w-3xl overflow-hidden rounded-xl border border-line-soft bg-white shadow-dialog"
+        className="relative z-10 flex h-[560px] w-full max-w-3xl overflow-hidden rounded-xl border border-line-soft bg-surface shadow-dialog"
         role="dialog"
       >
         <nav className="flex w-52 shrink-0 flex-col border-r border-line-soft bg-surface-subtle p-3">
@@ -73,8 +73,8 @@ export function SettingsDialog({
                     <button
                       key={item.value}
                       className={cn(
-                        "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-white hover:text-ink",
-                        tab === item.value && "border-line-soft bg-white text-ink shadow-sm",
+                        "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink",
+                        tab === item.value && "border-line-soft bg-surface text-ink shadow-sm",
                       )}
                       onClick={() => setTab(item.value)}
                       type="button"

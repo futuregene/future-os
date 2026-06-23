@@ -6,7 +6,7 @@ export function DiffView({ diff }: { diff: string }) {
   const rows = diffRows(diff);
 
   return (
-    <div className="max-h-[70vh] overflow-auto bg-white font-mono text-[12px] leading-5">
+    <div className="max-h-[70vh] overflow-auto bg-surface font-mono text-[12px] leading-5">
       {rows.map(row => (
         <DiffLine
           key={row.key}
@@ -33,7 +33,7 @@ function DiffLine({
 
   return (
     <div className={diffLineClass(kind)}>
-      <span className="w-16 shrink-0 select-none border-r border-white/70 px-1.5 text-right text-ink-muted">
+      <span className="w-16 shrink-0 select-none border-r border-line-soft px-1.5 text-right text-ink-muted">
         {oldLineNumber ?? ""}
         <span className="inline-block w-2" />
         {newLineNumber ?? ""}
@@ -112,9 +112,9 @@ function diffLineClass(kind: string) {
   const base = "flex min-w-0 border-l-2";
   switch (kind) {
     case "add":
-      return `${base} border-green-500 bg-green-50 text-green-900`;
+      return `${base} border-diff-add-line bg-diff-add text-success`;
     case "delete":
-      return `${base} border-red-500 bg-red-50 text-red-900`;
+      return `${base} border-diff-remove-line bg-diff-remove text-danger`;
     case "meta":
       return `${base} border-transparent bg-surface-subtle text-ink-muted`;
     default:
