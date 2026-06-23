@@ -133,21 +133,38 @@ GUI 负责展示审批请求并把 allow / deny 决策回传给 Agent。
 
 Review 解决“改了什么”。它不同于 Approval。Approval 是执行前允许与否，Review 是执行后查看变更。
 
-Review 第一优先级是 Git workspace 的工作树 diff 审查。只要当前 workspace 是 Git 仓库，Review 面板就应该基于真实 `git diff HEAD` 展示当前未提交变更，包括新增、删除、修改和未跟踪文本文件，并展示文件级 additions / deletions。
+Review 覆盖所有 Workspace 对话（`mode = workspace`），无论目录是否为 Git 仓库；普通 Chat 不显示 Review，其文件产物进入 Artifacts（见 4.8）。Review 面板顶部用一个下拉切换视图，按 workspace 类型提供：
 
-无 Git 的 workspace 不展示 Review 入口。普通 Chat 或临时 workspace 产生的文件不走 Git diff 审查，而是进入 Artifacts 管理。
+- **Git changes**（仅 Git workspace）：基于真实 `git diff` 展示当前工作树相对所选 base（默认 `HEAD`）的未提交变更，包括新增、删除、修改、重命名和未跟踪文本文件，并展示文件级 additions / deletions。
+- **上一轮变更**（两类 workspace 都有）：展示当前 Thread **最近一轮已结束 Run**（`completed` / `failed` / `cancelled`）从运行前到运行后之间的 workspace 文件变化。
 
-Git workspace 中不展示 Artifacts 入口。Git 仓库里的文件由 Git 管理，右侧 Review 负责展示文件变更，不能再把同一批文件重复投影成 Artifacts。
+「上一轮变更」的产品语义：
 
-长期目标中，Review 还需要覆盖 markdown、文档、表格等文本类 artifact 的变更审查；但第一版产品语义必须先保持清晰：Git workspace 看 Review，非 Git workspace 看 Artifacts。
+- 严格指最新结束的那一轮 Run；正在运行的 Run 不进入，运行期间继续显示前一轮结果。
+- 最新一轮没有文件变化时显示“上一轮没有文件变化”，不回退到更早但有变化的 Run，否则“上一轮”语义会失真。
+- 它表示“该轮运行期间工作区内发生的文件变化”，不绝对断言每处改动都来自 Agent（用户、IDE formatter、后台进程在同一窗口内的修改也会被纳入），UI 不谎称归属。
+- 失败、取消或部分完成的 Run 仍尽量展示已落盘的变化；快照失败时明确标为「不可用」，绝不伪装成“没有变化”。
+
+「上一轮变更」由 FutureOS 在每轮 Run 前后对 workspace 拍快照并求 diff 得到，全程只读：不向用户真实 Git 仓库写入任何 commit / index / ref / object，也不在非 Git 目录里创建 `.git`（实现见 ER.md §4.10、§6.8）。
+
+「上一轮变更」顶部按情况叠加状态提示：
+
+- **并发**：本轮运行期间该 workspace 有其他 Run 并发，部分变更可能来自并发运行，仍展示 diff。
+- **恢复**：应用重启后恢复的快照，归属可能不精确。
+- **不可用**：存在上一轮 Run 但快照不可用，区别于“没有变化”。
+- **目录过大**：非 Git workspace 超过体积红线后关闭改动预览，显示静态提示而非空状态。
+
+展示约定：diff 只做 unified（单栏）；文件默认收起，顶部一个「全部展开 / 全部收起」开关；二进制文件只显示路径、状态、前后大小与类型，不做文本 diff；命中凭证规则的敏感文件（`.env`、`*.pem`、`*.key` 等）只标记“敏感文件发生变化，内容未保存”，不保存内容。
+
+长期目标中，Review 还会覆盖 markdown、文档、表格等文本类 artifact 的变更审查。
 
 ### 4.8 Artifact
 
 Artifact 是 Agent 或用户在工作过程中产生的可复用产物，包括文档、报告、表格、图表、diff、命令输出、文献摘要、实验计划和数据分析结果。
 
-Artifact 在非 Git workspace 和普通 Chat 场景中可以关联文件系统；在普通 Chat 场景中可以由 FutureOS 自动管理。
+Artifact 主要服务普通 Chat：Chat 的文件产物由 FutureOS 在临时 workspace 中自动管理。Workspace 对话（含非 Git 目录）的文件变更改由 Review 的「上一轮变更」展示（见 4.7），不再投影为 Artifact。
 
-当 workspace 是 Git 仓库时，文件写入、编辑和新增不自动创建 Artifact。用户应该通过 Git Review 查看和管理这些变更，避免同一个文件同时出现在 Git diff 和 Artifacts 两套系统中。
+Workspace 对话中，文件写入、编辑和新增不自动创建 Artifact，避免同一个文件同时进入 Review 和 Artifacts 两套系统。
 
 用户在普通 Chat 中上传的图片附件也作为 Artifact 管理：图片会被保存进对应（临时）工作目录，并登记为 Artifact，便于后续查看、转入 Research 或复用。Workspace 对话中上传的图片附件不保存到工作目录、不创建 Artifact，只作为多模态输入传给模型。详见 4.12 Attachment。
 
@@ -238,10 +255,10 @@ GUI 采用三栏结构：
 当前重点：
 
 - Runs：展示后台运行程序列表，区分运行中和已完成程序，支持终止运行中程序和清空已完成程序。每个程序卡片主内容只展示 tool input JSON 中的 `command` 字段，按真实命令文本显示，不展示完整 JSON、转义文本、模型名或 `Program <id>` 这类内部编号；没有 `command` 的 run 不进入 Runs 列表。
-- Git workspace：只展示 Runs 和 Review。Review 基于真实 Git diff；Artifacts 不展示。
-- 非 Git workspace / 普通 Chat：只展示 Runs 和 Artifacts。Review 不展示。
-- Review：展示当前 Git workspace 的工作树变更审查，包含文件列表、统计和 diff。
-- Artifacts：展示当前 Thread 或 Workspace 的产物，仅用于非 Git workspace / 普通 Chat。
+- Workspace 对话：展示 Runs 和 Review，不展示 Artifacts。Git workspace 的 Review 提供「Git changes」+「上一轮变更」两个视图；非 Git workspace 只提供「上一轮变更」。
+- 普通 Chat：展示 Runs 和 Artifacts，不展示 Review。
+- Review：展示当前 Workspace 对话的变更审查，包含文件列表、统计和 diff，详见 4.7。
+- Artifacts：展示当前普通 Chat 的产物。
 
 右侧面板应可以收起。收起后只保留轻量入口，不影响主对话阅读。
 

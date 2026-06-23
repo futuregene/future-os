@@ -1,4 +1,4 @@
-//! Shadow review subsystem (SHADOW_REVIEW_DESIGN.md).
+//! Shadow review subsystem (see gui/ER.md §4.10 / §6.8).
 //!
 //! Produces the "上一轮变更" (last-run delta) for a Workspace by snapshotting
 //! the work tree before/after each Run into an isolated bare git repository,
