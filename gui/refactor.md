@@ -22,9 +22,9 @@
 - [x] `components/ui/Button.tsx` 增加 `size`(sm/md)与 `danger-soft` 变体,retint 到 token;已替换 settings(CustomProviderDialog/ProvidersPage)的裸按钮
 - [x] `Badge` retint 到 token + 增 `info` tone;ProvidersPage 状态徽章改用 `<Badge>`
 - [x] `shadow-dialog` token,替换 Dialog/SettingsDialog 内联阴影
-- [ ] **剩余**:替换 ReviewPanel/RunInspectPanel/NewConversation/Composer/ApprovalPrompt 等的裸 input/button/raw color(大面板,需逐个视觉确认)
-- [ ] **剩余**:status→颜色统一走 `<Badge tone>`:合并 `reviewChangesetStatusClass`/`eventCategoryClass`/`formatErrorType.color`/ThreadHeader 徽章为同一 tone 词汇
-- [ ] **剩余**:抽 `components/ui/DiffView.tsx`(ReviewPanel diff 渲染器)、`components/ui/CopyablePre.tsx`(RunInspectPanel)
+- [x] raw color token 化:`bg-white`→`bg-surface`(全局,#ffffff 零视觉变化)、`DiffView` 增删行→`diff-add`/`diff-remove` token(Batch 1 专为此加的)、行号分隔线→`line-soft`。**商定范围**:focus-ring 深浅(`ring-blue-100` 无等价 token)与裸 `input`/`button` 结构(视觉已正确)有意保留,不做结构性替换
+- [x] status→tone 统一:**真状态**走 tone 词汇 —— `reviewChangesetStatusClass`→`<Badge tone>`(applied=success/discarded=danger/pending=warning)、ThreadHeader 连接徽章→success/info/danger token(保留其内联 retry 按钮布局)。**分类色**(`eventCategoryClass` 6 类 / `formatErrorType.color` 5 类)是种类区分而非状态语义、且 token 板无 purple/orange,**有意保留**(errorType 另有 icon 辅助区分)
+- [x] 抽 `components/ui/DiffView.tsx`(ReviewPanel diff 渲染器:DiffBlock+DiffLine+diffRows+helpers,DiffBlock→DiffView)、`components/ui/CopyablePre.tsx`(RunInspectPanel,复用 4 处);纯组件抽取、视觉不变,内部裸色 token 化并入下方改色项
 - [x] 抽 `components/ui/Overlay.tsx`,Dialog/SettingsDialog 共用(去掉两份遮罩+Esc fork);WorkspaceModal 是面板内 absolute 模态,刻意保留
 
 ## Batch 3 — `threadStore` 拆分与改名 + invoke 边界统一(进行中)
