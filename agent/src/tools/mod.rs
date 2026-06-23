@@ -471,7 +471,14 @@ async fn run_bash(command: &str, timeout_secs: u64) -> Result<String> {
         combined
     };
 
-    Ok(format!("[exit code: {}]\n{}", exit_code, combined))
+    let result = if exit_code != 0 {
+        format!("[exit code: {}]\n{}", exit_code, combined)
+    } else {
+        combined
+    };
+    // Strip trailing blank lines
+    let trimmed = result.trim_end().to_string();
+    Ok(if trimmed.is_empty() { result } else { trimmed })
 }
 
 async fn run_read(path: &str, offset: Option<usize>, limit: Option<usize>) -> Result<String> {
