@@ -55,83 +55,6 @@ pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), 
     Ok(())
 }
 
-pub fn ensure_review_change(input: EnsureReviewChangeInput) -> Result<(), crate::AppError> {
-    let conn = connect()?;
-    let thread_id = run_thread_id(&conn, &input.run_id)?;
-    let now = now_millis();
-    let changeset_id: Option<String> = conn
-        .query_row(
-            "SELECT id
-             FROM review_changesets
-             WHERE tool_call_id = ?1
-             LIMIT 1",
-            params![input.tool_call_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-
-    let changeset_id = if let Some(id) = changeset_id {
-        id
-    } else {
-        let id = create_id("review");
-        conn.execute(
-            "INSERT INTO review_changesets (
-                 id, thread_id, run_id, tool_call_id, title, summary, status,
-                 files_changed, additions, deletions, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', 0, 0, 0, ?7, ?7)",
-            params![
-                id,
-                thread_id,
-                input.run_id,
-                input.tool_call_id,
-                input.title,
-                input.summary,
-                now
-            ],
-        )?;
-        id
-    };
-
-    if let Some(path) = input.path {
-        let existing: Option<String> = conn
-            .query_row(
-                "SELECT id
-                 FROM review_file_changes
-                 WHERE changeset_id = ?1 AND path = ?2
-                 LIMIT 1",
-                params![changeset_id, path],
-                |row| row.get(0),
-            )
-            .optional()?;
-
-        if existing.is_none() {
-            conn.execute(
-                "INSERT INTO review_file_changes (
-                     id, changeset_id, target_type, path, change_type, summary,
-                     additions, deletions, created_at, updated_at
-                 ) VALUES (?1, ?2, 'file', ?3, ?4, ?5, 0, 0, ?6, ?6)",
-                params![
-                    create_id("review_file"),
-                    changeset_id,
-                    path,
-                    input.change_type,
-                    input.summary,
-                    now
-                ],
-            )?;
-
-            conn.execute(
-                "UPDATE review_changesets
-                 SET files_changed = files_changed + 1, updated_at = ?1
-                 WHERE id = ?2",
-                params![now, changeset_id],
-            )?;
-        }
-    }
-
-    Ok(())
-}
-
 pub fn list_approval_requests(
     thread_id: &str,
 ) -> Result<Vec<ApprovalRequestRecord>, crate::AppError> {
@@ -175,68 +98,16 @@ pub fn decide_approval_request(
         .ok_or_else(|| "Approval request could not be loaded.".to_string().into())
 }
 
-pub fn list_review_changesets(
-    thread_id: &str,
-) -> Result<Vec<ReviewChangesetRecord>, crate::AppError> {
-    let conn = connect()?;
-    let mut stmt = conn.prepare(
-        "SELECT id, thread_id, run_id, tool_call_id, title, summary, status,
-                    files_changed, additions, deletions, created_at, updated_at
-             FROM review_changesets
-             WHERE thread_id = ?1
-             ORDER BY created_at DESC",
-    )?;
-    let rows = stmt.query_map(params![thread_id], review_changeset_from_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
-}
-
-pub fn update_review_changeset_status(
-    input: UpdateReviewChangesetStatusInput,
-) -> Result<ReviewChangesetRecord, crate::AppError> {
-    let status = match input.status.as_str() {
-        "applied" | "discarded" | "pending" => input.status,
-        _ => {
-            return Err(
-                "review changeset status must be pending, applied, or discarded."
-                    .to_string()
-                    .into(),
-            )
-        }
-    };
-    let now = now_millis();
-    let conn = connect()?;
-    conn.execute(
-        "UPDATE review_changesets
-         SET status = ?1, updated_at = ?2
-         WHERE id = ?3",
-        params![status, now, input.changeset_id],
-    )?;
-
-    conn.query_row(
-        "SELECT id, thread_id, run_id, tool_call_id, title, summary, status,
-                files_changed, additions, deletions, created_at, updated_at
-         FROM review_changesets
-         WHERE id = ?1",
-        params![input.changeset_id],
-        review_changeset_from_row,
-    )
-    .optional()?
-    .ok_or_else(|| "Review changeset could not be loaded.".to_string().into())
-}
-
 pub fn list_review_file_changes(
     changeset_id: &str,
 ) -> Result<Vec<ReviewFileChangeRecord>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt = conn.prepare(
-        "SELECT id, changeset_id, target_type, target_id, path, change_type,
-                    before_ref, after_ref, diff, summary, additions, deletions,
-                    created_at, updated_at
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {REVIEW_FILE_CHANGE_COLUMNS}
              FROM review_file_changes
              WHERE changeset_id = ?1
              ORDER BY created_at ASC",
-    )?;
+    ))?;
     let rows = stmt.query_map(params![changeset_id], review_file_change_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(crate::AppError::from)

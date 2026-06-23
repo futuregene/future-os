@@ -6,7 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::{fs, path::PathBuf};
 
 use super::records::*;
-use super::schema::SCHEMA;
+use super::schema::{ADDED_COLUMNS, ADDED_INDEXES, SCHEMA};
 use super::util::{create_id, now_millis};
 use super::{get_thread, get_workspace};
 
@@ -39,7 +39,27 @@ pub(super) fn connect() -> Result<Connection, crate::AppError> {
 }
 
 pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
-    conn.execute_batch(SCHEMA).map_err(crate::AppError::from)
+    conn.execute_batch(SCHEMA)?;
+    // Add columns introduced after a table's initial creation. `CREATE TABLE
+    // IF NOT EXISTS` is a no-op on existing tables, so these run separately and
+    // tolerate the "duplicate column name" error on already-migrated DBs.
+    for (table, column) in ADDED_COLUMNS {
+        let sql = format!("ALTER TABLE {table} ADD COLUMN {column}");
+        if let Err(error) = conn.execute(&sql, []) {
+            if !is_duplicate_column_error(&error) {
+                return Err(error.into());
+            }
+        }
+    }
+    // Indexes over added columns run last, once those columns are guaranteed.
+    for statement in ADDED_INDEXES {
+        conn.execute(statement, [])?;
+    }
+    Ok(())
+}
+
+fn is_duplicate_column_error(error: &rusqlite::Error) -> bool {
+    matches!(error, rusqlite::Error::SqliteFailure(_, Some(message)) if message.contains("duplicate column name"))
 }
 
 pub(super) fn get_message(id: &str) -> Result<Option<MessageRecord>, crate::AppError> {
@@ -163,4 +183,54 @@ pub(super) fn update_thread_status(
     )?;
 
     get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string().into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_schema_on_fresh_db_succeeds() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_schema(&conn).unwrap();
+    }
+
+    #[test]
+    fn apply_schema_migrates_pre_source_kind_db() {
+        // Reproduces the startup failure: an existing `review_changesets` that
+        // predates the `source_kind` column. The migration must add the column
+        // and only then create the index that references it.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE review_changesets (
+                 id TEXT PRIMARY KEY,
+                 thread_id TEXT NOT NULL,
+                 run_id TEXT,
+                 tool_call_id TEXT,
+                 title TEXT NOT NULL,
+                 summary TEXT,
+                 status TEXT NOT NULL,
+                 files_changed INTEGER NOT NULL DEFAULT 0,
+                 additions INTEGER NOT NULL DEFAULT 0,
+                 deletions INTEGER NOT NULL DEFAULT 0,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );",
+        )
+        .unwrap();
+
+        apply_schema(&conn).unwrap();
+
+        // Idempotent: applying twice must not fail either.
+        apply_schema(&conn).unwrap();
+
+        let has_source_kind: bool = conn
+            .prepare(
+                "SELECT 1 FROM pragma_table_info('review_changesets') WHERE name = 'source_kind'",
+            )
+            .unwrap()
+            .query_row([], |_| Ok(true))
+            .unwrap_or(false);
+        assert!(has_source_kind);
+    }
 }

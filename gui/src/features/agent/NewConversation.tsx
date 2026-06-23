@@ -5,19 +5,15 @@ import type { MessageAttachment } from "./agentThreadTypes";
 import type { ComposerSendPayload } from "./Composer";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  Bell,
   Check,
-  Command,
   Folder,
   FolderOpen,
   FolderPlus,
   MessageSquare,
-  MoreHorizontal,
   Search,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
-import { IconButton } from "../../components/ui/IconButton";
 import { defaultAgentModelId } from "../../integrations/agent/agentClient";
 import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
@@ -46,6 +42,8 @@ interface WorkspaceCreateRequest {
 }
 
 interface NewConversationProps {
+  initialCreateWorkspace?: boolean;
+  initialMode?: ConversationMode;
   initialWorkspaceId?: string | null;
   leftPanelExpanded: boolean;
   modelId: string;
@@ -58,6 +56,8 @@ interface NewConversationProps {
 }
 
 export function NewConversation({
+  initialCreateWorkspace,
+  initialMode,
   initialWorkspaceId,
   leftPanelExpanded,
   modelId,
@@ -78,10 +78,12 @@ export function NewConversation({
     [workspaces],
   );
   const initialWorkspace = workspaceOptions.find(workspace => workspace.id === initialWorkspaceId);
-  const [mode, setMode] = useState<ConversationMode>(initialWorkspace ? "workspace" : workspaceOptions.length > 0 ? "workspace" : "chat");
+  const [mode, setMode] = useState<ConversationMode>(
+    initialMode ?? (initialWorkspace ? "workspace" : workspaceOptions.length > 0 ? "workspace" : "chat"),
+  );
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [selectedWorkspace, setSelectedWorkspace] = useState(initialWorkspace?.id ?? workspaceOptions[0]?.id ?? "");
-  const [workspaceFormMode, setWorkspaceFormMode] = useState<WorkspaceFormMode>(null);
+  const [workspaceFormMode, setWorkspaceFormMode] = useState<WorkspaceFormMode>(initialCreateWorkspace ? "create" : null);
   const [workspaceName, setWorkspaceName] = useState("");
   const [workspaceDisplayName, setWorkspaceDisplayName] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");
@@ -215,11 +217,6 @@ export function NewConversation({
               {mode === "workspace" && activeWorkspace ? activeWorkspace.label : "普通对话"}
             </div>
           </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <IconButton icon={<Command className="size-4" />} label="Command palette" />
-          <IconButton icon={<Bell className="size-4" />} label="Notifications" />
-          <IconButton icon={<MoreHorizontal className="size-4" />} label="Thread actions" />
         </div>
       </header>
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-8">

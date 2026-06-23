@@ -146,6 +146,17 @@ export interface StoredReviewChangeset {
   filesChanged: number;
   additions: number;
   deletions: number;
+  // Shadow review (source_kind = 'run_snapshot') fields — see gui/ER.md §4.10.
+  sourceKind: string;
+  workspaceId?: string | null;
+  beforeSnapshotId?: string | null;
+  afterSnapshotId?: string | null;
+  binaryFiles: number;
+  omittedFiles: number;
+  completeness: "complete" | "partial" | string;
+  confidence: "normal" | "recovered" | string;
+  overlapped: boolean;
+  errorMessage?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -163,8 +174,34 @@ export interface StoredReviewFileChange {
   summary?: string | null;
   additions: number;
   deletions: number;
+  // Shadow review fields — see gui/ER.md §4.10.
+  previousPath?: string | null;
+  binary: boolean;
+  beforeSize?: number | null;
+  afterSize?: number | null;
+  mime?: string | null;
+  diffTruncated: boolean;
+  omissionReason?: string | null;
   createdAt: number;
   updatedAt: number;
+}
+
+/// Workspace review capabilities (§10.1).
+export interface WorkspaceReviewCapabilities {
+  isGitWorkspace: boolean;
+  views: Array<"git_changes" | "last_run">;
+  defaultView: "git_changes" | "last_run";
+  changePreview: "ready" | "unsupported_too_large";
+}
+
+/// The "上一轮变更" payload for a Thread (§10.3).
+export interface RunReview {
+  changeset: StoredReviewChangeset;
+  files: StoredReviewFileChange[];
+  run?: StoredRun | null;
+  snapshotStatus: "complete" | "partial" | "incomplete" | "unavailable";
+  confidence: "normal" | "recovered";
+  overlapped: boolean;
 }
 
 export interface GitReview {

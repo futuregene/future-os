@@ -35,9 +35,11 @@ erDiagram
     RUN ||--o{ TOOL_CALL : invokes
     RUN ||--o{ APPROVAL_REQUEST : creates
     RUN ||--o{ REVIEW_CHANGESET : produces
+    RUN ||--o{ REVIEW_SNAPSHOT : snapshots
     TOOL_CALL ||--o{ TOOL_OUTPUT : produces
 
     REVIEW_CHANGESET ||--o{ REVIEW_FILE_CHANGE : contains
+    REVIEW_SNAPSHOT ||--o{ REVIEW_CHANGESET : bounds
 
     RESEARCH_COLLECTION ||--o{ RESEARCH_RESOURCE : contains
 
@@ -339,7 +341,7 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
 - 超出当前 workspace 范围的读取使用 `external_workspace_read`，例如 Agent 需要读取当前 workspace 之外的本地文件或目录。
 - GUI 或 Agent 重启后遗留的 `pending` 审批应标记为 `cancelled`，防止旧审批继续显示为可操作状态。
 - 如果审批通过后产生文件变更，再由 Review Changeset 展示实际修改对比。
-- P2 引入结构化 `action_payload` 和 `sandbox_boundary` 字段，详见 `gui/P2_APPROVAL_MODEL.md`。
+- P2 引入结构化 `action_payload` 和 `sandbox_boundary` 字段（设计细节见 git history，原 `P2_APPROVAL_MODEL.md`）。
 - P2 预留了 `sandbox_config`、`approval_policy_config`、`approval_rules` 三张配置表，当前未启用。
 
 ### 4.9 Review Changeset
@@ -374,15 +376,13 @@ Review Changeset 表示一组可供用户 review 的变更集合。
 说明：
 
 - Review Changeset 不表示审批请求。
-- 第一版右侧 Review 面板只在 Git workspace 中展示，数据来源可以是实时 `git diff HEAD`，不要求先落库为 Review Changeset。
-- 无 Git 的 workspace 不展示 Review 入口；普通 Chat / 非 Git workspace 产生的文件进入 Artifact 管理。
-- Git workspace 不展示 Artifacts 入口，文件变更由 Git 和 Review 管理，避免同一文件同时进入 Git diff 和 Artifact 两套语义。
+- Review 覆盖所有 Workspace 对话（`mode = workspace`），有两类数据来源（见 4.10 的 `source_kind`）：
+  - **Git changes**（仅 Git workspace）：实时 `git diff`，不落库为 Review Changeset。
+  - **上一轮变更**（两类 workspace 都有）：影子快照 diff 固化为 `source_kind = 'run_snapshot'` 的 Review Changeset。
+- 普通 Chat 不展示 Review，文件产物进入 Artifact 管理；Workspace 对话不展示 Artifacts，避免同一文件同时进入 Review 和 Artifact 两套语义。
 - 用户可以在 Review 中查看代码 diff、文件变更，以及后续文本类 artifact 的变更摘要。
-- `ready` 表示变更已生成但用户还没有打开 review。
-- `viewed` 表示用户已经看过，但没有应用、撤销或丢弃，适合表示“不置可否”的中间状态。
-- `applied` 表示这组变更已经被应用或接受。
-- `discarded` 表示这组变更被撤销或丢弃。
 - `files_changed`、`additions`、`deletions` 用于展示类似 Git / Codex 的本轮变更汇总，例如 `2 个文件 +204 -90`。
+- `status` 列（`draft`/`ready`/`viewed`/`applied`/`discarded`）属于早期的 apply/discard 决策流；该流程前端已移除，`run_snapshot` changeset **不使用**该列，其状态改由 `completeness` / `confidence` 表达（见 4.10）。`StoredReviewChangeset` 类型保留，仅 markdown `futureos://` 引用仍在用。
 
 ### 4.10 Review File Change
 
@@ -419,6 +419,31 @@ Review File Change 表示某个文件或 artifact 的具体变更。
 - 非 Git workspace / 普通 Chat 后续针对 markdown、文档、表格等文本类 artifact，只做文本 diff 和摘要审查。
 - `additions` 和 `deletions` 只记录 Git diff 风格的简单行级统计，不做复杂行级实体建模。
 - 大型 diff 后续可以落文件，数据库保存引用。
+
+#### Shadow Review 扩展（「上一轮变更」）
+
+「上一轮变更」由 FutureOS 影子仓库（per-workspace 的 bare git repo，位于 `~/.future/app/review/<workspace-id>/`，**不在 workspace 目录建 `.git`**）的 before/after 快照 diff 生成，`source_kind = 'run_snapshot'`。影子仓只把 git 当内容寻址快照与 diff 引擎：只读，从不 checkout / reset / clean，也从不修改用户真实仓的 index / refs / objects / 工作树。设计取舍见 6.8。
+
+**新增 `review_snapshots`**：记录每个 Run 的 before/after 快照。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 快照唯一标识 |
+| `workspace_id` / `thread_id` / `run_id` | 归属 |
+| `phase` | `before` / `after` |
+| `commit_id` / `tree_id` | 影子仓 commit / tree（可丢弃缓存，非真源） |
+| `status` | `complete` / `partial` / `failed` |
+| `file_count` / `total_bytes` / `ignored_count` / `omitted_count` | 快照统计 |
+| `error_message` | 失败原因 |
+| `created_at` | 创建时间 |
+
+约束 `UNIQUE(run_id, phase)`。
+
+**扩展 `review_changesets`**：`source_kind`（`run_snapshot` / `native_git`）、`workspace_id`、`before_snapshot_id`、`after_snapshot_id`、`binary_files`、`omitted_files`、`completeness`（`complete` / `partial`）、`confidence`（`normal` / `recovered`）、`overlapped`（0/1）、`error_message`。`run_snapshot` changeset 不参与 apply/discard，旧 `status` 列对它不使用。
+
+**扩展 `review_file_changes`**：`previous_path`、`binary`、`before_size`、`after_size`、`mime`、`diff_truncated`、`omission_reason`。在 after 快照固化时，每个文本文件的统一 diff 写入既有 `diff` 列，这是「上一轮变更」的**真源**——前端直接读 SQLite，不再回影子仓重算；二进制文件只记 size / mime，不存 diff。
+
+**派生状态**：API 层把 `RunReview.snapshotStatus`（`complete` / `partial` / `incomplete` / `unavailable`）从快照 `status` + changeset `completeness` 派生，不落库。非 Git workspace 走简化档，只产生 `complete` 或 `unavailable`（任何 before/after/diff 失败一律塌缩为 `unavailable`）；`partial` / `incomplete` / `recovered` 只出现在 Git workspace。`overlapped`（并发窗口重叠）与上述状态正交，单独透传。
 
 ### 4.11 Artifact
 
@@ -696,6 +721,7 @@ Object Reference 表示某个对象引用了另一个对象。
 - `approval_requests`
 - `review_changesets`
 - `review_file_changes`
+- `review_snapshots`
 - `artifacts`
 - `research_collections`
 - `research_resources`
@@ -764,3 +790,15 @@ Data Credential 只服务 Data Source。
 Artifact 和 Research Resource 的 `content` 只用于存放小内容。
 
 大内容统一走文件路径，数据库只保存路径、摘要和元信息。
+
+### 6.8 「上一轮变更」用影子仓求 Run 级 diff
+
+Review 有两个数据源：「Git changes」读用户真实 Git 仓库的工作树 diff；「上一轮变更」读 FutureOS 影子仓库对每轮 Run before/after 快照求出的 diff（schema 见 4.10）。
+
+关键取舍：
+
+- **写隔离**：影子仓与真实仓物理分离（`~/.future/app/review/<workspace-id>/`），只读真实仓对象做加速，从不写真实仓，也不在用户目录建 `.git`。这样非 Git workspace 也能拿到准确的 Run 级 diff，且不污染用户目录。
+- **diff 立即固化为真源**：after 快照落盘后立即算出 patch 写入 SQLite（`review_file_changes.diff`），影子 commit / tree 降级为可丢弃缓存。即使日后真实仓 `git gc`、移动或影子仓被清理，已存 diff 仍可展示。
+- **归属诚实**：快照只能算出“运行窗口内 workspace 发生了什么变化”，无法绝对区分 Agent / 用户 / formatter，底层语义是 workspace_delta；并发 Run 重叠标 `overlapped`，重启恢复标 `recovered`，失败标 `unavailable`，绝不谎称归属或伪装“无变化”。
+- **两档可靠性**：Git workspace 借用真实仓对象库加速 + 完整可靠性机制（`partial` / `incomplete` / `recovered` / 重启恢复）；非 Git workspace 走简化档（失败即 `unavailable`，并对超体积目录用红线 `changePreview = unsupported_too_large` 关闭预览），换取实现简单。
+- **适用范围与保留**：仅 `thread.mode = workspace` 接入影子 Review；普通 Chat 继续用 Artifacts，不创建影子数据。每个 Thread 默认保留最近 10 个 changeset，超出后清理旧 refs 与 DB 投影。删除 Workspace 记录时同步清理其影子仓与 review 数据。

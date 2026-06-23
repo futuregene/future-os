@@ -8,6 +8,7 @@ mod markdown_refs;
 mod messages;
 mod records;
 mod research;
+mod review_snapshots;
 mod runs;
 mod schema;
 mod threads;
@@ -20,8 +21,8 @@ pub use app_settings::{
     get_app_settings, update_app_settings, AppSettings, UpdateAppSettingsInput,
 };
 pub use approvals::{
-    decide_approval_request, ensure_approval_request, ensure_review_change, list_approval_requests,
-    list_review_changesets, list_review_file_changes, update_review_changeset_status,
+    decide_approval_request, ensure_approval_request, list_approval_requests,
+    list_review_file_changes,
 };
 pub use artifacts::{
     artifact_type_from_path, create_artifact, delete_artifact, ensure_artifact,
@@ -35,6 +36,11 @@ pub use markdown_refs::{resolve_markdown_references, search_reference_targets};
 pub use messages::{append_message, list_messages};
 pub use records::*;
 pub use research::{list_research_resources, promote_artifact_to_research};
+pub use review_snapshots::{
+    create_review_snapshot, get_last_run_changeset, get_review_snapshot, get_run_changeset,
+    list_interrupted_runs, list_snapshots_with_commits, mark_run_overlapped, mark_snapshot_failed,
+    prune_thread_changesets, upsert_run_changeset,
+};
 pub use runs::{
     append_run_event, complete_tool_call, create_run, list_run_events, list_runs, list_tool_calls,
     list_tool_outputs, update_run_status, upsert_tool_call,

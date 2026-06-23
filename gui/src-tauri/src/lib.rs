@@ -5,20 +5,38 @@ mod commands;
 mod error;
 mod git_review;
 mod run_error;
+mod shadow_review;
 mod store;
 
 use commands::*;
 use error::AppError;
+
+/// App handle captured at setup, used to push events to the webview from
+/// background tasks (e.g. deferred shadow-review materialization).
+static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+/// Notify the frontend that a Thread's "上一轮变更" changeset has updated. The
+/// frontend bridges this to its typed event bus (§6.1, C1).
+pub(crate) fn emit_review_updated(thread_id: &str) {
+    if let Some(handle) = APP_HANDLE.get() {
+        use tauri::Emitter;
+        let _ = handle.emit("review-updated", thread_id.to_string());
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
-        .setup(|_| {
+        .setup(|app| {
+            let _ = APP_HANDLE.set(app.handle().clone());
             if let Err(error) = store::initialize_app_store() {
                 eprintln!("FutureOS store initialization failed: {error}");
             }
+            // Shadow-review maintenance (consistency check + crash recovery) runs
+            // off the launch path so it never delays the window.
+            std::thread::spawn(shadow_review::run_startup_maintenance);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -62,10 +80,10 @@ pub fn run() {
             list_tool_outputs,
             list_approval_requests,
             decide_approval_request,
-            list_review_changesets,
-            update_review_changeset_status,
-            list_review_file_changes,
             get_git_review,
+            get_workspace_review_capabilities,
+            get_last_run_review,
+            retry_run_review,
             list_artifacts,
             create_artifact,
             import_attachment_artifact,

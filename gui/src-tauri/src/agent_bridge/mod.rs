@@ -1,6 +1,9 @@
 mod client;
 mod persist;
+mod review;
 mod stream;
+
+pub use review::retry as retry_run_review;
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -83,10 +86,26 @@ pub async fn agent_prompt(
     model_id: Option<String>,
     thinking_level: Option<String>,
 ) -> Result<AgentPromptResponse, crate::AppError> {
+    // The session guard spans the whole prompt *and* the synchronous after
+    // snapshot capture (§6.1), so the next prompt for this session can't start
+    // writing before this Run's after snapshot lands. The deferred diff
+    // materialization (C1) needs no guard — it's a read-only diff of fixed commits.
+    let effective_session_id = session_id
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| thread_id.clone());
+    let _prompt_guard = match PromptSessionGuard::acquire(&effective_session_id) {
+        Ok(guard) => guard,
+        Err(error) => {
+            mark_run_failed_if_active(run_id.as_deref(), &error.to_string());
+            return Err(error);
+        }
+    };
+
     let result = agent_prompt_inner(
         message,
         image_paths,
-        thread_id,
+        thread_id.clone(),
         session_id,
         run_id.clone(),
         model_id,
@@ -94,10 +113,36 @@ pub async fn agent_prompt(
     )
     .await;
 
+    // Project the failure status immediately so the Run row is correct on return.
     if let Err(error) = &result {
         mark_run_failed_if_active(run_id.as_deref(), &error.to_string());
     }
 
+    if let Some(run_id) = run_id.clone() {
+        // §6.2: a normal `agent_end` means the Agent has stopped writing. On an
+        // abnormal return wait for the Agent to confirm idle before snapshotting.
+        if result.is_err() {
+            wait_for_agent_idle(&effective_session_id).await;
+        }
+        // §6.1: capture the after snapshot synchronously — the prompt guard is
+        // still held here, so the next Run's before-snapshot can't interleave.
+        let sensitive = review::capture_after(&thread_id, &run_id);
+        // C1: the diff materialization is a read-only diff between fixed commits,
+        // so defer it off the IPC path. The GUI is notified when it lands.
+        tokio::spawn(async move {
+            let materialize_thread = thread_id.clone();
+            let materialize_run = run_id.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                review::materialize_changeset(&materialize_thread, &materialize_run, sensitive);
+            })
+            .await;
+            crate::emit_review_updated(&thread_id);
+        });
+    }
+
+    // The prompt guard drops as this function returns; the next Run's
+    // before-snapshot then serializes behind the after snapshot via the
+    // Workspace lock (§12.1).
     result
 }
 
@@ -114,7 +159,8 @@ async fn agent_prompt_inner(
     let session_id = session_id
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| thread_id.clone());
-    let _prompt_guard = PromptSessionGuard::acquire(&session_id)?;
+    // The session guard is held by the outer `agent_prompt` so it also covers
+    // after-snapshot finalization (§6.1).
     let cwd = workspace_path_for_thread(&thread_id)?;
     let prior_user_message_count = prior_user_message_count(&thread_id)?;
     let force_reset_session = prior_user_message_count == 0;
@@ -174,6 +220,12 @@ async fn agent_prompt_inner(
         }
     }
 
+    // §6.1: before snapshot, after session/model setup but right before the
+    // prompt actually reaches the Agent.
+    if let Some(run_id) = run_id.as_deref() {
+        review::capture_before(&thread_id, run_id);
+    }
+
     let response = command_client
         .execute_command(prompt_command(
             message,
@@ -225,6 +277,37 @@ impl Drop for PromptSessionGuard {
                 guard.remove(&self.session_id);
             }
         }
+    }
+}
+
+/// Poll the Agent's `get_state.isStreaming` until it reports idle (or a short
+/// timeout / the agent disappears). Best-effort confirmation that the Agent has
+/// stopped writing files before the after snapshot (§6.2).
+async fn wait_for_agent_idle(session_id: &str) {
+    let endpoint = agent_endpoint();
+    let Ok(mut client) = FutureAgentClient::connect(endpoint).await else {
+        return;
+    };
+    // ~5s budget at 200ms intervals.
+    for _ in 0..25 {
+        match client
+            .execute_command(get_state_command(session_id.to_string()))
+            .await
+        {
+            Ok(response) => {
+                let data = response.into_inner().data;
+                let streaming = serde_json::from_str::<serde_json::Value>(&data)
+                    .ok()
+                    .and_then(|value| value.get("isStreaming").and_then(|s| s.as_bool()))
+                    .unwrap_or(false);
+                if !streaming {
+                    return;
+                }
+            }
+            // Agent unreachable → treat as idle; nothing more we can confirm.
+            Err(_) => return,
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 }
 
