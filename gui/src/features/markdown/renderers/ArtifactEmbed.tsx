@@ -5,6 +5,7 @@ import { useState } from "react";
 import { openPath, storedTimeToIso } from "../../../integrations/storage/threadStore";
 import { copyText } from "../../../lib/clipboard";
 import { formatTime } from "../../../lib/date";
+import { emitFutureEvent } from "../../../lib/futureEvents";
 
 export function ArtifactEmbed({
   artifact,
@@ -16,9 +17,7 @@ export function ArtifactEmbed({
   const [copied, setCopied] = useState(false);
 
   function inspectArtifact() {
-    window.dispatchEvent(new CustomEvent("futureos:inspect-artifact", {
-      detail: { artifactId: artifact.id },
-    }));
+    emitFutureEvent("inspect-artifact", { artifactId: artifact.id });
   }
 
   async function copyPath() {

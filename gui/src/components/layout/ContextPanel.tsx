@@ -17,6 +17,7 @@ import {
   listRuns,
   listToolCalls,
 } from "../../integrations/storage/threadStore";
+import { onFutureEvent } from "../../lib/futureEvents";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { EmptyState } from "../ui/EmptyState";
 import { IconButton } from "../ui/IconButton";
@@ -212,47 +213,30 @@ export function ContextPanel({
   }, [activeThreadId]);
 
   useEffect(() => {
-    function handleInspectRun(event: Event) {
-      const detail = (event as CustomEvent<{ runId?: string }>).detail;
-      if (!detail?.runId)
-        return;
-
-      handleSelectRun(detail.runId);
-      if (!expanded) {
-        onToggleExpanded();
-      }
-    }
-
-    function handleInspectArtifact(event: Event) {
-      const detail = (event as CustomEvent<{ artifactId?: string }>).detail;
-      if (!detail?.artifactId)
-        return;
-
-      handleSelectArtifact(detail.artifactId);
-      if (!expanded) {
-        onToggleExpanded();
-      }
-    }
-
-    function handleOpenReview(event: Event) {
-      const detail = (event as CustomEvent<{ reviewId?: string }>).detail;
-      setSelectedReviewId(detail?.reviewId ?? null);
-      setSelectedArtifactId(null);
-      setSelectedRunId(null);
-      onTabChange("review");
-      if (!expanded) {
-        onToggleExpanded();
-      }
-    }
-
-    window.addEventListener("futureos:inspect-run", handleInspectRun);
-    window.addEventListener("futureos:inspect-artifact", handleInspectArtifact);
-    window.addEventListener("futureos:open-review", handleOpenReview);
-    return () => {
-      window.removeEventListener("futureos:inspect-run", handleInspectRun);
-      window.removeEventListener("futureos:inspect-artifact", handleInspectArtifact);
-      window.removeEventListener("futureos:open-review", handleOpenReview);
-    };
+    const unsubscribers = [
+      onFutureEvent("inspect-run", (detail) => {
+        handleSelectRun(detail.runId);
+        if (!expanded) {
+          onToggleExpanded();
+        }
+      }),
+      onFutureEvent("inspect-artifact", (detail) => {
+        handleSelectArtifact(detail.artifactId);
+        if (!expanded) {
+          onToggleExpanded();
+        }
+      }),
+      onFutureEvent("open-review", (detail) => {
+        setSelectedReviewId(detail.reviewId);
+        setSelectedArtifactId(null);
+        setSelectedRunId(null);
+        onTabChange("review");
+        if (!expanded) {
+          onToggleExpanded();
+        }
+      }),
+    ];
+    return () => unsubscribers.forEach(unsubscribe => unsubscribe());
   }, [expanded, handleSelectArtifact, handleSelectRun, onTabChange, onToggleExpanded]);
 
   useEffect(() => {

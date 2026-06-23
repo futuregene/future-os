@@ -51,7 +51,7 @@
 - [x] `formatRunStatus` 二义性:`agentThreadUtils` 里那份是**死代码**,直接删除(clash 消除)
 - [x] 重命名:`useAgentThreadController`→`useAgentThreadState`、`agentThreadUtils`→`agentMessageFormatters`、`referencePromptContext`→`buildReferencePrompt`、`features/agent/types`→`agentThreadTypes`
 - [x] `integrations/agent`:合并 `futureAgentClient`+`models` → `agentClient.ts`,删死导出
-- [ ] 引入 typed event bus(替换 window CustomEvent)
+- [x] 引入 typed event bus `lib/futureEvents.ts`(`FutureEventMap` + `emitFutureEvent`/`onFutureEvent`,底层仍 window CustomEvent、行为不变;`onFutureEvent` 返回 unsubscribe 供 useEffect 直接 return)。5 个事件(inspect-run/inspect-artifact/open-review/open-research-resource/recover-run)全部 typed 化:发射 RunEmbed/ArtifactEmbed/ObjectEmbed/RunInspectPanel,监听 ContextPanel/AppShell/AgentThread
 
 ## Batch 6 — Rust 后端拆分
 

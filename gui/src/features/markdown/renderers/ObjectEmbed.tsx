@@ -8,6 +8,7 @@ import type {
 import type { FutureReference } from "../futureMarkdownTypes";
 import { AlertTriangle, Beaker, FileDiff, Maximize2, Microscope } from "lucide-react";
 import { Badge } from "../../../components/ui/Badge";
+import { emitFutureEvent } from "../../../lib/futureEvents";
 
 export function ApprovalEmbed({
   approval,
@@ -43,9 +44,7 @@ export function ReviewEmbed({
   review: StoredReviewChangeset;
 }) {
   function openReview() {
-    window.dispatchEvent(new CustomEvent("futureos:open-review", {
-      detail: { reviewId: review.id },
-    }));
+    emitFutureEvent("open-review", { reviewId: review.id });
   }
 
   return (
@@ -76,9 +75,7 @@ export function ResearchEmbed({
   resource: StoredResearchResource;
 }) {
   function openResearch() {
-    window.dispatchEvent(new CustomEvent("futureos:open-research-resource", {
-      detail: { resourceId: resource.id },
-    }));
+    emitFutureEvent("open-research-resource", { resourceId: resource.id });
   }
 
   return (
@@ -108,9 +105,7 @@ export function ToolEmbed({
   tool: StoredToolCall;
 }) {
   function inspectRun() {
-    window.dispatchEvent(new CustomEvent("futureos:inspect-run", {
-      detail: { runId: tool.runId },
-    }));
+    emitFutureEvent("inspect-run", { runId: tool.runId });
   }
 
   const command = toolCommand(tool.input);
