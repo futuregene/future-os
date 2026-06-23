@@ -75,17 +75,10 @@ impl DingtalkBridge {
 
         let webhook = event.session_webhook.clone();
 
-        // Fire "Thinking" emoji on the user's message
-        let emoji_msg_id = event.dingtalk_msg_id.clone();
-        let emoji_conv_id = event.chat_id.clone();
-        if let (Some(ref msg_id), Some(ref conv_id)) = (&emoji_msg_id, &emoji_conv_id) {
-            let _ = self.dingtalk.add_reaction(msg_id, conv_id, "🤔Thinking").await;
-        }
-
         if text.starts_with('/') {
             self.handle_slash_command(&text, &webhook).await?;
         } else {
-            self.process_prompt(&text, webhook, emoji_msg_id, emoji_conv_id).await?;
+            self.process_prompt(&text, webhook).await?;
         }
         Ok(())
     }
@@ -184,13 +177,13 @@ impl DingtalkBridge {
                 reply("/new /status /stop|/abort /model <id> /models /effort <level> /compact /help");
             }
             _ => {
-                self.process_prompt(text, webhook.clone(), None, None).await?;
+                self.process_prompt(text, webhook.clone()).await?;
             }
         }
         Ok(())
     }
 
-    async fn process_prompt(&self, text: &str, webhook: Option<String>, emoji_msg_id: Option<String>, emoji_conv_id: Option<String>) -> Result<()> {
+    async fn process_prompt(&self, text: &str, webhook: Option<String>) -> Result<()> {
         let session_id = {
             let mut agent = self.agent.write().await;
             agent.new_session(&self.agent_cfg.cwd).await?
@@ -203,7 +196,7 @@ impl DingtalkBridge {
             counters.entry("global".into()).or_insert_with(|| Arc::new(AtomicU64::new(0))).clone()
         };
         tokio::spawn(async move {
-            if let Err(e) = run_prompt_loop(&dingtalk, &agent, &session_id, &text, &gen_counter, webhook, emoji_msg_id, emoji_conv_id).await {
+            if let Err(e) = run_prompt_loop(&dingtalk, &agent, &session_id, &text, &gen_counter, webhook).await {
                 error!("DingTalk prompt loop error: {}", e);
             }
         });
@@ -218,8 +211,6 @@ async fn run_prompt_loop(
     text: &str,
     gen_counter: &AtomicU64,
     webhook: Option<String>,
-    emoji_msg_id: Option<String>,
-    emoji_conv_id: Option<String>,
 ) -> Result<()> {
     let my_gen = {
         let mut client = agent.write().await;
@@ -265,11 +256,6 @@ async fn run_prompt_loop(
             }
             Some(AgentEvent::AgentEnd { error }) => {
                 check_superseded!();
-                // Swap emoji: remove "Thinking", add "Done"
-                if let (Some(ref msg_id), Some(ref conv_id)) = (&emoji_msg_id, &emoji_conv_id) {
-                    let _ = dingtalk.remove_reaction(msg_id, conv_id).await;
-                    let _ = dingtalk.add_reaction(msg_id, conv_id, "🥳Done").await;
-                }
                 if let Some(err) = error {
                     if !err.contains("interrupted") && !err.contains("Interrupted") {
                         if let Some(ref wh) = webhook {
