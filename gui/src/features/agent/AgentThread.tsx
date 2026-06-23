@@ -108,10 +108,8 @@ export function AgentThread({
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
       <ThreadHeader
-        agentConnection={agentConnection}
         leftPanelExpanded={leftPanelExpanded}
         thread={thread}
-        onRetryAgentConnection={onRetryAgentConnection}
         onToggleLeftPanel={onToggleLeftPanel}
       />
       <div className="relative min-h-0 flex-1 overflow-hidden">

@@ -146,6 +146,17 @@ pub fn clear_finished_runs(thread_id: &str) -> Result<usize, crate::AppError> {
            )",
         params![thread_id],
     )?;
+    // review_snapshots is referenced by review_changesets, so it is deleted
+    // after the changesets above to avoid orphan snapshot rows.
+    tx.execute(
+        "DELETE FROM review_snapshots
+         WHERE run_id IN (
+           SELECT id FROM runs
+           WHERE thread_id = ?1
+             AND status IN ('completed', 'failed', 'cancelled')
+         )",
+        params![thread_id],
+    )?;
     tx.execute(
         "DELETE FROM tool_calls
          WHERE run_id IN (

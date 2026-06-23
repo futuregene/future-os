@@ -179,18 +179,10 @@ fn persist_tool_start(run_id: &str, value: &serde_json::Value, sequence: i64) {
         eprintln!("FutureOS tool call persistence failed: {error}");
     }
 
-    if let Some((change_type, path)) = review_shape_for_tool(&tool_name, value) {
-        if let Err(error) = store::ensure_review_change(store::EnsureReviewChangeInput {
-            run_id: run_id.to_string(),
-            tool_call_id,
-            title: format!("Review `{tool_name}` changes"),
-            summary: Some(format!("Agent requested `{tool_name}`.")),
-            path,
-            change_type,
-        }) {
-            eprintln!("FutureOS review persistence failed: {error}");
-        }
-    }
+    // Review changesets are no longer guessed from write/edit tool-start events
+    // (a `bash` call could bypass them). "上一轮变更" now comes from real
+    // before/after shadow snapshots — see agent_bridge/review.rs (§14.3).
+    let _ = tool_call_id;
 }
 
 fn persist_tool_end(run_id: &str, value: &serde_json::Value, sequence: i64) {
@@ -358,25 +350,4 @@ fn value_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
 
 fn compact_json(value: &serde_json::Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
-}
-
-fn review_shape_for_tool(
-    tool_name: &str,
-    value: &serde_json::Value,
-) -> Option<(String, Option<String>)> {
-    if !matches!(tool_name, "write" | "edit") {
-        return None;
-    }
-
-    let args = value
-        .get("tool_args")
-        .or_else(|| value.get("toolArgs"))
-        .or_else(|| value.get("arguments"))?;
-    let path = value_string(args, &["path", "file_path", "filePath"]);
-    let change_type = if tool_name == "write" {
-        "write"
-    } else {
-        "modify"
-    };
-    Some((change_type.to_string(), path))
 }

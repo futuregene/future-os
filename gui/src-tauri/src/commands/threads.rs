@@ -2,8 +2,6 @@
 
 use crate::store;
 
-use super::workspaces::ensure_workspace_git_repo;
-
 #[tauri::command]
 pub fn list_threads() -> Result<Vec<store::ThreadRecord>, crate::AppError> {
     store::list_threads()
@@ -23,13 +21,9 @@ pub fn get_recent_thread() -> Result<Option<store::ThreadRecord>, crate::AppErro
 pub fn create_thread(
     input: store::CreateThreadInput,
 ) -> Result<store::ThreadRecord, crate::AppError> {
-    let thread = store::create_thread(input)?;
-    if thread.mode == "workspace" {
-        if let Ok(Some(workspace)) = store::get_workspace(&thread.workspace_id) {
-            ensure_workspace_git_repo(&workspace);
-        }
-    }
-    Ok(thread)
+    // No auto `git init` for workspace-mode threads (§14.3); shadow review
+    // handles non-git Workspaces.
+    store::create_thread(input)
 }
 
 #[tauri::command]

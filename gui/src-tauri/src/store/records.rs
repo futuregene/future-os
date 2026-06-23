@@ -154,6 +154,16 @@ pub struct ReviewChangesetRecord {
     pub files_changed: i64,
     pub additions: i64,
     pub deletions: i64,
+    pub source_kind: String,
+    pub workspace_id: Option<String>,
+    pub before_snapshot_id: Option<String>,
+    pub after_snapshot_id: Option<String>,
+    pub binary_files: i64,
+    pub omitted_files: i64,
+    pub completeness: String,
+    pub confidence: String,
+    pub overlapped: bool,
+    pub error_message: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -173,8 +183,34 @@ pub struct ReviewFileChangeRecord {
     pub summary: Option<String>,
     pub additions: i64,
     pub deletions: i64,
+    pub previous_path: Option<String>,
+    pub binary: bool,
+    pub before_size: Option<i64>,
+    pub after_size: Option<i64>,
+    pub mime: Option<String>,
+    pub diff_truncated: bool,
+    pub omission_reason: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewSnapshotRecord {
+    pub id: String,
+    pub workspace_id: String,
+    pub thread_id: String,
+    pub run_id: String,
+    pub phase: String,
+    pub commit_id: Option<String>,
+    pub tree_id: Option<String>,
+    pub status: String,
+    pub file_count: i64,
+    pub total_bytes: i64,
+    pub ignored_count: i64,
+    pub omitted_count: i64,
+    pub error_message: Option<String>,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -316,14 +352,60 @@ pub struct EnsureApprovalRequestInput {
     pub reviewer: Option<String>,
 }
 
-#[derive(Debug)]
-pub struct EnsureReviewChangeInput {
+/// Insert a before/after shadow snapshot row (see gui/ER.md §4.10).
+#[derive(Debug, Default)]
+pub struct CreateReviewSnapshotInput {
+    pub workspace_id: String,
+    pub thread_id: String,
     pub run_id: String,
-    pub tool_call_id: String,
+    pub phase: String,
+    pub commit_id: Option<String>,
+    pub tree_id: Option<String>,
+    pub status: String,
+    pub file_count: i64,
+    pub total_bytes: i64,
+    pub ignored_count: i64,
+    pub omitted_count: i64,
+    pub error_message: Option<String>,
+}
+
+/// Create-or-replace the single `run_snapshot` changeset for a Run (§8.2).
+#[derive(Debug, Default)]
+pub struct UpsertRunChangesetInput {
+    pub run_id: String,
+    pub thread_id: String,
+    pub workspace_id: Option<String>,
     pub title: String,
     pub summary: Option<String>,
+    pub before_snapshot_id: Option<String>,
+    pub after_snapshot_id: Option<String>,
+    pub files_changed: i64,
+    pub additions: i64,
+    pub deletions: i64,
+    pub binary_files: i64,
+    pub omitted_files: i64,
+    pub completeness: String,
+    pub confidence: String,
+    pub error_message: Option<String>,
+    pub files: Vec<InsertReviewFileChangeInput>,
+}
+
+/// One file row inside a `run_snapshot` changeset (§8.3).
+#[derive(Debug, Default)]
+pub struct InsertReviewFileChangeInput {
     pub path: Option<String>,
+    pub previous_path: Option<String>,
     pub change_type: String,
+    pub diff: Option<String>,
+    pub summary: Option<String>,
+    pub additions: i64,
+    pub deletions: i64,
+    pub binary: bool,
+    pub before_size: Option<i64>,
+    pub after_size: Option<i64>,
+    pub mime: Option<String>,
+    pub diff_truncated: bool,
+    pub omission_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -409,13 +491,6 @@ pub struct UpdateRunStatusInput {
     /// When None, the existing error_type column is preserved.
     #[serde(default)]
     pub error_type: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateReviewChangesetStatusInput {
-    pub changeset_id: String,
-    pub status: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -632,6 +707,14 @@ pub(super) fn approval_request_from_row(
     })
 }
 
+/// Column list for `review_changeset_from_row`, in struct order. Reuse this in
+/// every `SELECT` that maps into `ReviewChangesetRecord`.
+pub(super) const REVIEW_CHANGESET_COLUMNS: &str =
+    "id, thread_id, run_id, tool_call_id, title, summary, status, \
+     files_changed, additions, deletions, source_kind, workspace_id, \
+     before_snapshot_id, after_snapshot_id, binary_files, omitted_files, \
+     completeness, confidence, overlapped, error_message, created_at, updated_at";
+
 pub(super) fn review_changeset_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<ReviewChangesetRecord> {
@@ -646,10 +729,27 @@ pub(super) fn review_changeset_from_row(
         files_changed: row.get(7)?,
         additions: row.get(8)?,
         deletions: row.get(9)?,
-        created_at: row.get(10)?,
-        updated_at: row.get(11)?,
+        source_kind: row.get(10)?,
+        workspace_id: row.get(11)?,
+        before_snapshot_id: row.get(12)?,
+        after_snapshot_id: row.get(13)?,
+        binary_files: row.get(14)?,
+        omitted_files: row.get(15)?,
+        completeness: row.get(16)?,
+        confidence: row.get(17)?,
+        overlapped: row.get(18)?,
+        error_message: row.get(19)?,
+        created_at: row.get(20)?,
+        updated_at: row.get(21)?,
     })
 }
+
+/// Column list for `review_file_change_from_row`, in struct order.
+pub(super) const REVIEW_FILE_CHANGE_COLUMNS: &str =
+    "id, changeset_id, target_type, target_id, path, change_type, \
+     before_ref, after_ref, diff, summary, additions, deletions, \
+     previous_path, binary, before_size, after_size, mime, diff_truncated, \
+     omission_reason, created_at, updated_at";
 
 pub(super) fn review_file_change_from_row(
     row: &rusqlite::Row<'_>,
@@ -667,8 +767,41 @@ pub(super) fn review_file_change_from_row(
         summary: row.get(9)?,
         additions: row.get(10)?,
         deletions: row.get(11)?,
-        created_at: row.get(12)?,
-        updated_at: row.get(13)?,
+        previous_path: row.get(12)?,
+        binary: row.get(13)?,
+        before_size: row.get(14)?,
+        after_size: row.get(15)?,
+        mime: row.get(16)?,
+        diff_truncated: row.get(17)?,
+        omission_reason: row.get(18)?,
+        created_at: row.get(19)?,
+        updated_at: row.get(20)?,
+    })
+}
+
+/// Column list for `review_snapshot_from_row`, in struct order.
+pub(super) const REVIEW_SNAPSHOT_COLUMNS: &str =
+    "id, workspace_id, thread_id, run_id, phase, commit_id, tree_id, status, \
+     file_count, total_bytes, ignored_count, omitted_count, error_message, created_at";
+
+pub(super) fn review_snapshot_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ReviewSnapshotRecord> {
+    Ok(ReviewSnapshotRecord {
+        id: row.get(0)?,
+        workspace_id: row.get(1)?,
+        thread_id: row.get(2)?,
+        run_id: row.get(3)?,
+        phase: row.get(4)?,
+        commit_id: row.get(5)?,
+        tree_id: row.get(6)?,
+        status: row.get(7)?,
+        file_count: row.get(8)?,
+        total_bytes: row.get(9)?,
+        ignored_count: row.get(10)?,
+        omitted_count: row.get(11)?,
+        error_message: row.get(12)?,
+        created_at: row.get(13)?,
     })
 }
 

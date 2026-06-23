@@ -1,19 +1,18 @@
-import type { GitReview, StoredReviewChangeset, StoredReviewFileChange } from "./types";
+import type { GitReview, RunReview, WorkspaceReviewCapabilities } from "./types";
 import { invokeCommand } from "../tauri/invoke";
 
-export async function listReviewChangesets(threadId: string) {
-  return invokeCommand<StoredReviewChangeset[]>("list_review_changesets", { threadId });
+export async function getWorkspaceReviewCapabilities(workspaceId: string) {
+  return invokeCommand<WorkspaceReviewCapabilities>("get_workspace_review_capabilities", {
+    workspaceId,
+  });
 }
 
-export async function updateReviewChangesetStatus(input: {
-  changesetId: string;
-  status: "applied" | "discarded" | "pending";
-}) {
-  return invokeCommand<StoredReviewChangeset>("update_review_changeset_status", { input });
+export async function getLastRunReview(threadId: string) {
+  return invokeCommand<RunReview | null>("get_last_run_review", { threadId });
 }
 
-export async function listReviewFileChanges(changesetId: string) {
-  return invokeCommand<StoredReviewFileChange[]>("list_review_file_changes", { changesetId });
+export async function retryRunReview(runId: string) {
+  return invokeCommand<RunReview | null>("retry_run_review", { runId });
 }
 
 export async function getGitReview(input: {

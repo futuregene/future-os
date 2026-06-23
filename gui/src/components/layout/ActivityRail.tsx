@@ -3,9 +3,10 @@ import type { ReactNode } from "react";
 import type { StoredRun, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import {
   Archive,
+  ChevronDown,
+  ChevronRight,
   Database,
   Folder,
-
   MessageSquare,
   Microscope,
   MoreHorizontal,
@@ -38,6 +39,7 @@ interface ActivityRailProps {
   onChange: (section: ActivitySection) => void;
   onDeleteThread: (thread: StoredThread) => void;
   onNewChat: (workspaceId?: string) => void;
+  onNewWorkspace: () => void;
   onRenameThread: (thread: StoredThread) => void;
   onRestoreThread: (thread: StoredThread) => void;
   onSelectWorkspace: (workspace: StoredWorkspace, threads: StoredThread[]) => void;
@@ -69,6 +71,7 @@ export function ActivityRail({
   onChange,
   onDeleteThread,
   onNewChat,
+  onNewWorkspace,
   onRenameThread,
   onRestoreThread,
   onSelectWorkspace,
@@ -76,10 +79,21 @@ export function ActivityRail({
   onTogglePinThread,
   onToggleExpanded,
 }: ActivityRailProps) {
-  const [showArchived, setShowArchived] = useState(false);
   const [openThreadMenuId, setOpenThreadMenuId] = useState<string | null>(null);
+  const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Set<string>>(() => new Set());
+
+  function toggleWorkspaceCollapsed(workspaceId: string) {
+    setCollapsedWorkspaces((current) => {
+      const next = new Set(current);
+      if (next.has(workspaceId))
+        next.delete(workspaceId);
+      else
+        next.add(workspaceId);
+      return next;
+    });
+  }
   const visibleThreads = sortThreads(
-    threads.filter(thread => thread.status === "active" || (showArchived && thread.status === "archived")),
+    threads.filter(thread => thread.status === "active"),
   );
   const chatThreads = visibleThreads.filter(thread => thread.mode === "chat");
   const workspaceThreads = visibleThreads.filter(thread => thread.mode === "workspace");
@@ -94,7 +108,7 @@ export function ActivityRail({
   return (
     <nav
       className={cn(
-        "flex h-full flex-col bg-surface-subtle transition-[width] duration-200",
+        "flex h-full flex-col bg-surface transition-[width] duration-200",
         floating
           ? "w-full rounded-r-lg border-r border-line-soft/70 shadow-[10px_0_28px_rgba(15,23,42,0.12)]"
           : "shrink-0 border-r border-line-soft",
@@ -132,7 +146,7 @@ export function ActivityRail({
           ? (
               <>
                 <button
-                  className="flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink transition-colors hover:bg-surface"
+                  className="flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink transition-colors hover:bg-surface-subtle"
                   onClick={() => onNewChat()}
                   type="button"
                 >
@@ -146,8 +160,8 @@ export function ActivityRail({
                       <button
                         key={item.id}
                         className={cn(
-                          "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink",
-                          active === item.id && "bg-surface text-ink",
+                          "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
+                          active === item.id && "bg-surface-subtle text-ink",
                         )}
                         onClick={() => onChange(item.id)}
                         type="button"
@@ -161,107 +175,93 @@ export function ActivityRail({
                 <div className="space-y-0.5">
                   <div className="flex h-6 items-center justify-between px-2 text-xs font-medium text-ink-muted">
                     <span>Workspace</span>
-                    <div className="flex items-center gap-1">
-                      <button
-                        aria-label={showArchived ? "Hide archived" : "Show archived"}
-                        className={cn(
-                          "inline-flex size-5 items-center justify-center rounded transition-colors hover:bg-surface hover:text-ink-soft",
-                          showArchived ? "text-ink-soft" : "text-ink-muted",
-                        )}
-                        onClick={() => setShowArchived(value => !value)}
-                        title={showArchived ? "Hide archived" : "Show archived"}
-                        type="button"
-                      >
-                        <Archive className="size-3.5" />
-                      </button>
-                      <button
-                        aria-label="New workspace chat"
-                        className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface hover:text-ink-soft"
-                        onClick={() => onNewChat()}
-                        title="New workspace chat"
-                        type="button"
-                      >
-                        <Plus className="size-3.5" />
-                      </button>
-                    </div>
+                    <button
+                      aria-label="New workspace"
+                      className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                      onClick={onNewWorkspace}
+                      title="New workspace"
+                      type="button"
+                    >
+                      <Plus className="size-3.5" />
+                    </button>
                   </div>
                   {workspaceGroups.length === 0
                     ? (
                         <div className="px-2 py-1 text-xs text-ink-muted">No workspace threads</div>
                       )
                     : null}
-                  {workspaceGroups.map(({ workspace, threads: groupThreads }) => (
-                    <div key={workspace.id} className="space-y-0.5">
-                      <button
-                        className={cn(
-                          "group flex h-7 w-full items-center gap-2 rounded-md px-2 text-left transition-colors hover:bg-surface",
-                          active === "workspace"
-                          && groupThreads.some(thread => thread.id === activeThreadId)
-                          && "bg-surface text-ink",
-                        )}
-                        onClick={() => onSelectWorkspace(workspace, groupThreads)}
-                        type="button"
-                      >
-                        <Folder className="size-4 shrink-0 text-ink-soft" />
-                        <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-soft">
-                          {workspace.name}
-                        </span>
-                        {showArchived && groupThreads.some(thread => thread.status === "archived")
-                          ? <span className="text-[11px] font-medium text-ink-muted">Archived</span>
+                  {workspaceGroups.map(({ workspace, threads: groupThreads }) => {
+                    const collapsed = collapsedWorkspaces.has(workspace.id);
+                    return (
+                      <div key={workspace.id} className="space-y-0.5">
+                        {/* Group header: hover only, no selected state (req 4). */}
+                        <div className="group flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle">
+                          <button
+                            aria-label={collapsed ? "Expand workspace" : "Collapse workspace"}
+                            className="inline-flex size-4 shrink-0 items-center justify-center text-ink-muted transition-colors hover:text-ink-soft"
+                            onClick={() => toggleWorkspaceCollapsed(workspace.id)}
+                            type="button"
+                          >
+                            {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+                          </button>
+                          <button
+                            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                            onClick={() => onSelectWorkspace(workspace, groupThreads)}
+                            type="button"
+                          >
+                            <Folder className="size-4 shrink-0 text-ink-soft" />
+                            <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-soft">
+                              {workspace.name}
+                            </span>
+                          </button>
+                          <button
+                            aria-label={`New chat in ${workspace.name}`}
+                            className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-surface hover:text-ink-soft group-hover:opacity-100"
+                            onClick={() => onNewChat(workspace.id)}
+                            title={`New chat in ${workspace.name}`}
+                            type="button"
+                          >
+                            <Plus className="size-3.5" />
+                          </button>
+                        </div>
+                        {!collapsed && groupThreads.length > 0
+                          ? (
+                              <div className="space-y-0.5">
+                                {groupThreads.map(thread => (
+                                  <ThreadListItem
+                                    active={thread.id === activeThreadId}
+                                    archived={thread.status === "archived"}
+                                    key={thread.id}
+                                    menuOpen={openThreadMenuId === thread.id}
+                                    runStatus={threadRunStatuses[thread.id]}
+                                    thread={thread}
+                                    compact
+                                    onDeleteThread={onDeleteThread}
+                                    onMenuOpenChange={open => setOpenThreadMenuId(open ? thread.id : null)}
+                                    onRenameThread={onRenameThread}
+                                    onRestoreThread={onRestoreThread}
+                                    onSelectThread={onSelectThread}
+                                    onTogglePinThread={onTogglePinThread}
+                                  />
+                                ))}
+                              </div>
+                            )
                           : null}
-                        <span
-                          aria-label={`New chat in ${workspace.name}`}
-                          className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-surface hover:text-ink-soft group-hover:opacity-100"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onNewChat(workspace.id);
-                          }}
-                          role="button"
-                          title={`New chat in ${workspace.name}`}
-                        >
-                          <Plus className="size-3.5" />
-                        </span>
-                      </button>
-                      {groupThreads.length > 0
-                        ? (
-                            <div className="ml-6 space-y-0.5 border-l border-line-soft/60 pl-2">
-                              {groupThreads.map(thread => (
-                                <ThreadListItem
-                                  active={thread.id === activeThreadId}
-                                  archived={thread.status === "archived"}
-                                  key={thread.id}
-                                  menuOpen={openThreadMenuId === thread.id}
-                                  runStatus={threadRunStatuses[thread.id]}
-                                  thread={thread}
-                                  compact
-                                  onDeleteThread={onDeleteThread}
-                                  onMenuOpenChange={open => setOpenThreadMenuId(open ? thread.id : null)}
-                                  onRenameThread={onRenameThread}
-                                  onRestoreThread={onRestoreThread}
-                                  onSelectThread={onSelectThread}
-                                  onTogglePinThread={onTogglePinThread}
-                                />
-                              ))}
-                            </div>
-                          )
-                        : null}
-                    </div>
-                  ))}
+                      </div>
+                    );
+                  })}
                 </div>
                 <div className="mt-3 space-y-0.5">
                   <div className="flex h-6 items-center justify-between px-2 text-xs font-medium text-ink-muted">
                     <span>Chat</span>
                     <button
-                      aria-label={showArchived ? "Hide archived" : "Show archived"}
-                      className={cn(
-                        "inline-flex size-5 items-center justify-center rounded transition-colors hover:bg-surface hover:text-ink-soft",
-                        showArchived ? "text-ink-soft" : "text-ink-muted",
-                      )}
-                      onClick={() => setShowArchived(value => !value)}
-                      title={showArchived ? "Hide archived" : "Show archived"}
+                      aria-label="New chat"
+                      className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                      onClick={() => onNewChat()}
+                      title="New chat"
                       type="button"
                     >
-                      <Archive className="size-3.5" />
+                      <Plus className="size-3.5" />
                     </button>
                   </div>
                   {chatThreads.length === 0 ? <div className="px-2 py-1 text-xs text-ink-muted">No chats</div> : null}
@@ -383,9 +383,11 @@ function ThreadListItem({
     <div
       ref={menuRef}
       className={cn(
-        "group/thread relative flex w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface",
-        compact ? "h-7" : "h-8 gap-2",
-        active && "bg-surface text-ink shadow-sm",
+        // Full-width row; workspace threads (compact) indent their content via
+        // padding so the highlight still spans the full width (req 2).
+        "group/thread relative flex w-full items-center gap-1 rounded-md pr-2 text-left transition-colors hover:bg-surface-subtle",
+        compact ? "h-7 pl-7" : "h-8 gap-2 pl-2",
+        active && "bg-surface-subtle text-ink",
       )}
     >
       {!compact ? <MessageSquare className="size-4 shrink-0 text-ink-soft" /> : null}
@@ -404,7 +406,7 @@ function ThreadListItem({
       <button
         aria-label={`Thread actions for ${thread.title}`}
         className={cn(
-          "hidden size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface hover:text-ink-soft group-hover/thread:inline-flex",
+          "hidden size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft group-hover/thread:inline-flex",
           menuOpen && "inline-flex",
         )}
         onClick={(event) => {

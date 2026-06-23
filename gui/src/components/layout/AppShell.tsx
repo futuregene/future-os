@@ -5,6 +5,7 @@ import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../..
 import type { ActivitySection } from "./ActivityRail";
 import type { DeleteDialogState, RenameDialogState } from "./AppShellDialogs";
 import type { ContextTab } from "./ContextPanel";
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { NewConversation } from "../../features/agent/NewConversation";
@@ -22,7 +23,7 @@ import {
   restoreThread,
   updateThreadModel,
 } from "../../integrations/storage/threadStore";
-import { onFutureEvent } from "../../lib/futureEvents";
+import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { ActivityRail } from "./ActivityRail";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
@@ -52,6 +53,8 @@ export function AppShell() {
   const [rightExpanded, setRightExpanded] = useState(false);
   const [contextTab, setContextTab] = useState<ContextTab>("runs");
   const [newChatWorkspaceId, setNewChatWorkspaceId] = useState<string | null>(null);
+  const [newConversationMode, setNewConversationMode] = useState<"workspace" | "chat">("chat");
+  const [newWorkspaceCreate, setNewWorkspaceCreate] = useState(false);
   const [selectedResearchResourceId, setSelectedResearchResourceId] = useState<string | null>(null);
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
   const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState | null>(null);
@@ -105,6 +108,17 @@ export function AppShell() {
     setNewChatWorkspaceId(null);
   }), []);
 
+  // Bridge the backend's deferred shadow-review notification (C1) onto the
+  // typed event bus so the Review panel refreshes when the changeset lands.
+  useEffect(() => {
+    const unlisten = listen<string>("review-updated", (event) => {
+      emitFutureEvent("review-updated", { threadId: event.payload });
+    });
+    return () => {
+      void unlisten.then(stop => stop());
+    };
+  }, []);
+
   function handleSectionChange(nextSection: ActivitySection) {
     if (nextSection === "settings") {
       setSettingsOpen(true);
@@ -148,8 +162,21 @@ export function AppShell() {
   }
 
   function handleOpenNewChat(workspaceId?: string) {
+    // Workspace "+" on a specific workspace → a chat inside it; otherwise a
+    // plain chat (Chat header "+" / top New Chat).
     setSection(workspaceId ? "workspace" : "chat");
     setNewChatWorkspaceId(workspaceId ?? null);
+    setNewConversationMode(workspaceId ? "workspace" : "chat");
+    setNewWorkspaceCreate(false);
+    setCenterMode("new-chat");
+  }
+
+  // Workspace header "+" → start the new-conversation flow on the create-workspace step.
+  function handleOpenNewWorkspace() {
+    setSection("workspace");
+    setNewChatWorkspaceId(null);
+    setNewConversationMode("workspace");
+    setNewWorkspaceCreate(true);
     setCenterMode("new-chat");
   }
 
@@ -332,6 +359,7 @@ export function AppShell() {
     workspaces,
     onChange: handleSectionChange,
     onNewChat: handleOpenNewChat,
+    onNewWorkspace: handleOpenNewWorkspace,
     onDeleteThread: handleDeleteThread,
     onRenameThread: handleRenameThread,
     onRestoreThread: handleRestoreThread,
@@ -368,6 +396,9 @@ export function AppShell() {
         {centerMode === "new-chat"
           ? (
               <NewConversation
+                key={`${newConversationMode}:${newWorkspaceCreate ? "new" : ""}:${newChatWorkspaceId ?? ""}`}
+                initialCreateWorkspace={newWorkspaceCreate}
+                initialMode={newConversationMode}
                 initialWorkspaceId={newChatWorkspaceId}
                 leftPanelExpanded={leftExpanded}
                 modelId={selectedModelId}
@@ -421,14 +452,20 @@ export function AppShell() {
                     />
                   )}
       </main>
-      <ContextPanel
-        activeThread={activeThread}
-        activeWorkspace={activeWorkspace}
-        activeTab={contextTab}
-        expanded={rightExpanded}
-        onTabChange={setContextTab}
-        onToggleExpanded={() => setRightExpanded(value => !value)}
-      />
+      {/* A new blank conversation has no thread context yet — hide the right
+          panel entirely (no expand affordance) until a thread exists. */}
+      {centerMode === "new-chat"
+        ? null
+        : (
+            <ContextPanel
+              activeThread={activeThread}
+              activeWorkspace={activeWorkspace}
+              activeTab={contextTab}
+              expanded={rightExpanded}
+              onTabChange={setContextTab}
+              onToggleExpanded={() => setRightExpanded(value => !value)}
+            />
+          )}
       <AppShellDialogs
         deleteDialog={deleteDialog}
         renameDialog={renameDialog}

@@ -148,6 +148,25 @@ CREATE TABLE IF NOT EXISTS approval_rules (
     expires_at INTEGER
 );
 
+-- Snapshots taken before/after a Run for the shadow review pipeline.
+CREATE TABLE IF NOT EXISTS review_snapshots (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    thread_id TEXT NOT NULL REFERENCES threads(id),
+    run_id TEXT NOT NULL REFERENCES runs(id),
+    phase TEXT NOT NULL CHECK (phase IN ('before', 'after')),
+    commit_id TEXT,
+    tree_id TEXT,
+    status TEXT NOT NULL,
+    file_count INTEGER NOT NULL DEFAULT 0,
+    total_bytes INTEGER NOT NULL DEFAULT 0,
+    ignored_count INTEGER NOT NULL DEFAULT 0,
+    omitted_count INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(run_id, phase)
+);
+
 CREATE TABLE IF NOT EXISTS review_changesets (
     id TEXT PRIMARY KEY,
     thread_id TEXT NOT NULL REFERENCES threads(id),
@@ -159,6 +178,17 @@ CREATE TABLE IF NOT EXISTS review_changesets (
     files_changed INTEGER NOT NULL DEFAULT 0,
     additions INTEGER NOT NULL DEFAULT 0,
     deletions INTEGER NOT NULL DEFAULT 0,
+    -- Shadow review (source_kind = 'run_snapshot') columns; see gui/ER.md §4.10.
+    source_kind TEXT NOT NULL DEFAULT 'run_snapshot',
+    workspace_id TEXT REFERENCES workspaces(id),
+    before_snapshot_id TEXT REFERENCES review_snapshots(id),
+    after_snapshot_id TEXT REFERENCES review_snapshots(id),
+    binary_files INTEGER NOT NULL DEFAULT 0,
+    omitted_files INTEGER NOT NULL DEFAULT 0,
+    completeness TEXT NOT NULL DEFAULT 'complete',
+    confidence TEXT NOT NULL DEFAULT 'normal',
+    overlapped INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -176,6 +206,14 @@ CREATE TABLE IF NOT EXISTS review_file_changes (
     summary TEXT,
     additions INTEGER NOT NULL DEFAULT 0,
     deletions INTEGER NOT NULL DEFAULT 0,
+    -- Shadow review columns; see gui/ER.md §4.10.
+    previous_path TEXT,
+    binary INTEGER NOT NULL DEFAULT 0,
+    before_size INTEGER,
+    after_size INTEGER,
+    mime TEXT,
+    diff_truncated INTEGER NOT NULL DEFAULT 0,
+    omission_reason TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -305,4 +343,56 @@ CREATE INDEX IF NOT EXISTS idx_threads_recent ON threads(status, pinned, last_me
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_thread ON runs(thread_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_reference_targets_scope ON reference_targets(scope, workspace_id, target_type);
+CREATE INDEX IF NOT EXISTS idx_review_snapshots_run ON review_snapshots(run_id, phase);
+CREATE INDEX IF NOT EXISTS idx_review_snapshots_workspace ON review_snapshots(workspace_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_review_changesets_run ON review_changesets(run_id);
 "#;
+
+/// Columns added to pre-existing tables after their initial `CREATE`. SQLite's
+/// `CREATE TABLE IF NOT EXISTS` will not add columns to a table that already
+/// exists, so these `ALTER`s run idempotently (a duplicate-column error is
+/// swallowed). Every column here must be nullable or carry a `DEFAULT`.
+pub(super) const ADDED_COLUMNS: &[(&str, &str)] = &[
+    (
+        "review_changesets",
+        "source_kind TEXT NOT NULL DEFAULT 'run_snapshot'",
+    ),
+    ("review_changesets", "workspace_id TEXT"),
+    ("review_changesets", "before_snapshot_id TEXT"),
+    ("review_changesets", "after_snapshot_id TEXT"),
+    (
+        "review_changesets",
+        "binary_files INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "review_changesets",
+        "omitted_files INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "review_changesets",
+        "completeness TEXT NOT NULL DEFAULT 'complete'",
+    ),
+    (
+        "review_changesets",
+        "confidence TEXT NOT NULL DEFAULT 'normal'",
+    ),
+    ("review_changesets", "overlapped INTEGER NOT NULL DEFAULT 0"),
+    ("review_changesets", "error_message TEXT"),
+    ("review_file_changes", "previous_path TEXT"),
+    ("review_file_changes", "binary INTEGER NOT NULL DEFAULT 0"),
+    ("review_file_changes", "before_size INTEGER"),
+    ("review_file_changes", "after_size INTEGER"),
+    ("review_file_changes", "mime TEXT"),
+    (
+        "review_file_changes",
+        "diff_truncated INTEGER NOT NULL DEFAULT 0",
+    ),
+    ("review_file_changes", "omission_reason TEXT"),
+];
+
+/// Indexes that reference columns from `ADDED_COLUMNS`. These must run *after*
+/// the `ALTER`s, not inside `SCHEMA`, or they fail with "no such column" on a
+/// database created before those columns existed.
+pub(super) const ADDED_INDEXES: &[&str] =
+    &["CREATE INDEX IF NOT EXISTS idx_review_changesets_thread \
+     ON review_changesets(thread_id, source_kind, created_at)"];
