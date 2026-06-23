@@ -221,7 +221,7 @@ export async function loadApiKey(): Promise<string> {
 
 async function listRemoteTools(apiKey: string): Promise<Array<{ name: string; description: string }>> {
   const sessionId = await initializeSession(apiKey);
-  const { body } = await mcpPost(mcpUrl(), "tools/list", {}, apiKey, sessionId, 2);
+  const { body } = await mcpPost(await mcpUrl(), "tools/list", {}, apiKey, sessionId, 2);
 
   if (body.error) throw new Error(`tools/list failed: ${JSON.stringify(body.error)}`);
   const result = getRecord(body.result);
@@ -242,7 +242,7 @@ interface CallToolResponse {
 
 async function callRemoteTool(apiKey: string, name: string, args: Record<string, unknown>): Promise<CallToolResponse> {
   const sessionId = await initializeSession(apiKey);
-  const { body } = await mcpPost(mcpUrl(), "tools/call", {
+  const { body } = await mcpPost(await mcpUrl(), "tools/call", {
     name,
     arguments: args,
   }, apiKey, sessionId, 2);

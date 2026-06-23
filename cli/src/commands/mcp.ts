@@ -1,14 +1,25 @@
 // Shared MCP protocol helpers used by tools.ts and skills.ts.
+import { readFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
-import { DEFAULT_API_URL } from "../constants.js";
+import { AUTH_FILE, DEFAULT_API_URL, FUTURE_AUTH_PROVIDER } from "../constants.js";
 
-function resolveMcpUrl(): string {
-  if (process.env["FUTURE_MCP_URL"]) return process.env["FUTURE_MCP_URL"];
-  const apiBase = process.env["FUTURE_API_BASE"] ?? DEFAULT_API_URL;
-  return `${apiBase}/v1/mcp`;
+async function resolveMcpUrl(): Promise<string> {
+  let baseUrl = DEFAULT_API_URL;
+  try {
+    const raw = await readFile(AUTH_FILE, "utf8");
+    const auth = JSON.parse(raw) as Record<string, unknown>;
+    const future = auth[FUTURE_AUTH_PROVIDER];
+    if (future && typeof future === "object") {
+      const base_url = (future as Record<string, unknown>).base_url;
+      if (typeof base_url === "string") baseUrl = base_url;
+    }
+  } catch {
+    // auth.json not found or unreadable — use default
+  }
+  return `${baseUrl}/v1/mcp`;
 }
 
-export function mcpUrl(): string {
+export async function mcpUrl(): Promise<string> {
   return resolveMcpUrl();
 }
 
@@ -128,7 +139,7 @@ export function mcpNotify(
 }
 
 export async function initializeSession(apiKey: string): Promise<string> {
-  const url = mcpUrl();
+  const url = await mcpUrl();
   const { body, sessionId } = await mcpPost(url, "initialize", {
     protocolVersion: "2024-11-05",
     capabilities: {},
