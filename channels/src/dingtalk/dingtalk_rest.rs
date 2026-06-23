@@ -5,6 +5,7 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::{info, warn};
 
 #[derive(Clone)]
 pub struct DingtalkRestClient {
@@ -112,12 +113,19 @@ impl DingtalkRestClient {
                 "backgroundId": "im_bg_1",
             },
         });
-        client.post(&url)
+        let resp = client.post(&url)
             .header("x-acs-dingtalk-access-token", &token)
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
             .await?;
+        let status = resp.status();
+        let resp_body = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            warn!("DingTalk add_reaction failed (HTTP {}): {}", status.as_u16(), resp_body);
+        } else {
+            info!("DingTalk add_reaction ok: {} status={}", emoji, status.as_u16());
+        }
         Ok(())
     }
 
@@ -131,12 +139,19 @@ impl DingtalkRestClient {
             "openMsgId": open_msg_id,
             "openConversationId": open_conversation_id,
         });
-        client.post(&url)
+        let resp = client.post(&url)
             .header("x-acs-dingtalk-access-token", &token)
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
             .await?;
+        let status = resp.status();
+        let resp_body = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            warn!("DingTalk remove_reaction failed (HTTP {}): {}", status.as_u16(), resp_body);
+        } else {
+            info!("DingTalk remove_reaction ok status={}", status.as_u16());
+        }
         Ok(())
     }
 }
