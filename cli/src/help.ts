@@ -13,6 +13,7 @@ Usage:
   future channel stop
   future channel restart
   future channel status
+  future run [options] [@files...] [message...]
   future tools list
   future tools call <name> [--args '<json>' | --stdin]
   future skills list
@@ -20,5 +21,7 @@ Usage:
   future skills update <name>
   future skills uninstall <name>
   future tui [tui options]
+
+Run 'future run --help' for run command options.
 `);
 }
