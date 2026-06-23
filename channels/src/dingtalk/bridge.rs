@@ -88,12 +88,6 @@ impl DingtalkBridge {
         let cmd = parts[0].to_lowercase();
         let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
         let wh = match webhook { Some(w) => w, None => { return Ok(()); } };
-        let reply = |msg: &str| {
-            let wh = wh.to_string();
-            let dingtalk = self.dingtalk.clone();
-            let msg = msg.to_string();
-            tokio::spawn(async move { let _ = dingtalk.reply_webhook(&wh, &msg).await; });
-        };
         let reply_md = |title: &str, md: &str| {
             let wh2 = wh.to_string();
             let dingtalk = self.dingtalk.clone();
@@ -106,15 +100,15 @@ impl DingtalkBridge {
             "/new" => {
                 let mut agent = self.agent.write().await;
                 match agent.new_session(&self.agent_cfg.cwd).await {
-                    Ok(sid) => reply(&format!("New session: {}", sid)),
-                    Err(e) => reply(&format!("Error: {}", e)),
+                    Ok(sid) => reply_md("New Session", &format!("**Session:** `{}`", sid)),
+                    Err(e) => reply_md("Error", &format!("**Error:** {}", e)),
                 }
             }
             "/status" | "/stop" | "/abort" | "/model" | "/models" | "/compact" | "/effort" => {
                 let mut agent = self.agent.write().await;
                 let sid = match agent.new_session(&self.agent_cfg.cwd).await {
                     Ok(s) => s,
-                    Err(e) => { reply(&format!("Error: {}", e)); return Ok(()); }
+                    Err(e) => { reply_md("Error", &format!("**Error:** {}", e)); return Ok(()); }
                 };
 
                 match cmd.as_str() {
@@ -140,13 +134,13 @@ impl DingtalkBridge {
                     }
                     "/stop" | "/abort" => {
                         let _ = agent.abort(&sid).await;
-                        reply("Stopped.");
+                        reply_md("Stopped", "Stopped.");
                     }
                     "/model" if !arg.is_empty() => {
                         let mid = arg.replace(':', "/");
                         if let Ok(()) = agent.set_model(&sid, &mid).await {
                             if let Ok(s) = agent.get_state(&sid).await {
-                                reply(&format!("Model: {}", s.model));
+                                reply_md("Model", &format!("**Model:** `{}`", s.model));
                             }
                         }
                     }
@@ -156,25 +150,25 @@ impl DingtalkBridge {
                                 let img = if m.image { "🖼️ " } else { "" };
                                 format!("• {}{} — `{}/{}`", img, m.name, m.provider, m.id)
                             }).collect();
-                            reply(&format!("Models ({}):\n{}", list.len(), list.join("\n")));
+                            reply_md("Models", &format!("**Models ({})**\n\n{}", list.len(), list.join("\n")));
                         }
                     }
                     "/compact" => {
-                        if let Ok(()) = agent.compact(&sid).await { reply("Context compacted."); }
+                        if let Ok(()) = agent.compact(&sid).await { reply_md("Compact", "Context compacted."); }
                     }
                     "/effort" if !arg.is_empty() => {
                         let valid = ["off","minimal","low","medium","high","xhigh"];
                         if !valid.contains(&arg) {
-                            reply(&format!("Invalid: {}. Use: {}", arg, valid.join(", ")));
+                            reply_md("Invalid", &format!("Invalid: `{}`\n\nUse: `{}`", arg, valid.join(", ")));
                         } else if let Ok(()) = agent.set_thinking_level(&sid, arg).await {
-                            reply(&format!("Thinking: {}", arg));
+                            reply_md("Thinking", &format!("**Thinking:** `{}`", arg));
                         }
                     }
                     _ => {}
                 }
             }
             "/help" => {
-                reply("/new /status /stop|/abort /model <id> /models /effort <level> /compact /help");
+                reply_md("Help", "**Commands**\n\n`/new` — new session\n`/status` — session status\n`/stop` — abort prompt\n`/model <id>` — switch model\n`/models` — list models\n`/effort <level>` — thinking level\n`/compact` — compact context\n`/help` — this help");
             }
             _ => {
                 self.process_prompt(text, webhook.clone()).await?;
