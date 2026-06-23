@@ -452,14 +452,20 @@ export function AppShell() {
                     />
                   )}
       </main>
-      <ContextPanel
-        activeThread={activeThread}
-        activeWorkspace={activeWorkspace}
-        activeTab={contextTab}
-        expanded={rightExpanded}
-        onTabChange={setContextTab}
-        onToggleExpanded={() => setRightExpanded(value => !value)}
-      />
+      {/* A new blank conversation has no thread context yet — hide the right
+          panel entirely (no expand affordance) until a thread exists. */}
+      {centerMode === "new-chat"
+        ? null
+        : (
+            <ContextPanel
+              activeThread={activeThread}
+              activeWorkspace={activeWorkspace}
+              activeTab={contextTab}
+              expanded={rightExpanded}
+              onTabChange={setContextTab}
+              onToggleExpanded={() => setRightExpanded(value => !value)}
+            />
+          )}
       <AppShellDialogs
         deleteDialog={deleteDialog}
         renameDialog={renameDialog}
