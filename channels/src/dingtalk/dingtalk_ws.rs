@@ -30,8 +30,8 @@ pub struct DingtalkEvent {
     pub raw: Value,
 }
 
-const PING_INTERVAL_SECS: u64 = 50;
-const HEARTBEAT_TIMEOUT_SECS: u64 = 120;
+const PING_INTERVAL_SECS: u64 = 30;
+const HEARTBEAT_TIMEOUT_SECS: u64 = 90;
 /// UA string sent when opening the connection.
 const UA: &str = "future-os/1.0 dingtalk-stream-sdk/1.0";
 
@@ -134,9 +134,9 @@ impl DingtalkWsClient {
                     if last_recv.elapsed().as_secs() > HEARTBEAT_TIMEOUT_SECS {
                         return Err(anyhow!("DingTalk WebSocket heartbeat timeout"));
                     }
-                    // Use WebSocket protocol ping (matching Python SDK's ws.ping()),
-                    // NOT a JSON text message. The DingTalk server expects protocol pings.
-                    if let Err(e) = ws_stream.send(WsMessage::Ping(vec![])).await {
+                    // Send application-level JSON PING (DingTalk Stream protocol).
+                    // WebSocket-level Ping frames are NOT recognized as keepalive by the server.
+                    if let Err(e) = ws_stream.send(WsMessage::Text(r#"{"type":"PING"}"#.into())).await {
                         warn!("DingTalk ping failed: {}", e);
                         return Err(anyhow!("DingTalk WebSocket send error: {}", e));
                     }
