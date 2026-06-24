@@ -164,7 +164,13 @@ impl DingtalkBridge {
                         if let Ok(models) = agent.get_available_models(&sid).await {
                             let list: Vec<String> = models.iter().map(|m| {
                                 let img = if m.image { "🖼️ " } else { "" };
-                                format!("• {}{} — `{}/{}`", img, m.name, m.provider, m.id)
+                                let ctx = if m.context_window > 0 {
+                                    format!(" | {}K ctx", m.context_window / 1000)
+                                } else { String::new() };
+                                let out = if m.max_tokens > 0 {
+                                    format!(" | {}K out", m.max_tokens / 1000)
+                                } else { String::new() };
+                                format!("• {}{} — `{}/{}`{}{}", img, m.name, m.provider, m.id, ctx, out)
                             }).collect();
                             reply_md("Models", &format!("**Models ({})**\n\n{}", list.len(), list.join("\n\n")));
                         }
