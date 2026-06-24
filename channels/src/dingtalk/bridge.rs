@@ -102,7 +102,14 @@ impl DingtalkBridge {
 
         match cmd.as_str() {
             "/new" => {
+                // Abort current session (if any) then create a fresh one.
+                // Hold agent lock once to avoid "agent is busy" from an
+                // in-flight prompt.
+                let old_sid = self.session_id.read().await.clone();
                 let mut agent = self.agent.write().await;
+                if let Some(ref sid) = old_sid {
+                    let _ = agent.abort(sid).await;
+                }
                 match agent.new_session(&self.agent_cfg.cwd).await {
                     Ok(sid) => {
                         *self.session_id.write().await = Some(sid.clone());
