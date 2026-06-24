@@ -208,6 +208,23 @@ Research / Data / Skill 暂不投入，左侧导航图标已隐藏（`ActivityRa
 - **提供商唯一性校验**：`upsert_custom_provider` 新增 `create` 标志——新建时 id 已存在则报错（防静默覆盖）；名称跨内置 + 自定义大小写不敏感去重。前端 `CustomProviderDialog` 同步即时校验。
 - **`future` 过滤**：`list_agent_providers` 自定义区跳过 `future` id，避免手改 models.json 时 FutureGene 重复显示。
 
+#### 自定义 Provider 字段校验
+
+前端 `CustomProviderDialog` 即时校验 + 后端 `upsert_custom_provider` 权威兜底（两边规则一致）：
+
+| 字段 | 必填 | 规则 | 长度 | 归一化 |
+|---|---|---|---|---|
+| Provider id | 是 | `^[a-z0-9_-]+$`，且 ≠ `future` | 2–40 | trim；**转小写** |
+| 名称 name | 否（空则回退 id） | ASCII：字母/数字/空格/`_.()-`（不支持中文 / emoji / 全角） | ≤40 | trim |
+| API 类型 | 是 | 枚举 `openai-completions` / `openai-responses` / `anthropic` | — | — |
+| Base URL | 是 | 可解析且 scheme ∈ {http, https}（不强制 https） | ≤2048 | trim |
+| API Key | 否 | ASCII、无控制字符 | ≤512 | trim |
+| 模型 id（每项） | 行内是 | `^[A-Za-z0-9._:/-]+$`（允许 `/ : .`，无空格） | ≤100 | trim |
+| 模型 name（每项） | 否（空则回退 model id） | ASCII、无控制字符 | ≤60 | trim |
+| 模型条数 | — | ≤100 | — | — |
+
+唯一性：新建时 id 不可与现有重复（防静默覆盖）；名称跨内置 + 自定义大小写不敏感唯一；同一 provider 内模型 id 不重复。
+
 ### 待办（需改 `agent/`，本期不做）
 
 > `agent/` 是 TUI / CLI / channels 共用后端，以下改动会波及它们，故单独记录、暂缓。
