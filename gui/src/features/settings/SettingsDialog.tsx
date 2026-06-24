@@ -9,7 +9,7 @@ import { GeneralPage } from "./GeneralPage";
 import { ModelsPage } from "./ModelsPage";
 import { ProvidersPage } from "./ProvidersPage";
 
-type SettingsTab = "general" | "providers" | "models";
+export type SettingsTab = "general" | "providers" | "models";
 
 const NAV_GROUPS = [
   {
@@ -33,19 +33,29 @@ const TAB_TITLES: Record<SettingsTab, string> = {
 
 export function SettingsDialog({
   appSettings,
+  initialTab = "general",
   modelOptions,
   onChangeSettings,
   onClose,
   open,
 }: {
   appSettings: AppSettings;
+  /** Tab to show when the dialog opens (e.g. a "Models" quick entry). */
+  initialTab?: SettingsTab;
   modelOptions: AgentModelOption[];
   onChangeSettings: (patch: Partial<AppSettings>) => void;
   onClose: () => void;
   open: boolean;
 }) {
-  const [tab, setTab] = useState<SettingsTab>("general");
+  const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [version, setVersion] = useState("");
+
+  // Reset to the requested tab each time the dialog opens.
+  useEffect(() => {
+    if (open) {
+      setTab(initialTab);
+    }
+  }, [open, initialTab]);
 
   useEffect(() => {
     if (!open || version) {

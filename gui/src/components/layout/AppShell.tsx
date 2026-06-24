@@ -1,5 +1,6 @@
 import type { MessageAttachment } from "../../features/agent/agentThreadTypes";
 import type { NewConversationStart } from "../../features/agent/NewConversation";
+import type { SettingsTab } from "../../features/settings/SettingsDialog";
 import type { AppSettings } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
@@ -60,6 +61,7 @@ export function AppShell() {
   const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState | null>(null);
   const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   const [appSettings, setAppSettings] = useState<AppSettings>({ autoApprove: false, hiddenModels: [] });
 
   const {
@@ -121,12 +123,18 @@ export function AppShell() {
 
   function handleSectionChange(nextSection: ActivitySection) {
     if (nextSection === "settings") {
+      setSettingsTab("general");
       setSettingsOpen(true);
       return;
     }
     setSection(nextSection);
     setCenterMode("thread");
     setNewChatWorkspaceId(null);
+  }
+
+  function handleOpenModels() {
+    setSettingsTab("models");
+    setSettingsOpen(true);
   }
 
   async function handleChangeSettings(patch: Partial<AppSettings>) {
@@ -358,6 +366,7 @@ export function AppShell() {
     threadRunStatuses,
     workspaces,
     onChange: handleSectionChange,
+    onOpenModels: handleOpenModels,
     onNewChat: handleOpenNewChat,
     onNewWorkspace: handleOpenNewWorkspace,
     onDeleteThread: handleDeleteThread,
@@ -476,6 +485,7 @@ export function AppShell() {
       />
       <SettingsDialog
         appSettings={appSettings}
+        initialTab={settingsTab}
         modelOptions={modelOptions}
         onChangeSettings={patch => void handleChangeSettings(patch)}
         onClose={() => setSettingsOpen(false)}
