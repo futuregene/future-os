@@ -301,7 +301,7 @@ impl crate::types::LLMProvider for Client {
             let tx = tx;
             let mut in_thinking = false;
             let mut in_tool_call = false;
-            let mut buffer = String::new();
+            let mut buffer: Vec<u8> = Vec::new();
             let mut last_sse_event_at = std::time::Instant::now();
 
             // Helper to emit events from a parsed SSE data line, handling
@@ -483,15 +483,21 @@ impl crate::types::LLMProvider for Client {
                         if let Some(ref cb) = on_payload {
                             cb(&bytes);
                         }
-                        // Use from_utf8_lossy — SSE structure is ASCII so \n\n
-                        // delimiters are never affected by replacement chars.
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
+                        buffer.extend_from_slice(&bytes);
 
-                        // Process complete SSE events (delimited by \n\n).
-                        // Keep trailing partial event in buffer for next chunk.
-                        while let Some(pos) = buffer.find("\n\n") {
-                            let event_block = buffer[..pos].to_string();
-                            buffer = buffer[pos + 2..].to_string();
+                        // Process complete SSE events (delimited by b"\n\n").
+                        // Use byte-level search so multi-byte UTF-8 characters
+                        // split across chunk boundaries are not corrupted by
+                        // from_utf8_lossy (which would replace partial bytes
+                        // with U+FFFD).  We only decode to &str once we have
+                        // a complete event.
+                        while let Some(pos) = buffer
+                            .windows(2)
+                            .position(|w| w == b"\n\n")
+                        {
+                            let event_bytes: Vec<u8> = buffer.drain(..pos).collect();
+                            buffer.drain(..2); // consume the \n\n delimiter
+                            let event_block = String::from_utf8_lossy(&event_bytes);
                             let mut done = false;
                             for line in event_block.lines() {
                                 let line = line.trim();
