@@ -142,7 +142,7 @@ logoutFutureProvider(): Promise<ProvidersView>
 
 - 打开即调 `startFutureLogin` → 展示大字 `userCode`（可复制）、可点授权链接（已自动开浏览器）+「复制链接」按钮（降级处理）、状态行。
 - 用 `lib/usePolling` 轮询 `pollFutureLogin`：
-  - **动态间隔**：`pollIntervalMs` 用 state 保存，作为 `usePolling` 的 `intervalMs`（变化时 `usePolling` 会按 deps 重启计时器）；收到 `nextIntervalMs` 时调高。
+  - **动态间隔**：`pollIntervalMs` 用 state 保存，作为 `usePolling` 的 `intervalMs`（变化时 `usePolling` 会按 deps 重启计时器）。为了授权后更快出「已配置」，**起始用更短的 `FAST_POLL_MS`（2s），不直接采用服务端 `interval`（常为 5s）**；若服务端回 `slow_down` 则 +5s 退避，仍合规。
   - **attemptId 守卫**（修 ④）：每次「开始 / 重试」自增 `attemptId`，poll 回调里带当前 `attemptId`；返回时若 `attemptId` 已过期则丢弃，避免重试后旧 in-flight 请求覆盖新状态（`usePolling` 不取消 in-flight async，需自己守卫）。
   - `authorized` → 调用方刷新 providers + 关闭弹窗。
   - `pending` → 继续（可能已调整 interval）。
