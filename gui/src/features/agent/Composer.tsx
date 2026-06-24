@@ -361,35 +361,31 @@ export function Composer({
             </button>
             {modelMenuOpen
               ? (
-                  <div className="absolute bottom-9 right-0 z-30 max-h-[40vh] w-56 overflow-y-auto rounded-lg border border-line-soft bg-surface shadow-panel">
+                  <div className="absolute bottom-9 right-0 z-30 max-h-[40vh] w-56 divide-y divide-line-soft overflow-y-auto rounded-lg border border-line-soft bg-surface shadow-panel">
                     {modelOptions.length === 0
                       ? (
                           <div className="px-3 py-2 text-sm text-ink-muted">Start Future Agent to load models.</div>
                         )
                       : null}
-                    {/* Inset wrapper: dividers and rows stop short of the rounded
-                        edges, and the right padding keeps the scrollbar off the text. */}
-                    <div className="divide-y divide-line-soft/70 px-1.5 py-1">
-                      {modelOptions.map(model => (
-                        <button
-                          className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-sm transition-colors hover:bg-surface-subtle"
-                          key={`${model.provider}/${model.id}`}
-                          onClick={() => {
-                            onModelChange?.(model.id);
-                            setModelMenuOpen(false);
-                          }}
-                          type="button"
-                        >
-                          <span className="min-w-0 flex-1 space-y-0.5">
-                            <span className="block truncate font-medium leading-tight text-ink">{model.label}</span>
-                            <span className="block truncate text-xs leading-tight text-ink-muted">
-                              {providerNames[model.provider] ?? model.provider}
-                            </span>
+                    {modelOptions.map(model => (
+                      <button
+                        className="flex w-full items-center gap-2 px-3 py-1 text-left text-sm transition-colors hover:bg-surface-subtle"
+                        key={`${model.provider}/${model.id}`}
+                        onClick={() => {
+                          onModelChange?.(model.id);
+                          setModelMenuOpen(false);
+                        }}
+                        type="button"
+                      >
+                        <span className="min-w-0 flex-1 space-y-0.5">
+                          <span className="block truncate font-medium leading-tight text-ink">{model.label}</span>
+                          <span className="block truncate text-xs leading-tight text-ink-muted">
+                            {providerNames[model.provider] ?? model.provider}
                           </span>
-                          {activeModelId === model.id ? <Check className="size-4 shrink-0 text-ink-soft" /> : null}
-                        </button>
-                      ))}
-                    </div>
+                        </span>
+                        {activeModelId === model.id ? <Check className="size-4 shrink-0 text-ink-soft" /> : null}
+                      </button>
+                    ))}
                   </div>
                 )
               : null}
