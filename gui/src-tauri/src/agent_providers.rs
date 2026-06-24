@@ -71,7 +71,9 @@ pub struct UpsertCustomProviderInput {
 
 pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
     let models = read_json(&models_json_path()?);
-    let auth = read_json(&auth_json_path()?);
+    // Display path: a corrupt auth.json shouldn't blank the providers list, so
+    // fall back to empty (key badges show "未配置"); write paths stay strict.
+    let auth = Value::Object(crate::auth_store::read().unwrap_or_default());
 
     let builtin = vec![BuiltinProvider {
         id: FUTURE_PROVIDER_ID.to_string(),
@@ -227,15 +229,7 @@ pub fn upsert_custom_provider(
         .map(str::trim)
         .filter(|v| !v.is_empty())
     {
-        let auth_path = auth_json_path()?;
-        let mut auth_doc = read_json(&auth_path);
-        if !auth_doc.is_object() {
-            auth_doc = json!({});
-        }
-        if let Some(auth) = auth_doc.as_object_mut() {
-            auth.insert(id.clone(), json!({ "type": "api_key", "key": key }));
-        }
-        write_json(&auth_path, &auth_doc)?;
+        crate::auth_store::set_provider_key(&id, key)?;
     }
 
     list_agent_providers()
@@ -257,18 +251,12 @@ pub fn delete_custom_provider(id: String) -> Result<ProvidersView, crate::AppErr
         write_json(&models_path, &models_doc)?;
     }
 
-    let auth_path = auth_json_path()?;
-    let mut auth_doc = read_json(&auth_path);
-    if let Some(auth) = auth_doc.as_object_mut() {
-        if auth.remove(&id).is_some() {
-            write_json(&auth_path, &auth_doc)?;
-        }
-    }
+    crate::auth_store::remove_provider_entry(&id)?;
 
     list_agent_providers()
 }
 
-fn resolve_future_base_url(auth: &Value) -> String {
+pub(crate) fn resolve_future_base_url(auth: &Value) -> String {
     auth.get(FUTURE_PROVIDER_ID)
         .and_then(|future| future.get("base_url"))
         .and_then(Value::as_str)
@@ -291,10 +279,6 @@ fn agent_dir() -> Result<PathBuf, crate::AppError> {
 
 fn models_json_path() -> Result<PathBuf, crate::AppError> {
     Ok(agent_dir()?.join("models.json"))
-}
-
-fn auth_json_path() -> Result<PathBuf, crate::AppError> {
-    Ok(agent_dir()?.join("auth.json"))
 }
 
 fn read_json(path: &PathBuf) -> Value {

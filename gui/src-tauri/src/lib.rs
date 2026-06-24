@@ -1,8 +1,10 @@
 mod agent_bridge;
 mod agent_proto;
 mod agent_providers;
+mod auth_store;
 mod commands;
 mod error;
+mod future_login;
 mod git_review;
 mod run_error;
 mod shadow_review;
@@ -10,6 +12,12 @@ mod store;
 
 use commands::*;
 use error::AppError;
+
+/// Process-wide lock for tests that mutate the global `HOME` env var
+/// (`auth_store` and the shadow-review smoke test). `HOME` is process-global, so
+/// those tests must run one at a time or they clobber each other's paths.
+#[cfg(test)]
+pub(crate) static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// App handle captured at setup, used to push events to the webview from
 /// background tasks (e.g. deferred shadow-review materialization).
@@ -52,6 +60,9 @@ pub fn run() {
             list_agent_providers,
             upsert_custom_provider,
             delete_custom_provider,
+            start_future_login,
+            poll_future_login,
+            logout_future_provider,
             clear_finished_runs,
             list_threads,
             list_workspaces,
