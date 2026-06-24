@@ -1,4 +1,4 @@
-//! FutureGene device-code login Tauri commands (see gui/LOGIN.md §4.2).
+//! FutureGene device-code login Tauri commands (see gui/ER.md §6.9).
 
 use crate::agent_providers::{self, ProvidersView};
 use crate::auth_store;
