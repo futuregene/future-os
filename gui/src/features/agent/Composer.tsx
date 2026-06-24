@@ -359,7 +359,7 @@ export function Composer({
             </button>
             {modelMenuOpen
               ? (
-                  <div className="absolute bottom-9 right-0 z-30 w-56 rounded-lg border border-line-soft bg-surface p-1 shadow-panel">
+                  <div className="absolute bottom-9 right-0 z-30 max-h-[60vh] w-56 overflow-y-auto rounded-lg border border-line-soft bg-surface p-1 shadow-panel">
                     {modelOptions.length === 0
                       ? (
                           <div className="px-2 py-2 text-sm text-ink-muted">Start Future Agent to load models.</div>
