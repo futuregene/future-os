@@ -37,6 +37,8 @@ export async function upsertCustomProvider(input: {
   baseUrl: string;
   apiKey?: string | null;
   models: CustomProviderModel[];
+  /** True when adding a new provider; the backend then rejects a colliding id. */
+  create: boolean;
 }) {
   return invokeCommand<ProvidersView>("upsert_custom_provider", { input });
 }

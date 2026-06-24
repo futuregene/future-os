@@ -21,14 +21,18 @@ export interface CustomProviderSubmit {
   baseUrl: string;
   apiKey: string | null;
   models: CustomProviderModel[];
+  create: boolean;
 }
 
 export function CustomProviderDialog({
+  existing,
   initial,
   onClose,
   onSubmit,
   open,
 }: {
+  /** All current providers (built-in + custom), for id/name collision checks. */
+  existing: Array<{ id: string; name: string }>;
   initial: CustomProvider | null;
   onClose: () => void;
   onSubmit: (input: CustomProviderSubmit) => Promise<void>;
@@ -63,13 +67,30 @@ export function CustomProviderDialog({
   }
 
   async function handleSubmit() {
-    if (!editing && !id.trim()) {
+    const trimmedId = id.trim();
+    const trimmedName = name.trim();
+    if (!editing && !trimmedId) {
       setError("请填写提供商 ID。");
       return;
     }
     if (!baseUrl.trim()) {
       setError("请填写 Base URL。");
       return;
+    }
+    // Collision checks (backend enforces too; this is for instant feedback).
+    if (!editing && existing.some(provider => provider.id === trimmedId)) {
+      setError("提供商 ID 已存在，请换一个。");
+      return;
+    }
+    if (trimmedName) {
+      const nameTaken = existing.some(
+        provider => provider.id !== initial?.id
+          && provider.name.trim().toLowerCase() === trimmedName.toLowerCase(),
+      );
+      if (nameTaken) {
+        setError("提供商名称已存在，请换一个。");
+        return;
+      }
     }
 
     setSaving(true);
@@ -79,11 +100,12 @@ export function CustomProviderDialog({
         api,
         apiKey: apiKey.trim() ? apiKey.trim() : null,
         baseUrl: baseUrl.trim(),
-        id: id.trim(),
+        create: !editing,
+        id: trimmedId,
         models: models
           .map(model => ({ id: model.id.trim(), name: model.name.trim() }))
           .filter(model => model.id.length > 0),
-        name: name.trim(),
+        name: trimmedName,
       });
       onClose();
     }
