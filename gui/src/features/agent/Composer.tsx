@@ -4,7 +4,7 @@ import type { ReferenceTargetSearchResult } from "../../integrations/storage/thr
 import type { MessageAttachment } from "./agentThreadTypes";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { AlertTriangle, ArrowUp, Beaker, Box, Check, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, Sparkles, X } from "lucide-react";
+import { AlertTriangle, ArrowUp, Beaker, Box, Check, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { modelLabel } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
@@ -338,14 +338,6 @@ export function Composer({
             title={attachments.length >= MAX_ATTACHMENTS_PER_TURN ? "Attachment limit reached (4 per turn)" : "Attach images"}
           >
             <Paperclip className="size-3.5" />
-          </button>
-          <button
-            className="inline-flex size-7 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
-            type="button"
-            aria-label="Agent presets"
-            title="Agent presets"
-          >
-            <Sparkles className="size-3.5" />
           </button>
         </div>
         <div className="flex items-center gap-2">
