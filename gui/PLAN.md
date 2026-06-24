@@ -232,6 +232,7 @@ Research / Data / Skill 暂不投入，左侧导航图标已隐藏（`ActivityRa
 - **模型按裸 id 去重 → 同 id 跨 provider 互相覆盖**：agent `all_models()`（[`agent/src/models/mod.rs:646`](../agent/src/models/mod.rs)）与 `new()`（[`:596`](../agent/src/models/mod.rs)）按裸 `id` 去重，user/custom 模型会**静默顶掉** FutureGene 的同 id 模型；`list_models` 经 `all_models()` 返回（`agent/src/rpc/commands.rs:851`），GUI 拿到的已是合并后的列表。
 - **模型标识应复合化为 `provider/id`**：GUI 目前用裸 id 选择/解析模型（`agentClient.ts` `modelOption`、Composer `onModelChange(model.id)`、`thread.modelId`）。彻底解决"同名模型"需端到端用 `provider/id`（agent `resolve()` 已支持 `provider/id`，见 [`models/mod.rs:659`](../agent/src/models/mod.rs)），并让 TUI/CLI 也传复合 id。
 - 影响评估与迁移（旧 `thread.modelId` 裸 id 兼容）需在动手前单独成文。
+- **`enabledModels` 白名单会挡住新登录 provider 的模型**：agent `list_models` 在 `settings.json.enabledModels` 非空时只返回白名单匹配项（`rpc/commands.rs:843` → `resolve_scope`）。GUI 用的是自己的 `hiddenModels`（opt-out），从不写 `enabledModels`，所以当 `enabledModels` 非空（如旧 TUI/预置配置）时，FutureGene 登录后其模型虽被动态拉取却被过滤掉。解法二选一：登录成功后让 GUI 调 `set_enabled_models` 把 `<provider>/*` 并入；或 GUI 模式下 list_models 不受 `enabledModels` 限制（改 agent / 设计）。临时绕过：给 `enabledModels` 加 `future/*` 或清空。
 - **次要**：新增/改 Provider 后 agent 需新会话或重启才加载新模型（Dialog 已提示）；自定义 provider 的 `compat` 字段 GUI 不可编辑。
 
 ## Out Of Current Scope

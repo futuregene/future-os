@@ -9,6 +9,9 @@ import { usePolling } from "../../lib/usePolling";
 type Phase = "starting" | "waiting" | "denied" | "expired" | "error";
 
 const SLOW_DOWN_STEP_MS = 5000;
+// Poll faster than the server's suggested interval for snappier "authorized"
+// detection; if the server pushes back with `slow_down` we back off (+5s).
+const FAST_POLL_MS = 2000;
 
 export function FutureLoginDialog({
   open,
@@ -22,7 +25,7 @@ export function FutureLoginDialog({
 }) {
   const [phase, setPhase] = useState<Phase>("starting");
   const [start, setStart] = useState<FutureLoginStart | null>(null);
-  const [pollIntervalMs, setPollIntervalMs] = useState(5000);
+  const [pollIntervalMs, setPollIntervalMs] = useState(FAST_POLL_MS);
   const [message, setMessage] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -44,7 +47,8 @@ export function FutureLoginDialog({
       if (attempt !== attemptRef.current)
         return;
       setStart(next);
-      setPollIntervalMs(Math.max(1, next.interval) * 1000);
+      // Start snappy; respect the server interval only if it asks for slower.
+      setPollIntervalMs(Math.min(Math.max(1, next.interval) * 1000, FAST_POLL_MS));
       deadlineRef.current = Date.now() + next.expiresIn * 1000;
       setPhase("waiting");
     }
