@@ -486,11 +486,10 @@ impl crate::types::LLMProvider for Client {
                         buffer.extend_from_slice(&bytes);
 
                         // Process complete SSE events (delimited by b"\n\n").
-                        // Use byte-level search so multi-byte UTF-8 characters
-                        // split across chunk boundaries are not corrupted by
-                        // from_utf8_lossy (which would replace partial bytes
-                        // with U+FFFD).  We only decode to &str once we have
-                        // a complete event.
+                        // Byte-level search avoids corrupting multi-byte UTF-8
+                        // chars split across chunks.  We only decode once we have
+                        // a complete event (all multi-byte chars within it are
+                        // guaranteed to be fully assembled).
                         while let Some(pos) = buffer
                             .windows(2)
                             .position(|w| w == b"\n\n")
