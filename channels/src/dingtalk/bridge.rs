@@ -132,14 +132,14 @@ impl DingtalkBridge {
                         if let Ok(s) = agent.get_state(&sid).await {
                             let models = agent.get_available_models(&sid).await.unwrap_or_default();
                             let mi = models.iter().find(|m| m.id == s.model).map(|m| format!(
-                                "**Provider:** {}\n**Image:** {}\n**Context:** {}K\n**Max output:** {}",
+                                "**Provider:** {}\n\n**Image:** {}\n\n**Context:** {}K\n\n**Max output:** {}",
                                 m.provider,
                                 if m.image { "yes" } else { "no" },
                                 m.context_window / 1000,
                                 if m.max_tokens > 0 { format!("{}K", m.max_tokens/1000) } else { "unlimited".into() },
                             )).unwrap_or_default();
                             reply_md("Status", &format!(
-                                "**Model:** {}\n{}\n\n**Session:** {}\n**CWD:** {}\n**Thinking:** {}\n**Messages:** {}\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n**Tokens:** {} in / {} out\n**Cost:** ¥{:.4}",
+                                "**Model:** {}\n\n{}\n\n**Session:** {}\n\n**CWD:** {}\n\n**Thinking:** {}\n\n**Messages:** {}\n\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n\n**Tokens:** {} in / {} out\n\n**Cost:** ¥{:.4}",
                                 s.model, mi, s.session_id, s.cwd, s.thinking_level, s.message_count,
                                 if s.auto_compaction {"on"} else {"off"},
                                 s.context_tokens, s.context_window,
@@ -166,7 +166,7 @@ impl DingtalkBridge {
                                 let img = if m.image { "🖼️ " } else { "" };
                                 format!("• {}{} — `{}/{}`", img, m.name, m.provider, m.id)
                             }).collect();
-                            reply_md("Models", &format!("**Models ({})**\n\n{}", list.len(), list.join("\n")));
+                            reply_md("Models", &format!("**Models ({})**\n\n{}", list.len(), list.join("\n\n")));
                         }
                     }
                     "/compact" => {
@@ -184,7 +184,7 @@ impl DingtalkBridge {
                 }
             }
             "/help" => {
-                reply_md("Help", "**Commands**\n\n`/new` — new session\n`/status` — session status\n`/stop` — abort prompt\n`/model <id>` — switch model\n`/models` — list models\n`/effort <level>` — thinking level\n`/compact` — compact context\n`/help` — this help");
+                reply_md("Help", "**Commands**\n\n`/new` — new session\n\n`/status` — session status\n\n`/stop` — abort prompt\n\n`/model <id>` — switch model\n\n`/models` — list models\n\n`/effort <level>` — thinking level\n\n`/compact` — compact context\n\n`/help` — this help");
             }
             _ => {
                 self.process_prompt(text, webhook.clone()).await?;
