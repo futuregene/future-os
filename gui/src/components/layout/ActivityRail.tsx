@@ -14,6 +14,7 @@ import {
   Pin,
   Plus,
   Settings,
+  Sparkles,
   SquarePen,
   Trash2,
 } from "lucide-react";
@@ -36,6 +37,7 @@ interface ActivityRailProps {
   onChange: (section: ActivitySection) => void;
   onDeleteThread: (thread: StoredThread) => void;
   onNewChat: (workspaceId?: string) => void;
+  onOpenModels: () => void;
   onNewWorkspace: () => void;
   onRenameThread: (thread: StoredThread) => void;
   onRestoreThread: (thread: StoredThread) => void;
@@ -67,6 +69,7 @@ export function ActivityRail({
   onChange,
   onDeleteThread,
   onNewChat,
+  onOpenModels,
   onNewWorkspace,
   onRenameThread,
   onRestoreThread,
@@ -141,14 +144,24 @@ export function ActivityRail({
         {expanded
           ? (
               <>
-                <button
-                  className="flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink transition-colors hover:bg-surface-subtle"
-                  onClick={() => onNewChat()}
-                  type="button"
-                >
-                  <SquarePen className="size-4 shrink-0 text-ink-soft" />
-                  <span className="truncate">New Chat</span>
-                </button>
+                <div className="mb-3 space-y-0.5">
+                  <button
+                    className="flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink transition-colors hover:bg-surface-subtle"
+                    onClick={() => onNewChat()}
+                    type="button"
+                  >
+                    <SquarePen className="size-4 shrink-0 text-ink-soft" />
+                    <span className="truncate">New Chat</span>
+                  </button>
+                  <button
+                    className="flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+                    onClick={onOpenModels}
+                    type="button"
+                  >
+                    <Sparkles className="size-4 shrink-0" />
+                    <span className="truncate">Models</span>
+                  </button>
+                </div>
                 {featureItems.length > 0
                   ? (
                       <div className="mb-3 space-y-0.5">
@@ -291,6 +304,12 @@ export function ActivityRail({
                   label="New chat"
                   active={false}
                   onClick={() => onNewChat()}
+                />
+                <IconButton
+                  icon={<Sparkles className="size-4" />}
+                  label="Models"
+                  active={false}
+                  onClick={onOpenModels}
                 />
                 {featureItems.map((item) => {
                   const Icon = item.icon;
