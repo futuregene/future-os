@@ -400,7 +400,7 @@ impl Bridge {
                 }
             }
 
-            "/stop" | "/abort" if arg.is_empty() => {
+            "/stop" if arg.is_empty() => {
                 let session_id = self.sessions.get(chat_id, thread_id);
                 if let Some(sid) = session_id {
                     let mut agent = self.agent.write().await;
