@@ -288,6 +288,10 @@ mod tests {
     // neither hangs nor errors and produces a correct changeset.
     #[test]
     fn shadow_review_lifecycle_smoke() {
+        // Serialize with other tests that mutate the process-global HOME.
+        let _home_lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let base = std::env::temp_dir().join(format!("futureos_shadow_{}", std::process::id()));
         let home = base.join("home");
         let workspace_dir = base.join("ws");
