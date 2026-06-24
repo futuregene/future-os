@@ -17,6 +17,17 @@ const DEFAULT_FUTURE_BASE_URL: &str = "http://api.westlakefuturegene.com";
 const FUTURE_PROVIDER_ID: &str = "future";
 const FUTURE_PROVIDER_NAME: &str = "FutureGene";
 
+// Field-validation limits for custom providers (see PLAN.md「自定义 Provider 字段校验」).
+const PROVIDER_ID_MIN_LEN: usize = 2;
+const PROVIDER_ID_MAX_LEN: usize = 40;
+const PROVIDER_NAME_MAX_LEN: usize = 40;
+const BASE_URL_MAX_LEN: usize = 2048;
+const API_KEY_MAX_LEN: usize = 512;
+const MODEL_ID_MAX_LEN: usize = 100;
+const MODEL_NAME_MAX_LEN: usize = 60;
+const MAX_MODELS: usize = 100;
+const ALLOWED_APIS: [&str; 3] = ["openai-completions", "openai-responses", "anthropic"];
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvidersView {
@@ -147,46 +158,122 @@ pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
 pub fn upsert_custom_provider(
     input: UpsertCustomProviderInput,
 ) -> Result<ProvidersView, crate::AppError> {
-    let id = input.id.trim().to_string();
+    // Provider id: lowercased, [a-z0-9_-], length-bounded, `future` reserved.
+    let id = input.id.trim().to_lowercase();
     if id.is_empty() {
-        return Err("Provider id is required.".to_string().into());
+        return Err("请填写提供商 ID。".into());
     }
     if id == FUTURE_PROVIDER_ID {
-        return Err("`future` is reserved for the built-in FutureGene provider."
-            .to_string()
-            .into());
+        return Err("`future` 为内置 FutureGene 保留，请换一个 ID。".into());
+    }
+    if id.len() < PROVIDER_ID_MIN_LEN || id.len() > PROVIDER_ID_MAX_LEN {
+        return Err(format!(
+            "提供商 ID 长度需在 {PROVIDER_ID_MIN_LEN}–{PROVIDER_ID_MAX_LEN} 个字符之间。"
+        )
+        .into());
     }
     if !id
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
     {
-        return Err(
-            "Provider id may only contain letters, numbers, '-', '_' and '.'."
-                .to_string()
-                .into(),
-        );
-    }
-    let base_url = input.base_url.trim();
-    if base_url.is_empty() {
-        return Err("Base URL is required.".to_string().into());
+        return Err("提供商 ID 只能包含小写字母、数字、'-' 和 '_'。".into());
     }
 
+    // Base URL: parseable http/https, length-bounded.
+    let base_url = input.base_url.trim().to_string();
+    if base_url.is_empty() {
+        return Err("请填写 Base URL。".into());
+    }
+    if base_url.len() > BASE_URL_MAX_LEN {
+        return Err("Base URL 过长。".into());
+    }
+    match reqwest::Url::parse(&base_url) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") => {}
+        _ => return Err("Base URL 必须是合法的 http/https 地址。".into()),
+    }
+
+    // API type: must be a supported value.
     let api = {
         let trimmed = input.api.trim();
         if trimmed.is_empty() {
             "openai-completions".to_string()
-        } else {
+        } else if ALLOWED_APIS.contains(&trimmed) {
             trimmed.to_string()
+        } else {
+            return Err(format!("不支持的 API 类型：`{trimmed}`。").into());
         }
     };
+
+    // Name: optional (falls back to id); when given, ASCII only (no CJK / emoji /
+    // full-width), restricted punctuation, length-bounded.
     let name = {
         let trimmed = input.name.trim();
         if trimmed.is_empty() {
             id.clone()
         } else {
+            if trimmed.chars().count() > PROVIDER_NAME_MAX_LEN {
+                return Err(format!("提供商名称不能超过 {PROVIDER_NAME_MAX_LEN} 个字符。").into());
+            }
+            if !is_provider_name_ok(trimmed) {
+                return Err(
+                    "提供商名称只能包含字母、数字、空格和 _.()-，不支持中文 / emoji / 全角字符。"
+                        .into(),
+                );
+            }
             trimmed.to_string()
         }
     };
+
+    // API key: validated here, written after models.json (so an invalid key
+    // doesn't leave a half-applied change).
+    let api_key = input
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    if let Some(key) = api_key {
+        if key.len() > API_KEY_MAX_LEN {
+            return Err("API Key 过长。".into());
+        }
+        if !is_ascii_no_control(key) {
+            return Err("API Key 含非法字符。".into());
+        }
+    }
+
+    // Models: validate ids/names, dedupe within the provider, cap the count.
+    let mut seen_model_ids = std::collections::HashSet::new();
+    let mut model_values: Vec<Value> = Vec::new();
+    for model in &input.models {
+        let model_id = model.id.trim();
+        if model_id.is_empty() {
+            continue;
+        }
+        if model_id.len() > MODEL_ID_MAX_LEN {
+            return Err(format!("模型 ID `{model_id}` 过长（上限 {MODEL_ID_MAX_LEN}）。").into());
+        }
+        if !is_model_id_ok(model_id) {
+            return Err(format!("模型 ID `{model_id}` 含非法字符。").into());
+        }
+        if !seen_model_ids.insert(model_id.to_string()) {
+            return Err(format!("模型 ID `{model_id}` 重复。").into());
+        }
+        let model_name = model.name.trim();
+        let model_name = if model_name.is_empty() {
+            model_id
+        } else {
+            if model_name.chars().count() > MODEL_NAME_MAX_LEN {
+                return Err(format!("模型名称不能超过 {MODEL_NAME_MAX_LEN} 个字符。").into());
+            }
+            if !is_ascii_no_control(model_name) {
+                return Err(format!("模型名称 `{model_name}` 含非法字符。").into());
+            }
+            model_name
+        };
+        model_values.push(json!({ "id": model_id, "name": model_name }));
+    }
+    if model_values.len() > MAX_MODELS {
+        return Err(format!("模型数量不能超过 {MAX_MODELS} 个。").into());
+    }
 
     let models_path = models_json_path()?;
     let mut models_doc = read_json(&models_path);
@@ -235,35 +322,12 @@ pub fn upsert_custom_provider(
         .unwrap_or_default();
     provider.insert("name".to_string(), Value::String(name));
     provider.insert("api".to_string(), Value::String(api));
-    provider.insert("baseUrl".to_string(), Value::String(base_url.to_string()));
-    provider.insert(
-        "models".to_string(),
-        Value::Array(
-            input
-                .models
-                .iter()
-                .filter(|model| !model.id.trim().is_empty())
-                .map(|model| {
-                    let model_id = model.id.trim();
-                    let model_name = if model.name.trim().is_empty() {
-                        model_id
-                    } else {
-                        model.name.trim()
-                    };
-                    json!({ "id": model_id, "name": model_name })
-                })
-                .collect(),
-        ),
-    );
+    provider.insert("baseUrl".to_string(), Value::String(base_url));
+    provider.insert("models".to_string(), Value::Array(model_values));
     providers.insert(id.clone(), Value::Object(provider));
     write_json(&models_path, &models_doc)?;
 
-    if let Some(key) = input
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
+    if let Some(key) = api_key {
         crate::auth_store::set_provider_key(&id, key)?;
     }
 
@@ -329,6 +393,32 @@ fn write_json(path: &PathBuf, value: &Value) -> Result<(), crate::AppError> {
     }
     let serialized = serde_json::to_string_pretty(value)?;
     std::fs::write(path, serialized).map_err(crate::AppError::from)
+}
+
+/// Provider display name: ASCII letters/digits, space, and `_.()-` only —
+/// rejects control chars and all non-ASCII (CJK / emoji / full-width).
+fn is_provider_name_ok(value: &str) -> bool {
+    value.chars().all(|c| {
+        c.is_ascii()
+            && !c.is_control()
+            && (c.is_ascii_alphanumeric() || matches!(c, ' ' | '_' | '.' | '(' | ')' | '-'))
+    })
+}
+
+/// Model id: ASCII, no whitespace, plus `._:/-` (covers ids like
+/// `anthropic/claude-3.5-sonnet`).
+fn is_model_id_ok(value: &str) -> bool {
+    !value.is_empty()
+        && value.chars().all(|c| {
+            c.is_ascii()
+                && !c.is_whitespace()
+                && (c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '-'))
+        })
+}
+
+/// Free-form-ish text (model name, API key): ASCII, no control chars.
+fn is_ascii_no_control(value: &str) -> bool {
+    value.chars().all(|c| c.is_ascii() && !c.is_control())
 }
 
 #[cfg(test)]
@@ -442,5 +532,78 @@ mod tests {
         let view = list_agent_providers().unwrap();
         assert!(view.custom.iter().all(|p| p.id != "future"));
         assert!(view.custom.iter().any(|p| p.id == "zai"));
+    }
+
+    #[test]
+    fn id_is_lowercased() {
+        let _home = HomeGuard::new("id-lower");
+        upsert_custom_provider(input("DashScope", "DashScope", true)).unwrap();
+        let view = list_agent_providers().unwrap();
+        assert_eq!(view.custom.len(), 1);
+        assert_eq!(view.custom[0].id, "dashscope");
+    }
+
+    #[test]
+    fn rejects_bad_id_charset_and_length() {
+        let _home = HomeGuard::new("id-bad");
+        // Disallowed punctuation (dot/space).
+        assert!(upsert_custom_provider(input("a.b", "A", true)).is_err());
+        assert!(upsert_custom_provider(input("a b", "A", true)).is_err());
+        // Too short.
+        assert!(upsert_custom_provider(input("a", "A", true)).is_err());
+    }
+
+    #[test]
+    fn rejects_non_ascii_name() {
+        let _home = HomeGuard::new("name-cjk");
+        assert!(upsert_custom_provider(input("p1", "中文", true)).is_err());
+        assert!(upsert_custom_provider(input("p2", "ＦＵＬＬ", true)).is_err());
+        assert!(upsert_custom_provider(input("p3", "emoji 🚀", true)).is_err());
+    }
+
+    #[test]
+    fn rejects_bad_base_url_and_api() {
+        let _home = HomeGuard::new("url-api");
+        let mut bad_url = input("p1", "P1", true);
+        bad_url.base_url = "ftp://example.com".to_string();
+        assert!(upsert_custom_provider(bad_url).is_err());
+
+        let mut bad_api = input("p2", "P2", true);
+        bad_api.api = "made-up".to_string();
+        assert!(upsert_custom_provider(bad_api).is_err());
+    }
+
+    #[test]
+    fn validates_models() {
+        let _home = HomeGuard::new("models");
+        // Valid composite model id with `/` and `.`.
+        let mut ok = input("p1", "P1", true);
+        ok.models = vec![CustomProviderModel {
+            id: "anthropic/claude-3.5-sonnet".to_string(),
+            name: String::new(),
+        }];
+        assert!(upsert_custom_provider(ok).is_ok());
+
+        // Whitespace in model id is rejected.
+        let mut bad = input("p2", "P2", true);
+        bad.models = vec![CustomProviderModel {
+            id: "bad id".to_string(),
+            name: String::new(),
+        }];
+        assert!(upsert_custom_provider(bad).is_err());
+
+        // Duplicate model ids are rejected.
+        let mut dup = input("p3", "P3", true);
+        dup.models = vec![
+            CustomProviderModel {
+                id: "m".to_string(),
+                name: String::new(),
+            },
+            CustomProviderModel {
+                id: "m".to_string(),
+                name: String::new(),
+            },
+        ];
+        assert!(upsert_custom_provider(dup).is_err());
     }
 }
