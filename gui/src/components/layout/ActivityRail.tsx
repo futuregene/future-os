@@ -5,10 +5,8 @@ import {
   Archive,
   ChevronDown,
   ChevronRight,
-  Database,
   Folder,
   MessageSquare,
-  Microscope,
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
@@ -16,7 +14,6 @@ import {
   Pin,
   Plus,
   Settings,
-  Sparkles,
   SquarePen,
   Trash2,
 } from "lucide-react";
@@ -48,11 +45,10 @@ interface ActivityRailProps {
   onToggleExpanded: () => void;
 }
 
-const featureItems = [
-  { id: "research", label: "Research", icon: Microscope },
-  { id: "data", label: "Data", icon: Database },
-  { id: "skill", label: "Skill", icon: Sparkles },
-] satisfies Array<{ id: ActivitySection; label: string; icon: LucideIcon }>;
+// Research / Data / Skill 入口暂时从导航隐藏：这些模块优先级下调（见 PLAN.md
+// 「Next Priorities」）。section 处理逻辑保留（markdown research embed 仍可跳转），
+// 仅移除左侧导航项；恢复时把对应条目加回即可。
+const featureItems: Array<{ id: ActivitySection; label: string; icon: LucideIcon }> = [];
 
 const settingsItem = { id: "settings", label: "Settings", icon: Settings } satisfies {
   id: ActivitySection;
@@ -153,25 +149,29 @@ export function ActivityRail({
                   <SquarePen className="size-4 shrink-0 text-ink-soft" />
                   <span className="truncate">New Chat</span>
                 </button>
-                <div className="mb-3 space-y-0.5">
-                  {featureItems.map((item) => {
-                    const Icon = item.icon;
-                    return (
-                      <button
-                        key={item.id}
-                        className={cn(
-                          "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
-                          active === item.id && "bg-surface-subtle text-ink",
-                        )}
-                        onClick={() => onChange(item.id)}
-                        type="button"
-                      >
-                        <Icon className="size-4 shrink-0" />
-                        <span className="truncate">{item.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
+                {featureItems.length > 0
+                  ? (
+                      <div className="mb-3 space-y-0.5">
+                        {featureItems.map((item) => {
+                          const Icon = item.icon;
+                          return (
+                            <button
+                              key={item.id}
+                              className={cn(
+                                "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
+                                active === item.id && "bg-surface-subtle text-ink",
+                              )}
+                              onClick={() => onChange(item.id)}
+                              type="button"
+                            >
+                              <Icon className="size-4 shrink-0" />
+                              <span className="truncate">{item.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )
+                  : null}
                 <div className="space-y-0.5">
                   <div className="flex h-6 items-center justify-between px-2 text-xs font-medium text-ink-muted">
                     <span>Workspace</span>
