@@ -1,0 +1,6 @@
+# Windows batch scripts must use CRLF so cmd.exe parses labels/goto reliably.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Keep shell scripts LF on all platforms.
+*.sh text eol=lf
