@@ -359,9 +359,8 @@ impl Bridge {
                             Ok(state) => {
                                 let model_info = match agent.get_available_models(&sid).await {
                                     Ok(models) => models.iter().find(|m| m.id == state.model).map(|m| {
-                                        format!("**Provider:** {}\n**Reasoning:** {}\n**Image:** {}\n**Context:** {}K\n**Max output:** {}",
+                                        format!("**Provider:** {}\n**Image:** {}\n**Context:** {}K\n**Max output:** {}",
                                             m.provider,
-                                            if m.reasoning { "yes" } else { "no" },
                                             if m.image { "yes" } else { "no" },
                                             m.context_window / 1000,
                                             if m.max_tokens > 0 { format!("{}K", m.max_tokens / 1000) } else { "unlimited".to_string() },
