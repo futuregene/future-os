@@ -1,4 +1,4 @@
-//! GUI-native FutureGene device-code OAuth (see gui/LOGIN.md).
+//! GUI-native FutureGene device-code OAuth (see gui/ER.md §6.9).
 //!
 //! Mirrors the CLI protocol (`cli/src/commands/auth.ts`) but is fully
 //! self-contained: it requests a device code, opens the verification page, then

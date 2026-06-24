@@ -204,7 +204,7 @@ Research / Data / Skill 暂不投入，左侧导航图标已隐藏（`ActivityRa
 
 ### 已完成
 
-- **FutureGene 登录**（设计见 LOGIN.md）：GUI 内独立设备码 OAuth（`future_login.rs` + `auth_store.rs` + `FutureLoginDialog`），Providers 页「连接 / 重新登录 / 退出登录」。不再依赖 CLI 登录。
+- **FutureGene 登录**（见 PRODUCT.md §5.6 / ER.md §6.9）：GUI 内独立设备码 OAuth（`future_login.rs` + `auth_store.rs` + `FutureLoginDialog`），Providers 页「连接 / 重新登录 / 退出登录」。不再依赖 CLI 登录。
 - **提供商唯一性校验**：`upsert_custom_provider` 新增 `create` 标志——新建时 id 已存在则报错（防静默覆盖）；名称跨内置 + 自定义大小写不敏感去重。前端 `CustomProviderDialog` 同步即时校验。
 - **`future` 过滤**：`list_agent_providers` 自定义区跳过 `future` id，避免手改 models.json 时 FutureGene 重复显示。
 

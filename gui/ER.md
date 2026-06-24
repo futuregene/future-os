@@ -802,3 +802,20 @@ Review 有两个数据源：「Git changes」读用户真实 Git 仓库的工作
 - **归属诚实**：快照只能算出“运行窗口内 workspace 发生了什么变化”，无法绝对区分 Agent / 用户 / formatter，底层语义是 workspace_delta；并发 Run 重叠标 `overlapped`，重启恢复标 `recovered`，失败标 `unavailable`，绝不谎称归属或伪装“无变化”。
 - **两档可靠性**：Git workspace 借用真实仓对象库加速 + 完整可靠性机制（`partial` / `incomplete` / `recovered` / 重启恢复）；非 Git workspace 走简化档（失败即 `unavailable`，并对超体积目录用红线 `changePreview = unsupported_too_large` 关闭预览），换取实现简单。
 - **适用范围与保留**：仅 `thread.mode = workspace` 接入影子 Review；普通 Chat 继续用 Artifacts，不创建影子数据。每个 Thread 默认保留最近 10 个 changeset，超出后清理旧 refs 与 DB 投影。删除 Workspace 记录时同步清理其影子仓与 review 数据。
+
+### 6.9 Provider / 模型 / 登录配置存于 agent 配置文件，不落 GUI SQLite
+
+Provider、模型与登录凭证不进 GUI 的 SQLite，而是读写 agent 的配置文件（与 CLI 共用）：
+
+- `~/.future/agent/auth.json`：按 provider id 存 API key（含内置 `future`）。
+- `~/.future/agent/models.json`：`providers.<id>` 自定义 provider 配置（`name` / `api` / `baseUrl` / `models` / `compat` …），合并在内置 catalog 之上。
+- `~/.future/agent/settings.json`：`defaultModel`、`enabledModels`（模型可见白名单）等。
+
+关键取舍：
+
+- **auth.json 统一收口到 `auth_store`**（`src-tauri/src/auth_store.rs`）：唯一写入口——严格解析（坏 JSON / 非对象 → 报错，不静默覆盖；缺文件 → 空对象）、原子写（同目录 temp + `rename`）、`0600` 权限（unix）。登录、退出、自定义 provider 的 key 写入都走它，避免某条路径把权限改回默认或吞掉损坏文件。
+- **FutureGene 登录在 Tauri 后端独立实现**（`future_login.rs` + `commands/login.rs`）：设备码 OAuth（`POST {base}/v1/oauth/device/code` → 轮询 `/v1/oauth/device/token`），协议复刻 CLI 但不调用 CLI；前端 `FutureLoginDialog` 用 `usePolling` 驱动轮询（起始 2s、`slow_down` 退避、`attemptId` 守卫），授权成功后才写 `auth.json.future.key`。base URL 取 `auth.json.future.base_url` ?? 默认 Future API。打开授权页前只校验 scheme（http/https），不绑定 host（授权页在不同域）。
+- **生效时机**：agent 按会话 / 命令重载 auth（`AuthStore::load()`），登录后新开一轮会话即生效，通常无需重启 agent。
+- **agent-app 优先级（已知限制）**：agent 读 auth 时 `~/.future/agent-app/auth.json` 优先于 `~/.future/agent/auth.json`（取第一个存在的，不合并）；GUI 只写后者，若存在前者会被忽略——与 CLI 同款行为，本期不处理。
+- **模型可见性**：GUI 用应用设置里的 `hiddenModels`（opt-out）控制展示；agent 的 `enabledModels`（opt-in 白名单）非空时会限制 `list_models` 返回集——两者叠加时新登录 provider 的模型可能被旧白名单挡住（见 PLAN.md 待办）。
+- **字段校验**：自定义 provider 的 id（小写 `[a-z0-9_-]`）/ 名称（ASCII，禁中文 / emoji / 全角）/ Base URL（http(s)）/ 模型 等规则见 PLAN.md「自定义 Provider 字段校验」，前端即时 + 后端权威。

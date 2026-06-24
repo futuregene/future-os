@@ -2,7 +2,7 @@
 //!
 //! This is the single write path for the agent auth file (FutureGene login,
 //! logout, and custom-provider API keys all route through it) so permissions
-//! and parse strictness stay consistent — see gui/LOGIN.md §4.3.
+//! and parse strictness stay consistent — see gui/ER.md §6.9.
 //!
 //! Read semantics: a missing file is an empty object; a corrupt file or a
 //! non-object root is an error (never silently dropped, so a write can't clobber
