@@ -14,6 +14,18 @@ const API_OPTIONS = [
   { label: "Anthropic", value: "anthropic" },
 ];
 
+// Field-validation rules — mirror the backend (agent_providers.rs); backend is
+// authoritative, these give instant feedback.
+const PROVIDER_ID_RE = /^[a-z0-9_-]+$/;
+const PROVIDER_NAME_RE = /^[\w .()-]+$/; // ASCII letters/digits/_ + space.()-
+const MODEL_ID_RE = /^[\w.:/-]+$/;
+const PROVIDER_ID_MIN_LEN = 2;
+const PROVIDER_ID_MAX_LEN = 40;
+const PROVIDER_NAME_MAX_LEN = 40;
+const MODEL_ID_MAX_LEN = 100;
+const MODEL_NAME_MAX_LEN = 60;
+const MAX_MODELS = 100;
+
 export interface CustomProviderSubmit {
   id: string;
   name: string;
@@ -21,14 +33,18 @@ export interface CustomProviderSubmit {
   baseUrl: string;
   apiKey: string | null;
   models: CustomProviderModel[];
+  create: boolean;
 }
 
 export function CustomProviderDialog({
+  existing,
   initial,
   onClose,
   onSubmit,
   open,
 }: {
+  /** All current providers (built-in + custom), for id/name collision checks. */
+  existing: Array<{ id: string; name: string }>;
   initial: CustomProvider | null;
   onClose: () => void;
   onSubmit: (input: CustomProviderSubmit) => Promise<void>;
@@ -63,12 +79,94 @@ export function CustomProviderDialog({
   }
 
   async function handleSubmit() {
-    if (!editing && !id.trim()) {
-      setError("请填写提供商 ID。");
+    const trimmedId = id.trim().toLowerCase();
+    const trimmedName = name.trim();
+    const trimmedBaseUrl = baseUrl.trim();
+
+    // Provider id (only validated when creating; disabled while editing).
+    if (!editing) {
+      if (!trimmedId) {
+        setError("请填写提供商 ID。");
+        return;
+      }
+      if (trimmedId.length < PROVIDER_ID_MIN_LEN || trimmedId.length > PROVIDER_ID_MAX_LEN) {
+        setError(`提供商 ID 长度需在 ${PROVIDER_ID_MIN_LEN}–${PROVIDER_ID_MAX_LEN} 个字符之间。`);
+        return;
+      }
+      if (!PROVIDER_ID_RE.test(trimmedId)) {
+        setError("提供商 ID 只能包含小写字母、数字、'-' 和 '_'。");
+        return;
+      }
+      if (existing.some(provider => provider.id === trimmedId)) {
+        setError("提供商 ID 已存在，请换一个。");
+        return;
+      }
+    }
+
+    // Base URL.
+    if (!trimmedBaseUrl) {
+      setError("请填写 Base URL。");
       return;
     }
-    if (!baseUrl.trim()) {
-      setError("请填写 Base URL。");
+    const parsedUrl = (() => {
+      try {
+        return new URL(trimmedBaseUrl);
+      }
+      catch {
+        return null;
+      }
+    })();
+    if (!parsedUrl || (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:")) {
+      setError("Base URL 必须是合法的 http/https 地址。");
+      return;
+    }
+
+    // Name (optional; falls back to id on the backend).
+    if (trimmedName) {
+      if (trimmedName.length > PROVIDER_NAME_MAX_LEN) {
+        setError(`提供商名称不能超过 ${PROVIDER_NAME_MAX_LEN} 个字符。`);
+        return;
+      }
+      if (!PROVIDER_NAME_RE.test(trimmedName)) {
+        setError("提供商名称只能包含字母、数字、空格和 _.()-，不支持中文 / emoji / 全角字符。");
+        return;
+      }
+      const nameTaken = existing.some(
+        provider => provider.id !== initial?.id
+          && provider.name.trim().toLowerCase() === trimmedName.toLowerCase(),
+      );
+      if (nameTaken) {
+        setError("提供商名称已存在，请换一个。");
+        return;
+      }
+    }
+
+    // Models.
+    const cleanedModels = models
+      .map(model => ({ id: model.id.trim(), name: model.name.trim() }))
+      .filter(model => model.id.length > 0);
+    const seenModelIds = new Set<string>();
+    for (const model of cleanedModels) {
+      if (model.id.length > MODEL_ID_MAX_LEN) {
+        setError(`模型 ID「${model.id}」过长。`);
+        return;
+      }
+      if (!MODEL_ID_RE.test(model.id)) {
+        setError(`模型 ID「${model.id}」含非法字符。`);
+        return;
+      }
+      if (seenModelIds.has(model.id)) {
+        setError(`模型 ID「${model.id}」重复。`);
+        return;
+      }
+      seenModelIds.add(model.id);
+      if (model.name.length > MODEL_NAME_MAX_LEN) {
+        setError(`模型名称「${model.name}」过长。`);
+        return;
+      }
+    }
+    if (cleanedModels.length > MAX_MODELS) {
+      setError(`模型数量不能超过 ${MAX_MODELS} 个。`);
       return;
     }
 
@@ -78,12 +176,11 @@ export function CustomProviderDialog({
       await onSubmit({
         api,
         apiKey: apiKey.trim() ? apiKey.trim() : null,
-        baseUrl: baseUrl.trim(),
-        id: id.trim(),
-        models: models
-          .map(model => ({ id: model.id.trim(), name: model.name.trim() }))
-          .filter(model => model.id.length > 0),
-        name: name.trim(),
+        baseUrl: trimmedBaseUrl,
+        create: !editing,
+        id: trimmedId,
+        models: cleanedModels,
+        name: trimmedName,
       });
       onClose();
     }
@@ -116,7 +213,7 @@ export function CustomProviderDialog({
         <Field label="提供商 ID">
           <TextInput
             disabled={editing}
-            onChange={event => setId(event.target.value)}
+            onChange={event => setId(event.target.value.toLowerCase())}
             placeholder="例如 dashscope-coding"
             value={id}
           />

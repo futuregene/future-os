@@ -1,13 +1,15 @@
 import type { CustomProvider, ProvidersView } from "../../integrations/agent/providers";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import {
   deleteCustomProvider,
   listAgentProviders,
+  logoutFutureProvider,
   upsertCustomProvider,
 } from "../../integrations/agent/providers";
 import { CustomProviderDialog } from "./CustomProviderDialog";
+import { FutureLoginDialog } from "./FutureLoginDialog";
 import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
 
 export function ProvidersPage() {
@@ -17,36 +19,54 @@ export function ProvidersPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<CustomProvider | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [confirmingLogout, setConfirmingLogout] = useState(false);
+  const [hint, setHint] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    const view = await listAgentProviders();
+    setProviders(view);
+    return view;
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    listAgentProviders()
-      .then((view) => {
-        if (!cancelled) {
-          setProviders(view);
+    reload()
+      .then(() => {
+        if (!cancelled)
           setError(null);
-        }
       })
       .catch((loadError) => {
-        if (!cancelled) {
+        if (!cancelled)
           setError(loadError instanceof Error ? loadError.message : String(loadError));
-        }
       })
       .finally(() => {
-        if (!cancelled) {
+        if (!cancelled)
           setLoading(false);
-        }
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reload]);
 
   async function handleDelete(id: string) {
     const view = await deleteCustomProvider(id);
     setProviders(view);
     setConfirmingDelete(null);
+  }
+
+  async function handleLogout() {
+    const view = await logoutFutureProvider();
+    setProviders(view);
+    setConfirmingLogout(false);
+    setHint(null);
+  }
+
+  async function handleAuthorized() {
+    setLoginOpen(false);
+    await reload();
+    setHint("已连接 FutureGene。新会话即可生效；如未生效可运行 future-cli agent restart。");
   }
 
   if (loading) {
@@ -56,6 +76,7 @@ export function ProvidersPage() {
   return (
     <div className="space-y-6">
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
+      {hint ? <p className="text-sm text-ink-soft">{hint}</p> : null}
 
       <SettingsSection title="内置">
         <SettingsList>
@@ -65,9 +86,53 @@ export function ProvidersPage() {
               title={provider.name}
               description={provider.baseUrl}
             >
-              <Badge tone={provider.hasApiKey ? "success" : "neutral"}>
-                {provider.hasApiKey ? "已配置密钥" : "未配置密钥"}
-              </Badge>
+              {provider.id === "future"
+                ? (
+                    <div className="flex items-center gap-2">
+                      {confirmingLogout && provider.hasApiKey
+                        ? (
+                            <>
+                              <span className="text-xs text-ink-muted">确认退出登录？</span>
+                              <Button onClick={() => void handleLogout()} size="sm" variant="danger">退出</Button>
+                              <Button onClick={() => setConfirmingLogout(false)} size="sm" variant="secondary">取消</Button>
+                            </>
+                          )
+                        : (
+                            <>
+                              <Badge tone={provider.hasApiKey ? "success" : "neutral"}>
+                                {provider.hasApiKey ? "已配置密钥" : "未配置密钥"}
+                              </Badge>
+                              <Button
+                                onClick={() => {
+                                  setHint(null);
+                                  setLoginOpen(true);
+                                }}
+                                size="sm"
+                                variant="secondary"
+                              >
+                                {provider.hasApiKey ? "重新登录" : "连接"}
+                              </Button>
+                              {provider.hasApiKey
+                                ? (
+                                    <Button
+                                      className="text-ink-soft hover:text-danger"
+                                      onClick={() => setConfirmingLogout(true)}
+                                      size="sm"
+                                      variant="secondary"
+                                    >
+                                      退出登录
+                                    </Button>
+                                  )
+                                : null}
+                            </>
+                          )}
+                    </div>
+                  )
+                : (
+                    <Badge tone={provider.hasApiKey ? "success" : "neutral"}>
+                      {provider.hasApiKey ? "已配置密钥" : "未配置密钥"}
+                    </Badge>
+                  )}
             </SettingsRow>
           ))}
         </SettingsList>
@@ -139,6 +204,10 @@ export function ProvidersPage() {
       </SettingsSection>
 
       <CustomProviderDialog
+        existing={[
+          ...(providers?.builtin ?? []).map(p => ({ id: p.id, name: p.name })),
+          ...(providers?.custom ?? []).map(p => ({ id: p.id, name: p.name })),
+        ]}
         initial={editing}
         onClose={() => setDialogOpen(false)}
         onSubmit={async (input) => {
@@ -146,6 +215,12 @@ export function ProvidersPage() {
           setProviders(view);
         }}
         open={dialogOpen}
+      />
+
+      <FutureLoginDialog
+        onAuthorized={() => void handleAuthorized()}
+        onClose={() => setLoginOpen(false)}
+        open={loginOpen}
       />
     </div>
   );
