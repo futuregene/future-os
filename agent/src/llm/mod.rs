@@ -5,6 +5,7 @@
 mod helpers;
 use crate::types::{Message, StreamEvent, ToolDef};
 use anyhow::{anyhow, Result};
+use tracing::warn;
 use futures::StreamExt;
 use reqwest::Client as HttpClient;
 use serde_json::Value;
@@ -484,6 +485,13 @@ impl crate::types::LLMProvider for Client {
                             cb(&bytes);
                         }
                         buffer.extend_from_slice(&bytes);
+
+                        // Guard against malformed streams (no \n\n delimiter).
+                        // 1 MiB is far larger than any legitimate single SSE event.
+                        if buffer.len() > 1_048_576 {
+                            warn!("SSE buffer exceeded 1 MiB without \\n\\n, discarding");
+                            buffer.clear();
+                        }
 
                         // Process complete SSE events (delimited by b"\n\n").
                         // Byte-level search avoids corrupting multi-byte UTF-8
