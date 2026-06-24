@@ -7,6 +7,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { AlertTriangle, ArrowUp, Beaker, Box, Check, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { modelLabel } from "../../integrations/agent/agentClient";
+import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { savePastedImage, searchReferenceTargets } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
@@ -44,6 +45,7 @@ export function Composer({
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [dropActive, setDropActive] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const providerNames = useProviderNames();
   const [caretPosition, setCaretPosition] = useState(0);
   const [referenceResults, setReferenceResults] = useState<ReferenceTargetSearchResult[]>([]);
   const [referenceSearchOpen, setReferenceSearchOpen] = useState(false);
@@ -359,7 +361,7 @@ export function Composer({
             </button>
             {modelMenuOpen
               ? (
-                  <div className="absolute bottom-9 right-0 z-30 max-h-[60vh] w-56 overflow-y-auto rounded-lg border border-line-soft bg-surface p-1 shadow-panel">
+                  <div className="absolute bottom-9 right-0 z-30 max-h-[40vh] w-56 divide-y divide-line-soft overflow-y-auto rounded-lg border border-line-soft bg-surface p-1 shadow-panel">
                     {modelOptions.length === 0
                       ? (
                           <div className="px-2 py-2 text-sm text-ink-muted">Start Future Agent to load models.</div>
@@ -367,7 +369,7 @@ export function Composer({
                       : null}
                     {modelOptions.map(model => (
                       <button
-                        className="flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition-colors hover:bg-surface-subtle"
+                        className="flex w-full items-center gap-2 px-2 py-2 text-left text-sm transition-colors hover:bg-surface-subtle"
                         key={`${model.provider}/${model.id}`}
                         onClick={() => {
                           onModelChange?.(model.id);
@@ -375,11 +377,13 @@ export function Composer({
                         }}
                         type="button"
                       >
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate font-medium text-ink">{model.label}</span>
-                          <span className="block truncate text-xs text-ink-muted">{model.provider}</span>
+                        <span className="min-w-0 flex-1 space-y-0.5">
+                          <span className="block truncate font-medium leading-tight text-ink">{model.label}</span>
+                          <span className="block truncate text-xs leading-tight text-ink-muted">
+                            {providerNames[model.provider] ?? model.provider}
+                          </span>
                         </span>
-                        {activeModelId === model.id ? <Check className="size-4 text-ink-soft" /> : null}
+                        {activeModelId === model.id ? <Check className="size-4 shrink-0 text-ink-soft" /> : null}
                       </button>
                     ))}
                   </div>
