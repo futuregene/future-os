@@ -132,8 +132,8 @@ impl DingtalkBridge {
                         if let Ok(s) = agent.get_state(&sid).await {
                             let models = agent.get_available_models(&sid).await.unwrap_or_default();
                             let mi = models.iter().find(|m| m.id == s.model).map(|m| format!(
-                                "**Provider:** {}\n**Reasoning:** {}\n**Image:** {}\n**Context:** {}K\n**Max output:** {}",
-                                m.provider, if m.reasoning { "yes" } else { "no" },
+                                "**Provider:** {}\n**Image:** {}\n**Context:** {}K\n**Max output:** {}",
+                                m.provider,
                                 if m.image { "yes" } else { "no" },
                                 m.context_window / 1000,
                                 if m.max_tokens > 0 { format!("{}K", m.max_tokens/1000) } else { "unlimited".into() },

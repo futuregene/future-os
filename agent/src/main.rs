@@ -155,7 +155,7 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
         } else if m.reasoning {
             32000
         } else {
-            4096
+            16384
         }
     });
 
