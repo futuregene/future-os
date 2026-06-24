@@ -204,6 +204,10 @@ export function ProvidersPage() {
       </SettingsSection>
 
       <CustomProviderDialog
+        existing={[
+          ...(providers?.builtin ?? []).map(p => ({ id: p.id, name: p.name })),
+          ...(providers?.custom ?? []).map(p => ({ id: p.id, name: p.name })),
+        ]}
         initial={editing}
         onClose={() => setDialogOpen(false)}
         onSubmit={async (input) => {

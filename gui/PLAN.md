@@ -177,7 +177,7 @@ GUI 当前已具备：
 
 当前优先 pass 已完成。下一阶段建议按以下顺序推进：
 
-1. **P10 Provider 管理**：见下方「Provider 配置现状」。当前自定义 Provider 的增删改已可用，主要缺口是 GUI 内的 FutureGene 登录（设备码 OAuth）。
+1. **P10 Provider 管理**：见下方「Provider 配置现状」。GUI 内 FutureGene 登录、提供商唯一性校验已完成；剩余的"模型按 `provider/id` 复合标识"需改 agent，单列为待办。
 2. **P9 测试 / 打包**：扩前端组件与集成测试（现仅 3 文件 / 15 用例）；approval / streaming / abort 中断测试；DMG / 签名打包在真实 macOS 或 CI 验证。
 3. **P8 Composer 引用**：引用 UX 打磨与统一 registry，复用 P7 的 embed 摘要增强。
 4. **P2 Approval 后续细化**：沙盒执行、自动审批、决策范围、Settings 配置面板、`auto_review`。
@@ -201,8 +201,21 @@ Research / Data / Skill 暂不投入，左侧导航图标已隐藏（`ActivityRa
   - `upsert_custom_provider`：写 `models.json.providers.<id>`（name / api / baseUrl / models，保留 `compat` 等未管理字段）+ 可选 API key 写 `auth.json.<id>`。
   - `delete_custom_provider`：从两个文件移除。
   - `CustomProviderDialog`：id / 名称 / API 类型（openai-completions / openai-responses / anthropic）/ Base URL / API Key / 模型列表。
-- **主要缺口**：GUI 里 FutureGene 是只读的，登录（写 `future` key）只能靠 CLI `future auth login`。GUI 无设备码登录入口，新用户必须先用 CLI 登录才能用内置 provider。
-- **次要项**：新增/改 Provider 后 agent 需重启才加载新模型（Dialog 已提示）；自定义 provider 的 `compat`（thinking/reasoning 兼容）字段 GUI 不可编辑。
+
+### 已完成
+
+- **FutureGene 登录**（设计见 LOGIN.md）：GUI 内独立设备码 OAuth（`future_login.rs` + `auth_store.rs` + `FutureLoginDialog`），Providers 页「连接 / 重新登录 / 退出登录」。不再依赖 CLI 登录。
+- **提供商唯一性校验**：`upsert_custom_provider` 新增 `create` 标志——新建时 id 已存在则报错（防静默覆盖）；名称跨内置 + 自定义大小写不敏感去重。前端 `CustomProviderDialog` 同步即时校验。
+- **`future` 过滤**：`list_agent_providers` 自定义区跳过 `future` id，避免手改 models.json 时 FutureGene 重复显示。
+
+### 待办（需改 `agent/`，本期不做）
+
+> `agent/` 是 TUI / CLI / channels 共用后端，以下改动会波及它们，故单独记录、暂缓。
+
+- **模型按裸 id 去重 → 同 id 跨 provider 互相覆盖**：agent `all_models()`（[`agent/src/models/mod.rs:646`](../agent/src/models/mod.rs)）与 `new()`（[`:596`](../agent/src/models/mod.rs)）按裸 `id` 去重，user/custom 模型会**静默顶掉** FutureGene 的同 id 模型；`list_models` 经 `all_models()` 返回（`agent/src/rpc/commands.rs:851`），GUI 拿到的已是合并后的列表。
+- **模型标识应复合化为 `provider/id`**：GUI 目前用裸 id 选择/解析模型（`agentClient.ts` `modelOption`、Composer `onModelChange(model.id)`、`thread.modelId`）。彻底解决"同名模型"需端到端用 `provider/id`（agent `resolve()` 已支持 `provider/id`，见 [`models/mod.rs:659`](../agent/src/models/mod.rs)），并让 TUI/CLI 也传复合 id。
+- 影响评估与迁移（旧 `thread.modelId` 裸 id 兼容）需在动手前单独成文。
+- **次要**：新增/改 Provider 后 agent 需新会话或重启才加载新模型（Dialog 已提示）；自定义 provider 的 `compat` 字段 GUI 不可编辑。
 
 ## Out Of Current Scope
 
