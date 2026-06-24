@@ -369,10 +369,11 @@ impl Bridge {
                                     }).unwrap_or_default(),
                                     Err(_) => String::new(),
                                 };
+                                let image_tag = if state.image_support { " 🖼️" } else { "" };
                                 let text = format!(
-                                    "**Model:** {} ({})\n{}\n\n**Session:** {}\n**CWD:** {}\n**Thinking:** {}\n**Messages:** {}\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n**Tokens:** {} in / {} out\n**Cost:** ¥{:.4}",
+                                    "**Model:** {}{}\n{}\n\n**Session:** {}\n**CWD:** {}\n**Thinking:** {}\n**Messages:** {}\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n**Tokens:** {} in / {} out\n**Cost:** ¥{:.4}",
                                     state.model,
-                                    if state.image_support { "🖼️" } else { "" },
+                                    image_tag,
                                     model_info,
                                     state.session_id,
                                     state.cwd,
