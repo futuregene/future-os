@@ -1,7 +1,7 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { TextInput } from "../../components/ui/TextInput";
-import { listAgentProviders } from "../../integrations/agent/providers";
+import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
 
 function modelKey(model: { id: string; provider: string }) {
@@ -18,30 +18,10 @@ export function ModelsPage({
   onChangeHidden: (next: string[]) => void;
 }) {
   const [query, setQuery] = useState("");
-  const [providerNames, setProviderNames] = useState<Record<string, string>>({});
+  const providerNames = useProviderNames();
   const hidden = useMemo(() => new Set(hiddenModels), [hiddenModels]);
 
-  // Map provider id → display name (built-in FutureGene + custom providers).
-  // Built-in catalog providers (deepseek, openai, …) have no entry → fall back
-  // to the id in providerLabel().
-  useEffect(() => {
-    let cancelled = false;
-    listAgentProviders()
-      .then((view) => {
-        if (cancelled)
-          return;
-        const map: Record<string, string> = {};
-        for (const provider of [...view.builtin, ...view.custom]) {
-          map[provider.id] = provider.name;
-        }
-        setProviderNames(map);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
+  // Built-in catalog providers (deepseek, openai, …) have no name → fall back to id.
   const providerLabel = (providerId: string) => providerNames[providerId] ?? providerId;
 
   const groups = useMemo(() => {
