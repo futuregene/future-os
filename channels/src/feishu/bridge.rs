@@ -350,7 +350,7 @@ impl Bridge {
                 }
             }
 
-            "/status" | "/stop" if arg.is_empty() => {
+            "/status" if arg.is_empty() => {
                 let session_id = self.sessions.get(chat_id, thread_id);
                 match session_id {
                     Some(sid) => {
@@ -398,6 +398,16 @@ impl Bridge {
                             &serde_json::json!({"text": "No active session. Send a message to start."}).to_string()).await?;
                     }
                 }
+            }
+
+            "/stop" | "/abort" if arg.is_empty() => {
+                let session_id = self.sessions.get(chat_id, thread_id);
+                if let Some(sid) = session_id {
+                    let mut agent = self.agent.write().await;
+                    let _ = agent.abort(&sid).await;
+                }
+                self.feishu.reply_message(message_id, "text",
+                    &serde_json::json!({"text": "Stopped."}).to_string()).await?;
             }
 
             "/model" if !arg.is_empty() => {
@@ -462,52 +472,6 @@ impl Bridge {
                     Err(e) => {
                         self.feishu.reply_message(message_id, "text",
                             &serde_json::json!({"text": format!("Error: {}", e)}).to_string()).await?;
-                    }
-                }
-            }
-
-            "/stop" => {
-                let session_id = self.sessions.get(chat_id, thread_id);
-                match session_id {
-                    Some(sid) => {
-                        let mut agent = self.agent.write().await;
-                        match agent.abort(&sid).await {
-                            Ok(()) => {
-                                self.feishu.reply_message(message_id, "text",
-                                    &serde_json::json!({"text": "Stopped current generation."}).to_string()).await?;
-                            }
-                            Err(e) => {
-                                self.feishu.reply_message(message_id, "text",
-                                    &serde_json::json!({"text": format!("Failed to stop: {}", e)}).to_string()).await?;
-                            }
-                        }
-                    }
-                    None => {
-                        self.feishu.reply_message(message_id, "text",
-                            &serde_json::json!({"text": "No active session to stop."}).to_string()).await?;
-                    }
-                }
-            }
-
-            "/abort" => {
-                let session_id = self.sessions.get(chat_id, thread_id);
-                match session_id {
-                    Some(sid) => {
-                        let mut agent = self.agent.write().await;
-                        match agent.abort(&sid).await {
-                            Ok(()) => {
-                                self.feishu.reply_message(message_id, "text",
-                                    &serde_json::json!({"text": "Aborted current generation."}).to_string()).await?;
-                            }
-                            Err(e) => {
-                                self.feishu.reply_message(message_id, "text",
-                                    &serde_json::json!({"text": format!("Failed to abort: {}", e)}).to_string()).await?;
-                            }
-                        }
-                    }
-                    None => {
-                        self.feishu.reply_message(message_id, "text",
-                            &serde_json::json!({"text": "No active session to abort."}).to_string()).await?;
                     }
                 }
             }
