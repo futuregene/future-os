@@ -118,7 +118,7 @@ impl DingtalkBridge {
                     Err(e) => reply_md("Error", &format!("**Error:** {}", e)),
                 }
             }
-            "/status" | "/stop" | "/abort" | "/model" | "/models" | "/compact" | "/effort" => {
+            "/status" | "/stop" | "/model" | "/models" | "/compact" | "/effort" => {
                 // Reuse cached session (from last prompt) instead of creating a new
                 // one — new_session() fails when the agent is busy.
                 let sid = match self.get_or_create_session().await {
@@ -148,7 +148,7 @@ impl DingtalkBridge {
                             ));
                         }
                     }
-                    "/stop" | "/abort" => {
+                    "/stop" => {
                         let _ = agent.abort(&sid).await;
                         reply_md("Stopped", "Stopped.");
                     }
