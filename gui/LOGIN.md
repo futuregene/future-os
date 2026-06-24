@@ -109,15 +109,14 @@ sequenceDiagram
 
 **收口**：登录、退出、以及**自定义 Provider 的 auth 写入**（`upsert_custom_provider` / `delete_custom_provider` 里写 `auth.json` 的分支）都改走 `auth_store`，确保严格解析 + 0600 + 原子写一致，不会被某条路径把权限改回默认。`models.json` 的写入不在本次强制改造范围（非机密），如顺手可同样原子化。
 
-### 4.4 打开 URL 前的安全校验（修 ⑤）
+### 4.4 打开 URL 前的安全校验
 
-默认 API 是 http（`cli/src/constants.ts:4`），http 下响应里的 `verification_uri_complete` 理论可被篡改。打开浏览器前：
+打开浏览器前校验 `verification_uri_complete`：
 
-- 解析 URL；**scheme 必须 ∈ {http, https}**；
-- **host 必须等于当前 base URL 的 host**（即只允许跳到与 device/code 同源的 FutureGene 域）；
-- 拒绝 `file:` / `javascript:` / `data:` / 自定义协议等。
-- 校验不过：不打开浏览器，但仍把（同样校验过的）链接返回给弹窗做手动兜底；若链接本身不过校验，则提示异常、不展示可点链接。
-- 备注：API 切 HTTPS 是更彻底的修法，但属 API 侧、不在 GUI 范围。
+- 解析 URL；**scheme 必须 ∈ {http, https}**，拒绝 `file:` / `javascript:` / `data:` / 自定义协议。
+- **不做 host 同源校验**：授权页合法地位于与 API **不同的 host**（Web 控制台 / 登录页），强制同源会误拒真实链接（实测会出现「域名与 API 不一致」而打不开）。与 CLI 一致——CLI 直接打开返回的 URL，不校验 host。
+- 校验通过才 best-effort 打开浏览器；弹窗始终展示可复制链接做手动兜底。
+- 备注：API 当前是 http，无法对返回 URL 做强同源保证；切 HTTPS 是更彻底的修法，但属 API 侧、不在 GUI 范围。
 
 ### 4.5 为什么前端驱动轮询，而非后端 spawn 任务
 

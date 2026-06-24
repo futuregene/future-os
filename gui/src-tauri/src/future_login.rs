@@ -123,7 +123,7 @@ pub async fn start() -> Result<FutureLoginStart, AppError> {
         .or_else(|| device.verification_uri.clone())
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| AppError::Message("设备码响应缺少授权链接。".to_string()))?;
-    validate_same_origin(&base, &verification)?;
+    validate_browser_url(&verification)?;
 
     // Best-effort: failure is fine, the dialog shows a copyable link.
     open_browser(&verification);
@@ -215,28 +215,22 @@ fn error_message_from_body(body: Option<Value>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Allow opening only http(s) URLs whose host matches the API base, so a
-/// tampered `verification_uri` (the API is currently plain http) can't redirect
-/// the browser to `file:`/`javascript:`/an unrelated host.
-fn validate_same_origin(base: &str, target: &str) -> Result<(), AppError> {
-    let base_url = reqwest::Url::parse(base)
-        .map_err(|_| AppError::Message("FutureGene base URL 无效。".to_string()))?;
-    let target_url =
+/// Allow opening only `http(s)` URLs, rejecting `file:` / `javascript:` /
+/// `data:` / custom schemes. The host is intentionally NOT pinned to the API
+/// host: the verification page legitimately lives on a different host (a web
+/// console / login page), so requiring same-origin would reject the real URL.
+/// This matches the CLI, which opens the returned URL directly.
+fn validate_browser_url(target: &str) -> Result<(), AppError> {
+    let url =
         reqwest::Url::parse(target).map_err(|_| AppError::Message("授权链接无效。".to_string()))?;
-
-    if !matches!(target_url.scheme(), "http" | "https") {
+    if !matches!(url.scheme(), "http" | "https") {
         return Err(AppError::Message("授权链接的协议不被允许。".to_string()));
-    }
-    if target_url.host_str().is_none() || target_url.host_str() != base_url.host_str() {
-        return Err(AppError::Message(
-            "授权链接的域名与 FutureGene API 不一致，已拒绝打开。".to_string(),
-        ));
     }
     Ok(())
 }
 
 /// Open a URL in the default browser, detached and best-effort (mirrors the
-/// CLI). Caller must validate the URL first (see [`validate_same_origin`]).
+/// CLI). Caller must validate the URL first (see [`validate_browser_url`]).
 fn open_browser(url: &str) {
     #[cfg(target_os = "macos")]
     let (command, args): (&str, Vec<&str>) = ("open", vec![url]);
@@ -253,28 +247,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn same_origin_accepts_matching_host() {
-        assert!(validate_same_origin(
-            "http://api.example.com",
-            "http://api.example.com/oauth/authorize?code=ABCD"
-        )
-        .is_ok());
-        assert!(validate_same_origin(
-            "http://api.example.com",
-            "https://api.example.com/oauth/authorize"
-        )
-        .is_ok());
+    fn browser_url_accepts_http_and_https_any_host() {
+        // The verification page can live on a different host than the API.
+        assert!(validate_browser_url("http://api.example.com/oauth/authorize?code=ABCD").is_ok());
+        assert!(validate_browser_url("https://console.example.org/device").is_ok());
     }
 
     #[test]
-    fn same_origin_rejects_other_host_and_schemes() {
-        assert!(validate_same_origin("http://api.example.com", "http://evil.test/x").is_err());
-        assert!(validate_same_origin(
-            "http://api.example.com",
-            "javascript:alert(1)//api.example.com"
-        )
-        .is_err());
-        assert!(validate_same_origin("http://api.example.com", "file:///etc/passwd").is_err());
+    fn browser_url_rejects_non_web_schemes() {
+        assert!(validate_browser_url("javascript:alert(1)").is_err());
+        assert!(validate_browser_url("file:///etc/passwd").is_err());
+        assert!(validate_browser_url("data:text/html,<script>").is_err());
+        assert!(validate_browser_url("not a url").is_err());
     }
 
     #[test]
