@@ -95,11 +95,11 @@ message SessionState {
   repeated string skills = 16;
   repeated string context_files = 17;
   repeated string extensions = 18;
-  int32 context_tokens = 19;
-  int32 context_window = 20;
+  int64 context_tokens = 19;
+  int64 context_window = 20;
   double context_percent = 21;
-  int32 tokens_in = 22;
-  int32 tokens_out = 23;
+  int64 tokens_in = 22;
+  int64 tokens_out = 23;
   double total_cost = 24;
 }
 

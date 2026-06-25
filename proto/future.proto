@@ -221,19 +221,19 @@ message SessionState {
 
   // Current estimated context token count (from last API call's prompt_tokens,
   // with fallback to heuristic estimation).
-  int32 context_tokens = 19;
+  int64 context_tokens = 19;
 
   // Model's maximum context window in tokens.
-  int32 context_window = 20;
+  int64 context_window = 20;
 
   // context_tokens as a percentage of context_window (0.0–100.0).
   double context_percent = 21;
 
   // Cumulative input tokens consumed in this session.
-  int32 tokens_in = 22;
+  int64 tokens_in = 22;
 
   // Cumulative output tokens produced in this session.
-  int32 tokens_out = 23;
+  int64 tokens_out = 23;
 
   // Cumulative cost in CNY (¥).
   double total_cost = 24;
