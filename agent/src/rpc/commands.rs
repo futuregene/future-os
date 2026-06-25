@@ -462,6 +462,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     tool_call_id: String::new(),
                     name: String::new(),
                     tool_args: String::new(),
+            thinking: String::new(),
                 });
                 s.name = cmd.name.clone();
                 let _ = session_manager.save(&s);
