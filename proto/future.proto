@@ -39,6 +39,12 @@ message RpcCommand {
   // "followUp" (enqueue after current run completes).
   string streaming_behavior = 12;
 
+  // ── fork / new_session ─────────────────────────────────────────────────
+
+  // Parent session ID when forking.  If empty, fork uses the current
+  // session.  Also used by new_session to record lineage.
+  string parent_session = 20;
+
   // ── set_model ──────────────────────────────────────────────────────────
 
   // Canonical model ID.  If it contains a "/", the part before the slash

@@ -19,6 +19,10 @@ pub struct RpcCommand {
     /// "followUp" (enqueue after current run completes).
     #[prost(string, tag = "12")]
     pub streaming_behavior: ::prost::alloc::string::String,
+    /// Parent session ID when forking.  If empty, fork uses the current
+    /// session.  Also used by new_session to record lineage.
+    #[prost(string, tag = "20")]
+    pub parent_session: ::prost::alloc::string::String,
     /// Canonical model ID.  If it contains a "/", the part before the slash
     /// is treated as the provider.  Example: "deepseek/deepseek-chat".
     #[prost(string, tag = "31")]

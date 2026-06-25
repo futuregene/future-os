@@ -18,6 +18,8 @@ pub struct RpcCommand {
     pub images: Vec<crate::types::ImageContent>,
     #[serde(default)]
     pub streaming_behavior: String,
+    #[serde(default)]
+    pub parent_session: String,
 
     // set_model
     #[serde(default)]
