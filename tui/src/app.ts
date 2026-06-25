@@ -221,8 +221,6 @@ export class App extends Container {
     this.keybindings.add(Key.ctrl_c, () => { this.handleInterrupt(); return true; }, "Interrupt / exit");
     this.keybindings.add(Key.ctrl_p, () => { this.cycleModel(); return true; }, "Cycle model");
     this.keybindings.add(Key.ctrl_r, () => { this.showSessions(); return true; }, "Browse sessions");
-    this.keybindings.add(Key.ctrl_s, () => { this.showSettings(); return true; }, "Open settings");
-
     this.keybindings.add(Key.ctrl_t, () => { this.cycleThinking(); return true; }, "Cycle thinking");
     this.keybindings.add(Key.shift_tab, () => { this.cycleThinking(); return true; }, "Cycle thinking");
     this.keybindings.add(Key.pageUp, () => {
