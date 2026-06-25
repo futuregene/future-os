@@ -2288,28 +2288,8 @@ export class App extends Container {
       if (!line) continue;
       const isImage = isImageLine(line);
       if (!isImage && visibleWidth(line) > W) {
-        // Log all lines to crash file for debugging (matches pi behavior)
-        const crashLogPath = path.join(os.homedir(), ".future", "tui", "crash.log");
-        const crashData = [
-          `Crash at ${new Date().toISOString()}`,
-          `Terminal width: ${W}`,
-          `Line ${i} visible width: ${visibleWidth(line)}`,
-          "",
-          "=== All rendered lines ===",
-          ...newLines.map((l, idx) => `[${idx}] (w=${visibleWidth(l)}) ${l}`),
-          "",
-        ].join("\n");
-        fs.mkdirSync(path.dirname(crashLogPath), { recursive: true });
-        fs.writeFileSync(crashLogPath, crashData);
-        const errorMsg = [
-          `Rendered line ${i} exceeds terminal width (${visibleWidth(line)} > ${W}).`,
-          "",
-          "This is likely caused by a custom TUI component not truncating its output.",
-          "Use visibleWidth() to measure and truncateToWidth() to truncate lines.",
-          "",
-          `Debug log written to: ${crashLogPath}`,
-        ].join("\n");
-        throw new Error(errorMsg);
+        // Truncate instead of crashing — graceful degradation
+        line = truncateToWidth(line, W - 1);
       }
       buf += line;
     }
