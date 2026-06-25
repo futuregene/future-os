@@ -1402,6 +1402,7 @@ export class App extends Container {
           content,
           name: (msg.name as string) || undefined,
           tool: (msg.tool_call_id as string) || undefined,
+          toolArgs: (msg.tool_args as string) || undefined,
           thinking: (msg.reasoning_content as string) || undefined,
           // Historical tool messages are always complete
           toolStatus: role === "tool" ? "complete" as const : undefined,
