@@ -93,21 +93,23 @@ export class SelectList implements Component {
 
     switch (key) {
       case "up":
-        // Wrap to bottom when at top (matches pi)
         if (this.selectedIndex > 0) {
           this.selectedIndex--;
         } else {
+          // Wrap to bottom
           this.selectedIndex = this.filteredItems.length - 1;
+          this.scrollOffset = Math.max(0, this.selectedIndex - this.maxVisible + 1);
         }
         this.recalcScroll();
         this.notifySelectionChange();
         return true;
       case "down":
-        // Wrap to top when at bottom (matches pi)
         if (this.selectedIndex < this.filteredItems.length - 1) {
           this.selectedIndex++;
         } else {
+          // Wrap to top
           this.selectedIndex = 0;
+          this.scrollOffset = 0;
         }
         this.recalcScroll();
         this.notifySelectionChange();
@@ -208,12 +210,15 @@ export class SelectList implements Component {
       const descPart = truncateToWidth(rawDesc, maxDescW);
 
       if (selected) {
-        const prefix = `${CSI}38;5;${this.theme.selectedFg}m${CSI}48;5;${this.theme.selectedBg}m ▶ `;
-        const label = `${labelPart}${RESET}`;
+        // Single continuous background: no RESET gap between label and suffix
+        const bgSeq = `${CSI}48;5;${this.theme.selectedBg}m`;
+        const fgSeq = `${CSI}38;5;${this.theme.selectedFg}m`;
+        const head = `${fgSeq}${bgSeq} ▶ `;
+        const label = labelPart;
         const suffix = descPart
-          ? `${CSI}38;5;${this.theme.selectedFg}m${CSI}48;5;${this.theme.selectedBg}m ${CSI}2m${descPart}${RESET}`
+          ? ` ${CSI}2m${descPart}`
           : "";
-        lines.push(padToWidth(prefix + label + suffix));
+        lines.push(padToWidth(head + label + suffix));
       } else {
         const label = `${CSI}38;5;${this.theme.fg}m  ${labelPart}${RESET}`;
         const suffix = descPart
