@@ -34,6 +34,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": ["binaries/future-agent"],
     "macOS": {
       "signingIdentity": "-"
     },

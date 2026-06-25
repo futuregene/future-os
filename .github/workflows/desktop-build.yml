@@ -17,12 +17,17 @@ jobs:
           - name: macOS
             os: macos-latest
             artifact_name: futureos-macos
+            # macOS ships as a .dmg: it preserves the .app bundle (exec bit,
+            # symlinks) that a raw upload-artifact zip would strip.
+            bundle_path: gui/src-tauri/target/release/bundle/dmg/*.dmg
           - name: Windows
             os: windows-latest
             artifact_name: futureos-windows
+            bundle_path: gui/src-tauri/target/release/bundle/**
           - name: Linux
             os: ubuntu-22.04
             artifact_name: futureos-linux
+            bundle_path: gui/src-tauri/target/release/bundle/**
 
     steps:
       - name: Checkout
@@ -75,6 +80,26 @@ jobs:
         working-directory: gui
         run: npm ci
 
+      # Build the agent and stage it as a Tauri sidecar so the packaged app
+      # starts it automatically (see bundle.externalBin in tauri.conf.json).
+      # The file must be named future-agent-<target-triple> for Tauri to pick it.
+      - name: Build bundled agent (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cargo build --release --manifest-path agent/Cargo.toml
+          triple=$(rustc -Vv | sed -n 's/^host: //p')
+          mkdir -p gui/src-tauri/binaries
+          cp "agent/target/release/future-agent" "gui/src-tauri/binaries/future-agent-$triple"
+
+      - name: Build bundled agent (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build --release --manifest-path agent/Cargo.toml
+          $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
+          New-Item -ItemType Directory -Force -Path gui/src-tauri/binaries | Out-Null
+          Copy-Item "agent/target/release/future-agent.exe" "gui/src-tauri/binaries/future-agent-$triple.exe"
+
       - name: Build desktop bundle
         working-directory: gui
         run: npm run tauri:build
@@ -84,4 +109,4 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}
           if-no-files-found: error
-          path: gui/src-tauri/target/release/bundle/**
+          path: ${{ matrix.bundle_path }}
