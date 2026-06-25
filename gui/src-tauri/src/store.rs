@@ -67,10 +67,14 @@ pub fn initialize_app_store() -> Result<(), crate::AppError> {
     Ok(())
 }
 
-/// Wipe all GUI-local data: empty every table (keeping the file + schema, which
-/// avoids Windows file-lock issues) and remove the temp chat workspaces and the
-/// shadow-review repos. Agent config (`~/.future/agent`: auth.json / models.json)
-/// is untouched, so login and providers survive. Used by Settings ▸ 调试 ▸ 重置.
+/// Wipe all GUI-local data and rebuild a pristine DB from the latest schema:
+/// drop every table, then re-apply [`apply_schema`] (so a reset matches the
+/// current schema even if the old DB predates a change — not just emptied rows
+/// on a stale structure). Dropping in place avoids the Windows file-lock risk of
+/// deleting the db file while a connection is open. Also removes the temp chat
+/// workspaces and shadow-review repos. Agent config (`~/.future/agent`:
+/// auth.json / models.json) is untouched, so login and providers survive. Used
+/// by Settings ▸ 调试 ▸ 重置.
 pub fn clear_all_data() -> Result<(), crate::AppError> {
     let conn = connect()?;
     conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
@@ -81,10 +85,12 @@ pub fn clear_all_data() -> Result<(), crate::AppError> {
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         rows.collect::<Result<Vec<_>, _>>()?
     };
+    // DROP TABLE also removes the table's indexes and triggers.
     for table in &tables {
-        conn.execute(&format!("DELETE FROM \"{table}\""), [])?;
+        conn.execute(&format!("DROP TABLE IF EXISTS \"{table}\""), [])?;
     }
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    apply_schema(&conn)?;
     drop(conn);
 
     // Best effort: remove GUI-managed file trees; they're recreated on demand.
