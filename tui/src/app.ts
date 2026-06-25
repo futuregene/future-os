@@ -1531,7 +1531,7 @@ export class App extends Container {
       this.setFocus(component);
     }
     this.terminal.hideCursor();
-    this.requestRender();
+    this.requestRender(true);
 
     return {
       hide: () => {
@@ -1542,7 +1542,7 @@ export class App extends Container {
             this.restoreFocus(entry);
           }
           if (this.overlayStack.length === 0) this.terminal.hideCursor();
-          this.requestRender();
+          this.requestRender(true);
         }
       },
       setHidden: (h: boolean) => {
@@ -1597,7 +1597,7 @@ export class App extends Container {
     if (this.focusedComponent === entry.component) {
       this.restoreFocus(entry);
     }
-    this.requestRender();
+    this.requestRender(true);
   }
 
   private getTopOverlay(): Component | null {
@@ -1838,7 +1838,12 @@ export class App extends Container {
   }
 
   private scheduleRender(): void {
-    if (!this.running || this.renderTimer || !this.renderRequested) return;
+    if (!this.running || !this.renderRequested) return;
+    // Clear any pending timer so we re-evaluate with current state.
+    if (this.renderTimer) {
+      clearTimeout(this.renderTimer);
+      this.renderTimer = undefined;
+    }
     const elapsed = performance.now() - this.lastRenderAt;
     const delay = Math.max(0, App.MIN_RENDER_INTERVAL_MS - elapsed);
     this.renderTimer = setTimeout(() => {
