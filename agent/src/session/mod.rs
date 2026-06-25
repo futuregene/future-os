@@ -202,6 +202,10 @@ pub struct SessionSummary {
         skip_serializing_if = "String::is_empty"
     )]
     pub parent_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_message: Option<String>,
+    #[serde(default)]
+    pub query_count: usize,
 }
 
 impl Session {
@@ -406,6 +410,35 @@ impl Manager {
         }
         let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
         if let Ok(sess) = self.load_path(path, id) {
+            // Scan entries for user messages: first user message and total count
+            let mut first_message: Option<String> = None;
+            let mut query_count: usize = 0;
+            for entry in &sess.entries {
+                if entry.role == "user" {
+                    query_count += 1;
+                    if first_message.is_none() {
+                        if let Some(ref content_val) = entry.content {
+                            let text: String = if let Some(arr) = content_val.as_array() {
+                                arr.iter()
+                                    .filter_map(|b| {
+                                        b.get("text").and_then(|t| t.as_str())
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            } else if let Some(s) = content_val.as_str() {
+                                s.to_string()
+                            } else {
+                                String::new()
+                            };
+                            // Truncate to first 60 Unicode chars
+                            let truncated: String = text.chars().take(60).collect();
+                            if !truncated.is_empty() {
+                                first_message = Some(truncated);
+                            }
+                        }
+                    }
+                }
+            }
             summaries.push(SessionSummary {
                 id: sess.id,
                 cwd: sess.cwd,
@@ -417,6 +450,8 @@ impl Manager {
                     Some(sess.name)
                 },
                 parent_session_id: sess.parent_session_id.clone(),
+                first_message,
+                query_count,
             });
         }
     }

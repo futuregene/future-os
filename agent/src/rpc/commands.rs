@@ -256,6 +256,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                         "cwd": s.cwd,
                         "updated_at": s.updated_at.format("%Y-%m-%d %H:%M:%S").to_string(),
                         "parent_session_id": s.parent_session_id,
+                        "first_message": s.first_message,
+                        "query_count": s.query_count,
                     })
                 })
                 .collect();
