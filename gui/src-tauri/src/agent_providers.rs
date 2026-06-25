@@ -324,12 +324,14 @@ pub fn upsert_custom_provider(
     provider.insert("api".to_string(), Value::String(api));
     provider.insert("baseUrl".to_string(), Value::String(base_url));
     provider.insert("models".to_string(), Value::Array(model_values));
-    providers.insert(id.clone(), Value::Object(provider));
-    write_json(&models_path, &models_doc)?;
-
+    // Write the API key first: if it fails we abort before persisting the
+    // provider, avoiding a saved provider with a missing key while returning Err.
     if let Some(key) = api_key {
         crate::auth_store::set_provider_key(&id, key)?;
     }
+
+    providers.insert(id.clone(), Value::Object(provider));
+    write_json(&models_path, &models_doc)?;
 
     list_agent_providers()
 }
@@ -392,7 +394,11 @@ fn write_json(path: &PathBuf, value: &Value) -> Result<(), crate::AppError> {
         std::fs::create_dir_all(parent)?;
     }
     let serialized = serde_json::to_string_pretty(value)?;
-    std::fs::write(path, serialized).map_err(crate::AppError::from)
+    // Atomic write (temp + rename) so a crash mid-write can't truncate/corrupt
+    // models.json.
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    std::fs::write(&tmp, serialized.as_bytes())?;
+    std::fs::rename(&tmp, path).map_err(crate::AppError::from)
 }
 
 /// Provider display name: ASCII letters/digits, space, and `_.()-` only —

@@ -86,8 +86,16 @@ export function useAgentThreadState({
     }, 1200);
   }, [updateFloatingScrollbar]);
 
+  // Guard against overlapping refreshes (poll tick, send, thread switch) where a
+  // slow response lands after a newer one and writes stale run state — e.g. a
+  // previous thread's run after switching. Newest call wins.
+  const recentRunGenRef = useRef(0);
   const refreshRecentRun = useCallback(async (threadId: string, workspaceId?: string | null) => {
+    const generation = ++recentRunGenRef.current;
     const runs = await listRuns(threadId);
+    if (generation !== recentRunGenRef.current) {
+      return;
+    }
     const latestRun = runs[0] ?? null;
     setRecentRun(latestRun);
     if (latestRun) {
@@ -108,6 +116,9 @@ export function useAgentThreadState({
 
     if (latestRun) {
       const events = await listRunEvents(latestRun.id);
+      if (generation !== recentRunGenRef.current) {
+        return;
+      }
       setRecentRunEventCount(events.length);
     }
     else {
