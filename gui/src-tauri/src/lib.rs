@@ -45,9 +45,10 @@ fn size_main_window_to_screen(app: &tauri::App) {
     let width = (area_w * 0.94).clamp(1024.0, area_w);
     let height = (area_h * 0.94).clamp(720.0, area_h);
     let _ = window.set_size(tauri::LogicalSize::new(width, height));
+    // Center horizontally; sit a bit above vertical center (smaller top gap).
     let _ = window.set_position(tauri::LogicalPosition::new(
         area_x + (area_w - width) / 2.0,
-        area_y + (area_h - height) / 2.0,
+        area_y + (area_h - height) * 0.35,
     ));
 }
 
