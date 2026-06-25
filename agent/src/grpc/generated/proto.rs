@@ -176,20 +176,20 @@ pub struct SessionState {
     pub extensions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Current estimated context token count (from last API call's prompt_tokens,
     /// with fallback to heuristic estimation).
-    #[prost(int32, tag = "19")]
-    pub context_tokens: i32,
+    #[prost(int64, tag = "19")]
+    pub context_tokens: i64,
     /// Model's maximum context window in tokens.
-    #[prost(int32, tag = "20")]
-    pub context_window: i32,
+    #[prost(int64, tag = "20")]
+    pub context_window: i64,
     /// context_tokens as a percentage of context_window (0.0–100.0).
     #[prost(double, tag = "21")]
     pub context_percent: f64,
     /// Cumulative input tokens consumed in this session.
-    #[prost(int32, tag = "22")]
-    pub tokens_in: i32,
+    #[prost(int64, tag = "22")]
+    pub tokens_in: i64,
     /// Cumulative output tokens produced in this session.
-    #[prost(int32, tag = "23")]
-    pub tokens_out: i32,
+    #[prost(int64, tag = "23")]
+    pub tokens_out: i64,
     /// Cumulative cost in CNY (¥).
     #[prost(double, tag = "24")]
     pub total_cost: f64,
