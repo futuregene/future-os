@@ -42,6 +42,7 @@ message RpcCommand {
   string message = 10;
   repeated ImageContent images = 11;
   string streaming_behavior = 12;
+  string parent_session = 20;
   string model_id = 31;
   string level = 40;
   string mode = 50;

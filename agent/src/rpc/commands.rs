@@ -333,7 +333,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             }
 
             // Extract needed data from session
-            let (agent_loop, session_manager, event_bus, broadcaster, _cwd, session_id) = {
+            let (agent_loop, session_manager, event_bus, broadcaster, _cwd, current_session_id) = {
                 let sess = session.read().unwrap();
                 (
                     sess.agent_loop.clone(),
@@ -345,8 +345,16 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 )
             };
 
+            // Resolve parent session: use cmd.parent_session if provided,
+            // otherwise fork from the current session.
+            let parent_id = if !cmd.parent_session.is_empty() {
+                cmd.parent_session.clone()
+            } else {
+                current_session_id.clone()
+            };
+
             // Get parent session from manager
-            let parent = match session_manager.load(&session_id) {
+            let parent = match session_manager.load(&parent_id) {
                 Ok(s) => s,
                 Err(_) => {
                     return RpcResponse::build_fail(

@@ -113,6 +113,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             message: cmd.message,
             images: internal_images,
             streaming_behavior: cmd.streaming_behavior,
+            parent_session: cmd.parent_session,
             model_id: cmd.model_id,
             level: cmd.level,
             mode: cmd.mode,
