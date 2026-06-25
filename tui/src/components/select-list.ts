@@ -179,7 +179,8 @@ export class SelectList implements Component {
       if (visW < innerW) {
         return line + " ".repeat(innerW - visW) + RESET;
       }
-      return line + RESET;
+      // Line already at or over width — truncate to avoid compositing overflow
+      return truncateToWidth(line, innerW - 1) + RESET;
     };
 
     lines.push(padToWidth(`${CSI}38;5;${this.theme.accent}m${BOLD} ${this.title}`));
