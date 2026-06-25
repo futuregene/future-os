@@ -223,7 +223,10 @@ impl Loop {
                 });
             }
 
-            let tool_args_str = serde_json::to_string(&tc.function.arguments).unwrap_or_default();
+            let tool_args_str = match &tc.function.arguments {
+                serde_json::Value::String(s) => s.clone(),
+                other => serde_json::to_string(other).unwrap_or_default(),
+            };
             let tool_msg = self.new_tool_result(&tc.id, &tc.function.name, &tool_args_str, &result, err_str.as_deref());
             messages.push(tool_msg);
             executed += 1;
@@ -236,7 +239,10 @@ impl Loop {
                     "[Tool execution cancelled — {} was skipped due to user interrupt]",
                     tc.function.name
                 );
-                let tool_args_str = serde_json::to_string(&tc.function.arguments).unwrap_or_default();
+                let tool_args_str = match &tc.function.arguments {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => serde_json::to_string(other).unwrap_or_default(),
+                };
                 messages.push(self.new_tool_result(&tc.id, &tc.function.name, &tool_args_str, &cancelled, Some(&cancelled)));
             }
         }
