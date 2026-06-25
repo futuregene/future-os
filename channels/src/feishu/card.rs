@@ -137,7 +137,7 @@ pub fn tool_card(tool_name: &str, args: &str) -> Value {
 pub fn status_card(
     model: &str, image_support: bool, thinking: &str,
     context_tokens: i64, context_window: i64,
-    tokens_in: i64, tokens_out: i64, msg_count: usize,
+    tokens_in: i64, tokens_out: i64, query_count: usize,
 ) -> Value {
     let image_icon = if image_support { "🖼️" } else { "" };
     let context_pct = if context_window > 0 {
@@ -158,7 +158,7 @@ pub fn status_card(
             {"tag": "div", "text": {"tag": "lark_md", "content": format!("**Thinking:** {}", thinking)}},
             {"tag": "div", "text": {"tag": "lark_md", "content": format!("**Context:** {} / {}{}", context_tokens, context_window, context_pct)}},
             {"tag": "div", "text": {"tag": "lark_md", "content": format!("**Tokens:** {} in / {} out", tokens_in, tokens_out)}},
-            {"tag": "div", "text": {"tag": "lark_md", "content": format!("**Messages:** {}", msg_count)}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": format!("**Queries:** {}", query_count)}},
         ]
     })
 }

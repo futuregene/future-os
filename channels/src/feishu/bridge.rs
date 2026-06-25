@@ -370,14 +370,14 @@ impl Bridge {
                                 };
                                 let image_tag = if state.image_support { " 🖼️" } else { "" };
                                 let text = format!(
-                                    "**Model:** {}{}\n{}\n\n**Session:** {}\n**CWD:** {}\n**Thinking:** {}\n**Messages:** {}\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n**Tokens:** {} in / {} out\n**Cost:** ¥{:.4}",
+                                    "**Model:** {}{}\n{}\n\n**Session:** {}\n**CWD:** {}\n**Thinking:** {}\n**Queries:** {}\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n**Tokens:** {} in / {} out\n**Cost:** ¥{:.4}",
                                     state.model,
                                     image_tag,
                                     model_info,
                                     state.session_id,
                                     state.cwd,
                                     state.thinking_level,
-                                    state.message_count,
+                                    state.query_count,
                                     if state.auto_compaction { "on" } else { "off" },
                                     state.context_tokens, state.context_window,
                                     if state.context_window > 0 { (state.context_tokens as f64 / state.context_window as f64) * 100.0 } else { 0.0 },

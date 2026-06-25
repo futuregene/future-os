@@ -92,7 +92,7 @@ message SessionState {
   string session_name = 9;
   bool explicit_session = 10;
   bool auto_compaction_enabled = 11;
-  int32 message_count = 12;
+  int32 query_count = 12;
   int32 pending_message_count = 13;
   string version = 14;
   string cwd = 15;
