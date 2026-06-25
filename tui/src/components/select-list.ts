@@ -169,8 +169,8 @@ export class SelectList implements Component {
     const lines: string[] = [];
     const innerW = Math.max(20, width);
 
-    // Width budget: label gets most space, description padded for alignment
-    const maxLabelW = Math.max(10, innerW - 42);
+    // Width budget: label left, description right, both aligned
+    const maxLabelW = Math.max(10, Math.floor(innerW * 0.55));
     const maxDescW = Math.max(5, innerW - maxLabelW - 4);
 
     // Helper: pad line to fill innerW, ensuring each line clears stale content

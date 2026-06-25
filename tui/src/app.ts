@@ -92,7 +92,6 @@ export class App extends Container {
     { value: "/name", label: "/name", description: "set session name" },
     { value: "/scoped-models", label: "/scoped-models", description: "configure model scope" },
     { value: "/reload", label: "/reload", description: "reload skills + context" },
-    { value: "/settings", label: "/settings", description: "open settings" },
     { value: "/help", label: "/help", description: "show help" },
   ];
 
@@ -845,11 +844,6 @@ export class App extends Container {
         return;
       }
 
-      if (cmd === "settings") {
-        this.showSettings();
-        return;
-      }
-
       if (cmd === "compact") {
         try {
           await this.client.compact();
@@ -872,7 +866,7 @@ export class App extends Container {
         this.chat.addMessage({
           id: crypto.randomUUID(),
           role: "system",
-          content: "Export: use /settings or Ctrl+E to export session",
+          content: "Export: use Ctrl+E to export session",
         });
         return;
       }
@@ -881,7 +875,7 @@ export class App extends Container {
         this.chat.addMessage({
           id: crypto.randomUUID(),
           role: "system",
-          content: "Import: use /settings or Ctrl+I to import session",
+          content: "Import: use Ctrl+I to import session",
         });
         return;
       }
