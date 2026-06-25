@@ -236,7 +236,6 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
         "tokensCacheW": cache_w,
         "totalCost": total_cost,
         "permissionLevel": sess.permission_level.clone(),
-        "cwd": sess.cwd.clone(),
     })
 }
 

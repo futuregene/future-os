@@ -134,7 +134,7 @@ pub struct SessionState {
     #[prost(bool, tag = "11")]
     pub auto_compaction_enabled: bool,
     #[prost(int32, tag = "12")]
-    pub message_count: i32,
+    pub query_count: i32,
     #[prost(int32, tag = "13")]
     pub pending_message_count: i32,
     #[prost(string, tag = "14")]
@@ -159,6 +159,14 @@ pub struct SessionState {
     pub tokens_out: i32,
     #[prost(double, tag = "24")]
     pub total_cost: f64,
+    #[prost(bool, tag = "25")]
+    pub image_support: bool,
+    #[prost(int64, tag = "26")]
+    pub tokens_cache_r: i64,
+    #[prost(int64, tag = "27")]
+    pub tokens_cache_w: i64,
+    #[prost(string, tag = "28")]
+    pub permission_level: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SessionStats {
