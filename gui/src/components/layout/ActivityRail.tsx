@@ -129,7 +129,7 @@ export function ActivityRail({
             "inline-flex size-8 items-center justify-center rounded-md border border-transparent text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
             // macOS reserves the top-left for the traffic lights; other platforms
             // don't, so the toggle sits near the edge.
-            expanded && (isMacOS ? "absolute left-[80px] top-1.5" : "absolute left-2 top-1.5"),
+            expanded && (isMacOS ? "absolute left-[80px] top-2" : "absolute left-2 top-2"),
           )}
           onClick={onToggleExpanded}
           type="button"
