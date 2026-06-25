@@ -25,6 +25,8 @@ interface AgentThreadProps {
   onApprovalDecision: (approval: StoredApprovalRequest, status: "approved" | "rejected") => Promise<void>;
   onPromptConsumed: (id: string) => void;
   onRetryAgentConnection: () => void;
+  onOpenProviders: () => void;
+  onOpenModels: () => void;
   onThreadActivity: () => void;
   onToggleLeftPanel: () => void;
 }
@@ -42,6 +44,8 @@ export function AgentThread({
   onApprovalDecision,
   onPromptConsumed,
   onRetryAgentConnection,
+  onOpenProviders,
+  onOpenModels,
   onThreadActivity,
   onToggleLeftPanel,
 }: AgentThreadProps) {
@@ -163,10 +167,12 @@ export function AgentThread({
                   </div>
                 )
               : null}
-            {agentConnection.status === "disconnected"
+            {shouldShowAgentNotice(agentConnection)
               ? (
                   <AgentConnectionNotice
                     connection={agentConnection}
+                    onOpenModels={onOpenModels}
+                    onOpenProviders={onOpenProviders}
                     onRetry={onRetryAgentConnection}
                   />
                 )
@@ -187,46 +193,89 @@ export function AgentThread({
   );
 }
 
+function shouldShowAgentNotice(connection: AgentConnectionState) {
+  return connection.status === "disconnected"
+    || connection.readiness === "needs_login"
+    || connection.readiness === "no_models";
+}
+
+interface AgentNotice {
+  title: string;
+  detail: string;
+  action: { label: string; onClick: () => void };
+}
+
 function AgentConnectionNotice({
   connection,
   onRetry,
+  onOpenProviders,
+  onOpenModels,
 }: {
   connection: AgentConnectionState;
   onRetry: () => void;
+  onOpenProviders: () => void;
+  onOpenModels: () => void;
 }) {
+  const notice = agentNotice(connection, { onOpenModels, onOpenProviders, onRetry });
   return (
     <div className="pointer-events-auto mx-auto w-full max-w-3xl rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="font-medium">{agentConnectionNoticeTitle(connection)}</span>
+        <span className="font-medium">{notice.title}</span>
         <button
           className="h-7 rounded-md bg-surface px-2 text-xs font-medium text-amber-800 ring-1 ring-amber-200 transition-colors hover:bg-amber-100"
-          onClick={onRetry}
+          onClick={notice.action.onClick}
           type="button"
         >
-          Retry
+          {notice.action.label}
         </button>
       </div>
-      <div className="mt-1 text-amber-700">{agentConnectionNoticeDetail(connection)}</div>
+      <div className="mt-1 text-amber-700">{notice.detail}</div>
     </div>
   );
 }
 
-function agentConnectionNoticeTitle(connection: AgentConnectionState) {
-  if (connection.kind === "agent_unavailable")
-    return "Future Agent is not running";
-  if (connection.kind === "model_error")
-    return "Future Agent models could not be loaded";
-  return "Future Agent connection needs attention";
-}
+function agentNotice(
+  connection: AgentConnectionState,
+  actions: { onRetry: () => void; onOpenProviders: () => void; onOpenModels: () => void },
+): AgentNotice {
+  const retry = { label: "重试", onClick: actions.onRetry };
 
-function agentConnectionNoticeDetail(connection: AgentConnectionState) {
-  // Always surface the underlying error — hiding it behind a generic hint makes
-  // a reachable-but-erroring agent look like it's simply not started.
-  if (connection.kind === "agent_unavailable")
-    return connection.error ?? "Start the agent, then retry the connection.";
-  if (connection.kind === "model_error")
-    return connection.error ?? "The agent is reachable, but model discovery failed.";
-  return connection.error ?? "Check FUTURE_AGENT_GRPC_ADDR and retry.";
+  // Can't reach the agent at all.
+  if (connection.status === "disconnected") {
+    if (connection.kind === "agent_unavailable") {
+      return {
+        title: "Future Agent 未运行",
+        detail: "请先启动 Future Agent，然后点击重试。",
+        action: retry,
+      };
+    }
+    if (connection.kind === "model_error") {
+      return {
+        title: "模型加载失败",
+        detail: connection.error ?? "Agent 可连接，但获取模型列表失败。",
+        action: retry,
+      };
+    }
+    return {
+      title: "连接异常",
+      detail: connection.error ?? "请检查 FUTURE_AGENT_GRPC_ADDR 后重试。",
+      action: retry,
+    };
+  }
+
+  // Connected, but no usable models: distinguish "not configured" from "empty".
+  if (connection.readiness === "needs_login") {
+    return {
+      title: "尚未登录",
+      detail: "已连接 Future Agent，但还没有可用模型。请连接 FutureGene 登录，或添加自定义提供商。",
+      action: { label: "前往登录", onClick: actions.onOpenProviders },
+    };
+  }
+  return {
+    title: "没有可用模型",
+    detail: "已配置提供商，但模型列表为空。请检查模型是否已启用，或确认账号配额 / 权限。",
+    action: { label: "模型设置", onClick: actions.onOpenModels },
+  };
 }
 
 function buildContinuePrompt({

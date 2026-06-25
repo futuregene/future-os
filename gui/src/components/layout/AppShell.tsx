@@ -137,6 +137,11 @@ export function AppShell() {
     setSettingsOpen(true);
   }
 
+  function handleOpenProviders() {
+    setSettingsTab("providers");
+    setSettingsOpen(true);
+  }
+
   async function handleChangeSettings(patch: Partial<AppSettings>) {
     setAppSettings(current => ({ ...current, ...patch }));
     try {
@@ -451,6 +456,8 @@ export function AppShell() {
                       onApprovalDecision={handleApprovalDecision}
                       leftPanelExpanded={leftExpanded}
                       onRetryAgentConnection={() => void refreshAgentModels()}
+                      onOpenProviders={handleOpenProviders}
+                      onOpenModels={handleOpenModels}
                       onToggleLeftPanel={handleToggleLeftPanel}
                       onPromptConsumed={(id) => {
                         setPendingPrompt(current => (current?.id === id ? null : current));
