@@ -35,7 +35,7 @@ build-tui-single:
 build-cli:
 	cd cli && npm run build
 
-build-gui:
+build-gui: install-gui
 	cd gui && npm run build
 
 build-channels:
