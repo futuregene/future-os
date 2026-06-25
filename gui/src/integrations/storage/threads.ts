@@ -50,6 +50,22 @@ export async function createDefaultChatThread() {
   });
 }
 
+// Bootstrap can run more than once concurrently (React StrictMode double-mounts
+// the store hook in dev). Without dedupe, each run sees an empty DB and creates
+// its own "New Chat", leaving duplicates. Share one in-flight promise so
+// concurrent callers resolve to a single thread; clear it on failure to allow
+// a later retry.
+let defaultChatThreadPromise: Promise<StoredThread> | null = null;
+
+export function getOrCreateDefaultChatThread() {
+  defaultChatThreadPromise ??= (async () => (await getRecentThread()) ?? createDefaultChatThread())()
+    .catch((error) => {
+      defaultChatThreadPromise = null;
+      throw error;
+    });
+  return defaultChatThreadPromise;
+}
+
 export async function createThread(input: {
   mode: StoredThread["mode"];
   title?: string | null;
