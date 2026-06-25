@@ -528,6 +528,21 @@ impl Bridge {
                 }
             }
 
+            "/cwd" if !arg.is_empty() => {
+                let session_id = self.sessions.get(chat_id, thread_id).unwrap_or_default();
+                let mut agent = self.agent.write().await;
+                match agent.set_cwd(&session_id, arg).await {
+                    Ok(()) => {
+                        self.feishu.reply_message(message_id, "text",
+                            &serde_json::json!({"text": format!("CWD set to: {}", arg)}).to_string()).await?;
+                    }
+                    Err(e) => {
+                        self.feishu.reply_message(message_id, "text",
+                            &serde_json::json!({"text": format!("Failed to set CWD: {}", e)}).to_string()).await?;
+                    }
+                }
+            }
+
             "/help" => {
                 let help = card::help_card();
                 self.feishu.reply_message(message_id, "interactive",

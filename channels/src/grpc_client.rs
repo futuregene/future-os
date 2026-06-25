@@ -192,6 +192,15 @@ impl AgentClient {
         Ok(())
     }
 
+    /// Set working directory.
+    pub async fn set_cwd(&mut self, session_id: &str, cwd: &str) -> Result<()> {
+        self.call("set_cwd", session_id, RpcCommand {
+            cwd: cwd.to_string(),
+            ..Default::default()
+        }).await?;
+        Ok(())
+    }
+
     /// Set thinking level.
     pub async fn set_thinking_level(&mut self, session_id: &str, level: &str) -> Result<()> {
         self.call("set_thinking_level", session_id, RpcCommand {

@@ -118,7 +118,7 @@ impl DingtalkBridge {
                     Err(e) => reply_md("Error", &format!("**Error:** {}", e)),
                 }
             }
-            "/status" | "/stop" | "/model" | "/models" | "/compact" | "/effort" => {
+            "/status" | "/stop" | "/model" | "/models" | "/compact" | "/effort" | "/cwd" => {
                 // Reuse cached session (from last prompt) instead of creating a new
                 // one — new_session() fails when the agent is busy.
                 let sid = match self.get_or_create_session().await {
@@ -186,11 +186,16 @@ impl DingtalkBridge {
                             reply_md("Thinking", &format!("**Thinking:** `{}`", arg));
                         }
                     }
+                    "/cwd" if !arg.is_empty() => {
+                        if let Ok(()) = agent.set_cwd(&sid, arg).await {
+                            reply_md("CWD", &format!("**CWD:** `{}`", arg));
+                        }
+                    }
                     _ => {}
                 }
             }
             "/help" => {
-                reply_md("Help", "**Commands**\n\n`/new` — new session\n\n`/status` — session status\n\n`/stop` — abort prompt\n\n`/model <id>` — switch model\n\n`/models` — list models\n\n`/effort <level>` — thinking level\n\n`/compact` — compact context\n\n`/help` — this help");
+                reply_md("Help", "**Commands**\n\n`/new` — new session\n\n`/status` — session status\n\n`/stop` — abort prompt\n\n`/model <id>` — switch model\n\n`/models` — list models\n\n`/effort <level>` — thinking level\n\n`/compact` — compact context\n\n`/cwd <path>` — set working directory\n\n`/help` — this help");
             }
             _ => {
                 self.process_prompt(text, webhook.clone()).await?;
