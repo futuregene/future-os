@@ -39,6 +39,7 @@ if not defined DRY_RUN set "DRY_RUN=0"
 
 set "AGENT_LOG=%LOG_DIR%\future-agent-test.log"
 set "AGENT_ERR=%LOG_DIR%\future-agent-test.err.log"
+set "AGENT_PID_FILE=%LOG_DIR%\future-agent-test.pid"
 set "AGENT_BIN=%AGENT_DIR%\target\debug\future-agent.exe"
 set "AGENT_PID="
 
@@ -92,8 +93,13 @@ if "%REUSE_AGENT%"=="1" if "%PORT_BUSY%"=="0" (
 
 if "%PORT_BUSY%"=="0" (
   echo Port %AGENT_PORT% is already in use.
-  echo Stop the old process, or run with REUSE_AGENT=1 to reuse it.
-  exit /b 1
+  call :stop_pid_file_process
+  call :port_in_use
+  set "PORT_BUSY=%ERRORLEVEL%"
+  if "!PORT_BUSY!"=="0" (
+    echo Stop the old process, or run with REUSE_AGENT=1 to reuse it.
+    exit /b 1
+  )
 )
 
 if not exist "%AGENT_BIN%" (
@@ -105,7 +111,7 @@ if not exist "%AGENT_BIN%" (
 echo Starting future-agent...
 rem Launch the agent binary directly via PowerShell so we capture its own PID
 rem (not a wrapper's) and redirect stdout/stderr to log files reliably.
-for /f "usebackq delims=" %%p in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "(Start-Process -FilePath '%AGENT_BIN%' -WorkingDirectory '%AGENT_DIR%' -RedirectStandardOutput '%AGENT_LOG%' -RedirectStandardError '%AGENT_ERR%' -WindowStyle Hidden -PassThru).Id"`) do set "AGENT_PID=%%p"
+for /f "usebackq delims=" %%p in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Start-Process -FilePath $env:AGENT_BIN -ArgumentList @('--grpc-addr', $env:AGENT_ADDR) -WorkingDirectory $env:AGENT_DIR -RedirectStandardOutput $env:AGENT_LOG -RedirectStandardError $env:AGENT_ERR -WindowStyle Hidden -PassThru; $p.Id"`) do set "AGENT_PID=%%p"
 
 if not defined AGENT_PID (
   echo Failed to start future-agent.
@@ -114,6 +120,7 @@ if not defined AGENT_PID (
   exit /b 1
 )
 
+> "%AGENT_PID_FILE%" echo %AGENT_PID%
 call :wait_for_agent || (call :cleanup & exit /b 1)
 echo future-agent started pid=%AGENT_PID%
 echo Agent log: %AGENT_LOG%
@@ -123,7 +130,21 @@ echo Starting GUI...
 echo Press Ctrl-C here to stop the GUI; the agent this script started is stopped afterward.
 set "FUTURE_AGENT_GRPC_ADDR=%AGENT_ADDR%"
 pushd "%GUI_DIR%" || (call :cleanup & exit /b 1)
-call npm run tauri:dev
+if "%GUI_DEV_PORT%"=="5173" (
+  call npm run tauri:dev
+) else (
+  set "TAURI_DEV_CONFIG_FILE=%TEMP%\futureos-tauri-dev-%RANDOM%.json"
+  > "!TAURI_DEV_CONFIG_FILE!" (
+    echo {
+    echo   "build": {
+    echo     "devUrl": "http://127.0.0.1:%GUI_DEV_PORT%",
+    echo     "beforeDevCommand": "npm run dev -- --port %GUI_DEV_PORT%"
+    echo   }
+    echo }
+  )
+  call npm run tauri:dev -- --config "!TAURI_DEV_CONFIG_FILE!"
+  del /q "!TAURI_DEV_CONFIG_FILE!" >nul 2>&1
+)
 set "GUI_EXIT=%ERRORLEVEL%"
 popd
 
@@ -156,6 +177,22 @@ if defined AGENT_PID (
   powershell -NoProfile -Command "Stop-Process -Id %AGENT_PID% -Force -ErrorAction SilentlyContinue" >nul 2>&1
   set "AGENT_PID="
 )
+if exist "%AGENT_PID_FILE%" del /q "%AGENT_PID_FILE%" >nul 2>&1
+exit /b 0
+
+:stop_pid_file_process
+if not exist "%AGENT_PID_FILE%" exit /b 0
+set /p OLD_AGENT_PID=<"%AGENT_PID_FILE%"
+if not defined OLD_AGENT_PID (
+  del /q "%AGENT_PID_FILE%" >nul 2>&1
+  exit /b 0
+)
+for /f "usebackq delims=" %%s in (`powershell -NoProfile -Command "$id = 0; if (-not [int]::TryParse($env:OLD_AGENT_PID, [ref]$id)) { 'invalid'; exit }; $p = Get-Process -Id $id -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq 'future-agent') { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue; 'stopped' } elseif ($p) { 'ignored' } else { 'missing' }"`) do set "OLD_AGENT_STATUS=%%s"
+if "%OLD_AGENT_STATUS%"=="stopped" echo Stopping previous future-agent pid=%OLD_AGENT_PID%
+if "%OLD_AGENT_STATUS%"=="ignored" echo Ignoring stale future-agent pid file; pid=%OLD_AGENT_PID% is not future-agent.
+del /q "%AGENT_PID_FILE%" >nul 2>&1
+set "OLD_AGENT_PID="
+set "OLD_AGENT_STATUS="
 exit /b 0
 
 :cancel_stale_app_tasks
