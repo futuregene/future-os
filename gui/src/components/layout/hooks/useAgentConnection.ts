@@ -2,12 +2,20 @@ import type { Dispatch, SetStateAction } from "react";
 import type { AgentModelOption } from "../../../integrations/agent/agentClient";
 import { useCallback, useMemo, useState } from "react";
 import { defaultAgentModelId, defaultModelId, loadAgentModelOptions } from "../../../integrations/agent/agentClient";
+import { listAgentProviders } from "../../../integrations/agent/providers";
 import { usePolling } from "../../../lib/usePolling";
 
 export interface AgentConnectionState {
   status: "checking" | "connected" | "disconnected";
   error?: string | null;
   kind?: "agent_unavailable" | "model_error" | "unknown" | null;
+  /**
+   * When connected, why there are (or aren't) usable models:
+   * - `ready`: models available.
+   * - `needs_login`: no FutureGene login and no custom provider → no credentials.
+   * - `no_models`: credentials exist, but the model list is still empty.
+   */
+  readiness?: "ready" | "needs_login" | "no_models" | null;
   checkedAt?: number | null;
 }
 
@@ -61,10 +69,28 @@ export function useAgentConnection(hiddenModels: string[]): AgentConnection {
           ? current
           : defaultModelId(nextModels),
       );
+      // Agent is reachable. If there are no models, find out whether that's
+      // because nothing is configured (needs login / a provider) or because the
+      // configured providers simply expose none — so the UI can say which.
+      let readiness: AgentConnectionState["readiness"] = "ready";
+      if (nextModels.length === 0) {
+        readiness = "no_models";
+        try {
+          const providers = await listAgentProviders();
+          const hasCredentials
+            = providers.builtin.some(provider => provider.hasApiKey)
+              || providers.custom.length > 0;
+          readiness = hasCredentials ? "no_models" : "needs_login";
+        }
+        catch {
+          // Can't tell — leave as a generic "no models" rather than guessing.
+        }
+      }
       setAgentConnection({
         checkedAt: Date.now(),
         error: null,
         kind: null,
+        readiness,
         status: "connected",
       });
     }
