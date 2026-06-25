@@ -1385,7 +1385,12 @@ export class App extends Container {
           content = raw;
         } else if (Array.isArray(raw)) {
           content = (raw as Array<Record<string, unknown>>)
-            .map((block) => (typeof block.text === "string" ? block.text : ""))
+            .map((block) => {
+              // TextBlock uses "text", ToolResultBlock uses "content"
+              if (typeof block.text === "string") return block.text;
+              if (typeof block.content === "string") return block.content;
+              return "";
+            })
             .filter(Boolean)
             .join("");
         }
