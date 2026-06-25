@@ -18,7 +18,7 @@ export function LeftPanelTitlebarToggle({
     <div className={cn("flex h-12 shrink-0 items-center", isMacOS ? "w-28 pl-[64px]" : "pl-2")}>
       <button
         aria-label="Show sidebar"
-        className="inline-flex size-8 -mt-0.5 items-center justify-center rounded-md border border-transparent text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+        className="inline-flex size-8 -mt-px items-center justify-center rounded-md border border-transparent text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
         onClick={onToggle}
         onMouseDown={event => event.stopPropagation()}
         title="Show sidebar"
