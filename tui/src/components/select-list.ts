@@ -1,6 +1,6 @@
 /**
  * SelectList - a list selector with filtering and keyboard navigation.
- * Modeled after pi's SelectList: Component + handleInput, filtering, scroll indicators.
+ * Modeled after SelectList: Component + handleInput, filtering, scroll indicators.
  */
 
 import type { Component } from "../tui.js";

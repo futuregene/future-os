@@ -1,4 +1,4 @@
-//! Prompt building — 1:1 compatible with Go internal/prompt/
+//! Prompt building — 1:1 compatible with internal/prompt/
 
 use crate::skills::Skill;
 use crate::types::AgentTool;
@@ -6,7 +6,7 @@ use crate::types::AgentTool;
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 /// BuildPrompt produces a fully assembled system prompt from the given options.
-/// Section ordering matches Go pi-mono's BuildPrompt():
+/// Section ordering matches 's BuildPrompt():
 ///   1. Identity (identity + tools list + guidelines)
 ///   2. Append prompt
 ///   3. Project context (AGENTS.md / CLAUDE.md)
@@ -161,7 +161,7 @@ fn build_dynamic_tool_guidelines(tool_names: &[&str]) -> Vec<String> {
 // ─── Skills Section ─────────────────────────────────────────────────────────
 
 /// Formats skills with lead-in text + <available_skills> XML block.
-/// Matches Go pi-mono's formatSkillsSection() exactly.
+/// Matches 's formatSkillsSection() exactly.
 fn format_skills_section(skills: &[&Skill]) -> String {
     let mut sb = String::new();
     sb.push_str("The following skills provide specialized instructions for specific tasks.\n");

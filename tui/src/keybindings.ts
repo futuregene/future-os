@@ -1,6 +1,6 @@
 /**
  * KeybindingManager — configurable key-to-action dispatch with conflict detection.
- * Ported from pi's keybindings.ts. Uses Symbol-based IDs for stable references
+ *ts. Uses Symbol-based IDs for stable references
  * and supports user-level overrides via a flat config map.
  */
 

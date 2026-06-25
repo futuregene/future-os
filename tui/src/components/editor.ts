@@ -1,6 +1,6 @@
 /**
  * Editor component — multi-line text input with Emacs-style keybindings.
- * Ported from pi's editor.ts. Implements Component + Focusable.
+ *ts. Implements Component + Focusable.
  */
 
 import { CSI, RESET, CURSOR_MARKER } from "../tui.js";
@@ -371,8 +371,8 @@ export class Editor implements Component, Focusable {
       // Movement
       case "left": return this.moveLeft();
       case "right": return this.moveRight();
-      case "ctrl+b": return this.moveLeft();    // pi: cursorLeft
-      case "ctrl+f": return this.moveRight();   // pi: cursorRight
+      case "ctrl+b": return this.moveLeft();    // cursorLeft
+      case "ctrl+f": return this.moveRight();   // cursorRight
       case "up": return this.moveUp();
       case "down": return this.moveDown();
       case "home": return this.moveHome();
@@ -389,13 +389,13 @@ export class Editor implements Component, Focusable {
       // Deletion
       case "backspace": return this.deleteBackward();
       case "delete":
-      case "ctrl+d": return this.deleteForward();  // pi: deleteCharForward
+      case "ctrl+d": return this.deleteForward();  // deleteCharForward
       case "ctrl+h": return this.deleteBackward();
 
       // Kill / Yank
       case "ctrl+k": return this.killToEndOfLine();
       case "alt+d":
-      case "alt+delete": return this.killWordForward();  // pi: deleteWordForward
+      case "alt+delete": return this.killWordForward();  // deleteWordForward
       case "alt+backspace":
       case "ctrl+w": return this.killWordBackward();
       case "ctrl+y": return this.yank();
@@ -405,7 +405,7 @@ export class Editor implements Component, Focusable {
       case "ctrl+/":
       case "ctrl+z":
       case "ctrl+_":
-      case "ctrl+-": return this.undo();  // pi: undo
+      case "ctrl+-": return this.undo();  // undo
       case "alt+/":
       case "ctrl+shift+z": return this.redo();
 
@@ -414,7 +414,7 @@ export class Editor implements Component, Focusable {
       case "ctrl+e": return this.moveEnd();
       case "ctrl+u": return this.killToStartOfLine();
 
-      // Jump mode: f{char} (pi: ctrl+] forward, ctrl+alt+] backward)
+      // Jump mode: f{char} 
       case "ctrl+]": this.jumpMode = "forward"; return true;
       case "ctrl+alt+]": this.jumpMode = "backward"; return true;
 
@@ -1033,7 +1033,7 @@ export class Editor implements Component, Focusable {
 
     const visibleEnd = Math.min(totalVL, this.viewportTop + maxVisible);
 
-    // Top border rule (matches pi's horizontal separator above editor)
+    // Top border rule 
     const hrColor = this.theme.border ?? 240;
     lines.push(`${CSI}38;5;${hrColor}m${"─".repeat(screenWidth)}${RESET}`);
 
@@ -1130,7 +1130,7 @@ export class Editor implements Component, Focusable {
       lines.push(borderChar + indicator);
     }
 
-    // Bottom border rule (matches pi's horizontal separator below editor)
+    // Bottom border rule 
     lines.push(`${CSI}38;5;${hrColor}m${"─".repeat(screenWidth)}${RESET}`);
 
     return lines;

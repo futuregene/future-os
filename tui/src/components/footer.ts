@@ -1,5 +1,5 @@
 /**
- * Footer - status bar matching pi-mono style.
+ * Footer - status bar matching style.
  * Shows: pwd, model, thinking, token stats, cost, context usage.
  */
 

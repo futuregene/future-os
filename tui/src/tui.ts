@@ -1,6 +1,6 @@
 /**
  * Core TUI types and utilities.
- * Terminal writes to process.stdout (matches pi's ProcessTerminal).
+ * Terminal writes to process.stdout .
  */
 
 // ─── ANSI Escape Sequences ─────────────────────────────────────────────────
