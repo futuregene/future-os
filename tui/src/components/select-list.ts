@@ -173,14 +173,14 @@ export class SelectList implements Component {
     const maxLabelW = Math.max(10, Math.floor(innerW * 0.4));
     const maxDescW = Math.max(5, innerW - maxLabelW - 4);
 
-    // Helper: pad line to fill innerW, ensuring each line clears stale content
+    // Helper: pad to innerW-2 (safe margin for overlay compositing borders)
     const padToWidth = (line: string): string => {
       const visW = visibleWidth(line);
-      if (visW < innerW) {
-        return line + " ".repeat(innerW - visW) + RESET;
+      const safeW = Math.max(10, innerW - 2);
+      if (visW < safeW) {
+        return line + " ".repeat(safeW - visW) + RESET;
       }
-      // Line already at or over width — truncate to avoid compositing overflow
-      return truncateToWidth(line, innerW - 1) + RESET;
+      return truncateToWidth(line, safeW) + RESET;
     };
 
     lines.push(padToWidth(`${CSI}38;5;${this.theme.accent}m${BOLD} ${this.title}`));
