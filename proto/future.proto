@@ -107,7 +107,7 @@ message SessionState {
   string session_name = 9;
   bool explicit_session = 10;
   bool auto_compaction_enabled = 11;
-  int32 message_count = 12;
+  int32 query_count = 12;
   int32 pending_message_count = 13;
   string version = 14;
   string cwd = 15;
@@ -120,6 +120,10 @@ message SessionState {
   int32 tokens_in = 22;
   int32 tokens_out = 23;
   double total_cost = 24;
+  bool image_support = 25;
+  int64 tokens_cache_r = 26;
+  int64 tokens_cache_w = 27;
+  string permission_level = 28;
 }
 
 // =============================================================================
