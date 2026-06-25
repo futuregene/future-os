@@ -995,11 +995,22 @@ export class App extends Container {
                 roots.push(s);
               }
             }
-            // Flatten recursively
-            const flatten = (list: typeof sessions, depth: number) => {
+            // Flatten recursively, tracking "last child" at each depth for
+            // correct tree-drawing (│ for ancestors with more children after).
+            const flatten = (list: typeof sessions, depth: number, ancestorsLast: boolean[]) => {
               list.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
-              for (const s of list) {
-                const prefix = depth > 0 ? "  ".repeat(depth - 1) + (children.get(s.id)?.length ? "├─ " : "└─ ") : "";
+              for (let i = 0; i < list.length; i++) {
+                const s = list[i];
+                const isLast = i === list.length - 1;
+                const hasChildren = children.has(s.id) && (children.get(s.id)?.length ?? 0) > 0;
+                // Build prefix: ancestor lines + connector
+                let prefix = "";
+                for (let d = 0; d < depth; d++) {
+                  prefix += ancestorsLast[d] ? "  " : "│ ";
+                }
+                if (depth > 0) {
+                  prefix += isLast ? "└─ " : "├─ ";
+                }
                 const currentMarker = s.id === this.state.sessionId ? "▶ " : "  ";
                 const label = `${currentMarker}${prefix}${s.name || s.id}`;
                 items.push({
@@ -1007,12 +1018,12 @@ export class App extends Container {
                   label,
                   description: `${s.model} · ${new Date(s.updated_at).toLocaleString()}`,
                 });
-                if (children.has(s.id)) {
-                  flatten(children.get(s.id)!, depth + 1);
+                if (hasChildren) {
+                  flatten(children.get(s.id)!, depth + 1, [...ancestorsLast, isLast]);
                 }
               }
             };
-            flatten(roots, 0);
+            flatten(roots, 0, []);
           }
           const treeList = new SelectList({
             title: "Session Tree",
