@@ -66,3 +66,30 @@ pub fn initialize_app_store() -> Result<(), crate::AppError> {
     apply_schema(&conn)?;
     Ok(())
 }
+
+/// Wipe all GUI-local data: empty every table (keeping the file + schema, which
+/// avoids Windows file-lock issues) and remove the temp chat workspaces and the
+/// shadow-review repos. Agent config (`~/.future/agent`: auth.json / models.json)
+/// is untouched, so login and providers survive. Used by Settings ▸ 调试 ▸ 重置.
+pub fn clear_all_data() -> Result<(), crate::AppError> {
+    let conn = connect()?;
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    let tables: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for table in &tables {
+        conn.execute(&format!("DELETE FROM \"{table}\""), [])?;
+    }
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    drop(conn);
+
+    // Best effort: remove GUI-managed file trees; they're recreated on demand.
+    let app = app_dir()?;
+    let _ = std::fs::remove_dir_all(app.join("workspaces"));
+    let _ = std::fs::remove_dir_all(app.join("review"));
+    Ok(())
+}

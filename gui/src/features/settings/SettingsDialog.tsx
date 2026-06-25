@@ -1,6 +1,6 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { AppSettings } from "../../integrations/storage/appSettings";
-import { Boxes, Settings2, Sparkles } from "lucide-react";
+import { Boxes, RotateCcw, Settings2, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Overlay } from "../../components/ui/Overlay";
 import { invokeCommand } from "../../integrations/tauri/invoke";
@@ -8,8 +8,9 @@ import { cn } from "../../lib/cn";
 import { GeneralPage } from "./GeneralPage";
 import { ModelsPage } from "./ModelsPage";
 import { ProvidersPage } from "./ProvidersPage";
+import { ResetPage } from "./ResetPage";
 
-export type SettingsTab = "general" | "providers" | "models";
+export type SettingsTab = "general" | "providers" | "models" | "reset";
 
 const NAV_GROUPS = [
   {
@@ -23,12 +24,17 @@ const NAV_GROUPS = [
     ],
     label: "服务器",
   },
+  {
+    items: [{ icon: RotateCcw, label: "重置", value: "reset" as const }],
+    label: "调试",
+  },
 ];
 
 const TAB_TITLES: Record<SettingsTab, string> = {
   general: "通用",
   models: "模型",
   providers: "提供商",
+  reset: "重置",
 };
 
 export function SettingsDialog({
@@ -133,6 +139,7 @@ export function SettingsDialog({
                   />
                 )
               : null}
+            {tab === "reset" ? <ResetPage /> : null}
           </div>
         </div>
       </section>
