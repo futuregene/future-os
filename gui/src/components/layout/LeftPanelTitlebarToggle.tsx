@@ -1,4 +1,6 @@
 import { PanelLeftOpen } from "lucide-react";
+import { cn } from "../../lib/cn";
+import { isMacOS } from "../../lib/platform";
 
 interface LeftPanelTitlebarToggleProps {
   expanded: boolean;
@@ -13,7 +15,7 @@ export function LeftPanelTitlebarToggle({
     return null;
 
   return (
-    <div className="flex h-12 w-28 shrink-0 items-center pl-[64px]">
+    <div className={cn("flex h-12 shrink-0 items-center", isMacOS ? "w-28 pl-[64px]" : "pl-2")}>
       <button
         aria-label="Show sidebar"
         className="inline-flex size-8 -mt-1 items-center justify-center rounded-md border border-transparent text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"

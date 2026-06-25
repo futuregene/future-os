@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "../../lib/cn";
+import { isMacOS } from "../../lib/platform";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { IconButton } from "../ui/IconButton";
@@ -126,7 +127,9 @@ export function ActivityRail({
           title={toggleLabel}
           className={cn(
             "inline-flex size-8 items-center justify-center rounded-md border border-transparent text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
-            expanded && "absolute left-[80px] top-1.5",
+            // macOS reserves the top-left for the traffic lights; other platforms
+            // don't, so the toggle sits near the edge.
+            expanded && (isMacOS ? "absolute left-[80px] top-1.5" : "absolute left-2 top-1.5"),
           )}
           onClick={onToggleExpanded}
           type="button"
