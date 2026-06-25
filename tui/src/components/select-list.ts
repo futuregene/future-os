@@ -186,15 +186,20 @@ export class SelectList implements Component {
     const total = this.filteredItems.length;
     const maxItems = Math.min(total, this.maxVisible);
 
-    // Scroll indicator above
+    // Scroll indicator above (always reserve space for consistent line count)
     if (this.scrollOffset > 0) {
       lines.push(padToWidth(`${CSI}38;5;${this.theme.dimFg}m↑ ${this.scrollOffset} more`));
+    } else {
+      lines.push(padToWidth(""));
     }
 
-    for (let i = 0; i < maxItems; i++) {
+    for (let i = 0; i < this.maxVisible; i++) {
       const idx = this.scrollOffset + i;
       const item = this.filteredItems[idx];
-      if (!item) continue;
+      if (!item) {
+        lines.push(padToWidth(""));
+        continue;
+      }
 
       const selected = idx === this.selectedIndex;
       const labelPart = truncateToWidth(item.label, maxLabelW);
@@ -218,14 +223,17 @@ export class SelectList implements Component {
       }
     }
 
-    // Scroll indicator below
+    // Scroll indicator below (always reserve space for consistent line count)
     if (this.scrollOffset + maxItems < total) {
       const remaining = total - this.scrollOffset - maxItems;
       lines.push(padToWidth(`${CSI}38;5;${this.theme.dimFg}m↓ ${remaining} more`));
+    } else {
+      lines.push(padToWidth(""));
     }
 
     if (total === 0) {
-      lines.push(padToWidth(`${CSI}2mNo matching items`));
+      // Replace one empty slot with the message (line count stays constant)
+      lines[2] = padToWidth(`${CSI}2mNo matching items`);
     }
 
     return lines;
