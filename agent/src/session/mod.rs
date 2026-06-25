@@ -603,7 +603,7 @@ pub fn entries_to_agent_messages(entries: &[SessionEntry]) -> Vec<crate::types::
         msgs.push(crate::types::AgentMessage {
             role,
             content,
-            thinking: String::new(),
+            thinking: entry.thinking.clone(),
             tool_calls,
             tool_call_id: entry.tool_call_id.clone(),
             name: entry.name.clone(),
