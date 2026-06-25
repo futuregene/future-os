@@ -1,4 +1,4 @@
-//! LLM Client — 1:1 compatible with Go internal/llm/
+//! LLM Client — 1:1 compatible with internal/llm/
 //!
 //! Uses reqwest for HTTP + SSE streaming, matching Go's OpenAI SDK behavior.
 
@@ -205,7 +205,7 @@ impl crate::types::LLMProvider for Client {
         }
 
         // Use model-specific max_tokens field name (from compat.maxTokensField)
-        // pi sets maxTokensField to "max_completion_tokens" for o1/o3/gpt-5 reasoning models
+        // Open AI SDK sets maxTokensField to "max_completion_tokens" for reasoning models
         if let Some(mt) = self.max_tokens {
             let field = self.max_tokens_field.read().unwrap();
             body[field.as_str()] = serde_json::json!(mt);

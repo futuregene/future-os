@@ -1,6 +1,6 @@
 /**
  * Autocomplete system — provider-based completion with debounce and cancellation.
- * Ported from pi's AutocompleteProvider + AutocompleteManager pattern.
+ *
  */
 
 import { fg, bold, DARK_THEME } from "../theme.js";
@@ -34,7 +34,7 @@ export interface AutocompleteProvider {
 
 // ─── Autocomplete Manager ──────────────────────────────────────────────────
 
-const DEBOUNCE_MS = 20;  // matches pi's autocomplete debounce
+const DEBOUNCE_MS = 20;
 
 export class AutocompleteManager {
   private providers: AutocompleteProvider[] = [];

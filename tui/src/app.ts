@@ -139,7 +139,7 @@ export class App extends Container {
 
   private running = false;
 
-  // Diff-based render state (matches pi's doRender approach)
+  // Diff-based render state 
   private previousLines: string[] = [];
   private cursorRow = 0;
   private hardwareCursorRow = 0;
@@ -212,7 +212,7 @@ export class App extends Container {
     this.acManager.register(new FilePathProvider(this.state.cwd || process.cwd()));
     this.acManager.register(new AttachmentProvider());
 
-    // Register children with Container (matches pi's TUI extends Container)
+    // Register children with Container 
     this.addChild(this.chat);
     this.addChild(this.input);
     this.addChild(this.footer);
@@ -360,7 +360,7 @@ export class App extends Container {
     await this.terminal.drainInput();
     this.terminal.stop();
 
-    // Move cursor to end of content (matches pi's stop())
+    // Move cursor to end of content )
     if (this.previousLines.length > 0) {
       const targetRow = this.previousLines.length;
       const lineDiff = targetRow - this.hardwareCursorRow;
@@ -510,7 +510,7 @@ export class App extends Container {
       return;
     }
 
-    // Filter key release events unless focused component explicitly wants them (matches pi)
+    // Filter key release events unless focused component explicitly wants them 
     if (isKeyRelease(data)) {
       const focused = this.focusedComponent;
       if (!focused?.wantsKeyRelease) return;
@@ -549,7 +549,7 @@ export class App extends Container {
     // Parse key through unified parser (Kitty CSI-u, modifyOtherKeys, legacy)
     const keyName = parseKey(data);
     if (keyName) {
-      // If focused component is a now-invisible overlay, redirect focus (matches pi)
+      // If focused component is a now-invisible overlay, redirect focus 
       const focusedOverlay = this.overlayStack.find((o) => o.component === this.focusedComponent);
       if (focusedOverlay && !this.isOverlayVisible(focusedOverlay, this.terminal.columns, this.terminal.rows)) {
         const top = this.getTopOverlay();
@@ -579,7 +579,7 @@ export class App extends Container {
   }
 
   private handleKey(key: string): void {
-    // Shift+Ctrl+D — trigger debug callback (matches pi onDebug pattern)
+    // Shift+Ctrl+D — trigger debug callback 
     if (key === "shift+ctrl+d" && this.onDebug) {
       this.onDebug();
       return;
@@ -761,7 +761,7 @@ export class App extends Container {
       this.requestRender();
       return;
     }
-    // Not streaming: exit the app (matches pi behavior)
+    // Not streaming: exit the app 
     this.running = false;
     setImmediate(async () => {
       await this.stop();
@@ -1545,7 +1545,7 @@ export class App extends Container {
     const entry = { component, options, preFocus, hidden: false, focusOrder };
     this.overlayStack.push(entry);
 
-    // Auto-focus unless nonCapturing (matches pi)
+    // Auto-focus unless nonCapturing 
     if (!options?.nonCapturing) {
       this.setFocus(component);
     }
@@ -1810,14 +1810,14 @@ export class App extends Container {
     this.showOverlay(sl);
   }
 
-  // ─── Rendering (pi-style differential with synchronized output) ──────────
+  // ─── Rendering (differential with synchronized output) ──────────
 
   /**
    * Request a render. If called rapidly, calls are coalesced so doRender()
    * fires at most every MIN_RENDER_INTERVAL_MS (16ms ≈ 60fps).
    */
   /**
-   * Request a render. Uses dual-phase scheduling (matches pi):
+   * Request a render. Uses dual-phase scheduling :
    * - force: process.nextTick for immediate full redraw
    * - ambient: setTimeout-based coalescing at ~30fps
    */
@@ -2038,7 +2038,7 @@ export class App extends Container {
     // Filter out undefined entries (can happen with certain input sequences)
     newLines = newLines.map((l) => l ?? "");
 
-    // Composite overlays into rendered lines (before diff compare, matches pi)
+    // Composite overlays into rendered lines (before diff compare)
     if (this.overlayStack.length > 0) {
       newLines = this.compositeOverlays(newLines, W, H);
     }
@@ -2115,7 +2115,7 @@ export class App extends Container {
       this.previousHeight = H;
     };
 
-    // Debug redraw logging (matches pi's PI_DEBUG_REDRAW)
+    // Debug redraw logging 
     const debugRedraw = process.env.PI_DEBUG_REDRAW === "1";
     const logRedraw = (reason: string): void => {
       if (!debugRedraw) return;

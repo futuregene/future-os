@@ -2,7 +2,7 @@
  * Keyboard input handling for terminal applications.
  *
  * Supports: legacy terminal sequences, Kitty CSI-u protocol, xterm modifyOtherKeys.
- * Ported from pi-mono for future-tui TUI.
+ *
  */
 
 // ─── Global Kitty Protocol State ─────────────────────────────────────────

@@ -651,7 +651,7 @@ async function listModels(grpcAddr: string, search?: string): Promise<void> {
     );
   }
 
-  // Format number with K/M suffix (matching pi style)
+  // Format number with K/M suffix 
   function fmtNum(n: number): string {
     if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
     if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";

@@ -1,5 +1,5 @@
 /**
- * ChatArea - scrollable chat view matching pi-mono style.
+ * ChatArea - scrollable chat view matching style.
  * Renders messages with proper markdown, tool output, and streaming.
  */
 
@@ -385,10 +385,10 @@ export class ChatArea implements Component {
     }
   }
 
-  // ─── User message (pi style: markdown + full-width background Box) ─
+  // ─── User message (markdown + full-width background Box) ─
 
   private renderUserMessage(msg: ChatMessage): void {
-    // Render through markdown for proper text wrapping (matches pi: Markdown inside Box)
+    // Render through markdown for proper text wrapping 
     const rendered = this.md.render(msg.content, this.width - 2);
     for (const line of rendered) {
       if (line === "") continue;
@@ -403,14 +403,14 @@ export class ChatArea implements Component {
     }
   }
 
-  // ─── Assistant message (pi style: mardown via marked, thinking first) ─
+  // ─── Assistant message (mardown via marked, thinking first) ─
 
   private renderAssistantMessage(msg: ChatMessage): void {
     const hasThinking = msg.thinking && msg.thinking.trim();
 
     // Render thinking block FIRST (before content).
     // Render through the markdown renderer so long lines wrap correctly
-    // (matches pi passing thinking through its Markdown component).
+    // .
     if (hasThinking) {
       if (this.thinkingHidden) {
         this.renderedLines.push({
@@ -474,7 +474,7 @@ export class ChatArea implements Component {
     });
   }
 
-  /** Format tool call display per tool type (matches pi's per-tool renderCall). */
+  /** Format tool call display per tool type . */
   private formatToolCall(toolName: string, toolArgs?: string): string {
     // Total line: " " + prefix + " " + content, must fit within this.width
     // Available for content = this.width - 1 (leading space) - visibleWidth(prefix) - 1 (separator)
