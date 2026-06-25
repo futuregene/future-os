@@ -19,13 +19,7 @@ pub struct RpcCommand {
     #[serde(default)]
     pub streaming_behavior: String,
 
-    // new_session
-    #[serde(default)]
-    pub parent_session: String,
-
     // set_model
-    #[serde(default)]
-    pub provider: String,
     #[serde(default)]
     pub model_id: String,
 
@@ -51,15 +45,11 @@ pub struct RpcCommand {
 
     // Session
     #[serde(default)]
-    pub session_path: String,
-    #[serde(default)]
     pub session_id: String,
     #[serde(default)]
     pub entry_id: String,
     #[serde(default)]
     pub name: String,
-    #[serde(default)]
-    pub output_path: String,
     #[serde(default)]
     pub cwd: String,
 
@@ -71,10 +61,7 @@ pub struct RpcCommand {
     #[serde(default)]
     pub tools: Vec<String>,
     #[serde(default)]
-    pub no_tools: bool,
-
     // set_ephemeral
-    #[serde(default)]
     pub ephemeral: bool,
 
     // set_enabled_models
