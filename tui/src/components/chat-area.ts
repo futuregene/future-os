@@ -453,33 +453,20 @@ export class ChatArea implements Component {
     }
   }
 
-  // ─── Tool message (single-line, matches streaming style) ─
+  // ─── Tool message (single-line header only, matches streaming style) ─
 
   private renderToolMessage(msg: ChatMessage): void {
     const toolName = msg.name || msg.tool || "tool";
     const status = msg.toolStatus || "running";
 
-    // Background color based on status
     const bgColor = status === "error" ? this.theme.toolErrorBg
       : status !== "running" ? this.theme.toolSuccessBg
       : this.theme.toolPendingBg;
 
-    // Build single line: tool header + inline content preview
+    // Single header line only — during streaming, tool output is never
+    // shown inline (it arrives in subsequent assistant messages).
     const toolArgs = (msg as { toolArgs?: string }).toolArgs;
-    const header = this.formatToolCall(toolName, toolArgs);
-    let line = " " + header;
-
-    // Append content preview inline (matches streaming style)
-    if (msg.content) {
-      const contentPreview = msg.content.replace(/\n/g, " ").trim();
-      const remaining = Math.max(10, this.width - visibleWidth(line) - 3);
-      const preview = contentPreview.length > remaining
-        ? contentPreview.slice(0, remaining) + "..."
-        : contentPreview;
-      if (preview) {
-        line += " " + preview;
-      }
-    }
+    const line = " " + this.formatToolCall(toolName, toolArgs);
 
     this.renderedLines.push({
       text: applyBackgroundToLine(line, this.width, bgColor),
