@@ -14,8 +14,6 @@ pub struct RpcCommand {
     pub streaming_behavior: String,
     #[prost(string, tag = "20")]
     pub parent_session: String,
-    #[prost(string, tag = "30")]
-    pub provider: String,
     #[prost(string, tag = "31")]
     pub model_id: String,
     #[prost(string, tag = "40")]
@@ -28,24 +26,18 @@ pub struct RpcCommand {
     pub enabled: bool,
     #[prost(string, tag = "80")]
     pub command: String,
-    #[prost(string, tag = "90")]
-    pub session_path: String,
     #[prost(string, tag = "91")]
     pub session_id: String,
     #[prost(string, tag = "92")]
     pub entry_id: String,
     #[prost(string, tag = "93")]
     pub name: String,
-    #[prost(string, tag = "94")]
-    pub output_path: String,
     #[prost(string, tag = "95")]
     pub cwd: String,
     #[prost(string, tag = "100")]
     pub system_prompt: String,
     #[prost(string, repeated, tag = "110")]
     pub tools: Vec<String>,
-    #[prost(bool, tag = "111")]
-    pub no_tools: bool,
     #[prost(bool, tag = "120")]
     pub ephemeral: bool,
     #[prost(string, repeated, tag = "130")]
