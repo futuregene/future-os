@@ -91,6 +91,8 @@ pub struct SessionEntry {
         skip_serializing_if = "String::is_empty"
     )]
     pub tool_call_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
 }
 
 impl SessionEntry {
@@ -113,6 +115,7 @@ impl SessionEntry {
             display: String::new(),
             provider: String::new(),
             tool_call_id: String::new(),
+            name: String::new(),
         }
     }
 
@@ -135,6 +138,7 @@ impl SessionEntry {
             display: String::new(),
             provider: String::new(),
             tool_call_id: String::new(),
+            name: String::new(),
         }
     }
 
@@ -157,6 +161,7 @@ impl SessionEntry {
             display: String::new(),
             provider: String::new(),
             tool_call_id: call_id.to_string(),
+        name: String::new(),
         }
     }
 }
@@ -506,6 +511,7 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
             display: String::new(),
             provider: String::new(),
             tool_call_id: String::new(),
+            name: String::new(),
         },
     );
     let now = Local::now();
@@ -588,7 +594,7 @@ pub fn entries_to_agent_messages(entries: &[SessionEntry]) -> Vec<crate::types::
             thinking: String::new(),
             tool_calls,
             tool_call_id: entry.tool_call_id.clone(),
-            name: String::new(),
+            name: entry.name.clone(),
             metadata: None,
         });
     }
@@ -678,6 +684,7 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
         display: String::new(),
         provider: String::new(),
         tool_call_id: msg.tool_call_id.clone(),
+        name: msg.name.clone(),
     }
 }
 
