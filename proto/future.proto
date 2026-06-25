@@ -39,17 +39,7 @@ message RpcCommand {
   // "followUp" (enqueue after current run completes).
   string streaming_behavior = 12;
 
-  // ── new_session ────────────────────────────────────────────────────────
-
-  // Reserved for future fork-from-parent.  Not currently wired.
-  string parent_session = 20;
-
   // ── set_model ──────────────────────────────────────────────────────────
-
-  // Provider prefix (e.g. "openai").  Not currently used by agent;
-  // model resolution happens via model_id which already encodes the
-  // provider (format: "provider/id" or just "id").
-  string provider = 30;
 
   // Canonical model ID.  If it contains a "/", the part before the slash
   // is treated as the provider.  Example: "deepseek/deepseek-chat".
@@ -82,10 +72,6 @@ message RpcCommand {
 
   // ── Session bookkeeping ────────────────────────────────────────────────
 
-  // Filesystem path to a session directory.  Used by the TUI for
-  // import/export.  Not used in regular command dispatch.
-  string session_path = 90;
-
   // Target session ID.  Almost every command requires this so the
   // agent knows which session to operate on.  new_session uses it
   // as the requested ID (generated if empty).
@@ -96,9 +82,6 @@ message RpcCommand {
 
   // Session name (set by /name command).  Used with set_session_name.
   string name = 93;
-
-  // Output path for session export.  Reserved, not currently wired.
-  string output_path = 94;
 
   // ── new_session cwd ────────────────────────────────────────────────────
 
@@ -115,9 +98,6 @@ message RpcCommand {
 
   // List of tool names to enable (e.g. ["read", "write", "edit", "bash"]).
   repeated string tools = 110;
-
-  // If true, disable ALL built-in tools (bare LLM mode).
-  bool no_tools = 111;
 
   // ── set_ephemeral ──────────────────────────────────────────────────────
 

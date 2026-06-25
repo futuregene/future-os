@@ -61,7 +61,6 @@ impl AgentClient {
             id: uuid::Uuid::new_v4().to_string(),
             r#type: cmd_type.to_string(),
             session_id: session_id.to_string(),
-            session_path: String::new(),
             entry_id: String::new(),
             ..extra
         });

@@ -42,23 +42,18 @@ message RpcCommand {
   string message = 10;
   repeated ImageContent images = 11;
   string streaming_behavior = 12;
-  string parent_session = 20;
-  string provider = 30;
   string model_id = 31;
   string level = 40;
   string mode = 50;
   string custom_instructions = 60;
   bool enabled = 70;
   string command = 80;
-  string session_path = 90;
   string session_id = 91;
   string entry_id = 92;
   string name = 93;
-  string output_path = 94;
   string cwd = 95;
   string system_prompt = 100;
   repeated string tools = 110;
-  bool no_tools = 111;
   bool ephemeral = 120;
   repeated string enabled_models = 130;
 }

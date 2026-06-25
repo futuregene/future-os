@@ -19,14 +19,6 @@ pub struct RpcCommand {
     /// "followUp" (enqueue after current run completes).
     #[prost(string, tag = "12")]
     pub streaming_behavior: ::prost::alloc::string::String,
-    /// Reserved for future fork-from-parent.  Not currently wired.
-    #[prost(string, tag = "20")]
-    pub parent_session: ::prost::alloc::string::String,
-    /// Provider prefix (e.g. "openai").  Not currently used by agent;
-    /// model resolution happens via model_id which already encodes the
-    /// provider (format: "provider/id" or just "id").
-    #[prost(string, tag = "30")]
-    pub provider: ::prost::alloc::string::String,
     /// Canonical model ID.  If it contains a "/", the part before the slash
     /// is treated as the provider.  Example: "deepseek/deepseek-chat".
     #[prost(string, tag = "31")]
@@ -46,10 +38,6 @@ pub struct RpcCommand {
     /// Shell command string.  Used when cmd_type = "bash".
     #[prost(string, tag = "80")]
     pub command: ::prost::alloc::string::String,
-    /// Filesystem path to a session directory.  Used by the TUI for
-    /// import/export.  Not used in regular command dispatch.
-    #[prost(string, tag = "90")]
-    pub session_path: ::prost::alloc::string::String,
     /// Target session ID.  Almost every command requires this so the
     /// agent knows which session to operate on.  new_session uses it
     /// as the requested ID (generated if empty).
@@ -61,9 +49,6 @@ pub struct RpcCommand {
     /// Session name (set by /name command).  Used with set_session_name.
     #[prost(string, tag = "93")]
     pub name: ::prost::alloc::string::String,
-    /// Output path for session export.  Reserved, not currently wired.
-    #[prost(string, tag = "94")]
-    pub output_path: ::prost::alloc::string::String,
     /// Working directory for the new session.  The agent resolves "~" and
     /// relative paths.  Defaults to ~/.future/agent/workspace.
     #[prost(string, tag = "95")]
@@ -74,9 +59,6 @@ pub struct RpcCommand {
     /// List of tool names to enable (e.g. \["read", "write", "edit", "bash"\]).
     #[prost(string, repeated, tag = "110")]
     pub tools: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// If true, disable ALL built-in tools (bare LLM mode).
-    #[prost(bool, tag = "111")]
-    pub no_tools: bool,
     /// If true, the session is not persisted to disk.
     #[prost(bool, tag = "120")]
     pub ephemeral: bool,
