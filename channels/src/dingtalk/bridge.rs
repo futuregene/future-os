@@ -139,8 +139,8 @@ impl DingtalkBridge {
                                 if m.max_tokens > 0 { format!("{}K", m.max_tokens/1000) } else { "unlimited".into() },
                             )).unwrap_or_default();
                             reply_md("Status", &format!(
-                                "**Model:** {}\n\n{}\n\n**Session:** {}\n\n**CWD:** {}\n\n**Thinking:** {}\n\n**Messages:** {}\n\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n\n**Tokens:** {} in / {} out\n\n**Cost:** ¥{:.4}",
-                                s.model, mi, s.session_id, s.cwd, s.thinking_level, s.message_count,
+                                "**Model:** {}\n\n{}\n\n**Session:** {}\n\n**CWD:** {}\n\n**Thinking:** {}\n\n**Queries:** {}\n\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n\n**Tokens:** {} in / {} out\n\n**Cost:** ¥{:.4}",
+                                s.model, mi, s.session_id, s.cwd, s.thinking_level, s.query_count,
                                 if s.auto_compaction {"on"} else {"off"},
                                 s.context_tokens, s.context_window,
                                 if s.context_window > 0 { (s.context_tokens as f64 / s.context_window as f64)*100.0 } else { 0.0 },

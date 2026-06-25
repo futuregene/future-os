@@ -1244,7 +1244,7 @@ export class App extends Container {
             `**CWD:** ${s.cwd || "(none)"}`,
             `**Thinking:** ${s.thinkingLevel}`,
             `**Permission:** ${s.permissionLevel ?? "all"}`,
-            `**Messages:** ${s.messageCount}`,
+            `**Queries:** ${s.queryCount}`,
             `**Auto compaction:** ${s.autoCompactionEnabled ? "on" : "off"}`,
             `**Streaming:** ${s.isStreaming ? "yes" : "no"}`,
             "",
