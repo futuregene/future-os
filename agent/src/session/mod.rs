@@ -231,7 +231,7 @@ impl Session {
     }
 
     pub fn set_session_name(&mut self, name: &str) {
-        self.name = name.to_string();
+        self.name = name.trim().to_string();
     }
 
     pub fn get_base_url(&self) -> &str {
@@ -430,8 +430,9 @@ impl Manager {
                             } else {
                                 String::new()
                             };
-                            // Truncate to first 60 Unicode chars
-                            let truncated: String = text.chars().take(60).collect();
+                            // Trim, then truncate to ~40 visible-width (≈20 CJK chars)
+                            let trimmed = text.trim();
+                            let truncated: String = truncate_visible(trimmed, 40);
                             if !truncated.is_empty() {
                                 first_message = Some(truncated);
                             }
@@ -677,4 +678,35 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
         provider: String::new(),
         tool_call_id: msg.tool_call_id.clone(),
     }
+}
+
+/// Truncate a string to max_vis visible columns. CJK characters count as 2,
+/// everything else as 1. Matches approximate terminal rendering width.
+fn truncate_visible(s: &str, max_vis: usize) -> String {
+    let mut vis: usize = 0;
+    let mut result = String::with_capacity(s.len());
+    for ch in s.chars() {
+        let w = if ch >= '\u{1100}' && ch <= '\u{115f}'   // Hangul Jamo
+            || ch >= '\u{2e80}' && ch <= '\u{a4cf}'       // CJK radicals + Yi
+            || ch >= '\u{ac00}' && ch <= '\u{d7a3}'       // Hangul Syllables
+            || ch >= '\u{f900}' && ch <= '\u{faff}'       // CJK Compatibility
+            || ch >= '\u{fe30}' && ch <= '\u{fe4f}'       // CJK Compatibility Forms
+            || ch >= '\u{ff00}' && ch <= '\u{ffef}'       // Fullwidth Forms
+            || ch >= '\u{1f300}' && ch <= '\u{1f5ff}'     // Misc Symbols
+            || ch >= '\u{1f900}' && ch <= '\u{1f9ff}'     // Supplemental Symbols
+            || ch >= '\u{1f600}' && ch <= '\u{1f64f}'     // Emoticons
+            || ch >= '\u{20000}' && ch <= '\u{2fffd}'     // SIP
+            || ch >= '\u{30000}' && ch <= '\u{3fffd}'     // TIP
+        {
+            2
+        } else {
+            1
+        };
+        if vis + w > max_vis {
+            break;
+        }
+        vis += w;
+        result.push(ch);
+    }
+    result
 }
