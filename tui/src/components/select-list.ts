@@ -169,8 +169,8 @@ export class SelectList implements Component {
     const lines: string[] = [];
     const innerW = Math.max(20, width);
 
-    // Width budget: label gets most of the space, description gets the rest
-    const maxLabelW = Math.max(10, innerW - 35);
+    // Width budget: label gets most space, description padded for alignment
+    const maxLabelW = Math.max(10, innerW - 42);
     const maxDescW = Math.max(5, innerW - maxLabelW - 4);
 
     // Helper: pad line to fill innerW, ensuring each line clears stale content
@@ -205,6 +205,9 @@ export class SelectList implements Component {
 
       const selected = idx === this.selectedIndex;
       const labelPart = truncateToWidth(item.label, maxLabelW);
+      // Pad label to fixed width so description column is aligned
+      const labelVisW = visibleWidth(labelPart);
+      const labelPad = " ".repeat(Math.max(0, maxLabelW - labelVisW));
       // Normalize multiline descriptions: replace \r\n with space
       const rawDesc = item.description?.replace(/\r\n/g, " ") ?? "";
       const descPart = truncateToWidth(rawDesc, maxDescW);
@@ -214,13 +217,13 @@ export class SelectList implements Component {
         const bgSeq = `${CSI}48;5;${this.theme.selectedBg}m`;
         const fgSeq = `${CSI}38;5;${this.theme.selectedFg}m`;
         const head = `${fgSeq}${bgSeq} ▶ `;
-        const label = labelPart;
+        const label = labelPart + labelPad;
         const suffix = descPart
           ? ` ${CSI}2m${descPart}`
           : "";
         lines.push(padToWidth(head + label + suffix));
       } else {
-        const label = `${CSI}38;5;${this.theme.fg}m  ${labelPart}${RESET}`;
+        const label = `${CSI}38;5;${this.theme.fg}m  ${labelPart}${labelPad}${RESET}`;
         const suffix = descPart
           ? ` ${CSI}38;5;${this.theme.dimFg}m${CSI}2m${descPart}${RESET}`
           : "";
