@@ -95,6 +95,8 @@ pub struct SessionEntry {
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tool_args: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub thinking: String,
 }
 
 impl SessionEntry {
@@ -119,6 +121,7 @@ impl SessionEntry {
             tool_call_id: String::new(),
             name: String::new(),
             tool_args: String::new(),
+            thinking: String::new(),
         }
     }
 
@@ -143,6 +146,7 @@ impl SessionEntry {
             tool_call_id: String::new(),
             name: String::new(),
             tool_args: String::new(),
+            thinking: String::new(),
         }
     }
 
@@ -167,6 +171,7 @@ impl SessionEntry {
             tool_call_id: call_id.to_string(),
         name: String::new(),
         tool_args: String::new(),
+            thinking: String::new(),
         }
     }
 }
@@ -518,6 +523,7 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
             tool_call_id: String::new(),
             name: String::new(),
             tool_args: String::new(),
+            thinking: String::new(),
         },
     );
     let now = Local::now();
@@ -621,8 +627,6 @@ pub fn build_context(entries: &[SessionEntry]) -> Vec<Message> {
 
         let content = entry.content.clone().unwrap_or(serde_json::Value::Null);
         let tool_calls: Vec<ToolCall> = entry.tool_calls.clone();
-        let reasoning = String::new();
-
         msgs.push(Message {
             role,
             content: Some(content),
@@ -634,7 +638,7 @@ pub fn build_context(entries: &[SessionEntry]) -> Vec<Message> {
             tool_call_id: entry.tool_call_id.clone(),
             name: String::new(),
             tool_args: String::new(),
-            reasoning_content: reasoning,
+            reasoning_content: entry.thinking.clone(),
         });
     }
     msgs
@@ -694,6 +698,7 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
         tool_call_id: msg.tool_call_id.clone(),
         name: msg.name.clone(),
         tool_args: msg.tool_args.clone(),
+        thinking: msg.thinking.clone(),
     }
 }
 
