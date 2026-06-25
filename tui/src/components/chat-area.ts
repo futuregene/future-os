@@ -529,18 +529,6 @@ export class ChatArea implements Component {
           const pathDisplay = filePath ? fg(this.theme.accent, truncateToWidth(filePath, maxFor(4))) : fg(this.theme.toolOutput, "...");
           return `${fg(this.theme.toolTitle, bold("edit"))} ${pathDisplay}`;
         }
-        case "grep": {
-          const pattern = typeof args.pattern === "string" ? args.pattern : "";
-          const filePath = typeof args.path === "string" ? args.path : "";
-          const patternDisplay = pattern ? fg(this.theme.toolOutput, truncateToWidth(pattern, maxFor(4))) : "...";
-          const pathDisplay = filePath ? ` ${fg(this.theme.accent, truncateToWidth(filePath, Math.max(5, maxFor(4) - (pattern ? pattern.length + 1 : 0))))}` : "";
-          return `${fg(this.theme.toolTitle, bold("grep"))} ${patternDisplay}${pathDisplay}`;
-        }
-        case "ls": {
-          const filePath = typeof args.path === "string" ? args.path : "";
-          const pathDisplay = filePath ? fg(this.theme.accent, truncateToWidth(filePath, maxFor(2))) : fg(this.theme.toolOutput, "...");
-          return `${fg(this.theme.toolTitle, bold("ls"))} ${pathDisplay}`;
-        }
         default: {
           const argSummary = JSON.stringify(args);
           const truncated = truncateToWidth(argSummary, maxFor(toolName.length));
