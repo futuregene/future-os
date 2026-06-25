@@ -171,15 +171,24 @@ export class SelectList implements Component {
     const maxLabelW = Math.max(10, innerW - 35);
     const maxDescW = Math.max(5, innerW - maxLabelW - 4);
 
-    lines.push(`${CSI}38;5;${this.theme.accent}m${BOLD} ${this.title} ${RESET}`);
-    lines.push(`${CSI}2mFilter: ${this.filter}_ ${RESET}`);
+    // Helper: pad line to fill innerW, ensuring each line clears stale content
+    const padToWidth = (line: string): string => {
+      const visW = visibleWidth(line);
+      if (visW < innerW) {
+        return line + " ".repeat(innerW - visW) + RESET;
+      }
+      return line + RESET;
+    };
+
+    lines.push(padToWidth(`${CSI}38;5;${this.theme.accent}m${BOLD} ${this.title}`));
+    lines.push(padToWidth(`${CSI}2mFilter: ${this.filter}_`));
 
     const total = this.filteredItems.length;
     const maxItems = Math.min(total, this.maxVisible);
 
     // Scroll indicator above
     if (this.scrollOffset > 0) {
-      lines.push(`${CSI}38;5;${this.theme.dimFg}m↑ ${this.scrollOffset} more${RESET}`);
+      lines.push(padToWidth(`${CSI}38;5;${this.theme.dimFg}m↑ ${this.scrollOffset} more`));
     }
 
     for (let i = 0; i < maxItems; i++) {
@@ -199,24 +208,24 @@ export class SelectList implements Component {
         const suffix = descPart
           ? `${CSI}38;5;${this.theme.selectedFg}m${CSI}48;5;${this.theme.selectedBg}m ${CSI}2m${descPart}${RESET}`
           : "";
-        lines.push(prefix + label + suffix);
+        lines.push(padToWidth(prefix + label + suffix));
       } else {
         const label = `${CSI}38;5;${this.theme.fg}m  ${labelPart}${RESET}`;
         const suffix = descPart
           ? ` ${CSI}38;5;${this.theme.dimFg}m${CSI}2m${descPart}${RESET}`
           : "";
-        lines.push(label + suffix);
+        lines.push(padToWidth(label + suffix));
       }
     }
 
     // Scroll indicator below
     if (this.scrollOffset + maxItems < total) {
       const remaining = total - this.scrollOffset - maxItems;
-      lines.push(`${CSI}38;5;${this.theme.dimFg}m↓ ${remaining} more${RESET}`);
+      lines.push(padToWidth(`${CSI}38;5;${this.theme.dimFg}m↓ ${remaining} more`));
     }
 
     if (total === 0) {
-      lines.push(`${CSI}2mNo matching items${RESET}`);
+      lines.push(padToWidth(`${CSI}2mNo matching items`));
     }
 
     return lines;
