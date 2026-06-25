@@ -111,7 +111,14 @@ if not exist "%AGENT_BIN%" (
 echo Starting future-agent...
 rem Launch the agent binary directly via PowerShell so we capture its own PID
 rem (not a wrapper's) and redirect stdout/stderr to log files reliably.
-for /f "usebackq delims=" %%p in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Start-Process -FilePath $env:AGENT_BIN -ArgumentList @('--grpc-addr', $env:AGENT_ADDR) -WorkingDirectory $env:AGENT_DIR -RedirectStandardOutput $env:AGENT_LOG -RedirectStandardError $env:AGENT_ERR -WindowStyle Hidden -PassThru; $p.Id"`) do set "AGENT_PID=%%p"
+rem PowerShell writes the PID to the pid file; we read it back. Do NOT capture
+rem the PID through `for /f` here: Start-Process redirection makes the spawned
+rem agent inherit the for-pipe handle, so `for /f` blocks until the agent exits.
+del /q "%AGENT_PID_FILE%" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Start-Process -FilePath $env:AGENT_BIN -ArgumentList @('--grpc-addr', $env:AGENT_ADDR) -WorkingDirectory $env:AGENT_DIR -RedirectStandardOutput $env:AGENT_LOG -RedirectStandardError $env:AGENT_ERR -WindowStyle Hidden -PassThru; [System.IO.File]::WriteAllText($env:AGENT_PID_FILE, [string]$p.Id)"
+
+set "AGENT_PID="
+if exist "%AGENT_PID_FILE%" set /p AGENT_PID=<"%AGENT_PID_FILE%"
 
 if not defined AGENT_PID (
   echo Failed to start future-agent.
@@ -120,7 +127,6 @@ if not defined AGENT_PID (
   exit /b 1
 )
 
-> "%AGENT_PID_FILE%" echo %AGENT_PID%
 call :wait_for_agent || (call :cleanup & exit /b 1)
 echo future-agent started pid=%AGENT_PID%
 echo Agent log: %AGENT_LOG%
