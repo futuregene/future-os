@@ -452,7 +452,7 @@ export class ChatArea implements Component {
     }
   }
 
-  // ─── Tool message (single-line summary) ─
+  // ─── Tool message (header + optional output) ─
 
   private renderToolMessage(msg: ChatMessage): void {
     const toolName = msg.name || msg.tool || "tool";
@@ -463,13 +463,29 @@ export class ChatArea implements Component {
       : status !== "running" ? this.theme.toolSuccessBg
       : this.theme.toolPendingBg;
 
-    // Single-line header: tool name + key args (file path for read/write/edit)
+    // Header line: tool name + key args (file path for read/write/edit)
     const toolArgs = (msg as { toolArgs?: string }).toolArgs;
     const commandLine = " " + this.formatToolCall(toolName, toolArgs);
     this.renderedLines.push({
       text: applyBackgroundToLine(commandLine, this.width, bgColor),
       dim: false,
     });
+
+    // Render output content for historical/loaded tool messages.
+    // During live streaming, output arrives via appendToolDelta.
+    if (msg.content) {
+      const maxOutputLines = 20;
+      const outputLines = msg.content.split("\n");
+      const displayLines = outputLines.length > maxOutputLines
+        ? [...outputLines.slice(0, maxOutputLines), `... (${outputLines.length - maxOutputLines} more lines)`]
+        : outputLines;
+      for (const line of displayLines) {
+        this.renderedLines.push({
+          text: applyBackgroundToLine(" " + line, this.width, this.theme.toolPendingBg),
+          dim: true,
+        });
+      }
+    }
   }
 
   /** Format tool call display per tool type (matches pi's per-tool renderCall). */
