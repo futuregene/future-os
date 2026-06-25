@@ -187,9 +187,11 @@ fn resolve_diff_base(
                     ["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
                 )
                 .ok()
-                .map(|_| DiffBase {
+                .map(|resolved| DiffBase {
+                    // Diff the resolved commit SHA, not the raw ref — an annotated
+                    // tag's object differs from the commit it points at.
                     label: format!("custom ({reference})"),
-                    reference: reference.to_string(),
+                    reference: resolved.trim().to_string(),
                 })
             })
             .unwrap_or_else(head_diff_base),

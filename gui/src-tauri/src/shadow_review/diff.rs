@@ -290,7 +290,13 @@ fn truncate_diff(text: String, limits: &Limits) -> (Option<String>, bool) {
         .collect::<Vec<_>>()
         .join("\n");
     if kept.len() > limits.max_diff_bytes {
-        kept.truncate(limits.max_diff_bytes);
+        // Truncate on a char boundary — String::truncate panics if the cut lands
+        // mid-codepoint (multibyte text in the diff).
+        let mut cut = limits.max_diff_bytes;
+        while cut > 0 && !kept.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        kept.truncate(cut);
     }
     (Some(kept), true)
 }

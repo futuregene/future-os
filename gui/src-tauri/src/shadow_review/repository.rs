@@ -81,7 +81,11 @@ impl ShadowRepo {
             git_dir: root.join("repo.git"),
             index_path: indexes.join("index"),
         };
-        repo.ensure_initialized()?;
+        // Initialize under the workspace lock so two concurrent opens (e.g. a
+        // live Run and startup recovery) can't both run `git init` on the same
+        // shadow repo. Callers always `open` outside the lock, so this never
+        // nests. The lock is released before the caller takes it for snapshots.
+        with_workspace_lock(workspace_id, || repo.ensure_initialized())?;
         Ok(repo)
     }
 

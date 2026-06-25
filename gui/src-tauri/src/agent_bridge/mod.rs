@@ -124,9 +124,18 @@ pub async fn agent_prompt(
         if result.is_err() {
             wait_for_agent_idle(&effective_session_id).await;
         }
-        // §6.1: capture the after snapshot synchronously — the prompt guard is
-        // still held here, so the next Run's before-snapshot can't interleave.
-        let sensitive = review::capture_after(&thread_id, &run_id);
+        // §6.1: capture the after snapshot before the guard drops, so the next
+        // Run's before-snapshot can't interleave. It forks `git` and does fs IO,
+        // so run it on a blocking thread rather than stalling the async runtime.
+        let sensitive = {
+            let capture_thread = thread_id.clone();
+            let capture_run = run_id.clone();
+            tokio::task::spawn_blocking(move || {
+                review::capture_after(&capture_thread, &capture_run)
+            })
+            .await
+            .unwrap_or_default()
+        };
         // C1: the diff materialization is a read-only diff between fixed commits,
         // so defer it off the IPC path. The GUI is notified when it lands.
         tokio::spawn(async move {

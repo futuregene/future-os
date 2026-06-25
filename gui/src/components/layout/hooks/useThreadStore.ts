@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredThread, StoredWorkspace } from "../../../integrations/storage/threadStore";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelStaleApprovalRequests,
   getOrCreateDefaultChatThread,
@@ -61,13 +61,21 @@ export function useThreadStore(): ThreadStore {
     [threads],
   );
 
+  // usePolling doesn't cancel in-flight async, and refreshStore can overlap a
+  // poll tick — so guard against a slow run-status fetch landing after a newer
+  // one and overwriting it with stale data (incl. removed threads).
+  const runStatusGenRef = useRef(0);
   const refreshThreadRunStatuses = useCallback(async (nextThreads: StoredThread[]) => {
+    const generation = ++runStatusGenRef.current;
     const entries = await Promise.all(
       nextThreads.map(async (thread) => {
         const runs = await listRuns(thread.id);
         return [thread.id, runs[0]?.status] as const;
       }),
     );
+    if (generation !== runStatusGenRef.current) {
+      return;
+    }
     setThreadRunStatuses(Object.fromEntries(entries));
   }, []);
 

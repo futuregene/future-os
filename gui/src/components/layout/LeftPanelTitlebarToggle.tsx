@@ -15,7 +15,7 @@ export function LeftPanelTitlebarToggle({
     return null;
 
   return (
-    <div className={cn("flex h-12 shrink-0 items-center", isMacOS ? "w-28 pl-[64px]" : "pl-2")}>
+    <div className={cn("flex h-12 shrink-0 items-center", isMacOS ? "w-28 pl-[64px]" : "w-28")}>
       <button
         aria-label="Show sidebar"
         className="inline-flex size-8 items-center justify-center rounded-md border border-transparent text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"

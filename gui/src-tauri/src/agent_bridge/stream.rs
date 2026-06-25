@@ -9,6 +9,23 @@ use super::persist::persist_run_event;
 
 const AGENT_EVENT_STREAM_TIMEOUT_SECS: u64 = 600;
 
+/// Persist a run event on a blocking thread, so the synchronous SQLite write
+/// (and the occasional `git` fork on write/artifact events) doesn't stall the
+/// async event loop. Awaited to preserve event order; errors are logged inside
+/// `persist_run_event`.
+async fn persist_run_event_off_thread(
+    run_id: Option<&str>,
+    event_type: String,
+    data: String,
+    sequence: i64,
+) {
+    let run_id = run_id.map(str::to_string);
+    let _ = tokio::task::spawn_blocking(move || {
+        persist_run_event(run_id.as_deref(), &event_type, &data, sequence);
+    })
+    .await;
+}
+
 pub(super) async fn collect_agent_response(
     stream: &mut tonic::Streaming<crate::agent_proto::StreamEvent>,
     run_id: Option<&str>,
@@ -35,12 +52,13 @@ pub(super) async fn collect_agent_response(
                     result.map_err(|error| format!("Future Agent event stream failed: {error}"))?
                 }
                 Err(_) => {
-                    persist_run_event(
+                    persist_run_event_off_thread(
                         run_id,
-                        "timeout",
-                        r#"{"error":"Future Agent response timed out."}"#,
+                        "timeout".to_string(),
+                        r#"{"error":"Future Agent response timed out."}"#.to_string(),
                         sequence,
-                    );
+                    )
+                    .await;
                     return Err("Future Agent response timed out.".to_string().into());
                 }
             }
@@ -50,7 +68,8 @@ pub(super) async fn collect_agent_response(
             break;
         };
 
-        persist_run_event(run_id, &event.r#type, &event.data, sequence);
+        persist_run_event_off_thread(run_id, event.r#type.clone(), event.data.clone(), sequence)
+            .await;
         sequence += 1;
 
         match event.r#type.as_str() {

@@ -75,6 +75,9 @@ export function FutureLoginDialog({
         return;
       const attempt = attemptRef.current;
       if (Date.now() > deadlineRef.current) {
+        // Invalidate any in-flight poll so a late "authorized" can't slip past
+        // expiry and fire onAuthorized.
+        attemptRef.current += 1;
         setPhase("expired");
         setMessage("授权码已过期，请重试。");
         return;
