@@ -1404,8 +1404,10 @@ export class App extends Container {
           tool: (msg.tool_call_id as string) || undefined,
           toolArgs: (msg.tool_args as string) || undefined,
           thinking: (msg.reasoning_content as string) || undefined,
-          // Historical tool messages are always complete
-          toolStatus: role === "tool" ? "complete" as const : undefined,
+          // Historical tool messages: check content for error prefix
+          toolStatus: role === "tool"
+            ? (content.startsWith("Error:") ? "error" as const : "complete" as const)
+            : undefined,
         });
       }
 
