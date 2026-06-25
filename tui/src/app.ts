@@ -1012,11 +1012,11 @@ export class App extends Container {
                   prefix += isLast ? "└─ " : "├─ ";
                 }
                 const currentMarker = s.id === this.state.sessionId ? "▶ " : "  ";
-                const label = `${currentMarker}${prefix}${s.name || s.id}`;
+                const label = `${currentMarker}${prefix}${s.name || (s as any).first_message || s.id}`;
                 items.push({
                   value: s.id,
                   label,
-                  description: `${s.model} · ${new Date(s.updated_at).toLocaleString()}`,
+                  description: `${s.model} · ${(s as any).query_count ?? "?"}Q · ${new Date(s.updated_at).toLocaleString()}`,
                 });
                 if (hasChildren) {
                   flatten(children.get(s.id)!, depth + 1, [...ancestorsLast, isLast]);
@@ -1718,7 +1718,7 @@ export class App extends Container {
   }
 
   async showSessions(): Promise<void> {
-    let sessions: { id: string; name?: string; model: string; updated_at: string }[] = [];
+    let sessions: { id: string; name?: string; first_message?: string; query_count?: number; model: string; updated_at: string }[] = [];
     try {
       const r = await this.client.listSessions();
       sessions = r.sessions;
@@ -1733,8 +1733,8 @@ export class App extends Container {
 
     const items: SelectItem[] = sessions.map((s) => ({
       value: s.id,
-      label: s.name ?? s.id,
-      description: `${s.model} · ${new Date(s.updated_at).toLocaleString()}`,
+      label: s.name || s.first_message || s.id,
+      description: `${s.model} · ${s.query_count ?? "?"}Q · ${new Date(s.updated_at).toLocaleString()}`,
     }));
 
     const sl = new SelectList({
