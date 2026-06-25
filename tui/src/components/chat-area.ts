@@ -452,40 +452,38 @@ export class ChatArea implements Component {
     }
   }
 
-  // ─── Tool message (header + optional output) ─
+  // ─── Tool message (single-line, matches streaming style) ─
 
   private renderToolMessage(msg: ChatMessage): void {
     const toolName = msg.name || msg.tool || "tool";
     const status = msg.toolStatus || "running";
 
-    // Background color based on status (subtle dark gray, red for errors)
+    // Background color based on status
     const bgColor = status === "error" ? this.theme.toolErrorBg
       : status !== "running" ? this.theme.toolSuccessBg
       : this.theme.toolPendingBg;
 
-    // Header line: tool name + key args (file path for read/write/edit)
+    // Build single line: tool header + inline content preview
     const toolArgs = (msg as { toolArgs?: string }).toolArgs;
-    const commandLine = " " + this.formatToolCall(toolName, toolArgs);
-    this.renderedLines.push({
-      text: applyBackgroundToLine(commandLine, this.width, bgColor),
-      dim: false,
-    });
+    const header = this.formatToolCall(toolName, toolArgs);
+    let line = " " + header;
 
-    // Render output content for historical/loaded tool messages.
-    // During live streaming, output arrives via appendToolDelta.
+    // Append content preview inline (matches streaming style)
     if (msg.content) {
-      const maxOutputLines = 20;
-      const outputLines = msg.content.split("\n");
-      const displayLines = outputLines.length > maxOutputLines
-        ? [...outputLines.slice(0, maxOutputLines), `... (${outputLines.length - maxOutputLines} more lines)`]
-        : outputLines;
-      for (const line of displayLines) {
-        this.renderedLines.push({
-          text: applyBackgroundToLine(" " + line, this.width, this.theme.toolPendingBg),
-          dim: true,
-        });
+      const contentPreview = msg.content.replace(/\n/g, " ").trim();
+      const remaining = Math.max(10, this.width - visibleWidth(line) - 3);
+      const preview = contentPreview.length > remaining
+        ? contentPreview.slice(0, remaining) + "..."
+        : contentPreview;
+      if (preview) {
+        line += " " + preview;
       }
     }
+
+    this.renderedLines.push({
+      text: applyBackgroundToLine(line, this.width, bgColor),
+      dim: status === "complete",
+    });
   }
 
   /** Format tool call display per tool type (matches pi's per-tool renderCall). */
