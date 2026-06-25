@@ -16,6 +16,7 @@ export interface ChatMessage {
   content: string;
   name?: string;     // tool name
   tool?: string;     // tool call id
+  toolArgs?: string; // tool arguments (JSON, for display)
   toolStatus?: "running" | "complete" | "error";
   exitCode?: number;
   timestamp?: number;

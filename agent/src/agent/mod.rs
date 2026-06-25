@@ -223,7 +223,8 @@ impl Loop {
                 });
             }
 
-            let tool_msg = self.new_tool_result(&tc.id, &tc.function.name, &result, err_str.as_deref());
+            let tool_args_str = serde_json::to_string(&tc.function.arguments).unwrap_or_default();
+            let tool_msg = self.new_tool_result(&tc.id, &tc.function.name, &tool_args_str, &result, err_str.as_deref());
             messages.push(tool_msg);
             executed += 1;
         }
@@ -235,7 +236,8 @@ impl Loop {
                     "[Tool execution cancelled — {} was skipped due to user interrupt]",
                     tc.function.name
                 );
-                messages.push(self.new_tool_result(&tc.id, &tc.function.name, &cancelled, Some(&cancelled)));
+                let tool_args_str = serde_json::to_string(&tc.function.arguments).unwrap_or_default();
+                messages.push(self.new_tool_result(&tc.id, &tc.function.name, &tool_args_str, &cancelled, Some(&cancelled)));
             }
         }
     }
@@ -435,7 +437,7 @@ impl Loop {
         }
     }
 
-    fn new_tool_result(&self, call_id: &str, tool_name: &str, result: &str, err: Option<&str>) -> AgentMessage {
+    fn new_tool_result(&self, call_id: &str, tool_name: &str, tool_args: &str, result: &str, err: Option<&str>) -> AgentMessage {
         let text = if let Some(e) = err {
             format!("Error: {}", e)
         } else {
@@ -455,6 +457,7 @@ impl Loop {
             content: vec![ContentBlock::text(&capped)],
             tool_call_id: call_id.to_string(),
             name: tool_name.to_string(),
+            tool_args: tool_args.to_string(),
             ..Default::default()
         }
     }
