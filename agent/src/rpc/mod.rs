@@ -195,7 +195,13 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
 
     // Use API-reported prompt_tokens from the last request as actual context usage
     let context_tokens = sess.last_prompt_tokens.load(Ordering::Relaxed);
-    let msg_count = sess.messages.read().unwrap().len();
+    // Count Q&A pairs: each user message = 2 (question + answer).
+    // Ignores internal tool/assistant chatter between the user message
+    // and the final answer.
+    let msg_count = sess.messages.read().unwrap()
+        .iter()
+        .filter(|m| m.role == "user")
+        .count() * 2;
     let context_percent = if context_window > 0 {
         (context_tokens as f64 / context_window as f64) * 100.0
     } else {
