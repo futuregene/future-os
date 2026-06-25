@@ -223,7 +223,7 @@ impl Loop {
                 });
             }
 
-            let tool_msg = self.new_tool_result(&tc.id, &result, err_str.as_deref());
+            let tool_msg = self.new_tool_result(&tc.id, &tc.function.name, &result, err_str.as_deref());
             messages.push(tool_msg);
             executed += 1;
         }
@@ -235,7 +235,7 @@ impl Loop {
                     "[Tool execution cancelled — {} was skipped due to user interrupt]",
                     tc.function.name
                 );
-                messages.push(self.new_tool_result(&tc.id, &cancelled, Some(&cancelled)));
+                messages.push(self.new_tool_result(&tc.id, &tc.function.name, &cancelled, Some(&cancelled)));
             }
         }
     }
@@ -435,7 +435,7 @@ impl Loop {
         }
     }
 
-    fn new_tool_result(&self, call_id: &str, result: &str, err: Option<&str>) -> AgentMessage {
+    fn new_tool_result(&self, call_id: &str, tool_name: &str, result: &str, err: Option<&str>) -> AgentMessage {
         let text = if let Some(e) = err {
             format!("Error: {}", e)
         } else {
@@ -454,6 +454,7 @@ impl Loop {
             role: "tool".to_string(),
             content: vec![ContentBlock::text(&capped)],
             tool_call_id: call_id.to_string(),
+            name: tool_name.to_string(),
             ..Default::default()
         }
     }

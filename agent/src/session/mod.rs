@@ -588,6 +588,7 @@ pub fn entries_to_agent_messages(entries: &[SessionEntry]) -> Vec<crate::types::
             thinking: String::new(),
             tool_calls,
             tool_call_id: entry.tool_call_id.clone(),
+            name: String::new(),
             metadata: None,
         });
     }
