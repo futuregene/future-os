@@ -220,8 +220,10 @@ function agentConnectionNoticeTitle(connection: AgentConnectionState) {
 }
 
 function agentConnectionNoticeDetail(connection: AgentConnectionState) {
+  // Always surface the underlying error — hiding it behind a generic hint makes
+  // a reachable-but-erroring agent look like it's simply not started.
   if (connection.kind === "agent_unavailable")
-    return "Start it with `make run-agent`, then retry the connection.";
+    return connection.error ?? "Start the agent, then retry the connection.";
   if (connection.kind === "model_error")
     return connection.error ?? "The agent is reachable, but model discovery failed.";
   return connection.error ?? "Check FUTURE_AGENT_GRPC_ADDR and retry.";

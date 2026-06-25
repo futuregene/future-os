@@ -26,7 +26,15 @@ export function toAgentMessage(message: StoredMessage): AgentMessage {
 }
 
 export function buildAgentFailureContent(message: string) {
-  return `Future Agent 连接失败：${message}\n\n请确认 agent 已启动，并且 FUTURE_AGENT_GRPC_ADDR 指向 127.0.0.1:50051。`;
+  // Only a genuine gRPC connection failure (prefixed by the Tauri bridge)
+  // warrants the "check the agent is running" guidance. Other errors — e.g. the
+  // model API rejecting the request (quota / tenant permission) — are run
+  // failures, not connectivity problems, and mislabeling them as 连接失败 sends
+  // users to debug the wrong thing.
+  if (message.includes("Unable to connect to Future Agent")) {
+    return `Future Agent 连接失败：${message}\n\n请确认 agent 已启动，并且 FUTURE_AGENT_GRPC_ADDR 指向 127.0.0.1:50051。`;
+  }
+  return `运行失败：${message}`;
 }
 
 export async function updateRunStatusSafe(
