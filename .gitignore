@@ -16,6 +16,8 @@ agent/target/
 channels/target/
 gui/src-tauri/target/
 gui/src-tauri/gen/
+# Bundled agent sidecars — built in CI / locally, never committed
+gui/src-tauri/binaries/
 *.app/
 *.dmg
 *.msi

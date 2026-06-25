@@ -1,6 +1,7 @@
 mod agent_bridge;
 mod agent_proto;
 mod agent_providers;
+mod agent_supervisor;
 mod auth_store;
 mod commands;
 mod error;
@@ -72,6 +73,11 @@ pub fn run() {
             if let Err(error) = store::initialize_app_store() {
                 eprintln!("FutureOS store initialization failed: {error}");
             }
+            // Start the bundled agent off the launch path — it does a blocking
+            // TCP probe and we don't want to delay the window. In dev (no
+            // sidecar binary) this no-ops and the user runs the agent manually.
+            let agent_handle = app.handle().clone();
+            std::thread::spawn(move || agent_supervisor::ensure_agent_running(&agent_handle));
             // Shadow-review maintenance (consistency check + crash recovery) runs
             // off the launch path so it never delays the window.
             std::thread::spawn(shadow_review::run_startup_maintenance);
@@ -137,6 +143,11 @@ pub fn run() {
             list_agent_models,
             agent_prompt
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running FutureOS");
+        .build(tauri::generate_context!())
+        .expect("error while running FutureOS")
+        .run(|_app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                agent_supervisor::shutdown_agent();
+            }
+        });
 }
