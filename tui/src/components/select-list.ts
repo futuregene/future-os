@@ -170,7 +170,7 @@ export class SelectList implements Component {
     const innerW = Math.max(20, width);
 
     // Width budget: label left, description right, both aligned
-    const maxLabelW = Math.max(10, Math.floor(innerW * 0.55));
+    const maxLabelW = Math.max(10, Math.floor(innerW * 0.4));
     const maxDescW = Math.max(5, innerW - maxLabelW - 4);
 
     // Helper: pad line to fill innerW, ensuring each line clears stale content
