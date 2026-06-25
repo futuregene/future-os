@@ -239,6 +239,8 @@ pub struct AgentMessage {
         skip_serializing_if = "String::is_empty"
     )]
     pub tool_call_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
 }
@@ -310,6 +312,7 @@ impl AgentMessage {
             thinking: String::new(),
             tool_calls: vec![],
             tool_call_id: String::new(),
+            name: String::new(),
             metadata: None,
         }
     }
@@ -652,7 +655,7 @@ impl AgentMessage {
             content,
             tool_calls,
             tool_call_id: self.tool_call_id.clone(),
-            name: String::new(),
+            name: self.name.clone(),
             reasoning_content: self.thinking.clone(),
         }
     }
@@ -731,6 +734,7 @@ pub fn convert_from_llm(msgs: Vec<Message>) -> Vec<AgentMessage> {
                 thinking: m.reasoning_content,
                 tool_calls,
                 tool_call_id: m.tool_call_id,
+                name: m.name.clone(),
                 metadata: None,
             }
         })
