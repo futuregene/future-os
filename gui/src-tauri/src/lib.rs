@@ -23,6 +23,34 @@ pub(crate) static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new((
 /// background tasks (e.g. deferred shadow-review materialization).
 static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
 
+/// Size the main window to most of the monitor's work area (which already
+/// excludes the taskbar/dock/menubar) and center it there — near-fullscreen but
+/// not maximized, correct on every OS. Best effort: any failure leaves the
+/// config default (1440x960).
+fn size_main_window_to_screen(app: &tauri::App) {
+    use tauri::Manager;
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(Some(monitor)) = window.current_monitor() else {
+        return;
+    };
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    let area_w = area.size.width as f64 / scale;
+    let area_h = area.size.height as f64 / scale;
+    let area_x = area.position.x as f64 / scale;
+    let area_y = area.position.y as f64 / scale;
+
+    let width = (area_w * 0.94).clamp(1024.0, area_w);
+    let height = (area_h * 0.94).clamp(720.0, area_h);
+    let _ = window.set_size(tauri::LogicalSize::new(width, height));
+    let _ = window.set_position(tauri::LogicalPosition::new(
+        area_x + (area_w - width) / 2.0,
+        area_y + (area_h - height) / 2.0,
+    ));
+}
+
 /// Notify the frontend that a Thread's "上一轮变更" changeset has updated. The
 /// frontend bridges this to its typed event bus (§6.1, C1).
 pub(crate) fn emit_review_updated(thread_id: &str) {
@@ -39,6 +67,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let _ = APP_HANDLE.set(app.handle().clone());
+            size_main_window_to_screen(app);
             if let Err(error) = store::initialize_app_store() {
                 eprintln!("FutureOS store initialization failed: {error}");
             }
@@ -57,6 +86,7 @@ pub fn run() {
             cancel_stale_approval_requests,
             get_app_settings,
             update_app_settings,
+            clear_app_data,
             list_agent_providers,
             upsert_custom_provider,
             delete_custom_provider,
