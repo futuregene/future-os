@@ -611,13 +611,18 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             // Include current enabled_models from settings so the TUI knows the scope
             let settings_path = std::path::PathBuf::from(crate::models::settings_path());
             let settings = crate::config::load_settings(&settings_path).unwrap_or_default();
+            let valid_ids: std::collections::HashSet<&str> = models
+                .iter()
+                .filter_map(|m| m["id"].as_str())
+                .collect();
             let enabled_model_ids: Vec<String> = if settings.enabled_models.is_empty() {
-                models
-                    .iter()
-                    .map(|m| m["id"].as_str().unwrap_or("").to_string())
-                    .collect()
+                valid_ids.iter().map(|&s| s.to_string()).collect()
             } else {
-                settings.enabled_models.clone()
+                // Filter to only valid model IDs (stale entries cleaned)
+                settings.enabled_models.iter()
+                    .filter(|id| valid_ids.contains(id.as_str()))
+                    .cloned()
+                    .collect()
             };
             RpcResponse::ok(
                 id,
