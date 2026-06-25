@@ -1,6 +1,36 @@
-# Windows batch scripts must use CRLF so cmd.exe parses labels/goto reliably.
+# Normalize all text files to LF in the repo AND the working tree on every
+# platform. `eol=lf` overrides Windows' core.autocrlf, so Windows checkouts stop
+# churning line endings (which otherwise shows every file as modified and makes
+# `git pull` need a rebase/stash). build.rs-generated *.rs files are LF too, so
+# they no longer look dirty after each build.
+* text=auto eol=lf
+
+# Windows scripts must stay CRLF so cmd.exe parses labels/goto reliably.
 *.bat text eol=crlf
 *.cmd text eol=crlf
+*.ps1 text eol=crlf
 
-# Keep shell scripts LF on all platforms.
+# Shell scripts always LF.
 *.sh text eol=lf
+
+# Binary assets: never touch line endings.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.bmp  binary
+*.ico  binary
+*.icns binary
+*.svg  text eol=lf
+*.pdf  binary
+*.woff  binary
+*.woff2 binary
+*.ttf  binary
+*.otf  binary
+*.zip  binary
+*.gz   binary
+*.wasm binary
+*.dll  binary
+*.dylib binary
+*.so   binary
