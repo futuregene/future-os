@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
-import type { StoredRun, StoredThread } from "../../integrations/storage/threadStore";
-import type { AgentActivityItem, AgentMessage, MessageAttachment } from "./agentThreadTypes";
+import type { StoredRun, StoredRunEvent, StoredThread } from "../../integrations/storage/threadStore";
+import type { AgentMessage, MessageAttachment, MessageSegment } from "./agentThreadTypes";
 import type { ComposerSendPayload } from "./Composer";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
@@ -284,6 +284,13 @@ export function useAgentThreadState({
         status: "complete",
       });
 
+      // Streaming polls can lag the final text tail; re-project the now-complete
+      // events so the inline segments match the persisted reply exactly.
+      const finalRender = deriveRenderFields(
+        await safeListRunEvents(run.id),
+        storedAssistantMessage.content,
+      );
+
       if (isCurrentSend()) {
         setMessages(current =>
           current.map(message =>
@@ -292,7 +299,8 @@ export function useAgentThreadState({
                   ...message,
                   id: storedAssistantMessage.id,
                   runId: storedAssistantMessage.runId,
-                  content: storedAssistantMessage.content,
+                  content: finalRender.content,
+                  segments: finalRender.segments,
                   status: storedAssistantMessage.status,
                   createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
                 }
@@ -482,6 +490,9 @@ async function updatePendingMessageFromRunEvents(
           ? {
               ...message,
               activityItems: projection.activityItems,
+              // Live content is derived from the same events as segments, so the
+              // two stay consistent — safe to render segments inline immediately.
+              segments: projection.segments,
               content: projection.content.trim() ? projection.content : message.content,
             }
           : message,
@@ -491,6 +502,32 @@ async function updatePendingMessageFromRunEvents(
   catch {
     // Streaming preview is best-effort. The final assistant message still
     // lands when the command returns.
+  }
+}
+
+/**
+ * Derive the renderable content + ordered segments from a run's events. Segments
+ * are only trusted when the events actually carried the assistant text — the
+ * stored reply (from the gRPC return) is otherwise authoritative, so legacy data
+ * and text-only-via-gRPC turns fall back to flat content + activity list.
+ */
+function deriveRenderFields(
+  events: StoredRunEvent[],
+  fallbackContent: string,
+): { content: string; segments?: MessageSegment[] } {
+  const projection = buildAssistantRunProjection(events);
+  if (projection.content.trim()) {
+    return { content: projection.content, segments: projection.segments };
+  }
+  return { content: fallbackContent };
+}
+
+async function safeListRunEvents(runId: string): Promise<StoredRunEvent[]> {
+  try {
+    return await listRunEvents(runId);
+  }
+  catch {
+    return [];
   }
 }
 
@@ -512,26 +549,31 @@ async function loadCurrentRun(threadId: string, runId: string) {
 }
 
 async function restoreMessageActivities(messages: AgentMessage[]) {
-  const activityEntries = await Promise.all(
+  const projectionEntries = await Promise.all(
     messages.map(async (message) => {
       if (message.role !== "assistant" || !message.runId)
-        return [message.id, [] as AgentActivityItem[]] as const;
+        return [message.id, null] as const;
 
       try {
-        const events = await listRunEvents(message.runId);
-        return [message.id, buildAssistantRunProjection(events).activityItems] as const;
+        return [message.id, buildAssistantRunProjection(await listRunEvents(message.runId))] as const;
       }
       catch {
-        return [message.id, [] as AgentActivityItem[]] as const;
+        return [message.id, null] as const;
       }
     }),
   );
-  const activitiesByMessageId = new Map(activityEntries);
+  const projectionByMessageId = new Map(projectionEntries);
 
-  return messages.map(message => ({
-    ...message,
-    activityItems: activitiesByMessageId.get(message.id) ?? message.activityItems,
-  }));
+  return messages.map((message) => {
+    const projection = projectionByMessageId.get(message.id);
+    if (!projection)
+      return message;
+    // Trust event-derived inline ordering only when the events carried the
+    // assistant text; otherwise keep the flat activity list (legacy fallback).
+    return projection.content.trim()
+      ? { ...message, activityItems: projection.activityItems, segments: projection.segments }
+      : { ...message, activityItems: projection.activityItems };
+  });
 }
 
 async function importChatAttachments(thread: StoredThread, attachments: MessageAttachment[]) {

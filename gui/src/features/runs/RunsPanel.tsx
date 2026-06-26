@@ -132,7 +132,16 @@ function RunRow({
   const active = isActiveRun(run);
   const displayTool = commandToolCall(tools);
   const command = displayTool ? toolCommand(displayTool) : null;
-  const toolMeta = displayTool ? `${toolLabel(displayTool)} ${toolStatusLabel(displayTool)}` : runStatusLabel(run);
+  // A run can fire several commands; the card previews the latest one, so call
+  // out the total to stay consistent with the thread's "ran N commands" line.
+  const commandCount = tools.filter(tool => toolCommand(tool)).length;
+  const toolMeta = displayTool
+    ? [
+        toolLabel(displayTool),
+        commandCount > 1 ? `${commandCount} commands` : null,
+        toolStatusLabel(displayTool),
+      ].filter(Boolean).join(" · ")
+    : runStatusLabel(run);
 
   if (!command)
     return null;
