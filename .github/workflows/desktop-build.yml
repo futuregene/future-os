@@ -23,7 +23,9 @@ jobs:
           - name: Windows
             os: windows-latest
             artifact_name: futureos-windows
-            bundle_path: gui/src-tauri/target/release/bundle/**
+            # The MSI installer. Coexists with the portable zip (uploaded as
+            # futureos-windows-portable below). Both bundle the agent sidecar.
+            bundle_path: gui/src-tauri/target/release/bundle/msi/*.msi
           - name: Linux
             os: ubuntu-22.04
             artifact_name: futureos-linux
