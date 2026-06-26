@@ -9,9 +9,10 @@ use crate::types::AgentTool;
 /// Section ordering matches 's BuildPrompt():
 ///   1. Identity (identity + tools list + guidelines)
 ///   2. Append prompt
-///   3. Project context (AGENTS.md / CLAUDE.md)
-///   4. Skills XML (with lead-in text, only if read tool is available)
-///   5. Date + working directory
+///   3. Project context (CLAUDE.md / AGENTS.md / GEMINI.md)
+///   4. Workspace memory (FUTURE.md)
+///   5. Skills XML (with lead-in text, only if read tool is available)
+///   6. Date + working directory
 pub fn build_prompt(opts: &PromptOptions) -> String {
     let mut sections = vec![];
 
@@ -35,7 +36,18 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
         ));
     }
 
-    // 4. Skills XML (only if read tool is available)
+    // 4. Workspace memory (FUTURE.md) — separate layer from project context.
+    if !opts.memory_content.is_empty() {
+        sections.push(format!(
+            "# Workspace Memory\n\nThe following is the persistent memory for this \
+             workspace, stored in FUTURE.md — notes you previously saved or the user \
+             provided. Treat it as authoritative: preferences, conventions, \
+             build/test/run commands, and facts worth remembering across sessions.\n\n{}",
+            opts.memory_content.trim()
+        ));
+    }
+
+    // 5. Skills XML (only if read tool is available)
     if !opts.skills.is_empty() && has_tool(&opts.tools, "read") {
         let visible: Vec<_> = opts
             .skills
@@ -47,7 +59,7 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
         }
     }
 
-    // 5. Date and working directory
+    // 6. Date and working directory
     if !opts.date.is_empty() || !opts.working_directory.is_empty() {
         let mut info = vec![];
         if !opts.date.is_empty() {
@@ -73,6 +85,10 @@ pub struct PromptOptions {
     pub tools: Vec<AgentTool>,
     pub skills: Vec<Skill>,
     pub agent_content: String,
+    /// Workspace memory (FUTURE.md). Injected as its own section, separate from
+    /// `agent_content` (project context), so memory and human-authored project
+    /// instructions never shadow each other.
+    pub memory_content: String,
     pub append_prompt: String,
     pub prompt_guidelines: Vec<String>,
 }
@@ -220,4 +236,35 @@ fn dedup(items: Vec<String>) -> Vec<String> {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_memory_is_a_separate_layer_from_project_context() {
+        let prompt = build_prompt(&PromptOptions {
+            agent_content: "Use 2-space indent.".to_string(),
+            memory_content: "User prefers pnpm over npm.".to_string(),
+            ..Default::default()
+        });
+
+        // Both layers present, each under its own heading — neither shadows the other.
+        assert!(prompt.contains("# Project Context"));
+        assert!(prompt.contains("Use 2-space indent."));
+        assert!(prompt.contains("# Workspace Memory"));
+        assert!(prompt.contains("User prefers pnpm over npm."));
+        assert!(prompt.contains("stored in FUTURE.md"));
+    }
+
+    #[test]
+    fn workspace_memory_section_omitted_when_empty() {
+        let prompt = build_prompt(&PromptOptions {
+            agent_content: "Project rules.".to_string(),
+            ..Default::default()
+        });
+        assert!(prompt.contains("# Project Context"));
+        assert!(!prompt.contains("# Workspace Memory"));
+    }
 }
