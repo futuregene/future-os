@@ -11,7 +11,7 @@ import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { savePastedImage, searchReferenceTargets } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
-import { fileNameFromPath, IMAGE_EXTENSIONS, imageExtensionFromMime, isImagePath, MAX_ATTACHMENTS_PER_TURN } from "./attachments";
+import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, MAX_ATTACHMENTS_PER_TURN, PICKER_EXTENSIONS } from "./attachments";
 
 export interface ComposerSendPayload {
   attachments: MessageAttachment[];
@@ -43,6 +43,7 @@ export function Composer({
 }: ComposerProps) {
   const [value, setValue] = useState("");
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
+  const [attachError, setAttachError] = useState<string | null>(null);
   const [dropActive, setDropActive] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const providerNames = useProviderNames();
@@ -107,6 +108,7 @@ export function Composer({
     onSend({ attachments, content: trimmed });
     setValue("");
     setAttachments([]);
+    setAttachError(null);
     setReferenceSearchOpen(false);
   }
 
@@ -169,19 +171,27 @@ export function Composer({
     });
   }
 
-  const addAttachmentPaths = useCallback((paths: string[]) => {
+  const addAttachmentPaths = useCallback(async (paths: string[]) => {
+    const classified = await Promise.all(
+      paths.map(async path => ({ path, result: await classifyAttachment(path) })),
+    );
     setAttachments((current) => {
       const next = [...current];
-      for (const path of paths) {
-        if (next.length >= MAX_ATTACHMENTS_PER_TURN)
-          break;
-        if (!isImagePath(path))
-          continue;
+      const rejected: string[] = [];
+      for (const { path, result } of classified) {
         if (next.some(attachment => attachment.path === path))
           continue;
-
-        next.push({ name: fileNameFromPath(path), path });
+        if (next.length >= MAX_ATTACHMENTS_PER_TURN) {
+          rejected.push(`${fileNameFromPath(path)}（最多 ${MAX_ATTACHMENTS_PER_TURN} 个）`);
+          continue;
+        }
+        if (result.kind === null) {
+          rejected.push(`${fileNameFromPath(path)}（${result.reason}）`);
+          continue;
+        }
+        next.push({ kind: result.kind, name: fileNameFromPath(path), path });
       }
+      setAttachError(rejected.length > 0 ? `已忽略：${rejected.join("，")}` : null);
       return next;
     });
   }, []);
@@ -191,15 +201,15 @@ export function Composer({
       return;
 
     const selected = await open({
-      filters: [{ extensions: [...IMAGE_EXTENSIONS], name: "Images" }],
+      filters: [{ extensions: PICKER_EXTENSIONS, name: "Supported (images, PDF, text)" }],
       multiple: true,
-      title: "Attach images",
+      title: "Attach files",
     });
     const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
     if (paths.length === 0)
       return;
 
-    addAttachmentPaths(paths);
+    await addAttachmentPaths(paths);
   }
 
   async function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
@@ -224,7 +234,7 @@ export function Composer({
           bytes: Array.from(new Uint8Array(buffer)),
           extension: imageExtensionFromMime(file.type) ?? "png",
         });
-        addAttachmentPaths([saved.path]);
+        await addAttachmentPaths([saved.path]);
       }
       catch {
         // Ignore a single failed paste; other clipboard items still attach.
@@ -252,7 +262,7 @@ export function Composer({
         }
         else if (event.payload.type === "drop") {
           setDropActive(false);
-          addAttachmentPaths(event.payload.paths);
+          void addAttachmentPaths(event.payload.paths);
         }
       })
       .then((unlisten) => {
@@ -327,6 +337,9 @@ export function Composer({
             </div>
           )
         : null}
+      {attachError
+        ? <div className="px-1 pb-1 text-xs text-amber-600">{attachError}</div>
+        : null}
       <div className="flex items-center justify-between pt-1">
         <div className="flex items-center gap-1">
           <button
@@ -334,8 +347,8 @@ export function Composer({
             disabled={disabled || attachments.length >= MAX_ATTACHMENTS_PER_TURN}
             onClick={() => void handleAttachFiles()}
             type="button"
-            aria-label="Attach images"
-            title={attachments.length >= MAX_ATTACHMENTS_PER_TURN ? "Attachment limit reached (4 per turn)" : "Attach images"}
+            aria-label="Attach files"
+            title={attachments.length >= MAX_ATTACHMENTS_PER_TURN ? "Attachment limit reached (4 per turn)" : "Attach files (images, PDF, text)"}
           >
             <Paperclip className="size-3.5" />
           </button>

@@ -1,5 +1,6 @@
-import type { AgentMessage } from "./agentThreadTypes";
-import { Paperclip, RotateCcw, StepForward } from "lucide-react";
+import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { FileText, Paperclip, RotateCcw, StepForward } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { formatTime } from "../../lib/date";
 import { MarkdownContent } from "../markdown/MarkdownContent";
@@ -48,14 +49,7 @@ export function MessageBlock({
             ? (
                 <div className={cn("mt-2 flex flex-wrap gap-1.5", isUser && "justify-end")}>
                   {message.attachments.map(attachment => (
-                    <span
-                      className="inline-flex max-w-72 items-center gap-1.5 rounded-md bg-surface px-2 py-1 text-xs text-ink-soft ring-1 ring-line-soft"
-                      key={`${message.id}:${attachment.path}`}
-                      title={attachment.path}
-                    >
-                      <Paperclip className="size-3 shrink-0" />
-                      <span className="truncate">{attachment.name}</span>
-                    </span>
+                    <AttachmentChip key={`${message.id}:${attachment.path}`} attachment={attachment} />
                   ))}
                 </div>
               )
@@ -95,5 +89,34 @@ export function MessageBlock({
         </div>
       </div>
     </article>
+  );
+}
+
+function AttachmentChip({ attachment }: { attachment: MessageAttachment }) {
+  const thumbSrc = attachment.thumbnail ?? (attachment.kind === "image" ? attachment.path : null);
+  if (attachment.kind === "image" && thumbSrc) {
+    return (
+      <span
+        className="inline-flex items-center overflow-hidden rounded-md ring-1 ring-line-soft"
+        title={attachment.name}
+      >
+        <img
+          alt={attachment.name}
+          className="size-16 object-cover"
+          src={convertFileSrc(thumbSrc)}
+        />
+      </span>
+    );
+  }
+  return (
+    <span
+      className="inline-flex max-w-72 items-center gap-1.5 rounded-md bg-surface px-2 py-1 text-xs text-ink-soft ring-1 ring-line-soft"
+      title={attachment.path}
+    >
+      {attachment.kind === "pdf" || attachment.kind === "text"
+        ? <FileText className="size-3 shrink-0" />
+        : <Paperclip className="size-3 shrink-0" />}
+      <span className="truncate">{attachment.name}</span>
+    </span>
   );
 }

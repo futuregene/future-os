@@ -32,3 +32,27 @@ export async function savePastedImage(input: { bytes: number[]; extension: strin
     extension: input.extension,
   });
 }
+
+export async function inspectAttachment(path: string) {
+  return invokeCommand<{ isDir: boolean; size: number; isBinary: boolean }>("inspect_attachment", {
+    path,
+  });
+}
+
+export async function readFileBase64(input: { path: string; maxBytes?: number | null }) {
+  return invokeCommand<string>("read_file_base64", {
+    maxBytes: input.maxBytes ?? null,
+    path: input.path,
+  });
+}
+
+export async function writeThumbnail(input: { base64Jpeg: string; key: string }) {
+  return invokeCommand<string>("write_thumbnail", {
+    base64Jpeg: input.base64Jpeg,
+    key: input.key,
+  });
+}
+
+export async function deleteTempAttachment(path: string) {
+  return invokeCommand<void>("delete_temp_attachment", { path });
+}
