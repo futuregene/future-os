@@ -11,7 +11,7 @@ use super::util::{create_id, now_millis};
 use super::{get_thread, get_workspace};
 
 pub(super) fn app_dir() -> Result<PathBuf, crate::AppError> {
-    let home = std::env::var("HOME").map_err(|_| "HOME environment variable is not set.")?;
+    let home = crate::home_dir().ok_or("HOME/USERPROFILE environment variable is not set.")?;
     Ok(PathBuf::from(home).join(".future").join("app"))
 }
 

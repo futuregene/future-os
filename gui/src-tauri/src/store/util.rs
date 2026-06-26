@@ -21,13 +21,13 @@ pub(super) fn normalize_mode(mode: &str) -> Result<String, crate::AppError> {
 pub(super) fn expand_tilde(path: &str) -> Result<PathBuf, crate::AppError> {
     if path == "~" {
         return Ok(PathBuf::from(
-            std::env::var("HOME").map_err(|_| "HOME environment variable is not set.")?,
+            crate::home_dir().ok_or("HOME/USERPROFILE environment variable is not set.")?,
         ));
     }
 
     if let Some(rest) = path.strip_prefix("~/") {
         return Ok(PathBuf::from(
-            std::env::var("HOME").map_err(|_| "HOME environment variable is not set.")?,
+            crate::home_dir().ok_or("HOME/USERPROFILE environment variable is not set.")?,
         )
         .join(rest));
     }
