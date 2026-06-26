@@ -14,6 +14,52 @@ const DEFAULT_FUTURE_BASE_URL: &str = "http://api.westlakefuturegene.com";
 /// Cache TTL in seconds (1 hour)
 const FUTURE_MODELS_CACHE_TTL: u64 = 3600;
 
+/// After a refresh attempt, don't re-hit the network for this long. `Registry::new()`
+/// rebuilds on the startup path and on every RPC, so without this backoff each
+/// rebuild would re-probe a slow/unreachable Future API.
+const FUTURE_MODELS_REFRESH_BACKOFF: u64 = 120;
+
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+static FUTURE_MODELS_LAST_ATTEMPT: AtomicU64 = AtomicU64::new(0);
+static FUTURE_MODELS_REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Kick off a one-at-a-time background refresh of the Future model catalog,
+/// respecting a backoff window. Never blocks the caller — the fetched models are
+/// written to the cache file and picked up by the next registry rebuild.
+fn spawn_future_models_refresh(api_key: &str, base_url: &str) {
+    let now = now_secs();
+    if now.saturating_sub(FUTURE_MODELS_LAST_ATTEMPT.load(Ordering::Relaxed))
+        < FUTURE_MODELS_REFRESH_BACKOFF
+    {
+        return;
+    }
+    // Single-flight: bail if a refresh is already running.
+    if FUTURE_MODELS_REFRESH_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    FUTURE_MODELS_LAST_ATTEMPT.store(now, Ordering::Relaxed);
+
+    let api_key = api_key.to_string();
+    let base_url = base_url.to_string();
+    std::thread::spawn(move || {
+        if let Some(models) = fetch_future_models(&api_key, &base_url) {
+            save_future_models_cache(&models);
+        }
+        FUTURE_MODELS_REFRESH_IN_FLIGHT.store(false, Ordering::Release);
+    });
+}
+
 /// Model represents a single model in the catalog.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Model {
@@ -104,7 +150,9 @@ pub fn settings_path() -> String {
 fn future_models_cache_path() -> String {
     let home = dirs::home_dir()
         .map(|h| h.join(".future/agent/.future-models-cache.json"))
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/.future/agent/.future-models-cache.json"));
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from("/tmp/.future/agent/.future-models-cache.json")
+        });
     home.to_string_lossy().to_string()
 }
 
@@ -199,24 +247,27 @@ fn fetch_future_models(api_key: &str, base_url: &str) -> Option<Vec<Model>> {
 
         let body: serde_json::Value = response.json().ok()?;
 
-    // Handle both array response and {data: [...]} response
-    let entries: Vec<FutureModelEntry> = if let Ok(resp) = serde_json::from_value::<FutureModelsResponse>(body.clone()) {
-        resp.data.unwrap_or_default()
-    } else if let Ok(arr) = serde_json::from_value::<Vec<FutureModelEntry>>(body) {
-        arr
-    } else {
-        return None;
-    };
+        // Handle both array response and {data: [...]} response
+        let entries: Vec<FutureModelEntry> =
+            if let Ok(resp) = serde_json::from_value::<FutureModelsResponse>(body.clone()) {
+                resp.data.unwrap_or_default()
+            } else if let Ok(arr) = serde_json::from_value::<Vec<FutureModelEntry>>(body) {
+                arr
+            } else {
+                return None;
+            };
 
-    let models_url = format!("{}/v1", base_url.trim_end_matches('/'));
+        let models_url = format!("{}/v1", base_url.trim_end_matches('/'));
 
-    let models: Vec<Model> = entries
-        .into_iter()
-        .map(|entry| convert_future_model(entry, &models_url))
-        .collect();
+        let models: Vec<Model> = entries
+            .into_iter()
+            .map(|entry| convert_future_model(entry, &models_url))
+            .collect();
 
-    Some(models)
-    }).join().ok()?
+        Some(models)
+    })
+    .join()
+    .ok()?
 }
 
 /// Convert Future server model entry to agent Model
@@ -240,10 +291,7 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         })
         .unwrap_or_else(|| vec!["text".to_string()]);
 
-    let context_window = entry
-        .context_length
-        .map(|v| v as i32)
-        .unwrap_or(128000);
+    let context_window = entry.context_length.map(|v| v as i32).unwrap_or(128000);
 
     // Parse pricing
     let (cost_input, cost_output, cost_cache_read, cost_cache_write) = entry
@@ -252,7 +300,9 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         .and_then(|p| p.prices.as_ref())
         .and_then(|prices| prices.first())
         .map(|rule| {
-            let price_unit = entry.pricing.as_ref()
+            let price_unit = entry
+                .pricing
+                .as_ref()
                 .and_then(|p| p.price_unit)
                 .unwrap_or(1)
                 .max(1) as f64;
@@ -331,42 +381,26 @@ fn save_future_models_cache(models: &[Model]) {
 /// 4. On success, update cache
 /// 5. On failure, return stale cache if available
 fn get_future_models_with_cache(api_key: &str, base_url: &str) -> Vec<Model> {
-    // Check cache first
-    if let Some(cache) = load_future_models_cache() {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-
-        if now.saturating_sub(cache.fetched_at) < FUTURE_MODELS_CACHE_TTL {
-            return cache.models;
+    // Never block the caller. `Registry::new()` runs before the gRPC server binds
+    // and again on every RPC, so a synchronous network fetch here stalls agent
+    // startup and every model query whenever the Future API is slow or
+    // unreachable. Instead serve whatever cache we have (even stale) immediately
+    // and refresh in the background; the next registry rebuild (the GUI polls
+    // models every 10s) picks up the fresh catalog.
+    match load_future_models_cache() {
+        Some(cache) => {
+            if now_secs().saturating_sub(cache.fetched_at) >= FUTURE_MODELS_CACHE_TTL {
+                spawn_future_models_refresh(api_key, base_url);
+            }
+            cache.models
         }
-
-        // Cache expired, try to refresh
-        if let Some(models) = fetch_future_models(api_key, base_url) {
-            save_future_models_cache(&models);
-            return models;
+        None => {
+            // First login on this machine: no cache yet. Fetch in the background
+            // and return empty for now.
+            spawn_future_models_refresh(api_key, base_url);
+            Vec::new()
         }
-
-        // Refresh failed, return stale cache
-        eprintln!(
-            "[future-models] Failed to refresh models from {}, using cached models",
-            base_url
-        );
-        return cache.models;
     }
-
-    // No cache, fetch fresh
-    if let Some(models) = fetch_future_models(api_key, base_url) {
-        save_future_models_cache(&models);
-        return models;
-    }
-
-    eprintln!(
-        "[future-models] Failed to fetch models from {}",
-        base_url
-    );
-    Vec::new()
 }
 
 /// Settings represents the FutureAgent settings.json format.
