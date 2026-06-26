@@ -4,9 +4,9 @@ import type { ReferenceTargetSearchResult } from "../../integrations/storage/thr
 import type { MessageAttachment } from "./agentThreadTypes";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { AlertTriangle, ArrowUp, Beaker, Box, Check, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, X } from "lucide-react";
+import { AlertTriangle, ArrowUp, Beaker, Box, Brain, Check, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { modelLabel } from "../../integrations/agent/agentClient";
+import { modelLabel, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { savePastedImage, searchReferenceTargets } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
@@ -25,6 +25,8 @@ interface ComposerProps {
   modelId?: string;
   modelOptions: AgentModelOption[];
   onModelChange?: (modelId: string) => void;
+  thinkingLevel?: string;
+  onThinkingLevelChange?: (thinkingLevel: string) => void;
   placeholder?: string;
   textareaClassName?: string;
   workspaceId?: string | null;
@@ -37,6 +39,8 @@ export function Composer({
   modelId,
   modelOptions,
   onModelChange,
+  thinkingLevel,
+  onThinkingLevelChange,
   placeholder,
   textareaClassName,
   workspaceId,
@@ -46,6 +50,7 @@ export function Composer({
   const [attachError, setAttachError] = useState<string | null>(null);
   const [dropActive, setDropActive] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
   const providerNames = useProviderNames();
   const [caretPosition, setCaretPosition] = useState(0);
   const [referenceResults, setReferenceResults] = useState<ReferenceTargetSearchResult[]>([]);
@@ -53,10 +58,15 @@ export function Composer({
   const [selectedReferenceIndex, setSelectedReferenceIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const activeModelId = modelId || modelOptions[0]?.id || "";
+  const activeThinkingLevel = normalizeThinkingLevel(thinkingLevel);
   const activeMention = useMemo(() => findActiveMention(value, caretPosition), [caretPosition, value]);
   const modelMenuRef = useDismissableLayer<HTMLDivElement>({
     enabled: modelMenuOpen,
     onDismiss: () => setModelMenuOpen(false),
+  });
+  const thinkingMenuRef = useDismissableLayer<HTMLDivElement>({
+    enabled: thinkingMenuOpen,
+    onDismiss: () => setThinkingMenuOpen(false),
   });
 
   useEffect(() => {
@@ -357,7 +367,10 @@ export function Composer({
           <div className="relative hidden md:block" ref={modelMenuRef}>
             <button
               className="inline-flex h-7 max-w-48 items-center gap-1.5 rounded-md bg-surface-subtle px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink"
-              onClick={() => setModelMenuOpen(open => !open)}
+              onClick={() => {
+                setThinkingMenuOpen(false);
+                setModelMenuOpen(open => !open);
+              }}
               type="button"
               title="Model"
             >
@@ -395,6 +408,41 @@ export function Composer({
                 )
               : null}
           </div>
+          <div className="relative hidden md:block" ref={thinkingMenuRef}>
+            <button
+              className="inline-flex h-7 max-w-40 items-center gap-1.5 rounded-md bg-surface-subtle px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink"
+              onClick={() => {
+                setModelMenuOpen(false);
+                setThinkingMenuOpen(open => !open);
+              }}
+              type="button"
+              title="Thinking level"
+            >
+              <Brain className="size-3 shrink-0" />
+              <span className="truncate">{thinkingLevelLabel(activeThinkingLevel)}</span>
+              <ChevronDown className="size-3 shrink-0" />
+            </button>
+            {thinkingMenuOpen
+              ? (
+                  <div className="absolute bottom-9 right-0 z-30 w-40 divide-y divide-line-soft overflow-hidden rounded-lg border border-line-soft bg-surface shadow-panel">
+                    {thinkingLevels.map(level => (
+                      <button
+                        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-surface-subtle"
+                        key={level}
+                        onClick={() => {
+                          onThinkingLevelChange?.(level);
+                          setThinkingMenuOpen(false);
+                        }}
+                        type="button"
+                      >
+                        <span className="min-w-0 flex-1 truncate font-medium text-ink">{thinkingLevelLabel(level)}</span>
+                        {activeThinkingLevel === level ? <Check className="size-4 shrink-0 text-ink-soft" /> : null}
+                      </button>
+                    ))}
+                  </div>
+                )
+              : null}
+          </div>
           <button
             className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-blue-700 disabled:bg-blue-200"
             disabled={(!value.trim() && attachments.length === 0) || disabled}
@@ -408,6 +456,25 @@ export function Composer({
       </div>
     </form>
   );
+}
+
+function thinkingLevelLabel(level: string) {
+  switch (level) {
+    case "off":
+      return "Off";
+    case "minimal":
+      return "Minimal";
+    case "low":
+      return "Low";
+    case "medium":
+      return "Medium";
+    case "high":
+      return "High";
+    case "xhigh":
+      return "XHigh";
+    default:
+      return level;
+  }
 }
 
 function ReferenceSearchMenu({

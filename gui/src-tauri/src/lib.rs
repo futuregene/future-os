@@ -125,6 +125,7 @@ pub fn run() {
             create_thread,
             rename_thread,
             update_thread_model,
+            update_thread_thinking_level,
             pin_thread,
             archive_thread,
             restore_thread,

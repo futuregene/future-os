@@ -28,6 +28,7 @@ export interface NewConversationStart {
   content: string;
   mode: ConversationMode;
   modelId: string;
+  thinkingLevel: string;
   workspace?: {
     id?: string;
     label: string;
@@ -49,6 +50,8 @@ interface NewConversationProps {
   modelId: string;
   modelOptions: AgentModelOption[];
   onModelChange: (modelId: string) => void;
+  thinkingLevel: string;
+  onThinkingLevelChange: (thinkingLevel: string) => void;
   onStart: (input: NewConversationStart) => void;
   onAddWorkspace: (input: WorkspaceCreateRequest) => Promise<StoredWorkspace | null>;
   onToggleLeftPanel: () => void;
@@ -64,6 +67,8 @@ export function NewConversation({
   modelOptions,
   onAddWorkspace,
   onModelChange,
+  thinkingLevel,
+  onThinkingLevelChange,
   onStart,
   onToggleLeftPanel,
   workspaces,
@@ -187,6 +192,7 @@ export function NewConversation({
         content,
         mode,
         modelId: modelId || defaultAgentModelId,
+        thinkingLevel,
         workspace: activeWorkspace,
       });
       return;
@@ -197,6 +203,7 @@ export function NewConversation({
       content,
       mode: "chat",
       modelId: modelId || defaultAgentModelId,
+      thinkingLevel,
     });
   }
 
@@ -228,6 +235,8 @@ export function NewConversation({
               modelId={modelId}
               modelOptions={modelOptions}
               onModelChange={onModelChange}
+              thinkingLevel={thinkingLevel}
+              onThinkingLevelChange={onThinkingLevelChange}
               onSend={handleSend}
               placeholder="随心输入"
               textareaClassName="h-16 text-base leading-6"

@@ -41,6 +41,13 @@ pub fn update_thread_model(
 }
 
 #[tauri::command]
+pub fn update_thread_thinking_level(
+    input: store::UpdateThreadThinkingLevelInput,
+) -> Result<store::ThreadRecord, crate::AppError> {
+    store::update_thread_thinking_level(input)
+}
+
+#[tauri::command]
 pub fn pin_thread(input: store::PinThreadInput) -> Result<store::ThreadRecord, crate::AppError> {
     store::pin_thread(input)
 }

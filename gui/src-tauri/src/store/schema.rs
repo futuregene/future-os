@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS threads (
     readonly INTEGER NOT NULL DEFAULT 0,
     model_provider TEXT,
     model_id TEXT,
+    thinking_level TEXT,
     agent_session_id TEXT,
     last_message_at INTEGER,
     last_opened_at INTEGER,
@@ -353,6 +354,7 @@ CREATE INDEX IF NOT EXISTS idx_review_changesets_run ON review_changesets(run_id
 /// exists, so these `ALTER`s run idempotently (a duplicate-column error is
 /// swallowed). Every column here must be nullable or carry a `DEFAULT`.
 pub(super) const ADDED_COLUMNS: &[(&str, &str)] = &[
+    ("threads", "thinking_level TEXT"),
     (
         "review_changesets",
         "source_kind TEXT NOT NULL DEFAULT 'run_snapshot'",

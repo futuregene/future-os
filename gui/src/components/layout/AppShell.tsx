@@ -1,17 +1,19 @@
 import type { MessageAttachment } from "../../features/agent/agentThreadTypes";
 import type { NewConversationStart } from "../../features/agent/NewConversation";
 import type { SettingsTab } from "../../features/settings/SettingsDialog";
+import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { AppSettings } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { DeleteDialogState, RenameDialogState } from "./AppShellDialogs";
 import type { ContextTab } from "./ContextPanel";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { ResearchView } from "../../features/research/ResearchView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
+import { defaultThinkingLevel, modelThinkingLevel, normalizeThinkingLevel } from "../../integrations/agent/agentClient";
 import { getAppSettings, updateAppSettings } from "../../integrations/storage/appSettings";
 import {
   createThread,
@@ -23,6 +25,7 @@ import {
   renameThread,
   restoreThread,
   updateThreadModel,
+  updateThreadThinkingLevel,
 } from "../../integrations/storage/threadStore";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { ActivityRail } from "./ActivityRail";
@@ -63,6 +66,8 @@ export function AppShell() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   const [appSettings, setAppSettings] = useState<AppSettings>({ autoApprove: false, hiddenModels: [] });
+  const [selectedThinkingLevel, setSelectedThinkingLevel] = useState(defaultThinkingLevel);
+  const draftThinkingModelRef = useRef("");
 
   const {
     threads,
@@ -88,6 +93,10 @@ export function AppShell() {
     setSelectedModelId,
     refreshAgentModels,
   } = useAgentConnection(appSettings.hiddenModels);
+  const activeThreadModelId = activeThread?.modelId ?? selectedModelId;
+  const activeThinkingLevel = activeThread
+    ? normalizeThinkingLevel(activeThread.thinkingLevel ?? modelThinkingLevel(activeThreadModelId, visibleModelOptions))
+    : selectedThinkingLevel;
 
   useEffect(() => {
     let cancelled = false;
@@ -102,6 +111,14 @@ export function AppShell() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (activeThread || draftThinkingModelRef.current === selectedModelId)
+      return;
+
+    draftThinkingModelRef.current = selectedModelId;
+    setSelectedThinkingLevel(thinkingLevelForModel(selectedModelId, visibleModelOptions));
+  }, [activeThread, selectedModelId, visibleModelOptions]);
 
   useEffect(() => onFutureEvent("open-research-resource", (detail) => {
     setSelectedResearchResourceId(detail.resourceId);
@@ -202,8 +219,11 @@ export function AppShell() {
       workspaceName: input.workspace?.label,
       workspacePath: input.workspace?.path,
       modelId: input.modelId,
+      thinkingLevel: input.thinkingLevel,
     });
     setSelectedModelId(input.modelId);
+    setSelectedThinkingLevel(normalizeThinkingLevel(input.thinkingLevel));
+    draftThinkingModelRef.current = input.modelId;
     await refreshStore(thread.id);
     setSection(thread.mode === "workspace" ? "workspace" : "chat");
     setCenterMode("thread");
@@ -269,12 +289,40 @@ export function AppShell() {
 
   async function handleModelChange(modelId: string) {
     setSelectedModelId(modelId);
+    // Follow the new model's default thinking level (same as the draft flow), so
+    // switching models can't leave a thread on a level the model doesn't fit.
+    const nextLevel = thinkingLevelForModel(modelId, visibleModelOptions);
+    setSelectedThinkingLevel(nextLevel);
+    draftThinkingModelRef.current = modelId;
     if (!activeThread)
       return;
 
     await updateThreadModel({
       threadId: activeThread.id,
       modelId,
+    });
+    await updateThreadThinkingLevel({
+      threadId: activeThread.id,
+      thinkingLevel: nextLevel,
+    });
+    await refreshStore(activeThread.id);
+  }
+
+  function handleDraftModelChange(modelId: string) {
+    setSelectedModelId(modelId);
+    setSelectedThinkingLevel(thinkingLevelForModel(modelId, visibleModelOptions));
+    draftThinkingModelRef.current = modelId;
+  }
+
+  async function handleThinkingLevelChange(thinkingLevel: string) {
+    const nextLevel = normalizeThinkingLevel(thinkingLevel);
+    setSelectedThinkingLevel(nextLevel);
+    if (!activeThread)
+      return;
+
+    await updateThreadThinkingLevel({
+      threadId: activeThread.id,
+      thinkingLevel: nextLevel,
     });
     await refreshStore(activeThread.id);
   }
@@ -418,7 +466,9 @@ export function AppShell() {
                 modelId={selectedModelId}
                 modelOptions={visibleModelOptions}
                 onAddWorkspace={handleAddWorkspace}
-                onModelChange={setSelectedModelId}
+                onModelChange={handleDraftModelChange}
+                thinkingLevel={selectedThinkingLevel}
+                onThinkingLevelChange={handleThinkingLevelChange}
                 onStart={handleStartNewConversation}
                 onToggleLeftPanel={handleToggleLeftPanel}
                 workspaces={workspaces.filter(workspace => workspace.kind === "user")}
@@ -451,6 +501,8 @@ export function AppShell() {
                       modelId={activeThread?.modelId ?? selectedModelId}
                       modelOptions={visibleModelOptions}
                       onModelChange={handleModelChange}
+                      thinkingLevel={activeThinkingLevel}
+                      onThinkingLevelChange={handleThinkingLevelChange}
                       pendingPrompt={pendingPrompt}
                       thread={activeThread}
                       onApprovalDecision={handleApprovalDecision}
@@ -523,6 +575,10 @@ function deriveThreadTitle(content: string) {
   if (!compact)
     return "New Chat";
   return compact.length > 28 ? `${compact.slice(0, 28)}...` : compact;
+}
+
+function thinkingLevelForModel(modelId: string, modelOptions: AgentModelOption[]) {
+  return normalizeThinkingLevel(modelThinkingLevel(modelId, modelOptions));
 }
 
 let pendingPromptCounter = 0;

@@ -1,10 +1,9 @@
 import type { Dispatch, SetStateAction } from "react";
-import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { StoredRun, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentActivityItem, AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import type { ComposerSendPayload } from "./Composer";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { modelThinkingLevel, sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
+import { sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
 import {
   appendMessage,
   createRun,
@@ -30,7 +29,7 @@ interface UseAgentThreadStateInput {
   thread: StoredThread | null;
   loadingStore: boolean;
   modelId: string;
-  modelOptions: AgentModelOption[];
+  thinkingLevel: string;
   pendingPrompt: { attachments?: MessageAttachment[]; id: string; content: string } | null;
   onPromptConsumed: (id: string) => void;
   onThreadActivity: () => void;
@@ -40,7 +39,7 @@ export function useAgentThreadState({
   thread,
   loadingStore,
   modelId,
-  modelOptions,
+  thinkingLevel,
   pendingPrompt,
   onPromptConsumed,
   onThreadActivity,
@@ -257,7 +256,7 @@ export function useAgentThreadState({
         // model returns a clear API error instead — better than the model
         // replying "I don't see an image".
         imageAttachmentPaths(importedAttachments),
-        modelThinkingLevel(modelId, modelOptions),
+        thinkingLevel,
       );
       clearStreamTimer();
 
@@ -346,7 +345,7 @@ export function useAgentThreadState({
         onThreadActivity();
       }
     }
-  }, [modelId, modelOptions, onThreadActivity, refreshRecentRun, thread]);
+  }, [modelId, onThreadActivity, refreshRecentRun, thinkingLevel, thread]);
 
   useEffect(() => {
     const scrollContainer = scrollRef.current;

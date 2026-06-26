@@ -19,6 +19,7 @@ pub struct ThreadRecord {
     pub readonly: bool,
     pub model_provider: Option<String>,
     pub model_id: Option<String>,
+    pub thinking_level: Option<String>,
     pub agent_session_id: Option<String>,
     pub last_message_at: Option<i64>,
     pub last_opened_at: Option<i64>,
@@ -418,6 +419,7 @@ pub struct CreateThreadInput {
     pub workspace_name: Option<String>,
     pub model_provider: Option<String>,
     pub model_id: Option<String>,
+    pub thinking_level: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -527,6 +529,13 @@ pub struct UpdateThreadModelInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UpdateThreadThinkingLevelInput {
+    pub thread_id: String,
+    pub thinking_level: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PinThreadInput {
     pub thread_id: String,
     pub pinned: bool,
@@ -587,13 +596,14 @@ pub(super) fn thread_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Threa
         readonly: row.get::<_, i64>(6)? != 0,
         model_provider: row.get(7)?,
         model_id: row.get(8)?,
-        agent_session_id: row.get(9)?,
-        last_message_at: row.get(10)?,
-        last_opened_at: row.get(11)?,
-        created_at: row.get(12)?,
-        updated_at: row.get(13)?,
-        archived_at: row.get(14)?,
-        deleted_at: row.get(15)?,
+        thinking_level: row.get(9)?,
+        agent_session_id: row.get(10)?,
+        last_message_at: row.get(11)?,
+        last_opened_at: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+        archived_at: row.get(15)?,
+        deleted_at: row.get(16)?,
     })
 }
 
