@@ -37,14 +37,21 @@ impl ServerSession {
                 }
             }
 
+            // Load workspace memory (FUTURE.md) — a separate layer from project
+            // context, read fresh each turn (cwd only; workspace-scoped).
+            let memory_path = std::path::Path::new(&self.cwd).join("FUTURE.md");
+            let memory_content = std::fs::read_to_string(&memory_path).unwrap_or_default();
+
             let system_prompt = crate::prompt::build_prompt(&crate::prompt::PromptOptions {
                 working_directory: self.cwd.clone(),
                 date: today,
                 tools: r#loop.tools.clone(),
                 skills,
                 agent_content,
+                memory_content,
                 prompt_guidelines: vec![
                     "When asked to create, save, write, or modify a normal file, prefer the write or edit tool. Bash redirection, heredocs, tee, or cat > file remain available when they are the better fit. Only describe file changes after the tool succeeds.".to_string(),
+                    "You maintain a workspace memory file named FUTURE.md in the working directory. Record a memory when the user explicitly asks you to remember something, and also proactively when you learn a durable, high-value fact about this workspace: a verified build/test/run/lint command, a stated user preference, a correction the user made (especially a repeated one), or a stable project convention. Do not record one-off task details, transient state, secrets, unverified guesses, or anything already derivable from the repo. Use the write or edit tool; keep entries short and grouped under markdown headers; update or remove stale entries instead of duplicating; keep the file concise (aim under ~200 lines). Whenever you write to memory, tell the user in one short line what you recorded. Memory may only be written to FUTURE.md — never to CLAUDE.md, AGENTS.md, or GEMINI.md.".to_string(),
                 ],
                 ..Default::default()
             });
