@@ -20,6 +20,8 @@ interface AgentThreadProps {
   modelId: string;
   modelOptions: AgentModelOption[];
   onModelChange: (modelId: string) => void;
+  thinkingLevel: string;
+  onThinkingLevelChange: (thinkingLevel: string) => void;
   pendingPrompt: { attachments?: MessageAttachment[]; id: string; content: string } | null;
   activeApproval?: StoredApprovalRequest | null;
   onApprovalDecision: (approval: StoredApprovalRequest, status: "approved" | "rejected") => Promise<void>;
@@ -39,6 +41,8 @@ export function AgentThread({
   modelId,
   modelOptions,
   onModelChange,
+  thinkingLevel,
+  onThinkingLevelChange,
   pendingPrompt,
   activeApproval,
   onApprovalDecision,
@@ -60,7 +64,7 @@ export function AgentThread({
     thread,
     loadingStore,
     modelId,
-    modelOptions,
+    thinkingLevel,
     pendingPrompt,
     onPromptConsumed,
     onThreadActivity,
@@ -183,6 +187,8 @@ export function AgentThread({
               modelId={modelId}
               modelOptions={modelOptions}
               onModelChange={onModelChange}
+              thinkingLevel={thinkingLevel}
+              onThinkingLevelChange={onThinkingLevelChange}
               onSend={handleSend}
               workspaceId={thread?.workspaceId}
             />

@@ -9,7 +9,7 @@ pub fn list_threads() -> Result<Vec<ThreadRecord>, crate::AppError> {
     let conn = connect()?;
     let mut stmt = conn.prepare(
         "SELECT id, workspace_id, mode, title, status, pinned, readonly,
-                    model_provider, model_id, agent_session_id, last_message_at,
+                    model_provider, model_id, thinking_level, agent_session_id, last_message_at,
                     last_opened_at, created_at, updated_at, archived_at, deleted_at
              FROM threads
              WHERE status != 'deleted'
@@ -24,7 +24,7 @@ pub fn get_recent_thread() -> Result<Option<ThreadRecord>, crate::AppError> {
     let conn = connect()?;
     conn.query_row(
         "SELECT id, workspace_id, mode, title, status, pinned, readonly,
-                model_provider, model_id, agent_session_id, last_message_at,
+                model_provider, model_id, thinking_level, agent_session_id, last_message_at,
                 last_opened_at, created_at, updated_at, archived_at, deleted_at
          FROM threads
          WHERE status = 'active'
@@ -69,9 +69,9 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
     conn.execute(
         "INSERT INTO threads (
              id, workspace_id, mode, title, status, pinned, readonly,
-             model_provider, model_id, agent_session_id, last_opened_at,
+             model_provider, model_id, thinking_level, agent_session_id, last_opened_at,
              created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, 'active', 0, 0, ?5, ?6, ?7, ?8, ?8, ?8)",
+         ) VALUES (?1, ?2, ?3, ?4, 'active', 0, 0, ?5, ?6, ?7, ?8, ?9, ?9, ?9)",
         params![
             thread_id,
             workspace.id,
@@ -79,6 +79,7 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
             title,
             input.model_provider,
             input.model_id,
+            normalize_optional_thinking_level(input.thinking_level),
             agent_session_id,
             now
         ],
@@ -91,7 +92,7 @@ pub fn get_thread(thread_id: &str) -> Result<Option<ThreadRecord>, crate::AppErr
     let conn = connect()?;
     conn.query_row(
         "SELECT id, workspace_id, mode, title, status, pinned, readonly,
-                model_provider, model_id, agent_session_id, last_message_at,
+                model_provider, model_id, thinking_level, agent_session_id, last_message_at,
                 last_opened_at, created_at, updated_at, archived_at, deleted_at
          FROM threads
          WHERE id = ?1",
@@ -136,6 +137,22 @@ pub fn update_thread_model(input: UpdateThreadModelInput) -> Result<ThreadRecord
          SET model_provider = ?1, model_id = ?2, updated_at = ?3
          WHERE id = ?4 AND status != 'deleted'",
         params![model_provider, model_id, now, input.thread_id],
+    )?;
+
+    get_thread(&input.thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string().into())
+}
+
+pub fn update_thread_thinking_level(
+    input: UpdateThreadThinkingLevelInput,
+) -> Result<ThreadRecord, crate::AppError> {
+    let thinking_level = normalize_optional_thinking_level(input.thinking_level);
+    let now = now_millis();
+    let conn = connect()?;
+    conn.execute(
+        "UPDATE threads
+         SET thinking_level = ?1, updated_at = ?2
+         WHERE id = ?3 AND status != 'deleted'",
+        params![thinking_level, now, input.thread_id],
     )?;
 
     get_thread(&input.thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string().into())
@@ -187,4 +204,11 @@ pub fn delete_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> {
     }
 
     get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string().into())
+}
+
+fn normalize_optional_thinking_level(level: Option<String>) -> Option<String> {
+    level.and_then(|value| {
+        let trimmed = value.trim().to_string();
+        (!trimmed.is_empty()).then_some(trimmed)
+    })
 }

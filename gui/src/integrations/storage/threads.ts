@@ -74,6 +74,7 @@ export async function createThread(input: {
   workspaceName?: string | null;
   modelProvider?: string | null;
   modelId?: string | null;
+  thinkingLevel?: string | null;
 }) {
   return invokeCommand<StoredThread>("create_thread", { input });
 }
@@ -88,6 +89,13 @@ export async function updateThreadModel(input: {
   modelId?: string | null;
 }) {
   return invokeCommand<StoredThread>("update_thread_model", { input });
+}
+
+export async function updateThreadThinkingLevel(input: {
+  threadId: string;
+  thinkingLevel?: string | null;
+}) {
+  return invokeCommand<StoredThread>("update_thread_thinking_level", { input });
 }
 
 export async function pinThread(input: { threadId: string; pinned: boolean }) {

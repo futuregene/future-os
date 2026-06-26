@@ -1,11 +1,14 @@
 import { invokeCommand } from "../tauri/invoke";
 
+export const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+export type ThinkingLevel = typeof thinkingLevels[number];
+
 export interface AgentModelOption {
   id: string;
   label: string;
   provider: string;
   supportsImages?: boolean;
-  thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | string | null;
+  thinkingLevel?: ThinkingLevel | string | null;
   contextWindow?: number | null;
   isDefault?: boolean;
 }
@@ -15,6 +18,7 @@ interface AgentPromptResponse {
 }
 
 export const defaultAgentModelId = "";
+export const defaultThinkingLevel: ThinkingLevel = "off";
 
 export async function sendPromptToFutureAgent(
   message: string,
@@ -68,6 +72,10 @@ export function modelSupportsImages(modelId: string, models: AgentModelOption[])
 
 export function modelThinkingLevel(modelId: string, models: AgentModelOption[]) {
   return modelOption(modelId, models)?.thinkingLevel ?? undefined;
+}
+
+export function normalizeThinkingLevel(level?: string | null): ThinkingLevel {
+  return thinkingLevels.includes(level as ThinkingLevel) ? level as ThinkingLevel : defaultThinkingLevel;
 }
 
 function modelOption(modelId: string, models: AgentModelOption[]) {

@@ -47,7 +47,7 @@ pub use runs::{
 };
 pub use threads::{
     archive_thread, create_thread, delete_thread, get_recent_thread, get_thread, list_threads,
-    pin_thread, rename_thread, restore_thread, update_thread_model,
+    pin_thread, rename_thread, restore_thread, update_thread_model, update_thread_thinking_level,
 };
 pub use workspaces::{
     create_workspace, get_or_create_chat_workspace, get_workspace, list_workspaces,

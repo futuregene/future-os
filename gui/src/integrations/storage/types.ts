@@ -8,6 +8,7 @@ export interface StoredThread {
   readonly: boolean;
   modelProvider?: string | null;
   modelId?: string | null;
+  thinkingLevel?: string | null;
   agentSessionId?: string | null;
   lastMessageAt?: number | null;
   lastOpenedAt?: number | null;
