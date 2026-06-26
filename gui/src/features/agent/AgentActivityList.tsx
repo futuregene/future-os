@@ -20,7 +20,7 @@ export function AgentActivityList({ items }: AgentActivityListProps) {
   );
 }
 
-function AgentActivityLine({ item }: { item: AgentActivityItem }) {
+export function AgentActivityLine({ item }: { item: AgentActivityItem }) {
   const label = labelForActivity(item);
   const failed = item.status === "failed";
   const running = item.status === "running";

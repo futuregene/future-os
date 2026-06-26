@@ -31,6 +31,15 @@ export interface AgentActivityItem {
   deletions?: number;
 }
 
+/**
+ * One ordered slice of an assistant turn. Text and tool activity are kept in
+ * the chronological order the agent produced them (Claude-style inline tool
+ * calls), instead of being flattened into "all text, then all tools".
+ */
+export type MessageSegment
+  = | { kind: "text"; id: string; text: string }
+    | { kind: "activity"; id: string; item: AgentActivityItem };
+
 export interface MessageAttachment {
   artifactId?: string | null;
   name: string;
@@ -50,6 +59,11 @@ export interface AgentMessage {
   status?: "complete" | "streaming" | "failed";
   createdAt: string;
   activityItems?: AgentActivityItem[];
+  /**
+   * Ordered text/activity slices for inline rendering. Falls back to
+   * content + activityItems when absent (optimistic, error, legacy data).
+   */
+  segments?: MessageSegment[];
   attachments?: MessageAttachment[];
   plan?: AgentPlanStep[];
   toolCalls?: ToolCall[];

@@ -1,10 +1,18 @@
 import type { StoredRunEvent } from "../../integrations/storage/threadStore";
-import type { AgentActivityItem, AgentActivityKind } from "./agentThreadTypes";
+import type { AgentActivityItem, AgentActivityKind, MessageSegment } from "./agentThreadTypes";
 
 interface AssistantRunProjection {
   activityItems: AgentActivityItem[];
   content: string;
+  /** Text and activity in chronological order — drives inline rendering. */
+  segments: MessageSegment[];
 }
+
+/**
+ * Ordered placeholder: a text run or a reference to a tool by id. The tool's
+ * latest state lives in the `toolActivities` map; the slot only fixes position.
+ */
+type Slot = { type: "text"; text: string } | { type: "tool"; id: string };
 
 interface ToolActivity {
   id: string;
@@ -21,6 +29,11 @@ const SUPPORTED_TOOL_NAMES = new Set(["read", "bash", "edit", "write"]);
 export function buildAssistantRunProjection(events: StoredRunEvent[]): AssistantRunProjection {
   const sortedEvents = [...events].sort((a, b) => a.sequence - b.sequence);
   const toolActivities = new Map<string, ToolActivity>();
+  // Ordered timeline of the turn. Text accumulates into the open text slot;
+  // each tool call pins a slot at the point it started.
+  const slots: Slot[] = [];
+  const slottedToolIds = new Set<string>();
+  let openText: Extract<Slot, { type: "text" }> | null = null;
   let content = "";
   let thinking = false;
   let sawVisibleWork = false;
@@ -32,6 +45,11 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
     if (event.eventType === "text_chunk") {
       const text = textFromPayload(payload);
       content += text;
+      if (!openText) {
+        openText = { type: "text", text: "" };
+        slots.push(openText);
+      }
+      openText.text += text;
       if (text.trim()) {
         sawVisibleWork = true;
       }
@@ -57,6 +75,12 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
           ...tool,
           status: "running",
         });
+        if (!slottedToolIds.has(tool.id)) {
+          slots.push({ type: "tool", id: tool.id });
+          slottedToolIds.add(tool.id);
+        }
+        // A tool call ends the current text run; later text starts a new slot.
+        openText = null;
         sawVisibleWork = true;
       }
       continue;
@@ -101,23 +125,82 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
         status: hasToolError(payload) ? "failed" : "completed",
         order: existing?.order ?? tool.order,
       });
+      // A result without a preceding start still deserves a slot.
+      if (!slottedToolIds.has(toolId)) {
+        slots.push({ type: "tool", id: toolId });
+        slottedToolIds.add(toolId);
+      }
       sawVisibleWork = true;
     }
   }
 
+  const segments = buildSegments(slots, toolActivities);
+
+  // Flat activity list kept for back-compat (legacy render path / callers).
   const items = collapseToolActivities([...toolActivities.values()].sort((a, b) => a.order - b.order));
   if (thinking && !content.trim() && !sawVisibleWork) {
-    items.unshift({
-      id: "thinking",
-      kind: "thinking",
-      status: "running",
-    });
+    const thinkingItem: AgentActivityItem = { id: "thinking", kind: "thinking", status: "running" };
+    items.unshift(thinkingItem);
+    segments.unshift({ kind: "activity", id: thinkingItem.id, item: thinkingItem });
   }
 
   return {
     activityItems: items,
     content,
+    segments,
   };
+}
+
+/**
+ * Walk the ordered slots into renderable segments. Adjacent tool slots (ignoring
+ * whitespace-only text between them) are grouped with the same collapse rules as
+ * the flat list, so a burst of edits still reads as "已编辑 N 个文件" — but real
+ * prose between tools keeps them as separate inline lines.
+ */
+function buildSegments(
+  slots: Slot[],
+  toolActivities: Map<string, ToolActivity>,
+): MessageSegment[] {
+  const segments: MessageSegment[] = [];
+  let index = 0;
+
+  while (index < slots.length) {
+    const slot = slots[index];
+
+    if (slot.type === "text") {
+      if (slot.text.trim()) {
+        segments.push({ kind: "text", id: `text_${index}`, text: slot.text });
+      }
+      index += 1;
+      continue;
+    }
+
+    // Gather a run of adjacent tool slots, hopping over whitespace-only text.
+    const run: ToolActivity[] = [];
+    let cursor = index;
+    while (cursor < slots.length) {
+      const current = slots[cursor];
+      if (current.type === "tool") {
+        const tool = toolActivities.get(current.id);
+        if (tool)
+          run.push(tool);
+        cursor += 1;
+        continue;
+      }
+      if (!current.text.trim()) {
+        cursor += 1;
+        continue;
+      }
+      break;
+    }
+
+    for (const item of collapseToolActivities(run)) {
+      segments.push({ kind: "activity", id: item.id, item });
+    }
+    index = cursor;
+  }
+
+  return segments;
 }
 
 function latestRunningToolId(
