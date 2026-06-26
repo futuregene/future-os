@@ -4,7 +4,7 @@ import { FileText, Paperclip, RotateCcw, StepForward } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { formatTime } from "../../lib/date";
 import { MarkdownContent } from "../markdown/MarkdownContent";
-import { AgentActivityList } from "./AgentActivityList";
+import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
 import { PlanBlock } from "./PlanBlock";
 
 interface MessageBlockProps {
@@ -24,6 +24,7 @@ export function MessageBlock({
 }: MessageBlockProps) {
   const isUser = message.role === "user";
   const canRecover = !isUser && message.status === "failed";
+  const hasSegments = !isUser && !!message.segments && message.segments.length > 0;
 
   return (
     <article className="flex justify-center">
@@ -40,11 +41,27 @@ export function MessageBlock({
               : "w-full",
           )}
         >
-          {message.content
-            ? isUser
-              ? <p className="whitespace-pre-wrap">{message.content}</p>
-              : <MarkdownContent content={message.content} workspaceId={workspaceId} />
-            : null}
+          {hasSegments
+            ? (
+                <div className="space-y-3">
+                  {message.segments!.map(segment =>
+                    segment.kind === "text"
+                      ? (
+                          <MarkdownContent
+                            content={segment.text}
+                            key={segment.id}
+                            workspaceId={workspaceId}
+                          />
+                        )
+                      : <AgentActivityLine item={segment.item} key={segment.id} />,
+                  )}
+                </div>
+              )
+            : message.content
+              ? isUser
+                ? <p className="whitespace-pre-wrap">{message.content}</p>
+                : <MarkdownContent content={message.content} workspaceId={workspaceId} />
+              : null}
           {message.attachments && message.attachments.length > 0
             ? (
                 <div className={cn("mt-2 flex flex-wrap gap-1.5", isUser && "justify-end")}>
@@ -55,7 +72,7 @@ export function MessageBlock({
               )
             : null}
           {message.plan ? <PlanBlock steps={message.plan} /> : null}
-          {!isUser ? <AgentActivityList items={message.activityItems} /> : null}
+          {!isUser && !hasSegments ? <AgentActivityList items={message.activityItems} /> : null}
           {canRecover
             ? (
                 <div className="mt-3 flex flex-wrap gap-2">
