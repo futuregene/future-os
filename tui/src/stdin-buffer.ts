@@ -208,7 +208,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
       this.pasteMode = true;
       this.pasteBuffer = this.buffer;
       this.buffer = "";
-      this.pendingKittyPrintableCodepoint = undefined;  // matches pi
+      this.pendingKittyPrintableCodepoint = undefined; 
 
       const endIndex = this.pasteBuffer.indexOf(BRACKETED_PASTE_END);
       if (endIndex !== -1) {

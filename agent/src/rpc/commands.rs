@@ -256,6 +256,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                         "cwd": s.cwd,
                         "updated_at": s.updated_at.format("%Y-%m-%d %H:%M:%S").to_string(),
                         "parent_session_id": s.parent_session_id,
+                        "first_message": s.first_message,
+                        "query_count": s.query_count,
                     })
                 })
                 .collect();
@@ -331,7 +333,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             }
 
             // Extract needed data from session
-            let (agent_loop, session_manager, event_bus, broadcaster, _cwd, session_id) = {
+            let (agent_loop, session_manager, event_bus, broadcaster, _cwd, current_session_id) = {
                 let sess = session.read().unwrap();
                 (
                     sess.agent_loop.clone(),
@@ -343,8 +345,16 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 )
             };
 
+            // Resolve parent session: use cmd.parent_session if provided,
+            // otherwise fork from the current session.
+            let parent_id = if !cmd.parent_session.is_empty() {
+                cmd.parent_session.clone()
+            } else {
+                current_session_id.clone()
+            };
+
             // Get parent session from manager
-            let parent = match session_manager.load(&session_id) {
+            let parent = match session_manager.load(&parent_id) {
                 Ok(s) => s,
                 Err(_) => {
                     return RpcResponse::build_fail(
@@ -458,6 +468,9 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     display: String::new(),
                     provider: String::new(),
                     tool_call_id: String::new(),
+                    name: String::new(),
+                    tool_args: String::new(),
+            thinking: String::new(),
                 });
                 s.name = cmd.name.clone();
                 let _ = session_manager.save(&s);
@@ -611,13 +624,18 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             // Include current enabled_models from settings so the TUI knows the scope
             let settings_path = std::path::PathBuf::from(crate::models::settings_path());
             let settings = crate::config::load_settings(&settings_path).unwrap_or_default();
+            let valid_ids: std::collections::HashSet<&str> = models
+                .iter()
+                .filter_map(|m| m["id"].as_str())
+                .collect();
             let enabled_model_ids: Vec<String> = if settings.enabled_models.is_empty() {
-                models
-                    .iter()
-                    .map(|m| m["id"].as_str().unwrap_or("").to_string())
-                    .collect()
+                valid_ids.iter().map(|&s| s.to_string()).collect()
             } else {
-                settings.enabled_models.clone()
+                // Filter to only valid model IDs (stale entries cleaned)
+                settings.enabled_models.iter()
+                    .filter(|id| valid_ids.contains(id.as_str()))
+                    .cloned()
+                    .collect()
             };
             RpcResponse::ok(
                 id,

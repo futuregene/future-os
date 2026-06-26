@@ -1,4 +1,4 @@
-//! Engine — 1:1 compatible with Go internal/engine/
+//! Engine — 1:1 compatible with internal/engine/
 
 use crate::agent::{Loop, DEFAULT_MAX_TURNS};
 use crate::config::Settings;
@@ -58,7 +58,7 @@ impl Engine {
             config.compat_requires_reasoning_on_assistant,
         );
 
-        // Apply max_tokens field name from compat (pi uses maxTokensField for this)
+        // Apply max_tokens field name from compat (the SDK uses maxTokensField for this)
         if !config.max_tokens_field.is_empty() {
             llm_client = llm_client.with_max_tokens_field(&config.max_tokens_field);
         }

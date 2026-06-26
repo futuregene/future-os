@@ -1,6 +1,6 @@
 /**
  * Input component — single-line text input with horizontal scrolling.
- * Ported from pi's input.ts. Implements Component + Focusable.
+ *ts. Implements Component + Focusable.
  */
 
 import { type Component, CURSOR_MARKER, type Focusable } from "../tui.js";

@@ -61,7 +61,6 @@ impl AgentClient {
             id: uuid::Uuid::new_v4().to_string(),
             r#type: cmd_type.to_string(),
             session_id: session_id.to_string(),
-            session_path: String::new(),
             entry_id: String::new(),
             ..extra
         });
@@ -133,7 +132,7 @@ impl AgentClient {
             context_window: resp["contextWindow"].as_i64().unwrap_or(0),
             tokens_in: resp["tokensIn"].as_i64().unwrap_or(0),
             tokens_out: resp["tokensOut"].as_i64().unwrap_or(0),
-            message_count: resp["messageCount"].as_i64().unwrap_or(0) as usize,
+            query_count: resp["queryCount"].as_i64().unwrap_or(0) as usize,
             session_id: resp["sessionId"].as_str().unwrap_or("").to_string(),
             session_name: resp["sessionName"].as_str().unwrap_or("").to_string(),
             cwd: resp["cwd"].as_str().unwrap_or("").to_string(),
@@ -189,6 +188,15 @@ impl AgentClient {
     /// Compact the current session context.
     pub async fn compact(&mut self, session_id: &str) -> Result<()> {
         self.call("compact", session_id, Default::default()).await?;
+        Ok(())
+    }
+
+    /// Set working directory.
+    pub async fn set_cwd(&mut self, session_id: &str, cwd: &str) -> Result<()> {
+        self.call("set_cwd", session_id, RpcCommand {
+            cwd: cwd.to_string(),
+            ..Default::default()
+        }).await?;
         Ok(())
     }
 
@@ -310,7 +318,7 @@ pub struct SessionState {
     pub context_window: i64,
     pub tokens_in: i64,
     pub tokens_out: i64,
-    pub message_count: usize,
+    pub query_count: usize,
     pub session_id: String,
     pub session_name: String,
     pub cwd: String,

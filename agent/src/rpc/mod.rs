@@ -195,7 +195,12 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
 
     // Use API-reported prompt_tokens from the last request as actual context usage
     let context_tokens = sess.last_prompt_tokens.load(Ordering::Relaxed);
-    let msg_count = sess.messages.read().unwrap().len();
+    // Query count: number of user messages (prompts, steering, follow-ups).
+    // Excludes internal tool/assistant messages.
+    let query_count = sess.messages.read().unwrap()
+        .iter()
+        .filter(|m| m.role == "user")
+        .count();
     let context_percent = if context_window > 0 {
         (context_tokens as f64 / context_window as f64) * 100.0
     } else {
@@ -215,7 +220,7 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
         "sessionName": serde_json::Value::Null,
         "explicitSession": state.explicit_session,
         "autoCompactionEnabled": sess.auto_compaction,
-        "messageCount": msg_count,
+        "queryCount": query_count,
         "pendingMessageCount": sess.agent_loop.try_read().map(|l|l.pending_message_count()).unwrap_or(0),
         "version": crate::utils::VERSION,
         "cwd": cwd,
@@ -231,7 +236,6 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
         "tokensCacheW": cache_w,
         "totalCost": total_cost,
         "permissionLevel": sess.permission_level.clone(),
-        "cwd": sess.cwd.clone(),
     })
 }
 

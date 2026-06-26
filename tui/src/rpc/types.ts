@@ -99,7 +99,7 @@ export interface RpcSessionState {
   sessionName?: string;
   explicitSession: boolean;
   autoCompactionEnabled: boolean;
-  messageCount: number;
+  queryCount: number;
   pendingMessageCount: number;
   // Welcome info
   version?: string;

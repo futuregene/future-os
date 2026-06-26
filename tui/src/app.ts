@@ -139,7 +139,7 @@ export class App extends Container {
 
   private running = false;
 
-  // Diff-based render state (matches pi's doRender approach)
+  // Diff-based render state 
   private previousLines: string[] = [];
   private cursorRow = 0;
   private hardwareCursorRow = 0;
@@ -212,7 +212,7 @@ export class App extends Container {
     this.acManager.register(new FilePathProvider(this.state.cwd || process.cwd()));
     this.acManager.register(new AttachmentProvider());
 
-    // Register children with Container (matches pi's TUI extends Container)
+    // Register children with Container 
     this.addChild(this.chat);
     this.addChild(this.input);
     this.addChild(this.footer);
@@ -221,8 +221,6 @@ export class App extends Container {
     this.keybindings.add(Key.ctrl_c, () => { this.handleInterrupt(); return true; }, "Interrupt / exit");
     this.keybindings.add(Key.ctrl_p, () => { this.cycleModel(); return true; }, "Cycle model");
     this.keybindings.add(Key.ctrl_r, () => { this.showSessions(); return true; }, "Browse sessions");
-    this.keybindings.add(Key.ctrl_s, () => { this.showSettings(); return true; }, "Open settings");
-
     this.keybindings.add(Key.ctrl_t, () => { this.cycleThinking(); return true; }, "Cycle thinking");
     this.keybindings.add(Key.shift_tab, () => { this.cycleThinking(); return true; }, "Cycle thinking");
     this.keybindings.add(Key.pageUp, () => {
@@ -362,7 +360,7 @@ export class App extends Container {
     await this.terminal.drainInput();
     this.terminal.stop();
 
-    // Move cursor to end of content (matches pi's stop())
+    // Move cursor to end of content )
     if (this.previousLines.length > 0) {
       const targetRow = this.previousLines.length;
       const lineDiff = targetRow - this.hardwareCursorRow;
@@ -512,7 +510,7 @@ export class App extends Container {
       return;
     }
 
-    // Filter key release events unless focused component explicitly wants them (matches pi)
+    // Filter key release events unless focused component explicitly wants them 
     if (isKeyRelease(data)) {
       const focused = this.focusedComponent;
       if (!focused?.wantsKeyRelease) return;
@@ -551,7 +549,7 @@ export class App extends Container {
     // Parse key through unified parser (Kitty CSI-u, modifyOtherKeys, legacy)
     const keyName = parseKey(data);
     if (keyName) {
-      // If focused component is a now-invisible overlay, redirect focus (matches pi)
+      // If focused component is a now-invisible overlay, redirect focus 
       const focusedOverlay = this.overlayStack.find((o) => o.component === this.focusedComponent);
       if (focusedOverlay && !this.isOverlayVisible(focusedOverlay, this.terminal.columns, this.terminal.rows)) {
         const top = this.getTopOverlay();
@@ -581,7 +579,7 @@ export class App extends Container {
   }
 
   private handleKey(key: string): void {
-    // Shift+Ctrl+D — trigger debug callback (matches pi onDebug pattern)
+    // Shift+Ctrl+D — trigger debug callback 
     if (key === "shift+ctrl+d" && this.onDebug) {
       this.onDebug();
       return;
@@ -763,7 +761,7 @@ export class App extends Container {
       this.requestRender();
       return;
     }
-    // Not streaming: exit the app (matches pi behavior)
+    // Not streaming: exit the app 
     this.running = false;
     setImmediate(async () => {
       await this.stop();
@@ -868,7 +866,7 @@ export class App extends Container {
         this.chat.addMessage({
           id: crypto.randomUUID(),
           role: "system",
-          content: "Export: use /settings or Ctrl+E to export session",
+          content: "Export: use Ctrl+E to export session",
         });
         return;
       }
@@ -877,7 +875,7 @@ export class App extends Container {
         this.chat.addMessage({
           id: crypto.randomUUID(),
           role: "system",
-          content: "Import: use /settings or Ctrl+I to import session",
+          content: "Import: use Ctrl+I to import session",
         });
         return;
       }
@@ -995,24 +993,35 @@ export class App extends Container {
                 roots.push(s);
               }
             }
-            // Flatten recursively
-            const flatten = (list: typeof sessions, depth: number) => {
+            // Flatten recursively, tracking "last child" at each depth for
+            // correct tree-drawing (│ for ancestors with more children after).
+            const flatten = (list: typeof sessions, depth: number, ancestorsLast: boolean[]) => {
               list.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
-              for (const s of list) {
-                const prefix = depth > 0 ? "  ".repeat(depth - 1) + (children.get(s.id)?.length ? "├─ " : "└─ ") : "";
+              for (let i = 0; i < list.length; i++) {
+                const s = list[i];
+                const isLast = i === list.length - 1;
+                const hasChildren = children.has(s.id) && (children.get(s.id)?.length ?? 0) > 0;
+                // Build prefix: ancestor lines + connector
+                let prefix = "";
+                for (let d = 0; d < depth; d++) {
+                  prefix += ancestorsLast[d] ? "  " : "│ ";
+                }
+                if (depth > 0) {
+                  prefix += isLast ? "└─ " : "├─ ";
+                }
                 const currentMarker = s.id === this.state.sessionId ? "▶ " : "  ";
-                const label = `${currentMarker}${prefix}${s.name || s.id}`;
+                const label = `${currentMarker}${prefix}${s.name || (s as any).first_message || s.id}`;
                 items.push({
                   value: s.id,
                   label,
-                  description: `${s.model} · ${new Date(s.updated_at).toLocaleString()}`,
+                  description: `${s.model} · ${(s as any).query_count ?? "?"}Q · ${new Date(s.updated_at).toLocaleString()}`,
                 });
-                if (children.has(s.id)) {
-                  flatten(children.get(s.id)!, depth + 1);
+                if (hasChildren) {
+                  flatten(children.get(s.id)!, depth + 1, [...ancestorsLast, isLast]);
                 }
               }
             };
-            flatten(roots, 0);
+            flatten(roots, 0, []);
           }
           const treeList = new SelectList({
             title: "Session Tree",
@@ -1244,7 +1253,7 @@ export class App extends Container {
             `**CWD:** ${s.cwd || "(none)"}`,
             `**Thinking:** ${s.thinkingLevel}`,
             `**Permission:** ${s.permissionLevel ?? "all"}`,
-            `**Messages:** ${s.messageCount}`,
+            `**Queries:** ${s.queryCount}`,
             `**Auto compaction:** ${s.autoCompactionEnabled ? "on" : "off"}`,
             `**Streaming:** ${s.isStreaming ? "yes" : "no"}`,
             "",
@@ -1374,7 +1383,12 @@ export class App extends Container {
           content = raw;
         } else if (Array.isArray(raw)) {
           content = (raw as Array<Record<string, unknown>>)
-            .map((block) => (typeof block.text === "string" ? block.text : ""))
+            .map((block) => {
+              // TextBlock uses "text", ToolResultBlock uses "content"
+              if (typeof block.text === "string") return block.text;
+              if (typeof block.content === "string") return block.content;
+              return "";
+            })
             .filter(Boolean)
             .join("");
         }
@@ -1388,7 +1402,12 @@ export class App extends Container {
           content,
           name: (msg.name as string) || undefined,
           tool: (msg.tool_call_id as string) || undefined,
+          toolArgs: (msg.tool_args as string) || undefined,
           thinking: (msg.reasoning_content as string) || undefined,
+          // Historical tool messages: check content for error prefix
+          toolStatus: role === "tool"
+            ? (content.startsWith("Error:") ? "error" as const : "complete" as const)
+            : undefined,
         });
       }
 
@@ -1526,12 +1545,12 @@ export class App extends Container {
     const entry = { component, options, preFocus, hidden: false, focusOrder };
     this.overlayStack.push(entry);
 
-    // Auto-focus unless nonCapturing (matches pi)
+    // Auto-focus unless nonCapturing 
     if (!options?.nonCapturing) {
       this.setFocus(component);
     }
     this.terminal.hideCursor();
-    this.requestRender();
+    this.requestRender(true);
 
     return {
       hide: () => {
@@ -1542,7 +1561,7 @@ export class App extends Container {
             this.restoreFocus(entry);
           }
           if (this.overlayStack.length === 0) this.terminal.hideCursor();
-          this.requestRender();
+          this.requestRender(true);
         }
       },
       setHidden: (h: boolean) => {
@@ -1597,7 +1616,7 @@ export class App extends Container {
     if (this.focusedComponent === entry.component) {
       this.restoreFocus(entry);
     }
-    this.requestRender();
+    this.requestRender(true);
   }
 
   private getTopOverlay(): Component | null {
@@ -1707,7 +1726,7 @@ export class App extends Container {
   }
 
   async showSessions(): Promise<void> {
-    let sessions: { id: string; name?: string; model: string; updated_at: string }[] = [];
+    let sessions: { id: string; name?: string; first_message?: string; query_count?: number; model: string; updated_at: string }[] = [];
     try {
       const r = await this.client.listSessions();
       sessions = r.sessions;
@@ -1722,8 +1741,8 @@ export class App extends Container {
 
     const items: SelectItem[] = sessions.map((s) => ({
       value: s.id,
-      label: s.name ?? s.id,
-      description: `${s.model} · ${new Date(s.updated_at).toLocaleString()}`,
+      label: s.name || s.first_message || s.id,
+      description: `${s.model} · ${s.query_count ?? "?"}Q · ${new Date(s.updated_at).toLocaleString()}`,
     }));
 
     const sl = new SelectList({
@@ -1791,14 +1810,14 @@ export class App extends Container {
     this.showOverlay(sl);
   }
 
-  // ─── Rendering (pi-style differential with synchronized output) ──────────
+  // ─── Rendering (differential with synchronized output) ──────────
 
   /**
    * Request a render. If called rapidly, calls are coalesced so doRender()
    * fires at most every MIN_RENDER_INTERVAL_MS (16ms ≈ 60fps).
    */
   /**
-   * Request a render. Uses dual-phase scheduling (matches pi):
+   * Request a render. Uses dual-phase scheduling :
    * - force: process.nextTick for immediate full redraw
    * - ambient: setTimeout-based coalescing at ~30fps
    */
@@ -1838,7 +1857,12 @@ export class App extends Container {
   }
 
   private scheduleRender(): void {
-    if (!this.running || this.renderTimer || !this.renderRequested) return;
+    if (!this.running || !this.renderRequested) return;
+    // Clear any pending timer so we re-evaluate with current state.
+    if (this.renderTimer) {
+      clearTimeout(this.renderTimer);
+      this.renderTimer = undefined;
+    }
     const elapsed = performance.now() - this.lastRenderAt;
     const delay = Math.max(0, App.MIN_RENDER_INTERVAL_MS - elapsed);
     this.renderTimer = setTimeout(() => {
@@ -2014,7 +2038,7 @@ export class App extends Container {
     // Filter out undefined entries (can happen with certain input sequences)
     newLines = newLines.map((l) => l ?? "");
 
-    // Composite overlays into rendered lines (before diff compare, matches pi)
+    // Composite overlays into rendered lines (before diff compare)
     if (this.overlayStack.length > 0) {
       newLines = this.compositeOverlays(newLines, W, H);
     }
@@ -2091,7 +2115,7 @@ export class App extends Container {
       this.previousHeight = H;
     };
 
-    // Debug redraw logging (matches pi's PI_DEBUG_REDRAW)
+    // Debug redraw logging 
     const debugRedraw = process.env.PI_DEBUG_REDRAW === "1";
     const logRedraw = (reason: string): void => {
       if (!debugRedraw) return;
@@ -2264,28 +2288,8 @@ export class App extends Container {
       if (!line) continue;
       const isImage = isImageLine(line);
       if (!isImage && visibleWidth(line) > W) {
-        // Log all lines to crash file for debugging (matches pi behavior)
-        const crashLogPath = path.join(os.homedir(), ".future", "tui", "crash.log");
-        const crashData = [
-          `Crash at ${new Date().toISOString()}`,
-          `Terminal width: ${W}`,
-          `Line ${i} visible width: ${visibleWidth(line)}`,
-          "",
-          "=== All rendered lines ===",
-          ...newLines.map((l, idx) => `[${idx}] (w=${visibleWidth(l)}) ${l}`),
-          "",
-        ].join("\n");
-        fs.mkdirSync(path.dirname(crashLogPath), { recursive: true });
-        fs.writeFileSync(crashLogPath, crashData);
-        const errorMsg = [
-          `Rendered line ${i} exceeds terminal width (${visibleWidth(line)} > ${W}).`,
-          "",
-          "This is likely caused by a custom TUI component not truncating its output.",
-          "Use visibleWidth() to measure and truncateToWidth() to truncate lines.",
-          "",
-          `Debug log written to: ${crashLogPath}`,
-        ].join("\n");
-        throw new Error(errorMsg);
+        // Truncate instead of crashing — graceful degradation
+        line = truncateToWidth(line, W - 1);
       }
       buf += line;
     }

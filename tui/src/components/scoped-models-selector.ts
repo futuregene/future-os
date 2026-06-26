@@ -1,6 +1,6 @@
 /**
  * ScopedModelsSelector - multi-select model toggle list.
- * Matches pi's ScopedModelsSelectorComponent: shows all models with ✓/✗,
+ * Matches ScopedModelsSelectorComponent: shows all models with ✓/✗,
  * Space toggles, Enter saves, Escape cancels.
  */
 
