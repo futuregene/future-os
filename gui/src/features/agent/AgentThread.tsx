@@ -155,7 +155,7 @@ export function AgentThread({
             transform: `translateY(${scrollbar.top}px)`,
           }}
         />
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-8 pb-5">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-surface from-80% to-transparent px-8 pb-5 pt-10">
           <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
             {activeApproval
               ? (
