@@ -91,6 +91,12 @@ pub struct SessionEntry {
         skip_serializing_if = "String::is_empty"
     )]
     pub tool_call_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tool_args: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub thinking: String,
 }
 
 impl SessionEntry {
@@ -113,6 +119,9 @@ impl SessionEntry {
             display: String::new(),
             provider: String::new(),
             tool_call_id: String::new(),
+            name: String::new(),
+            tool_args: String::new(),
+            thinking: String::new(),
         }
     }
 
@@ -135,6 +144,9 @@ impl SessionEntry {
             display: String::new(),
             provider: String::new(),
             tool_call_id: String::new(),
+            name: String::new(),
+            tool_args: String::new(),
+            thinking: String::new(),
         }
     }
 
@@ -157,6 +169,9 @@ impl SessionEntry {
             display: String::new(),
             provider: String::new(),
             tool_call_id: call_id.to_string(),
+        name: String::new(),
+        tool_args: String::new(),
+            thinking: String::new(),
         }
     }
 }
@@ -202,6 +217,10 @@ pub struct SessionSummary {
         skip_serializing_if = "String::is_empty"
     )]
     pub parent_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_message: Option<String>,
+    #[serde(default)]
+    pub query_count: usize,
 }
 
 impl Session {
@@ -227,7 +246,7 @@ impl Session {
     }
 
     pub fn set_session_name(&mut self, name: &str) {
-        self.name = name.to_string();
+        self.name = name.trim().to_string();
     }
 
     pub fn get_base_url(&self) -> &str {
@@ -406,6 +425,36 @@ impl Manager {
         }
         let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
         if let Ok(sess) = self.load_path(path, id) {
+            // Scan entries for user messages: first user message and total count
+            let mut first_message: Option<String> = None;
+            let mut query_count: usize = 0;
+            for entry in &sess.entries {
+                if entry.role == "user" {
+                    query_count += 1;
+                    if first_message.is_none() {
+                        if let Some(ref content_val) = entry.content {
+                            let text: String = if let Some(arr) = content_val.as_array() {
+                                arr.iter()
+                                    .filter_map(|b| {
+                                        b.get("text").and_then(|t| t.as_str())
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            } else if let Some(s) = content_val.as_str() {
+                                s.to_string()
+                            } else {
+                                String::new()
+                            };
+                            // Trim, then truncate to ~40 visible-width (≈20 CJK chars)
+                            let trimmed = text.trim();
+                            let truncated: String = truncate_visible(trimmed, 40);
+                            if !truncated.is_empty() {
+                                first_message = Some(truncated);
+                            }
+                        }
+                    }
+                }
+            }
             summaries.push(SessionSummary {
                 id: sess.id,
                 cwd: sess.cwd,
@@ -417,6 +466,8 @@ impl Manager {
                     Some(sess.name)
                 },
                 parent_session_id: sess.parent_session_id.clone(),
+                first_message,
+                query_count,
             });
         }
     }
@@ -470,6 +521,9 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
             display: String::new(),
             provider: String::new(),
             tool_call_id: String::new(),
+            name: String::new(),
+            tool_args: String::new(),
+            thinking: String::new(),
         },
     );
     let now = Local::now();
@@ -549,9 +603,11 @@ pub fn entries_to_agent_messages(entries: &[SessionEntry]) -> Vec<crate::types::
         msgs.push(crate::types::AgentMessage {
             role,
             content,
-            thinking: String::new(),
+            thinking: entry.thinking.clone(),
             tool_calls,
             tool_call_id: entry.tool_call_id.clone(),
+            name: entry.name.clone(),
+            tool_args: entry.tool_args.clone(),
             metadata: None,
         });
     }
@@ -571,8 +627,6 @@ pub fn build_context(entries: &[SessionEntry]) -> Vec<Message> {
 
         let content = entry.content.clone().unwrap_or(serde_json::Value::Null);
         let tool_calls: Vec<ToolCall> = entry.tool_calls.clone();
-        let reasoning = String::new();
-
         msgs.push(Message {
             role,
             content: Some(content),
@@ -583,7 +637,8 @@ pub fn build_context(entries: &[SessionEntry]) -> Vec<Message> {
             },
             tool_call_id: entry.tool_call_id.clone(),
             name: String::new(),
-            reasoning_content: reasoning,
+            tool_args: String::new(),
+            reasoning_content: entry.thinking.clone(),
         });
     }
     msgs
@@ -641,5 +696,39 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
         display: String::new(),
         provider: String::new(),
         tool_call_id: msg.tool_call_id.clone(),
+        name: msg.name.clone(),
+        tool_args: msg.tool_args.clone(),
+        thinking: msg.thinking.clone(),
     }
+}
+
+/// Truncate a string to max_vis visible columns. CJK characters count as 2,
+/// everything else as 1. Matches approximate terminal rendering width.
+fn truncate_visible(s: &str, max_vis: usize) -> String {
+    let mut vis: usize = 0;
+    let mut result = String::with_capacity(s.len());
+    for ch in s.chars() {
+        let w = if ch >= '\u{1100}' && ch <= '\u{115f}'   // Hangul Jamo
+            || ch >= '\u{2e80}' && ch <= '\u{a4cf}'       // CJK radicals + Yi
+            || ch >= '\u{ac00}' && ch <= '\u{d7a3}'       // Hangul Syllables
+            || ch >= '\u{f900}' && ch <= '\u{faff}'       // CJK Compatibility
+            || ch >= '\u{fe30}' && ch <= '\u{fe4f}'       // CJK Compatibility Forms
+            || ch >= '\u{ff00}' && ch <= '\u{ffef}'       // Fullwidth Forms
+            || ch >= '\u{1f300}' && ch <= '\u{1f5ff}'     // Misc Symbols
+            || ch >= '\u{1f900}' && ch <= '\u{1f9ff}'     // Supplemental Symbols
+            || ch >= '\u{1f600}' && ch <= '\u{1f64f}'     // Emoticons
+            || ch >= '\u{20000}' && ch <= '\u{2fffd}'     // SIP
+            || ch >= '\u{30000}' && ch <= '\u{3fffd}'     // TIP
+        {
+            2
+        } else {
+            1
+        };
+        if vis + w > max_vis {
+            break;
+        }
+        vis += w;
+        result.push(ch);
+    }
+    result
 }

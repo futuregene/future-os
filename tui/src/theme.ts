@@ -1,12 +1,12 @@
 /**
- * future-tui dark theme — matches pi-mono dark theme colors.
+ * future-tui dark theme — matches dark theme colors.
  */
 
 import { CSI, RESET } from "./tui.js";
 
-// 256-color palette (approximate to pi-mono hex values)
+// 256-color palette (approximate to hex values)
 export const C = {
-  // Accent colors (pi-mono 256-color indices)
+  // Accent colors (256-color indices)
   cyan:    45,    // #00d7ff
   blue:    69,    // #5f87ff
   green:   143,   // #b5bd68
@@ -87,9 +87,9 @@ export interface Theme {
 export const DARK_THEME: Theme = {
   bg: -1,                // use terminal default background
   fg: 252,
-  accent: 39,            // matches pi DEFAULT_THEME accent
-  border: 240,           // matches pi DEFAULT_THEME border
-  selectedBg: 38,        // matches pi DEFAULT_THEME selectedBg
+  accent: 39,
+  border: 240,
+  selectedBg: 38,
   selectedFg: 255,
   dim: C.dim,
   error: C.red,

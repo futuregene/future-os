@@ -1,4 +1,4 @@
-//! Settings management — matches pi's settings.json format exactly.
+//! Settings management — settings.json format exactly.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ pub struct ThinkingBudgetsSettings {
     pub high: Option<i32>,
 }
 
-/// Compaction settings (matches pi's CompactionSettings — nested in settings.json)
+/// Compaction settings 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionSettings {
     #[serde(default = "default_true", skip_serializing_if = "Option::is_none")]
@@ -36,7 +36,7 @@ fn default_compaction_keep_recent_tokens() -> i32 {
     20000
 }
 
-/// Image settings (matches pi's ImageSettings)
+/// Image settings 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageSettings {
     #[serde(default = "default_true", skip_serializing_if = "Option::is_none")]
@@ -45,7 +45,7 @@ pub struct ImageSettings {
     pub block_images: Option<bool>,
 }
 
-/// Terminal settings (matches pi's TerminalSettings)
+/// Terminal settings 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalSettings {
     #[serde(default = "default_true", skip_serializing_if = "Option::is_none")]
@@ -62,7 +62,7 @@ fn default_image_width_cells() -> i32 {
     60
 }
 
-/// Provider-specific retry settings (matches pi's ProviderRetrySettings)
+/// Provider-specific retry settings 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderRetrySettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -76,7 +76,7 @@ pub struct ProviderRetrySettings {
     pub max_retry_delay_ms: Option<i32>,
 }
 
-/// Retry settings (matches pi's RetrySettings — provider sub-settings are in `provider`)
+/// Retry settings 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrySettings {
     #[serde(default = "default_true", skip_serializing_if = "Option::is_none")]
@@ -99,7 +99,7 @@ fn default_max_retry_delay_ms() -> Option<i32> {
     Some(60000)
 }
 
-/// Branch summary settings (matches pi's BranchSummarySettings)
+/// Branch summary settings 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BranchSummarySettings {
     #[serde(default = "default_branch_summary_reserve_tokens")]
@@ -112,7 +112,7 @@ fn default_branch_summary_reserve_tokens() -> i32 {
     16384
 }
 
-/// Markdown settings (matches pi's MarkdownSettings)
+/// Markdown settings 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarkdownSettings {
     #[serde(
@@ -126,7 +126,7 @@ fn default_code_block_indent() -> String {
     "  ".to_string()
 }
 
-/// Package source — matches pi's PackageSource: string or { source, extensions?, skills?, prompts?, themes? }
+/// Package source — PackageSource: string or { source, extensions?, skills?, prompts?, themes? }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PackageSource {
@@ -144,17 +144,17 @@ pub enum PackageSource {
     },
 }
 
-/// Warning settings (matches pi's WarningSettings)
+/// Warning settings 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WarningSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anthropic_extra_usage: Option<bool>,
 }
 
-/// Main Settings struct — mirrors pi settings.json exactly.
+/// Main Settings struct
 ///
-/// JSON field names use camelCase (matching pi's wire format).
-/// Defaults match pi's SettingsManager getter defaults.
+/// JSON field names use camelCase .
+/// Defaults match SettingsManager getter defaults.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -255,7 +255,7 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub session_dir: String,
 
-    // ─── future-specific extensions (not in pi) ─────────────────────────────
+    // ─── future-specific extensions (not in upstream) ─────────────────────────────
     #[serde(default = "default_max_turns")]
     pub max_turns: i32,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -266,7 +266,7 @@ pub struct Settings {
     pub scoped_models: Vec<String>,
 }
 
-// ─── Serde default functions (pi-compatible defaults) ──────────────────────
+// ─── Serde default functions (defaults) ──────────────────────
 
 fn default_steering_mode() -> String {
     "one-at-a-time".to_string()
@@ -482,7 +482,7 @@ impl Settings {
     }
 }
 
-/// LoadSettings reads a settings file, returns pi-default Settings if not found.
+/// LoadSettings reads a settings file, returns defaults if not found.
 pub fn load_settings(path: &Path) -> Result<Settings> {
     if !path.exists() {
         return Ok(Settings::default());

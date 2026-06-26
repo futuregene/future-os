@@ -1,6 +1,6 @@
 /**
  * SelectList - a list selector with filtering and keyboard navigation.
- * Modeled after pi's SelectList: Component + handleInput, filtering, scroll indicators.
+ * Modeled after SelectList: Component + handleInput, filtering, scroll indicators.
  */
 
 import type { Component } from "../tui.js";
@@ -93,21 +93,23 @@ export class SelectList implements Component {
 
     switch (key) {
       case "up":
-        // Wrap to bottom when at top (matches pi)
         if (this.selectedIndex > 0) {
           this.selectedIndex--;
         } else {
+          // Wrap to bottom
           this.selectedIndex = this.filteredItems.length - 1;
+          this.scrollOffset = Math.max(0, this.selectedIndex - this.maxVisible + 1);
         }
         this.recalcScroll();
         this.notifySelectionChange();
         return true;
       case "down":
-        // Wrap to top when at bottom (matches pi)
         if (this.selectedIndex < this.filteredItems.length - 1) {
           this.selectedIndex++;
         } else {
+          // Wrap to top
           this.selectedIndex = 0;
+          this.scrollOffset = 0;
         }
         this.recalcScroll();
         this.notifySelectionChange();
@@ -167,56 +169,80 @@ export class SelectList implements Component {
     const lines: string[] = [];
     const innerW = Math.max(20, width);
 
-    // Width budget: label gets most of the space, description gets the rest
-    const maxLabelW = Math.max(10, innerW - 35);
+    // Width budget: label left, description right, both aligned
+    const maxLabelW = Math.max(10, Math.floor(innerW * 0.4));
     const maxDescW = Math.max(5, innerW - maxLabelW - 4);
 
-    lines.push(`${CSI}38;5;${this.theme.accent}m${BOLD} ${this.title} ${RESET}`);
-    lines.push(`${CSI}2mFilter: ${this.filter}_ ${RESET}`);
+    // Helper: pad to innerW-2 (safe margin for overlay compositing borders)
+    const padToWidth = (line: string): string => {
+      const visW = visibleWidth(line);
+      const safeW = Math.max(10, innerW - 2);
+      if (visW < safeW) {
+        return line + " ".repeat(safeW - visW) + RESET;
+      }
+      return truncateToWidth(line, safeW) + RESET;
+    };
+
+    lines.push(padToWidth(`${CSI}38;5;${this.theme.accent}m${BOLD} ${this.title}`));
+    lines.push(padToWidth(`${CSI}2mFilter: ${this.filter}_`));
 
     const total = this.filteredItems.length;
     const maxItems = Math.min(total, this.maxVisible);
 
-    // Scroll indicator above
+    // Scroll indicator above (always reserve space for consistent line count)
     if (this.scrollOffset > 0) {
-      lines.push(`${CSI}38;5;${this.theme.dimFg}m↑ ${this.scrollOffset} more${RESET}`);
+      lines.push(padToWidth(`${CSI}38;5;${this.theme.dimFg}m↑ ${this.scrollOffset} more`));
+    } else {
+      lines.push(padToWidth(""));
     }
 
-    for (let i = 0; i < maxItems; i++) {
+    for (let i = 0; i < this.maxVisible; i++) {
       const idx = this.scrollOffset + i;
       const item = this.filteredItems[idx];
-      if (!item) continue;
+      if (!item) {
+        lines.push(padToWidth(""));
+        continue;
+      }
 
       const selected = idx === this.selectedIndex;
       const labelPart = truncateToWidth(item.label, maxLabelW);
+      // Pad label to fixed width so description column is aligned
+      const labelVisW = visibleWidth(labelPart);
+      const labelPad = " ".repeat(Math.max(0, maxLabelW - labelVisW));
       // Normalize multiline descriptions: replace \r\n with space
       const rawDesc = item.description?.replace(/\r\n/g, " ") ?? "";
       const descPart = truncateToWidth(rawDesc, maxDescW);
 
       if (selected) {
-        const prefix = `${CSI}38;5;${this.theme.selectedFg}m${CSI}48;5;${this.theme.selectedBg}m ▶ `;
-        const label = `${labelPart}${RESET}`;
+        // Single continuous background: no RESET gap between label and suffix
+        const bgSeq = `${CSI}48;5;${this.theme.selectedBg}m`;
+        const fgSeq = `${CSI}38;5;${this.theme.selectedFg}m`;
+        const head = `${fgSeq}${bgSeq} ▶ `;
+        const label = labelPart + labelPad;
         const suffix = descPart
-          ? `${CSI}38;5;${this.theme.selectedFg}m${CSI}48;5;${this.theme.selectedBg}m ${CSI}2m${descPart}${RESET}`
+          ? ` ${CSI}2m${descPart}`
           : "";
-        lines.push(prefix + label + suffix);
+        lines.push(padToWidth(head + label + suffix));
       } else {
-        const label = `${CSI}38;5;${this.theme.fg}m  ${labelPart}${RESET}`;
+        const label = `${CSI}38;5;${this.theme.fg}m  ${labelPart}${labelPad}${RESET}`;
         const suffix = descPart
           ? ` ${CSI}38;5;${this.theme.dimFg}m${CSI}2m${descPart}${RESET}`
           : "";
-        lines.push(label + suffix);
+        lines.push(padToWidth(label + suffix));
       }
     }
 
-    // Scroll indicator below
+    // Scroll indicator below (always reserve space for consistent line count)
     if (this.scrollOffset + maxItems < total) {
       const remaining = total - this.scrollOffset - maxItems;
-      lines.push(`${CSI}38;5;${this.theme.dimFg}m↓ ${remaining} more${RESET}`);
+      lines.push(padToWidth(`${CSI}38;5;${this.theme.dimFg}m↓ ${remaining} more`));
+    } else {
+      lines.push(padToWidth(""));
     }
 
     if (total === 0) {
-      lines.push(`${CSI}2mNo matching items${RESET}`);
+      // Replace one empty slot with the message (line count stays constant)
+      lines[2] = padToWidth(`${CSI}2mNo matching items`);
     }
 
     return lines;

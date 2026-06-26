@@ -435,7 +435,7 @@ pub fn get_default_model() -> Option<String> {
     }
 }
 
-/// LoadUserModels reads a pi-compatible models.json file.
+/// LoadUserModels reads a models.json file.
 /// Returns empty vec if file doesn't exist.
 /// Load user models + provider-level overrides from models.json.
 /// Providers without models still contribute baseUrl/compat overrides.

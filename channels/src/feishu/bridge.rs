@@ -350,7 +350,7 @@ impl Bridge {
                 }
             }
 
-            "/status" | "/stop" if arg.is_empty() => {
+            "/status" if arg.is_empty() => {
                 let session_id = self.sessions.get(chat_id, thread_id);
                 match session_id {
                     Some(sid) => {
@@ -370,14 +370,14 @@ impl Bridge {
                                 };
                                 let image_tag = if state.image_support { " 🖼️" } else { "" };
                                 let text = format!(
-                                    "**Model:** {}{}\n{}\n\n**Session:** {}\n**CWD:** {}\n**Thinking:** {}\n**Messages:** {}\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n**Tokens:** {} in / {} out\n**Cost:** ¥{:.4}",
+                                    "**Model:** {}{}\n{}\n\n**Session:** {}\n**CWD:** {}\n**Thinking:** {}\n**Queries:** {}\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n**Tokens:** {} in / {} out\n**Cost:** ¥{:.4}",
                                     state.model,
                                     image_tag,
                                     model_info,
                                     state.session_id,
                                     state.cwd,
                                     state.thinking_level,
-                                    state.message_count,
+                                    state.query_count,
                                     if state.auto_compaction { "on" } else { "off" },
                                     state.context_tokens, state.context_window,
                                     if state.context_window > 0 { (state.context_tokens as f64 / state.context_window as f64) * 100.0 } else { 0.0 },
@@ -398,6 +398,16 @@ impl Bridge {
                             &serde_json::json!({"text": "No active session. Send a message to start."}).to_string()).await?;
                     }
                 }
+            }
+
+            "/stop" if arg.is_empty() => {
+                let session_id = self.sessions.get(chat_id, thread_id);
+                if let Some(sid) = session_id {
+                    let mut agent = self.agent.write().await;
+                    let _ = agent.abort(&sid).await;
+                }
+                self.feishu.reply_message(message_id, "text",
+                    &serde_json::json!({"text": "Stopped."}).to_string()).await?;
             }
 
             "/model" if !arg.is_empty() => {
@@ -466,52 +476,6 @@ impl Bridge {
                 }
             }
 
-            "/stop" => {
-                let session_id = self.sessions.get(chat_id, thread_id);
-                match session_id {
-                    Some(sid) => {
-                        let mut agent = self.agent.write().await;
-                        match agent.abort(&sid).await {
-                            Ok(()) => {
-                                self.feishu.reply_message(message_id, "text",
-                                    &serde_json::json!({"text": "Stopped current generation."}).to_string()).await?;
-                            }
-                            Err(e) => {
-                                self.feishu.reply_message(message_id, "text",
-                                    &serde_json::json!({"text": format!("Failed to stop: {}", e)}).to_string()).await?;
-                            }
-                        }
-                    }
-                    None => {
-                        self.feishu.reply_message(message_id, "text",
-                            &serde_json::json!({"text": "No active session to stop."}).to_string()).await?;
-                    }
-                }
-            }
-
-            "/abort" => {
-                let session_id = self.sessions.get(chat_id, thread_id);
-                match session_id {
-                    Some(sid) => {
-                        let mut agent = self.agent.write().await;
-                        match agent.abort(&sid).await {
-                            Ok(()) => {
-                                self.feishu.reply_message(message_id, "text",
-                                    &serde_json::json!({"text": "Aborted current generation."}).to_string()).await?;
-                            }
-                            Err(e) => {
-                                self.feishu.reply_message(message_id, "text",
-                                    &serde_json::json!({"text": format!("Failed to abort: {}", e)}).to_string()).await?;
-                            }
-                        }
-                    }
-                    None => {
-                        self.feishu.reply_message(message_id, "text",
-                            &serde_json::json!({"text": "No active session to abort."}).to_string()).await?;
-                    }
-                }
-            }
-
             "/effort" if !arg.is_empty() => {
                 let valid_levels = ["off", "minimal", "low", "medium", "high", "xhigh"];
                 let level = arg.to_lowercase();
@@ -560,6 +524,21 @@ impl Bridge {
                     None => {
                         self.feishu.reply_message(message_id, "text",
                             &serde_json::json!({"text": "No active session to compact."}).to_string()).await?;
+                    }
+                }
+            }
+
+            "/cwd" if !arg.is_empty() => {
+                let session_id = self.sessions.get(chat_id, thread_id).unwrap_or_default();
+                let mut agent = self.agent.write().await;
+                match agent.set_cwd(&session_id, arg).await {
+                    Ok(()) => {
+                        self.feishu.reply_message(message_id, "text",
+                            &serde_json::json!({"text": format!("CWD set to: {}", arg)}).to_string()).await?;
+                    }
+                    Err(e) => {
+                        self.feishu.reply_message(message_id, "text",
+                            &serde_json::json!({"text": format!("Failed to set CWD: {}", e)}).to_string()).await?;
                     }
                 }
             }

@@ -1,6 +1,6 @@
 /**
  * Text processing utilities for terminal rendering.
- * Ported from pi's utils.ts — grapheme-aware width, ANSI code tracking,
+ *ts — grapheme-aware width, ANSI code tracking,
  * word wrapping, truncation, and overlay compositing.
  */
 
@@ -246,7 +246,7 @@ const THAI_LAO_AM_GLOBAL_REGEX = /[\u0e33\u0eb3]/g;
 export function normalizeTerminalOutput(s: string): string {
   s = replaceTabs(s);
   // Decompose Thai/Lao AM vowels into base + combining marks for
-  // terminal compatibility (matching pi's NFD-based approach).
+  // terminal compatibility .
   if (!THAI_LAO_AM_REGEX.test(s)) return s;
   return s.replace(THAI_LAO_AM_GLOBAL_REGEX, (char) =>
     char === "\u0e33" ? "\u0e4d\u0e32" : "\u0ecd\u0eb2"

@@ -1,5 +1,5 @@
 /**
- * ChatArea - scrollable chat view matching pi-mono style.
+ * ChatArea - scrollable chat view matching style.
  * Renders messages with proper markdown, tool output, and streaming.
  */
 
@@ -16,6 +16,7 @@ export interface ChatMessage {
   content: string;
   name?: string;     // tool name
   tool?: string;     // tool call id
+  toolArgs?: string; // tool arguments (JSON, for display)
   toolStatus?: "running" | "complete" | "error";
   exitCode?: number;
   timestamp?: number;
@@ -384,10 +385,10 @@ export class ChatArea implements Component {
     }
   }
 
-  // ─── User message (pi style: markdown + full-width background Box) ─
+  // ─── User message (markdown + full-width background Box) ─
 
   private renderUserMessage(msg: ChatMessage): void {
-    // Render through markdown for proper text wrapping (matches pi: Markdown inside Box)
+    // Render through markdown for proper text wrapping 
     const rendered = this.md.render(msg.content, this.width - 2);
     for (const line of rendered) {
       if (line === "") continue;
@@ -402,14 +403,14 @@ export class ChatArea implements Component {
     }
   }
 
-  // ─── Assistant message (pi style: mardown via marked, thinking first) ─
+  // ─── Assistant message (mardown via marked, thinking first) ─
 
   private renderAssistantMessage(msg: ChatMessage): void {
     const hasThinking = msg.thinking && msg.thinking.trim();
 
     // Render thinking block FIRST (before content).
     // Render through the markdown renderer so long lines wrap correctly
-    // (matches pi passing thinking through its Markdown component).
+    // .
     if (hasThinking) {
       if (this.thinkingHidden) {
         this.renderedLines.push({
@@ -452,27 +453,28 @@ export class ChatArea implements Component {
     }
   }
 
-  // ─── Tool message (single-line summary) ─
+  // ─── Tool message (single-line header only, matches streaming style) ─
 
   private renderToolMessage(msg: ChatMessage): void {
     const toolName = msg.name || msg.tool || "tool";
     const status = msg.toolStatus || "running";
 
-    // Background color based on status (subtle dark gray, red for errors)
     const bgColor = status === "error" ? this.theme.toolErrorBg
       : status !== "running" ? this.theme.toolSuccessBg
       : this.theme.toolPendingBg;
 
-    // Single-line header: tool name + key args (file path for read/write/edit)
+    // Single header line only — during streaming, tool output is never
+    // shown inline (it arrives in subsequent assistant messages).
     const toolArgs = (msg as { toolArgs?: string }).toolArgs;
-    const commandLine = " " + this.formatToolCall(toolName, toolArgs);
+    const line = " " + this.formatToolCall(toolName, toolArgs);
+
     this.renderedLines.push({
-      text: applyBackgroundToLine(commandLine, this.width, bgColor),
-      dim: false,
+      text: applyBackgroundToLine(line, this.width, bgColor),
+      dim: status === "complete",
     });
   }
 
-  /** Format tool call display per tool type (matches pi's per-tool renderCall). */
+  /** Format tool call display per tool type . */
   private formatToolCall(toolName: string, toolArgs?: string): string {
     // Total line: " " + prefix + " " + content, must fit within this.width
     // Available for content = this.width - 1 (leading space) - visibleWidth(prefix) - 1 (separator)
@@ -514,18 +516,6 @@ export class ChatArea implements Component {
           const filePath = typeof args.path === "string" ? args.path : "";
           const pathDisplay = filePath ? fg(this.theme.accent, truncateToWidth(filePath, maxFor(4))) : fg(this.theme.toolOutput, "...");
           return `${fg(this.theme.toolTitle, bold("edit"))} ${pathDisplay}`;
-        }
-        case "grep": {
-          const pattern = typeof args.pattern === "string" ? args.pattern : "";
-          const filePath = typeof args.path === "string" ? args.path : "";
-          const patternDisplay = pattern ? fg(this.theme.toolOutput, truncateToWidth(pattern, maxFor(4))) : "...";
-          const pathDisplay = filePath ? ` ${fg(this.theme.accent, truncateToWidth(filePath, Math.max(5, maxFor(4) - (pattern ? pattern.length + 1 : 0))))}` : "";
-          return `${fg(this.theme.toolTitle, bold("grep"))} ${patternDisplay}${pathDisplay}`;
-        }
-        case "ls": {
-          const filePath = typeof args.path === "string" ? args.path : "";
-          const pathDisplay = filePath ? fg(this.theme.accent, truncateToWidth(filePath, maxFor(2))) : fg(this.theme.toolOutput, "...");
-          return `${fg(this.theme.toolTitle, bold("ls"))} ${pathDisplay}`;
         }
         default: {
           const argSummary = JSON.stringify(args);

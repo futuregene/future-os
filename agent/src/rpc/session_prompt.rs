@@ -392,6 +392,9 @@ impl ServerSession {
                             display: String::new(),
                             provider: String::new(),
                             tool_call_id: String::new(),
+                            name: String::new(),
+                            tool_args: String::new(),
+            thinking: String::new(),
                         };
                         entries.insert(0, info_entry);
 

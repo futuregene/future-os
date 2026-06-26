@@ -118,7 +118,7 @@ impl DingtalkBridge {
                     Err(e) => reply_md("Error", &format!("**Error:** {}", e)),
                 }
             }
-            "/status" | "/stop" | "/abort" | "/model" | "/models" | "/compact" | "/effort" => {
+            "/status" | "/stop" | "/model" | "/models" | "/compact" | "/effort" | "/cwd" => {
                 // Reuse cached session (from last prompt) instead of creating a new
                 // one — new_session() fails when the agent is busy.
                 let sid = match self.get_or_create_session().await {
@@ -132,15 +132,15 @@ impl DingtalkBridge {
                         if let Ok(s) = agent.get_state(&sid).await {
                             let models = agent.get_available_models(&sid).await.unwrap_or_default();
                             let mi = models.iter().find(|m| m.id == s.model).map(|m| format!(
-                                "**Provider:** {}\n**Image:** {}\n**Context:** {}K\n**Max output:** {}",
+                                "**Provider:** {}\n\n**Image:** {}\n\n**Context:** {}K\n\n**Max output:** {}",
                                 m.provider,
                                 if m.image { "yes" } else { "no" },
                                 m.context_window / 1000,
                                 if m.max_tokens > 0 { format!("{}K", m.max_tokens/1000) } else { "unlimited".into() },
                             )).unwrap_or_default();
                             reply_md("Status", &format!(
-                                "**Model:** {}\n{}\n\n**Session:** {}\n**CWD:** {}\n**Thinking:** {}\n**Messages:** {}\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n**Tokens:** {} in / {} out\n**Cost:** ¥{:.4}",
-                                s.model, mi, s.session_id, s.cwd, s.thinking_level, s.message_count,
+                                "**Model:** {}\n\n{}\n\n**Session:** {}\n\n**CWD:** {}\n\n**Thinking:** {}\n\n**Queries:** {}\n\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n\n**Tokens:** {} in / {} out\n\n**Cost:** ¥{:.4}",
+                                s.model, mi, s.session_id, s.cwd, s.thinking_level, s.query_count,
                                 if s.auto_compaction {"on"} else {"off"},
                                 s.context_tokens, s.context_window,
                                 if s.context_window > 0 { (s.context_tokens as f64 / s.context_window as f64)*100.0 } else { 0.0 },
@@ -148,7 +148,7 @@ impl DingtalkBridge {
                             ));
                         }
                     }
-                    "/stop" | "/abort" => {
+                    "/stop" => {
                         let _ = agent.abort(&sid).await;
                         reply_md("Stopped", "Stopped.");
                     }
@@ -164,9 +164,15 @@ impl DingtalkBridge {
                         if let Ok(models) = agent.get_available_models(&sid).await {
                             let list: Vec<String> = models.iter().map(|m| {
                                 let img = if m.image { "🖼️ " } else { "" };
-                                format!("• {}{} — `{}/{}`", img, m.name, m.provider, m.id)
+                                let ctx = if m.context_window > 0 {
+                                    format!(" | {}K ctx", m.context_window / 1000)
+                                } else { String::new() };
+                                let out = if m.max_tokens > 0 {
+                                    format!(" | {}K out", m.max_tokens / 1000)
+                                } else { String::new() };
+                                format!("• {}{} — `{}/{}`{}{}", img, m.name, m.provider, m.id, ctx, out)
                             }).collect();
-                            reply_md("Models", &format!("**Models ({})**\n\n{}", list.len(), list.join("\n")));
+                            reply_md("Models", &format!("**Models ({})**\n\n{}", list.len(), list.join("\n\n")));
                         }
                     }
                     "/compact" => {
@@ -180,11 +186,16 @@ impl DingtalkBridge {
                             reply_md("Thinking", &format!("**Thinking:** `{}`", arg));
                         }
                     }
+                    "/cwd" if !arg.is_empty() => {
+                        if let Ok(()) = agent.set_cwd(&sid, arg).await {
+                            reply_md("CWD", &format!("**CWD:** `{}`", arg));
+                        }
+                    }
                     _ => {}
                 }
             }
             "/help" => {
-                reply_md("Help", "**Commands**\n\n`/new` — new session\n`/status` — session status\n`/stop` — abort prompt\n`/model <id>` — switch model\n`/models` — list models\n`/effort <level>` — thinking level\n`/compact` — compact context\n`/help` — this help");
+                reply_md("Help", "**Commands**\n\n`/new` — new session\n\n`/status` — session status\n\n`/stop` — abort prompt\n\n`/model <id>` — switch model\n\n`/models` — list models\n\n`/effort <level>` — thinking level\n\n`/compact` — compact context\n\n`/cwd <path>` — set working directory\n\n`/help` — this help");
             }
             _ => {
                 self.process_prompt(text, webhook.clone()).await?;
