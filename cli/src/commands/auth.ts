@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { platform as osPlatform } from "node:os";
 import { dirname } from "node:path";
 
-import { AUTH_FILE, DEFAULT_API_URL, FUTURE_AUTH_PROVIDER } from "../constants.js";
+import { AUTH_FILE, DEFAULT_API_URL, DEFAULT_PLATFORM_URL, FUTURE_AUTH_PROVIDER } from "../constants.js";
 import { isNodeError, isRecord } from "../utils/object.js";
 import { trimTrailingSlash } from "../utils/string.js";
 import { sleep } from "../utils/time.js";
@@ -20,6 +20,7 @@ type DeviceCodeResponse = {
 type DeviceTokenResponse = {
   api_key: string;
   api_key_id: string;
+  api_base_url: string;
   token_type: "api_key";
 };
 
@@ -32,14 +33,17 @@ type FutureAuthEntry = {
   type?: string;
   key?: string;
   base_url?: string;
+  platform_base_url?: string;
 };
 
 type AuthFile = Record<string, unknown>;
 
-export async function login(): Promise<void> {
+export async function login(platformUrlOverride?: string): Promise<void> {
   const authFile = await loadAuthFile();
-  const apiUrl = resolveApiUrl(authFile);
-  const device = await post<DeviceCodeResponse>(apiUrl, "/v1/oauth/device/code", {
+  const platformUrl = platformUrlOverride
+    ? trimTrailingSlash(platformUrlOverride)
+    : (resolvePlatformUrl(authFile) ?? DEFAULT_PLATFORM_URL);
+  const device = await post<DeviceCodeResponse>(platformUrl, "/api/client/v1/oauth/device/code", {
     client_name: "Future OS CLI",
   });
 
@@ -56,7 +60,7 @@ export async function login(): Promise<void> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < device.expires_in * 1000) {
     await sleep(device.interval * 1000);
-    const response = await fetch(`${apiUrl}/v1/oauth/device/token`, {
+    const response = await fetch(`${platformUrl}/api/client/v1/oauth/device/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ device_code: device.device_code }),
@@ -65,7 +69,7 @@ export async function login(): Promise<void> {
     const body = (await response.json()) as DeviceTokenResponse | DeviceErrorResponse;
     if (response.ok) {
       const token = body as DeviceTokenResponse;
-      await saveAuth(authFile, token);
+      await saveAuth(authFile, token, platformUrl);
       console.log(`Saved Future API key to ${AUTH_FILE}`);
       return;
     }
@@ -92,6 +96,9 @@ export async function status(): Promise<void> {
     }
 
     console.log(`API: ${auth.base_url ?? DEFAULT_API_URL}`);
+    if (auth.platform_base_url) {
+      console.log(`Platform: ${auth.platform_base_url}`);
+    }
   } catch {
     console.log("Not logged in.");
   }
@@ -148,17 +155,21 @@ async function loadAuthFile(): Promise<AuthFile> {
   return parsed;
 }
 
-function resolveApiUrl(authFile: AuthFile): string {
+function resolvePlatformUrl(authFile: AuthFile): string | undefined {
   const auth = getFutureAuthEntry(authFile);
-  return trimTrailingSlash(auth?.base_url ?? DEFAULT_API_URL);
+  return auth?.platform_base_url
+    ? trimTrailingSlash(auth.platform_base_url)
+    : undefined;
 }
 
-async function saveAuth(authFile: AuthFile, token: DeviceTokenResponse): Promise<void> {
+async function saveAuth(authFile: AuthFile, token: DeviceTokenResponse, platformUrl: string): Promise<void> {
   const current = getFutureAuthEntry(authFile) ?? {};
   authFile[FUTURE_AUTH_PROVIDER] = {
     ...current,
     type: current.type ?? "api_key",
     key: token.api_key,
+    base_url: token.api_base_url,
+    platform_base_url: platformUrl,
   } satisfies FutureAuthEntry;
 
   await writeAuthFile(authFile);
@@ -181,6 +192,7 @@ function getFutureAuthEntry(authFile: AuthFile): FutureAuthEntry | undefined {
     type: typeof value.type === "string" ? value.type : undefined,
     key: typeof value.key === "string" ? value.key : undefined,
     base_url: typeof value.base_url === "string" ? value.base_url : undefined,
+    platform_base_url: typeof value.platform_base_url === "string" ? value.platform_base_url : undefined,
   };
 }
 

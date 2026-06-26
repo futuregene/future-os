@@ -11,10 +11,11 @@ import { printHelp } from "./help.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const [group, command] = args;
+  const [group, command, ...rest] = args;
 
   if (group === "auth" && command === "login") {
-    await login();
+    const urlArg = rest.find(a => a.startsWith("--url="));
+    await login(urlArg?.slice("--url=".length));
     return;
   }
 
