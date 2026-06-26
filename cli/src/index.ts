@@ -6,6 +6,7 @@ import { login, logout, status } from "./commands/auth.js";
 import { tui } from "./commands/tui.js";
 import { tools, isToolsCommand } from "./commands/tools.js";
 import { skills, isSkillsCommand } from "./commands/skills.js";
+import { account, isAccountCommand } from "./commands/account.js";
 import { run as runCommand } from "./commands/run.js";
 import { printHelp } from "./help.js";
 
@@ -51,6 +52,11 @@ async function main(): Promise<void> {
 
   if (group === "skills" && isSkillsCommand(command)) {
     await skills(command, args.slice(2));
+    return;
+  }
+
+  if (group === "account" && isAccountCommand(command)) {
+    await account(command, rest);
     return;
   }
 
