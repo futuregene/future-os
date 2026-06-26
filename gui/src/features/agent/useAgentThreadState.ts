@@ -4,7 +4,7 @@ import type { StoredRun, StoredThread } from "../../integrations/storage/threadS
 import type { AgentActivityItem, AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import type { ComposerSendPayload } from "./Composer";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { modelSupportsImages, modelThinkingLevel, sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
+import { modelThinkingLevel, sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
 import {
   appendMessage,
   createRun,
@@ -250,7 +250,13 @@ export function useAgentThreadState({
         agentSessionId,
         run.id,
         modelId,
-        modelSupportsImages(modelId, modelOptions) ? imageAttachmentPaths(importedAttachments) : [],
+        // Always forward image attachments. The per-model supportsImages flag
+        // comes from the provider catalog's modality data, which is unreliable
+        // for the Future provider (capable models like Qwen-VL were mis-flagged
+        // text-only, so images were silently dropped). A genuinely text-only
+        // model returns a clear API error instead — better than the model
+        // replying "I don't see an image".
+        imageAttachmentPaths(importedAttachments),
         modelThinkingLevel(modelId, modelOptions),
       );
       clearStreamTimer();
