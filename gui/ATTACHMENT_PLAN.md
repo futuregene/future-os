@@ -233,6 +233,17 @@
 
 ---
 
+## 11. 落地状态（已实现）
+
+- ✅ **P0**：`tauri.conf.json` 启用 `assetProtocol`（scope: `$APPCACHE`/`$APPDATA`/`$HOME/.future`/`$TEMP`）+ Cargo `protocol-asset` feature；`PdfPreview` 改 `convertFileSrc`；新增 Rust 命令 `inspect_attachment` / `read_file_base64` / `write_thumbnail` / `delete_temp_attachment`（`commands/files.rs`，注册于 `lib.rs`）+ 前端封装（`integrations/storage/files.ts`）。
+- ✅ **P1**：`attachments.ts` 新增 `classifyAttachment`（Rust 嗅探）、`TEXT_EXTENSIONS`/`PICKER_EXTENSIONS`、`buildInlineAttachmentContext`（pdfjs 抽 PDF + `read_text_file_preview` 抽文本，单文件 30KB/2000 行、合计 60KB）；`Composer` 接受 image/pdf/text、其余 toast 拒绝；发送路径把内联文本拼进 `promptContent`，并持久化 `inlineContext` 进 mixed 消息（不入可见气泡）。
+- ✅ **P2**：图片缩略图 `generateImageThumbnail`（canvas→`write_thumbnail`→appCache）；`MessageBlock` 的 `AttachmentChip` 渲染图片缩略图 / PDF·文本图标；artifact 预览（image/pdf/text）经 P0 修复后可用。
+- ✅ **P3**：chat 发送后 `delete_temp_attachment` 清理粘贴临时图（护栏限 `futureos-attachments`；workspace 保留以便重发）。
+- 验证：`tsc` / `eslint` / `stylelint` / `vitest`(15) / `cargo clippy` 全过；`npm run build` 成功；`cargo build`(src-tauri) 成功。
+- agent / proto **未改**。
+
+---
+
 ## 附：关键源码索引
 - 协议/类型（仅图片）：`proto/future.proto:21-36`、`agent/src/types/mod.rs`
 - agent 组装：`agent/src/rpc/session_prompt.rs:62-80`（**本期不动**）

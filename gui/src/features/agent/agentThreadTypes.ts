@@ -35,6 +35,10 @@ export interface MessageAttachment {
   artifactId?: string | null;
   name: string;
   path: string;
+  /** image | pdf | text — drives inlining and thread rendering. */
+  kind?: "image" | "pdf" | "text" | null;
+  /** Absolute path to a cached thumbnail (images only), rendered via convertFileSrc. */
+  thumbnail?: string | null;
 }
 
 export interface AgentMessage {

@@ -1,3 +1,4 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
 import * as pdfjs from "pdfjs-dist";
 import { useEffect, useRef, useState } from "react";
 
@@ -27,8 +28,8 @@ export function PdfPreview({ path }: PdfPreviewProps) {
         setLoading(true);
         setError(null);
 
-        // 使用 Tauri 的 asset protocol 访问本地文件
-        const url = `asset://localhost/${encodeURIComponent(path)}`;
+        // Tauri asset protocol (convertFileSrc handles per-OS scheme + Windows).
+        const url = convertFileSrc(path);
         const loadingTask = pdfjs.getDocument({ url });
         loadingTaskRef.current = loadingTask;
 

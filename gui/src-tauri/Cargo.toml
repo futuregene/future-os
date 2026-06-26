@@ -14,7 +14,7 @@ tauri-build = { version = "2", features = [] }
 tonic-build = "0.12"
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

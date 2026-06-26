@@ -8,6 +8,7 @@ import { modelSupportsImages, modelThinkingLevel, sendPromptToFutureAgent } from
 import {
   appendMessage,
   createRun,
+  deleteTempAttachment,
   importAttachmentArtifact,
   listMessages,
   listRunEvents,
@@ -22,7 +23,7 @@ import {
   toAgentMessage,
   updateRunStatusSafe,
 } from "./agentMessageFormatters";
-import { buildPromptWithAttachments, imageAttachmentPaths, stringifyMessageContent } from "./attachments";
+import { buildInlineAttachmentContext, generateImageThumbnail, imageAttachmentPaths, stringifyMessageContent } from "./attachments";
 import { buildReferencePrompt } from "./buildReferencePrompt";
 
 interface UseAgentThreadStateInput {
@@ -165,15 +166,21 @@ export function useAgentThreadState({
     let run: StoredRun | null = null;
 
     try {
-      const importedAttachments = await importChatAttachments(thread, attachments);
+      const importedAttachments = await withImageThumbnails(
+        await importChatAttachments(thread, attachments),
+      );
 
+      // Extract PDF/text into the model-facing prompt only; keep the visible
+      // bubble (messageContent) free of the bulky inlined text. inlineContext is
+      // persisted in the stored message so a resend can reuse it.
+      const inlineContext = await buildInlineAttachmentContext(importedAttachments);
       const messageContent = importedAttachments.length > 0
-        ? stringifyMessageContent(content, importedAttachments)
+        ? stringifyMessageContent(content, importedAttachments, inlineContext)
         : content;
       const promptContent = await buildReferencePrompt(
         thread.workspaceId,
         content,
-        buildPromptWithAttachments(content, importedAttachments),
+        inlineContext ? `${content}${inlineContext}` : content,
       );
 
       if (isCurrentSend()) {
@@ -247,6 +254,13 @@ export function useAgentThreadState({
         modelThinkingLevel(modelId, modelOptions),
       );
       clearStreamTimer();
+
+      // Chat attachments were copied into the artifact store, so the pasted temp
+      // originals are now redundant. (Guarded to our temp dir; user-picked files
+      // are rejected and left untouched. Workspace threads keep temps for resend.)
+      if (thread.mode === "chat") {
+        void Promise.all(attachments.map(item => deleteTempAttachment(item.path).catch(() => {})));
+      }
 
       const currentRun = await loadCurrentRun(thread.id, run.id);
       if (currentRun && matchesSettledRun(currentRun.status)) {
@@ -528,10 +542,24 @@ async function importChatAttachments(thread: StoredThread, attachments: MessageA
       });
 
       return {
+        ...attachment,
         artifactId: artifact.id,
-        name: attachment.name,
         path: artifact.path ?? attachment.path,
       };
+    }),
+  );
+}
+
+// Generate a cached thumbnail for image attachments so the thread can show a
+// small preview without loading the full-size original.
+async function withImageThumbnails(attachments: MessageAttachment[]) {
+  return Promise.all(
+    attachments.map(async (attachment) => {
+      if (attachment.kind !== "image") {
+        return attachment;
+      }
+      const thumbnail = await generateImageThumbnail(attachment.path);
+      return thumbnail ? { ...attachment, thumbnail } : attachment;
     }),
   );
 }

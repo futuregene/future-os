@@ -18,6 +18,114 @@ pub struct SavedAttachment {
     name: String,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentInfo {
+    is_dir: bool,
+    size: u64,
+    is_binary: bool,
+}
+
+/// Inspect a local file for attachment classification. The webview can't read
+/// arbitrary paths, so directory + binary detection must happen here in Rust.
+#[tauri::command]
+pub fn inspect_attachment(path: String) -> Result<AttachmentInfo, crate::AppError> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("path cannot be empty.".to_string().into());
+    }
+    let meta = std::fs::metadata(trimmed)?;
+    if meta.is_dir() {
+        return Ok(AttachmentInfo {
+            is_dir: true,
+            size: 0,
+            is_binary: false,
+        });
+    }
+    let mut file = File::open(trimmed)?;
+    let mut buffer = vec![0_u8; 4096];
+    let read = file.read(&mut buffer)?;
+    let sample = &buffer[..read];
+    // Binary if it contains a NUL byte or >30% control chars (excluding tab/CR/LF).
+    let control = sample
+        .iter()
+        .filter(|&&b| b == 0 || (b < 0x20 && b != b'\t' && b != b'\n' && b != b'\r'))
+        .count();
+    let is_binary = sample.contains(&0) || (read > 0 && control * 100 / read > 30);
+    Ok(AttachmentInfo {
+        is_dir: false,
+        size: meta.len(),
+        is_binary,
+    })
+}
+
+/// Read a whole file as base64 (for client-side PDF text extraction). Errors if
+/// the file exceeds `max_bytes` (default 25MB) — extraction targets must be small.
+#[tauri::command]
+pub fn read_file_base64(path: String, max_bytes: Option<u64>) -> Result<String, crate::AppError> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("path cannot be empty.".to_string().into());
+    }
+    let meta = std::fs::metadata(trimmed)?;
+    let limit = max_bytes.unwrap_or(25 * 1024 * 1024);
+    if meta.len() > limit {
+        return Err(format!("File too large ({} bytes; limit {}).", meta.len(), limit).into());
+    }
+    Ok(STANDARD.encode(std::fs::read(trimmed)?))
+}
+
+/// Persist a base64-encoded JPEG thumbnail under `<appCache>/thumbnails/<key>.jpg`
+/// and return its absolute path (rendered in the webview via `convertFileSrc`).
+#[tauri::command]
+pub fn write_thumbnail(
+    app: tauri::AppHandle,
+    base64_jpeg: String,
+    key: String,
+) -> Result<String, crate::AppError> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use tauri::Manager;
+    let safe_key: String = key
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    if safe_key.is_empty() {
+        return Err("invalid thumbnail key.".to_string().into());
+    }
+    let bytes = STANDARD
+        .decode(base64_jpeg.as_bytes())
+        .map_err(|error| format!("invalid thumbnail data: {error}"))?;
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("cache dir unavailable: {error}"))?
+        .join("thumbnails");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{safe_key}.jpg"));
+    std::fs::write(&path, &bytes)?;
+    Ok(path.display().to_string())
+}
+
+/// Delete a pasted temp attachment after send. Guarded to only remove files
+/// inside our own `<temp>/futureos-attachments/` subdir — never user originals.
+#[tauri::command]
+pub fn delete_temp_attachment(path: String) -> Result<(), crate::AppError> {
+    let base = std::env::temp_dir().join("futureos-attachments");
+    let target = std::path::Path::new(path.trim());
+    let canon_target = target.canonicalize().ok();
+    let canon_base = base.canonicalize().ok();
+    match (canon_target, canon_base) {
+        (Some(t), Some(b)) if t.starts_with(&b) && t.is_file() => {
+            std::fs::remove_file(&t)?;
+            Ok(())
+        }
+        _ => Err("Refusing to delete: not a FutureOS temp attachment."
+            .to_string()
+            .into()),
+    }
+}
+
 #[tauri::command]
 pub fn open_path(path: String) -> Result<(), crate::AppError> {
     let trimmed = path.trim();
