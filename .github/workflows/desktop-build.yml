@@ -110,3 +110,26 @@ jobs:
           name: ${{ matrix.artifact_name }}
           if-no-files-found: error
           path: ${{ matrix.bundle_path }}
+
+      # Portable (install-free) Windows build: the main exe plus the agent
+      # sidecar (renamed without the triple, as Tauri does on bundling, so
+      # runtime sidecar resolution finds it next to the exe). Requires the
+      # WebView2 Evergreen runtime, which ships with Windows 10/11.
+      - name: Assemble Windows portable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
+          $dir = "futureos-portable"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item "gui/src-tauri/target/release/futureos.exe" "$dir/FutureOS.exe"
+          Copy-Item "gui/src-tauri/binaries/future-agent-$triple.exe" "$dir/future-agent.exe"
+          Compress-Archive -Path "$dir/*" -DestinationPath "FutureOS-portable-windows.zip" -Force
+
+      - name: Upload Windows portable
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: futureos-windows-portable
+          if-no-files-found: error
+          path: FutureOS-portable-windows.zip

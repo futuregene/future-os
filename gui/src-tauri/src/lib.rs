@@ -14,6 +14,15 @@ mod store;
 use commands::*;
 use error::AppError;
 
+/// Cross-platform home directory. Prefers `HOME` (always set on macOS/Linux, and
+/// what the test suite overrides to redirect storage) and falls back to
+/// `USERPROFILE` on Windows, where `HOME` is normally unset.
+pub(crate) fn home_dir() -> Option<String> {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+}
+
 /// Process-wide lock for tests that mutate the global `HOME` env var
 /// (`auth_store` and the shadow-review smoke test). `HOME` is process-global, so
 /// those tests must run one at a time or they clobber each other's paths.

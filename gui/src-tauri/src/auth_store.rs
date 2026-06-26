@@ -19,7 +19,7 @@ use crate::AppError;
 const FUTURE_PROVIDER_ID: &str = "future";
 
 fn agent_dir() -> Result<PathBuf, AppError> {
-    let home = std::env::var("HOME").map_err(|_| "HOME environment variable is not set.")?;
+    let home = crate::home_dir().ok_or("HOME/USERPROFILE environment variable is not set.")?;
     Ok(PathBuf::from(home).join(".future").join("agent"))
 }
 
