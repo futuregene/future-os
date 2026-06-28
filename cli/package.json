@@ -22,7 +22,7 @@
   },
   "allowScripts": {
     "protobufjs@7.6.4": true,
-    "esbuild@0.28.0": true,
-    "fsevents@2.3.3": true
+    "fsevents@2.3.3": true,
+    "esbuild@0.28.1": true
   }
 }
