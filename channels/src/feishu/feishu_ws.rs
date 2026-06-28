@@ -145,7 +145,7 @@ impl FeishuWsClient {
         if let Some(ref cfg) = client_config {
             if let Some(pi) = cfg.ping_interval {
                 if pi > 0 {
-                    let clamped = (pi as u64).max(15).min(60);
+                    let clamped = (pi as u64).clamp(15, 60);
                     *self.ping_interval.write().await = clamped;
                     info!("Server ping interval: {}s (clamped to {}s)", pi, clamped);
                 }

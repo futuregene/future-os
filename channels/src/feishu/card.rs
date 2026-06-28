@@ -134,6 +134,7 @@ pub fn tool_card(tool_name: &str, args: &str) -> Value {
 }
 
 /// Build a status card (for /status command).
+#[allow(clippy::too_many_arguments)]
 pub fn status_card(
     model: &str,
     image_support: bool,
