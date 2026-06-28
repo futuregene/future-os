@@ -70,7 +70,7 @@ impl AppState {
 
             let (agent_loop, session_manager, event_bus, cwd, approval_gate) = {
                 let sess = self.session.read().unwrap();
-                if !sess.session_manager.find(session_id).is_some() {
+                if sess.session_manager.find(session_id).is_none() {
                     return self.session.clone(); // not on disk either
                 }
                 (

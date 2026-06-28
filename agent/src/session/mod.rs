@@ -706,17 +706,17 @@ fn truncate_visible(s: &str, max_vis: usize) -> String {
     let mut vis: usize = 0;
     let mut result = String::with_capacity(s.len());
     for ch in s.chars() {
-        let w = if ch >= '\u{1100}' && ch <= '\u{115f}'   // Hangul Jamo
-            || ch >= '\u{2e80}' && ch <= '\u{a4cf}'       // CJK radicals + Yi
-            || ch >= '\u{ac00}' && ch <= '\u{d7a3}'       // Hangul Syllables
-            || ch >= '\u{f900}' && ch <= '\u{faff}'       // CJK Compatibility
-            || ch >= '\u{fe30}' && ch <= '\u{fe4f}'       // CJK Compatibility Forms
-            || ch >= '\u{ff00}' && ch <= '\u{ffef}'       // Fullwidth Forms
-            || ch >= '\u{1f300}' && ch <= '\u{1f5ff}'     // Misc Symbols
-            || ch >= '\u{1f900}' && ch <= '\u{1f9ff}'     // Supplemental Symbols
-            || ch >= '\u{1f600}' && ch <= '\u{1f64f}'     // Emoticons
-            || ch >= '\u{20000}' && ch <= '\u{2fffd}'     // SIP
-            || ch >= '\u{30000}' && ch <= '\u{3fffd}'
+        let w = if ('\u{1100}'..='\u{115f}').contains(&ch)   // Hangul Jamo
+            || ('\u{2e80}'..='\u{a4cf}').contains(&ch)       // CJK radicals + Yi
+            || ('\u{ac00}'..='\u{d7a3}').contains(&ch)       // Hangul Syllables
+            || ('\u{f900}'..='\u{faff}').contains(&ch)       // CJK Compatibility
+            || ('\u{fe30}'..='\u{fe4f}').contains(&ch)       // CJK Compatibility Forms
+            || ('\u{ff00}'..='\u{ffef}').contains(&ch)       // Fullwidth Forms
+            || ('\u{1f300}'..='\u{1f5ff}').contains(&ch)     // Misc Symbols
+            || ('\u{1f900}'..='\u{1f9ff}').contains(&ch)     // Supplemental Symbols
+            || ('\u{1f600}'..='\u{1f64f}').contains(&ch)     // Emoticons
+            || ('\u{20000}'..='\u{2fffd}').contains(&ch)     // SIP
+            || ('\u{30000}'..='\u{3fffd}').contains(&ch)
         // TIP
         {
             2

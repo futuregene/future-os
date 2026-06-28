@@ -41,9 +41,7 @@ impl ApprovalGate {
         tool_id: &str,
         arguments: &serde_json::Value,
     ) -> Option<crate::types::ToolCallResult> {
-        let Some(shape) = approval_shape(cwd, tool_name, arguments) else {
-            return None;
-        };
+        let shape = approval_shape(cwd, tool_name, arguments)?;
 
         // Policy evaluation hook (stub). Today this always returns AskUser.
         // Future: rule-based auto-approve / auto-reject lives here without
@@ -190,9 +188,8 @@ impl ApprovalGate {
             let mut guard = self.pending.lock().unwrap();
             let request_ids = guard
                 .iter()
-                .filter_map(|(request_id, pending)| {
-                    (pending.session_id == session_id).then(|| request_id.clone())
-                })
+                .filter(|&(_request_id, pending)| pending.session_id == session_id)
+                .map(|(request_id, _pending)| request_id.clone())
                 .collect::<Vec<_>>();
             request_ids
                 .into_iter()
@@ -268,7 +265,7 @@ fn approval_shape(
             let category = if tool_name == "write" {
                 "file_write"
             } else {
-                "file_write"
+                "file_edit"
             };
             let action = serde_json::json!({
                 "tool": tool_name,
@@ -311,7 +308,7 @@ fn command_summary(command: &str) -> String {
         trimmed.to_string()
     } else {
         let mut head: String = trimmed.chars().take(200).collect();
-        head.push_str("\u{2026}");
+        head.push('\u{2026}');
         head
     }
 }
@@ -327,7 +324,7 @@ fn argument_write_preview(arguments: &serde_json::Value) -> Option<String> {
         if let Some(value) = normalized.get(key).and_then(|v| v.as_str()) {
             let mut head: String = value.chars().take(200).collect();
             if value.chars().count() > 200 {
-                head.push_str("\u{2026}");
+                head.push('\u{2026}');
             }
             return Some(head);
         }

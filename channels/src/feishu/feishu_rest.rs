@@ -208,7 +208,7 @@ impl FeishuRestClient {
         let token = self.get_token().await?;
         let url = format!("{}/im/v1/images", self.api_base);
 
-        let ext = mime_type.split('/').last().unwrap_or("png");
+        let ext = mime_type.split('/').next_back().unwrap_or("png");
         let filename = format!("image.{}", ext);
 
         let form = reqwest::multipart::Form::new()

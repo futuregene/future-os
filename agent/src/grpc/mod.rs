@@ -164,6 +164,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         Ok(tonic::Response::new(proto_resp))
     }
 
+    #[allow(clippy::result_large_err)]
     async fn stream_events(
         &self,
         request: tonic::Request<proto::StreamRequest>,

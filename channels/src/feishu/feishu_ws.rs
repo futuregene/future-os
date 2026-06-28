@@ -223,7 +223,7 @@ impl FeishuWsClient {
                                             let mut buf = Vec::new();
                                             if let Err(e) = pong_frame.encode(&mut buf) {
                                                 warn!("Failed to encode pong: {}", e);
-                                            } else if let Err(e) = ws_stream.send(WsMessage::Binary(buf.into())).await {
+                                            } else if let Err(e) = ws_stream.send(WsMessage::Binary(buf)).await {
                                                 warn!("Failed to send pong: {}", e);
                                             }
                                         }
@@ -332,7 +332,7 @@ fn parse_feishu_event(data: &serde_json::Value) -> Option<FeishuEvent> {
     let mentions = message
         .get("mentions")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().cloned().collect::<Vec<_>>());
+        .map(|arr| arr.to_vec());
 
     let tenant_key = header
         .get("tenant_key")
