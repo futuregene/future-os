@@ -26,7 +26,7 @@ build: build-agent build-tui build-cli build-gui
 build-agent:
 	cd agent && cargo build
 
-build-tui:
+build-tui: install
 	cd tui && npm run build
 
 build-tui-single:
