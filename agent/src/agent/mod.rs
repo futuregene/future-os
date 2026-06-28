@@ -112,9 +112,9 @@ impl Loop {
         Ok(result)
     }
 
-    /// RunStreamingWithMessages runs the agent loop with pre-existing messages.
-    /// Returns (final_text, all_messages).
-    /// `interrupt_rx` is an optional channel that, when fired, interrupts the current stream.
+    // RunStreamingWithMessages runs the agent loop with pre-existing messages.
+    // Returns (final_text, all_messages).
+    // interrupt_rx is an optional channel that, when fired, interrupts the current stream.
 
     // ═══════════════════════════════════════════════════════════════════════════
     // TOOL EXECUTION

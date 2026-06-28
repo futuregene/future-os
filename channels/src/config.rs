@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ChannelConfig {
     #[serde(default)]
     pub agent: AgentConfig,
@@ -140,16 +140,6 @@ impl ChannelConfig {
                 path.display(),
                 e
             )),
-        }
-    }
-}
-
-impl Default for ChannelConfig {
-    fn default() -> Self {
-        Self {
-            agent: AgentConfig::default(),
-            feishu: None,
-            dingtalk: None,
         }
     }
 }

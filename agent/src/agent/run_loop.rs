@@ -270,7 +270,7 @@ impl Loop {
                 };
 
                 let event = if let Some(ref mut irx) = interrupt_rx {
-                    match tokio::time::timeout(event_idle_timeout, async {
+                    tokio::time::timeout(event_idle_timeout, async {
                         tokio::select! {
                             event_opt = rx.next() => event_opt,
                             _ = irx.recv() => {
@@ -280,15 +280,11 @@ impl Loop {
                         }
                     })
                     .await
-                    {
-                        Ok(event_opt) => event_opt,
-                        Err(_) => None,
-                    }
+                    .unwrap_or_default()
                 } else {
-                    match tokio::time::timeout(event_idle_timeout, rx.next()).await {
-                        Ok(event_opt) => event_opt,
-                        Err(_) => None,
-                    }
+                    tokio::time::timeout(event_idle_timeout, rx.next())
+                        .await
+                        .unwrap_or_default()
                 };
 
                 let event = match event {
