@@ -1,9 +1,17 @@
-.PHONY: build build-agent build-tui build-tui-single build-cli build-gui test test-agent lint lint-agent lint-tui lint-cli lint-gui stylelint-gui check-gui clean clean-gui run run-agent run-tui run-cli run-gui package-gui install install-cli install-skills install-gui
+.PHONY: build build-agent build-tui build-tui-single build-cli build-gui test test-agent lint lint-agent lint-tui lint-cli lint-gui stylelint-gui check-gui clean clean-gui run run-agent run-tui run-cli run-gui package-gui install install-tui install-agent install-channels install-cli install-skills install-gui
 
 # ─── Install ──────────────────────────────────────────────────────────────────
 
-install:
+install: install-tui install-agent install-channels install-cli install-gui
+
+install-tui:
 	cd tui && npm install
+
+install-agent:
+	cd agent && cargo build
+
+install-channels:
+	cd channels && cargo build
 
 install-cli: install-skills build-tui
 	cd cli && npm install && npm run build && chmod +x dist/index.js && npm link
@@ -143,4 +151,9 @@ help:
 	@echo "  run-channels        Build and run channel bridge"
 	@echo "  generate-models    Fetch model data and regenerate models_generated.rs"
 	@echo "  generate-proto     Compile proto/future.proto to Rust gRPC code"
+	@echo "  install            Install all dependencies (agent + channels + TUI + CLI + GUI)"
+	@echo "  install-agent      Install Rust agent deps"
+	@echo "  install-channels   Install channel bridge deps"
+	@echo "  install-cli        Install CLI (includes TUI build)"
+	@echo "  install-gui        Install GUI deps"
 	@echo "  clean              Remove build artifacts"
