@@ -169,8 +169,8 @@ impl SessionEntry {
             display: String::new(),
             provider: String::new(),
             tool_call_id: call_id.to_string(),
-        name: String::new(),
-        tool_args: String::new(),
+            name: String::new(),
+            tool_args: String::new(),
             thinking: String::new(),
         }
     }
@@ -435,9 +435,7 @@ impl Manager {
                         if let Some(ref content_val) = entry.content {
                             let text: String = if let Some(arr) = content_val.as_array() {
                                 arr.iter()
-                                    .filter_map(|b| {
-                                        b.get("text").and_then(|t| t.as_str())
-                                    })
+                                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
                                     .collect::<Vec<_>>()
                                     .join(" ")
                             } else if let Some(s) = content_val.as_str() {
@@ -718,7 +716,8 @@ fn truncate_visible(s: &str, max_vis: usize) -> String {
             || ch >= '\u{1f900}' && ch <= '\u{1f9ff}'     // Supplemental Symbols
             || ch >= '\u{1f600}' && ch <= '\u{1f64f}'     // Emoticons
             || ch >= '\u{20000}' && ch <= '\u{2fffd}'     // SIP
-            || ch >= '\u{30000}' && ch <= '\u{3fffd}'     // TIP
+            || ch >= '\u{30000}' && ch <= '\u{3fffd}'
+        // TIP
         {
             2
         } else {

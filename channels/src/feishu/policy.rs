@@ -74,9 +74,7 @@ impl PolicyEngine {
                 // Explicitly enabled groups still work
                 if let Some(ov) = self.overrides.get(chat_id) {
                     if ov.enabled == Some(true) {
-                        let require = ov
-                            .require_mention
-                            .unwrap_or(self.config.require_mention);
+                        let require = ov.require_mention.unwrap_or(self.config.require_mention);
                         if require && !mentioned_bot {
                             return Access::Denied("Mention the bot to get a response".into());
                         }
@@ -100,10 +98,7 @@ impl PolicyEngine {
                     }
                     Access::Allowed
                 } else {
-                    Access::Denied(format!(
-                        "This group ({}) is not in the allowlist",
-                        chat_id
-                    ))
+                    Access::Denied(format!("This group ({}) is not in the allowlist", chat_id))
                 }
             }
         }

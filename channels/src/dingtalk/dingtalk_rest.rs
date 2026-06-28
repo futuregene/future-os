@@ -60,7 +60,12 @@ impl DingtalkRestClient {
     }
 
     /// Reply via a sessionWebhook with markdown content.
-    pub async fn reply_webhook_markdown(&self, webhook_url: &str, title: &str, markdown: &str) -> Result<()> {
+    pub async fn reply_webhook_markdown(
+        &self,
+        webhook_url: &str,
+        title: &str,
+        markdown: &str,
+    ) -> Result<()> {
         let token = self.get_token().await?;
         let client = reqwest::Client::new();
         let body = json!({

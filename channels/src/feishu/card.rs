@@ -135,13 +135,21 @@ pub fn tool_card(tool_name: &str, args: &str) -> Value {
 
 /// Build a status card (for /status command).
 pub fn status_card(
-    model: &str, image_support: bool, thinking: &str,
-    context_tokens: i64, context_window: i64,
-    tokens_in: i64, tokens_out: i64, query_count: usize,
+    model: &str,
+    image_support: bool,
+    thinking: &str,
+    context_tokens: i64,
+    context_window: i64,
+    tokens_in: i64,
+    tokens_out: i64,
+    query_count: usize,
 ) -> Value {
     let image_icon = if image_support { "🖼️" } else { "" };
     let context_pct = if context_window > 0 {
-        format!(" ({:.0}%)", (context_tokens as f64 / context_window as f64) * 100.0)
+        format!(
+            " ({:.0}%)",
+            (context_tokens as f64 / context_window as f64) * 100.0
+        )
     } else {
         String::new()
     };
@@ -202,9 +210,7 @@ pub fn approval_card(
         "**{}** {}\n\n**Tool:** `{}`\n**Risk:** {}\n\n{}",
         risk_emoji, title, tool_name, risk_level, summary
     );
-    let mut elements: Vec<Value> = vec![
-        json!({"tag": "markdown", "content": body_text}),
-    ];
+    let mut elements: Vec<Value> = vec![json!({"tag": "markdown", "content": body_text})];
     if !requested_action.is_empty() {
         let preview = if requested_action.len() > 500 {
             format!("{}\n..._(truncated)_", &requested_action[..500])
@@ -309,7 +315,8 @@ fn strip_markdown(text: &str) -> String {
             continue;
         }
         // Skip our custom status/separator lines
-        if trimmed.starts_with("💭") || trimmed.starts_with("🔧") || trimmed.starts_with("✅") {
+        if trimmed.starts_with("💭") || trimmed.starts_with("🔧") || trimmed.starts_with("✅")
+        {
             continue;
         }
         if trimmed == "---" {
@@ -322,16 +329,16 @@ fn strip_markdown(text: &str) -> String {
     }
 
     // Remove common inline markdown syntax
-    result = result.replace("**", "");       // bold
-    result = result.replace("*", "");        // italic
-    result = result.replace("__", "");       // bold alt
-    result = result.replace("_", "");        // italic alt
-    result = result.replace("`", "");        // inline code
-    result = result.replace("~~", "");       // strikethrough
-    result = result.replace("###", "");      // h3
-    result = result.replace("##", "");       // h2
-    result = result.replace("#", "");        // h1
-    result = result.replace("> ", "");       // blockquote
+    result = result.replace("**", ""); // bold
+    result = result.replace("*", ""); // italic
+    result = result.replace("__", ""); // bold alt
+    result = result.replace("_", ""); // italic alt
+    result = result.replace("`", ""); // inline code
+    result = result.replace("~~", ""); // strikethrough
+    result = result.replace("###", ""); // h3
+    result = result.replace("##", ""); // h2
+    result = result.replace("#", ""); // h1
+    result = result.replace("> ", ""); // blockquote
 
     // Remove links: [text](url) → text
     while let Some(start) = result.find('[') {

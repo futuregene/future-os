@@ -227,7 +227,13 @@ impl Loop {
                 serde_json::Value::String(s) => s.clone(),
                 other => serde_json::to_string(other).unwrap_or_default(),
             };
-            let tool_msg = self.new_tool_result(&tc.id, &tc.function.name, &tool_args_str, &result, err_str.as_deref());
+            let tool_msg = self.new_tool_result(
+                &tc.id,
+                &tc.function.name,
+                &tool_args_str,
+                &result,
+                err_str.as_deref(),
+            );
             messages.push(tool_msg);
             executed += 1;
         }
@@ -243,7 +249,13 @@ impl Loop {
                     serde_json::Value::String(s) => s.clone(),
                     other => serde_json::to_string(other).unwrap_or_default(),
                 };
-                messages.push(self.new_tool_result(&tc.id, &tc.function.name, &tool_args_str, &cancelled, Some(&cancelled)));
+                messages.push(self.new_tool_result(
+                    &tc.id,
+                    &tc.function.name,
+                    &tool_args_str,
+                    &cancelled,
+                    Some(&cancelled),
+                ));
             }
         }
     }
@@ -443,7 +455,14 @@ impl Loop {
         }
     }
 
-    fn new_tool_result(&self, call_id: &str, tool_name: &str, tool_args: &str, result: &str, err: Option<&str>) -> AgentMessage {
+    fn new_tool_result(
+        &self,
+        call_id: &str,
+        tool_name: &str,
+        tool_args: &str,
+        result: &str,
+        err: Option<&str>,
+    ) -> AgentMessage {
         let text = if let Some(e) = err {
             format!("Error: {}", e)
         } else {
@@ -454,7 +473,10 @@ impl Loop {
         // Compaction can trim old messages but can't split one message.
         let capped = if text.len() > 100_000 {
             let start = text.ceil_char_boundary(text.len() - 100_000);
-            format!("...(truncated, showing last 100K chars)\n{}", &text[start..])
+            format!(
+                "...(truncated, showing last 100K chars)\n{}",
+                &text[start..]
+            )
         } else {
             text
         };

@@ -4,8 +4,8 @@ use std::{
     sync::{mpsc, Arc, Mutex},
 };
 
-use super::{SseBroadcaster, SseEvent};
 use super::approval_policy::{evaluate_policy, PolicyDecision};
+use super::{SseBroadcaster, SseEvent};
 
 #[derive(Clone, Default)]
 pub struct ApprovalGate {
@@ -58,9 +58,7 @@ impl ApprovalGate {
             }
             PolicyDecision::AutoReject(reason) => {
                 return Some(crate::types::ToolCallResult {
-                    result: format!(
-                        "Tool call `{tool_name}` was rejected by policy: {reason}"
-                    ),
+                    result: format!("Tool call `{tool_name}` was rejected by policy: {reason}"),
                     is_error: true,
                 });
             }
@@ -267,7 +265,11 @@ fn approval_shape(
         "write" | "edit" if path_is_outside_workspace(cwd, arguments) => {
             let path = argument_path(arguments).unwrap_or_default();
             let preview = argument_write_preview(arguments);
-            let category = if tool_name == "write" { "file_write" } else { "file_write" };
+            let category = if tool_name == "write" {
+                "file_write"
+            } else {
+                "file_write"
+            };
             let action = serde_json::json!({
                 "tool": tool_name,
                 "category": category,
@@ -604,8 +606,14 @@ mod structured_tests {
 
         assert_eq!(shape.sandbox_boundary["mode"], "workspace-write");
         assert_eq!(shape.sandbox_boundary["inside_sandbox"], false);
-        assert_eq!(shape.sandbox_boundary["violation"], "shell_command_not_in_allowlist");
-        assert_eq!(shape.sandbox_boundary["cwd"], workspace.to_string_lossy().to_string());
+        assert_eq!(
+            shape.sandbox_boundary["violation"],
+            "shell_command_not_in_allowlist"
+        );
+        assert_eq!(
+            shape.sandbox_boundary["cwd"],
+            workspace.to_string_lossy().to_string()
+        );
     }
 
     #[test]
@@ -622,8 +630,14 @@ mod structured_tests {
 
         assert_eq!(shape.action["tool"], "write");
         assert_eq!(shape.action["category"], "file_write");
-        assert_eq!(shape.action["paths"][0], outside.to_string_lossy().to_string());
-        assert_eq!(shape.action["writes"][0]["path"], outside.to_string_lossy().to_string());
+        assert_eq!(
+            shape.action["paths"][0],
+            outside.to_string_lossy().to_string()
+        );
+        assert_eq!(
+            shape.action["writes"][0]["path"],
+            outside.to_string_lossy().to_string()
+        );
         assert_eq!(shape.action["writes"][0]["preview"], "hello world");
         assert_eq!(shape.action["scope"]["inside_workspace"], false);
         assert_eq!(shape.action["scope"]["estimated_blast_radius"], "medium");
@@ -643,7 +657,10 @@ mod structured_tests {
 
         assert_eq!(shape.sandbox_boundary["mode"], "workspace-write");
         assert_eq!(shape.sandbox_boundary["inside_sandbox"], false);
-        assert_eq!(shape.sandbox_boundary["violation"], "outside_workspace_write");
+        assert_eq!(
+            shape.sandbox_boundary["violation"],
+            "outside_workspace_write"
+        );
     }
 
     #[test]
@@ -674,12 +691,7 @@ mod structured_tests {
         let shape = approval_shape(workspace.to_string_lossy().as_ref(), "bash", &args)
             .expect("rm should require approval");
 
-        let decision = evaluate_policy(
-            workspace.to_string_lossy().as_ref(),
-            "bash",
-            &args,
-            &shape,
-        );
+        let decision = evaluate_policy(workspace.to_string_lossy().as_ref(), "bash", &args, &shape);
 
         assert!(matches!(decision, PolicyDecision::AskUser));
     }

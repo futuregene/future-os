@@ -248,96 +248,99 @@ impl ServerSession {
                 perm,
                 shared_interrupt_flag,
                 async {
-                let mut current_messages = initial_messages;
-                let mut current_interrupt_rx = Some(interrupt_rx);
+                    let mut current_messages = initial_messages;
+                    let mut current_interrupt_rx = Some(interrupt_rx);
 
-                loop {
-                    let bt = broadcaster.clone();
-                    let be = broadcaster.clone();
-                    let r#loop = agent_loop.write().await;
+                    loop {
+                        let bt = broadcaster.clone();
+                        let be = broadcaster.clone();
+                        let r#loop = agent_loop.write().await;
 
-                    match r#loop
-                        .run_streaming_with_messages(
-                            current_messages,
-                            move |text| {
-                                bt.broadcast(crate::rpc::SseEvent {
-                                    event_type: "text_chunk".to_string(),
-                                    data: serde_json::json!({"text": text}).to_string(),
-                                });
-                            },
-                            move |event| {
-                                let mut data = serde_json::Map::new();
-                                data.insert(
-                                    "type".to_string(),
-                                    serde_json::json!(&event.event_type),
-                                );
-                                if !event.text.is_empty() {
-                                    data.insert("text".to_string(), serde_json::json!(&event.text));
-                                }
-                                if !event.tool_name.is_empty() {
+                        match r#loop
+                            .run_streaming_with_messages(
+                                current_messages,
+                                move |text| {
+                                    bt.broadcast(crate::rpc::SseEvent {
+                                        event_type: "text_chunk".to_string(),
+                                        data: serde_json::json!({"text": text}).to_string(),
+                                    });
+                                },
+                                move |event| {
+                                    let mut data = serde_json::Map::new();
                                     data.insert(
-                                        "tool_name".to_string(),
-                                        serde_json::json!(&event.tool_name),
+                                        "type".to_string(),
+                                        serde_json::json!(&event.event_type),
                                     );
-                                }
-                                if !event.tool_id.is_empty() {
-                                    data.insert(
-                                        "tool_id".to_string(),
-                                        serde_json::json!(&event.tool_id),
-                                    );
-                                }
-                                if !event.error_text.is_empty() {
-                                    data.insert(
-                                        "error".to_string(),
-                                        serde_json::json!(&event.error_text),
-                                    );
-                                }
-                                if !event.stop_reason.is_empty() {
-                                    data.insert(
-                                        "stopReason".to_string(),
-                                        serde_json::json!(&event.stop_reason),
-                                    );
-                                }
-                                if let Some(usage) = &event.usage {
-                                    data.insert("usage".to_string(), serde_json::json!(usage));
-                                }
-                                if let Some(ref tc) = event.tool_call {
-                                    data.insert(
-                                        "tool_args".to_string(),
-                                        tc.function.arguments.clone(),
-                                    );
-                                }
-                                be.broadcast(crate::rpc::SseEvent {
-                                    event_type: event.event_type.clone(),
-                                    data: serde_json::to_string(&data).unwrap_or_default(),
-                                });
-                            },
-                            current_interrupt_rx.take(),
-                        )
-                        .await
-                    {
-                        Ok((_, final_messages)) => {
-                            current_messages = final_messages;
+                                    if !event.text.is_empty() {
+                                        data.insert(
+                                            "text".to_string(),
+                                            serde_json::json!(&event.text),
+                                        );
+                                    }
+                                    if !event.tool_name.is_empty() {
+                                        data.insert(
+                                            "tool_name".to_string(),
+                                            serde_json::json!(&event.tool_name),
+                                        );
+                                    }
+                                    if !event.tool_id.is_empty() {
+                                        data.insert(
+                                            "tool_id".to_string(),
+                                            serde_json::json!(&event.tool_id),
+                                        );
+                                    }
+                                    if !event.error_text.is_empty() {
+                                        data.insert(
+                                            "error".to_string(),
+                                            serde_json::json!(&event.error_text),
+                                        );
+                                    }
+                                    if !event.stop_reason.is_empty() {
+                                        data.insert(
+                                            "stopReason".to_string(),
+                                            serde_json::json!(&event.stop_reason),
+                                        );
+                                    }
+                                    if let Some(usage) = &event.usage {
+                                        data.insert("usage".to_string(), serde_json::json!(usage));
+                                    }
+                                    if let Some(ref tc) = event.tool_call {
+                                        data.insert(
+                                            "tool_args".to_string(),
+                                            tc.function.arguments.clone(),
+                                        );
+                                    }
+                                    be.broadcast(crate::rpc::SseEvent {
+                                        event_type: event.event_type.clone(),
+                                        data: serde_json::to_string(&data).unwrap_or_default(),
+                                    });
+                                },
+                                current_interrupt_rx.take(),
+                            )
+                            .await
+                        {
+                            Ok((_, final_messages)) => {
+                                current_messages = final_messages;
 
-                            let follow_ups = r#loop.follow_up_queue.drain();
-                            drop(r#loop);
+                                let follow_ups = r#loop.follow_up_queue.drain();
+                                drop(r#loop);
 
-                            if follow_ups.is_empty() {
-                                return Ok(current_messages);
+                                if follow_ups.is_empty() {
+                                    return Ok(current_messages);
+                                }
+                                for msg in follow_ups {
+                                    current_messages.push(crate::types::AgentMessage::new_user(
+                                        "user",
+                                        serde_json::json!([{"type": "text", "text": msg}]),
+                                    ));
+                                }
+                                // No interrupt channel for follow-up re-runs
+                                current_interrupt_rx = None;
                             }
-                            for msg in follow_ups {
-                                current_messages.push(crate::types::AgentMessage::new_user(
-                                    "user",
-                                    serde_json::json!([{"type": "text", "text": msg}]),
-                                ));
-                            }
-                            // No interrupt channel for follow-up re-runs
-                            current_interrupt_rx = None;
+                            Err(e) => return Err(e),
                         }
-                        Err(e) => return Err(e),
                     }
-                }
-            },
+                },
             )
             .await;
 
@@ -401,7 +404,7 @@ impl ServerSession {
                             tool_call_id: String::new(),
                             name: String::new(),
                             tool_args: String::new(),
-            thinking: String::new(),
+                            thinking: String::new(),
                         };
                         entries.insert(0, info_entry);
 

@@ -41,7 +41,10 @@ pub async fn create_ai_card(
 ) -> Result<AiCard> {
     let card_instance_id = format!(
         "card_{}_{}",
-        std::time::UNIX_EPOCH.elapsed().unwrap_or_default().as_millis(),
+        std::time::UNIX_EPOCH
+            .elapsed()
+            .unwrap_or_default()
+            .as_millis(),
         unique_id()
     );
     let api = format!("https://{}/v1.0/card/instances", domain);
@@ -80,7 +83,9 @@ pub async fn create_ai_card(
             "imRobotOpenSpaceModel": {"supportForward": true},
             "userId": user_id,
         }),
-        CardTarget::Group { open_conversation_id } => json!({
+        CardTarget::Group {
+            open_conversation_id,
+        } => json!({
             "outTrackId": card_instance_id,
             "robotCode": client_id,
             "imGroupOpenSpaceModel": {"supportForward": true},
@@ -143,7 +148,9 @@ pub async fn stream_ai_card(
     let stream_content = if finished {
         normalize_content(content)
     } else {
-        normalize_content(content).trim_end_matches('\n').to_string()
+        normalize_content(content)
+            .trim_end_matches('\n')
+            .to_string()
     };
 
     let stream_body = json!({

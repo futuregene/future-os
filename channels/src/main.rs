@@ -6,9 +6,9 @@
 #![allow(dead_code)]
 
 mod config;
-mod grpc_client;
-mod feishu;
 mod dingtalk;
+mod feishu;
+mod grpc_client;
 
 use anyhow::Result;
 use std::sync::Arc;

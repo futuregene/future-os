@@ -470,7 +470,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     tool_call_id: String::new(),
                     name: String::new(),
                     tool_args: String::new(),
-            thinking: String::new(),
+                    thinking: String::new(),
                 });
                 s.name = cmd.name.clone();
                 let _ = session_manager.save(&s);
@@ -497,7 +497,9 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 })
                 .collect();
             commands.sort_by(|a, b| {
-                a["name"].as_str().unwrap_or("")
+                a["name"]
+                    .as_str()
+                    .unwrap_or("")
                     .cmp(b["name"].as_str().unwrap_or(""))
             });
 
@@ -596,9 +598,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             let mut models: Vec<serde_json::Value> = registry
                 .all_models()
                 .into_iter()
-                .filter(|m| {
-                    !m.api_key.is_empty() || auth.get(&m.provider).is_some()
-                })
+                .filter(|m| !m.api_key.is_empty() || auth.get(&m.provider).is_some())
                 .map(|m| {
                     let has_image = m.input.contains(&"image".to_string());
                     serde_json::json!({
@@ -613,26 +613,30 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 })
                 .collect();
             models.sort_by(|a, b| {
-                let key_a = format!("{}/{}",
+                let key_a = format!(
+                    "{}/{}",
                     a["provider"].as_str().unwrap_or(""),
-                    a["id"].as_str().unwrap_or(""));
-                let key_b = format!("{}/{}",
+                    a["id"].as_str().unwrap_or("")
+                );
+                let key_b = format!(
+                    "{}/{}",
                     b["provider"].as_str().unwrap_or(""),
-                    b["id"].as_str().unwrap_or(""));
+                    b["id"].as_str().unwrap_or("")
+                );
                 key_a.cmp(&key_b)
             });
             // Include current enabled_models from settings so the TUI knows the scope
             let settings_path = std::path::PathBuf::from(crate::models::settings_path());
             let settings = crate::config::load_settings(&settings_path).unwrap_or_default();
-            let valid_ids: std::collections::HashSet<&str> = models
-                .iter()
-                .filter_map(|m| m["id"].as_str())
-                .collect();
+            let valid_ids: std::collections::HashSet<&str> =
+                models.iter().filter_map(|m| m["id"].as_str()).collect();
             let enabled_model_ids: Vec<String> = if settings.enabled_models.is_empty() {
                 valid_ids.iter().map(|&s| s.to_string()).collect()
             } else {
                 // Filter to only valid model IDs (stale entries cleaned)
-                settings.enabled_models.iter()
+                settings
+                    .enabled_models
+                    .iter()
                     .filter(|id| valid_ids.contains(id.as_str()))
                     .cloned()
                     .collect()

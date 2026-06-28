@@ -5,7 +5,6 @@
 mod helpers;
 use crate::types::{Message, StreamEvent, ToolDef};
 use anyhow::{anyhow, Result};
-use tracing::warn;
 use futures::StreamExt;
 use reqwest::Client as HttpClient;
 use serde_json::Value;
@@ -14,6 +13,7 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+use tracing::warn;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
 const STREAM_IDLE_TIMEOUT_SECS: u64 = 45;
@@ -498,10 +498,7 @@ impl crate::types::LLMProvider for Client {
                         // chars split across chunks.  We only decode once we have
                         // a complete event (all multi-byte chars within it are
                         // guaranteed to be fully assembled).
-                        while let Some(pos) = buffer
-                            .windows(2)
-                            .position(|w| w == b"\n\n")
-                        {
+                        while let Some(pos) = buffer.windows(2).position(|w| w == b"\n\n") {
                             let event_bytes: Vec<u8> = buffer.drain(..pos).collect();
                             buffer.drain(..2); // consume the \n\n delimiter
                             let event_block = String::from_utf8_lossy(&event_bytes);

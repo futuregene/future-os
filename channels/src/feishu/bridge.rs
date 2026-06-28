@@ -6,10 +6,11 @@
 
 use super::card;
 use super::config::FeishuConfig;
-use super::feishu_rest::{
-    bytes_to_base64_data, mime_from_ext, FeishuRestClient,
+use super::feishu_rest::{bytes_to_base64_data, mime_from_ext, FeishuRestClient};
+use super::feishu_ws::{
+    extract_file_key, extract_image_key, extract_text_content, is_bot_mentioned,
+    is_bot_mentioned_in_mentions, FeishuEvent,
 };
-use super::feishu_ws::{extract_file_key, extract_image_key, extract_text_content, is_bot_mentioned, is_bot_mentioned_in_mentions, FeishuEvent};
 use super::policy::{Access, PolicyEngine};
 use super::session_store::SessionStore;
 use crate::config::AgentConfig;
@@ -61,7 +62,10 @@ impl Bridge {
                 info.open_id
             }
             Err(e) => {
-                warn!("[BOT] Failed to get bot info: {}. @mention detection in groups will not work.", e);
+                warn!(
+                    "[BOT] Failed to get bot info: {}. @mention detection in groups will not work.",
+                    e
+                );
                 String::new()
             }
         };
@@ -130,7 +134,10 @@ impl Bridge {
                 .as_millis() as i64;
             let age_secs = (now_ms - create_ms) / 1000;
             if age_secs > 60 {
-                info!("[STALE] skipping message_id={} age={}s", message_id, age_secs);
+                info!(
+                    "[STALE] skipping message_id={} age={}s",
+                    message_id, age_secs
+                );
                 return Ok(());
             }
         }
@@ -144,10 +151,18 @@ impl Bridge {
         info!(
             "[RECV] sender={} chat={} chat_type={} msg_type={} text=\"{}\"",
             sender_id,
-            if chat_type == "p2p" { &*sender_id } else { chat_id.as_str() },
+            if chat_type == "p2p" {
+                &*sender_id
+            } else {
+                chat_id.as_str()
+            },
             chat_type,
             msg_type,
-            if text_preview.len() > 200 { truncate_at_char(&text_preview, 200) } else { text_preview.to_string() },
+            if text_preview.len() > 200 {
+                truncate_at_char(&text_preview, 200)
+            } else {
+                text_preview.to_string()
+            },
         );
 
         // Skip bot's own messages
@@ -163,8 +178,13 @@ impl Bridge {
                 match policy.check_dm(&sender_id) {
                     Access::Denied(reason) => {
                         debug!("[POLICY] DM denied for {}: {}", sender_id, reason);
-                        self.feishu.reply_message(&message_id, "text",
-                            &serde_json::json!({"text": reason}).to_string()).await?;
+                        self.feishu
+                            .reply_message(
+                                &message_id,
+                                "text",
+                                &serde_json::json!({"text": reason}).to_string(),
+                            )
+                            .await?;
                         return Ok(());
                     }
                     Access::Allowed => {
@@ -177,12 +197,16 @@ impl Bridge {
                 let content = event.content.as_deref().unwrap_or("");
                 // Check both content-level mentions (old API) and event-level mentions (API v2)
                 let content_mentioned = is_bot_mentioned(content, msg_type, &bot_id);
-                let event_mentioned = event.mentions.as_ref()
+                let event_mentioned = event
+                    .mentions
+                    .as_ref()
                     .map(|m| is_bot_mentioned_in_mentions(m, &bot_id))
                     .unwrap_or(false);
                 let mentioned = content_mentioned || event_mentioned;
-                debug!("[POLICY] group chat={} mentioned={} (content={} event={}) bot_id={}",
-                    chat_id, mentioned, content_mentioned, event_mentioned, bot_id);
+                debug!(
+                    "[POLICY] group chat={} mentioned={} (content={} event={}) bot_id={}",
+                    chat_id, mentioned, content_mentioned, event_mentioned, bot_id
+                );
                 // Silently skip non-mentioned messages — no ACK, no reaction
                 if !mentioned {
                     return Ok(());
@@ -191,8 +215,13 @@ impl Bridge {
                 match policy.check_group(&chat_id, true) {
                     Access::Denied(reason) => {
                         debug!("[POLICY] group denied: {}", reason);
-                        self.feishu.reply_message(&message_id, "text",
-                            &serde_json::json!({"text": reason}).to_string()).await?;
+                        self.feishu
+                            .reply_message(
+                                &message_id,
+                                "text",
+                                &serde_json::json!({"text": reason}).to_string(),
+                            )
+                            .await?;
                         return Ok(());
                     }
                     Access::Allowed => {
@@ -240,9 +269,15 @@ impl Bridge {
         // ─── Check for slash commands ─────────────────────────────────────
         if let Some(text) = extract_text_content(content, msg_type) {
             if text.starts_with('/') {
-                let result = self.handle_slash_command(
-                    &chat_id, thread_id.as_deref(), &message_id, &text, ack_reaction_id,
-                ).await;
+                let result = self
+                    .handle_slash_command(
+                        &chat_id,
+                        thread_id.as_deref(),
+                        &message_id,
+                        &text,
+                        ack_reaction_id,
+                    )
+                    .await;
                 // handle_slash_command handles reactions for non-agent cases.
                 // For the _ wildcard (falls through to process_prompt), reactions
                 // are managed by the AgentEnd handler in run_prompt_loop.
@@ -257,18 +292,48 @@ impl Bridge {
                 let text = extract_text_content(content, msg_type).unwrap_or_default();
                 if text.trim().is_empty() {
                     // Image/file only message
-                    self.handle_media_message(&chat_id, thread_id.as_deref(), &message_id, &event, ack_rid).await?;
+                    self.handle_media_message(
+                        &chat_id,
+                        thread_id.as_deref(),
+                        &message_id,
+                        &event,
+                        ack_rid,
+                    )
+                    .await?;
                 } else {
-                    self.process_prompt(&chat_id, thread_id.as_deref(), &message_id, &text, &[], is_reply, ack_rid).await?;
+                    self.process_prompt(
+                        &chat_id,
+                        thread_id.as_deref(),
+                        &message_id,
+                        &text,
+                        &[],
+                        is_reply,
+                        ack_rid,
+                    )
+                    .await?;
                 }
             }
             "image" => {
                 if let Some(image_key) = extract_image_key(content) {
-                    self.handle_image_message(&chat_id, thread_id.as_deref(), &message_id, &image_key, ack_rid).await?;
+                    self.handle_image_message(
+                        &chat_id,
+                        thread_id.as_deref(),
+                        &message_id,
+                        &image_key,
+                        ack_rid,
+                    )
+                    .await?;
                 }
             }
             "file" | "media" | "audio" => {
-                self.handle_media_message(&chat_id, thread_id.as_deref(), &message_id, &event, ack_rid).await?;
+                self.handle_media_message(
+                    &chat_id,
+                    thread_id.as_deref(),
+                    &message_id,
+                    &event,
+                    ack_rid,
+                )
+                .await?;
             }
             _ => {
                 info!("Unsupported message type: {}", msg_type);
@@ -286,8 +351,11 @@ impl Bridge {
                 // Re-activate session on the agent side (agent may have restarted)
                 let mut agent = self.agent.write().await;
                 let _ = agent.switch_session(&sid).await;
-                let cache = agent.get_state(&sid).await
-                    .map(|s| s.image_support).unwrap_or(false);
+                let cache = agent
+                    .get_state(&sid)
+                    .await
+                    .map(|s| s.image_support)
+                    .unwrap_or(false);
                 drop(agent);
                 *self.image_support.write().await = cache;
                 return Ok(sid);
@@ -296,8 +364,11 @@ impl Bridge {
         let mut agent = self.agent.write().await;
         let sid = agent.new_session(&self.agent_cfg.cwd).await?;
         self.sessions.set_session_id(chat_id, thread_id, &sid);
-        let cache = agent.get_state(&sid).await
-            .map(|s| s.image_support).unwrap_or(false);
+        let cache = agent
+            .get_state(&sid)
+            .await
+            .map(|s| s.image_support)
+            .unwrap_or(false);
         drop(agent);
         *self.image_support.write().await = cache;
         Ok(sid)
@@ -340,8 +411,14 @@ impl Bridge {
                 match self.ensure_session(chat_id, thread_id).await {
                     Ok(sid) => {
                         info!("[NEW] session={}", sid);
-                        self.feishu.reply_message(message_id, "text",
-                            &serde_json::json!({"text": format!("New session: {}", sid)}).to_string()).await?;
+                        self.feishu
+                            .reply_message(
+                                message_id,
+                                "text",
+                                &serde_json::json!({"text": format!("New session: {}", sid)})
+                                    .to_string(),
+                            )
+                            .await?;
                     }
                     Err(e) => {
                         self.feishu.reply_message(message_id, "text",
@@ -384,12 +461,23 @@ impl Bridge {
                                     state.tokens_in, state.tokens_out,
                                     state.total_cost,
                                 );
-                                self.feishu.reply_message(message_id, "text",
-                                    &serde_json::json!({"text": text}).to_string()).await?;
+                                self.feishu
+                                    .reply_message(
+                                        message_id,
+                                        "text",
+                                        &serde_json::json!({"text": text}).to_string(),
+                                    )
+                                    .await?;
                             }
                             Err(e) => {
-                                self.feishu.reply_message(message_id, "text",
-                                    &serde_json::json!({"text": format!("Error: {}", e)}).to_string()).await?;
+                                self.feishu
+                                    .reply_message(
+                                        message_id,
+                                        "text",
+                                        &serde_json::json!({"text": format!("Error: {}", e)})
+                                            .to_string(),
+                                    )
+                                    .await?;
                             }
                         }
                     }
@@ -406,8 +494,13 @@ impl Bridge {
                     let mut agent = self.agent.write().await;
                     let _ = agent.abort(&sid).await;
                 }
-                self.feishu.reply_message(message_id, "text",
-                    &serde_json::json!({"text": "Stopped."}).to_string()).await?;
+                self.feishu
+                    .reply_message(
+                        message_id,
+                        "text",
+                        &serde_json::json!({"text": "Stopped."}).to_string(),
+                    )
+                    .await?;
             }
 
             "/model" if !arg.is_empty() => {
@@ -443,35 +536,51 @@ impl Bridge {
                 let mut agent = self.agent.write().await;
                 match agent.get_available_models(&session_id).await {
                     Ok(models) => {
-                        let list: Vec<String> = models.iter().map(|m| {
-                            let image_icon = if m.image { "🖼️ " } else { "" };
-                            let ctx = if m.context_window > 0 {
-                                format!(" | {}K ctx", m.context_window / 1000)
-                            } else {
-                                String::new()
-                            };
-                            let out = if m.max_tokens > 0 {
-                                format!(" | {}K out", m.max_tokens / 1000)
-                            } else {
-                                String::new()
-                            };
-                            if m.provider.is_empty() {
-                                format!("• {}{} — `{}`{}{}", image_icon, m.name, m.id, ctx, out)
-                            } else {
-                                format!("• {}{} — `{}/{}`{}{}", image_icon, m.name, m.provider, m.id, ctx, out)
-                            }
-                        }).collect();
+                        let list: Vec<String> = models
+                            .iter()
+                            .map(|m| {
+                                let image_icon = if m.image { "🖼️ " } else { "" };
+                                let ctx = if m.context_window > 0 {
+                                    format!(" | {}K ctx", m.context_window / 1000)
+                                } else {
+                                    String::new()
+                                };
+                                let out = if m.max_tokens > 0 {
+                                    format!(" | {}K out", m.max_tokens / 1000)
+                                } else {
+                                    String::new()
+                                };
+                                if m.provider.is_empty() {
+                                    format!("• {}{} — `{}`{}{}", image_icon, m.name, m.id, ctx, out)
+                                } else {
+                                    format!(
+                                        "• {}{} — `{}/{}`{}{}",
+                                        image_icon, m.name, m.provider, m.id, ctx, out
+                                    )
+                                }
+                            })
+                            .collect();
                         let text = if list.is_empty() {
                             "No models available".to_string()
                         } else {
                             format!("Available models ({})\n{}", list.len(), list.join("\n"))
                         };
-                        self.feishu.reply_message(message_id, "text",
-                            &serde_json::json!({"text": text}).to_string()).await?;
+                        self.feishu
+                            .reply_message(
+                                message_id,
+                                "text",
+                                &serde_json::json!({"text": text}).to_string(),
+                            )
+                            .await?;
                     }
                     Err(e) => {
-                        self.feishu.reply_message(message_id, "text",
-                            &serde_json::json!({"text": format!("Error: {}", e)}).to_string()).await?;
+                        self.feishu
+                            .reply_message(
+                                message_id,
+                                "text",
+                                &serde_json::json!({"text": format!("Error: {}", e)}).to_string(),
+                            )
+                            .await?;
                     }
                 }
             }
@@ -512,8 +621,14 @@ impl Bridge {
                         let mut agent = self.agent.write().await;
                         match agent.compact(&sid).await {
                             Ok(()) => {
-                                self.feishu.reply_message(message_id, "text",
-                                    &serde_json::json!({"text": "Context compacted."}).to_string()).await?;
+                                self.feishu
+                                    .reply_message(
+                                        message_id,
+                                        "text",
+                                        &serde_json::json!({"text": "Context compacted."})
+                                            .to_string(),
+                                    )
+                                    .await?;
                             }
                             Err(e) => {
                                 self.feishu.reply_message(message_id, "text",
@@ -522,8 +637,14 @@ impl Bridge {
                         }
                     }
                     None => {
-                        self.feishu.reply_message(message_id, "text",
-                            &serde_json::json!({"text": "No active session to compact."}).to_string()).await?;
+                        self.feishu
+                            .reply_message(
+                                message_id,
+                                "text",
+                                &serde_json::json!({"text": "No active session to compact."})
+                                    .to_string(),
+                            )
+                            .await?;
                     }
                 }
             }
@@ -533,26 +654,48 @@ impl Bridge {
                 let mut agent = self.agent.write().await;
                 match agent.set_cwd(&session_id, arg).await {
                     Ok(()) => {
-                        self.feishu.reply_message(message_id, "text",
-                            &serde_json::json!({"text": format!("CWD set to: {}", arg)}).to_string()).await?;
+                        self.feishu
+                            .reply_message(
+                                message_id,
+                                "text",
+                                &serde_json::json!({"text": format!("CWD set to: {}", arg)})
+                                    .to_string(),
+                            )
+                            .await?;
                     }
                     Err(e) => {
-                        self.feishu.reply_message(message_id, "text",
-                            &serde_json::json!({"text": format!("Failed to set CWD: {}", e)}).to_string()).await?;
+                        self.feishu
+                            .reply_message(
+                                message_id,
+                                "text",
+                                &serde_json::json!({"text": format!("Failed to set CWD: {}", e)})
+                                    .to_string(),
+                            )
+                            .await?;
                     }
                 }
             }
 
             "/help" => {
                 let help = card::help_card();
-                self.feishu.reply_message(message_id, "interactive",
-                    &card::card_content(&help)).await?;
+                self.feishu
+                    .reply_message(message_id, "interactive", &card::card_content(&help))
+                    .await?;
             }
 
             _ => {
                 // Unknown slash command — send to agent as normal prompt.
                 // Pass ack_reaction_id so the AgentEnd handler can clean it up.
-                self.process_prompt(chat_id, thread_id, message_id, text, &[], false, ack_reaction_id).await?;
+                self.process_prompt(
+                    chat_id,
+                    thread_id,
+                    message_id,
+                    text,
+                    &[],
+                    false,
+                    ack_reaction_id,
+                )
+                .await?;
                 // Don't add DONE here — run_prompt_loop's AgentEnd handler does it.
                 return Ok(());
             }
@@ -577,7 +720,11 @@ impl Bridge {
         ack_reaction_id: Option<String>,
     ) -> Result<()> {
         // Download image, save to disk, and convert to base64
-        match self.feishu.download_resource(message_id, image_key, "image").await {
+        match self
+            .feishu
+            .download_resource(message_id, image_key, "image")
+            .await
+        {
             Ok(data) => {
                 let file_path = save_received_file(&data, &format!("image_{}.png", message_id));
                 let prompt = format!("[User sent an image: {}]", file_path.display());
@@ -592,11 +739,26 @@ impl Bridge {
                 } else {
                     vec![]
                 };
-                self.process_prompt(chat_id, thread_id, message_id, &prompt, &images, false, ack_reaction_id).await?;
+                self.process_prompt(
+                    chat_id,
+                    thread_id,
+                    message_id,
+                    &prompt,
+                    &images,
+                    false,
+                    ack_reaction_id,
+                )
+                .await?;
             }
             Err(e) => {
-                self.feishu.reply_message(message_id, "text",
-                    &serde_json::json!({"text": format!("Failed to download image: {}", e)}).to_string()).await?;
+                self.feishu
+                    .reply_message(
+                        message_id,
+                        "text",
+                        &serde_json::json!({"text": format!("Failed to download image: {}", e)})
+                            .to_string(),
+                    )
+                    .await?;
             }
         }
         Ok(())
@@ -615,14 +777,19 @@ impl Bridge {
         let (file_key, file_name) = extract_file_key(content);
 
         if let Some(key) = file_key {
-            let rtype = if event.msg_type.as_deref() == Some("image") { "image" } else { "file" };
+            let rtype = if event.msg_type.as_deref() == Some("image") {
+                "image"
+            } else {
+                "file"
+            };
             match self.feishu.download_resource(message_id, &key, rtype).await {
                 Ok(data) => {
                     let name = file_name.unwrap_or_else(|| "file".to_string());
                     let file_path = save_received_file(&data, &name);
                     let text = format!(
                         "[User sent a file: {} ({} bytes)]\nFile path: {}",
-                        name, data.len(),
+                        name,
+                        data.len(),
                         file_path.display()
                     );
                     let image_support = *self.image_support.read().await;
@@ -637,11 +804,26 @@ impl Bridge {
                     } else {
                         vec![]
                     };
-                    self.process_prompt(chat_id, thread_id, message_id, &text, &images, false, ack_reaction_id).await?;
+                    self.process_prompt(
+                        chat_id,
+                        thread_id,
+                        message_id,
+                        &text,
+                        &images,
+                        false,
+                        ack_reaction_id,
+                    )
+                    .await?;
                 }
                 Err(e) => {
-                    self.feishu.reply_message(message_id, "text",
-                        &serde_json::json!({"text": format!("Failed to download file: {}", e)}).to_string()).await?;
+                    self.feishu
+                        .reply_message(
+                            message_id,
+                            "text",
+                            &serde_json::json!({"text": format!("Failed to download file: {}", e)})
+                                .to_string(),
+                        )
+                        .await?;
                 }
             }
         }
@@ -666,8 +848,14 @@ impl Bridge {
             Ok(sid) => sid,
             Err(e) => {
                 error!("Failed to ensure session: {}", e);
-                self.feishu.reply_message(feishu_msg_id, "text",
-                    &serde_json::json!({"text": format!("Failed to create session: {}", e)}).to_string()).await?;
+                self.feishu
+                    .reply_message(
+                        feishu_msg_id,
+                        "text",
+                        &serde_json::json!({"text": format!("Failed to create session: {}", e)})
+                            .to_string(),
+                    )
+                    .await?;
                 return Ok(());
             }
         };
@@ -677,7 +865,8 @@ impl Bridge {
         // Per-chat lock: serializes abort+prompt (held briefly, not during stream)
         let prompt_lock = {
             let mut locks = self.prompt_locks.write().await;
-            locks.entry(chat_id.to_string())
+            locks
+                .entry(chat_id.to_string())
                 .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
                 .clone()
         };
@@ -685,7 +874,8 @@ impl Bridge {
         // Per-chat generation counter: lets new prompts interrupt old streams
         let gen_counter = {
             let mut counters = self.gen_counters.write().await;
-            counters.entry(chat_id.to_string())
+            counters
+                .entry(chat_id.to_string())
                 .or_insert_with(|| Arc::new(AtomicU64::new(0)))
                 .clone()
         };
@@ -711,10 +901,17 @@ impl Bridge {
                 &prompt_lock,
                 &gen_counter,
                 ack_reaction_id,
-            ).await {
+            )
+            .await
+            {
                 error!("Prompt loop error: {}", e);
-                let _ = feishu.reply_message(&feishu_msg_id, "text",
-                    &serde_json::json!({"text": format!("Error: {}", e)}).to_string()).await;
+                let _ = feishu
+                    .reply_message(
+                        &feishu_msg_id,
+                        "text",
+                        &serde_json::json!({"text": format!("Error: {}", e)}).to_string(),
+                    )
+                    .await;
             }
         });
 
@@ -732,28 +929,41 @@ impl Bridge {
             Err(_) => return Ok(()),
         };
         let action = value.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        let approval_request_id = value.get("approval_request_id").and_then(|v| v.as_str()).unwrap_or("");
+        let approval_request_id = value
+            .get("approval_request_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
         if approval_request_id.is_empty() {
             return Ok(());
         }
 
         let approved = action == "approve";
-        let note = if approved { "approved via Feishu card" } else { "rejected via Feishu card" };
+        let note = if approved {
+            "approved via Feishu card"
+        } else {
+            "rejected via Feishu card"
+        };
 
-        info!("[CARD_ACTION] action={} approval_request_id={}", action, approval_request_id);
+        info!(
+            "[CARD_ACTION] action={} approval_request_id={}",
+            action, approval_request_id
+        );
 
         // Get any active session to send the decision through.
         // Card actions may arrive after the streaming session has changed,
         // so we try the session associated with the chat.
-        let session_id = self.sessions.get(
-            event.chat_id.as_deref().unwrap_or(""),
-            None,
-        ).unwrap_or_default();
+        let session_id = self
+            .sessions
+            .get(event.chat_id.as_deref().unwrap_or(""), None)
+            .unwrap_or_default();
 
         if !session_id.is_empty() {
             let mut agent = self.agent.write().await;
-            match agent.approval_decision(&session_id, approval_request_id, approved, note).await {
+            match agent
+                .approval_decision(&session_id, approval_request_id, approved, note)
+                .await
+            {
                 Ok(()) => info!("[CARD_ACTION] decision sent successfully"),
                 Err(e) => warn!("[CARD_ACTION] failed to send decision: {}", e),
             }
@@ -766,8 +976,13 @@ impl Bridge {
             } else {
                 "❌ Rejected. The tool call has been denied."
             };
-            self.feishu.reply_message(msg_id, "text",
-                &serde_json::json!({"text": ack_text}).to_string()).await?;
+            self.feishu
+                .reply_message(
+                    msg_id,
+                    "text",
+                    &serde_json::json!({"text": ack_text}).to_string(),
+                )
+                .await?;
         }
 
         Ok(())
@@ -820,9 +1035,18 @@ async fn run_prompt_loop(
                     ImageData::Url(_) => prompt_text.push_str("\n[Image URL attached]"),
                 }
             }
-            info!("[SEND] session={} text=\"{}\"", session_id,
-                if prompt_text.len() > 300 { format!("{}...", truncate_at_char(&prompt_text, 300)) } else { prompt_text.clone() });
-            client.prompt(session_id, &prompt_text, images.to_vec()).await?;
+            info!(
+                "[SEND] session={} text=\"{}\"",
+                session_id,
+                if prompt_text.len() > 300 {
+                    format!("{}...", truncate_at_char(&prompt_text, 300))
+                } else {
+                    prompt_text.clone()
+                }
+            );
+            client
+                .prompt(session_id, &prompt_text, images.to_vec())
+                .await?;
         }
 
         // Bump generation — we're now the latest active stream
@@ -892,7 +1116,10 @@ async fn run_prompt_loop(
                         Ok(cid) => {
                             cardkit_card_id = Some(cid.clone());
                             match feishu.reply_with_card_id(feishu_msg_id, &cid).await {
-                                Ok(resp) => info!("[CARD] reply_with_card_id card_id={} msg_id={}", cid, resp.message_id),
+                                Ok(resp) => info!(
+                                    "[CARD] reply_with_card_id card_id={} msg_id={}",
+                                    cid, resp.message_id
+                                ),
                                 Err(e) => warn!("[CARD] reply_with_card_id failed: {}", e),
                             }
                         }
@@ -904,7 +1131,9 @@ async fn run_prompt_loop(
                     let thinking_flush = std::time::Duration::from_millis(100);
                     if last_flush.elapsed() >= thinking_flush {
                         card_seq += 1;
-                        let _ = feishu.update_card_element(cid, streaming_element_id, &stream_text, card_seq).await;
+                        let _ = feishu
+                            .update_card_element(cid, streaming_element_id, &stream_text, card_seq)
+                            .await;
                         last_flush = Instant::now();
                         needs_flush = false;
                     }
@@ -914,7 +1143,9 @@ async fn run_prompt_loop(
                 if needs_flush {
                     if let Some(ref cid) = cardkit_card_id {
                         card_seq += 1;
-                        let _ = feishu.update_card_element(cid, streaming_element_id, &stream_text, card_seq).await;
+                        let _ = feishu
+                            .update_card_element(cid, streaming_element_id, &stream_text, card_seq)
+                            .await;
                         last_flush = Instant::now();
                         needs_flush = false;
                     }
@@ -935,7 +1166,10 @@ async fn run_prompt_loop(
                         Ok(cid) => {
                             cardkit_card_id = Some(cid.clone());
                             match feishu.reply_with_card_id(feishu_msg_id, &cid).await {
-                                Ok(resp) => info!("[CARD] reply_with_card_id card_id={} msg_id={}", cid, resp.message_id),
+                                Ok(resp) => info!(
+                                    "[CARD] reply_with_card_id card_id={} msg_id={}",
+                                    cid, resp.message_id
+                                ),
                                 Err(e) => warn!("[CARD] reply_with_card_id failed: {}", e),
                             }
                         }
@@ -947,13 +1181,20 @@ async fn run_prompt_loop(
                 if let Some(ref cid) = cardkit_card_id {
                     if last_flush.elapsed() >= flush_interval {
                         card_seq += 1;
-                        let _ = feishu.update_card_element(cid, streaming_element_id, &stream_text, card_seq).await;
+                        let _ = feishu
+                            .update_card_element(cid, streaming_element_id, &stream_text, card_seq)
+                            .await;
                         last_flush = Instant::now();
                         needs_flush = false;
                     }
                 }
             }
-            Some(AgentEvent::ToolStart { tool_id, tool_name, tool_args, .. }) => {
+            Some(AgentEvent::ToolStart {
+                tool_id,
+                tool_name,
+                tool_args,
+                ..
+            }) => {
                 last_was_content = false;
                 let args_preview = tool_args.as_deref().unwrap_or("");
                 let args_display = if !args_preview.is_empty() {
@@ -977,18 +1218,24 @@ async fn run_prompt_loop(
                 if let Some(ref cid) = cardkit_card_id {
                     if last_flush.elapsed() >= flush_interval {
                         card_seq += 1;
-                        let _ = feishu.update_card_element(cid, streaming_element_id, &stream_text, card_seq).await;
+                        let _ = feishu
+                            .update_card_element(cid, streaming_element_id, &stream_text, card_seq)
+                            .await;
                         last_flush = Instant::now();
                         needs_flush = false;
                     }
                 }
             }
-            Some(AgentEvent::ToolEnd { tool_id, text: result }) => {
+            Some(AgentEvent::ToolEnd {
+                tool_id,
+                text: result,
+            }) => {
                 last_was_content = false;
                 if let Some(ref cid) = cardkit_card_id {
                     let (tool_name, old_entry) = {
                         let entry = tool_running.remove(&tool_id);
-                        let name = entry.as_ref()
+                        let name = entry
+                            .as_ref()
                             .and_then(|s| s.split("**Running tool:** `").nth(1))
                             .and_then(|s| s.split('`').next())
                             .unwrap_or(&tool_id)
@@ -1016,19 +1263,31 @@ async fn run_prompt_loop(
                     needs_flush = true;
                     if last_flush.elapsed() >= flush_interval {
                         card_seq += 1;
-                        let _ = feishu.update_card_element(cid, streaming_element_id, &stream_text, card_seq).await;
+                        let _ = feishu
+                            .update_card_element(cid, streaming_element_id, &stream_text, card_seq)
+                            .await;
                         last_flush = Instant::now();
                         needs_flush = false;
                     }
                 }
             }
             Some(AgentEvent::ToolDelta { .. }) => {}
-            Some(AgentEvent::ApprovalRequest { approval_request_id, tool_name, risk_level, title, summary, requested_action, .. }) => {
+            Some(AgentEvent::ApprovalRequest {
+                approval_request_id,
+                tool_name,
+                risk_level,
+                title,
+                summary,
+                requested_action,
+                ..
+            }) => {
                 // Flush any pending text before sending approval card
                 if needs_flush {
                     if let Some(ref cid) = cardkit_card_id {
                         card_seq += 1;
-                        let _ = feishu.update_card_element(cid, streaming_element_id, &stream_text, card_seq).await;
+                        let _ = feishu
+                            .update_card_element(cid, streaming_element_id, &stream_text, card_seq)
+                            .await;
                         needs_flush = false;
                         last_flush = Instant::now();
                     }
@@ -1039,7 +1298,9 @@ async fn run_prompt_loop(
                     let complete_card = card::complete_card("", &stream_text);
                     let ck_complete = card::to_cardkit_format(&complete_card);
                     card_seq += 1;
-                    let _ = feishu.update_cardkit_card(cid, &ck_complete, card_seq).await;
+                    let _ = feishu
+                        .update_cardkit_card(cid, &ck_complete, card_seq)
+                        .await;
                     cardkit_card_id = None;
                 }
                 // Send approval card with Approve/Reject buttons
@@ -1049,12 +1310,20 @@ async fn run_prompt_loop(
                     serde_json::to_string_pretty(&requested_action).unwrap_or_default()
                 };
                 let approval = card::approval_card(
-                    &approval_request_id, &tool_name, &risk_level, &title, &summary, &action_preview,
+                    &approval_request_id,
+                    &tool_name,
+                    &risk_level,
+                    &title,
+                    &summary,
+                    &action_preview,
                 );
                 let ck_card = card::to_cardkit_format(&approval);
                 match feishu.create_cardkit_card(&ck_card).await {
                     Ok(cid) => {
-                        info!("[APPROVAL] card created cid={} request_id={}", cid, approval_request_id);
+                        info!(
+                            "[APPROVAL] card created cid={} request_id={}",
+                            cid, approval_request_id
+                        );
                         card_seq += 1;
                         let _ = feishu.reply_with_card_id(feishu_msg_id, &cid).await;
                     }
@@ -1065,8 +1334,13 @@ async fn run_prompt_loop(
                             "⚠️ Approval: {}\nTool: {}\nUse `/approve {}` or `/reject {}` in TUI",
                             title, tool_name, approval_request_id, approval_request_id
                         );
-                        feishu.reply_message(feishu_msg_id, "text",
-                            &serde_json::json!({"text": fallback}).to_string()).await?;
+                        feishu
+                            .reply_message(
+                                feishu_msg_id,
+                                "text",
+                                &serde_json::json!({"text": fallback}).to_string(),
+                            )
+                            .await?;
                     }
                 }
             }
@@ -1076,7 +1350,9 @@ async fn run_prompt_loop(
                 if needs_flush {
                     if let Some(ref cid) = cardkit_card_id {
                         card_seq += 1;
-                        let _ = feishu.update_card_element(cid, streaming_element_id, &stream_text, card_seq).await;
+                        let _ = feishu
+                            .update_card_element(cid, streaming_element_id, &stream_text, card_seq)
+                            .await;
                     }
                 }
                 // Swap reactions: remove "Typing", add "DONE"
@@ -1093,8 +1369,13 @@ async fn run_prompt_loop(
                     } else {
                         info!("[REPLY] error=\"{}\"", err);
                         let err_card = card::error_card(&err);
-                        feishu.reply_message(feishu_msg_id, "interactive",
-                            &card::card_content(&err_card)).await?;
+                        feishu
+                            .reply_message(
+                                feishu_msg_id,
+                                "interactive",
+                                &card::card_content(&err_card),
+                            )
+                            .await?;
                     }
                 } else if !stream_text.trim().is_empty() {
                     info!("[REPLY] text_len={}", stream_text.len());
@@ -1106,13 +1387,17 @@ async fn run_prompt_loop(
                         let complete_card = card::complete_card("", &stream_text);
                         let ck_complete = card::to_cardkit_format(&complete_card);
                         card_seq += 1;
-                        if let Err(e) = feishu.update_cardkit_card(cid, &ck_complete, card_seq).await {
+                        if let Err(e) = feishu
+                            .update_cardkit_card(cid, &ck_complete, card_seq)
+                            .await
+                        {
                             warn!("[CARD] update_cardkit_card failed: {}", e);
                         }
                     } else {
                         let card = card::complete_card("", &stream_text);
-                        feishu.reply_message(feishu_msg_id, "interactive",
-                            &card::card_content(&card)).await?;
+                        feishu
+                            .reply_message(feishu_msg_id, "interactive", &card::card_content(&card))
+                            .await?;
                     }
                 }
                 break;
@@ -1125,8 +1410,9 @@ async fn run_prompt_loop(
                 let _ = feishu.react_to_message(feishu_msg_id, "DONE").await;
                 info!("[REPLY] error=\"{}\"", err);
                 let err_card = card::error_card(&err);
-                feishu.reply_message(feishu_msg_id, "interactive",
-                    &card::card_content(&err_card)).await?;
+                feishu
+                    .reply_message(feishu_msg_id, "interactive", &card::card_content(&err_card))
+                    .await?;
                 break;
             }
             None => {}

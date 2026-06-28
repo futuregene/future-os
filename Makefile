@@ -1,17 +1,11 @@
-.PHONY: build build-agent build-tui build-tui-single build-cli build-gui test test-agent lint lint-agent lint-tui lint-cli lint-gui stylelint-gui check-gui clean clean-gui run run-agent run-tui run-cli run-gui package-gui install install-tui install-agent install-channels install-cli install-skills install-gui
+.PHONY: build build-agent build-tui build-tui-single build-cli build-gui test test-agent lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean clean-gui run run-agent run-tui run-cli run-gui package-gui install install-tui install-cli install-skills install-gui
 
 # ─── Install ──────────────────────────────────────────────────────────────────
 
-install: install-tui install-agent install-channels install-cli install-gui
+install: install-tui install-cli install-gui
 
 install-tui:
 	cd tui && npm install
-
-install-agent:
-	cd agent && cargo build
-
-install-channels:
-	cd channels && cargo build
 
 install-cli: install-skills build-tui
 	cd cli && npm install && npm run build && chmod +x dist/index.js && npm link
@@ -61,10 +55,13 @@ test-agent:
 
 # ─── Lint ───────────────────────────────────────────────────────────────────
 
-lint: lint-agent lint-tui lint-cli lint-gui stylelint-gui
+lint: lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui
 
 lint-agent:
 	cd agent && cargo fmt --check && cargo clippy
+
+lint-channels:
+	cd channels && cargo fmt --check && cargo clippy
 
 lint-tui:
 	cd tui && npx tsc --noEmit
@@ -83,6 +80,7 @@ check-gui: lint-gui stylelint-gui build-gui
 
 fmt:
 	cd agent && cargo fmt
+	cd channels && cargo fmt
 
 # ─── Run ────────────────────────────────────────────────────────────────────
 
@@ -141,8 +139,8 @@ help:
 	@echo "  build-channels      Build channel bridge"
 	@echo "  build-channels-release  Build channel bridge (optimized)"
 	@echo "  test               Run Rust tests"
-	@echo "  lint               Lint Rust + TypeScript"
-	@echo "  fmt                Format Rust code"
+	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI)"
+	@echo "  fmt                Format Rust code (agent + channels)"
 	@echo "  run-agent          Build and run Rust agent"
 	@echo "  run-tui            Run TUI in dev mode"
 	@echo "  run-cli            Run CLI in dev mode"
@@ -151,9 +149,5 @@ help:
 	@echo "  run-channels        Build and run channel bridge"
 	@echo "  generate-models    Fetch model data and regenerate models_generated.rs"
 	@echo "  generate-proto     Compile proto/future.proto to Rust gRPC code"
-	@echo "  install            Install all dependencies (agent + channels + TUI + CLI + GUI)"
-	@echo "  install-agent      Install Rust agent deps"
-	@echo "  install-channels   Install channel bridge deps"
-	@echo "  install-cli        Install CLI (includes TUI build)"
-	@echo "  install-gui        Install GUI deps"
+	@echo "  install            Install all dependencies (TUI + CLI + GUI)"
 	@echo "  clean              Remove build artifacts"

@@ -197,7 +197,10 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
     let context_tokens = sess.last_prompt_tokens.load(Ordering::Relaxed);
     // Query count: number of user messages (prompts, steering, follow-ups).
     // Excludes internal tool/assistant messages.
-    let query_count = sess.messages.read().unwrap()
+    let query_count = sess
+        .messages
+        .read()
+        .unwrap()
         .iter()
         .filter(|m| m.role == "user")
         .count();

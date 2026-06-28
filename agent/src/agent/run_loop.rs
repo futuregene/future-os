@@ -217,9 +217,7 @@ impl Loop {
                                 *self.last_compaction_result.lock().unwrap() = Some(r);
                             }
                             if let Some(ref bus) = self.event_bus {
-                                bus.emit(events::compaction_end(
-                                    0, "", false, "auto",
-                                ));
+                                bus.emit(events::compaction_end(0, "", false, "auto"));
                             }
                         }
                         retry_attempt += 1;
@@ -299,7 +297,12 @@ impl Loop {
                 };
                 on_event(event.clone());
 
-                if self.verbose && !matches!(event.event_type.as_str(), "thinking_delta" | "text_delta" | "toolcall_delta") {
+                if self.verbose
+                    && !matches!(
+                        event.event_type.as_str(),
+                        "thinking_delta" | "text_delta" | "toolcall_delta"
+                    )
+                {
                     eprintln!("[EVENT] {} len={}", event.event_type, event.text.len());
                 }
 
