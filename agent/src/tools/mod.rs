@@ -769,9 +769,7 @@ mod tests {
                 workspace_string,
                 "all".to_string(),
                 flag_clone,
-                async {
-                    run_bash("sleep 30", 60).await
-                },
+                async { run_bash("sleep 30", 60).await },
             )
             .await
         });
@@ -780,7 +778,10 @@ mod tests {
         interrupt_flag.store(true, Ordering::SeqCst);
 
         let result = bash_task.await.unwrap();
-        assert!(result.is_err(), "run_bash should return Err when interrupted");
+        assert!(
+            result.is_err(),
+            "run_bash should return Err when interrupted"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("interrupted") || err.contains("Interrupted") || err.contains("abort"),

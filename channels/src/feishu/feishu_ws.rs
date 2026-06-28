@@ -122,7 +122,9 @@ impl FeishuWsClient {
             ));
         }
 
-        let data = resp.data.ok_or_else(|| anyhow!("WS bootstrap response missing data"))?;
+        let data = resp
+            .data
+            .ok_or_else(|| anyhow!("WS bootstrap response missing data"))?;
         if data.url.is_empty() {
             return Err(anyhow!("WS bootstrap response missing URL"));
         }
@@ -327,9 +329,10 @@ fn parse_feishu_event(data: &serde_json::Value) -> Option<FeishuEvent> {
         .map(|s| s.to_string());
 
     // Extract mentions from the message object (API v2 format)
-    let mentions = message.get("mentions").and_then(|v| v.as_array()).map(|arr| {
-        arr.iter().cloned().collect::<Vec<_>>()
-    });
+    let mentions = message
+        .get("mentions")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().cloned().collect::<Vec<_>>());
 
     let tenant_key = header
         .get("tenant_key")
@@ -457,7 +460,8 @@ pub fn is_bot_mentioned(content: &str, msg_type: &str, bot_open_id: &str) -> boo
                                     // user_id can be a string or an object with open_id
                                     let user_id_match = match element.get("user_id") {
                                         Some(uid) if uid.is_object() => {
-                                            uid.get("open_id").and_then(|v| v.as_str()) == Some(bot_open_id)
+                                            uid.get("open_id").and_then(|v| v.as_str())
+                                                == Some(bot_open_id)
                                         }
                                         Some(uid) => uid.as_str() == Some(bot_open_id),
                                         None => false,
@@ -536,13 +540,11 @@ fn parse_card_action_event(
 /// In API v2, mentions are in `message.mentions` rather than inside the content JSON.
 /// Each mention has an `id` object with `open_id`, `union_id`, etc.
 pub fn is_bot_mentioned_in_mentions(mentions: &[serde_json::Value], bot_open_id: &str) -> bool {
-    mentions.iter().any(|m| {
-        match m.get("id") {
-            Some(id_obj) if id_obj.is_object() => {
-                id_obj.get("open_id").and_then(|v| v.as_str()) == Some(bot_open_id)
-            }
-            Some(id_str) => id_str.as_str() == Some(bot_open_id),
-            None => false,
+    mentions.iter().any(|m| match m.get("id") {
+        Some(id_obj) if id_obj.is_object() => {
+            id_obj.get("open_id").and_then(|v| v.as_str()) == Some(bot_open_id)
         }
+        Some(id_str) => id_str.as_str() == Some(bot_open_id),
+        None => false,
     })
 }

@@ -49,7 +49,8 @@ impl FeishuRestClient {
         }
 
         let url = format!("{}/auth/v3/tenant_access_token/internal", self.api_base);
-        let resp: Value = self.http
+        let resp: Value = self
+            .http
             .post(&url)
             .json(&serde_json::json!({
                 "app_id": self.app_id,
@@ -69,7 +70,8 @@ impl FeishuRestClient {
             ));
         }
 
-        let token = resp["tenant_access_token"].as_str()
+        let token = resp["tenant_access_token"]
+            .as_str()
             .ok_or_else(|| anyhow!("Token not found in response"))?
             .to_string();
         let expire = resp["expire"].as_i64().unwrap_or(7200);
@@ -85,7 +87,8 @@ impl FeishuRestClient {
     async fn post(&self, path: &str, body: &Value) -> Result<Value> {
         let token = self.get_token().await?;
         let url = format!("{}{}", self.api_base, path);
-        let resp: Value = self.http
+        let resp: Value = self
+            .http
             .post(&url)
             .header("Authorization", format!("Bearer {}", token))
             .json(body)
@@ -105,7 +108,8 @@ impl FeishuRestClient {
     async fn put_json(&self, path: &str, body: &Value) -> Result<Value> {
         let token = self.get_token().await?;
         let url = format!("{}{}", self.api_base, path);
-        let resp: Value = self.http
+        let resp: Value = self
+            .http
             .put(&url)
             .header("Authorization", format!("Bearer {}", token))
             .json(body)
@@ -125,7 +129,8 @@ impl FeishuRestClient {
     async fn get(&self, path: &str) -> Result<Value> {
         let token = self.get_token().await?;
         let url = format!("{}{}", self.api_base, path);
-        let resp: Value = self.http
+        let resp: Value = self
+            .http
             .get(&url)
             .header("Authorization", format!("Bearer {}", token))
             .send()
@@ -150,19 +155,24 @@ impl FeishuRestClient {
         msg_type: &str,
         content: &str,
     ) -> Result<SendMessageResponse> {
-        let path = format!(
-            "/im/v1/messages?receive_id_type={}",
-            receive_id_type
-        );
-        let resp = self.post(&path, &serde_json::json!({
-            "receive_id": receive_id,
-            "msg_type": msg_type,
-            "content": content,
-            "uuid": uuid::Uuid::new_v4().to_string(),
-        })).await?;
+        let path = format!("/im/v1/messages?receive_id_type={}", receive_id_type);
+        let resp = self
+            .post(
+                &path,
+                &serde_json::json!({
+                    "receive_id": receive_id,
+                    "msg_type": msg_type,
+                    "content": content,
+                    "uuid": uuid::Uuid::new_v4().to_string(),
+                }),
+            )
+            .await?;
 
         Ok(SendMessageResponse {
-            message_id: resp["data"]["message_id"].as_str().unwrap_or("").to_string(),
+            message_id: resp["data"]["message_id"]
+                .as_str()
+                .unwrap_or("")
+                .to_string(),
         })
     }
 
@@ -174,14 +184,22 @@ impl FeishuRestClient {
         content: &str,
     ) -> Result<SendMessageResponse> {
         let path = format!("/im/v1/messages/{}/reply", message_id);
-        let resp = self.post(&path, &serde_json::json!({
-            "content": content,
-            "msg_type": msg_type,
-            "uuid": uuid::Uuid::new_v4().to_string(),
-        })).await?;
+        let resp = self
+            .post(
+                &path,
+                &serde_json::json!({
+                    "content": content,
+                    "msg_type": msg_type,
+                    "uuid": uuid::Uuid::new_v4().to_string(),
+                }),
+            )
+            .await?;
 
         Ok(SendMessageResponse {
-            message_id: resp["data"]["message_id"].as_str().unwrap_or("").to_string(),
+            message_id: resp["data"]["message_id"]
+                .as_str()
+                .unwrap_or("")
+                .to_string(),
         })
     }
 
@@ -195,11 +213,15 @@ impl FeishuRestClient {
 
         let form = reqwest::multipart::Form::new()
             .text("image_type", "message")
-            .part("image", reqwest::multipart::Part::bytes(data.to_vec())
-                .file_name(filename)
-                .mime_str(mime_type)?);
+            .part(
+                "image",
+                reqwest::multipart::Part::bytes(data.to_vec())
+                    .file_name(filename)
+                    .mime_str(mime_type)?,
+            );
 
-        let resp: Value = self.http
+        let resp: Value = self
+            .http
             .post(&url)
             .header("Authorization", format!("Bearer {}", token))
             .multipart(form)
@@ -213,24 +235,34 @@ impl FeishuRestClient {
             return Err(anyhow!("Upload image failed: {}", resp["msg"]));
         }
 
-        resp["data"]["image_key"].as_str()
+        resp["data"]["image_key"]
+            .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| anyhow!("image_key not found in upload response"))
     }
 
     /// Upload a file. Returns file_key.
-    pub async fn upload_file(&self, data: &[u8], file_type: &str, filename: &str) -> Result<String> {
+    pub async fn upload_file(
+        &self,
+        data: &[u8],
+        file_type: &str,
+        filename: &str,
+    ) -> Result<String> {
         let token = self.get_token().await?;
         let url = format!("{}/im/v1/files", self.api_base);
 
         let form = reqwest::multipart::Form::new()
             .text("file_type", file_type.to_string())
             .text("file_name", filename.to_string())
-            .part("file", reqwest::multipart::Part::bytes(data.to_vec())
-                .file_name(filename.to_string())
-                .mime_str("application/octet-stream")?);
+            .part(
+                "file",
+                reqwest::multipart::Part::bytes(data.to_vec())
+                    .file_name(filename.to_string())
+                    .mime_str("application/octet-stream")?,
+            );
 
-        let resp: Value = self.http
+        let resp: Value = self
+            .http
             .post(&url)
             .header("Authorization", format!("Bearer {}", token))
             .multipart(form)
@@ -244,20 +276,27 @@ impl FeishuRestClient {
             return Err(anyhow!("Upload file failed: {}", resp["msg"]));
         }
 
-        resp["data"]["file_key"].as_str()
+        resp["data"]["file_key"]
+            .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| anyhow!("file_key not found in upload response"))
     }
 
     /// Download a message resource (image/file).
-    pub async fn download_resource(&self, message_id: &str, file_key: &str, resource_type: &str) -> Result<Vec<u8>> {
+    pub async fn download_resource(
+        &self,
+        message_id: &str,
+        file_key: &str,
+        resource_type: &str,
+    ) -> Result<Vec<u8>> {
         let token = self.get_token().await?;
         let url = format!(
             "{}/im/v1/messages/{}/resources/{}?type={}",
             self.api_base, message_id, file_key, resource_type
         );
 
-        let resp = self.http
+        let resp = self
+            .http
             .get(&url)
             .header("Authorization", format!("Bearer {}", token))
             .send()
@@ -281,7 +320,8 @@ impl FeishuRestClient {
     pub async fn get_bot_info(&self) -> Result<BotInfo> {
         let token = self.get_token().await?;
         let url = format!("{}/bot/v3/info", self.api_base);
-        let resp: Value = self.http
+        let resp: Value = self
+            .http
             .get(&url)
             .header("Authorization", format!("Bearer {}", token))
             .send()
@@ -309,11 +349,17 @@ impl FeishuRestClient {
 
     /// Create a CardKit card entity. Returns the card_id for later operations.
     pub async fn create_cardkit_card(&self, card: &Value) -> Result<String> {
-        let resp = self.post("/cardkit/v1/cards", &serde_json::json!({
-            "type": "card_json",
-            "data": card.to_string(),
-        })).await?;
-        resp["data"]["card_id"].as_str()
+        let resp = self
+            .post(
+                "/cardkit/v1/cards",
+                &serde_json::json!({
+                    "type": "card_json",
+                    "data": card.to_string(),
+                }),
+            )
+            .await?;
+        resp["data"]["card_id"]
+            .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| anyhow!("card_id not found in cardkit create response"))
     }
@@ -333,7 +379,10 @@ impl FeishuRestClient {
             "uuid": uuid::Uuid::new_v4().to_string(),
         })).await?;
         Ok(SendMessageResponse {
-            message_id: resp["data"]["message_id"].as_str().unwrap_or("").to_string(),
+            message_id: resp["data"]["message_id"]
+                .as_str()
+                .unwrap_or("")
+                .to_string(),
         })
     }
 
@@ -350,7 +399,10 @@ impl FeishuRestClient {
             "uuid": uuid::Uuid::new_v4().to_string(),
         })).await?;
         Ok(SendMessageResponse {
-            message_id: resp["data"]["message_id"].as_str().unwrap_or("").to_string(),
+            message_id: resp["data"]["message_id"]
+                .as_str()
+                .unwrap_or("")
+                .to_string(),
         })
     }
 
@@ -366,10 +418,14 @@ impl FeishuRestClient {
             "/cardkit/v1/cards/{}/elements/{}/content",
             card_id, element_id
         );
-        self.put_json(&path, &serde_json::json!({
-            "content": content,
-            "sequence": sequence,
-        })).await?;
+        self.put_json(
+            &path,
+            &serde_json::json!({
+                "content": content,
+                "sequence": sequence,
+            }),
+        )
+        .await?;
         Ok(())
     }
 
@@ -381,10 +437,14 @@ impl FeishuRestClient {
         sequence: u64,
     ) -> Result<()> {
         let path = format!("/cardkit/v1/cards/{}", card_id);
-        self.put_json(&path, &serde_json::json!({
-            "card": {"type": "card_json", "data": card.to_string()},
-            "sequence": sequence,
-        })).await?;
+        self.put_json(
+            &path,
+            &serde_json::json!({
+                "card": {"type": "card_json", "data": card.to_string()},
+                "sequence": sequence,
+            }),
+        )
+        .await?;
         Ok(())
     }
 
@@ -431,7 +491,10 @@ impl FeishuRestClient {
         Ok(UserInfo {
             open_id: open_id.to_string(),
             name: user["name"].as_str().unwrap_or("Unknown").to_string(),
-            avatar_url: user["avatar"]["avatar_origin"].as_str().unwrap_or("").to_string(),
+            avatar_url: user["avatar"]["avatar_origin"]
+                .as_str()
+                .unwrap_or("")
+                .to_string(),
         })
     }
 
@@ -439,10 +502,16 @@ impl FeishuRestClient {
     /// Returns the reaction_id on success.
     pub async fn react_to_message(&self, message_id: &str, emoji_type: &str) -> Result<String> {
         let path = format!("/im/v1/messages/{}/reactions", message_id);
-        let resp = self.post(&path, &serde_json::json!({
-            "reaction_type": {"emoji_type": emoji_type}
-        })).await?;
-        resp["data"]["reaction_id"].as_str()
+        let resp = self
+            .post(
+                &path,
+                &serde_json::json!({
+                    "reaction_type": {"emoji_type": emoji_type}
+                }),
+            )
+            .await?;
+        resp["data"]["reaction_id"]
+            .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| anyhow!("reaction_id not found in response"))
     }
@@ -450,8 +519,12 @@ impl FeishuRestClient {
     /// Remove a reaction from a message.
     pub async fn remove_reaction(&self, message_id: &str, reaction_id: &str) -> Result<()> {
         let token = self.get_token().await?;
-        let url = format!("{}/im/v1/messages/{}/reactions/{}", self.api_base, message_id, reaction_id);
-        let resp: Value = self.http
+        let url = format!(
+            "{}/im/v1/messages/{}/reactions/{}",
+            self.api_base, message_id, reaction_id
+        );
+        let resp: Value = self
+            .http
             .delete(&url)
             .header("Authorization", format!("Bearer {}", token))
             .send()
@@ -489,7 +562,11 @@ pub struct BotInfo {
 
 /// Convert raw bytes to base64 data URL form for agent input.
 pub fn bytes_to_base64_data(data: &[u8], mime_type: &str) -> String {
-    format!("data:{};base64,{}", mime_type, base64::engine::general_purpose::STANDARD.encode(data))
+    format!(
+        "data:{};base64,{}",
+        mime_type,
+        base64::engine::general_purpose::STANDARD.encode(data)
+    )
 }
 
 /// Detect MIME type from file extension.

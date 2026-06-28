@@ -20,10 +20,22 @@ pub enum AgentEvent {
     ThinkingDelta(String),
     ThinkingEnd,
     AgentStart,
-    AgentEnd { error: Option<String> },
-    ToolStart { tool_id: String, tool_name: String, tool_args: Option<String> },
-    ToolDelta { tool_id: String, text: String },
-    ToolEnd { tool_id: String, text: Option<String> },
+    AgentEnd {
+        error: Option<String>,
+    },
+    ToolStart {
+        tool_id: String,
+        tool_name: String,
+        tool_args: Option<String>,
+    },
+    ToolDelta {
+        tool_id: String,
+        text: String,
+    },
+    ToolEnd {
+        tool_id: String,
+        text: Option<String>,
+    },
     ApprovalRequest {
         approval_request_id: String,
         tool_id: String,
@@ -45,11 +57,17 @@ pub struct AgentClient {
 
 impl AgentClient {
     pub async fn connect(addr: &str) -> Result<Self> {
-        let addr = format!("http://{}", addr.trim_start_matches("http://").trim_start_matches("https://"));
+        let addr = format!(
+            "http://{}",
+            addr.trim_start_matches("http://")
+                .trim_start_matches("https://")
+        );
         let endpoint = tonic::transport::Endpoint::new(addr.clone())?
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(60));
-        let channel = endpoint.connect().await
+        let channel = endpoint
+            .connect()
+            .await
             .map_err(|e| anyhow!("Failed to connect to agent at {}: {}", addr, e))?;
         let inner = FutureAgentClient::new(channel);
         Ok(Self { inner })
@@ -65,12 +83,19 @@ impl AgentClient {
             ..extra
         });
 
-        let response = self.inner.execute_command(request).await
+        let response = self
+            .inner
+            .execute_command(request)
+            .await
             .map_err(|e| anyhow!("gRPC call '{}' failed: {}", cmd_type, e))?
             .into_inner();
 
         if !response.success {
-            let err = if response.error.is_empty() { "unknown error".to_string() } else { response.error.clone() };
+            let err = if response.error.is_empty() {
+                "unknown error".to_string()
+            } else {
+                response.error.clone()
+            };
             return Err(anyhow!("Command '{}' failed: {}", cmd_type, err));
         }
 
@@ -84,33 +109,51 @@ impl AgentClient {
 
     /// Create a new agent session. Returns the session_id.
     pub async fn new_session(&mut self, cwd: &str) -> Result<String> {
-        let resp = self.call("new_session", "", RpcCommand {
-            cwd: cwd.to_string(),
-            ..Default::default()
-        }).await?;
-        resp["sessionId"].as_str()
+        let resp = self
+            .call(
+                "new_session",
+                "",
+                RpcCommand {
+                    cwd: cwd.to_string(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        resp["sessionId"]
+            .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| anyhow!("new_session response missing sessionId"))
     }
 
     /// Send a prompt to the agent. Returns immediately (agent runs in background).
-    pub async fn prompt(&mut self, session_id: &str, message: &str, images: Vec<ImageInput>) -> Result<()> {
-        let proto_images: Vec<proto::ImageContent> = images.into_iter().map(|img| {
-            proto::ImageContent {
+    pub async fn prompt(
+        &mut self,
+        session_id: &str,
+        message: &str,
+        images: Vec<ImageInput>,
+    ) -> Result<()> {
+        let proto_images: Vec<proto::ImageContent> = images
+            .into_iter()
+            .map(|img| proto::ImageContent {
                 r#type: img.content_type,
                 content: Some(match img.data {
                     ImageData::Url(url) => proto::image_content::Content::Url(url),
                     ImageData::Base64(b64) => proto::image_content::Content::Base64(b64),
                 }),
                 file_path: img.file_path.unwrap_or_default(),
-            }
-        }).collect();
+            })
+            .collect();
 
-        self.call("prompt", session_id, RpcCommand {
-            message: message.to_string(),
-            images: proto_images,
-            ..Default::default()
-        }).await?;
+        self.call(
+            "prompt",
+            session_id,
+            RpcCommand {
+                message: message.to_string(),
+                images: proto_images,
+                ..Default::default()
+            },
+        )
+        .await?;
         Ok(())
     }
 
@@ -122,7 +165,9 @@ impl AgentClient {
 
     /// Get session state.
     pub async fn get_state(&mut self, session_id: &str) -> Result<SessionState> {
-        let resp = self.call("get_state", session_id, Default::default()).await?;
+        let resp = self
+            .call("get_state", session_id, Default::default())
+            .await?;
         Ok(SessionState {
             model: resp["model"].as_str().unwrap_or("?").to_string(),
             image_support: resp["imageSupport"].as_bool().unwrap_or(false),
@@ -138,33 +183,48 @@ impl AgentClient {
             cwd: resp["cwd"].as_str().unwrap_or("").to_string(),
             auto_compaction: resp["autoCompactionEnabled"].as_bool().unwrap_or(true),
             total_cost: resp["totalCost"].as_f64().unwrap_or(0.0),
-            permission_level: resp["permissionLevel"].as_str().unwrap_or("all").to_string(),
+            permission_level: resp["permissionLevel"]
+                .as_str()
+                .unwrap_or("all")
+                .to_string(),
         })
     }
 
     /// Get available models.
     pub async fn get_available_models(&mut self, session_id: &str) -> Result<Vec<ModelInfo>> {
-        let resp = self.call("get_available_models", session_id, Default::default()).await?;
-        let models = resp["models"].as_array().map(|arr| {
-            arr.iter().map(|m| ModelInfo {
-                id: m["id"].as_str().unwrap_or("?").to_string(),
-                name: m["name"].as_str().unwrap_or("?").to_string(),
-                provider: m["provider"].as_str().unwrap_or("").to_string(),
-                image: m["image"].as_bool().unwrap_or(false),
-                reasoning: m["reasoning"].as_bool().unwrap_or(false),
-                context_window: m["contextWindow"].as_i64().unwrap_or(0),
-                max_tokens: m["maxTokens"].as_i64().unwrap_or(0),
-            }).collect()
-        }).unwrap_or_default();
+        let resp = self
+            .call("get_available_models", session_id, Default::default())
+            .await?;
+        let models = resp["models"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .map(|m| ModelInfo {
+                        id: m["id"].as_str().unwrap_or("?").to_string(),
+                        name: m["name"].as_str().unwrap_or("?").to_string(),
+                        provider: m["provider"].as_str().unwrap_or("").to_string(),
+                        image: m["image"].as_bool().unwrap_or(false),
+                        reasoning: m["reasoning"].as_bool().unwrap_or(false),
+                        context_window: m["contextWindow"].as_i64().unwrap_or(0),
+                        max_tokens: m["maxTokens"].as_i64().unwrap_or(0),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         Ok(models)
     }
 
     /// Switch to a different model.
     pub async fn set_model(&mut self, session_id: &str, model_id: &str) -> Result<()> {
-        self.call("set_model", session_id, RpcCommand {
-            model_id: model_id.to_string(),
-            ..Default::default()
-        }).await?;
+        self.call(
+            "set_model",
+            session_id,
+            RpcCommand {
+                model_id: model_id.to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
         Ok(())
     }
 
@@ -176,12 +236,21 @@ impl AgentClient {
         approved: bool,
         note: &str,
     ) -> Result<()> {
-        self.call("approval_decision", session_id, RpcCommand {
-            mode: if approved { "approved".to_string() } else { "rejected".to_string() },
-            message: note.to_string(),
-            entry_id: request_id.to_string(),
-            ..Default::default()
-        }).await?;
+        self.call(
+            "approval_decision",
+            session_id,
+            RpcCommand {
+                mode: if approved {
+                    "approved".to_string()
+                } else {
+                    "rejected".to_string()
+                },
+                message: note.to_string(),
+                entry_id: request_id.to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
         Ok(())
     }
 
@@ -193,19 +262,29 @@ impl AgentClient {
 
     /// Set working directory.
     pub async fn set_cwd(&mut self, session_id: &str, cwd: &str) -> Result<()> {
-        self.call("set_cwd", session_id, RpcCommand {
-            cwd: cwd.to_string(),
-            ..Default::default()
-        }).await?;
+        self.call(
+            "set_cwd",
+            session_id,
+            RpcCommand {
+                cwd: cwd.to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
         Ok(())
     }
 
     /// Set thinking level.
     pub async fn set_thinking_level(&mut self, session_id: &str, level: &str) -> Result<()> {
-        self.call("set_thinking_level", session_id, RpcCommand {
-            level: level.to_string(),
-            ..Default::default()
-        }).await?;
+        self.call(
+            "set_thinking_level",
+            session_id,
+            RpcCommand {
+                level: level.to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
         Ok(())
     }
 
@@ -214,19 +293,30 @@ impl AgentClient {
         // Note: pass session_id as the second arg to call(), not via extra.
         // Rust struct update syntax (..extra) does NOT override fields
         // that are already explicitly set in the struct literal.
-        self.call("switch_session", session_id, RpcCommand {
-            ..Default::default()
-        }).await?;
+        self.call(
+            "switch_session",
+            session_id,
+            RpcCommand {
+                ..Default::default()
+            },
+        )
+        .await?;
         Ok(())
     }
 
     /// Stream events from the agent for a specific session.
-    pub async fn stream_events(&mut self, session_id: &str) -> Result<tonic::Streaming<proto::StreamEvent>> {
+    pub async fn stream_events(
+        &mut self,
+        session_id: &str,
+    ) -> Result<tonic::Streaming<proto::StreamEvent>> {
         let request = tonic::Request::new(StreamRequest {
             session_id: session_id.to_string(),
             event_types: vec![],
         });
-        let stream = self.inner.stream_events(request).await
+        let stream = self
+            .inner
+            .stream_events(request)
+            .await
             .map_err(|e| anyhow!("Failed to subscribe to events: {}", e))?
             .into_inner();
         Ok(stream)
@@ -284,7 +374,10 @@ impl AgentClient {
             "approval_request" => {
                 let data = serde_json::from_str::<Value>(&event.data).ok()?;
                 Some(AgentEvent::ApprovalRequest {
-                    approval_request_id: data["approval_request_id"].as_str().unwrap_or("").to_string(),
+                    approval_request_id: data["approval_request_id"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
                     tool_id: data["tool_id"].as_str().unwrap_or("").to_string(),
                     tool_name: data["tool_name"].as_str().unwrap_or("").to_string(),
                     kind: data["kind"].as_str().unwrap_or("").to_string(),

@@ -19,10 +19,18 @@ enum AgentEvent {
     ThinkingStart,
     ThinkingDelta(String),
     ThinkingEnd,
-    ToolStart { tool_id: String, tool_name: String },
-    ToolEnd { tool_id: String, text: Option<String> },
+    ToolStart {
+        tool_id: String,
+        tool_name: String,
+    },
+    ToolEnd {
+        tool_id: String,
+        text: Option<String>,
+    },
     AgentStart,
-    AgentEnd { error: Option<String> },
+    AgentEnd {
+        error: Option<String>,
+    },
     Error(String),
     Ping,
 }
@@ -114,19 +122,33 @@ async fn test_agent_prompt_flow() {
 
     // 1. Create a new session
     println!("--- Creating new session ---");
-    let resp = call(&mut client, "new_session", "", RpcCommand {
-        cwd: "/tmp".to_string(),
-        ..Default::default()
-    }).await.expect("new_session failed");
+    let resp = call(
+        &mut client,
+        "new_session",
+        "",
+        RpcCommand {
+            cwd: "/tmp".to_string(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("new_session failed");
     let session_id = resp["sessionId"].as_str().unwrap().to_string();
     println!("Session created: {}", session_id);
 
     // 2. Send a prompt
     println!("--- Sending prompt ---");
-    call(&mut client, "prompt", &session_id, RpcCommand {
-        message: "Reply with exactly: pong".to_string(),
-        ..Default::default()
-    }).await.expect("prompt failed");
+    call(
+        &mut client,
+        "prompt",
+        &session_id,
+        RpcCommand {
+            message: "Reply with exactly: pong".to_string(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("prompt failed");
     println!("Prompt sent");
 
     // 3. Stream events and collect the response
@@ -135,7 +157,9 @@ async fn test_agent_prompt_flow() {
         session_id: session_id.clone(),
         event_types: vec![],
     });
-    let mut stream = client.stream_events(stream_request).await
+    let mut stream = client
+        .stream_events(stream_request)
+        .await
         .expect("stream_events failed")
         .into_inner();
 
@@ -188,9 +212,11 @@ async fn test_agent_prompt_flow() {
             }
             Err(_) => {
                 // 2s timeout — check if we've been waiting too long
-                if tokio::time::Instant::now().duration_since(
-                    tokio::time::Instant::now() - Duration::from_secs(0)
-                ).as_secs() > deadline.as_secs() {
+                if tokio::time::Instant::now()
+                    .duration_since(tokio::time::Instant::now() - Duration::from_secs(0))
+                    .as_secs()
+                    > deadline.as_secs()
+                {
                     println!("\nTimeout after {} seconds", deadline.as_secs());
                     break;
                 }
@@ -201,7 +227,10 @@ async fn test_agent_prompt_flow() {
 
     println!("\n=== Full response ===");
     println!("{}", response_text);
-    assert!(!response_text.is_empty(), "Should have received a response from the agent");
+    assert!(
+        !response_text.is_empty(),
+        "Should have received a response from the agent"
+    );
     println!("\n✅ Agent prompt flow works correctly");
 }
 
@@ -209,8 +238,8 @@ async fn test_agent_prompt_flow() {
 #[ignore] // Requires running agent
 async fn test_old_session_prompt_flow() {
     // Test what happens when channel uses an old session ID after agent restart.
-    let session_id = std::env::var("OLD_SESSION_ID")
-        .unwrap_or_else(|_| "20260604-171411-78b7bb".to_string());
+    let session_id =
+        std::env::var("OLD_SESSION_ID").unwrap_or_else(|_| "20260604-171411-78b7bb".to_string());
     println!("Using old session ID: {}", session_id);
 
     let addr = "http://127.0.0.1:50051";
@@ -225,18 +254,34 @@ async fn test_old_session_prompt_flow() {
     // Simulate what channel does for existing sessions:
     // 1. Try switch_session (channel code sends it but it's broken with empty session_id)
     println!("--- Simulating channel ensure_session: switch_session ---");
-    let switch_resp = call(&mut client, "switch_session", &session_id, RpcCommand {
-        session_id: session_id.clone(),
-        ..Default::default()
-    }).await;
-    println!("switch_session result: {:?}", switch_resp.as_ref().map(|_| "ok").unwrap_or_else(|e| "err"));
+    let switch_resp = call(
+        &mut client,
+        "switch_session",
+        &session_id,
+        RpcCommand {
+            session_id: session_id.clone(),
+            ..Default::default()
+        },
+    )
+    .await;
+    println!(
+        "switch_session result: {:?}",
+        switch_resp.as_ref().map(|_| "ok").unwrap_or_else(|e| "err")
+    );
 
     // 2. Send prompt with old session ID
     println!("--- Sending prompt with OLD session ID ---");
-    call(&mut client, "prompt", &session_id, RpcCommand {
-        message: "reply pong".to_string(),
-        ..Default::default()
-    }).await.expect("prompt failed");
+    call(
+        &mut client,
+        "prompt",
+        &session_id,
+        RpcCommand {
+            message: "reply pong".to_string(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("prompt failed");
     println!("Prompt sent");
 
     // 3. Stream events
@@ -245,7 +290,9 @@ async fn test_old_session_prompt_flow() {
         session_id: session_id.clone(),
         event_types: vec![],
     });
-    let mut stream = client.stream_events(stream_request).await
+    let mut stream = client
+        .stream_events(stream_request)
+        .await
         .expect("stream_events failed")
         .into_inner();
 
@@ -275,14 +322,26 @@ async fn test_old_session_prompt_flow() {
                     }
                 }
             }
-            Ok(Ok(None)) => { println!("\nStream ended"); break; }
-            Ok(Err(e)) => { println!("\nStream error: {}", e); break; }
-            Err(_) => { println!("\nTimeout waiting for events"); break; }
+            Ok(Ok(None)) => {
+                println!("\nStream ended");
+                break;
+            }
+            Ok(Err(e)) => {
+                println!("\nStream error: {}", e);
+                break;
+            }
+            Err(_) => {
+                println!("\nTimeout waiting for events");
+                break;
+            }
         }
     }
 
     println!("\n=== Full response ===");
     println!("{}", response_text);
-    assert!(!response_text.is_empty(), "Should have received a response from the agent");
+    assert!(
+        !response_text.is_empty(),
+        "Should have received a response from the agent"
+    );
     println!("\n✅ Old session prompt flow works correctly");
 }

@@ -52,10 +52,7 @@ impl DingtalkWsClient {
     /// (no OAuth2 token). Returns the WebSocket endpoint and ticket.
     async fn open_connection(&self) -> Result<(String, String)> {
         let client = reqwest::Client::new();
-        let url = format!(
-            "https://{}/v1.0/gateway/connections/open",
-            self.domain
-        );
+        let url = format!("https://{}/v1.0/gateway/connections/open", self.domain);
 
         let body = serde_json::json!({
             "clientId": self.client_id,
@@ -110,11 +107,7 @@ impl DingtalkWsClient {
         F: FnMut(DingtalkEvent),
     {
         let (endpoint, ticket) = self.open_connection().await?;
-        let ws_url = format!(
-            "{}?ticket={}",
-            endpoint,
-            urlencoding(&ticket)
-        );
+        let ws_url = format!("{}?ticket={}", endpoint, urlencoding(&ticket));
         info!("DingTalk WebSocket connecting: {}", ws_url);
 
         let (ws_stream, _response) = connect_async(&ws_url)
@@ -147,10 +140,8 @@ impl DingtalkWsClient {
                 Ok(WsMessage::Text(text)) => {
                     match serde_json::from_str::<Value>(&text) {
                         Ok(msg_data) => {
-                            let msg_type = msg_data
-                                .get("type")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
+                            let msg_type =
+                                msg_data.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
                             info!("DingTalk WS raw: {}", text);
                             match msg_type {
@@ -167,7 +158,8 @@ impl DingtalkWsClient {
                                     let ack_data = msg_data.clone();
                                     tokio::spawn(async move {
                                         let mut sink = ack_sink.lock().await;
-                                        let _ = send_ack_inner(&mut *sink, &ack_data, 200, "").await;
+                                        let _ =
+                                            send_ack_inner(&mut *sink, &ack_data, 200, "").await;
                                     });
                                     if topic == "disconnect" {
                                         info!("DingTalk server requested disconnect");
@@ -183,7 +175,8 @@ impl DingtalkWsClient {
                                     let ack_data = msg_data.clone();
                                     tokio::spawn(async move {
                                         let mut sink = ack_sink.lock().await;
-                                        let _ = send_ack_inner(&mut *sink, &ack_data, 200, "").await;
+                                        let _ =
+                                            send_ack_inner(&mut *sink, &ack_data, 200, "").await;
                                     });
                                 }
                                 "CALLBACK" => {
@@ -193,7 +186,9 @@ impl DingtalkWsClient {
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("");
                                     info!("DingTalk CALLBACK topic={}", topic);
-                                    if topic == "/v1.0/im/bot/messages/get" || topic == "/v1.0/im/bot/messages/delegate" {
+                                    if topic == "/v1.0/im/bot/messages/get"
+                                        || topic == "/v1.0/im/bot/messages/delegate"
+                                    {
                                         if let Some(event) = parse_dingtalk_event(&msg_data) {
                                             on_event(event);
                                         }
@@ -202,7 +197,8 @@ impl DingtalkWsClient {
                                     let ack_data = msg_data.clone();
                                     tokio::spawn(async move {
                                         let mut sink = ack_sink.lock().await;
-                                        let _ = send_ack_inner(&mut *sink, &ack_data, 200, "").await;
+                                        let _ =
+                                            send_ack_inner(&mut *sink, &ack_data, 200, "").await;
                                     });
                                 }
                                 other => {
@@ -338,9 +334,15 @@ fn parse_dingtalk_event(msg: &Value) -> Option<DingtalkEvent> {
         .and_then(|v| v.get("content"))
         .and_then(|v| v.as_str())
         .or_else(|| body.get("text").and_then(|v| v.as_str()))
-        .or_else(|| body.get("content").and_then(|v| {
-            if let Some(s) = v.as_str() { Some(s) } else { None }
-        }))
+        .or_else(|| {
+            body.get("content").and_then(|v| {
+                if let Some(s) = v.as_str() {
+                    Some(s)
+                } else {
+                    None
+                }
+            })
+        })
         .map(|s| s.to_string());
     let msg_type = body
         .get("msgType")
@@ -348,9 +350,15 @@ fn parse_dingtalk_event(msg: &Value) -> Option<DingtalkEvent> {
         .or_else(|| body.get("message_type"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let content = text_content.or_else(|| body.get("content").map(|v| {
-        if let Some(s) = v.as_str() { s.to_string() } else { v.to_string() }
-    }));
+    let content = text_content.or_else(|| {
+        body.get("content").map(|v| {
+            if let Some(s) = v.as_str() {
+                s.to_string()
+            } else {
+                v.to_string()
+            }
+        })
+    });
     let message_id = headers
         .get("messageId")
         .and_then(|v| v.as_str())
@@ -378,7 +386,11 @@ fn parse_dingtalk_event(msg: &Value) -> Option<DingtalkEvent> {
         .map(|s| s.to_string());
 
     Some(DingtalkEvent {
-        event_type: if event_type.is_empty() { msg_type_str.to_string() } else { event_type },
+        event_type: if event_type.is_empty() {
+            msg_type_str.to_string()
+        } else {
+            event_type
+        },
         message_id,
         chat_id,
         chat_type,

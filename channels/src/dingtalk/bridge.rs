@@ -45,14 +45,19 @@ impl DingtalkBridge {
     pub async fn handle_event(&self, event: DingtalkEvent) -> Result<()> {
         let sender_id = match &event.sender_id {
             Some(id) => id.clone(),
-            None => { warn!("Event without sender, skipping"); return Ok(()); }
+            None => {
+                warn!("Event without sender, skipping");
+                return Ok(());
+            }
         };
         let message_id = match &event.message_id {
             Some(id) => id.clone(),
             None => return Ok(()),
         };
         if let Some(ref bot_id) = event.chatbot_user_id {
-            if sender_id == *bot_id { return Ok(()); }
+            if sender_id == *bot_id {
+                return Ok(());
+            }
         }
         {
             let mut processed = self.processed.write().await;
@@ -62,20 +67,33 @@ impl DingtalkBridge {
             processed.insert(message_id.clone());
             if processed.len() > 1000 {
                 let old: Vec<String> = processed.iter().take(500).cloned().collect();
-                for id in old { processed.remove(&id); }
+                for id in old {
+                    processed.remove(&id);
+                }
             }
         }
         if let Some(create_ms) = event.create_time_ms {
             let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
-            if (now_ms - create_ms) / 1000 > 60 { return Ok(()); }
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            if (now_ms - create_ms) / 1000 > 60 {
+                return Ok(());
+            }
         }
 
         let text = event.content.clone().unwrap_or_default();
 
-        info!("[DING RECV] sender={} name={} text=\"{}\"",
-            sender_id, event.sender_name.as_deref().unwrap_or("?"),
-            if text.len() > 200 { truncate_at_char(&text, 200) } else { text.clone() });
+        info!(
+            "[DING RECV] sender={} name={} text=\"{}\"",
+            sender_id,
+            event.sender_name.as_deref().unwrap_or("?"),
+            if text.len() > 200 {
+                truncate_at_char(&text, 200)
+            } else {
+                text.clone()
+            }
+        );
 
         let webhook = event.session_webhook.clone();
 
@@ -91,13 +109,20 @@ impl DingtalkBridge {
         let parts: Vec<&str> = text.trim().splitn(2, char::is_whitespace).collect();
         let cmd = parts[0].to_lowercase();
         let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
-        let wh = match webhook { Some(w) => w, None => { return Ok(()); } };
+        let wh = match webhook {
+            Some(w) => w,
+            None => {
+                return Ok(());
+            }
+        };
         let reply_md = |title: &str, md: &str| {
             let wh2 = wh.to_string();
             let dingtalk = self.dingtalk.clone();
             let title = title.to_string();
             let md = md.to_string();
-            tokio::spawn(async move { let _ = dingtalk.reply_webhook_markdown(&wh2, &title, &md).await; });
+            tokio::spawn(async move {
+                let _ = dingtalk.reply_webhook_markdown(&wh2, &title, &md).await;
+            });
         };
 
         match cmd.as_str() {
@@ -123,7 +148,10 @@ impl DingtalkBridge {
                 // one — new_session() fails when the agent is busy.
                 let sid = match self.get_or_create_session().await {
                     Ok(s) => s,
-                    Err(e) => { reply_md("Error", &format!("**Error:** {}", e)); return Ok(()); }
+                    Err(e) => {
+                        reply_md("Error", &format!("**Error:** {}", e));
+                        return Ok(());
+                    }
                 };
                 let mut agent = self.agent.write().await;
 
@@ -162,26 +190,44 @@ impl DingtalkBridge {
                     }
                     "/models" => {
                         if let Ok(models) = agent.get_available_models(&sid).await {
-                            let list: Vec<String> = models.iter().map(|m| {
-                                let img = if m.image { "🖼️ " } else { "" };
-                                let ctx = if m.context_window > 0 {
-                                    format!(" | {}K ctx", m.context_window / 1000)
-                                } else { String::new() };
-                                let out = if m.max_tokens > 0 {
-                                    format!(" | {}K out", m.max_tokens / 1000)
-                                } else { String::new() };
-                                format!("• {}{} — `{}/{}`{}{}", img, m.name, m.provider, m.id, ctx, out)
-                            }).collect();
-                            reply_md("Models", &format!("**Models ({})**\n\n{}", list.len(), list.join("\n\n")));
+                            let list: Vec<String> = models
+                                .iter()
+                                .map(|m| {
+                                    let img = if m.image { "🖼️ " } else { "" };
+                                    let ctx = if m.context_window > 0 {
+                                        format!(" | {}K ctx", m.context_window / 1000)
+                                    } else {
+                                        String::new()
+                                    };
+                                    let out = if m.max_tokens > 0 {
+                                        format!(" | {}K out", m.max_tokens / 1000)
+                                    } else {
+                                        String::new()
+                                    };
+                                    format!(
+                                        "• {}{} — `{}/{}`{}{}",
+                                        img, m.name, m.provider, m.id, ctx, out
+                                    )
+                                })
+                                .collect();
+                            reply_md(
+                                "Models",
+                                &format!("**Models ({})**\n\n{}", list.len(), list.join("\n\n")),
+                            );
                         }
                     }
                     "/compact" => {
-                        if let Ok(()) = agent.compact(&sid).await { reply_md("Compact", "Context compacted."); }
+                        if let Ok(()) = agent.compact(&sid).await {
+                            reply_md("Compact", "Context compacted.");
+                        }
                     }
                     "/effort" if !arg.is_empty() => {
-                        let valid = ["off","minimal","low","medium","high","xhigh"];
+                        let valid = ["off", "minimal", "low", "medium", "high", "xhigh"];
                         if !valid.contains(&arg) {
-                            reply_md("Invalid", &format!("Invalid: `{}`\n\nUse: `{}`", arg, valid.join(", ")));
+                            reply_md(
+                                "Invalid",
+                                &format!("Invalid: `{}`\n\nUse: `{}`", arg, valid.join(", ")),
+                            );
                         } else if let Ok(()) = agent.set_thinking_level(&sid, arg).await {
                             reply_md("Thinking", &format!("**Thinking:** `{}`", arg));
                         }
@@ -227,10 +273,15 @@ impl DingtalkBridge {
         let text = text.to_string();
         let gen_counter = {
             let mut counters = self.gen_counters.write().await;
-            counters.entry("global".into()).or_insert_with(|| Arc::new(AtomicU64::new(0))).clone()
+            counters
+                .entry("global".into())
+                .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+                .clone()
         };
         tokio::spawn(async move {
-            if let Err(e) = run_prompt_loop(&dingtalk, &agent, &session_id, &text, &gen_counter, webhook).await {
+            if let Err(e) =
+                run_prompt_loop(&dingtalk, &agent, &session_id, &text, &gen_counter, webhook).await
+            {
                 error!("DingTalk prompt loop error: {}", e);
             }
         });
@@ -249,8 +300,15 @@ async fn run_prompt_loop(
     let my_gen = {
         let mut client = agent.write().await;
         let _ = client.abort(session_id).await;
-        info!("[DING SEND] session={} text=\"{}\"", session_id,
-            if text.len() > 300 { truncate_at_char(text, 300) } else { text.to_string() });
+        info!(
+            "[DING SEND] session={} text=\"{}\"",
+            session_id,
+            if text.len() > 300 {
+                truncate_at_char(text, 300)
+            } else {
+                text.to_string()
+            }
+        );
         client.prompt(session_id, text, vec![]).await?;
         gen_counter.fetch_add(1, Ordering::SeqCst) + 1
     };
@@ -274,10 +332,18 @@ async fn run_prompt_loop(
         let parsed = AgentClient::parse_event(event);
         match parsed {
             Some(AgentEvent::AgentStart) | Some(AgentEvent::Ping) => {}
-            Some(AgentEvent::ThinkingStart) => { stream_text.push_str("\n\n> 💭 **Thinking...**\n> \n> "); }
-            Some(AgentEvent::ThinkingDelta(t)) => { stream_text.push_str(&t.replace('\n', "\n> ")); }
-            Some(AgentEvent::ThinkingEnd) => { stream_text.push_str("\n\n---\n\n"); }
-            Some(AgentEvent::TextChunk(chunk)) => { stream_text.push_str(&chunk); }
+            Some(AgentEvent::ThinkingStart) => {
+                stream_text.push_str("\n\n> 💭 **Thinking...**\n> \n> ");
+            }
+            Some(AgentEvent::ThinkingDelta(t)) => {
+                stream_text.push_str(&t.replace('\n', "\n> "));
+            }
+            Some(AgentEvent::ThinkingEnd) => {
+                stream_text.push_str("\n\n---\n\n");
+            }
+            Some(AgentEvent::TextChunk(chunk)) => {
+                stream_text.push_str(&chunk);
+            }
             Some(AgentEvent::ToolStart { tool_name, .. }) => {
                 stream_text.push_str(&format!("\n\n🔧 **{}**\n\n```\n", tool_name));
             }
@@ -293,22 +359,32 @@ async fn run_prompt_loop(
                 if let Some(err) = error {
                     if !err.contains("interrupted") && !err.contains("Interrupted") {
                         if let Some(ref wh) = webhook {
-                            dingtalk.reply_webhook_markdown(wh, "Error", &format!("**Error:** {}", err)).await?;
+                            dingtalk
+                                .reply_webhook_markdown(wh, "Error", &format!("**Error:** {}", err))
+                                .await?;
                         }
                     }
                 } else if !stream_text.trim().is_empty() {
                     if let Some(ref wh) = webhook {
                         let preview = if stream_text.len() > 20000 {
                             format!("{}...", truncate_at_char(&stream_text, 20000))
-                        } else { stream_text.clone() };
-                        dingtalk.reply_webhook_markdown(wh, "Future OS", &preview).await?;
+                        } else {
+                            stream_text.clone()
+                        };
+                        dingtalk
+                            .reply_webhook_markdown(wh, "Future OS", &preview)
+                            .await?;
                     }
                 }
                 break;
             }
             Some(AgentEvent::Error(err)) => {
                 check_superseded!();
-                if let Some(ref wh) = webhook { dingtalk.reply_webhook_markdown(wh, "Error", &format!("**Error:** {}", err)).await?; }
+                if let Some(ref wh) = webhook {
+                    dingtalk
+                        .reply_webhook_markdown(wh, "Error", &format!("**Error:** {}", err))
+                        .await?;
+                }
                 break;
             }
             _ => {}

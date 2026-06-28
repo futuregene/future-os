@@ -18,7 +18,7 @@ pub struct ThinkingBudgetsSettings {
     pub high: Option<i32>,
 }
 
-/// Compaction settings 
+/// Compaction settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionSettings {
     #[serde(default = "default_true", skip_serializing_if = "Option::is_none")]
@@ -36,7 +36,7 @@ fn default_compaction_keep_recent_tokens() -> i32 {
     20000
 }
 
-/// Image settings 
+/// Image settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageSettings {
     #[serde(default = "default_true", skip_serializing_if = "Option::is_none")]
@@ -45,7 +45,7 @@ pub struct ImageSettings {
     pub block_images: Option<bool>,
 }
 
-/// Terminal settings 
+/// Terminal settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalSettings {
     #[serde(default = "default_true", skip_serializing_if = "Option::is_none")]
@@ -62,7 +62,7 @@ fn default_image_width_cells() -> i32 {
     60
 }
 
-/// Provider-specific retry settings 
+/// Provider-specific retry settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderRetrySettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -76,7 +76,7 @@ pub struct ProviderRetrySettings {
     pub max_retry_delay_ms: Option<i32>,
 }
 
-/// Retry settings 
+/// Retry settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrySettings {
     #[serde(default = "default_true", skip_serializing_if = "Option::is_none")]
@@ -99,7 +99,7 @@ fn default_max_retry_delay_ms() -> Option<i32> {
     Some(60000)
 }
 
-/// Branch summary settings 
+/// Branch summary settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BranchSummarySettings {
     #[serde(default = "default_branch_summary_reserve_tokens")]
@@ -112,7 +112,7 @@ fn default_branch_summary_reserve_tokens() -> i32 {
     16384
 }
 
-/// Markdown settings 
+/// Markdown settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarkdownSettings {
     #[serde(
@@ -144,7 +144,7 @@ pub enum PackageSource {
     },
 }
 
-/// Warning settings 
+/// Warning settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WarningSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]

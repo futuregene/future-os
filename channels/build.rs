@@ -12,10 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_build::configure()
         .build_server(false)
         .build_client(true)
-        .compile_protos(
-            &[proto_dir.join("future.proto")],
-            &[proto_dir],
-        )?;
+        .compile_protos(&[proto_dir.join("future.proto")], &[proto_dir])?;
 
     // Compile feishu_ws.proto for WebSocket frames
     prost_build::compile_protos(

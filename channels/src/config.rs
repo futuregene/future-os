@@ -64,7 +64,9 @@ pub struct DingtalkChannelConfig {
     pub domain: String,
 }
 
-fn default_dingtalk_domain() -> String { "api.dingtalk.com".into() }
+fn default_dingtalk_domain() -> String {
+    "api.dingtalk.com".into()
+}
 
 impl Default for DingtalkChannelConfig {
     fn default() -> Self {
@@ -79,21 +81,39 @@ impl Default for DingtalkChannelConfig {
 
 // ─── Defaults ──────────────────────────────────────────────────────────────
 
-fn default_grpc_addr() -> String { "http://127.0.0.1:50051".into() }
-fn default_cwd() -> String {
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp")).to_string_lossy().into()
+fn default_grpc_addr() -> String {
+    "http://127.0.0.1:50051".into()
 }
-fn default_domain() -> String { "feishu".into() }
-fn default_dm_policy() -> String { "allowlist".into() }
-fn default_group_policy() -> String { "disabled".into() }
-fn default_true() -> bool { true }
-fn default_max_image_mb() -> u64 { 10 }
+fn default_cwd() -> String {
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("/tmp"))
+        .to_string_lossy()
+        .into()
+}
+fn default_domain() -> String {
+    "feishu".into()
+}
+fn default_dm_policy() -> String {
+    "allowlist".into()
+}
+fn default_group_policy() -> String {
+    "disabled".into()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_max_image_mb() -> u64 {
+    10
+}
 
 // ─── Load / Save ───────────────────────────────────────────────────────────
 
 impl ChannelConfig {
     pub fn default_path() -> PathBuf {
-        home_dir().join(".future").join("channels").join("config.json")
+        home_dir()
+            .join(".future")
+            .join("channels")
+            .join("config.json")
     }
 
     pub fn load() -> anyhow::Result<Self> {
@@ -115,7 +135,11 @@ impl ChannelConfig {
                     path.display()
                 );
             }
-            Err(e) => Err(anyhow::anyhow!("Failed to read config at {}: {}", path.display(), e)),
+            Err(e) => Err(anyhow::anyhow!(
+                "Failed to read config at {}: {}",
+                path.display(),
+                e
+            )),
         }
     }
 }
@@ -132,7 +156,10 @@ impl Default for ChannelConfig {
 
 impl Default for AgentConfig {
     fn default() -> Self {
-        Self { grpc_addr: default_grpc_addr(), cwd: default_cwd() }
+        Self {
+            grpc_addr: default_grpc_addr(),
+            cwd: default_cwd(),
+        }
     }
 }
 
@@ -157,5 +184,8 @@ impl Default for FeishuChannelConfig {
 }
 
 fn home_dir() -> PathBuf {
-    std::env::var("HOME").ok().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("~"))
+    std::env::var("HOME")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("~"))
 }
