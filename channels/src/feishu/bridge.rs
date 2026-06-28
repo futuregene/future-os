@@ -831,6 +831,7 @@ impl Bridge {
     }
 
     /// Core prompt processing: get or create session, send prompt, stream response.
+    #[allow(clippy::too_many_arguments)]
     async fn process_prompt(
         &self,
         chat_id: &str,
@@ -1001,6 +1002,7 @@ impl Bridge {
 }
 
 /// Run the prompt → stream → respond loop.
+#[allow(clippy::too_many_arguments)]
 async fn run_prompt_loop(
     feishu: &FeishuRestClient,
     agent: &Arc<RwLock<AgentClient>>,

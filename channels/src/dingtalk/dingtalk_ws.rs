@@ -334,7 +334,7 @@ fn parse_dingtalk_event(msg: &Value) -> Option<DingtalkEvent> {
         .and_then(|v| v.get("content"))
         .and_then(|v| v.as_str())
         .or_else(|| body.get("text").and_then(|v| v.as_str()))
-        .or_else(|| body.get("content").and_then(|v| v.as_str().map(|s| s)))
+        .or_else(|| body.get("content").and_then(|v| v.as_str()))
         .map(|s| s.to_string());
     let msg_type = body
         .get("msgType")
