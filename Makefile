@@ -20,6 +20,9 @@ install-skills:
 
 install-gui:
 	cd gui && npm install
+	@mkdir -p gui/src-tauri/binaries
+	cd agent && cargo build --release
+	cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-aarch64-apple-darwin
 
 # ─── Build ──────────────────────────────────────────────────────────────────
 
