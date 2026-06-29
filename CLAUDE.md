@@ -152,7 +152,7 @@ Entry point: `index.ts` — subcommand dispatcher. The CLI is installed via `npm
 | `auth` | `login`, `status`, `logout` | Device-flow OAuth against Future API. Saves API key to `~/.future/agent/auth.json` and model list to `~/.future/agent/models.json` |
 | `agent` | `start`, `stop`, `restart`, `status` | Manage the Rust agent as a background service (launchctl on macOS, systemctl on Linux, sc.exe on Windows) |
 | `channel` | `start`, `stop`, `restart`, `status` | Manage the channel bridge as a background service |
-| `tools` | `list`, `call` | MCP client — lists and calls tools from a remote MCP server (defaults to `FUTURE_API_BASE`/v1/mcp, or `http://api.westlakefuturegene.com/v1/mcp`). Override with `FUTURE_MCP_URL`. |
+| `tools` | `list`, `call` | MCP client — lists and calls tools from a remote MCP server (defaults to `FUTURE_API_BASE`/v1/mcp, or `https://api.future-os.cn/v1/mcp`). Override with `FUTURE_MCP_URL`. |
 | `skills` | `list`, `get` | Skill bundle discovery — groups related tools into named workflows (`core`, `rare-disease`, `gene-variant`, `literature`). Outputs SKILL.md format for agent consumption |
 | `tui` | (forwards args) | Launches the TUI, forwarding all remaining arguments |
 

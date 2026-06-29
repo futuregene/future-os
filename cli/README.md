@@ -27,7 +27,7 @@ The agent reads the saved key on startup and dynamically fetches available model
 `auth logout` removes the saved Future API Key from the `future` entry in
 `~/.future/agent/auth.json` while leaving non-secret settings such as `base_url` intact.
 
-By default, the CLI connects to Future API at `http://api.westlakefuturegene.com`.
+By default, the CLI connects to Future API at `https://api.future-os.cn`.
 Set `future.base_url` in `~/.future/agent/auth.json` to use another API URL.
 
 The saved key is intended for future `future-server/api` requests and is also readable by the
