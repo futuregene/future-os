@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { useEffect } from "react";
+import { useOverlayLayer } from "./overlayStack";
 
 /**
  * Full-screen modal scaffold: a dimmed backdrop that closes on click or
@@ -15,18 +16,22 @@ export function Overlay({
   onClose: () => void;
   open: boolean;
 }) {
+  const { isTop } = useOverlayLayer(open);
+
   useEffect(() => {
     if (!open) {
       return;
     }
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
+      // Only the topmost overlay closes on Escape, so a nested dialog's Escape
+      // doesn't also dismiss its parent.
+      if (event.key === "Escape" && isTop()) {
         onClose();
       }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose, open]);
+  }, [isTop, onClose, open]);
 
   if (!open) {
     return null;

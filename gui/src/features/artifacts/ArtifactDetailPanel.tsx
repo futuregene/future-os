@@ -1,9 +1,12 @@
 import type { StoredArtifact } from "../../integrations/storage/threadStore";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
-import { ArrowLeft, BookMarked, Check, Clipboard, Download, ExternalLink, Trash2 } from "lucide-react";
+import { ArrowLeft, BookMarked, Download, ExternalLink, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Badge } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
+import { CopyButton } from "../../components/ui/CopyButton";
+import { useCopyState } from "../../components/ui/useCopyState";
 import {
   deleteArtifact,
   exportArtifactFile,
@@ -12,7 +15,6 @@ import {
   readTextFilePreview,
   storedTimeToIso,
 } from "../../integrations/storage/threadStore";
-import { copyText } from "../../lib/clipboard";
 import { formatTime } from "../../lib/date";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { PdfPreview } from "./PdfPreview";
@@ -26,7 +28,7 @@ interface ArtifactDetailPanelProps {
 export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDetailPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<"delete" | "export" | "open" | "promote" | null>(null);
-  const [copied, setCopied] = useState<"content" | "path" | null>(null);
+  const { copiedKey, copy } = useCopyState<"content" | "path">();
   const [imageFailed, setImageFailed] = useState(false);
   const imageSrc = useMemo(
     () => artifact.path && isImageArtifact(artifact) ? convertFileSrc(artifact.path) : null,
@@ -77,12 +79,6 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
     }
   }
 
-  async function handleCopy(kind: "content" | "path", value: string) {
-    await copyText(value);
-    setCopied(kind);
-    window.setTimeout(setCopied, 1400, null);
-  }
-
   async function handleExport() {
     const destinationPath = await save({
       defaultPath: artifactFileName(artifact),
@@ -125,30 +121,25 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
           ? (
               <div className="mt-3 flex items-start gap-2 rounded-md bg-surface-subtle px-2 py-1.5 text-xs leading-5 text-ink-muted">
                 <span className="min-w-0 flex-1 break-words" title={artifact.path}>{artifact.path}</span>
-                <button
-                  aria-label="Copy artifact path"
-                  className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface hover:text-ink"
-                  onClick={() => void handleCopy("path", artifact.path ?? "")}
-                  title="Copy path"
-                  type="button"
-                >
-                  {copied === "path" ? <Check className="size-3.5" /> : <Clipboard className="size-3.5" />}
-                </button>
+                <CopyButton
+                  className="shrink-0"
+                  copied={copiedKey === "path"}
+                  label="Copy path"
+                  onCopy={() => void copy(artifact.path ?? "", "path")}
+                  variant="inline"
+                />
               </div>
             )
           : null}
         {artifact.content
           ? (
               <div className="relative mt-3">
-                <button
-                  aria-label="Copy artifact content"
-                  className="absolute right-1.5 top-1.5 inline-flex size-6 items-center justify-center rounded-md bg-surface/90 text-ink-muted shadow-sm ring-1 ring-line-soft transition-colors hover:text-ink"
-                  onClick={() => void handleCopy("content", artifact.content ?? "")}
-                  title="Copy content"
-                  type="button"
-                >
-                  {copied === "content" ? <Check className="size-3.5" /> : <Clipboard className="size-3.5" />}
-                </button>
+                <CopyButton
+                  copied={copiedKey === "content"}
+                  label="Copy content"
+                  onCopy={() => void copy(artifact.content ?? "", "content")}
+                  variant="floating"
+                />
                 <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-surface-subtle p-2 pr-9 text-[11px] leading-4 text-ink-soft">
                   <code>{artifact.content}</code>
                 </pre>
@@ -179,15 +170,12 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
         {!artifact.content && filePreview
           ? (
               <div className="relative mt-3">
-                <button
-                  aria-label="Copy artifact preview"
-                  className="absolute right-1.5 top-1.5 inline-flex size-6 items-center justify-center rounded-md bg-surface/90 text-ink-muted shadow-sm ring-1 ring-line-soft transition-colors hover:text-ink"
-                  onClick={() => void handleCopy("content", filePreview.content)}
-                  title="Copy preview"
-                  type="button"
-                >
-                  {copied === "content" ? <Check className="size-3.5" /> : <Clipboard className="size-3.5" />}
-                </button>
+                <CopyButton
+                  copied={copiedKey === "content"}
+                  label="Copy preview"
+                  onCopy={() => void copy(filePreview.content, "content")}
+                  variant="floating"
+                />
                 <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-surface-subtle p-2 pr-9 text-[11px] leading-4 text-ink-soft">
                   <code>{filePreview.content}</code>
                 </pre>
@@ -224,48 +212,48 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
       <div className="flex flex-wrap gap-2">
         {artifact.path
           ? (
-              <button
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+              <Button
                 disabled={busyAction !== null}
+                leftIcon={<ExternalLink className="size-3.5" />}
                 onClick={() => void runAction("open", () => openPath(artifact.path ?? ""))}
-                type="button"
+                size="sm"
+                variant="toolbar"
               >
-                <ExternalLink className="size-3.5" />
                 {busyAction === "open" ? "Opening" : "Open"}
-              </button>
+              </Button>
             )
           : null}
-        <button
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+        <Button
           disabled={busyAction !== null}
+          leftIcon={<BookMarked className="size-3.5" />}
           onClick={() => void runAction("promote", async () => {
             await promoteArtifactToResearch(artifact.id);
           })}
-          type="button"
+          size="sm"
+          variant="toolbar"
         >
-          <BookMarked className="size-3.5" />
           {busyAction === "promote" ? "Adding" : "Add to Research"}
-        </button>
-        <button
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+        </Button>
+        <Button
           disabled={busyAction !== null || (!artifact.path && !artifact.content && !filePreview)}
+          leftIcon={<Download className="size-3.5" />}
           onClick={() => void handleExport()}
-          type="button"
+          size="sm"
+          variant="toolbar"
         >
-          <Download className="size-3.5" />
           {busyAction === "export" ? "Exporting" : "Export"}
-        </button>
-        <button
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-danger-line bg-danger-soft px-2.5 text-xs font-medium text-danger transition-colors hover:bg-danger-soft disabled:cursor-not-allowed disabled:opacity-60"
+        </Button>
+        <Button
           disabled={busyAction !== null}
+          leftIcon={<Trash2 className="size-3.5" />}
           onClick={() => void runAction("delete", async () => {
             await deleteArtifact(artifact.id);
           })}
-          type="button"
+          size="sm"
+          variant="danger-soft"
         >
-          <Trash2 className="size-3.5" />
           {busyAction === "delete" ? "Deleting" : "Delete"}
-        </button>
+        </Button>
       </div>
     </div>
   );

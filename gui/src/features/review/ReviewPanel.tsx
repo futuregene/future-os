@@ -8,6 +8,7 @@ import { AlertTriangle, ChevronDown, ChevronRight, FileDiff, GitBranch } from "l
 import { useCallback, useEffect, useState } from "react";
 import { DiffView } from "../../components/ui/DiffView";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { Select } from "../../components/ui/Select";
 import { getLastRunReview, retryRunReview, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { formatTime } from "../../lib/date";
 import { onFutureEvent } from "../../lib/futureEvents";
@@ -339,7 +340,7 @@ function ChangesetFileChange({
         type="button"
       >
         <span className="flex min-w-0 items-center gap-2">
-          <FileDiff className="size-4 shrink-0 text-orange-500" />
+          <FileDiff className="size-4 shrink-0 text-ink-soft" />
           <span className="min-w-0 truncate text-sm font-medium text-ink-soft">
             {file.previousPath ? `${file.previousPath} → ` : ""}
             {file.path ?? "Unknown file"}
@@ -475,17 +476,18 @@ function ReviewHeader({
         : null}
       <div className="grid grid-cols-1 gap-2">
         <label className="text-xs font-medium text-ink-muted" htmlFor="review-base-select">Diff base</label>
-        <select
-          className="h-8 rounded-md border border-line-soft bg-surface px-2 text-sm text-ink-soft outline-none transition-colors hover:border-line focus:border-focus focus:ring-2 focus:ring-focus"
+        <Select
+          className="text-ink-soft hover:border-line"
           id="review-base-select"
-          value={reviewBase}
           onChange={event => onReviewBaseChange(event.target.value as ReviewBase)}
+          size="sm"
+          value={reviewBase}
         >
           <option value="head">HEAD</option>
           <option disabled={!review.upstream} value="upstream">Upstream</option>
           <option disabled={!review.upstream} value="merge-base">Merge base</option>
           <option value="custom">Custom commit</option>
-        </select>
+        </Select>
         {reviewBase === "custom"
           ? (
               <input
@@ -518,7 +520,7 @@ function GitFileDiff({
         type="button"
       >
         <span className="flex min-w-0 items-center gap-2">
-          <FileDiff className="size-4 shrink-0 text-orange-500" />
+          <FileDiff className="size-4 shrink-0 text-ink-soft" />
           <span className="min-w-0 truncate text-sm font-medium text-ink-soft">{file.path}</span>
         </span>
         <span className="flex shrink-0 items-center gap-2 text-xs">

@@ -17,6 +17,24 @@ export function formatRunStatus(status: StoredRun["status"]) {
   }
 }
 
+/** Title-case status label for run rows (badges use the lowercase `formatRunStatus`). */
+export function runStatusLabel(status: StoredRun["status"]) {
+  switch (status) {
+    case "completed":
+      return "Success";
+    case "failed":
+      return "Failed";
+    case "cancelled":
+      return "Cancelled";
+    case "waiting_approval":
+      return "Waiting";
+    case "queued":
+      return "Queued";
+    default:
+      return "Running";
+  }
+}
+
 export function runTone(status: StoredRun["status"]) {
   if (status === "completed")
     return "success";

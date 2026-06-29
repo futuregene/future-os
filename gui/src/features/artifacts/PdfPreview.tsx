@@ -18,6 +18,7 @@ export function PdfPreview({ path }: PdfPreviewProps) {
   const [error, setError] = useState<string | null>(null);
   const [totalPages, setTotalPages] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
+  const [pdfDoc, setPdfDoc] = useState<pdfjs.PDFDocumentProxy | null>(null);
   const loadingTaskRef = useRef<pdfjs.PDFDocumentLoadingTask | null>(null);
 
   useEffect(() => {
@@ -40,6 +41,7 @@ export function PdfPreview({ path }: PdfPreviewProps) {
           return;
         }
 
+        setPdfDoc(pdf);
         setTotalPages(pdf.numPages);
         setCurrentPage(1);
         setLoading(false);
@@ -64,22 +66,18 @@ export function PdfPreview({ path }: PdfPreviewProps) {
   }, [path]);
 
   useEffect(() => {
-    const loadingTask = loadingTaskRef.current;
-    if (!loadingTask || !containerRef.current || loading || error)
+    const container = containerRef.current;
+    if (!pdfDoc || !container)
       return;
 
     let cancelled = false;
 
     async function renderPage() {
       try {
-        if (!containerRef.current || !loadingTaskRef.current)
+        const page = await pdfDoc!.getPage(currentPage);
+        if (cancelled)
           return;
 
-        // 清空容器
-        containerRef.current.innerHTML = "";
-
-        const pdf = await loadingTaskRef.current.promise;
-        const page = await pdf.getPage(currentPage);
         const scale = 1.5;
         const viewport = page.getViewport({ scale });
 
@@ -89,12 +87,15 @@ export function PdfPreview({ path }: PdfPreviewProps) {
         canvas.style.width = "100%";
         canvas.style.height = "auto";
 
-        containerRef.current.appendChild(canvas);
+        // Clear + attach only once we're about to paint, and bail if a newer
+        // render (page/document change) superseded this one — otherwise a late
+        // resolve could blank the container or paint a stale page.
+        if (cancelled || !container)
+          return;
+        container.innerHTML = "";
+        container.appendChild(canvas);
 
-        await page.render({
-          canvas,
-          viewport,
-        }).promise;
+        await page.render({ canvas, viewport }).promise;
 
         if (!cancelled) {
           page.cleanup();
@@ -112,7 +113,7 @@ export function PdfPreview({ path }: PdfPreviewProps) {
     return () => {
       cancelled = true;
     };
-  }, [currentPage, loading, error]);
+  }, [currentPage, pdfDoc]);
 
   if (loading) {
     return (

@@ -68,7 +68,7 @@ export function AppShellDialogs({
         </label>
         <input
           autoFocus
-          className="mt-2 h-10 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15"
+          className="mt-2 h-10 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none transition focus:border-focus focus:ring-2 focus:ring-focus"
           disabled={renameDialog?.submitting}
           id="thread-title"
           onChange={event =>

@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
+import { Button } from "../../components/ui/Button";
 import { defaultAgentModelId } from "../../integrations/agent/agentClient";
 import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
@@ -403,7 +404,7 @@ function WorkspaceModal({
     : path;
 
   return (
-    <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/10 px-6">
+    <div className="absolute inset-0 z-40 flex items-center justify-center bg-ink-strong/20 px-6">
       <form className="w-full max-w-md rounded-lg border border-line-soft bg-surface p-4 shadow-panel" onSubmit={onSubmit}>
         <div className="mb-3">
           <div className="text-sm font-semibold text-ink">
@@ -480,13 +481,14 @@ function WorkspaceModal({
           >
             Cancel
           </button>
-          <button
-            className="h-8 rounded-md bg-accent px-3 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
+          <Button
             disabled={creating}
+            size="sm"
             type="submit"
+            variant="primary"
           >
             {mode === "open" ? "Open" : "Create"}
-          </button>
+          </Button>
         </div>
       </form>
     </div>

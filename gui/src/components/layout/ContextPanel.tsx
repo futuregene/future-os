@@ -1,7 +1,7 @@
 import type { ReviewBase } from "../../features/review/ReviewPanel";
 import type { GitReview, StoredArtifact, StoredRun, StoredThread, StoredToolCall, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { WorkspaceReviewCapabilities } from "../../integrations/storage/types";
-import { ChevronDown, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArtifactDetailPanel } from "../../features/artifacts/ArtifactDetailPanel";
 import { ArtifactsPanel } from "../../features/artifacts/ArtifactsPanel";
@@ -24,6 +24,7 @@ import { usePolling } from "../../lib/usePolling";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { EmptyState } from "../ui/EmptyState";
 import { IconButton } from "../ui/IconButton";
+import { Select } from "../ui/Select";
 
 export type ContextTab = "runs" | "review" | "artifacts";
 export type { ReviewBase };
@@ -275,19 +276,20 @@ export function ContextPanel({
         className="flex h-12 shrink-0 select-none items-center justify-between px-4"
         onMouseDown={startWindowDrag}
       >
-        <div className="relative inline-block max-w-full">
+        <div className="inline-block max-w-full">
           <label className="sr-only" htmlFor="context-panel-view">Context panel view</label>
-          <select
+          <Select
+            className="w-fit min-w-24 max-w-full py-0 font-normal hover:border-line"
             id="context-panel-view"
-            className="h-8 w-fit min-w-24 max-w-full appearance-none rounded-md border border-line-soft bg-surface py-0 pl-3 pr-8 text-sm font-normal text-ink outline-none transition-colors hover:border-line focus:border-focus focus:ring-2 focus:ring-focus"
-            value={activeTab}
             onChange={event => onTabChange(event.target.value as ContextTab)}
+            size="sm"
+            value={activeTab}
+            wrapperClassName="max-w-full"
           >
             {tabs.map(tab => (
               <option key={tab.value} value={tab.value}>{tab.label}</option>
             ))}
-          </select>
-          <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-ink-muted" />
+          </Select>
         </div>
         <IconButton
           icon={<PanelRightClose className="size-3.5" />}
