@@ -476,7 +476,7 @@ function ReviewHeader({
       <div className="grid grid-cols-1 gap-2">
         <label className="text-xs font-medium text-ink-muted" htmlFor="review-base-select">Diff base</label>
         <select
-          className="h-8 rounded-md border border-line-soft bg-surface px-2 text-sm text-ink-soft outline-none transition-colors hover:border-line focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+          className="h-8 rounded-md border border-line-soft bg-surface px-2 text-sm text-ink-soft outline-none transition-colors hover:border-line focus:border-focus focus:ring-2 focus:ring-focus"
           id="review-base-select"
           value={reviewBase}
           onChange={event => onReviewBaseChange(event.target.value as ReviewBase)}
@@ -489,7 +489,7 @@ function ReviewHeader({
         {reviewBase === "custom"
           ? (
               <input
-                className="h-8 rounded-md border border-line-soft bg-surface px-2 text-sm text-ink outline-none transition-colors placeholder:text-ink-muted hover:border-line focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+                className="h-8 rounded-md border border-line-soft bg-surface px-2 text-sm text-ink outline-none transition-colors placeholder:text-ink-muted hover:border-line focus:border-focus focus:ring-2 focus:ring-focus"
                 onChange={event => onCustomBaseChange(event.target.value)}
                 placeholder="Commit, tag, or branch"
                 value={customBase}

@@ -20,6 +20,7 @@ import {
   listToolCalls,
 } from "../../integrations/storage/threadStore";
 import { onFutureEvent } from "../../lib/futureEvents";
+import { usePolling } from "../../lib/usePolling";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { EmptyState } from "../ui/EmptyState";
 import { IconButton } from "../ui/IconButton";
@@ -249,15 +250,10 @@ export function ContextPanel({
     return () => unsubscribers.forEach(unsubscribe => unsubscribe());
   }, [expanded, handleSelectArtifact, handleSelectRun, onTabChange, onToggleExpanded]);
 
-  useEffect(() => {
-    if (!activeThreadId || !expanded) {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void refreshContext();
-    }, 1500);
-    return () => window.clearInterval(timer);
-  }, [activeThreadId, expanded, refreshContext]);
+  usePolling(() => refreshContext(), 1500, {
+    enabled: Boolean(activeThreadId) && expanded,
+    deps: [refreshContext],
+  });
 
   if (!expanded) {
     return (
@@ -283,7 +279,7 @@ export function ContextPanel({
           <label className="sr-only" htmlFor="context-panel-view">Context panel view</label>
           <select
             id="context-panel-view"
-            className="h-8 w-fit min-w-24 max-w-full appearance-none rounded-md border border-line-soft bg-surface py-0 pl-3 pr-8 text-sm font-normal text-ink outline-none transition-colors hover:border-line focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+            className="h-8 w-fit min-w-24 max-w-full appearance-none rounded-md border border-line-soft bg-surface py-0 pl-3 pr-8 text-sm font-normal text-ink outline-none transition-colors hover:border-line focus:border-focus focus:ring-2 focus:ring-focus"
             value={activeTab}
             onChange={event => onTabChange(event.target.value as ContextTab)}
           >

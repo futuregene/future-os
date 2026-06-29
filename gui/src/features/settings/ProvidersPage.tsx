@@ -1,5 +1,5 @@
 import type { CustomProvider, ProvidersView } from "../../integrations/agent/providers";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import {
@@ -8,14 +8,20 @@ import {
   logoutFutureProvider,
   upsertCustomProvider,
 } from "../../integrations/agent/providers";
+import { useAsyncResource } from "../../lib/useAsyncResource";
 import { CustomProviderDialog } from "./CustomProviderDialog";
 import { FutureLoginDialog } from "./FutureLoginDialog";
 import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
 
 export function ProvidersPage() {
+  const { data: loadedProviders, loading, error, reload } = useAsyncResource<ProvidersView | null>(
+    listAgentProviders,
+    [],
+    null,
+  );
+  // Mirror the loaded view locally so mutations (delete/logout/upsert) can apply
+  // their returned view optimistically without waiting for a refetch.
   const [providers, setProviders] = useState<ProvidersView | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<CustomProvider | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
@@ -23,32 +29,10 @@ export function ProvidersPage() {
   const [confirmingLogout, setConfirmingLogout] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
-    const view = await listAgentProviders();
-    setProviders(view);
-    return view;
-  }, []);
-
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    reload()
-      .then(() => {
-        if (!cancelled)
-          setError(null);
-      })
-      .catch((loadError) => {
-        if (!cancelled)
-          setError(loadError instanceof Error ? loadError.message : String(loadError));
-      })
-      .finally(() => {
-        if (!cancelled)
-          setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [reload]);
+    if (loadedProviders)
+      setProviders(loadedProviders);
+  }, [loadedProviders]);
 
   async function handleDelete(id: string) {
     const view = await deleteCustomProvider(id);
@@ -63,9 +47,9 @@ export function ProvidersPage() {
     setHint(null);
   }
 
-  async function handleAuthorized() {
+  function handleAuthorized() {
     setLoginOpen(false);
-    await reload();
+    reload();
     setHint("已连接 FutureGene。新会话即可生效；如未生效可运行 future-cli agent restart。");
   }
 
@@ -75,7 +59,7 @@ export function ProvidersPage() {
 
   return (
     <div className="space-y-6">
-      {error ? <p className="text-sm text-red-600">{error}</p> : null}
+      {error ? <p className="text-sm text-danger">{error}</p> : null}
       {hint ? <p className="text-sm text-ink-soft">{hint}</p> : null}
 
       <SettingsSection title="内置">

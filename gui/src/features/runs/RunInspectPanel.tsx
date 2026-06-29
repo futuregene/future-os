@@ -5,7 +5,7 @@ import type {
   StoredToolOutput,
 } from "../../integrations/storage/threadStore";
 import { ArrowLeft, History, RotateCcw, Search, StepForward, Terminal, Wrench } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Badge } from "../../components/ui/Badge";
 import { CopyablePre } from "../../components/ui/CopyablePre";
 import {
@@ -16,12 +16,18 @@ import {
 import { cn } from "../../lib/cn";
 import { formatTime } from "../../lib/date";
 import { emitFutureEvent } from "../../lib/futureEvents";
+import { useAsyncResource } from "../../lib/useAsyncResource";
 import { formatErrorType, formatRunStatus, runTone, shortId, summarizePayload } from "./runDisplayFormatters";
 
 interface RunInspectPanelProps {
   run: StoredRun;
   tools: StoredToolCall[];
   onBack: () => void;
+}
+
+interface RunDetails {
+  events: StoredRunEvent[];
+  outputsByTool: Record<string, StoredToolOutput[]>;
 }
 
 type EventFilter = "all" | "approval" | "artifact" | "error" | "review" | "text" | "tool";
@@ -37,16 +43,32 @@ const eventFilters: Array<{ label: string; value: EventFilter }> = [
 ];
 
 export function RunInspectPanel({ onBack, run, tools }: RunInspectPanelProps) {
-  const [events, setEvents] = useState<StoredRunEvent[]>([]);
-  const [error, setError] = useState<string | null>(null);
   const [eventFilter, setEventFilter] = useState<EventFilter>("all");
   const [query, setQuery] = useState("");
-  const [outputsByTool, setOutputsByTool] = useState<Record<string, StoredToolOutput[]>>({});
-  const [loading, setLoading] = useState(true);
   const sortedTools = useMemo(
     () => [...tools].sort((left, right) => (left.startedAt ?? left.createdAt) - (right.startedAt ?? right.createdAt)),
     [tools],
   );
+  const { data: details, error, loading } = useAsyncResource<RunDetails>(
+    async () => {
+      const [nextEvents, outputEntries] = await Promise.all([
+        listRunEvents(run.id),
+        Promise.all(sortedTools.map(async (tool) => {
+          try {
+            return [tool.id, await listToolOutputs(tool.id)] as const;
+          }
+          catch {
+            return [tool.id, [] as StoredToolOutput[]] as const;
+          }
+        })),
+      ]);
+      return { events: nextEvents, outputsByTool: Object.fromEntries(outputEntries) };
+    },
+    [run.id, sortedTools],
+    { events: [], outputsByTool: {} },
+  );
+  const events = details.events;
+  const outputsByTool = details.outputsByTool;
   const filteredEvents = useMemo(
     () => events
       .filter(event => eventMatchesFilter(event, eventFilter))
@@ -57,49 +79,6 @@ export function RunInspectPanel({ onBack, run, tools }: RunInspectPanelProps) {
     () => sortedTools.filter(tool => eventMatchesQuery(toolSearchText(tool, outputsByTool[tool.id] ?? []), query)),
     [outputsByTool, query, sortedTools],
   );
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadDetails() {
-      setLoading(true);
-      setError(null);
-      try {
-        const [nextEvents, outputEntries] = await Promise.all([
-          listRunEvents(run.id),
-          Promise.all(sortedTools.map(async (tool) => {
-            try {
-              return [tool.id, await listToolOutputs(tool.id)] as const;
-            }
-            catch {
-              return [tool.id, [] as StoredToolOutput[]] as const;
-            }
-          })),
-        ]);
-        if (!cancelled) {
-          setEvents(nextEvents);
-          setOutputsByTool(Object.fromEntries(outputEntries));
-        }
-      }
-      catch (nextError) {
-        if (!cancelled) {
-          setError(nextError instanceof Error ? nextError.message : String(nextError));
-          setEvents([]);
-          setOutputsByTool({});
-        }
-      }
-      finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    }
-
-    void loadDetails();
-    return () => {
-      cancelled = true;
-    };
-  }, [run.id, sortedTools]);
 
   return (
     <div className="space-y-3">
@@ -163,7 +142,7 @@ export function RunInspectPanel({ onBack, run, tools }: RunInspectPanelProps) {
           <span className="sr-only">Search run details</span>
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-ink-muted" />
           <input
-            className="h-8 w-full rounded-md border border-line-soft bg-surface pl-8 pr-2 text-sm text-ink outline-none transition-colors placeholder:text-ink-muted hover:border-line focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+            className="h-8 w-full rounded-md border border-line-soft bg-surface pl-8 pr-2 text-sm text-ink outline-none transition-colors placeholder:text-ink-muted hover:border-line focus:border-focus focus:ring-2 focus:ring-focus"
             onChange={event => setQuery(event.target.value)}
             placeholder="Search run details..."
             value={query}
@@ -176,7 +155,7 @@ export function RunInspectPanel({ onBack, run, tools }: RunInspectPanelProps) {
           <Wrench className="size-3.5" />
           Tool Calls
         </div>
-        {error ? <div className="rounded-md bg-red-50 p-2 text-xs leading-5 text-red-700">{error}</div> : null}
+        {error ? <div className="rounded-md border border-danger-line bg-danger-soft p-2 text-xs leading-5 text-danger">{error}</div> : null}
         {filteredTools.length === 0
           ? <div className="rounded-md border border-dashed border-line-soft p-3 text-sm text-ink-muted">{sortedTools.length === 0 ? "No tool calls recorded." : "No matching tool calls."}</div>
           : filteredTools.map(tool => (
@@ -196,7 +175,7 @@ export function RunInspectPanel({ onBack, run, tools }: RunInspectPanelProps) {
           </div>
           <select
             aria-label="Filter run events"
-            className="h-7 rounded-md border border-line-soft bg-surface px-2 text-xs text-ink-soft outline-none transition-colors hover:border-line focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+            className="h-7 rounded-md border border-line-soft bg-surface px-2 text-xs text-ink-soft outline-none transition-colors hover:border-line focus:border-focus focus:ring-2 focus:ring-focus"
             value={eventFilter}
             onChange={event => setEventFilter(event.target.value as EventFilter)}
           >
@@ -364,7 +343,7 @@ function ToolCallDetail({
           {details.stderr
             ? (
                 <div className="mt-2">
-                  <div className="mb-1 text-[11px] font-medium text-red-600">stderr</div>
+                  <div className="mb-1 text-[11px] font-medium text-danger">stderr</div>
                   <CopyablePre maxHeightClassName="max-h-40" text={details.stderr} />
                 </div>
               )
@@ -432,7 +411,7 @@ function ToolOutputPreview({ output }: { output: StoredToolOutput }) {
   const long = text.length > 800 || text.split("\n").length > 8;
 
   return (
-    <div className="rounded-md bg-slate-50">
+    <div className="rounded-md bg-surface-subtle">
       <div className="flex items-center justify-between gap-2 px-2 pt-2">
         <span className="truncate text-[11px] font-medium text-ink-muted">{output.kind}</span>
         {long
@@ -571,7 +550,7 @@ interface RunErrorBannerProps {
 function RunErrorBanner({ errorMessage, errorType }: RunErrorBannerProps) {
   const meta = formatErrorType(errorType);
   return (
-    <div className="mt-3 rounded-md bg-red-50 p-2">
+    <div className="mt-3 rounded-md border border-danger-line bg-danger-soft p-2">
       {meta
         ? (
             <div className={`mb-1 flex items-center gap-1.5 text-xs font-medium ${meta.color}`}>
@@ -580,7 +559,7 @@ function RunErrorBanner({ errorMessage, errorType }: RunErrorBannerProps) {
             </div>
           )
         : null}
-      <p className="text-xs leading-5 text-red-700">{errorMessage}</p>
+      <p className="text-xs leading-5 text-danger">{errorMessage}</p>
     </div>
   );
 }

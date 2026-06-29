@@ -41,7 +41,7 @@ export function RunEmbed({
             </div>
           </div>
           {run.errorMessage
-            ? <p className="mt-2 rounded-md bg-red-50 p-2 text-xs leading-5 text-red-700">{run.errorMessage}</p>
+            ? <p className="mt-2 rounded-md bg-danger-soft p-2 text-xs leading-5 text-danger">{run.errorMessage}</p>
             : null}
           <button
             className="mt-3 inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"

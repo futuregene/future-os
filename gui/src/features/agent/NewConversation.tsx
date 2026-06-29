@@ -471,7 +471,7 @@ function WorkspaceModal({
                 : "Choose an existing workspace directory."}
           </div>
         </div>
-        {error ? <div className="mt-2 text-xs leading-5 text-red-600">{error}</div> : null}
+        {error ? <div className="mt-2 text-xs leading-5 text-danger">{error}</div> : null}
         <div className="mt-4 flex justify-end gap-2">
           <button
             className="h-8 rounded-md px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
@@ -481,7 +481,7 @@ function WorkspaceModal({
             Cancel
           </button>
           <button
-            className="h-8 rounded-md bg-accent px-3 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:bg-blue-200"
+            className="h-8 rounded-md bg-accent px-3 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
             disabled={creating}
             type="submit"
           >

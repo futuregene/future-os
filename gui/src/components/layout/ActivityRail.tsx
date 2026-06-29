@@ -482,7 +482,7 @@ function ThreadRunIndicator({ status }: { status?: StoredRun["status"] }) {
         className="inline-flex size-5 shrink-0 items-center justify-center group-hover/thread:hidden"
         title="Running"
       >
-        <span className="size-3 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600" />
+        <span className="size-3 animate-spin rounded-full border-2 border-accent-soft border-t-accent" />
       </span>
     );
   }
@@ -562,7 +562,7 @@ function ThreadMenuItem({
     <button
       className={cn(
         "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm font-medium transition-colors",
-        danger ? "text-red-600 hover:bg-red-50" : "text-ink-soft hover:bg-surface-subtle hover:text-ink",
+        danger ? "text-danger hover:bg-danger-soft" : "text-ink-soft hover:bg-surface-subtle hover:text-ink",
       )}
       onClick={() => {
         onClose();

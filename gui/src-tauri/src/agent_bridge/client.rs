@@ -6,6 +6,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use std::{
     fs,
     path::Path,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -140,9 +141,14 @@ fn image_mime_type(path: &str) -> Option<&'static str> {
 }
 
 fn command_id() -> String {
+    // A monotonic per-process counter makes ids unique even when several
+    // commands are issued within the same millisecond (e.g. new_session,
+    // set_model, set_thinking_level, prompt during one `agent_prompt`).
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or_default();
-    format!("gui_{millis}")
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("gui_{millis}_{seq}")
 }

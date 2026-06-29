@@ -23,8 +23,11 @@ pub fn append_message(input: AppendMessageInput) -> Result<MessageRecord, crate:
     let now = now_millis();
     let content_type = input.content_type.unwrap_or_else(|| "markdown".to_string());
     let status = input.status.unwrap_or_else(|| "complete".to_string());
-    let conn = connect()?;
-    conn.execute(
+    let mut conn = connect()?;
+    // The message insert and the thread bump are one logical write — commit them
+    // atomically so a crash can't leave a message without its `last_message_at`.
+    let tx = conn.transaction()?;
+    tx.execute(
         "INSERT INTO messages (
              id, thread_id, run_id, role, content_type, content, status, created_at, updated_at
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
@@ -39,13 +42,22 @@ pub fn append_message(input: AppendMessageInput) -> Result<MessageRecord, crate:
             now
         ],
     )?;
-    conn.execute(
+    tx.execute(
         "UPDATE threads
          SET last_message_at = ?1, last_opened_at = ?1, updated_at = ?1
          WHERE id = ?2",
         params![now, input.thread_id],
     )?;
-    let _ = sync_message_markdown_references(&conn, &id, &input.thread_id, &input.content);
+    tx.commit()?;
+
+    // The reference index is best-effort: a failure must not lose the message,
+    // but log it (search / `futureos://` resolution can lag until the next edit)
+    // rather than dropping it silently.
+    if let Err(error) =
+        sync_message_markdown_references(&conn, &id, &input.thread_id, &input.content)
+    {
+        eprintln!("FutureOS message reference sync failed for {id}: {error}");
+    }
 
     get_message(&id)?.ok_or_else(|| "Created message could not be loaded.".to_string().into())
 }

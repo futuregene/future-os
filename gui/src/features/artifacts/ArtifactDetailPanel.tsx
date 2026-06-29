@@ -14,6 +14,7 @@ import {
 } from "../../integrations/storage/threadStore";
 import { copyText } from "../../lib/clipboard";
 import { formatTime } from "../../lib/date";
+import { useAsyncResource } from "../../lib/useAsyncResource";
 import { PdfPreview } from "./PdfPreview";
 
 interface ArtifactDetailPanelProps {
@@ -24,8 +25,6 @@ interface ArtifactDetailPanelProps {
 
 export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDetailPanelProps) {
   const [error, setError] = useState<string | null>(null);
-  const [filePreview, setFilePreview] = useState<{ content: string; size: number; truncated: boolean } | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<"delete" | "export" | "open" | "promote" | null>(null);
   const [copied, setCopied] = useState<"content" | "path" | null>(null);
   const [imageFailed, setImageFailed] = useState(false);
@@ -35,6 +34,15 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
   );
   const shouldLoadTextPreview = Boolean(artifact.path && !artifact.content && isTextPreviewArtifact(artifact));
   const shouldShowPdfPreview = Boolean(artifact.path && isPdfArtifact(artifact));
+
+  const { data: filePreview, error: previewError } = useAsyncResource<{ content: string; size: number; truncated: boolean } | null>(
+    () => (shouldLoadTextPreview && artifact.path
+      ? readTextFilePreview({ maxBytes: 200 * 1024, path: artifact.path })
+      : Promise.resolve(null)),
+    [artifact.path, shouldLoadTextPreview],
+    null,
+  );
+
   const showUnsupportedPreview = Boolean(
     artifact.path
     && !artifact.content
@@ -44,34 +52,10 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
     && !shouldShowPdfPreview,
   );
 
+  // Reset the image-load failure flag whenever the previewed file changes.
   useEffect(() => {
-    let cancelled = false;
-    setFilePreview(null);
-    setPreviewError(null);
     setImageFailed(false);
-
-    if (!shouldLoadTextPreview || !artifact.path)
-      return;
-
-    async function loadPreview() {
-      try {
-        const preview = await readTextFilePreview({ maxBytes: 200 * 1024, path: artifact.path ?? "" });
-        if (!cancelled) {
-          setFilePreview(preview);
-        }
-      }
-      catch (nextError) {
-        if (!cancelled) {
-          setPreviewError(nextError instanceof Error ? nextError.message : String(nextError));
-        }
-      }
-    }
-
-    void loadPreview();
-    return () => {
-      cancelled = true;
-    };
-  }, [artifact.path, shouldLoadTextPreview]);
+  }, [artifact.path]);
 
   async function runAction(action: "delete" | "export" | "open" | "promote", task: () => Promise<void>) {
     setBusyAction(action);
@@ -233,8 +217,8 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
               </div>
             )
           : null}
-        {previewError ? <div className="mt-3 rounded-md bg-amber-50 p-2 text-xs leading-5 text-amber-700">{previewError}</div> : null}
-        {error ? <div className="mt-3 rounded-md bg-red-50 p-2 text-xs leading-5 text-red-700">{error}</div> : null}
+        {previewError ? <div className="mt-3 rounded-md bg-warning-soft p-2 text-xs leading-5 text-warning">{previewError}</div> : null}
+        {error ? <div className="mt-3 rounded-md bg-danger-soft p-2 text-xs leading-5 text-danger">{error}</div> : null}
       </section>
 
       <div className="flex flex-wrap gap-2">
@@ -272,7 +256,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
           {busyAction === "export" ? "Exporting" : "Export"}
         </button>
         <button
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-red-200 bg-red-50 px-2.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-danger-line bg-danger-soft px-2.5 text-xs font-medium text-danger transition-colors hover:bg-danger-soft disabled:cursor-not-allowed disabled:opacity-60"
           disabled={busyAction !== null}
           onClick={() => void runAction("delete", async () => {
             await deleteArtifact(artifact.id);

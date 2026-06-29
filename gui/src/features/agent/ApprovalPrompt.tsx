@@ -69,18 +69,18 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
     <section className="rounded-lg border border-line bg-surface/95 p-4 shadow-panel backdrop-blur">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="size-2 shrink-0 rounded-full bg-amber-500" />
+          <span className="size-2 shrink-0 rounded-full bg-warning" />
           <h2 className="truncate text-base font-semibold text-ink">{approval.title}</h2>
         </div>
       </div>
       {approval.summary ? <p className="mt-2 text-sm leading-5 text-ink-soft">{approval.summary}</p> : null}
       {sandboxBoundary?.violation
         ? (
-            <div className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700">
+            <div className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-warning-line bg-warning-soft px-2 py-1 text-xs font-medium text-warning">
               <ShieldAlert className="size-3" />
               <span>{formatViolation(sandboxBoundary.violation)}</span>
-              <span className="text-amber-600/70">·</span>
-              <span className="text-amber-600/70">
+              <span className="text-warning/70">·</span>
+              <span className="text-warning/70">
                 sandbox:
                 {" "}
                 {sandboxBoundary.mode}
@@ -98,7 +98,7 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
         : null}
       {error
         ? (
-            <div className="mt-3 flex items-center gap-2 text-xs leading-5 text-red-600">
+            <div className="mt-3 flex items-center gap-2 text-xs leading-5 text-danger">
               <AlertTriangle className="size-3.5 shrink-0" />
               <span>{error}</span>
             </div>
@@ -115,7 +115,7 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
           {deciding === "rejected" ? "Denying" : "Deny"}
         </button>
         <button
-          className="inline-flex h-9 items-center gap-2 rounded-md border border-accent bg-accent px-3 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex h-9 items-center gap-2 rounded-md border border-accent bg-accent px-3 text-sm font-medium text-white shadow-sm transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
           disabled={deciding !== null}
           onClick={() => void decide("approved")}
           type="button"

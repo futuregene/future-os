@@ -81,7 +81,7 @@ export function AppShellDialogs({
           }}
           value={renameDialog?.value ?? ""}
         />
-        {renameDialog?.error ? <div className="mt-2 text-xs leading-5 text-red-600">{renameDialog.error}</div> : null}
+        {renameDialog?.error ? <div className="mt-2 text-xs leading-5 text-danger">{renameDialog.error}</div> : null}
       </Dialog>
       <Dialog
         description={deleteDialog ? deleteThreadDescription(deleteDialog.thread) : undefined}
@@ -119,7 +119,7 @@ export function AppShellDialogs({
               )
             : null}
         </div>
-        {deleteDialog?.error ? <div className="mt-2 text-xs leading-5 text-red-600">{deleteDialog.error}</div> : null}
+        {deleteDialog?.error ? <div className="mt-2 text-xs leading-5 text-danger">{deleteDialog.error}</div> : null}
       </Dialog>
     </>
   );

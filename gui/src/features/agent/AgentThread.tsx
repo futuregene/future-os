@@ -151,7 +151,7 @@ export function AgentThread({
         </div>
         <div
           className={cn(
-            "pointer-events-none absolute right-1 top-0 z-20 w-1.5 rounded-full bg-slate-300 transition-opacity duration-300",
+            "pointer-events-none absolute right-1 top-0 z-20 w-1.5 rounded-full bg-line transition-opacity duration-300",
             scrollbar.visible ? "opacity-80" : "opacity-0",
           )}
           style={{
@@ -224,18 +224,18 @@ function AgentConnectionNotice({
 }) {
   const notice = agentNotice(connection, { onOpenModels, onOpenProviders, onRetry });
   return (
-    <div className="pointer-events-auto mx-auto w-full max-w-3xl rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 shadow-sm">
+    <div className="pointer-events-auto mx-auto w-full max-w-3xl rounded-md border border-warning-line bg-warning-soft px-3 py-2 text-xs leading-5 text-warning shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-medium">{notice.title}</span>
         <button
-          className="h-7 rounded-md bg-surface px-2 text-xs font-medium text-amber-800 ring-1 ring-amber-200 transition-colors hover:bg-amber-100"
+          className="h-7 rounded-md bg-surface px-2 text-xs font-medium text-warning ring-1 ring-warning-line transition-colors hover:bg-warning-soft"
           onClick={notice.action.onClick}
           type="button"
         >
           {notice.action.label}
         </button>
       </div>
-      <div className="mt-1 text-amber-700">{notice.detail}</div>
+      <div className="mt-1 text-warning">{notice.detail}</div>
     </div>
   );
 }

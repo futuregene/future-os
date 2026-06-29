@@ -16,8 +16,8 @@ export function PlanBlock({ steps }: PlanBlockProps) {
             <span
               className={cn(
                 "mt-0.5 inline-flex size-5 items-center justify-center rounded-full border",
-                step.status === "completed" && "border-green-200 bg-green-50 text-green-700",
-                step.status === "active" && "border-blue-200 bg-accent-soft text-accent",
+                step.status === "completed" && "border-success-line bg-success-soft text-success",
+                step.status === "active" && "border-info-line bg-accent-soft text-accent",
                 step.status === "pending" && "border-line-soft bg-surface text-ink-muted",
               )}
             >

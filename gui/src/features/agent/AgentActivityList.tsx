@@ -29,7 +29,7 @@ export function AgentActivityLine({ item }: { item: AgentActivityItem }) {
     <div
       className={cn(
         "flex min-w-0 items-center gap-2 text-sm leading-6",
-        failed ? "text-red-500" : running ? "text-ink-muted" : "text-ink-soft",
+        failed ? "text-danger" : running ? "text-ink-muted" : "text-ink-soft",
       )}
     >
       {renderActivityIcon(item.kind, running)}
