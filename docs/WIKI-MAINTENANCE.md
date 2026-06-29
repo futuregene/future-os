@@ -29,7 +29,8 @@ Page names come from filenames: `Quick-Start.md` → page **Quick-Start**
 
 1. Edit or add `.md` files under `docs/wiki/`.
 2. If you add a page, link it from `_Sidebar.md` (and usually from `Home.md`).
-3. Open a PR. On merge to `main`, the Action publishes the changes.
+3. Open a PR. After it merges, publish the changes by running the `Publish Wiki`
+   workflow manually (see below) — it does not run automatically.
 
 ## One-time prerequisite: enable the Wikis feature
 
@@ -47,9 +48,9 @@ creates it from scratch (`git init` + push) on the first run.
 
 ## Publishing
 
-**Automatic:** push to `main` with changes under `docs/wiki/`. The
-`Publish Wiki` workflow syncs them. You can also trigger it manually from the
-Actions tab (`workflow_dispatch`).
+**Workflow (manual):** the `Publish Wiki` workflow is manual-only for now —
+trigger it from the **Actions tab → Publish Wiki → Run workflow**, or with
+`gh workflow run publish-wiki.yml`.
 
 **Manual / local:** run the script yourself (pushes over SSH by default):
 

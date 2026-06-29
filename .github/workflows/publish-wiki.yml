@@ -1,18 +1,13 @@
 name: Publish Wiki
 
-# Sync docs/wiki/ to the GitHub wiki whenever wiki sources change on main.
+# Sync docs/wiki/ to the GitHub wiki. Manual trigger only for now — run it from
+# the Actions tab ("Run workflow") or with `gh workflow run publish-wiki.yml`.
 #
 # Prerequisite: the repository's Wikis feature must be enabled by an admin
 # (Settings → Features → Wikis). Once it's on, the wiki is created and filled
 # automatically — no need to hand-create a first page. See docs/WIKI-MAINTENANCE.md.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'docs/wiki/**'
-      - 'scripts/publish-wiki.sh'
-      - '.github/workflows/publish-wiki.yml'
   workflow_dispatch:
 
 permissions:
