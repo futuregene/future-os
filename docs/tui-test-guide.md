@@ -1,13 +1,16 @@
 # TUI 测试指南
 
 > 本指南供大模型在 tmux 中交互式测试 FutureOS TUI。每次改完 TUI / agent 代码后，按本文档逐步执行验证。
+>
+> 终端尺寸：**120 列 × 40 行**。窄终端专项测试用 80×24。
 
 ## 准备
 
-1. 确认 agent 已启动（`pgrep future-agent`，否则 `make run-agent &`）
-2. 在 tmux 中启动 TUI，终端尺寸 120×40：
-
 ```bash
+# 1. Agent
+pgrep future-agent || (cd /Users/geilige/future-os/agent && cargo run &) && sleep 2
+
+# 2. tmux session
 SESSION="tui-test"
 tmux kill-session -t "$SESSION" 2>/dev/null; sleep 0.5
 tmux new-session -d -s "$SESSION" -x 120 -y 40 \
@@ -15,194 +18,548 @@ tmux new-session -d -s "$SESSION" -x 120 -y 40 \
 sleep 3
 ```
 
-3. 操作 TUI 的基本方式：
+### 操作 TUI 的方式
 
-| 操作 | 命令 |
-|------|------|
-| 发送按键 | `tmux send-keys -t tui-test "<keys>"` |
-| 发送 Enter | 在 keys 后加 `Enter`，如 `send-keys "/help" Enter` |
-| 清除输入 | `send-keys C-u` |
-| 关闭弹窗 | `send-keys Escape` |
-| 截取画面 | `tmux capture-pane -t tui-test -p -e` |
-| 截取尾部 | `tmux capture-pane -t tui-test -p -e -S -<行数>` |
-
-4. 每步之间 `sleep <秒>` 等待渲染或 agent 响应。
+| 操作 | tmux 命令 |
+|------|----------|
+| 发送文本 | `tmux send-keys -t tui-test "text"` |
+| 发送 Enter | `send-keys Enter` |
+| 清除输入行 | `send-keys C-u` |
+| 关闭弹窗/取消 | `send-keys Escape` |
+| 截取全屏（含 ANSI） | `tmux capture-pane -t tui-test -p -e` |
+| 截取尾部 N 行 | `capture-pane -p -e -S -N` |
+| 等待渲染/响应 | `sleep N` |
 
 ---
 
-## 自动测试步骤
+## 一、启动与基础 UI
 
-按顺序执行以下 14 项测试。每项包含：目的、发送的按键、等多久、检查什么。
-
-### 1. `/help` —— 帮助弹窗
+### 1.1 TUI 正常启动
 
 ```
-目的: 验证 overlay 正常显示和关闭
-操作: 输入 /help → Enter → 等 0.5s → 截屏检查 → Escape 关闭
-检查: 屏幕出现 "Terminal UI Help" 或帮助内容表格
-```
-
-### 2. `/status` —— 初始会话状态
-
-```
-目的: 验证状态字段正确（初始 Queries=0）
-操作: C-u 清输入 → 输入 /status → Enter → 等 0.5s → 截屏
+目的: 确认 TUI 能连接 agent 并显示 UI
+操作: 启动后等 3s，截全屏
 检查:
-  - 显示 "Queries: 0"
-  - 显示当前 model 名（含 deepseek 字样）
-  - 显示 CWD、Thinking、Context 等字段
+  - 顶部显示 "future-tui vX.X.X"
+  - 底部 footer 显示 cwd、model、thinking、token/cost
+  - 出现 "[skills] ..." 技能列表
+  - 无 "Failed to connect" 或 connection error
 ```
 
-### 3. 简单提问 —— Agent 基础响应
+### 1.2 Footer 实时更新
 
 ```
-目的: 验证 Agent 能正常回复
-操作: C-u 清输入 → 输入 "What is 2+2? Answer with just the number." → Enter
-      等 8s → 截屏
-检查: 屏幕出现 "4"（Agent 的回答）
-```
-
-### 4. `/status` —— 提问后 Queries 递增
-
-```
-目的: 验证 Queries 计数正确
-操作: C-u → /status → Enter → 等 0.5s → 截屏
-检查: 显示 "Queries: 1"
-Escape 关闭（如有弹窗）
-```
-
-### 5. Tool call (bash) —— 工具调用展示
-
-```
-目的: 验证工具调用展示格式（`$ cmd` / `read path` 等）
-操作: C-u → 输入 "Run ls in the current directory" → Enter → 等 12s → 截屏尾部 30 行
+目的: 确认 streaming 时 footer 的 token/cost 实时变化
+操作: 提问一个简单问题，在 Agent 回答过程中截屏 2-3 次
 检查:
-  - 出现 "$ ls" 格式的 bash 工具调用
-  - 出现 ls 的输出内容（如 src/ 目录）
-  - 工具调用后 Agent 有回复文字
-```
-
-### 6. `/status` —— 两次提问后 Queries=2
-
-```
-目的: 验证多次提问后计数
-操作: C-u → /status → Enter → 等 0.5s → 截屏
-检查: 显示 "Queries: 2"
-Escape 关闭
-```
-
-### 7. `/new` —— 创建新会话
-
-```
-目的: 验证新会话创建
-操作: C-u → /new → Enter → 等 1s → 截屏
-检查: 出现 "New session" 或 session ID
-```
-
-### 8. `/sessions` —— 会话列表
-
-```
-目的: 验证会话列表展示（name、queryCount、时间三列对齐）
-操作: C-u → /sessions → Enter → 等 1.5s → 截屏尾部 40 行
-检查:
-  - 列表项不含原始 session ID（有 name 或 first_message 作为标签）
-  - 每项显示 "NQ" 格式的 query 计数（如 "2Q"）
-  - 每项显示 model 名和更新时间
-Escape 关闭
-```
-
-### 9. `ctrl+p` —— 模型切换
-
-```
-目的: 验证模型循环切换
-操作: Escape 关闭弹窗 → 等 0.2s → ctrl+p → 等 1s → 截屏底部
-检查: Footer 中 model 名发生变化（不再是之前的模型）
-```
-
-### 10. 切换到历史 session
-
-```
-目的: 验证 session 切换和消息加载
-操作: C-u → /sessions → Enter → 等 1.5s
-      按 Down 两次选中一个历史 session → Enter
-      等 3s → 截屏尾部 20 行
-检查: 出现 "Switched to session" 或切换提示
-```
-
-### 11. 历史消息渲染
-
-```
-目的: 验证历史 session 中工具调用格式正确（非 call_id）
-操作: 在切换后的 session 中截全屏
-检查（逐一确认）:
-  - bash 工具展示格式为 "$ 命令"（非 "bash" 或 call_xxx）
-  - read 工具展示格式为 "read 文件路径"
-  - write 工具展示格式为 "write 文件路径"
-  - edit 工具展示格式为 "edit 文件路径"
-  - 工具调用行不包含输出内容（只有 header）
-  - 如果有 thinking，以斜体灰色显示
-```
-
-### 12. Session 文件字段
-
-```
-目的: 验证 session JSONL 文件包含 name、tool_args、thinking 字段
-操作: 不操作 TUI，直接检查磁盘文件
-      LATEST=$(ls -t ~/.future/agent/sessions/*.jsonl | head -1)
-      检查:
-        grep -c '"name":"' $LATEST → 应有 tool 条目带 name
-        grep -c 'tool_args' $LATEST → 应有条目带 tool_args
-        grep -c '"thinking":"' $LATEST → 应有 assistant 条目带 thinking
-  三项检查都有非零计数即为通过
-```
-
-### 13. `/compact` —— 上下文压缩
-
-```
-目的: 验证压缩命令正常执行
-操作: C-u → /compact → Enter → 等 1s → 截屏
-检查: 出现 compact 相关提示（如 "Context compacted" 或无报错）
-```
-
-### 14. `/cwd` —— 切换工作目录
-
-```
-目的: 验证工作目录切换
-操作: C-u → /cwd /tmp → Enter → 等 0.5s
-      C-u → /status → Enter → 等 0.5s → 截屏
-检查: CWD 字段显示 "/tmp"
+  - streaming 过程中 ↑in 和 ↓out 数字持续增长
+  - 回答结束后 ¥cost 更新为非零值
+  - spinner 在 streaming 时旋转，结束后停止
 ```
 
 ---
 
-## 手动专项测试
+## 二、所有 Slash 命令
 
-以下场景脚本难以精确判断，需要大模型自行观察截屏内容并判断。
+### 2.1 `/help` —— 帮助弹窗
 
-### A. Overlay 弹窗无残影
+```
+命令: /help
+检查:
+  - overlay 弹出，标题含 "Help"
+  - 列出所有快捷键（ctrl+c/p/r/t, tab, ↑↓, enter, escape）
+  - 列出所有 / 命令
+  - Escape 可关闭
+```
 
-1. `/sessions` 打开列表 → 上下滚动到底再滚回头 → **确认第一行的选中高亮/背景色无异常**
-2. 选中一个 session 切换 → 再次 `/sessions` → **确认弹窗内容完整刷新，无上次的残留文字或高亮**
+### 2.2 `/status` —— 会话状态
 
-### B. 自动补全
+```
+命令: /status
+检查:
+  - Model 名称正确
+  - Provider 正确
+  - Context window 显示（如 131K）
+  - Max output tokens 显示
+  - Session ID 显示
+  - CWD 显示当前工作目录
+  - Thinking level 显示（off/minimal/low/medium/high/xhigh）
+  - Permission 显示（all/workspace/none）
+  - Queries 数为整数（新 session 为 0）
+  - Auto compaction 显示 on/off
+  - Context tokens/percent 显示
+  - Tokens in/out 显示
+  - Cost 显示（¥ 符号）
+```
 
-1. 输入 `/s` → 等 0.3s → 截屏 → **确认出现补全列表，含 /sessions、/status、/scoped-models**
-2. Tab 接受补全 → 等 0.2s → **确认输入框变为完整命令**
+### 2.3 `/model <id>` —— 切换模型
 
-### C. 长时间 streaming 不崩溃
+```
+命令: /model deepseek/deepseek-chat
+检查:
+  - 回复显示 "Model: deepseek/deepseek-chat"
+  - Footer model 字段立即更新
+  - 再发 /status 确认 model 已切换
+```
 
-1. 发送一个会触发多步工具调用的 prompt（如 "read this file, write a summary, then run tests"）
-2. 观察整个过程中 TUI 无卡死，spinner 正常旋转，Footer 实时更新 token 计数
+### 2.4 `/sessions` —— 会话列表
 
-### D. 窄终端
+```
+命令: /sessions
+检查:
+  - overlay 弹出，标题含 "Sessions"
+  - 每项展示 name（或 first_message 前 60 字）而非 session ID
+  - 每项展示 "NQ" query 计数
+  - 每项展示 model 名
+  - 每项展示更新时间
+  - name 列和 metadata 列对齐
+  - ↑↓ 可滚动，选中高亮连续背景
+  - 滚到底再滚回头无残影
+  - Enter 选中切换，Escape 取消
+```
 
-1. 关闭当前 tmux 重新开 80×24 的 session
-2. `/status` → **确认各字段不截断到不可读**
-3. `/sessions` → **确认列表不溢出**
+### 2.5 `/sessions` —— 树形视图
+
+```
+命令: /tree
+检查:
+  - overlay 弹出，标题含 "Session Tree"
+  - 子 session 有缩进和 ├─ / └─ 连接线
+  - 父 session 的祖先线用 │ 而非空格
+  - 当前 session 用 ▶ 标记
+  - 切换后 /tree 再打开，▶ 移到新 session
+```
+
+### 2.6 `/new` —— 创建新会话
+
+```
+命令: /new
+检查:
+  - 回复显示 "New session:" + session ID
+  - 如果之前有正在运行的 prompt，先 abort 再创建
+  - /status 确认新 session 的 Queries=0
+```
+
+### 2.7 `/stop` —— 停止当前生成
+
+```
+命令: /stop（在 Agent streaming 时发送）
+准备: 先发送一个会让 Agent 思考较久的问题
+操作: 等 2s → /stop
+检查:
+  - Agent 停止输出
+  - 回复 "Stopped." 或类似提示
+  - 不会返回 /status 的内容
+```
+
+### 2.8 `/clone <sessionId>` —— 克隆会话
+
+```
+命令: /clone 20260xxx-xxxxxxxx
+检查:
+  - 回复确认克隆成功或显示新 session ID
+  - /sessions 中能看到克隆出的 session
+```
+
+### 2.9 `/fork` —— Fork 会话
+
+```
+命令: /fork
+准备: 先用 /sessions 找到想要 fork 的 session
+操作: 切换到目标 session → /fork → 按提示选择从哪条消息 fork
+检查:
+  - 回复确认 fork 成功
+```
+
+### 2.10 `/name <name>` —— 设置会话名
+
+```
+命令: /name my-test-session
+检查:
+  - /status 中 Session name 更新为 "my-test-session"
+  - /sessions 列表中该 session 显示新名称（而非 first_message）
+```
+
+### 2.11 `/cwd <path>` —— 切换工作目录
+
+```
+命令: /cwd /tmp
+检查:
+  - 回复 "CWD: /tmp"
+  - /status 中 CWD 变为 /tmp
+  - Footer cwd 立即更新
+```
+
+### 2.12 `/compact` —— 压缩上下文
+
+```
+命令: /compact
+检查:
+  - 无报错
+  - 回复提示压缩完成或无需压缩
+```
+
+### 2.13 `/reload` —— 重载技能和上下文
+
+```
+命令: /reload
+检查:
+  - 无报错
+  - 回复列出 reloaded 的技能
+```
+
+### 2.14 `/scoped-models` —— 模型范围配置
+
+```
+命令: /scoped-models
+检查:
+  - overlay 弹出，列出所有可用模型
+  - 每项显示 ✓（启用）或 ✗（禁用）
+  - Space 切换启用/禁用状态
+  - Footer 显示 "x/y enabled"
+  - Enter 保存，回复确认 "Model scope saved (x/y enabled)"
+  - Escape 取消，状态回滚
+  - 过滤输入可筛选模型（输入模型名关键字）
+```
+
+### 2.15 `/settings` → settings overlay
+
+```
+命令: ctrl+r 之后选 settings
+操作: ctrl+r → 在 sessions 列表中选 settings
+或者: /settings（如果该命令存在）
+检查:
+  - overlay 弹出
+  - 包含 "Reload"、"Model"、"Thinking"、"Sessions" 选项
+```
+
+### 2.16 `/approve` / `/reject` —— 审批工作流
+
+```
+准备: 需要先触发一个需要审批的 tool call
+      （如 write 到 workspace 外的路径）
+命令: /approve <requestId> 或 /reject <requestId>
+检查:
+  - 审批通过后工具继续执行
+  - 拒绝后工具返回拒绝提示
+```
 
 ---
 
-## 测试完成后的清理
+## 三、键盘快捷键
+
+### 3.1 `ctrl+c` —— 中断 / 退出
+
+```
+操作: ctrl+c
+检查:
+  - 如果 Agent 在 streaming：中断当前输出（不退出）
+  - 如果 Agent 空闲：退出 TUI
+```
+
+### 3.2 `ctrl+p` —— 循环切换模型
+
+```
+操作: ctrl+p
+检查:
+  - Footer model 名称变化
+  - 每次按下切换到下一个可用模型
+```
+
+### 3.3 `ctrl+t` / `Shift+Tab` —— 循环切换 Thinking 等级
+
+```
+操作: ctrl+t
+检查:
+  - Footer thinking 字段变化
+  - 顺序: off → minimal → low → medium → high → xhigh → off
+```
+
+### 3.4 `ctrl+r` —— 打开 Sessions 列表
+
+```
+操作: ctrl+r
+检查: 同 /sessions
+```
+
+### 3.5 `PageUp` / `PageDown` —— 整页滚动
+
+```
+操作: PageUp → PageDown → PageUp
+检查:
+  - 聊天区域整页上下滚动
+  - 不会跳到 overlay 上去
+```
+
+### 3.6 `ctrl+↑` / `ctrl+↓` —— 行滚动
+
+```
+操作: ctrl+↑ 按 3 次 → ctrl+↓ 按 3 次
+检查: 聊天区域以 3 行为单位滚动
+```
+
+### 3.7 `Tab` —— 自动补全
+
+```
+操作: 输入 /s → 等 0.3s → Tab
+检查:
+  - 出现补全列表（/sessions, /status, /scoped-models）
+  - Tab 接受第一个匹配
+  - ↑↓ 可在候选中导航
+  - 继续输入可进一步筛选
+  - Escape 关闭补全
+```
+
+---
+
+## 四、Editor（输入框）
+
+### 4.1 光标移动
+
+```
+操作（逐一测试）:
+  - left / right 左右移动
+  - ctrl+b / ctrl+f 左右移动
+  - ctrl+left / ctrl+right 按词移动
+  - alt+b / alt+f 按词移动
+  - home / end 行首/行尾
+检查: 光标移动到预期位置
+```
+
+### 4.2 删除与 Kill/Yank
+
+```
+操作:
+  1. 输入 "hello world test"
+  2. ctrl+w 删除 "test"
+  3. ctrl+a → ctrl+k 删除到行尾
+  4. ctrl+y 粘贴 → 应出现刚删除的内容
+检查: Kill ring 正常工作
+```
+
+### 4.3 多行输入
+
+```
+操作:
+  1. 输入 "line1"
+  2. 按 Enter (不提交，编辑器应支持换行)
+  3. 输入 "line2"
+检查:
+  - 如果编辑器支持多行，输入区域高度增加
+  - 两行都可见
+```
+
+### 4.4 Visual 模式 (`ctrl+v`)
+
+```
+操作:
+  1. 输入 "hello world"
+  2. ctrl+v 进入 visual 模式
+  3. left 选中 "world"
+  4. ctrl+y 复制选中区域
+检查: 选中区域有视觉反馈
+```
+
+### 4.5 Undo (`ctrl+-`)
+
+```
+操作:
+  1. 输入 "hello"
+  2. ctrl+w 删除
+  3. ctrl+- 撤销
+检查: 恢复 "hello"
+```
+
+---
+
+## 五、Chat 渲染
+
+### 5.1 User 消息
+
+```
+目的: User bubble 展示
+操作: 发送任意消息，截屏
+检查: User 消息有彩色背景（Box 样式）
+```
+
+### 5.2 Assistant 消息（Markdown）
+
+```
+目的: Markdown 正确渲染
+操作: 发送 "Write a short code block in python"
+检查:
+  - 代码块有语法高亮
+  - 粗体/斜体/链接正确渲染
+  - 列表正确显示
+```
+
+### 5.3 Thinking block
+
+```
+目的: Thinking 以斜体灰色显示
+操作: 确保 thinking ≠ off → 发送需要思考的问题
+检查:
+  - 在回答内容出现前，有斜体灰色 thinking 文字
+  - thinking 和正文之间有分隔
+  - 完成后 /sessions 切到该 session → 历史 thinking 也显示
+```
+
+### 5.4 Tool 调用展示
+
+```
+目的: 验证每个工具调用的显示格式
+操作: 发送分别触发 bash / read / write / edit 的 prompt
+检查:
+  - bash: 显示 "$ 命令" 格式
+  - read: 显示 "read 文件路径[:行范围]"
+  - write: 显示 "write 文件路径"
+  - edit: 显示 "edit 文件路径"
+  - 工具行只显示 header，不显示 output
+  - 工具 output 出现在后续 assistant 消息中
+```
+
+### 5.5 Tool 调用错误状态
+
+```
+目的: 工具调用失败时有错误提示
+操作: 发送 "Run a command that does not exist in bash"
+检查: 错误工具调用有视觉区分（红色背景或 error 标记）
+```
+
+### 5.6 长输出截断
+
+```
+目的: 长输出不会撑爆终端
+操作: 发送 "cat a large file" 或触发返回大量文本的工具
+检查:
+  - 没有 line exceeds terminal width 崩溃
+  - 长文本正确换行
+```
+
+---
+
+## 六、Session 持久化
+
+### 6.1 新字段保存
+
+```
+目的: 验证 name / tool_args / thinking 保存到 JSONL
+操作: 发送一条会触发 tool call 的 prompt，等完成后
+检查: 最新 session 文件中:
+  grep -c '"name":"' → tool 条目含 name
+  grep -c 'tool_args' → 含 tool_args
+  grep -c '"thinking":"' → assistant 条目含 thinking
+```
+
+### 6.2 切换到历史 session
+
+```
+目的: 切换到旧 session 后展示正确
+操作:
+  1. 提问 → 等完成 → /new → 再提问
+  2. /sessions → 选中第一个 session → Enter
+检查:
+  - 消息正确加载（包括 user/assistant/tool）
+  - tool call 显示格式正确（非 call_xxx）
+  - thinking 正确显示
+  - toolStatus 显示为 complete（非 running spinner）
+```
+
+### 6.3 Session name 默认值
+
+```
+目的: 未命名的 session 使用 first_message 作为显示名
+操作: 新建 session → 提问 → /sessions
+检查: 列表中该 session 显示的是首条消息的前若干字，不是 ID
+```
+
+### 6.4 Query count 显示
+
+```
+目的: /status Queries 和 /sessions Q 计数正确
+操作:
+  1. 新 session → /status → Queries=0
+  2. 提问 1 次 → /status → Queries=1
+  3. 再提问 1 次 → /status → Queries=2
+  4. /sessions → 该 session 显示 "2Q"
+检查: 计数等于 user message 数量（不包含 tool/assistant 内部消息）
+```
+
+---
+
+## 七、Overlay 渲染稳定性
+
+### 7.1 反复打开关闭无残影
+
+```
+目的: 连续多次打开同一 overlay 无视觉错乱
+操作:
+  1. /sessions → Escape
+  2. /sessions → Escape
+  3. /sessions → Escape
+  4. /help → Escape
+  5. /sessions → Escape
+检查: 每次弹出/关闭后屏幕干净，无残留文字或高亮
+```
+
+### 7.2 滚到底再滚回头
+
+```
+目的: SelectList 滚动边界处理正确
+操作: /sessions → 按 Down 直到最后一项 → 再按 Down（wrap to top）
+检查:
+  - 回到第一项时高亮正确
+  - 中间无空白行残留
+  - 滚动指示器（↑ more / ↓ more）显示/消失正常
+```
+
+### 7.3 Overlay 上打字
+
+```
+目的: 过滤输入正常
+操作: /scoped-models → 输入 "deep"
+检查:
+  - 列表只显示含 "deep" 的模型
+  - 选中索引重置为 0
+  - 删除过滤文字后恢复完整列表
+```
+
+---
+
+## 八、窄终端（80×24）
+
+```
+准备: 关闭 120×40 session，重新开 80×24
+操作:
+  1. /status → 各字段不截断
+  2. /sessions → 列表项可见 metadata
+  3. 提问 → 长文本正确换行
+  4. /help → overlay 不超出屏幕
+检查: 所有输出在 80 列内正确排版，无水平溢出
+```
+
+---
+
+## 九、Stability
+
+### 9.1 连续多轮对话不崩溃
+
+```
+操作: 连续发送 5 条不同的 prompt
+检查: TUI 不会卡死或崩溃，每次都能正常回复
+```
+
+### 9.2 快速切换 session 不崩溃
+
+```
+操作: /sessions → 选 session1 → 等加载 → /sessions → 选 session2 → ...
+      重复 3 次
+检查: 每次切换都正常加载消息，无 crash
+```
+
+---
+
+## 清理
 
 ```bash
 tmux kill-session -t tui-test
@@ -210,13 +567,14 @@ tmux kill-session -t tui-test
 
 ---
 
-## 常见失败原因速查
+## 常见失败速查
 
-| 现象 | 可能原因 | 排查方向 |
-|------|---------|---------|
+| 现象 | 原因 | 排查 |
+|------|------|------|
 | TUI 连不上 agent | Agent 未启动 | `pgrep future-agent` |
-| Queries 不递增 | `/status` 走了 fallback 创建新 session | 确认 agent 未重启 |
-| 工具调用显示 call_xxx | session 是旧代码保存的 | 新建 session 再测 |
-| thinking 不显示 | session 是旧代码保存的 | 同上 |
-| Overlay 重叠/残影 | 差分渲染缓存未清 | Ctrl+L 强制重绘 |
-| Line exceeds terminal width | 某行超出终端宽度 | 检查 `padToWidth` 截断逻辑 |
+| Line exceeds terminal width | 某行超出终端 | 检查 `padToWidth` / `truncateToWidth` |
+| Overlay 重叠/残影 | 差分渲染缓存 | Ctrl+L 或 `requestRender(true)` |
+| 工具调用显示 call_xxx | 旧 session 文件 | 新建 session 再测 |
+| thinking 不显示 | 旧 session 文件 | 同上 |
+| Queries 不递增 | 走了 fallback 新 session | 确认 agent 未重启 |
+| 中文乱码 | from_utf8_lossy | 确认最新 agent（字节 buffer 已修） |
