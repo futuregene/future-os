@@ -794,6 +794,189 @@ sleep 3
 
 ---
 
+---
+
+## 十八、异常检测与恢复
+
+### 18.1 Agent 进程突然终止
+
+```
+目的: 验证 TUI 在 agent 崩溃后能优雅降级并自动重连
+操作:
+  1. TUI 正常运行中 → 在另一个终端 `kill -9 $(pgrep future-agent)`
+  2. 等 3s → 截屏
+  3. 重启 agent (`make run-agent &`)
+  4. 等 5s → 截屏 → 尝试提问
+检查:
+  - Agent 被 kill 后 TUI 不崩溃
+  - 终端/stream 报错时 TUI 捕获异常不退出
+  - Footer 或提示区域显示连接断开状态
+  - Agent 重启后 TUI 自动重连（无需手动重启 TUI）
+  - 重连后 /status 正常，可以继续提问
+```
+
+### 18.2 Agent 连接拒绝
+
+```
+目的: 验证 TUI 在 agent 未启动时的行为
+操作: 先停掉 agent → 启动 TUI
+检查:
+  - TUI 启动不崩溃
+  - 显示 "(not connected)" 或连接失败提示
+  - 不会持续刷屏报错
+  - Footer 显示异常状态
+```
+
+### 18.3 Context Length Overflow
+
+```
+目的: 验证超过 context window 时 TUI 的错误展示
+操作:
+  1. 连续多轮对话填满 context
+  2. 发送一条新 prompt → 等 agent 处理
+  3. 截屏观察
+检查:
+  - 如果是 auto_retry: TUI 显示 "retrying..." 提示
+  - auto_compaction 自动压缩后重试成功
+  - 如果最终失败: TUI 显示清晰的错误消息（如 "context length exceeded"）
+  - TUI 不会卡死或退出
+  - 可以 /compact 后重试
+```
+
+### 18.4 工具调用超时
+
+```
+目的: 验证长时间运行的工具（如 sleep 60）的取消行为
+操作:
+  1. 发送 "sleep 60" → 等 3s → ctrl+c
+检查:
+  - 工具被中断，显示 "[Tool execution cancelled]"
+  - 不会死等 60 秒
+```
+
+### 18.5 工具返回超大结果
+
+```
+目的: 验证超大输出（>100K chars）不会被截断到不可读
+操作: 发送 "cat a very large file" (如 200K+ 的日志文件)
+检查:
+  - Agent 的 tool result 被 cap 到 100K
+  - TUI 不会因输出过大而崩溃
+  - 不会触发 "line exceeds terminal width" 异常
+```
+
+### 18.6 审批超时
+
+```
+目的: 验证审批请求在超时后自动取消
+操作:
+  1. 触发需要审批的工具调用
+  2. 不回复审批，等 30s+
+检查:
+  - 审批请求自动过期（不会永久等）
+  - 工具调用以 "cancelled" 状态结束
+  - TUI 清理审批请求后不再显示
+```
+
+### 18.7 快速连续操作
+
+```
+目的: 验证高频操作不导致竞态
+操作:
+  1. 快速连续按 ctrl+p 5 次
+  2. 快速连续 /sessions → Escape → /sessions → Escape 5 次
+  3. 快速连续 /status → /sessions → /help 各一次
+检查:
+  - TUI 不崩溃，不卡死
+  - overlay 不重叠
+  - 最后显示的是最后操作的 overlay
+```
+
+### 18.8 gRPC 流中断
+
+```
+目的: 验证 streaming 过程中 gRPC 连接中断的恢复
+操作:
+  1. 发送 prompt → 在 streaming 过程中 kill agent
+  2. 等 3s → 截屏
+检查:
+  - TUI 不死循环不崩溃
+  - streaming 状态被重置（isStreaming → false）
+  - 显示 stream error 提示
+  - 连接恢复后可以发送新 prompt
+```
+
+### 18.9 输入非法命令
+
+```
+目的: 验证非法输入不崩溃
+操作:
+  1. 输入空消息 → Enter（不应发送）
+  2. 输入 "/" → Enter
+  3. 输入 "/unknown_command" → Enter
+  4. 输入超长文本（>10K chars）
+检查:
+  - TUI 不崩溃
+  - 未知命令给出提示或静默处理
+  - 超长文本正常截断或发送
+```
+
+### 18.10 Session 文件损坏
+
+```
+目的: 验证 session 文件损坏后的容错
+操作:
+  1. 找到最新 session 文件 → 删除文件头部几行
+  2. /sessions → 尝试切换到损坏的 session
+检查:
+  - TUI 不崩溃
+  - 显示 "Failed to load" 或跳过损坏 session
+  - 其他正常 session 仍可切换
+```
+
+### 18.11 Terminal 尺寸突变
+
+```
+目的: 验证终端 resize 后的渲染正确性
+操作:
+  1. 在 120×40 tmux 中运行 TUI
+  2. tmux resize-window -x 80 -y 24 → 等 0.5s → 截屏
+  3. tmux resize-window -x 120 -y 40 → 等 0.5s → 截屏
+检查:
+  - resize 后布局自适应（footer/chat/input 重新分配空间）
+  - 不出现 "line exceeds terminal width" 异常
+  - /help overlay 在新尺寸下居中
+```
+
+### 18.12 并发 Prompt + Abort
+
+```
+目的: 验证 prompt 和 abort 的竞态
+操作:
+  1. 发送 prompt
+  2. 立即 /stop
+  3. 再发送一条新 prompt
+检查:
+  - 旧 prompt 被正确 abort
+  - 新 prompt 正常执行
+  - 不会出现 "agent is busy" 错误
+```
+
+### 18.13 切换 Session 时 Agent 正忙
+
+```
+目的: 验证切换 session 不阻塞
+操作:
+  1. 发送一条 prompt（让 agent 进入 streaming）
+  2. streaming 过程中 /sessions → 选择一个 session → Enter
+检查:
+  - 切换正常（不需要等 streaming 结束）
+  - 新 session 消息正确加载
+  - 原 session 的 streaming 继续（如果 agent 支持后台运行）
+```
+
+---
+
 ## 清理
 
 ```bash
