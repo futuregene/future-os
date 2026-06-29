@@ -1,21 +1,9 @@
 // Shared MCP protocol helpers used by tools.ts and skills.ts.
-import { readFile } from "node:fs/promises";
-import { AUTH_FILE, DEFAULT_API_URL, FUTURE_AUTH_PROVIDER } from "../constants.js";
+import { getPlatformUrl } from "../utils/platform.js";
 
 async function resolveMcpUrl(): Promise<string> {
-  let baseUrl = DEFAULT_API_URL;
-  try {
-    const raw = await readFile(AUTH_FILE, "utf8");
-    const auth = JSON.parse(raw) as Record<string, unknown>;
-    const future = auth[FUTURE_AUTH_PROVIDER];
-    if (future && typeof future === "object") {
-      const base_url = (future as Record<string, unknown>).base_url;
-      if (typeof base_url === "string") baseUrl = base_url;
-    }
-  } catch {
-    // auth.json not found or unreadable — use default
-  }
-  return `${baseUrl}/v1/mcp`;
+  const platformUrl = await getPlatformUrl();
+  return `${platformUrl}/api/v1/mcp`;
 }
 
 export async function mcpUrl(): Promise<string> {

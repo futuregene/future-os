@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { platform as osPlatform } from "node:os";
 import { dirname } from "node:path";
 
-import { AUTH_FILE, DEFAULT_API_URL, FUTURE_AUTH_PROVIDER } from "../constants.js";
+import { AUTH_FILE, FUTURE_AUTH_PROVIDER } from "../constants.js";
 import { isNodeError, isRecord } from "../utils/object.js";
 import { getPlatformUrl } from "../utils/platform.js";
 import { sleep } from "../utils/time.js";
@@ -20,7 +20,6 @@ type DeviceCodeResponse = {
 type DeviceTokenResponse = {
   api_key: string;
   api_key_id: string;
-  api_base_url: string;
   token_type: "api_key";
 };
 
@@ -32,7 +31,6 @@ type DeviceErrorResponse = {
 type FutureAuthEntry = {
   type?: string;
   key?: string;
-  base_url?: string;
   platform_base_url?: string;
 };
 
@@ -93,10 +91,9 @@ export async function status(): Promise<void> {
       return;
     }
 
-    console.log(`API: ${auth.base_url ?? DEFAULT_API_URL}`);
-    if (auth.platform_base_url) {
-      console.log(`Platform: ${auth.platform_base_url}`);
-    }
+    const platformUrl = auth.platform_base_url ?? await getPlatformUrl();
+    console.log(`Platform: ${platformUrl}`);
+    console.log(`API: ${platformUrl}/api/v1`);
   } catch {
     console.log("Not logged in.");
   }
@@ -159,7 +156,6 @@ async function saveAuth(authFile: AuthFile, token: DeviceTokenResponse, platform
     ...current,
     type: current.type ?? "api_key",
     key: token.api_key,
-    base_url: token.api_base_url,
     platform_base_url: platformUrl,
   } satisfies FutureAuthEntry;
 
@@ -182,7 +178,6 @@ function getFutureAuthEntry(authFile: AuthFile): FutureAuthEntry | undefined {
     ...value,
     type: typeof value.type === "string" ? value.type : undefined,
     key: typeof value.key === "string" ? value.key : undefined,
-    base_url: typeof value.base_url === "string" ? value.base_url : undefined,
     platform_base_url: typeof value.platform_base_url === "string" ? value.platform_base_url : undefined,
   };
 }
