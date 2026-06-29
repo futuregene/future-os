@@ -688,21 +688,7 @@ sleep 3
 
 ---
 
-## 十三、Image Input (Kitty Protocol)
-
-### 13.1 图片显示
-
-```
-目的: 验证 Kitty 图片协议在支持时正常工作
-操作: 如果终端支持 Kitty（如 iTerm2/WezTerm/kitty）:
-  1. 通过 file:// 或 base64 发送一张图片
-  2. 确认终端能渲染图片
-  3. 检查: TUI 中图片不破坏文本布局
-```
-
----
-
-## 十四、Session Fork / Clone 链路
+## 十三、Session Fork / Clone 链路
 
 ### 14.1 Fork Lineage
 
@@ -733,7 +719,7 @@ sleep 3
 
 ---
 
-## 十五、Permission Level
+## 十四、Permission Level
 
 ### 15.1 Workspace Permission
 
@@ -757,7 +743,7 @@ sleep 3
 
 ---
 
-## 十六、Thinking Level 效果验证
+## 十五、Thinking Level 效果验证
 
 ### 16.1 不同 Thinking Level 的可见差异
 
@@ -775,7 +761,7 @@ sleep 3
 
 ---
 
-## 十七、gRPC 重连
+## 十六、gRPC 重连
 
 ### 17.1 Agent 断连后恢复
 
@@ -796,7 +782,7 @@ sleep 3
 
 ---
 
-## 十八、异常检测与恢复
+## 十七、异常检测与恢复
 
 ### 18.1 Agent 进程突然终止
 
