@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { cp, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { cp, mkdir, open, read, close, readdir, rename, rm, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -139,12 +139,22 @@ async function listSkills(): Promise<void> {
   }
 
   // Check which skills are installed across all scopes
-  const installed: Record<string, string[]> = {}; // skillId -> scopes
+  const installed: Record<string, { scopes: string[]; version: string }> = {};
   for (const [scope, dir] of [["app", APP_SKILLS] as const, ["project", projectSkillsDir()] as const, ["global", GLOBAL_SKILLS] as const]) {
     try {
       const entries = await readdir(dir);
       for (const entry of entries) {
-        (installed[entry] ??= []).push(scope);
+        const skillMd = join(dir, entry, "SKILL.md");
+        try {
+          const ver = await readSkillMdVersion(skillMd);
+          const info = (installed[entry] ??= { scopes: [], version: ver ?? "?" });
+          info.scopes.push(scope);
+          if (ver) info.version = ver;
+        } catch {
+          // No SKILL.md — still mark as installed (partial install)
+          const info = (installed[entry] ??= { scopes: [], version: "?" });
+          info.scopes.push(scope);
+        }
       }
     } catch {
       // Skip nonexistent dirs
@@ -152,10 +162,10 @@ async function listSkills(): Promise<void> {
   }
 
   for (const s of skills) {
-    const scopes = installed[s.id];
-    const marker = scopes && scopes.length > 0 ? `[installed: ${scopes.join(", ")}]` : "";
+    const info = installed[s.id];
+    const marker = info ? `[${info.scopes.join(", ")}] v${info.version}` : "";
     const ver = s.latest_version ? `v${s.latest_version}` : "(no version)";
-    console.log(`  ${s.id.padEnd(30)} ${ver.padEnd(12)} ${marker}`);
+    console.log(`  ${s.id.padEnd(30)} ${`remote ${ver}`.padEnd(18)} ${marker}`);
     console.log(`    ${s.name}  |  ${s.price}  |  ${s.formats}`);
   }
   console.log(`\n${skills.length} skills available. Use "future skills install <name>" to install.`);
@@ -252,6 +262,48 @@ async function uninstallSkill(skillId: string, scope: Scope = "app"): Promise<vo
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Read just the YAML frontmatter from a SKILL.md and extract the version field.
+ * Returns null if no version field found.
+ * Only reads up to the closing ---, not the whole file body.
+ */
+async function readSkillMdVersion(skillMdPath: string): Promise<string | null> {
+  const fh = await open(skillMdPath, "r");
+  try {
+    const buf = Buffer.alloc(4096); // frontmatter is always small
+    const { bytesRead } = await read(fh, buf, 0, buf.length, 0);
+    const text = buf.toString("utf8", 0, bytesRead);
+
+    const trimmed = text.trimStart();
+    if (!trimmed.startsWith("---")) return null;
+
+    const rest = trimmed.slice(3);
+    const endIdx = Math.max(
+      rest.indexOf("\n---"),
+      rest.indexOf("---"),
+    );
+    if (endIdx === -1) return null;
+
+    const frontmatter = rest.slice(0, endIdx);
+
+    for (const line of frontmatter.split("\n")) {
+      const t = line.trim();
+      if (!t || t.startsWith("#")) continue;
+      const m = t.match(/^version:\s*(.+)$/);
+      if (m) {
+        let val = m[1].trim();
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          val = val.slice(1, -1);
+        }
+        return val || null;
+      }
+    }
+    return null;
+  } finally {
+    await close(fh);
+  }
+}
 
 function unzip(zipPath: string, destDir: string): Promise<void> {
   return new Promise((resolve, reject) => {

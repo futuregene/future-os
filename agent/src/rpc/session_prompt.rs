@@ -19,7 +19,7 @@ impl ServerSession {
 
             // Discover skills so they appear in the system prompt's <available_skills> block.
             let skill_dirs = vec![
-                crate::skills::USER_SKILLS_DIR.to_string(),
+                crate::skills::APP_SKILLS_DIR.to_string(),
                 format!("{}/{}", self.cwd, crate::skills::PROJECT_SKILLS_DIR),
                 crate::skills::AGENTS_SKILLS_DIR.to_string(),
             ];
