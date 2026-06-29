@@ -11,5 +11,9 @@
 - [[Settings]]
 - [[Skills]]
 
+**Command line (advanced)**
+- [[CLI (future-cli)|CLI]]
+- [[Terminal UI (future-tui)|TUI]]
+
 **Help**
 - [[FAQ]]
