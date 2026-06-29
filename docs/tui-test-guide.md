@@ -559,6 +559,241 @@ sleep 3
 
 ---
 
+---
+
+## 十、Steer / FollowUp / Interrupt
+
+### 10.1 Steer（中断并替换当前生成）
+
+```
+目的: 验证 steer 能中断当前 prompt 并注入新指令
+操作:
+  1. 发送一个长 prompt（如 "write a poem with 20 stanzas"）
+  2. 等 2s 让 Agent 开始 streaming
+  3. 输入 "/steer write only 3 stanzas instead" → Enter
+  4. 等 5s → 截屏
+检查:
+  - Agent 立即停止原输出
+  - 按照 steer 的新指令重新生成（诗变短了）
+  - messageCount / Queries 增加的是 steer 而非新 user message
+```
+
+### 10.2 FollowUp（排队追加）
+
+```
+目的: 验证 followUp 在当前生成完成后追加
+操作:
+  1. 发送 "What is 2+2?"
+  2. 在 streaming 过程中输入 "/followUp also tell me what 3+3 is" → Enter
+  3. 等 Agent 回答完 → 截屏
+检查:
+  - Agent 先回答 2+2=4，然后自动回答 3+3=6
+  - 两次回答在同一个 session 中
+```
+
+### 10.3 Interrupt（ctrl+c 中断 streaming）
+
+```
+目的: 验证 ctrl+c 在 streaming 时中断但不退出
+操作:
+  1. 发送一个会让 Agent 运行较久的 prompt
+  2. 等 2s → ctrl+c
+  3. 等 1s → 截屏
+检查:
+  - TUI 不退去
+  - 显示 "(aborted)" 提示
+  - Agent 停止输出
+  - 可以继续发送新 prompt
+```
+
+### 10.4 Interrupt（ctrl+c 退出空闲 TUI）
+
+```
+目的: 验证 ctrl+c 在空闲时退出 TUI
+操作: 等 Agent 空闲 → ctrl+c
+检查: TUI 退出（tmux session 结束）
+注意: 测试后需重新启动 tmux session
+```
+
+---
+
+## 十一、Auto Retry / Auto Compaction
+
+### 11.1 Auto Retry
+
+```
+目的: 验证 context-length 错误时自动重试
+操作:
+  1. 确认 auto_retry 开启（/status 检查）
+  2. 发送会导致 context overflow 的长对话（多轮提问填满 context）
+  3. 观察是否自动触发 compaction/retry
+检查: 遇 context-length 错误时不直接报错，而是自动 compact 后重试
+```
+
+### 11.2 Auto Compaction 触发
+
+```
+目的: 验证 context 达到 90% 时自动压缩
+操作:
+  1. 确认 auto_compaction 开启（/status 检查）
+  2. 连续多轮提问直到 context 超过 90%
+  3. 观察 /status 中 context_tokens 的变化
+检查: context 接近上限时自动压缩，压缩后 context_tokens 明显减少
+```
+
+### 11.3 手动 Compaction
+
+```
+目的: 验证 /compact 命令效果
+操作:
+  1. 多轮提问后 /status 记录 context_tokens
+  2. /compact → 等 3s
+  3. /status 对比 context_tokens
+检查: compact 后 context_tokens 应减少，旧消息被 summarize
+```
+
+---
+
+## 十二、Export / Import / Delete
+
+### 12.1 Export HTML
+
+```
+目的: 验证 session 导出为 HTML
+操作: /export → 等 2s → 检查输出路径
+检查:
+  - 提示导出成功或显示文件路径
+  - 文件存在且内容非空
+```
+
+### 12.2 Import Session
+
+```
+目的: 验证从文件导入 session
+操作: /import <path> → 等 2s
+检查:
+  - 提示导入成功
+  - /sessions 列表中可以看到导入的 session
+```
+
+### 12.3 Delete Session
+
+```
+目的: 验证删除 session
+操作: /sessions → 选中一个 session → /delete <sessionId>
+检查:
+  - 提示删除成功
+  - /sessions 列表中该 session 已消失
+```
+
+---
+
+## 十三、Image Input (Kitty Protocol)
+
+### 13.1 图片显示
+
+```
+目的: 验证 Kitty 图片协议在支持时正常工作
+操作: 如果终端支持 Kitty（如 iTerm2/WezTerm/kitty）:
+  1. 通过 file:// 或 base64 发送一张图片
+  2. 确认终端能渲染图片
+  3. 检查: TUI 中图片不破坏文本布局
+```
+
+---
+
+## 十四、Session Fork / Clone 链路
+
+### 14.1 Fork Lineage
+
+```
+目的: 验证 fork 的 session 保留 parent_session_id
+操作:
+  1. 在 session A 中提问
+  2. /fork → 选择 fork 节点 → 创建 session B
+  3. /tree → 检查 session B 显示为 session A 的子节点
+检查:
+  - /tree 中能看到 A → B 的父子结构
+  - session B 中只包含 fork 点之前的消息
+  - session B 可以独立继续对话
+```
+
+### 14.2 Clone Session
+
+```
+目的: 验证 clone 创建完整独立副本
+操作:
+  1. 在 session A 中提问多轮
+  2. 切换到 session A → /clone → 创建 session C
+  3. /sessions → 切换到 session C
+检查:
+  - session C 包含 A 的全部消息
+  - 在 C 中继续提问不影响 A
+```
+
+---
+
+## 十五、Permission Level
+
+### 15.1 Workspace Permission
+
+```
+目的: 验证 workspace 权限限制工具执行范围
+操作:
+  1. 设置 permission_level = "workspace"
+  2. 尝试 read /etc/passwd
+检查: 工具被拒绝执行，提示超出 workspace
+```
+
+### 15.2 None Permission
+
+```
+目的: 验证 none 权限只允许只读
+操作:
+  1. 设置 permission_level = "none"
+  2. 尝试 write 一个文件
+检查: write 被拒绝
+```
+
+---
+
+## 十六、Thinking Level 效果验证
+
+### 16.1 不同 Thinking Level 的可见差异
+
+```
+目的: 验证 thinking level 改变影响输出
+操作:
+  1. ctrl+t 切换到 "off" → 提问 "explain recursion"
+  2. ctrl+t 切换到 "xhigh" → 提问 "explain recursion"
+  3. 对比两次回答
+检查:
+  - off: 无 thinking block，回答相对简短
+  - xhigh: 有斜体灰色 thinking block，回答可能更详细
+  - /status 中 Thinking 字段正确反映当前等级
+```
+
+---
+
+## 十七、gRPC 重连
+
+### 17.1 Agent 断连后恢复
+
+```
+目的: 验证 TUI 在 agent 重启后自动重连
+操作:
+  1. TUI 运行中 → kill agent 进程
+  2. 观察 TUI 状态
+  3. 重启 agent
+  4. 等 5s → 尝试提问
+检查:
+  - Agent 断连时 TUI 显示 "(not connected)" 或类似提示
+  - Agent 恢复后 TUI 自动重连
+  - 重连后 /status 正常
+```
+
+---
+
 ## 清理
 
 ```bash
