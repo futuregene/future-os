@@ -185,26 +185,27 @@ export function Composer({
     const classified = await Promise.all(
       paths.map(async path => ({ path, result: await classifyAttachment(path) })),
     );
-    setAttachments((current) => {
-      const next = [...current];
-      const rejected: string[] = [];
-      for (const { path, result } of classified) {
-        if (next.some(attachment => attachment.path === path))
-          continue;
-        if (next.length >= MAX_ATTACHMENTS_PER_TURN) {
-          rejected.push(`${fileNameFromPath(path)}（最多 ${MAX_ATTACHMENTS_PER_TURN} 个）`);
-          continue;
-        }
-        if (result.kind === null) {
-          rejected.push(`${fileNameFromPath(path)}（${result.reason}）`);
-          continue;
-        }
-        next.push({ kind: result.kind, name: fileNameFromPath(path), path });
+    // Compute next/rejected against the current attachments, then call both
+    // setters — never call setAttachError inside a setAttachments updater
+    // (updaters must be pure; StrictMode/concurrent React may run them twice).
+    const next = [...attachments];
+    const rejected: string[] = [];
+    for (const { path, result } of classified) {
+      if (next.some(attachment => attachment.path === path))
+        continue;
+      if (next.length >= MAX_ATTACHMENTS_PER_TURN) {
+        rejected.push(`${fileNameFromPath(path)}（最多 ${MAX_ATTACHMENTS_PER_TURN} 个）`);
+        continue;
       }
-      setAttachError(rejected.length > 0 ? `已忽略：${rejected.join("，")}` : null);
-      return next;
-    });
-  }, []);
+      if (result.kind === null) {
+        rejected.push(`${fileNameFromPath(path)}（${result.reason}）`);
+        continue;
+      }
+      next.push({ kind: result.kind, name: fileNameFromPath(path), path });
+    }
+    setAttachments(next);
+    setAttachError(rejected.length > 0 ? `已忽略：${rejected.join("，")}` : null);
+  }, [attachments]);
 
   async function handleAttachFiles() {
     if (disabled)

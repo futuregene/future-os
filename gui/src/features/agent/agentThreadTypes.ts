@@ -1,22 +1,4 @@
-export type AgentMode = "plan" | "research" | "build" | "review";
-
 export type MessageRole = "user" | "assistant" | "system";
-
-export interface ToolCall {
-  id: string;
-  name: string;
-  status: "queued" | "running" | "completed" | "failed";
-  summary: string;
-  input: string;
-  output?: string;
-}
-
-export interface AgentPlanStep {
-  id: string;
-  title: string;
-  detail: string;
-  status: "completed" | "active" | "pending";
-}
 
 export type AgentActivityKind = "thinking" | "read" | "bash" | "edit" | "write";
 
@@ -65,8 +47,6 @@ export interface AgentMessage {
    */
   segments?: MessageSegment[];
   attachments?: MessageAttachment[];
-  plan?: AgentPlanStep[];
-  toolCalls?: ToolCall[];
   /**
    * Model id of the run that produced this assistant turn (resolved to a
    * display label at render time).

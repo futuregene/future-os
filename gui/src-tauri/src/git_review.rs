@@ -367,6 +367,10 @@ fn git_output<const N: usize>(
     let output = Command::new("git")
         .arg("-C")
         .arg(workspace_path)
+        // Disable path quoting so non-ASCII filenames come back literal and line
+        // up with the numstat/diff path maps (shadow_review/diff.rs does the
+        // same). Harmless for non-diff subcommands.
+        .args(["-c", "core.quotePath=false"])
         .args(args)
         .output()?;
 

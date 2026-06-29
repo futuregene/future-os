@@ -182,8 +182,8 @@ function base64ToBytes(base64: string) {
 async function extractPdfText(path: string) {
   const base64 = await readFileBase64({ maxBytes: READ_SOURCE_MAX_BYTES, path });
   const loadingTask = pdfjs.getDocument({ data: base64ToBytes(base64) });
-  const pdf = await loadingTask.promise;
   try {
+    const pdf = await loadingTask.promise;
     const parts: string[] = [];
     let bytes = 0;
     for (let page = 1; page <= pdf.numPages; page++) {
