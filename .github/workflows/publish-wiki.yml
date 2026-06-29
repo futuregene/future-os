@@ -1,0 +1,53 @@
+name: Publish Wiki
+
+# Sync docs/wiki/ to the GitHub wiki whenever wiki sources change on main.
+#
+# Prerequisite: the repository's Wikis feature must be enabled
+# (Settings → Features → Wikis). The job below tries to enable it automatically,
+# but that only works if the org allows GITHUB_TOKEN administration access or a
+# WIKI_TOKEN (PAT with admin) is provided — otherwise an admin must enable it
+# once by hand. Once Wikis is on, the wiki is created and filled automatically
+# (no need to hand-create a first page). See docs/WIKI-MAINTENANCE.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/wiki/**'
+      - 'scripts/publish-wiki.sh'
+      - '.github/workflows/publish-wiki.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  administration: write
+
+concurrency:
+  group: publish-wiki
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure Wikis feature is enabled (best effort)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.WIKI_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          gh api -X PATCH "repos/${{ github.repository }}" -F has_wiki=true \
+            && echo "Wikis feature is enabled." \
+            || echo "Could not enable Wikis automatically — an admin may need to turn it on in Settings → Features → Wikis."
+
+      - name: Sync docs/wiki to the GitHub wiki
+        env:
+          # GITHUB_TOKEN can push to the repo's own wiki. If your org restricts
+          # that, create a PAT with repo scope and store it as the WIKI_TOKEN
+          # secret — it is used automatically when present.
+          WIKI_REMOTE: https://x-access-token:${{ secrets.WIKI_TOKEN || secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git
+          GIT_AUTHOR_NAME: 'github-actions[bot]'
+          GIT_AUTHOR_EMAIL: '41898282+github-actions[bot]@users.noreply.github.com'
+        run: bash scripts/publish-wiki.sh
