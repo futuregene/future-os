@@ -36,11 +36,10 @@ Page names come from filenames: `Quick-Start.md` → page **Quick-Start**
 The only manual step is enabling the **Wikis** feature, which requires repo
 admin: **Settings → General → Features → Wikis** (checkbox).
 
-- This cannot be done from the script or from a non-admin account (the API
-  returns 404 without admin rights).
-- The publish workflow *attempts* to enable it automatically with its own token,
-  but that only succeeds if the org permits `GITHUB_TOKEN` administration access
-  or a `WIKI_TOKEN` PAT (with admin) is configured.
+- This cannot be done from the script, the workflow, or a non-admin account
+  (the API returns 404 without admin rights, and requesting `administration`
+  scope from a workflow is rejected under this org's policy).
+- So a repo admin must tick the checkbox once, by hand.
 
 Once Wikis is enabled, **no further bootstrap is needed** — you do *not* have to
 hand-create a first page. `publish-wiki.sh` detects an uninitialized wiki and
