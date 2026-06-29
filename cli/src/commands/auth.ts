@@ -41,7 +41,7 @@ type AuthFile = Record<string, unknown>;
 export async function login(platformUrlOverride?: string): Promise<void> {
   const authFile = await loadAuthFile();
   const platformUrl = await getPlatformUrl(platformUrlOverride);
-  const device = await post<DeviceCodeResponse>(platformUrl, "/api/client/v1/oauth/device/code", {
+  const device = await post<DeviceCodeResponse>(platformUrl, "/client/v1/oauth/device/code", {
     client_name: "Future OS CLI",
   });
 
@@ -58,7 +58,7 @@ export async function login(platformUrlOverride?: string): Promise<void> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < device.expires_in * 1000) {
     await sleep(device.interval * 1000);
-    const response = await fetch(`${platformUrl}/api/client/v1/oauth/device/token`, {
+    const response = await fetch(`${platformUrl}/client/v1/oauth/device/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ device_code: device.device_code }),
