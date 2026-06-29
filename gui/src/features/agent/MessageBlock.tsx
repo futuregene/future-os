@@ -6,7 +6,6 @@ import { formatTime } from "../../lib/date";
 import { MarkdownContent } from "../markdown/MarkdownContent";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
 import { MessageMeta } from "./MessageMeta";
-import { PlanBlock } from "./PlanBlock";
 
 interface MessageBlockProps {
   message: AgentMessage;
@@ -72,7 +71,6 @@ export function MessageBlock({
                 </div>
               )
             : null}
-          {message.plan ? <PlanBlock steps={message.plan} /> : null}
           {!isUser && !hasSegments ? <AgentActivityList items={message.activityItems} /> : null}
           {canRecover
             ? (

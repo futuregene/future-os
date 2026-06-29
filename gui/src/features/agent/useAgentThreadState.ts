@@ -47,7 +47,6 @@ export function useAgentThreadState({
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [loadingThread, setLoadingThread] = useState(true);
   const [recentRun, setRecentRun] = useState<StoredRun | null>(null);
-  const [recentRunEventCount, setRecentRunEventCount] = useState(0);
   const [scrollbar, setScrollbar] = useState({ height: 0, top: 0, visible: false });
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -92,37 +91,23 @@ export function useAgentThreadState({
   const recentRunGenRef = useRef(0);
   const refreshRecentRun = useCallback(async (threadId: string, workspaceId?: string | null) => {
     const generation = ++recentRunGenRef.current;
-    const runs = await listRuns(threadId);
-    if (generation !== recentRunGenRef.current) {
-      return;
-    }
-    const latestRun = runs[0] ?? null;
-    setRecentRun(latestRun);
-    if (latestRun) {
-      upsertFutureReferenceData(workspaceId, "run", latestRun.id, latestRun);
-    }
-    if (latestRun?.status === "waiting_approval") {
-      setMessages(current =>
-        current.map(message =>
-          message.id.startsWith("pending_")
-            ? {
-                ...message,
-                content: "正在等待你审批一个操作。请在输入框上方查看并决定是否继续。",
-              }
-            : message,
-        ),
-      );
-    }
-
-    if (latestRun) {
-      const events = await listRunEvents(latestRun.id);
+    try {
+      const runs = await listRuns(threadId);
       if (generation !== recentRunGenRef.current) {
         return;
       }
-      setRecentRunEventCount(events.length);
+      const latestRun = runs[0] ?? null;
+      setRecentRun(latestRun);
+      if (latestRun) {
+        upsertFutureReferenceData(workspaceId, "run", latestRun.id, latestRun);
+      }
     }
-    else {
-      setRecentRunEventCount(0);
+    catch {
+      // Run-status refresh is best-effort: a failure here must not blank the
+      // thread (it runs alongside listMessages in loadThreadMessages via
+      // Promise.all) or abort an in-flight send. Keep the previous recentRun
+      // until the next poll. The waiting-approval prompt is rendered separately
+      // by AgentThread from `activeApproval`, so no message rewrite is needed.
     }
   }, []);
 
@@ -226,7 +211,6 @@ export function useAgentThreadState({
       if (isCurrentSend()) {
         setRecentRun(run);
         upsertFutureReferenceData(thread.workspaceId, "run", run.id, run);
-        setRecentRunEventCount(0);
         setMessages(current =>
           current.map(message =>
             message.id === pendingId
@@ -470,7 +454,6 @@ export function useAgentThreadState({
     loadingThread,
     messages,
     recentRun,
-    recentRunEventCount,
     scrollRef,
     scrollbar,
   };
