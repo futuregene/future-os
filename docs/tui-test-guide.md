@@ -1,178 +1,222 @@
-# TUI Test Guide
+# TUI 测试指南
 
-> 在 tmux 中自动化测试 TUI 功能的流程。每次改完 TUI 代码后执行。
+> 本指南供大模型在 tmux 中交互式测试 FutureOS TUI。每次改完 TUI / agent 代码后，按本文档逐步执行验证。
 
-## 前置条件
+## 准备
 
-```bash
-# Agent 必须运行
-make run-agent  # 或提前启动
-
-# TUI 依赖安装
-make install-tui
-```
-
-## 自动化测试脚本
+1. 确认 agent 已启动（`pgrep future-agent`，否则 `make run-agent &`）
+2. 在 tmux 中启动 TUI，终端尺寸 120×40：
 
 ```bash
-#!/bin/bash
-# 保存为 /tmp/tui-tmux-test.sh 然后 bash 执行
-
-set -e
 SESSION="tui-test"
-TUI_DIR="$PWD/tui"
-
-tmux kill-session -t "$SESSION" 2>/dev/null || true
-sleep 0.5
-
-# 120x40 终端
+tmux kill-session -t "$SESSION" 2>/dev/null; sleep 0.5
 tmux new-session -d -s "$SESSION" -x 120 -y 40 \
-    "cd $TUI_DIR && bun run src/index.ts 2>&1"
+  "cd /Users/geilige/future-os/tui && bun run src/index.ts 2>&1"
 sleep 3
-
-send() { tmux send-keys -t "$SESSION" "$@"; }
-capture() { tmux capture-pane -t "$SESSION" -p "$@"; }
-wait_sec() { sleep "$1"; }
-clear_input() { send C-u; wait_sec 0.2; }
-
-# ── 1. /help ────────────────────────────────────────────────────────────────
-echo "1. /help"
-clear_input; send "/help"; send Enter; wait_sec 0.5
-capture | grep -q "Terminal UI Help" && echo "  PASS" || echo "  FAIL"
-send Escape; wait_sec 0.2
-
-# ── 2. /status (初始状态) ───────────────────────────────────────────────────
-echo "2. /status"
-clear_input; send "/status"; send Enter; wait_sec 0.5
-capture | grep -q "Queries: 0" && echo "  PASS" || echo "  FAIL"
-clear_input
-
-# ── 3. 简单提问 ─────────────────────────────────────────────────────────────
-echo "3. Simple question"
-send "What is 2+2? Answer with just the number."; send Enter; wait_sec 8
-capture | grep -q "4" && echo "  PASS" || echo "  FAIL"
-wait_sec 3
-
-# ── 4. 查询后 /status ───────────────────────────────────────────────────────
-echo "4. /status after query"
-clear_input; send "/status"; send Enter; wait_sec 0.5
-capture | grep "Queries: 1" && echo "  PASS" || echo "  WARN: queries not 1"
-clear_input
-
-# ── 5. 工具调用 (bash) ─────────────────────────────────────────────────────
-echo "5. Tool call (bash)"
-clear_input; send "Run ls in current directory"; send Enter; wait_sec 12
-capture | grep -E '\$ ls|bash' && echo "  PASS" || echo "  WARN"
-capture | grep "src" && echo "  PASS (output)" || echo "  WARN: no output"
-wait_sec 3
-
-# ── 6. /status (Queries=2) ─────────────────────────────────────────────────
-echo "6. /status after tool"
-clear_input; send "/status"; send Enter; wait_sec 0.5
-capture | grep "Queries: 2" && echo "  PASS" || echo "  WARN"
-send Escape; wait_sec 0.1
-
-# ── 7. /new ─────────────────────────────────────────────────────────────────
-echo "7. /new"
-clear_input; send "/new"; send Enter; wait_sec 1
-capture | grep -iE "session|New" && echo "  PASS" || echo "  WARN"
-clear_input
-
-# ── 8. /sessions 列表 ──────────────────────────────────────────────────────
-echo "8. /sessions"
-clear_input; send "/sessions"; send Enter; wait_sec 1.5
-capture -S -40 | grep "Q" && echo "  PASS" || echo "  WARN: no Q counts"
-send Escape; wait_sec 0.2
-
-# ── 9. ctrl+p 切换模型 ─────────────────────────────────────────────────────
-echo "9. Model cycle (ctrl+p)"
-send Escape; wait_sec 0.2; send "ctrl+p"; wait_sec 1
-echo "  INFO: check footer for model change"
-clear_input
-
-# ── 10. 切换到历史 session ──────────────────────────────────────────────────
-echo "10. Switch to historical session"
-clear_input; send "/sessions"; send Enter; wait_sec 1.5
-send Down Down Enter; wait_sec 3
-capture -S -20 | grep -i "switch\|session" && echo "  PASS" || echo "  WARN"
-clear_input
-
-# ── 11. 历史消息渲染检查 ───────────────────────────────────────────────────
-echo "11. Historical messages"
-capture | grep -E '\$ ls|read |write |edit ' && echo "  PASS: tool calls" || echo "  INFO: no tools"
-echo "  Done"
-
-# ── 12. Session 文件字段检查 ────────────────────────────────────────────────
-echo "12. Session file fields"
-LATEST=$(ls -t ~/.future/agent/sessions/*.jsonl | head -1)
-grep -q '"name":"bash"\|"name":"read"' "$LATEST" && echo "  PASS: name" || echo "  INFO: no name"
-grep -q "tool_args" "$LATEST" && echo "  PASS: tool_args" || echo "  INFO: no tool_args"
-grep -q "thinking" "$LATEST" && echo "  PASS: thinking" || echo "  INFO: no thinking"
-
-# ── 13. /compact ────────────────────────────────────────────────────────────
-echo "13. /compact"
-clear_input; send "/compact"; send Enter; wait_sec 1
-echo "  PASS (command sent)"
-clear_input
-
-# ── 14. /cwd ────────────────────────────────────────────────────────────────
-echo "14. /cwd"
-clear_input; send "/cwd /tmp"; send Enter; wait_sec 0.5
-send "/status"; send Enter; wait_sec 0.5
-capture | grep "/tmp" && echo "  PASS" || echo "  WARN"
-clear_input
-
-echo ""
-echo "=== Done. tmux attach -t $SESSION ==="
 ```
 
-## 运行
+3. 操作 TUI 的基本方式：
+
+| 操作 | 命令 |
+|------|------|
+| 发送按键 | `tmux send-keys -t tui-test "<keys>"` |
+| 发送 Enter | 在 keys 后加 `Enter`，如 `send-keys "/help" Enter` |
+| 清除输入 | `send-keys C-u` |
+| 关闭弹窗 | `send-keys Escape` |
+| 截取画面 | `tmux capture-pane -t tui-test -p -e` |
+| 截取尾部 | `tmux capture-pane -t tui-test -p -e -S -<行数>` |
+
+4. 每步之间 `sleep <秒>` 等待渲染或 agent 响应。
+
+---
+
+## 自动测试步骤
+
+按顺序执行以下 14 项测试。每项包含：目的、发送的按键、等多久、检查什么。
+
+### 1. `/help` —— 帮助弹窗
+
+```
+目的: 验证 overlay 正常显示和关闭
+操作: 输入 /help → Enter → 等 0.5s → 截屏检查 → Escape 关闭
+检查: 屏幕出现 "Terminal UI Help" 或帮助内容表格
+```
+
+### 2. `/status` —— 初始会话状态
+
+```
+目的: 验证状态字段正确（初始 Queries=0）
+操作: C-u 清输入 → 输入 /status → Enter → 等 0.5s → 截屏
+检查:
+  - 显示 "Queries: 0"
+  - 显示当前 model 名（含 deepseek 字样）
+  - 显示 CWD、Thinking、Context 等字段
+```
+
+### 3. 简单提问 —— Agent 基础响应
+
+```
+目的: 验证 Agent 能正常回复
+操作: C-u 清输入 → 输入 "What is 2+2? Answer with just the number." → Enter
+      等 8s → 截屏
+检查: 屏幕出现 "4"（Agent 的回答）
+```
+
+### 4. `/status` —— 提问后 Queries 递增
+
+```
+目的: 验证 Queries 计数正确
+操作: C-u → /status → Enter → 等 0.5s → 截屏
+检查: 显示 "Queries: 1"
+Escape 关闭（如有弹窗）
+```
+
+### 5. Tool call (bash) —— 工具调用展示
+
+```
+目的: 验证工具调用展示格式（`$ cmd` / `read path` 等）
+操作: C-u → 输入 "Run ls in the current directory" → Enter → 等 12s → 截屏尾部 30 行
+检查:
+  - 出现 "$ ls" 格式的 bash 工具调用
+  - 出现 ls 的输出内容（如 src/ 目录）
+  - 工具调用后 Agent 有回复文字
+```
+
+### 6. `/status` —— 两次提问后 Queries=2
+
+```
+目的: 验证多次提问后计数
+操作: C-u → /status → Enter → 等 0.5s → 截屏
+检查: 显示 "Queries: 2"
+Escape 关闭
+```
+
+### 7. `/new` —— 创建新会话
+
+```
+目的: 验证新会话创建
+操作: C-u → /new → Enter → 等 1s → 截屏
+检查: 出现 "New session" 或 session ID
+```
+
+### 8. `/sessions` —— 会话列表
+
+```
+目的: 验证会话列表展示（name、queryCount、时间三列对齐）
+操作: C-u → /sessions → Enter → 等 1.5s → 截屏尾部 40 行
+检查:
+  - 列表项不含原始 session ID（有 name 或 first_message 作为标签）
+  - 每项显示 "NQ" 格式的 query 计数（如 "2Q"）
+  - 每项显示 model 名和更新时间
+Escape 关闭
+```
+
+### 9. `ctrl+p` —— 模型切换
+
+```
+目的: 验证模型循环切换
+操作: Escape 关闭弹窗 → 等 0.2s → ctrl+p → 等 1s → 截屏底部
+检查: Footer 中 model 名发生变化（不再是之前的模型）
+```
+
+### 10. 切换到历史 session
+
+```
+目的: 验证 session 切换和消息加载
+操作: C-u → /sessions → Enter → 等 1.5s
+      按 Down 两次选中一个历史 session → Enter
+      等 3s → 截屏尾部 20 行
+检查: 出现 "Switched to session" 或切换提示
+```
+
+### 11. 历史消息渲染
+
+```
+目的: 验证历史 session 中工具调用格式正确（非 call_id）
+操作: 在切换后的 session 中截全屏
+检查（逐一确认）:
+  - bash 工具展示格式为 "$ 命令"（非 "bash" 或 call_xxx）
+  - read 工具展示格式为 "read 文件路径"
+  - write 工具展示格式为 "write 文件路径"
+  - edit 工具展示格式为 "edit 文件路径"
+  - 工具调用行不包含输出内容（只有 header）
+  - 如果有 thinking，以斜体灰色显示
+```
+
+### 12. Session 文件字段
+
+```
+目的: 验证 session JSONL 文件包含 name、tool_args、thinking 字段
+操作: 不操作 TUI，直接检查磁盘文件
+      LATEST=$(ls -t ~/.future/agent/sessions/*.jsonl | head -1)
+      检查:
+        grep -c '"name":"' $LATEST → 应有 tool 条目带 name
+        grep -c 'tool_args' $LATEST → 应有条目带 tool_args
+        grep -c '"thinking":"' $LATEST → 应有 assistant 条目带 thinking
+  三项检查都有非零计数即为通过
+```
+
+### 13. `/compact` —— 上下文压缩
+
+```
+目的: 验证压缩命令正常执行
+操作: C-u → /compact → Enter → 等 1s → 截屏
+检查: 出现 compact 相关提示（如 "Context compacted" 或无报错）
+```
+
+### 14. `/cwd` —— 切换工作目录
+
+```
+目的: 验证工作目录切换
+操作: C-u → /cwd /tmp → Enter → 等 0.5s
+      C-u → /status → Enter → 等 0.5s → 截屏
+检查: CWD 字段显示 "/tmp"
+```
+
+---
+
+## 手动专项测试
+
+以下场景脚本难以精确判断，需要大模型自行观察截屏内容并判断。
+
+### A. Overlay 弹窗无残影
+
+1. `/sessions` 打开列表 → 上下滚动到底再滚回头 → **确认第一行的选中高亮/背景色无异常**
+2. 选中一个 session 切换 → 再次 `/sessions` → **确认弹窗内容完整刷新，无上次的残留文字或高亮**
+
+### B. 自动补全
+
+1. 输入 `/s` → 等 0.3s → 截屏 → **确认出现补全列表，含 /sessions、/status、/scoped-models**
+2. Tab 接受补全 → 等 0.2s → **确认输入框变为完整命令**
+
+### C. 长时间 streaming 不崩溃
+
+1. 发送一个会触发多步工具调用的 prompt（如 "read this file, write a summary, then run tests"）
+2. 观察整个过程中 TUI 无卡死，spinner 正常旋转，Footer 实时更新 token 计数
+
+### D. 窄终端
+
+1. 关闭当前 tmux 重新开 80×24 的 session
+2. `/status` → **确认各字段不截断到不可读**
+3. `/sessions` → **确认列表不溢出**
+
+---
+
+## 测试完成后的清理
 
 ```bash
-make run-agent &        # 启动 agent
-sleep 2                 # 等 agent 就绪
-bash /tmp/tui-tmux-test.sh
+tmux kill-session -t tui-test
 ```
 
-## 手动测试项目
+---
 
-测试脚本无法覆盖的场景，需要手动验证：
+## 常见失败原因速查
 
-### Overlay 渲染
-1. 输入 `/sessions` → 确认弹窗正常
-2. 选择 session → 确认切换正常
-3. 再次 `/sessions` → **检查 overlay 无重叠/错乱**
-4. 上下滚动到列表末尾再滚回头 → **检查无残留行**
-
-### 模型切换
-1. `ctrl+p` 切几次 → footer 更新
-2. `/model deepseek-v4-pro` → 确认切换
-
-### 工具调发展示
-1. 发送需要工具的 prompt（如 "read this file"）
-2. 观察工具调用格式：`$ cmd` / `read /path` / `write /path` / `edit /path`
-3. 完成后 `/sessions` 切回该 session → 历史工具调用仍正确显示
-
-### Thinking 显示
-1. 确保 thinking 等级非 off
-2. 提问 → 确认 thinking block 以斜体显示
-3. 切历史 session → 确认历史 thinking 也有
-
-### Session 文件
-```bash
-# 检查最新 session 文件包含所有新字段
-LATEST=$(ls -t ~/.future/agent/sessions/*.jsonl | head -1)
-echo "--- name ---"; grep -c '"name":"' "$LATEST"
-echo "--- tool_args ---"; grep -c "tool_args" "$LATEST"
-echo "--- thinking ---"; grep -c '"thinking":"' "$LATEST"
-```
-
-## 常见问题排查
-
-| 现象 | 原因 | 解决 |
-|------|------|------|
-| TUI 连不上 agent | Agent 未启动 | `make run-agent` |
-| 答非所问 | 切到了错误 session | `/new` 创建新 session |
-| Overlay 重叠 | 差分渲染缓存 | `requestRender(true)` 或 Ctrl+L |
-| 工具调用显示 call_id | Session 保存缺少 name 字段 | 确认是最新 agent 代码 && 新 session |
-| thinking 不显示 | Session 保存缺少 thinking 字段 | 同上 |
+| 现象 | 可能原因 | 排查方向 |
+|------|---------|---------|
+| TUI 连不上 agent | Agent 未启动 | `pgrep future-agent` |
+| Queries 不递增 | `/status` 走了 fallback 创建新 session | 确认 agent 未重启 |
+| 工具调用显示 call_xxx | session 是旧代码保存的 | 新建 session 再测 |
+| thinking 不显示 | session 是旧代码保存的 | 同上 |
+| Overlay 重叠/残影 | 差分渲染缓存未清 | Ctrl+L 强制重绘 |
+| Line exceeds terminal width | 某行超出终端宽度 | 检查 `padToWidth` 截断逻辑 |
