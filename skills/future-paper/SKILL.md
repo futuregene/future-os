@@ -1,8 +1,10 @@
 ---
+version: 1.0.0
 name: future-paper
 description: Search academic literature across multiple databases and retrieve full paper content by identifier (PMID, DOI). Returns structured Paper objects with bibliographic metadata (title, authors, journal, year, DOI, PMID, ArXiv, citation count) and AI-summarized findings. Use for literature reviews, finding papers on a topic, and extracting specific findings from the scientific literature. Also supports retrieving complete paper body text.
 allowed-tools: Bash(future:*)
 ---
+version: 1.0.0
 
 > **Authentication is automatic.** The `future` CLI reads your credentials from `~/.future/agent/auth.json`. You do NOT need to find, configure, or pass API keys — just call the tools below.
 

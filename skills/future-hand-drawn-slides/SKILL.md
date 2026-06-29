@@ -1,9 +1,11 @@
 ---
+version: 1.0.0
 name: future-hand-drawn-slides
 description: Generate hand-drawn sketchnote style presentation slides from a Markdown report using Future OS image tools. Default style is Japanese illustration with ink splatters, pastel watercolor, and comic sketch texture. Triggered when the user asks to create PPT/slides in hand-drawn, sketchnote, or Japanese illustration style.
 allowed-tools: Bash(future:*)
 category: creative
 ---
+version: 1.0.0
 
 # Future Hand-Drawn Sketchnote Slides Generator
 

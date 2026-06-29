@@ -1,8 +1,10 @@
 ---
+version: 1.0.0
 name: future-web
 description: Search the public web for current information. Returns page titles, URLs, and content snippets from search results. Pair with fetch_url to retrieve full page content — if fetch_url returns empty or fails (e.g. JS-rendered pages, WeChat articles, anti-bot walls), automatically fall back to browser_open + browser_snapshot. Use for fact-checking, news, documentation, and any information beyond your knowledge cutoff.
 allowed-tools: Bash(future:*)
 ---
+version: 1.0.0
 
 > **Authentication is automatic.** The `future` CLI reads your credentials from `~/.future/agent/auth.json`. You do NOT need to find, configure, or pass API keys — just call the tools below.
 

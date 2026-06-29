@@ -1,8 +1,10 @@
 ---
+version: 1.0.0
 name: future-account
 description: View Future account profile and balance, create credit recharge orders via Future CLI. Use when the user asks about their account info, credits balance, remaining credits, wants to top up or recharge, or asks "how much credit do I have left".
 allowed-tools: Bash(future:*)
 ---
+version: 1.0.0
 
 > **Authentication is automatic.** The `future` CLI reads credentials from `~/.future/agent/auth.json`. You do NOT need to find, configure, or pass API keys — just call the commands below.
 

@@ -1,9 +1,11 @@
 ---
+version: 1.0.0
 name: future-skill-creator
 description: Create or update user-local custom skills under ~/.agents/skills using mature skill design patterns: concise SKILL.md instructions, clear triggering descriptions, optional scripts/references/assets, progressive disclosure, validation, and iteration. Use when the user asks to create, scaffold, port, review, improve, or install a custom skill, including requests like "add a skill", "make this a skill", "create my own skill", "update SKILL.md", or "创建技能".
 allowed-tools: Bash(future:*)
 category: development
 ---
+version: 1.0.0
 
 # Future Skill Creator
 
@@ -73,9 +75,11 @@ Every `SKILL.md` starts with YAML frontmatter:
 
 ```yaml
 ---
+version: 1.0.0
 name: example-skill
 description: Do a specific task with specific inputs, outputs, tools, and constraints. Use when the user asks for concrete trigger phrases or task families.
 ---
+version: 1.0.0
 ```
 
 Rules:
@@ -164,9 +168,11 @@ Recommended shape:
 
 ```markdown
 ---
+version: 1.0.0
 name: <skill-name>
 description: <what it does and when to use it>
 ---
+version: 1.0.0
 
 # <Human Title>
 

@@ -1,9 +1,11 @@
 ---
+version: 1.0.0
 name: future-hand-drawn-posters
 description: Generate hand-drawn Japanese illustration style infographic posters from transcripts, articles, or reports using Future OS image tools. Vertical mobile-first layout with dense modular sections. Use when the user asks for posters, infographics, visual summaries, or hand-drawn visual cards.
 allowed-tools: Bash(future:*)
 category: creative
 ---
+version: 1.0.0
 
 # Future Hand-Drawn Posters Generator
 
