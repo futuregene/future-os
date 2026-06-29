@@ -141,6 +141,7 @@ export function useAgentThreadState({
     };
     const optimisticUserId = clientId("pending_user");
     const pendingId = clientId("pending");
+    const runStartAnchorMs = Date.now();
     const optimisticUserMessage: AgentMessage = {
       id: optimisticUserId,
       role: "user",
@@ -156,8 +157,10 @@ export function useAgentThreadState({
       author: "Research Copilot",
       content: "",
       status: "streaming",
-      createdAt: new Date().toISOString(),
+      createdAt: new Date(runStartAnchorMs).toISOString(),
       activityItems: thinkingActivity(),
+      modelId,
+      runStartedAt: runStartAnchorMs,
     };
     setMessages(current => [...current, optimisticUserMessage, assistantMessage]);
     onThreadActivity();
@@ -290,6 +293,8 @@ export function useAgentThreadState({
         await safeListRunEvents(run.id),
         storedAssistantMessage.content,
       );
+      const settledRun = await loadCurrentRun(thread.id, run.id);
+      const durationMs = runDurationMs(settledRun, runStartAnchorMs);
 
       if (isCurrentSend()) {
         setMessages(current =>
@@ -303,6 +308,9 @@ export function useAgentThreadState({
                   segments: finalRender.segments,
                   status: storedAssistantMessage.status,
                   createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
+                  modelId: settledRun?.modelId ?? modelId,
+                  durationMs,
+                  outputTokens: finalRender.outputTokens,
                 }
               : message,
           ),
@@ -401,7 +409,7 @@ export function useAgentThreadState({
       try {
         const [storedMessages] = await Promise.all([listMessages(threadId), refreshRecentRun(threadId, thread?.workspaceId)]);
         const agentMessages = storedMessages.map(toAgentMessage);
-        const restoredMessages = await restoreMessageActivities(agentMessages);
+        const restoredMessages = await restoreMessageActivities(agentMessages, threadId);
         if (!cancelled) {
           setMessages(restoredMessages);
         }
@@ -494,6 +502,9 @@ async function updatePendingMessageFromRunEvents(
               // two stay consistent — safe to render segments inline immediately.
               segments: projection.segments,
               content: projection.content.trim() ? projection.content : message.content,
+              // Tokens accumulate as each LLM call reports usage (lands at the
+              // end of each call); shown as the real count, no estimate.
+              outputTokens: projection.outputTokens,
             }
           : message,
       ),
@@ -514,12 +525,16 @@ async function updatePendingMessageFromRunEvents(
 function deriveRenderFields(
   events: StoredRunEvent[],
   fallbackContent: string,
-): { content: string; segments?: MessageSegment[] } {
+): { content: string; segments?: MessageSegment[]; outputTokens: number } {
   const projection = buildAssistantRunProjection(events);
   if (projection.content.trim()) {
-    return { content: projection.content, segments: projection.segments };
+    return {
+      content: projection.content,
+      segments: projection.segments,
+      outputTokens: projection.outputTokens,
+    };
   }
-  return { content: fallbackContent };
+  return { content: fallbackContent, outputTokens: projection.outputTokens };
 }
 
 async function safeListRunEvents(runId: string): Promise<StoredRunEvent[]> {
@@ -529,6 +544,20 @@ async function safeListRunEvents(runId: string): Promise<StoredRunEvent[]> {
   catch {
     return [];
   }
+}
+
+/**
+ * Exact model run time from the persisted run; falls back to wall-clock since
+ * the send anchor while the run is still settling. Null when neither is known.
+ */
+function runDurationMs(run: StoredRun | null | undefined, fallbackStartMs?: number): number | null {
+  if (run?.startedAt && run?.endedAt && run.endedAt >= run.startedAt) {
+    return run.endedAt - run.startedAt;
+  }
+  if (typeof fallbackStartMs === "number") {
+    return Math.max(0, Date.now() - fallbackStartMs);
+  }
+  return null;
 }
 
 let clientIdCounter = 0;
@@ -548,7 +577,9 @@ async function loadCurrentRun(threadId: string, runId: string) {
   }
 }
 
-async function restoreMessageActivities(messages: AgentMessage[]) {
+async function restoreMessageActivities(messages: AgentMessage[], threadId: string) {
+  const runs = await listRuns(threadId).catch(() => [] as StoredRun[]);
+  const runById = new Map(runs.map(run => [run.id, run] as const));
   const projectionEntries = await Promise.all(
     messages.map(async (message) => {
       if (message.role !== "assistant" || !message.runId)
@@ -566,13 +597,18 @@ async function restoreMessageActivities(messages: AgentMessage[]) {
 
   return messages.map((message) => {
     const projection = projectionByMessageId.get(message.id);
+    const run = message.runId ? runById.get(message.runId) ?? null : null;
+    const meta: Partial<AgentMessage> = run
+      ? { modelId: run.modelId ?? message.modelId, durationMs: runDurationMs(run) }
+      : {};
     if (!projection)
-      return message;
+      return { ...message, ...meta };
     // Trust event-derived inline ordering only when the events carried the
     // assistant text; otherwise keep the flat activity list (legacy fallback).
-    return projection.content.trim()
-      ? { ...message, activityItems: projection.activityItems, segments: projection.segments }
-      : { ...message, activityItems: projection.activityItems };
+    const withSegments = projection.content.trim()
+      ? { ...message, ...meta, activityItems: projection.activityItems, segments: projection.segments }
+      : { ...message, ...meta, activityItems: projection.activityItems };
+    return { ...withSegments, outputTokens: projection.outputTokens };
   });
 }
 

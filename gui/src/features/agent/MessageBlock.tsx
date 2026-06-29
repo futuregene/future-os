@@ -5,6 +5,7 @@ import { cn } from "../../lib/cn";
 import { formatTime } from "../../lib/date";
 import { MarkdownContent } from "../markdown/MarkdownContent";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
+import { MessageMeta } from "./MessageMeta";
 import { PlanBlock } from "./PlanBlock";
 
 interface MessageBlockProps {
@@ -28,7 +29,7 @@ export function MessageBlock({
 
   return (
     <article className="flex justify-center">
-      <div className="min-w-0 w-full max-w-3xl">
+      <div className="group/msg min-w-0 w-full max-w-3xl">
         <div className={cn("mb-1 flex items-center gap-2", isUser && "justify-end")}>
           <span className="text-sm font-semibold text-ink">{message.author}</span>
           <span className="text-xs text-ink-muted">{formatTime(message.createdAt)}</span>
@@ -104,6 +105,7 @@ export function MessageBlock({
               )
             : null}
         </div>
+        {!isUser ? <MessageMeta message={message} /> : null}
       </div>
     </article>
   );
