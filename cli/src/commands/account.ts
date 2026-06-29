@@ -121,7 +121,7 @@ interface ProfileResponse {
 
 async function accountProfile(): Promise<void> {
   const auth = await loadAccountAuth();
-  const url = `${auth.platformUrl}/client/v1/account/profile`;
+  const url = `${auth.platformUrl}/platform/v1/account/profile`;
 
   const profile = await platformGet<ProfileResponse>(url, auth.apiKey);
 
@@ -140,7 +140,7 @@ interface BalanceResponse {
 
 async function accountBalance(jsonFlag: boolean): Promise<void> {
   const auth = await loadAccountAuth();
-  const url = `${auth.platformUrl}/client/v1/account/balance`;
+  const url = `${auth.platformUrl}/platform/v1/account/balance`;
 
   const balance = await platformGet<BalanceResponse>(url, auth.apiKey);
 
@@ -206,7 +206,7 @@ async function accountRecharge(
   }
 
   const auth = await loadAccountAuth();
-  const url = `${auth.platformUrl}/client/v1/account/recharge/orders`;
+  const url = `${auth.platformUrl}/platform/v1/account/recharge/orders`;
 
   // Convert yuan to cents: 1 CNY = 100 cents
   const amountCents = Math.round(amountYuan * 100);

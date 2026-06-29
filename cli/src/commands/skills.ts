@@ -95,7 +95,7 @@ function scopeLabel(scope: Scope, dir: string): string {
 // ── Remote API ───────────────────────────────────────────────────────────────
 
 async function fetchSkills(platformUrl: string): Promise<SkillInfo[]> {
-  const resp = await fetch(`${platformUrl}/client/v1/skills`);
+  const resp = await fetch(`${platformUrl}/platform/v1/skills`);
   if (!resp.ok) {
     throw new Error(`Failed to fetch skills: ${resp.status} ${resp.statusText}`);
   }
@@ -104,7 +104,7 @@ async function fetchSkills(platformUrl: string): Promise<SkillInfo[]> {
 }
 
 async function downloadSkillZip(platformUrl: string, skillId: string, version: string): Promise<Readable> {
-  const url = `${platformUrl}/client/v1/skills/${encodeURIComponent(skillId)}/versions/${encodeURIComponent(version)}/download`;
+  const url = `${platformUrl}/platform/v1/skills/${encodeURIComponent(skillId)}/versions/${encodeURIComponent(version)}/download`;
   const resp = await fetch(url);
   if (!resp.ok) {
     if (resp.status === 404) {
@@ -127,7 +127,7 @@ async function listSkills(): Promise<void> {
   try {
     skills = await fetchSkills(platformUrl);
   } catch (err) {
-    console.error(`Failed to fetch skills from ${platformUrl}/client/v1/skills`);
+    console.error(`Failed to fetch skills from ${platformUrl}/platform/v1/skills`);
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
     return;
