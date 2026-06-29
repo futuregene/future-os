@@ -67,4 +67,15 @@ export interface AgentMessage {
   attachments?: MessageAttachment[];
   plan?: AgentPlanStep[];
   toolCalls?: ToolCall[];
+  /**
+   * Model id of the run that produced this assistant turn (resolved to a
+   * display label at render time).
+   */
+  modelId?: string | null;
+  /** Epoch ms anchor for the live elapsed timer while streaming. */
+  runStartedAt?: number | null;
+  /** Final model run duration (ms), set once the run settles. */
+  durationMs?: number | null;
+  /** Tokens this reply generated (summed completion tokens across the run). */
+  outputTokens?: number | null;
 }

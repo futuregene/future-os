@@ -456,7 +456,12 @@ impl crate::types::LLMProvider for Client {
                                 error_text: String::new(),
                             })
                             .await;
-                        return false;
+                        // Do NOT stop reading here. Per the OpenAI streaming spec the
+                        // stream ends at `[DONE]` (or connection close), not at the
+                        // finish_reason chunk — and providers like dashscope/qwen send
+                        // the `usage` chunk AFTER finish_reason. Returning false here
+                        // dropped token usage for every reasoning turn. Keep reading;
+                        // `[DONE]` / `Ok(None)` still terminate the stream below.
                     }
                 }
                 true // continue
