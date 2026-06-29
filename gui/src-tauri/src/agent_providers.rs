@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-const DEFAULT_FUTURE_BASE_URL: &str = "http://api.westlakefuturegene.com";
+const DEFAULT_FUTURE_BASE_URL: &str = "https://api.future-os.cn";
 const FUTURE_PROVIDER_ID: &str = "future";
 const FUTURE_PROVIDER_NAME: &str = "FutureGene";
 

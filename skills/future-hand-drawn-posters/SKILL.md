@@ -58,10 +58,10 @@ Use `--stdin` by default because poster prompts often contain quotes, newlines, 
 
 ## Output Directory Convention
 
-**Never save directly to `/tmp/`.** Always create a timestamped subdirectory:
+**Never save directly as bare files in the working directory.** Always create a timestamped subdirectory:
 
 ```bash
-WORK_DIR="/tmp/posters_$(date +%Y%m%d_%H%M%S)"
+WORK_DIR="./posters_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$WORK_DIR"
 ```
 

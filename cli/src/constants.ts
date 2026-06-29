@@ -1,8 +1,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export const DEFAULT_API_URL = "http://api.westlakefuturegene.com";
-export const DEFAULT_PLATFORM_URL = "https://future-os.cn";
+export const DEFAULT_API_URL = "https://api.future-os.cn";
+export const DEFAULT_PLATFORM_URL = "https://api.future-os.cn";
 export const AUTH_FILE = join(homedir(), ".future", "agent", "auth.json");
 export const FUTURE_AUTH_PROVIDER = "future";
 

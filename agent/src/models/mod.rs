@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Default Future API base URL
-const DEFAULT_FUTURE_BASE_URL: &str = "http://api.westlakefuturegene.com";
+const DEFAULT_FUTURE_BASE_URL: &str = "https://api.future-os.cn";
 
 /// Cache TTL in seconds (1 hour)
 const FUTURE_MODELS_CACHE_TTL: u64 = 3600;

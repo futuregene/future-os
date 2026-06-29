@@ -289,7 +289,7 @@ allowed-tools: Bash(future:*)
     对空内容/过短的 URL，用浏览器降级重试：
       future tools call browser_start --args '{"url": "..."}'
       future tools call browser_snapshot --args '{"limit": 100}'
-      future tools call browser_screenshot --args '{"fullPage": true, "path": "/tmp/page.png"}'
+      future tools call browser_screenshot --args '{"fullPage": true, "path": "./page.png"}'
     
     浏览器抓取后再次检查内容充分性：
       - 内容充分 → 标记 ✅
@@ -741,7 +741,7 @@ future tools call browser_open --args '{"url": "<目标URL>"}'
 future tools call browser_snapshot --args '{"limit": 100}'
 
 # Step 4: 如需完整页面内容，截图保存
-future tools call browser_screenshot --args '{"fullPage": true, "path": "/tmp/deep-research-page.png"}'
+future tools call browser_screenshot --args '{"fullPage": true, "path": "./deep-research-page.png"}'
 
 # Step 5: 检测控制台错误
 future tools call browser_console --args '{"level": "error"}'
