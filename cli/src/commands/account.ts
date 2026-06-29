@@ -1,8 +1,8 @@
 import { readFile } from "node:fs/promises";
 
-import { AUTH_FILE, DEFAULT_PLATFORM_URL, FUTURE_AUTH_PROVIDER } from "../constants.js";
+import { AUTH_FILE, FUTURE_AUTH_PROVIDER } from "../constants.js";
 import { isRecord, isNodeError } from "../utils/object.js";
-import { trimTrailingSlash } from "../utils/string.js";
+import { getPlatformUrl } from "../utils/platform.js";
 
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 
@@ -44,16 +44,9 @@ async function loadAccountAuth(): Promise<AccountAuth> {
     );
   }
 
-  const platformUrl =
-    typeof (future as Record<string, unknown>).platform_base_url === "string"
-      ? trimTrailingSlash(
-          (future as Record<string, unknown>).platform_base_url as string,
-        )
-      : undefined;
-
   return {
     apiKey: key,
-    platformUrl: platformUrl ?? DEFAULT_PLATFORM_URL,
+    platformUrl: await getPlatformUrl(),
   };
 }
 
