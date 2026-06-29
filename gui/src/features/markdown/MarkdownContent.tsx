@@ -9,9 +9,9 @@ import type {
   StoredToolCall,
 } from "../../integrations/storage/types";
 import type { FutureReference, InlineNode, MarkdownNode } from "./futureMarkdownTypes";
-import { Check, Clipboard } from "lucide-react";
 import { useMemo, useState } from "react";
-import { copyText } from "../../lib/clipboard";
+import { CopyButton } from "../../components/ui/CopyButton";
+import { useCopyState } from "../../components/ui/useCopyState";
 import { useFutureReference, useFutureReferences } from "./futureReferenceStore";
 import { parseFutureMarkdown } from "./parseFutureMarkdown";
 import { ArtifactEmbed } from "./renderers/ArtifactEmbed";
@@ -130,29 +130,20 @@ function CodeBlock({
   code: string;
   language?: string;
 }) {
-  const [copied, setCopied] = useState(false);
+  const { copiedKey, copy } = useCopyState();
   const { highlight, isLoaded } = useCodeHighlighter();
   const highlighted = useMemo(() => highlight(code, language), [highlight, code, language]);
-
-  async function handleCopy() {
-    await copyText(code);
-    setCopied(true);
-    window.setTimeout(setCopied, 1400, false);
-  }
 
   // Fallback to plain text if highlighter not loaded or language not supported
   if (!isLoaded || !highlighted) {
     return (
       <div className="relative">
-        <button
-          aria-label="Copy code"
-          className="absolute right-1.5 top-1.5 inline-flex size-7 items-center justify-center rounded-md bg-surface/90 text-ink-muted shadow-sm ring-1 ring-line-soft transition-colors hover:text-ink"
-          onClick={() => void handleCopy()}
-          title="Copy code"
-          type="button"
-        >
-          {copied ? <Check className="size-3.5" /> : <Clipboard className="size-3.5" />}
-        </button>
+        <CopyButton
+          copied={copiedKey !== null}
+          label="Copy code"
+          onCopy={() => void copy(code)}
+          variant="floating"
+        />
         <pre className="overflow-auto rounded-lg bg-surface-subtle p-3 pr-11 text-xs leading-5 text-ink">
           {language ? <div className="mb-2 text-[11px] text-ink-muted">{language}</div> : null}
           <code>{code}</code>
@@ -163,15 +154,13 @@ function CodeBlock({
 
   return (
     <div className="relative">
-      <button
-        aria-label="Copy code"
-        className="absolute right-1.5 top-1.5 z-10 inline-flex size-7 items-center justify-center rounded-md bg-surface/90 text-ink-muted shadow-sm ring-1 ring-line-soft transition-colors hover:text-ink"
-        onClick={() => void handleCopy()}
-        title="Copy code"
-        type="button"
-      >
-        {copied ? <Check className="size-3.5" /> : <Clipboard className="size-3.5" />}
-      </button>
+      <CopyButton
+        className="z-10"
+        copied={copiedKey !== null}
+        label="Copy code"
+        onCopy={() => void copy(code)}
+        variant="floating"
+      />
       <pre
         className="overflow-auto rounded-lg p-3 pr-11 text-xs leading-5"
         style={{ backgroundColor: highlighted.bgColor, color: highlighted.fgColor }}

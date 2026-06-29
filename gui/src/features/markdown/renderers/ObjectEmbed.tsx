@@ -8,6 +8,7 @@ import type {
 import type { FutureReference } from "../futureMarkdownTypes";
 import { AlertTriangle, Beaker, FileDiff, Maximize2, Microscope } from "lucide-react";
 import { Badge } from "../../../components/ui/Badge";
+import { Button } from "../../../components/ui/Button";
 import { emitFutureEvent } from "../../../lib/futureEvents";
 
 export function ApprovalEmbed({
@@ -55,14 +56,15 @@ export function ReviewEmbed({
       title={review.title || reference.label || review.id}
     >
       {review.summary ? <p className="text-sm leading-5 text-ink-soft">{review.summary}</p> : null}
-      <button
-        className="mt-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+      <Button
+        className="mt-2"
+        leftIcon={<Maximize2 className="size-3.5" />}
         onClick={openReview}
-        type="button"
+        size="xs"
+        variant="toolbar"
       >
-        <Maximize2 className="size-3.5" />
         Open Review
-      </button>
+      </Button>
     </ObjectFrame>
   );
 }
@@ -85,14 +87,15 @@ export function ResearchEmbed({
       title={resource.title || reference.label || resource.id}
     >
       {resource.summary ? <p className="text-sm leading-5 text-ink-soft">{resource.summary}</p> : null}
-      <button
-        className="mt-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+      <Button
+        className="mt-2"
+        leftIcon={<Maximize2 className="size-3.5" />}
         onClick={openResearch}
-        type="button"
+        size="xs"
+        variant="toolbar"
       >
-        <Maximize2 className="size-3.5" />
         Open Research
-      </button>
+      </Button>
     </ObjectFrame>
   );
 }
@@ -124,14 +127,15 @@ export function ToolEmbed({
             </pre>
           )
         : null}
-      <button
-        className="mt-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+      <Button
+        className="mt-2"
+        leftIcon={<Maximize2 className="size-3.5" />}
         onClick={inspectRun}
-        type="button"
+        size="xs"
+        variant="toolbar"
       >
-        <Maximize2 className="size-3.5" />
         Inspect run
-      </button>
+      </Button>
     </ObjectFrame>
   );
 }

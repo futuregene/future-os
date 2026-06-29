@@ -1,8 +1,10 @@
 import type { StoredRun, StoredToolCall } from "../../integrations/storage/threadStore";
 import { CircleStop, Maximize2, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { formatErrorType } from "./runDisplayFormatters";
+import { runStatusLabel } from "./runDisplayFormatters";
+import { RunError } from "./RunError";
 
 interface RunsPanelProps {
   runs: StoredRun[];
@@ -78,15 +80,15 @@ export function RunsPanel({ onClearFinished, onInspectRun, onTerminateRun, runs,
           {" "}
           finished
         </div>
-        <button
-          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+        <Button
           disabled={clearing || finishedRuns.length === 0}
+          leftIcon={<Trash2 className="size-3.5" />}
           onClick={() => void clearFinished()}
-          type="button"
+          size="xs"
+          variant="toolbar"
         >
-          <Trash2 className="size-3.5" />
           {clearing ? "Clearing" : "Clear finished"}
-        </button>
+        </Button>
       </div>
       <div className="space-y-2">
         {orderedRuns.map(run => (
@@ -141,7 +143,7 @@ function RunRow({
         commandCount > 1 ? `${commandCount} commands` : null,
         toolStatusLabel(displayTool),
       ].filter(Boolean).join(" · ")
-    : runStatusLabel(run);
+    : runStatusLabel(run.status);
 
   if (!command)
     return null;
@@ -172,7 +174,7 @@ function RunRow({
             {toolMeta}
           </div>
           {run.errorMessage && !active
-            ? <RunErrorSummary errorMessage={run.errorMessage} errorType={run.errorType} />
+            ? <RunError errorMessage={run.errorMessage} errorType={run.errorType} variant="summary" />
             : null}
           {actionError
             ? <div className="mt-2 line-clamp-3 text-xs leading-5 text-danger">{actionError}</div>
@@ -184,34 +186,29 @@ function RunRow({
                     ? (
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-ink-muted">Terminate this program?</span>
-                          <button
-                            className="h-7 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
-                            disabled={busy}
-                            onClick={onCancelConfirm}
-                            type="button"
-                          >
+                          <Button disabled={busy} onClick={onCancelConfirm} size="xs" variant="ghost">
                             Cancel
-                          </button>
-                          <button
-                            className="inline-flex h-7 items-center gap-1.5 rounded-md bg-danger px-2 text-xs font-medium text-white transition-colors hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-60"
+                          </Button>
+                          <Button
                             disabled={busy}
+                            leftIcon={<CircleStop className="size-3.5" />}
                             onClick={onTerminate}
-                            type="button"
+                            size="xs"
+                            variant="danger"
                           >
-                            <CircleStop className="size-3.5" />
                             {busy ? "Stopping" : "Terminate"}
-                          </button>
+                          </Button>
                         </div>
                       )
                     : (
-                        <button
-                          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-danger-line bg-danger-soft px-2 text-xs font-medium text-danger transition-colors hover:bg-danger-soft"
+                        <Button
+                          leftIcon={<CircleStop className="size-3.5" />}
                           onClick={onRequestTerminate}
-                          type="button"
+                          size="xs"
+                          variant="danger-soft"
                         >
-                          <CircleStop className="size-3.5" />
                           Terminate
-                        </button>
+                        </Button>
                       )}
                 </div>
               )
@@ -228,23 +225,6 @@ function isActiveRun(run: StoredRun) {
 
 function compareRunTimeDesc(left: StoredRun, right: StoredRun) {
   return (right.startedAt ?? right.createdAt) - (left.startedAt ?? left.createdAt);
-}
-
-function runStatusLabel(run: StoredRun) {
-  switch (run.status) {
-    case "completed":
-      return "Success";
-    case "failed":
-      return "Failed";
-    case "cancelled":
-      return "Cancelled";
-    case "waiting_approval":
-      return "Waiting";
-    case "queued":
-      return "Queued";
-    default:
-      return "Running";
-  }
 }
 
 function commandToolCall(tools: StoredToolCall[]) {
@@ -314,26 +294,4 @@ function stringField(record: Record<string, unknown> | null, key: string) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-interface RunErrorSummaryProps {
-  errorMessage: string;
-  errorType?: StoredRun["errorType"];
-}
-
-function RunErrorSummary({ errorMessage, errorType }: RunErrorSummaryProps) {
-  const meta = formatErrorType(errorType);
-  return (
-    <div className="mt-2">
-      {meta
-        ? (
-            <div className={`flex items-center gap-1.5 text-xs font-medium ${meta.color}`}>
-              <span>{meta.icon}</span>
-              <span>{meta.label}</span>
-            </div>
-          )
-        : null}
-      <div className="line-clamp-2 text-xs leading-5 text-danger">{errorMessage}</div>
-    </div>
-  );
 }

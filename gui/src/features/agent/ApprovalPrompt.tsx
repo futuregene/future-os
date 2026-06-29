@@ -5,6 +5,7 @@ import type {
 } from "../../integrations/storage/types";
 import { AlertTriangle, Check, ShieldAlert, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Button } from "../../components/ui/Button";
 
 interface ApprovalPromptProps {
   approval: StoredApprovalRequest;
@@ -105,24 +106,24 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
           )
         : null}
       <div className="mt-4 flex items-center justify-between gap-3">
-        <button
-          className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-surface px-3 text-sm font-medium text-ink-soft shadow-sm transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+        <Button
+          className="shadow-sm"
           disabled={deciding !== null}
+          leftIcon={<X className="size-3.5" />}
           onClick={() => void decide("rejected")}
-          type="button"
+          variant="toolbar"
         >
-          <X className="size-3.5" />
           {deciding === "rejected" ? "Denying" : "Deny"}
-        </button>
-        <button
-          className="inline-flex h-9 items-center gap-2 rounded-md border border-accent bg-accent px-3 text-sm font-medium text-white shadow-sm transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+        </Button>
+        <Button
+          className="shadow-sm"
           disabled={deciding !== null}
+          leftIcon={<Check className="size-3.5" />}
           onClick={() => void decide("approved")}
-          type="button"
+          variant="primary"
         >
-          <Check className="size-3.5" />
           {deciding === "approved" ? "Allowing" : "Allow once"}
-        </button>
+        </Button>
       </div>
     </section>
   );

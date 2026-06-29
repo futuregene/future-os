@@ -46,6 +46,8 @@ make run-gui
 **批次 2 — UI 收口（一次性大幅减重复）**
 `U-1`（删/采纳吃灰组件）→ `U-2` `U-3` `U-4` `U-5` `U-6`（按钮/select/复制/下拉收进 `ui/`）→ `U-7` `U-8` `U-10` `U-11`（焦点环/hover/配色）；`C-10` `M-9`（runs/review 组件去重）；`B-7` `B-8`（Overlay / PdfPreview bug）。
 
+> **进度**：12/14 已落地（见各条 `[x]`）。`U-6`（SelectMenu）与 `M-9`（CollapsibleFileDiff）**暂缓**——属从零抽象/结构性重排，最需实机视觉 QA；且四个下拉结构差异大（Composer model/thinking 一致，但 NewConversation workspace 含搜索+底部动作、Composer reference 是键盘导航搜索菜单），强行统一有过度抽象风险。建议作为独立一次 pass 单独实机验证。
+
 **批次 3 — Rust 一致性收口**
 `C-3`（8× RpcResponse 样板）`C-4`（connect 样板 + 默认地址）`C-5`（agent_dir/FUTURE_PROVIDER_ID 去重）`M-6`（git diff 解析合并）`B-15`（错误判定类型化）。
 
@@ -297,7 +299,7 @@ make run-gui
 
 > 颜色总体已 token 化良好；本节剩余裸色仅 U-10/U-11 两处真违规，其余多为「该用 `ui/` primitive 却手搓」。
 
-### [ ] U-1. ui 目录下零外部引用的死组件
+### [x] U-1. ui 目录下零外部引用的死组件
 - **类别 / 严重度**: module / 中
 - **位置**: `src/components/ui/`：`Tabs.tsx`(33行)、`SegmentedControl.tsx`(38)、`Tooltip.tsx`(13)、`Drawer.tsx`(21)、`Panel.tsx`(14)。无 `ui/index.ts` barrel。
 - **现状**: 5 个组件零外部 importer（grep 确认）。对照：`ReviewPanel.tsx:143-154` 手搓 `ViewTab`，三处手搓 `<select>`（U-4），而 `Tabs`/`SegmentedControl` 闲置。
@@ -307,7 +309,7 @@ make run-gui
 - **验证**: `grep -rn "Tabs\|SegmentedControl\|Tooltip\|Drawer\|Panel" gui/src --include=*.tsx --include=*.ts | grep -i import` + 基线三连。
 - **关联**: U-4、ReviewPanel ViewTab。
 
-### [ ] U-2. 「带边框图标-文字操作按钮」className 复制粘贴约 12 处
+### [x] U-2. 「带边框图标-文字操作按钮」className 复制粘贴约 12 处
 - **类别 / 严重度**: ui / 中
 - **位置**: h-7/px-2 变体（7）：`ObjectEmbed.tsx:59,89,128`、`ArtifactEmbed.tsx:61,71,83`、`RunEmbed.tsx:47`；h-8/px-2.5 变体（5）：`ArtifactDetailPanel.tsx:228,239,250`、`RunInspectPanel.tsx:120,128`。另 `features/agent/MessageBlock.tsx:83,95` 同串（agent 域，仅记录不在本条改动面）。
 - **现状**: 同串 `inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink` 逐字重复；danger 变体见 `RunsPanel.tsx:208`、`ArtifactDetailPanel.tsx:259`。`ui/Button` 已有 variants + sizes(md=h-9/sm=h-8) 但这些工具按钮都没用（缺 xs/h-7 与 leftIcon）。
@@ -317,7 +319,7 @@ make run-gui
 - **验证**: `grep -rn "border border-line bg-surface px-2 text-xs font-medium text-ink-soft" gui/src/features/{markdown,runs,artifacts} gui/src/components/layout`（替换后归零）+ 基线三连 + `make run-gui`。
 - **关联**: U-8（合并修复）、U-1。
 
-### [ ] U-3. 主按钮（accent）手搓 3 处，未用 `Button variant="primary"`
+### [x] U-3. 主按钮（accent）手搓 3 处，未用 `Button variant="primary"`
 - **类别 / 严重度**: ui / 中
 - **位置**: `src/features/agent/Composer.tsx:447`（发送，`size-7` 图标按钮）、`src/features/agent/NewConversation.tsx:484`（`h-8`）、`src/features/agent/ApprovalPrompt.tsx:118`（`h-9`，approve）
 - **现状**: 三处各写 `bg-accent text-white hover:bg-accent-hover [disabled:bg-accent-disabled]`，而 `ui/Button.tsx:16` 的 `primary` = `border-accent bg-accent text-white hover:bg-accent-hover`（颜色一致，仅缺 disabled 态与图标 size）。
@@ -327,7 +329,7 @@ make run-gui
 - **验证**: 前端基线三连 + `make run-gui` 确认三处按钮态（hover/disabled）一致。
 - **关联**: U-2（Button size/icon 扩展）、U-6。
 
-### [ ] U-4. 原生 `<select>` 标记重复三处（含绝对定位 ChevronDown），未走 `ui/Select`
+### [x] U-4. 原生 `<select>` 标记重复三处（含绝对定位 ChevronDown），未走 `ui/Select`
 - **类别 / 严重度**: ui / 中
 - **位置**: `src/components/layout/ContextPanel.tsx:280-290`（自带 ChevronDown :290）、`src/features/runs/RunInspectPanel.tsx:176-185`（h-7，靠浏览器原生箭头）、`src/features/review/ReviewPanel.tsx:478-488`（h-8）
 - **现状**: `ui/Select` 已封装 `appearance-none` + 绝对定位 ChevronDown，但三处手写；`ui/Select` 固定 `h-9`，三处分别 h-8/h-7。
@@ -338,7 +340,7 @@ make run-gui
 - **验证**: `grep -rn "<select" gui/src/components/layout gui/src/features`（替换后归零）+ 基线三连 + `make run-gui`。
 - **关联**: U-1、U-7。
 
-### [ ] U-5. copy-to-clipboard 按钮 + 瞬时「copied」状态重复四处（timeout 未清理）
+### [x] U-5. copy-to-clipboard 按钮 + 瞬时「copied」状态重复四处（timeout 未清理）
 - **类别 / 严重度**: bug / 中
 - **位置**: `setTimeout(setCopied, 1400, …)`：`src/features/markdown/MarkdownContent.tsx:140`、`src/features/artifacts/ArtifactDetailPanel.tsx:83`、`src/features/markdown/renderers/ArtifactEmbed.tsx:29`、`src/components/ui/CopyablePre.tsx:23`（canonical）。浮动按钮：MarkdownContent 146-173、ArtifactEmbed 60-78、ArtifactDetailPanel 128-189。
 - **现状**: 同模式四处拷贝（`copyText → setCopied(true) → setTimeout(reset,1400)`），timeout 句柄从不保存：卸载后仍 `setCopied`（React 警告/泄漏），1400ms 内重复点击叠加多个 timer 提前复位。ArtifactDetailPanel 是 `copied: "content"|"path"|null` 三态。
@@ -362,7 +364,7 @@ make run-gui
 - **验证**: 前端基线三连 + `make run-gui` 确认四个下拉的开合/选中/外点关闭。
 - **关联**: U-3、`lib/useDismissableLayer`。
 
-### [ ] U-7. focus ring token 不一致
+### [x] U-7. focus ring token 不一致
 - **类别 / 严重度**: consistency / 低
 - **位置**: `focus:ring-accent-soft`：`ui/Select.tsx:14`、`ui/TextInput.tsx:6`；`focus:ring-2 focus:ring-focus`：`RunInspectPanel.tsx:145,178`、`ReviewPanel.tsx:479,492`、`ContextPanel.tsx:282`；`focus:ring-accent/15`：`AppShellDialogs.tsx:71`
 - **现状**: 三种焦点环并存。COLOR.md（33、65 行）定义 `focus`(#93c5fd) 为唯一 ring token；`accent-soft`/`accent/15` 是强调浅底，非 ring 语义。
@@ -372,7 +374,7 @@ make run-gui
 - **验证**: `grep -rn "focus:ring-accent-soft\|focus:ring-accent/" gui/src`（改后趋零）+ 基线三连 + `make run-gui`。
 - **关联**: COLOR.md `focus`、U-4、AppShellDialogs 裸 input。
 
-### [ ] U-8. `hover:bg-surface` 对 `bg-surface` 按钮是 no-op
+### [x] U-8. `hover:bg-surface` 对 `bg-surface` 按钮是 no-op
 - **类别 / 严重度**: ui / 低
 - **位置**: `bg-surface … hover:bg-surface`：`RunsPanel.tsx:82`、`ArtifactDetailPanel.tsx:228,239,250`；danger no-op（`bg-danger-soft … hover:bg-danger-soft`）：`RunsPanel.tsx:208`、`ArtifactDetailPanel.tsx:259`
 - **现状**: 这些按钮底色已是 `bg-surface`，hover 又写 `hover:bg-surface`，悬停无变化；danger 同理。
@@ -383,7 +385,7 @@ make run-gui
 - **验证**: 前端基线三连 + `make run-gui` 悬停确认有底色过渡。
 - **关联**: U-2（合并修复）。
 
-### [ ] U-10. ReviewPanel 裸 `text-orange-500` 装饰图标 + RunInspect 分类色可收窄
+### [x] U-10. ReviewPanel 裸 `text-orange-500` 装饰图标 + RunInspect 分类色可收窄
 - **类别 / 严重度**: bug / 低（配色违规）
 - **位置**: 裸色 `src/features/review/ReviewPanel.tsx:342`、`:521`（`<FileDiff className="… text-orange-500" />`，全仓仅此两处）；分类色白名单 `src/features/runs/RunInspectPanel.tsx:258-274`（`eventCategoryClass`）
 - **现状**: ReviewPanel 的 FileDiff 图标是装饰性用色，非「区分并列种类」，不属 COLOR.md 例外。`eventCategoryClass` 6 类中 approval/error/tool/default 可映射到语义 token（warning/danger/info/neutral），仅 artifact(紫)/review(橙) 真需分类色。
@@ -396,7 +398,7 @@ make run-gui
 - **验证**: `grep -rn "text-orange-500" gui/src`（改后归零）+ 基线三连 + `make run-gui`。
 - **关联**: COLOR.md 第 9/71 行、M-9、CLAUDE.md 原则 1。
 
-### [ ] U-11. `NewConversation` 工作区创建弹层用裸 `bg-black/10` 遮罩
+### [x] U-11. `NewConversation` 工作区创建弹层用裸 `bg-black/10` 遮罩
 - **类别 / 严重度**: ui / 低
 - **位置**: `src/features/agent/NewConversation.tsx:406`（`<div className="absolute inset-0 z-40 … bg-black/10 …">`）
 - **现状**: 该内嵌弹层背景用裸 `bg-black/10`，而 `ui/Overlay.tsx:26` 的标准遮罩用 `bg-ink-strong/20`。
@@ -544,7 +546,7 @@ make run-gui
 - **验证**: 前端基线三连；为 `lib/objects.ts` 加单测（`isRecord([])===false` 等）。
 - **关联**: M-3；CLAUDE.md `lib/` 约定。
 
-### [ ] C-10. Run 状态文案两套真相 + RunError 摘要组件重复
+### [x] C-10. Run 状态文案两套真相 + RunError 摘要组件重复
 - **类别 / 严重度**: consistency / 中
 - **位置**: `runDisplayFormatters.ts:3-18`(`formatRunStatus`，小写) vs `RunsPanel.tsx:233-248`(`runStatusLabel`，Title-case 且用词不同)；`RunsPanel.tsx:319-339`(`RunErrorSummary`) vs `RunInspectPanel.tsx:545-565`(`RunErrorBanner`)
 - **现状**: 同 `StoredRun["status"]` 两套映射、用词不一致（`completed`→`completed` vs `Success`；`waiting_approval`→`approval` vs `Waiting`）。两错误组件都用 `formatErrorType` 渲染 icon+label+message，仅容器样式不同（banner 有边框/不截断 vs inline `line-clamp-2`）。
@@ -655,7 +657,7 @@ make run-gui
 - **验证**: 单测：写 before+after 但不写 changeset，调恢复后断言 `get_run_changeset(run_id)` 为 `Some` + 后端基线三连。
 - **关联**: review.rs materialize 流水线；maintenance.rs §6.6。
 
-### [ ] B-7. 嵌套 Overlay 的全局 Escape 同时关闭内外两层
+### [x] B-7. 嵌套 Overlay 的全局 Escape 同时关闭内外两层
 - **类别 / 严重度**: bug / 高
 - **位置**: `src/components/ui/Overlay.tsx:18-29`（全局 keydown）；嵌套：`SettingsDialog.tsx:74`（外层 Overlay）→ `:132`(`ProvidersPage`)→ `ProvidersPage.tsx:190/204`(`CustomProviderDialog`/`FutureLoginDialog`，经 `Dialog.tsx:25` 包 Overlay)
 - **现状**: Overlay open 期间无条件挂 `window` keydown，任意 Escape 调自己 `onClose`，无 `stopImmediatePropagation` 也无「最顶层才响应」判定。设置弹层打开时外层+内层 Overlay 同时挂着监听。
@@ -666,7 +668,7 @@ make run-gui
 - **验证**: 前端基线三连 + `make run-gui`：设置→Provider→新建自定义 Provider→按 Escape，预期只关内层。
 - **关联**: 无。
 
-### [ ] B-8. PdfPreview 渲染 effect 依赖 ref 而非文档身份，换路径可能画旧页 + innerHTML 清空竞态
+### [x] B-8. PdfPreview 渲染 effect 依赖 ref 而非文档身份，换路径可能画旧页 + innerHTML 清空竞态
 - **类别 / 严重度**: bug / 中
 - **位置**: `src/features/artifacts/PdfPreview.tsx:66-115`（渲染 effect，deps `[currentPage, loading, error]`，:115）；加载 effect 23-64（deps `[path]`）；`loadingTaskRef` :21
 - **现状**: 渲染 effect 文档身份只经 `loadingTaskRef.current`（ref，非响应式）读取，依赖不含 path/文档身份。`renderPage` 先同步 `containerRef.current.innerHTML = ""`(79) 再 `await`，`appendChild` 前无 `cancelled` 守卫（仅末尾 `page.cleanup()` 有 :99）。

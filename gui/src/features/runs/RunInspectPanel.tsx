@@ -7,7 +7,9 @@ import type {
 import { ArrowLeft, History, RotateCcw, Search, StepForward, Terminal, Wrench } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Badge } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
 import { CopyablePre } from "../../components/ui/CopyablePre";
+import { Select } from "../../components/ui/Select";
 import {
   listRunEvents,
   listToolOutputs,
@@ -17,7 +19,8 @@ import { cn } from "../../lib/cn";
 import { formatTime } from "../../lib/date";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { useAsyncResource } from "../../lib/useAsyncResource";
-import { formatErrorType, formatRunStatus, runTone, shortId, summarizePayload } from "./runDisplayFormatters";
+import { formatRunStatus, runTone, shortId, summarizePayload } from "./runDisplayFormatters";
+import { RunError } from "./RunError";
 
 interface RunInspectPanelProps {
   run: StoredRun;
@@ -112,26 +115,26 @@ export function RunInspectPanel({ onBack, run, tools }: RunInspectPanelProps) {
             <dd className="mt-0.5 text-ink-soft">{sortedTools.length}</dd>
           </div>
         </dl>
-        {run.errorMessage ? <RunErrorBanner errorMessage={run.errorMessage} errorType={run.errorType} /> : null}
+        {run.errorMessage ? <RunError errorMessage={run.errorMessage} errorType={run.errorType} variant="banner" /> : null}
         {canRecoverRun(run)
           ? (
               <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+                <Button
+                  leftIcon={<RotateCcw className="size-3.5" />}
                   onClick={() => dispatchRunRecovery(run, "retry")}
-                  type="button"
+                  size="sm"
+                  variant="toolbar"
                 >
-                  <RotateCcw className="size-3.5" />
                   Retry
-                </button>
-                <button
-                  className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+                </Button>
+                <Button
+                  leftIcon={<StepForward className="size-3.5" />}
                   onClick={() => dispatchRunRecovery(run, "continue")}
-                  type="button"
+                  size="sm"
+                  variant="toolbar"
                 >
-                  <StepForward className="size-3.5" />
                   Continue
-                </button>
+                </Button>
               </div>
             )
           : null}
@@ -173,16 +176,18 @@ export function RunInspectPanel({ onBack, run, tools }: RunInspectPanelProps) {
             <History className="size-3.5" />
             Timeline
           </div>
-          <select
+          <Select
             aria-label="Filter run events"
-            className="h-7 rounded-md border border-line-soft bg-surface px-2 text-xs text-ink-soft outline-none transition-colors hover:border-line focus:border-focus focus:ring-2 focus:ring-focus"
-            value={eventFilter}
+            className="w-auto text-ink-soft"
             onChange={event => setEventFilter(event.target.value as EventFilter)}
+            size="xs"
+            value={eventFilter}
+            wrapperClassName="w-auto"
           >
             {eventFilters.map(filter => (
               <option key={filter.value} value={filter.value}>{filter.label}</option>
             ))}
-          </select>
+          </Select>
         </div>
         {loading
           ? <div className="rounded-md border border-line-soft bg-surface p-3 text-sm text-ink-muted">Loading run details...</div>
@@ -259,17 +264,18 @@ function eventCategoryClass(category: Exclude<EventFilter, "all">) {
   const base = "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium";
   switch (category) {
     case "approval":
-      return `${base} bg-amber-50 text-amber-700`;
+      return `${base} bg-warning-soft text-warning`;
+    // artifact/review have no semantic equivalent — intentional category colors (COLOR.md).
     case "artifact":
       return `${base} bg-purple-50 text-purple-700`;
     case "error":
-      return `${base} bg-red-50 text-red-700`;
+      return `${base} bg-danger-soft text-danger`;
     case "review":
       return `${base} bg-orange-50 text-orange-700`;
     case "tool":
-      return `${base} bg-blue-50 text-blue-700`;
+      return `${base} bg-info-soft text-info`;
     default:
-      return `${base} bg-slate-100 text-ink-muted`;
+      return `${base} bg-surface-subtle text-ink-muted`;
   }
 }
 
@@ -540,26 +546,4 @@ function formatDuration(milliseconds: number) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-interface RunErrorBannerProps {
-  errorMessage: string;
-  errorType?: StoredRun["errorType"];
-}
-
-function RunErrorBanner({ errorMessage, errorType }: RunErrorBannerProps) {
-  const meta = formatErrorType(errorType);
-  return (
-    <div className="mt-3 rounded-md border border-danger-line bg-danger-soft p-2">
-      {meta
-        ? (
-            <div className={`mb-1 flex items-center gap-1.5 text-xs font-medium ${meta.color}`}>
-              <span>{meta.icon}</span>
-              <span>{meta.label}</span>
-            </div>
-          )
-        : null}
-      <p className="text-xs leading-5 text-danger">{errorMessage}</p>
-    </div>
-  );
 }

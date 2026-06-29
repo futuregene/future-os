@@ -2,6 +2,7 @@ import type { StoredRun } from "../../../integrations/storage/types";
 import type { FutureReference } from "../futureMarkdownTypes";
 import { Maximize2, PlayCircle } from "lucide-react";
 import { Badge } from "../../../components/ui/Badge";
+import { Button } from "../../../components/ui/Button";
 import { storedTimeToIso } from "../../../integrations/storage/threadStore";
 import { formatTime } from "../../../lib/date";
 import { emitFutureEvent } from "../../../lib/futureEvents";
@@ -43,14 +44,15 @@ export function RunEmbed({
           {run.errorMessage
             ? <p className="mt-2 rounded-md bg-danger-soft p-2 text-xs leading-5 text-danger">{run.errorMessage}</p>
             : null}
-          <button
-            className="mt-3 inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+          <Button
+            className="mt-3"
+            leftIcon={<Maximize2 className="size-3.5" />}
             onClick={inspectRun}
-            type="button"
+            size="xs"
+            variant="toolbar"
           >
-            <Maximize2 className="size-3.5" />
             Inspect
-          </button>
+          </Button>
         </div>
       </div>
     </article>

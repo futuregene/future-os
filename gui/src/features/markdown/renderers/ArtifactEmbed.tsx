@@ -1,9 +1,9 @@
 import type { StoredArtifact } from "../../../integrations/storage/types";
 import type { FutureReference } from "../futureMarkdownTypes";
 import { Check, Clipboard, ExternalLink, FileText, Maximize2 } from "lucide-react";
-import { useState } from "react";
+import { Button } from "../../../components/ui/Button";
+import { useCopyState } from "../../../components/ui/useCopyState";
 import { openPath, storedTimeToIso } from "../../../integrations/storage/threadStore";
-import { copyText } from "../../../lib/clipboard";
 import { formatTime } from "../../../lib/date";
 import { emitFutureEvent } from "../../../lib/futureEvents";
 
@@ -14,19 +14,10 @@ export function ArtifactEmbed({
   artifact: StoredArtifact;
   reference: FutureReference;
 }) {
-  const [copied, setCopied] = useState(false);
+  const { copiedKey, copy } = useCopyState();
 
   function inspectArtifact() {
     emitFutureEvent("inspect-artifact", { artifactId: artifact.id });
-  }
-
-  async function copyPath() {
-    if (!artifact.path)
-      return;
-
-    await copyText(artifact.path);
-    setCopied(true);
-    window.setTimeout(setCopied, 1400, false);
   }
 
   return (
@@ -57,36 +48,36 @@ export function ArtifactEmbed({
               )
             : null}
           <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+            <Button
+              leftIcon={<Maximize2 className="size-3.5" />}
               onClick={inspectArtifact}
-              type="button"
+              size="xs"
+              variant="toolbar"
             >
-              <Maximize2 className="size-3.5" />
               Details
-            </button>
+            </Button>
             {artifact.path
               ? (
-                  <button
-                    className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
-                    onClick={() => void copyPath()}
-                    type="button"
+                  <Button
+                    leftIcon={copiedKey ? <Check className="size-3.5" /> : <Clipboard className="size-3.5" />}
+                    onClick={() => void copy(artifact.path ?? "")}
+                    size="xs"
+                    variant="toolbar"
                   >
-                    {copied ? <Check className="size-3.5" /> : <Clipboard className="size-3.5" />}
                     Copy path
-                  </button>
+                  </Button>
                 )
               : null}
             {artifact.path
               ? (
-                  <button
-                    className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-surface px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+                  <Button
+                    leftIcon={<ExternalLink className="size-3.5" />}
                     onClick={() => void openPath(artifact.path ?? "")}
-                    type="button"
+                    size="xs"
+                    variant="toolbar"
                   >
-                    <ExternalLink className="size-3.5" />
                     Open
-                  </button>
+                  </Button>
                 )
               : null}
           </div>
