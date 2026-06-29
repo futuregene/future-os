@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { cp, mkdir, open, read, close, readdir, rename, rm, stat } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -264,45 +264,42 @@ async function uninstallSkill(skillId: string, scope: Scope = "app"): Promise<vo
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Read just the YAML frontmatter from a SKILL.md and extract the version field.
+ * Read YAML frontmatter from a SKILL.md and extract the version field.
  * Returns null if no version field found.
- * Only reads up to the closing ---, not the whole file body.
  */
 async function readSkillMdVersion(skillMdPath: string): Promise<string | null> {
-  const fh = await open(skillMdPath, "r");
+  let text: string;
   try {
-    const buf = Buffer.alloc(4096); // frontmatter is always small
-    const { bytesRead } = await read(fh, buf, 0, buf.length, 0);
-    const text = buf.toString("utf8", 0, bytesRead);
-
-    const trimmed = text.trimStart();
-    if (!trimmed.startsWith("---")) return null;
-
-    const rest = trimmed.slice(3);
-    const endIdx = Math.max(
-      rest.indexOf("\n---"),
-      rest.indexOf("---"),
-    );
-    if (endIdx === -1) return null;
-
-    const frontmatter = rest.slice(0, endIdx);
-
-    for (const line of frontmatter.split("\n")) {
-      const t = line.trim();
-      if (!t || t.startsWith("#")) continue;
-      const m = t.match(/^version:\s*(.+)$/);
-      if (m) {
-        let val = m[1].trim();
-        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-          val = val.slice(1, -1);
-        }
-        return val || null;
-      }
-    }
+    text = await readFile(skillMdPath, "utf8");
+  } catch {
     return null;
-  } finally {
-    await close(fh);
   }
+
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith("---")) return null;
+
+  const rest = trimmed.slice(3);
+  const endIdx = Math.max(
+    rest.indexOf("\n---"),
+    rest.indexOf("---"),
+  );
+  if (endIdx === -1) return null;
+
+  const frontmatter = rest.slice(0, endIdx);
+
+  for (const line of frontmatter.split("\n")) {
+    const t = line.trim();
+    if (!t || t.startsWith("#")) continue;
+    const m = t.match(/^version:\s*(.+)$/);
+    if (m) {
+      let val = m[1].trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      return val || null;
+    }
+  }
+  return null;
 }
 
 function unzip(zipPath: string, destDir: string): Promise<void> {
