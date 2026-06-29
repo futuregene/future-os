@@ -1,4 +1,4 @@
-name: Build desktop apps
+name: Build FutureOS apps (GUI + TUI + CLI + agent)
 
 on:
   workflow_dispatch:
@@ -18,14 +18,15 @@ jobs:
             os: macos-latest
             artifact_name: futureos-macos
             # macOS ships as a .dmg: it preserves the .app bundle (exec bit,
-            # symlinks) that a raw upload-artifact zip would strip.
+            # symlinks) that a raw upload-artifact zip would strip. The TUI/CLI
+            # binaries are injected into the .app alongside the agent sidecar.
             bundle_path: gui/src-tauri/target/release/bundle/dmg/*.dmg
           - name: Windows
             os: windows-latest
             artifact_name: futureos-windows
             # Both installers (NSIS setup .exe + MSI). Coexists with the portable
-            # zip (uploaded as futureos-windows-portable below). All bundle the
-            # agent sidecar.
+            # zip (uploaded as futureos-windows-portable below), which carries the
+            # GUI, agent, TUI, and CLI in one directory.
             bundle_path: |
               gui/src-tauri/target/release/bundle/nsis/*.exe
               gui/src-tauri/target/release/bundle/msi/*.msi
@@ -43,7 +44,17 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: gui/package-lock.json
+          cache-dependency-path: |
+            gui/package-lock.json
+            tui/package-lock.json
+            cli/package-lock.json
+
+      # Bun is required to build the TUI (proto codegen) and to compile the
+      # TUI/CLI into standalone single-file binaries (bun build --compile).
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -81,8 +92,16 @@ jobs:
         shell: pwsh
         run: choco install protoc --yes
 
-      - name: Install npm dependencies
+      - name: Install npm dependencies (GUI)
         working-directory: gui
+        run: npm ci
+
+      - name: Install npm dependencies (TUI)
+        working-directory: tui
+        run: npm ci
+
+      - name: Install npm dependencies (CLI)
+        working-directory: cli
         run: npm ci
 
       # Build the agent and stage it as a Tauri sidecar so the packaged app
@@ -105,14 +124,49 @@ jobs:
           New-Item -ItemType Directory -Force -Path gui/src-tauri/binaries | Out-Null
           Copy-Item "agent/target/release/future-agent.exe" "gui/src-tauri/binaries/future-agent-$triple.exe"
 
+      # Compile the TUI into a standalone binary (no Node runtime needed).
+      - name: Build TUI binary (Unix)
+        if: runner.os != 'Windows'
+        working-directory: tui
+        run: |
+          npm run build
+          bun build --compile dist/index.js --outfile dist/future-tui
+
+      - name: Build TUI binary (Windows)
+        if: runner.os == 'Windows'
+        working-directory: tui
+        shell: pwsh
+        run: |
+          npm run build
+          bun build --compile dist/index.js --outfile dist/future-tui.exe
+
+      # Compile the CLI into a standalone binary. chromium-bidi is a lazily
+      # required optional dep of playwright-core (only the WebDriver-BiDi path,
+      # never the default CDP path) — mark it external so the bundle resolves.
+      - name: Build CLI binary (Unix)
+        if: runner.os != 'Windows'
+        working-directory: cli
+        run: |
+          npm run build
+          bun build --compile dist/index.js --outfile dist/future-cli --external chromium-bidi
+
+      - name: Build CLI binary (Windows)
+        if: runner.os == 'Windows'
+        working-directory: cli
+        shell: pwsh
+        run: |
+          npm run build
+          bun build --compile dist/index.js --outfile dist/future-cli.exe --external chromium-bidi
+
       - name: Build desktop bundle
         working-directory: gui
         run: npm run tauri:build
 
-      # The .app is unsigned/un-notarized, so ship first-launch (Gatekeeper)
-      # instructions inside the dmg. Inject the file into Tauri's dmg by
-      # round-tripping it through a read-write image.
-      - name: Add first-launch guide to macOS dmg
+      # macOS: co-locate the agent (already a sidecar), TUI, and CLI inside the
+      # .app's Contents/MacOS, and ship first-launch (Gatekeeper) instructions in
+      # the dmg — the .app is unsigned/un-notarized. Tauri's dmg is read-only, so
+      # round-trip it through a read-write image to inject everything.
+      - name: Bundle agent, TUI & CLI into macOS .app (inside dmg)
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
@@ -121,10 +175,19 @@ jobs:
           out="$RUNNER_TEMP/out.dmg"
           mnt="$RUNNER_TEMP/mnt"
           hdiutil convert "$src" -format UDRW -o "$work"
-          hdiutil resize -size 200m "$work"
+          hdiutil resize -size 700m "$work"
           mkdir -p "$mnt"
           hdiutil attach "$work" -mountpoint "$mnt" -nobrowse -noverify
+          app=$(ls -d "$mnt"/*.app | head -n1)
+          macos_dir="$app/Contents/MacOS"
+          cp "tui/dist/future-tui" "$macos_dir/future-tui"
+          cp "cli/dist/future-cli" "$macos_dir/future-cli"
+          chmod +x "$macos_dir/future-tui" "$macos_dir/future-cli"
           cp "docs/dist/macos-first-launch.txt" "$mnt/请先阅读-如何打开.txt"
+          # Ad-hoc sign the injected binaries first, then re-seal the bundle.
+          codesign --force --sign - "$macos_dir/future-tui"
+          codesign --force --sign - "$macos_dir/future-cli"
+          codesign --force --sign - "$app"
           hdiutil detach "$mnt"
           hdiutil convert "$work" -format UDZO -o "$out"
           mv -f "$out" "$src"
@@ -136,10 +199,10 @@ jobs:
           if-no-files-found: error
           path: ${{ matrix.bundle_path }}
 
-      # Portable (install-free) Windows build: the main exe plus the agent
-      # sidecar (renamed without the triple, as Tauri does on bundling, so
-      # runtime sidecar resolution finds it next to the exe). Requires the
-      # WebView2 Evergreen runtime, which ships with Windows 10/11.
+      # Portable (install-free) Windows build: the GUI exe plus the agent, TUI,
+      # and CLI binaries, all in one directory. The agent sidecar is renamed
+      # without the triple (as Tauri does on bundling) so the GUI finds it next
+      # to the exe. Requires the WebView2 Evergreen runtime (ships with Win 10/11).
       - name: Assemble Windows portable
         if: runner.os == 'Windows'
         shell: pwsh
@@ -149,6 +212,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           Copy-Item "gui/src-tauri/target/release/futureos.exe" "$dir/FutureOS.exe"
           Copy-Item "gui/src-tauri/binaries/future-agent-$triple.exe" "$dir/future-agent.exe"
+          Copy-Item "tui/dist/future-tui.exe" "$dir/future-tui.exe"
+          Copy-Item "cli/dist/future-cli.exe" "$dir/future-cli.exe"
           Copy-Item "docs/dist/windows-portable-README.txt" "$dir/使用说明.txt"
           Compress-Archive -Path "$dir/*" -DestinationPath "FutureOS-portable-windows.zip" -Force
 
@@ -159,3 +224,26 @@ jobs:
           name: futureos-windows-portable
           if-no-files-found: error
           path: FutureOS-portable-windows.zip
+
+      # Portable (install-free) Linux build: the GUI binary plus the agent, TUI,
+      # and CLI binaries, all in one directory.
+      - name: Assemble Linux portable
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          dir="futureos-portable-linux"
+          mkdir -p "$dir"
+          cp "gui/src-tauri/target/release/futureos" "$dir/futureos"
+          cp "agent/target/release/future-agent" "$dir/future-agent"
+          cp "tui/dist/future-tui" "$dir/future-tui"
+          cp "cli/dist/future-cli" "$dir/future-cli"
+          chmod +x "$dir"/*
+          tar -czf FutureOS-portable-linux.tar.gz -C "$dir" .
+
+      - name: Upload Linux portable
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: futureos-linux-portable
+          if-no-files-found: error
+          path: FutureOS-portable-linux.tar.gz
