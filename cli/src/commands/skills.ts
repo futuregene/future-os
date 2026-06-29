@@ -1,18 +1,17 @@
 import { createWriteStream } from "node:fs";
-import { cp, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { cp, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { execFile } from "node:child_process";
 
-import { AUTH_FILE, DEFAULT_PLATFORM_URL } from "../constants.js";
-import { isRecord } from "../utils/object.js";
+import { getPlatformUrl } from "../utils/platform.js";
 
 // ── Paths ────────────────────────────────────────────────────────────────────
 
 const APP_SKILLS = join(homedir(), ".future", "agent", "skills");
-const GLOBAL_SKILLS = join(homedir(), ".agent", "skills");
+const GLOBAL_SKILLS = join(homedir(), ".agents", "skills");
 
 function projectSkillsDir(): string {
   return join(process.cwd(), ".future", "agent", "skills");
@@ -91,24 +90,6 @@ function skillsDirFor(scope: Scope): string {
 function scopeLabel(scope: Scope, dir: string): string {
   if (scope === "project") return `${dir} (project)`;
   return dir;
-}
-
-// ── Platform URL ─────────────────────────────────────────────────────────────
-
-async function getPlatformUrl(): Promise<string> {
-  try {
-    const raw = await readFile(AUTH_FILE, "utf8");
-    const auth = JSON.parse(raw) as unknown;
-    if (!isRecord(auth)) return DEFAULT_PLATFORM_URL;
-    const future = auth["future"];
-    if (!isRecord(future)) return DEFAULT_PLATFORM_URL;
-    const url = typeof (future as Record<string, unknown>).platform_base_url === "string"
-      ? (future as Record<string, unknown>).platform_base_url as string
-      : DEFAULT_PLATFORM_URL;
-    return url.replace(/\/$/, "");
-  } catch {
-    return DEFAULT_PLATFORM_URL;
-  }
 }
 
 // ── Remote API ───────────────────────────────────────────────────────────────

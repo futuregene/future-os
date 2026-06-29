@@ -3,9 +3,9 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { platform as osPlatform } from "node:os";
 import { dirname } from "node:path";
 
-import { AUTH_FILE, DEFAULT_API_URL, DEFAULT_PLATFORM_URL, FUTURE_AUTH_PROVIDER } from "../constants.js";
+import { AUTH_FILE, DEFAULT_API_URL, FUTURE_AUTH_PROVIDER } from "../constants.js";
 import { isNodeError, isRecord } from "../utils/object.js";
-import { trimTrailingSlash } from "../utils/string.js";
+import { getPlatformUrl } from "../utils/platform.js";
 import { sleep } from "../utils/time.js";
 
 type DeviceCodeResponse = {
@@ -40,9 +40,7 @@ type AuthFile = Record<string, unknown>;
 
 export async function login(platformUrlOverride?: string): Promise<void> {
   const authFile = await loadAuthFile();
-  const platformUrl = platformUrlOverride
-    ? trimTrailingSlash(platformUrlOverride)
-    : (resolvePlatformUrl(authFile) ?? DEFAULT_PLATFORM_URL);
+  const platformUrl = await getPlatformUrl(platformUrlOverride);
   const device = await post<DeviceCodeResponse>(platformUrl, "/api/client/v1/oauth/device/code", {
     client_name: "Future OS CLI",
   });
@@ -153,13 +151,6 @@ async function loadAuthFile(): Promise<AuthFile> {
     throw new Error(`${AUTH_FILE} must contain a JSON object.`);
   }
   return parsed;
-}
-
-function resolvePlatformUrl(authFile: AuthFile): string | undefined {
-  const auth = getFutureAuthEntry(authFile);
-  return auth?.platform_base_url
-    ? trimTrailingSlash(auth.platform_base_url)
-    : undefined;
 }
 
 async function saveAuth(authFile: AuthFile, token: DeviceTokenResponse, platformUrl: string): Promise<void> {
