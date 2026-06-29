@@ -311,3 +311,32 @@ impl Client {
         Ok(event)
     }
 }
+
+#[cfg(test)]
+mod usage_parse_tests {
+    use super::Client;
+
+    #[test]
+    fn parses_dashscope_empty_choices_usage_chunk() {
+        let data = r#"{"choices":[],"object":"chat.completion.chunk","usage":{"prompt_tokens":11,"completion_tokens":215,"total_tokens":226,"completion_tokens_details":{"reasoning_tokens":201,"text_tokens":215},"prompt_tokens_details":{"text_tokens":11}},"created":1782699751,"model":"qwen3.6-plus","id":"x"}"#;
+        let event = Client::parse_sse_chunk(data).expect("parse");
+        assert_eq!(
+            event.event_type, "usage",
+            "got event_type={}",
+            event.event_type
+        );
+        assert_eq!(event.usage.expect("usage present").completion_tokens, 215);
+    }
+
+    #[test]
+    fn parses_deepseek_finish_chunk_usage() {
+        let data = r#"{"choices":[{"index":0,"delta":{"content":"","reasoning_content":null},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}"#;
+        let event = Client::parse_sse_chunk(data).expect("parse");
+        assert_eq!(
+            event.event_type, "usage",
+            "got event_type={}",
+            event.event_type
+        );
+        assert_eq!(event.usage.expect("usage present").completion_tokens, 10);
+    }
+}
