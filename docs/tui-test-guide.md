@@ -189,6 +189,32 @@ sleep 3
 
 ---
 
+## 十二、Compaction
+
+### 12.1 手动 Compaction 效果
+
+```
+目的: 验证 /compact 减少 context token 数量
+操作:
+  1. /status 记录 context_tokens
+  2. /compact → 等 3s
+  3. /status 对比 context_tokens
+检查: compact 后 context_tokens 减小或不变（旧消息被 summarize）
+```
+
+### 12.2 context overflow 处理
+
+```
+目的: 验证 context 接近上限时自动触发 compaction
+操作:
+  1. 确认 auto_compaction 开启（/status）
+  2. 连续多轮提问（每轮带较多上下文）
+  3. 观察 /status 中 context_tokens 在接近 90% 时是否触发 compaction
+检查: 不出现 crash；若有 auto_retry，错误时自动重试而非直接失败
+```
+
+---
+
 ## 清理
 
 ```bash
