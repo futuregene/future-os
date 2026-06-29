@@ -2,12 +2,9 @@ name: Publish Wiki
 
 # Sync docs/wiki/ to the GitHub wiki whenever wiki sources change on main.
 #
-# Prerequisite: the repository's Wikis feature must be enabled
-# (Settings → Features → Wikis). The job below tries to enable it automatically,
-# but that only works if the org allows GITHUB_TOKEN administration access or a
-# WIKI_TOKEN (PAT with admin) is provided — otherwise an admin must enable it
-# once by hand. Once Wikis is on, the wiki is created and filled automatically
-# (no need to hand-create a first page). See docs/WIKI-MAINTENANCE.md.
+# Prerequisite: the repository's Wikis feature must be enabled by an admin
+# (Settings → Features → Wikis). Once it's on, the wiki is created and filled
+# automatically — no need to hand-create a first page. See docs/WIKI-MAINTENANCE.md.
 
 on:
   push:
@@ -20,7 +17,6 @@ on:
 
 permissions:
   contents: write
-  administration: write
 
 concurrency:
   group: publish-wiki
@@ -32,15 +28,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Ensure Wikis feature is enabled (best effort)
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.WIKI_TOKEN || secrets.GITHUB_TOKEN }}
-        run: |
-          gh api -X PATCH "repos/${{ github.repository }}" -F has_wiki=true \
-            && echo "Wikis feature is enabled." \
-            || echo "Could not enable Wikis automatically — an admin may need to turn it on in Settings → Features → Wikis."
 
       - name: Sync docs/wiki to the GitHub wiki
         env:
