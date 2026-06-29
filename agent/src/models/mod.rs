@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Default Future API base URL
-const DEFAULT_FUTURE_BASE_URL: &str = "https://api.future-os.cn";
+/// Default Future API base URL (platform URL + /api)
+const DEFAULT_FUTURE_BASE_URL: &str = "https://future-os.cn/api";
 
 /// Cache TTL in seconds (1 hour)
 const FUTURE_MODELS_CACHE_TTL: u64 = 3600;
@@ -165,7 +165,7 @@ struct FutureModelsCache {
 
 /// Resolve Future provider base URL from auth.json or default
 fn resolve_future_base_url() -> String {
-    // Try to read base_url from auth.json
+    // Try to read base_url or platform_base_url from auth.json
     let auth_path = dirs::home_dir()
         .map(|h| h.join(".future/agent/auth.json"))
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp/.future/agent/auth.json"));
@@ -173,8 +173,15 @@ fn resolve_future_base_url() -> String {
     if let Ok(contents) = std::fs::read_to_string(&auth_path) {
         if let Ok(auth) = serde_json::from_str::<HashMap<String, serde_json::Value>>(&contents) {
             if let Some(future) = auth.get("future") {
+                // legacy: explicit base_url in auth.json
                 if let Some(base_url) = future.get("base_url").and_then(|v| v.as_str()) {
                     return base_url.trim_end_matches('/').to_string();
+                }
+                // new: derive from platform_base_url
+                if let Some(platform_url) =
+                    future.get("platform_base_url").and_then(|v| v.as_str())
+                {
+                    return format!("{}/api", platform_url.trim_end_matches('/'));
                 }
             }
         }
