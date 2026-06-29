@@ -27,6 +27,7 @@ It's built for people pushing real, multi-step tasks forward — software work, 
 | Moving around the app (chats, workspaces, the three panels) | [[Using FutureOS|Using-FutureOS]] |
 | Signing in, choosing a model, adding a provider | [[Settings]] |
 | The built-in skill packs | [[Skills]] |
+| Command-line tools (advanced) | [[CLI|CLI]] · [[Terminal UI|TUI]] |
 | Common questions and fixes | [[FAQ]] |
 
 ---
