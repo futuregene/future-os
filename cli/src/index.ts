@@ -15,8 +15,15 @@ async function main(): Promise<void> {
   const [group, command, ...rest] = args;
 
   if (group === "auth" && command === "login") {
-    const urlArg = rest.find(a => a.startsWith("--url="));
-    await login(urlArg?.slice("--url=".length));
+    const urlIdx = rest.indexOf("--url");
+    let urlOverride: string | undefined;
+    if (urlIdx !== -1 && urlIdx + 1 < rest.length) {
+      urlOverride = rest[urlIdx + 1];
+    } else {
+      const urlEq = rest.find(a => a.startsWith("--url="));
+      urlOverride = urlEq?.slice("--url=".length);
+    }
+    await login(urlOverride);
     return;
   }
 

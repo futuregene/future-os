@@ -7,8 +7,8 @@ import { trimTrailingSlash } from "./string.js";
 /**
  * Resolve the Future Platform base URL with this priority:
  *   1. Explicit override (e.g. --url CLI argument)
- *   2. FUTURE_PLATFORM_URL environment variable
- *   3. auth.json → future.platform_base_url
+ *   2. FUTURE_BASE_URL environment variable
+ *   3. auth.json → future.base_url (strip /api)
  *   4. DEFAULT_PLATFORM_URL
  */
 export async function getPlatformUrl(override?: string): Promise<string> {
@@ -16,7 +16,7 @@ export async function getPlatformUrl(override?: string): Promise<string> {
   if (override) return trimTrailingSlash(override);
 
   // Priority 2: environment variable
-  const envUrl = process.env["FUTURE_PLATFORM_URL"];
+  const envUrl = process.env["FUTURE_BASE_URL"];
   if (envUrl) return trimTrailingSlash(envUrl);
 
   // Priority 3: auth.json
@@ -26,9 +26,11 @@ export async function getPlatformUrl(override?: string): Promise<string> {
     if (isRecord(auth)) {
       const future = auth[FUTURE_AUTH_PROVIDER];
       if (isRecord(future)) {
-        const url = (future as Record<string, unknown>).platform_base_url;
-        if (typeof url === "string" && url.length > 0) {
-          return trimTrailingSlash(url);
+        const rec = future as Record<string, unknown>;
+
+        const baseUrl = rec.base_url;
+        if (typeof baseUrl === "string" && baseUrl.length > 0) {
+          return trimTrailingSlash(baseUrl.replace(/\/api\/?$/, ""));
         }
       }
     }
