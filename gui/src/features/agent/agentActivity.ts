@@ -6,6 +6,11 @@ interface AssistantRunProjection {
   content: string;
   /** Text and activity in chronological order — drives inline rendering. */
   segments: MessageSegment[];
+  /**
+   * Tokens this reply actually generated: summed completion tokens across
+   * every LLM call in the run (0 when the provider returned no usage).
+   */
+  outputTokens: number;
 }
 
 /**
@@ -38,9 +43,25 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
   let thinking = false;
   let sawVisibleWork = false;
   let activeToolCallId: string | null = null;
+  // Output tokens: prefer summing per-call `usage` events; fall back to the
+  // `agent_end` total only when no per-call usage was streamed.
+  let usageOutputSum = 0;
+  let sawUsageEvent = false;
+  let agentEndOutput = 0;
 
   for (const event of sortedEvents) {
     const payload = parseEventPayload(event.payload);
+
+    if (event.eventType === "usage") {
+      usageOutputSum += usageOutputTokens(payload);
+      sawUsageEvent = true;
+      continue;
+    }
+
+    if (event.eventType === "agent_end") {
+      agentEndOutput = usageOutputTokens(payload);
+      continue;
+    }
 
     if (event.eventType === "text_chunk") {
       const text = textFromPayload(payload);
@@ -148,7 +169,31 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
     activityItems: items,
     content,
     segments,
+    outputTokens: sawUsageEvent ? usageOutputSum : agentEndOutput,
   };
+}
+
+function numberFromPayload(payload: unknown, keys: string[]): number {
+  if (!isRecord(payload))
+    return 0;
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "number" && Number.isFinite(value))
+      return value;
+  }
+  return 0;
+}
+
+/**
+ * Output (completion) tokens from a usage-bearing event. The gRPC StreamEvent
+ * nests the raw `Usage` under a `usage` key (`{type,usage:{completion_tokens}}`),
+ * matching how the TUI reads it; we also tolerate a flat shape just in case.
+ */
+function usageOutputTokens(payload: unknown): number {
+  if (!isRecord(payload))
+    return 0;
+  const usage = isRecord(payload.usage) ? payload.usage : payload;
+  return numberFromPayload(usage, ["completion_tokens", "output_tokens"]);
 }
 
 /**
