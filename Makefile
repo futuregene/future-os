@@ -11,11 +11,11 @@ install-cli: install-skills build-tui
 	cd cli && npm install && npm run build && chmod +x dist/index.js && npm link
 
 install-skills:
-	@mkdir -p ~/.agents/skills
+	@mkdir -p ~/.future/agent/skills
 	@for dir in skills/*/; do \
 		name=$$(basename "$$dir"); \
 		echo "  installing $$name"; \
-		rsync -a "$$dir" ~/.agents/skills/"$$name"/; \
+		rsync -a "$$dir" ~/.future/agent/skills/"$$name"/; \
 	done
 
 install-gui:
