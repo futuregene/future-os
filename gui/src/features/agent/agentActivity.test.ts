@@ -106,3 +106,50 @@ describe("buildAssistantRunProjection segments", () => {
     expect(projection.segments[0].kind).toBe("activity");
   });
 });
+
+describe("buildAssistantRunProjection output tokens", () => {
+  // Real shape emitted by the agent's gRPC StreamEvent: usage nested under `usage`
+  // with `completion_tokens` (mirrors how the TUI reads it).
+  it("sums completion tokens across every per-call usage event", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["text_chunk", { text: "thinking" }],
+        ["usage", { type: "usage", usage: { prompt_tokens: 1200, completion_tokens: 40, total_tokens: 1240 } }],
+        ["tool_start", read("t1", "/a.ts")[0]],
+        ["tool_end", read("t1", "/a.ts")[0]],
+        ["usage", { type: "usage", usage: { prompt_tokens: 1800, completion_tokens: 110, total_tokens: 1910 } }],
+        ["agent_end", { type: "agent_end" }],
+      ]),
+    );
+
+    // 40 + 110 generated across the two turns.
+    expect(projection.outputTokens).toBe(150);
+  });
+
+  it("falls back to agent_end usage when no per-call usage was streamed", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["text_chunk", { text: "done" }],
+        ["agent_end", { type: "agent_end", usage: { completion_tokens: 64 } }],
+      ]),
+    );
+
+    expect(projection.outputTokens).toBe(64);
+  });
+
+  it("tolerates a flat output_tokens shape", () => {
+    const projection = buildAssistantRunProjection(
+      events([["usage", { output_tokens: 27 }]]),
+    );
+
+    expect(projection.outputTokens).toBe(27);
+  });
+
+  it("reports zero when the provider returned no usage", () => {
+    const projection = buildAssistantRunProjection(
+      events([["text_chunk", { text: "hi" }]]),
+    );
+
+    expect(projection.outputTokens).toBe(0);
+  });
+});
