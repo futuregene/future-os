@@ -49,7 +49,7 @@ export function ToolCallBlock({ tool }: ToolCallBlockProps) {
                 ? (
                     <pre
                       className={cn(
-                        "mt-2 overflow-auto rounded-md border border-green-200 bg-green-50 p-3 text-xs leading-5 text-green-800",
+                        "mt-2 overflow-auto rounded-md border border-success-line bg-success-soft p-3 text-xs leading-5 text-success",
                       )}
                     >
                       <code>{tool.output}</code>

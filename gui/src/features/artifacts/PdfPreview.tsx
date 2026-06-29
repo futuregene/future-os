@@ -124,9 +124,9 @@ export function PdfPreview({ path }: PdfPreviewProps) {
 
   if (error) {
     return (
-      <div className="rounded-md border border-red-200 bg-red-50 p-3">
-        <div className="text-sm font-medium text-red-900">PDF Preview Error</div>
-        <div className="mt-1 text-xs text-red-700">{error}</div>
+      <div className="rounded-md border border-danger-line bg-danger-soft p-3">
+        <div className="text-sm font-medium text-danger">PDF Preview Error</div>
+        <div className="mt-1 text-xs text-danger">{error}</div>
       </div>
     );
   }

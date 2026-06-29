@@ -28,6 +28,7 @@ import {
   updateThreadThinkingLevel,
 } from "../../integrations/storage/threadStore";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
+import { useAsyncResource } from "../../lib/useAsyncResource";
 import { ActivityRail } from "./ActivityRail";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
@@ -65,6 +66,11 @@ export function AppShell() {
   const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
+  const { data: loadedAppSettings } = useAsyncResource<AppSettings>(
+    getAppSettings,
+    [],
+    { autoApprove: false, hiddenModels: [] },
+  );
   const [appSettings, setAppSettings] = useState<AppSettings>({ autoApprove: false, hiddenModels: [] });
   const [selectedThinkingLevel, setSelectedThinkingLevel] = useState(defaultThinkingLevel);
   const draftThinkingModelRef = useRef("");
@@ -99,18 +105,8 @@ export function AppShell() {
     : selectedThinkingLevel;
 
   useEffect(() => {
-    let cancelled = false;
-    getAppSettings()
-      .then((settings) => {
-        if (!cancelled) {
-          setAppSettings(settings);
-        }
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    setAppSettings(loadedAppSettings);
+  }, [loadedAppSettings]);
 
   useEffect(() => {
     if (activeThread || draftThinkingModelRef.current === selectedModelId)

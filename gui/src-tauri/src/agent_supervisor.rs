@@ -96,6 +96,8 @@ pub fn ensure_agent_running(app: &AppHandle) {
 /// Kill the bundled agent if we started it. Idempotent.
 pub fn shutdown_agent() {
     if let Some(child) = AGENT_CHILD.lock().unwrap().take() {
-        let _ = child.kill();
+        if let Err(error) = child.kill() {
+            eprintln!("FutureOS: failed to kill bundled agent on shutdown: {error}");
+        }
     }
 }

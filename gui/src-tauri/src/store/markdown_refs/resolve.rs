@@ -143,7 +143,7 @@ fn get_run_in_workspace(
 ) -> Result<Option<RunRecord>, crate::AppError> {
     conn.query_row(
         "SELECT r.id, r.thread_id, r.trigger_message_id, r.status, r.model_provider, r.model_id,
-                r.started_at, r.ended_at, r.error_message, r.created_at, r.updated_at
+                r.started_at, r.ended_at, r.error_message, r.error_type, r.created_at, r.updated_at
          FROM runs r
          JOIN threads t ON t.id = r.thread_id
          WHERE r.id = ?1 AND t.workspace_id = ?2",
@@ -199,12 +199,20 @@ fn get_review_changeset_in_workspace(
     workspace_id: &str,
     id: &str,
 ) -> Result<Option<ReviewChangesetRecord>, crate::AppError> {
+    // Columns qualified with `c.` because the JOIN onto `threads` makes several
+    // names (id, thread_id, created_at, updated_at) ambiguous. Use the shared
+    // column list so this stays in sync with `review_changeset_from_row`.
+    let cols = REVIEW_CHANGESET_COLUMNS
+        .split(", ")
+        .map(|c| format!("c.{}", c.trim()))
+        .collect::<Vec<_>>()
+        .join(", ");
     conn.query_row(
-        "SELECT c.id, c.thread_id, c.run_id, c.tool_call_id, c.title, c.summary, c.status,
-                c.files_changed, c.additions, c.deletions, c.created_at, c.updated_at
-         FROM review_changesets c
-         JOIN threads t ON t.id = c.thread_id
-         WHERE c.id = ?1 AND t.workspace_id = ?2",
+        &format!(
+            "SELECT {cols} FROM review_changesets c
+             JOIN threads t ON t.id = c.thread_id
+             WHERE c.id = ?1 AND t.workspace_id = ?2"
+        ),
         params![id, workspace_id],
         review_changeset_from_row,
     )

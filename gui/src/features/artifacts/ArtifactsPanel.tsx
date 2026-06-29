@@ -84,7 +84,7 @@ function ArtifactCard({
             </button>
             <button
               aria-label={`Delete artifact ${artifact.title}`}
-              className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-red-50 hover:text-red-600"
+              className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-danger-soft hover:text-danger"
               onClick={() => void handleDelete()}
               title="Delete artifact"
               type="button"

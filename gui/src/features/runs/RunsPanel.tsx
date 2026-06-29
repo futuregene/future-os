@@ -149,7 +149,7 @@ function RunRow({
   return (
     <div className="rounded-md border border-line-soft bg-surface p-3">
       <div className="flex items-start gap-2.5">
-        <span className={active ? "mt-1.5 size-2.5 shrink-0 rounded-full bg-blue-500" : "mt-1.5 size-2.5 shrink-0 rounded-full bg-slate-300"} />
+        <span className={active ? "mt-1.5 size-2.5 shrink-0 rounded-full bg-accent" : "mt-1.5 size-2.5 shrink-0 rounded-full bg-line"} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
             <div
@@ -175,7 +175,7 @@ function RunRow({
             ? <RunErrorSummary errorMessage={run.errorMessage} errorType={run.errorType} />
             : null}
           {actionError
-            ? <div className="mt-2 line-clamp-3 text-xs leading-5 text-red-600">{actionError}</div>
+            ? <div className="mt-2 line-clamp-3 text-xs leading-5 text-danger">{actionError}</div>
             : null}
           {active
             ? (
@@ -193,7 +193,7 @@ function RunRow({
                             Cancel
                           </button>
                           <button
-                            className="inline-flex h-7 items-center gap-1.5 rounded-md bg-red-600 px-2 text-xs font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                            className="inline-flex h-7 items-center gap-1.5 rounded-md bg-danger px-2 text-xs font-medium text-white transition-colors hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-60"
                             disabled={busy}
                             onClick={onTerminate}
                             type="button"
@@ -205,7 +205,7 @@ function RunRow({
                       )
                     : (
                         <button
-                          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-red-200 bg-red-50 px-2 text-xs font-medium text-red-700 transition-colors hover:bg-red-100"
+                          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-danger-line bg-danger-soft px-2 text-xs font-medium text-danger transition-colors hover:bg-danger-soft"
                           onClick={onRequestTerminate}
                           type="button"
                         >
@@ -333,7 +333,7 @@ function RunErrorSummary({ errorMessage, errorType }: RunErrorSummaryProps) {
             </div>
           )
         : null}
-      <div className="line-clamp-2 text-xs leading-5 text-red-600">{errorMessage}</div>
+      <div className="line-clamp-2 text-xs leading-5 text-danger">{errorMessage}</div>
     </div>
   );
 }

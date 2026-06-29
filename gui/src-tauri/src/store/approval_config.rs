@@ -19,11 +19,7 @@ pub fn get_sandbox_config(
     workspace_id: Option<&str>,
 ) -> Result<Option<SandboxConfigRecord>, crate::AppError> {
     let conn = connect()?;
-    let query = match workspace_id {
-        Some(_) => "SELECT id, workspace_id, mode, writable_roots, network_access, created_at, updated_at FROM sandbox_config WHERE workspace_id = ?1",
-        None => "SELECT id, workspace_id, mode, writable_roots, network_access, created_at, updated_at FROM sandbox_config WHERE workspace_id IS NULL",
-    };
-    conn.query_row(query, params![workspace_id], |row| {
+    let map_row = |row: &rusqlite::Row<'_>| {
         Ok(SandboxConfigRecord {
             id: row.get(0)?,
             workspace_id: row.get(1)?,
@@ -33,7 +29,20 @@ pub fn get_sandbox_config(
             created_at: row.get(5)?,
             updated_at: row.get(6)?,
         })
-    })
+    };
+    // The `None` branch has no `?1` placeholder, so it must bind no parameter.
+    match workspace_id {
+        Some(ws) => conn.query_row(
+            "SELECT id, workspace_id, mode, writable_roots, network_access, created_at, updated_at FROM sandbox_config WHERE workspace_id = ?1",
+            params![ws],
+            map_row,
+        ),
+        None => conn.query_row(
+            "SELECT id, workspace_id, mode, writable_roots, network_access, created_at, updated_at FROM sandbox_config WHERE workspace_id IS NULL",
+            [],
+            map_row,
+        ),
+    }
     .optional()
     .map_err(crate::AppError::from)
 }
@@ -68,11 +77,7 @@ pub fn get_approval_policy_config(
     workspace_id: Option<&str>,
 ) -> Result<Option<ApprovalPolicyConfigRecord>, crate::AppError> {
     let conn = connect()?;
-    let query = match workspace_id {
-        Some(_) => "SELECT id, workspace_id, policy, reviewer, created_at, updated_at FROM approval_policy_config WHERE workspace_id = ?1",
-        None => "SELECT id, workspace_id, policy, reviewer, created_at, updated_at FROM approval_policy_config WHERE workspace_id IS NULL",
-    };
-    conn.query_row(query, params![workspace_id], |row| {
+    let map_row = |row: &rusqlite::Row<'_>| {
         Ok(ApprovalPolicyConfigRecord {
             id: row.get(0)?,
             workspace_id: row.get(1)?,
@@ -81,7 +86,20 @@ pub fn get_approval_policy_config(
             created_at: row.get(4)?,
             updated_at: row.get(5)?,
         })
-    })
+    };
+    // The `None` branch has no `?1` placeholder, so it must bind no parameter.
+    match workspace_id {
+        Some(ws) => conn.query_row(
+            "SELECT id, workspace_id, policy, reviewer, created_at, updated_at FROM approval_policy_config WHERE workspace_id = ?1",
+            params![ws],
+            map_row,
+        ),
+        None => conn.query_row(
+            "SELECT id, workspace_id, policy, reviewer, created_at, updated_at FROM approval_policy_config WHERE workspace_id IS NULL",
+            [],
+            map_row,
+        ),
+    }
     .optional()
     .map_err(crate::AppError::from)
 }
@@ -116,12 +134,7 @@ pub fn list_approval_rules(
     workspace_id: Option<&str>,
 ) -> Result<Vec<ApprovalRuleRecord>, crate::AppError> {
     let conn = connect()?;
-    let query = match workspace_id {
-        Some(_) => "SELECT id, workspace_id, scope, match_kind, match_value, decision, enabled, created_at, expires_at FROM approval_rules WHERE workspace_id = ?1 ORDER BY created_at",
-        None => "SELECT id, workspace_id, scope, match_kind, match_value, decision, enabled, created_at, expires_at FROM approval_rules WHERE workspace_id IS NULL ORDER BY created_at",
-    };
-    let mut stmt = conn.prepare(query)?;
-    let rows = stmt.query_map(params![workspace_id], |row| {
+    let map_row = |row: &rusqlite::Row<'_>| {
         Ok(ApprovalRuleRecord {
             id: row.get(0)?,
             workspace_id: row.get(1)?,
@@ -133,7 +146,17 @@ pub fn list_approval_rules(
             created_at: row.get(7)?,
             expires_at: row.get(8)?,
         })
-    })?;
+    };
+    // The `None` branch has no `?1` placeholder, so it must bind no parameter.
+    let query = match workspace_id {
+        Some(_) => "SELECT id, workspace_id, scope, match_kind, match_value, decision, enabled, created_at, expires_at FROM approval_rules WHERE workspace_id = ?1 ORDER BY created_at",
+        None => "SELECT id, workspace_id, scope, match_kind, match_value, decision, enabled, created_at, expires_at FROM approval_rules WHERE workspace_id IS NULL ORDER BY created_at",
+    };
+    let mut stmt = conn.prepare(query)?;
+    let rows = match workspace_id {
+        Some(ws) => stmt.query_map(params![ws], map_row)?,
+        None => stmt.query_map([], map_row)?,
+    };
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(crate::AppError::from)
 }

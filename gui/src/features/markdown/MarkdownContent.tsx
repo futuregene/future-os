@@ -153,7 +153,7 @@ function CodeBlock({
         >
           {copied ? <Check className="size-3.5" /> : <Clipboard className="size-3.5" />}
         </button>
-        <pre className="overflow-auto rounded-lg bg-slate-100 p-3 pr-11 text-xs leading-5 text-ink">
+        <pre className="overflow-auto rounded-lg bg-surface-subtle p-3 pr-11 text-xs leading-5 text-ink">
           {language ? <div className="mb-2 text-[11px] text-ink-muted">{language}</div> : null}
           <code>{code}</code>
         </pre>
@@ -217,7 +217,7 @@ function renderInline(nodes: InlineNode[], workspaceId: string | null | undefine
         return <del className="text-ink-muted" key={key}>{renderInline(node.children, workspaceId, key)}</del>;
       case "code":
         return (
-          <code className="rounded bg-slate-100 px-1 py-0.5 text-[0.92em] text-ink" key={key}>
+          <code className="rounded bg-surface-subtle px-1 py-0.5 text-[0.92em] text-ink" key={key}>
             {node.code}
           </code>
         );

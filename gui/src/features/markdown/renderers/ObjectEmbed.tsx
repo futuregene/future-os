@@ -19,7 +19,7 @@ export function ApprovalEmbed({
 }) {
   return (
     <ObjectFrame
-      icon={<AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600" />}
+      icon={<AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />}
       meta={approval.kind}
       status={approval.status}
       title={approval.title || reference.label || approval.id}

@@ -338,7 +338,7 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
 - 审批支持键盘快捷操作：`Esc` 拒绝，`Cmd/Ctrl + Enter` 允许一次。
 - `requested_action` 预览需要可读化展示；内容过长时 UI 内部滚动，最大高度不超过窗口高度的三分之一。
 - 批量操作使用 `batch_operation`，用于一组文件写入、批量删除、批量命令或跨多个资源的高风险动作。
-- 超出当前 workspace 范围的读取使用 `external_workspace_read`，例如 Agent 需要读取当前 workspace 之外的本地文件或目录。
+- 超出当前 workspace 范围的读取对应枚举值 `outside_workspace_read`（与上表 `kind` 一致）。注意：该读取审批**当前尚未实现**，Agent 侧仅对 workspace 外的写入 / 编辑 / 删除（`outside_workspace_write` 等）触发审批。
 - GUI 或 Agent 重启后遗留的 `pending` 审批应标记为 `cancelled`，防止旧审批继续显示为可操作状态。
 - 如果审批通过后产生文件变更，再由 Review Changeset 展示实际修改对比。
 - P2 引入结构化 `action_payload` 和 `sandbox_boundary` 字段（设计细节见 git history，原 `P2_APPROVAL_MODEL.md`）。
@@ -732,6 +732,9 @@ Object Reference 表示某个对象引用了另一个对象。
 - `workspace_files`
 - `reference_targets`
 - `object_references`
+- `app_settings`（应用级设置：`auto_approve` / `hidden_models`，见 `store/app_settings.rs`）
+
+> 另有 P2 审批脚手架的预留表（schema 已建、未接线，详见 §4.8）：`sandbox_config`、`approval_policy_config`、`approval_rules`。
 
 ## 6. 关键设计决策
 

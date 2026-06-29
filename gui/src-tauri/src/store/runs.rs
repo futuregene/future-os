@@ -90,6 +90,31 @@ pub fn update_run_status(input: UpdateRunStatusInput) -> Result<RunRecord, crate
     get_run(&input.run_id)?.ok_or_else(|| "Updated run could not be loaded.".to_string().into())
 }
 
+/// Transition a run to `failed` only if it is not already in a terminal state,
+/// in a single atomic statement. Returns `true` if a row was updated. This is a
+/// compare-and-set so a concurrent abort (which sets `cancelled`) is never
+/// clobbered by a late failure projection.
+pub fn fail_run_if_active(
+    run_id: &str,
+    error_message: &str,
+    error_type: &str,
+) -> Result<bool, crate::AppError> {
+    let now = now_millis();
+    let conn = connect()?;
+    let affected = conn.execute(
+        "UPDATE runs
+         SET status = 'failed',
+             error_message = ?1,
+             error_type = ?2,
+             ended_at = COALESCE(ended_at, ?3),
+             updated_at = ?3
+         WHERE id = ?4
+           AND status NOT IN ('completed', 'failed', 'cancelled')",
+        params![error_message, error_type, now, run_id],
+    )?;
+    Ok(affected > 0)
+}
+
 pub fn list_run_events(run_id: &str) -> Result<Vec<RunEventRecord>, crate::AppError> {
     let conn = connect()?;
     let mut stmt = conn.prepare(
@@ -177,8 +202,11 @@ pub fn upsert_tool_call(input: UpsertToolCallInput) -> Result<(), crate::AppErro
 
 pub fn complete_tool_call(input: CompleteToolCallInput) -> Result<(), crate::AppError> {
     let now = now_millis();
-    let conn = connect()?;
-    conn.execute(
+    let mut conn = connect()?;
+    // The tool-call row and its output row are one logical write — commit them
+    // atomically so a crash can't leave a tool call without its output.
+    let tx = conn.transaction()?;
+    tx.execute(
         "INSERT INTO tool_calls (
              id, run_id, name, kind, status, started_at, ended_at, created_at
          ) VALUES (?1, ?2, ?3, 'agent_tool', ?4, ?5, ?5, ?5)
@@ -195,7 +223,7 @@ pub fn complete_tool_call(input: CompleteToolCallInput) -> Result<(), crate::App
         ],
     )?;
 
-    conn.execute(
+    tx.execute(
         "INSERT INTO tool_outputs (id, tool_call_id, kind, content, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5)",
         params![
@@ -206,5 +234,6 @@ pub fn complete_tool_call(input: CompleteToolCallInput) -> Result<(), crate::App
             now
         ],
     )?;
+    tx.commit()?;
     Ok(())
 }

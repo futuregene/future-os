@@ -317,6 +317,7 @@ mod tests {
             workspace_name: None,
             model_provider: None,
             model_id: None,
+            thinking_level: None,
         })
         .unwrap();
         let run = store::create_run(CreateRunInput {

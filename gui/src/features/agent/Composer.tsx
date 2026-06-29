@@ -293,7 +293,7 @@ export function Composer({
     <form
       className={cn(
         "relative rounded-lg border border-line bg-surface/95 p-2 shadow-panel backdrop-blur",
-        dropActive && "ring-2 ring-blue-300",
+        dropActive && "ring-2 ring-focus",
         className,
       )}
       onSubmit={handleSubmit}
@@ -348,7 +348,7 @@ export function Composer({
           )
         : null}
       {attachError
-        ? <div className="px-1 pb-1 text-xs text-amber-600">{attachError}</div>
+        ? <div className="px-1 pb-1 text-xs text-warning">{attachError}</div>
         : null}
       <div className="flex items-center justify-between pt-1">
         <div className="flex items-center gap-1">
@@ -444,7 +444,7 @@ export function Composer({
               : null}
           </div>
           <button
-            className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-blue-700 disabled:bg-blue-200"
+            className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
             disabled={(!value.trim() && attachments.length === 0) || disabled}
             type="submit"
             aria-label="Send"

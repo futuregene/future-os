@@ -238,7 +238,7 @@ async fn agent_prompt_inner(
     let response = command_client
         .execute_command(prompt_command(
             message,
-            session_id,
+            session_id.clone(),
             image_paths.unwrap_or_default(),
         )?)
         .await
@@ -254,8 +254,24 @@ async fn agent_prompt_inner(
         .into());
     }
 
-    let content = collect_agent_response(&mut event_stream, run_id.as_deref()).await?;
-    Ok(AgentPromptResponse { content })
+    match collect_agent_response(&mut event_stream, run_id.as_deref()).await {
+        Ok(content) => Ok(AgentPromptResponse { content }),
+        Err(error) => {
+            // The prompt was already accepted, so the Agent keeps running
+            // server-side with no consumer once we drop the stream — and there is
+            // no resume path. Tell it to stop so we don't orphan the run (and so
+            // the after-snapshot doesn't race a still-writing Agent). Best-effort:
+            // if this is itself the result of a user abort, the extra abort is a
+            // harmless no-op.
+            if let Err(abort_error) = command_client
+                .execute_command(base_command("abort", session_id))
+                .await
+            {
+                eprintln!("FutureOS: failed to abort Agent after stream error: {abort_error}");
+            }
+            Err(error)
+        }
+    }
 }
 
 struct PromptSessionGuard {
@@ -324,19 +340,10 @@ fn mark_run_failed_if_active(run_id: Option<&str>, error: &str) {
     let Some(run_id) = run_id else {
         return;
     };
-    let Ok(Some(run)) = store::get_run(run_id) else {
-        return;
-    };
-    if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
-        return;
-    }
     let error_type = crate::run_error::classify_run_error(error);
-    if let Err(update_error) = store::update_run_status(store::UpdateRunStatusInput {
-        run_id: run_id.to_string(),
-        status: "failed".to_string(),
-        error_message: Some(error.to_string()),
-        error_type: Some(error_type.to_string()),
-    }) {
+    // Compare-and-set: only fails a run that isn't already terminal, atomically,
+    // so a concurrent `abort_run` (which sets `cancelled`) is never overwritten.
+    if let Err(update_error) = store::fail_run_if_active(run_id, error, error_type) {
         eprintln!("FutureOS run failure status update failed: {update_error}");
     }
 }

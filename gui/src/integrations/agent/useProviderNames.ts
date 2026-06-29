@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useAsyncResource } from "../../lib/useAsyncResource";
 import { listAgentProviders } from "./providers";
 
 /**
@@ -7,25 +7,18 @@ import { listAgentProviders } from "./providers";
  * back to the id. Best-effort: errors leave the map empty.
  */
 export function useProviderNames(): Record<string, string> {
-  const [names, setNames] = useState<Record<string, string>>({});
+  const { data } = useAsyncResource<Record<string, string>>(
+    async () => {
+      const view = await listAgentProviders();
+      const map: Record<string, string> = {};
+      for (const provider of [...view.builtin, ...view.custom]) {
+        map[provider.id] = provider.name;
+      }
+      return map;
+    },
+    [],
+    {},
+  );
 
-  useEffect(() => {
-    let cancelled = false;
-    listAgentProviders()
-      .then((view) => {
-        if (cancelled)
-          return;
-        const map: Record<string, string> = {};
-        for (const provider of [...view.builtin, ...view.custom]) {
-          map[provider.id] = provider.name;
-        }
-        setNames(map);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return names;
+  return data;
 }
