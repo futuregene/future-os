@@ -150,7 +150,7 @@ make run-gui
 - **验证**: 前端基线三连；行为保持，回归：正常发送、附件发送、流式预览、失败落库、线程切换中途取消。
 - **关联**: C-11（顺带清理 `recentRunEventCount` set 点 229）、C-9（共享 util）。
 
-### [ ] M-2. AppShell 仍持有大量本应进 `layout/hooks/` 的域逻辑
+### [x] M-2. AppShell 仍持有大量本应进 `layout/hooks/` 的域逻辑
 - **类别 / 严重度**: module / 中
 - **位置**: `src/components/layout/AppShell.tsx`
   - (a) app-settings：`useAsyncResource(getAppSettings)` 69-73、镜像 `appSettings` useState 74、同步 effect 107-109、`handleChangeSettings` 158-167（默认字面量 `{autoApprove:false,hiddenModels:[]}` 写两遍：72 与 74）
@@ -165,7 +165,8 @@ make run-gui
   3. `useModelSelection({ activeThread, selectedModelId, setSelectedModelId, visibleModelOptions, refreshStore }): { selectedThinkingLevel, changeModel, changeDraftModel, changeThinkingLevel }` —— 搬入 286-324 + 111-117 + `draftThinkingModelRef`。
   - **坑**：`refreshStore` 属 thread-store 域、`selectedModelId/setSelectedModelId` 来自 `useAgentConnection`，均作参数注入，别在新 hook 内重持一份。
 - **复核结论**: CONFIRMED（行号已逐段核对一致）。
-- **验证**: 前端基线三连；`grep -nc "function handle" src/components/layout/AppShell.tsx` 应明显减少。
+- **落地结论**: 抽出三个 hook 进 `src/components/layout/hooks/`：`useAppSettings`、`useThreadDialogs({activeThreadId, refreshStore})`、`useModelSelection({activeThread, selectedModelId, setSelectedModelId, visibleModelOptions, refreshStore})`，均同名解构暴露。`DEFAULT_APP_SETTINGS` 抽到 `integrations/storage/appSettings.ts`（消除两处默认字面量）。`refreshStore`/`selectedModelId`/`setSelectedModelId` 作参数注入未重持。hook 调用顺序：`useAppSettings`（先于消费它的 `useApprovals`/`useAgentConnection`）→ `useThreadStore` → `useApprovals` → `useAgentConnection` → `useModelSelection`/`useThreadDialogs`（依赖前两者）。新增 `useModelSelection.syncSelection(modelId, thinkingLevel)` 收敛 `handleStartNewConversation` 原先直接写 `setSelectedModelId/setSelectedThinkingLevel/draftThinkingModelRef` 的三行。**为保「零功能变化」未消除 `useAppSettings` 的镜像 state + 同步 effect**（属纯搬移，原乐观更新/reload 行为保持）。`function handle` 由 ~22 降至 14。
+- **验证**: 前端基线三连 + 生产 `vite build` 均过；审批/模型切换/对话流待 `make run-gui` 实机确认。
 - **关联**: C-13、N-1；CLAUDE.md §5、§4。
 
 ### [x] M-3. prompt 构造逻辑堆在视图组件 `AgentThread.tsx` 底部
