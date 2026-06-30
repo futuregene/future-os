@@ -249,7 +249,7 @@ export function NewConversation({
                   className={cn(
                     "inline-flex h-8 max-w-64 items-center gap-2 rounded-md px-2.5 text-sm font-medium transition-colors",
                     mode === "workspace"
-                      ? "bg-surface text-ink shadow-sm"
+                      ? "bg-surface text-ink shadow-xs"
                       : "text-ink-soft hover:bg-surface/70 hover:text-ink",
                   )}
                   onClick={() => {
@@ -331,7 +331,7 @@ export function NewConversation({
                 className={cn(
                   "inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors",
                   mode === "chat"
-                    ? "bg-surface text-ink shadow-sm"
+                    ? "bg-surface text-ink shadow-xs"
                     : "text-ink-soft hover:bg-surface/70 hover:text-ink",
                 )}
                 onClick={() => {
