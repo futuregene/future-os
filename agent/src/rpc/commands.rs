@@ -593,71 +593,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 serde_json::json!({"level": next_level}),
             )
         }
-        "get_available_models" => {
-            let registry = crate::models::Registry::new();
-            let auth = crate::AuthStore::load();
-            let mut models: Vec<serde_json::Value> = registry
-                .all_models()
-                .into_iter()
-                .filter(|m| !m.api_key.is_empty() || auth.get(&m.provider).is_some())
-                .map(|m| {
-                    let has_image = m.input.contains(&"image".to_string());
-                    serde_json::json!({
-                        "id": m.id,
-                        "name": m.name,
-                        "provider": m.provider,
-                        "reasoning": m.reasoning,
-                        "image": has_image,
-                        "contextWindow": m.context_window,
-                        "maxTokens": m.max_tokens,
-                    })
-                })
-                .collect();
-            models.sort_by(|a, b| {
-                let key_a = format!(
-                    "{}/{}",
-                    a["provider"].as_str().unwrap_or(""),
-                    a["id"].as_str().unwrap_or("")
-                );
-                let key_b = format!(
-                    "{}/{}",
-                    b["provider"].as_str().unwrap_or(""),
-                    b["id"].as_str().unwrap_or("")
-                );
-                key_a.cmp(&key_b)
-            });
-            // Include current enabled_models from settings so the TUI knows the scope
-            let settings_path = std::path::PathBuf::from(crate::models::settings_path());
-            let settings = crate::config::load_settings(&settings_path).unwrap_or_default();
-            let valid_ids: std::collections::HashSet<&str> =
-                models.iter().filter_map(|m| m["id"].as_str()).collect();
-            let enabled_model_ids: Vec<String> = if settings.enabled_models.is_empty() {
-                valid_ids.iter().map(|&s| s.to_string()).collect()
-            } else {
-                // Filter to only valid model IDs (stale entries cleaned)
-                settings
-                    .enabled_models
-                    .iter()
-                    .filter(|id| valid_ids.contains(id.as_str()))
-                    .cloned()
-                    .collect()
-            };
-            RpcResponse::ok(
-                id,
-                "get_available_models",
-                serde_json::json!({"models": models, "enabled_model_ids": enabled_model_ids}),
-            )
-        }
         "set_enabled_models" => {
-            let enabled: Vec<String> = cmd.enabled_models.clone().unwrap_or_default();
-            let settings_path = std::path::PathBuf::from(crate::models::settings_path());
-            let mut settings = crate::config::load_settings(&settings_path).unwrap_or_default();
-            settings.enabled_models = enabled;
-            if let Err(e) = settings.save(&settings_path) {
-                RpcResponse::build_fail(id, "set_enabled_models", &e.to_string())
-            } else {
-                RpcResponse::ok(id, "set_enabled_models", serde_json::json!({}))
-            }
+            // Scoped models are now managed entirely by the TUI/client.
+            // The agent no longer reads enabled_models — list_models always
+            // returns all available models.
+            RpcResponse::ok(id, "set_enabled_models", serde_json::json!({}))
         }
         "clone" => {
             // Extract needed data from session
@@ -863,19 +803,12 @@ fn list_models_response(id: &str) -> String {
     let default_model = settings.default_model.clone();
     let default_thinking_level = settings.default_thinking_level.clone();
 
-    let mut models: Vec<crate::models::Model> = if !settings.enabled_models.is_empty() {
-        registry
-            .resolve_scope(&settings.enabled_models, &auth)
-            .into_iter()
-            .filter_map(|model_id| registry.resolve(&model_id))
-            .collect()
-    } else {
-        registry
-            .all_models()
-            .into_iter()
-            .filter(|model| !model.api_key.is_empty() || auth.get(&model.provider).is_some())
-            .collect()
-    };
+    // Always return all available models.  Scoping is a client-side concern.
+    let mut models: Vec<crate::models::Model> = registry
+        .all_models()
+        .into_iter()
+        .filter(|model| !model.api_key.is_empty() || auth.get(&model.provider).is_some())
+        .collect();
 
     models.sort_by(|left, right| {
         left.provider
