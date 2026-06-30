@@ -19,7 +19,7 @@ export interface AgentConnectionState {
   checkedAt?: number | null;
 }
 
-export interface AgentConnection {
+export interface UseAgentConnectionResult {
   agentConnection: AgentConnectionState;
   /** All advertised models (used by Settings). */
   modelOptions: AgentModelOption[];
@@ -51,7 +51,7 @@ function classifyAgentConnectionError(message: string): AgentConnectionState["ki
  * hints), and holds the selected model id. `visibleModelOptions` applies the
  * caller's hidden-model set.
  */
-export function useAgentConnection(hiddenModels: string[]): AgentConnection {
+export function useAgentConnection(hiddenModels: string[]): UseAgentConnectionResult {
   const [agentConnection, setAgentConnection] = useState<AgentConnectionState>({ status: "checking" });
   const [modelOptions, setModelOptions] = useState<AgentModelOption[]>([]);
   const [selectedModelId, setSelectedModelId] = useState(defaultAgentModelId);

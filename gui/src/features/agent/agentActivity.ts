@@ -1,5 +1,6 @@
 import type { StoredRunEvent } from "../../integrations/storage/threadStore";
 import type { AgentActivityItem, AgentActivityKind, MessageSegment } from "./agentThreadTypes";
+import { isRecord, singleLine } from "../../lib/objects";
 
 interface AssistantRunProjection {
   activityItems: AgentActivityItem[];
@@ -123,7 +124,7 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
         ...(target
           ? {
               detail: target,
-              target: compactTarget(target),
+              target: singleLine(target),
             }
           : {}),
       });
@@ -337,7 +338,7 @@ function toolFromPayload(payload: unknown, sequence: number): ToolActivity | nul
     id: explicitToolId(payload) ?? `${name}_${sequence}`,
     kind: name as Exclude<AgentActivityKind, "thinking">,
     status: "running",
-    target: target ? compactTarget(target) : undefined,
+    target: target ? singleLine(target) : undefined,
     detail: target,
     order: sequence,
   };
@@ -415,14 +416,6 @@ function hasToolError(payload: unknown) {
   return Boolean(error?.trim());
 }
 
-function compactTarget(value: string) {
-  return value.replace(/\s+/g, " ").trim();
-}
-
 function stringValue(value: unknown) {
   return typeof value === "string" ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

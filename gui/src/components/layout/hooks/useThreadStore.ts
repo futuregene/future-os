@@ -3,7 +3,7 @@ import type { StoredRun, StoredThread, StoredWorkspace } from "../../../integrat
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelStaleApprovalRequests,
-  getOrCreateDefaultChatThread,
+  getRecentOrCreateDefaultThread,
   initializeAppStore,
   listRuns,
   listThreads,
@@ -104,7 +104,7 @@ export function useThreadStore(): ThreadStore {
       try {
         await initializeAppStore();
         await cancelStaleApprovalRequests();
-        const recentThread = await getOrCreateDefaultChatThread();
+        const recentThread = await getRecentOrCreateDefaultThread();
         const [nextThreads, nextWorkspaces] = await Promise.all([listThreads(), listWorkspaces()]);
         if (cancelled) {
           return;

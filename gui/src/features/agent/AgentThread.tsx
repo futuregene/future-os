@@ -1,12 +1,12 @@
 import type { AgentConnectionState } from "../../components/layout/AppShell";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
-import type { StoredApprovalRequest, StoredRunEvent, StoredThread, StoredToolCall, StoredToolOutput } from "../../integrations/storage/threadStore";
+import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { useCallback, useEffect } from "react";
-import { listRunEvents, listToolCalls, listToolOutputs } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { ApprovalPrompt } from "./ApprovalPrompt";
+import { buildContinuePrompt, loadRunResumeSummary, previousUserForRun } from "./buildContinuePrompt";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { ThreadHeader } from "./ThreadHeader";
@@ -282,137 +282,4 @@ function agentNotice(
     detail: "已配置提供商，但模型列表为空。请检查模型是否已启用，或确认账号配额 / 权限。",
     action: { label: "模型设置", onClick: actions.onOpenModels },
   };
-}
-
-function buildContinuePrompt({
-  message,
-  runId,
-  summary,
-}: {
-  message?: AgentMessage;
-  runId?: string;
-  summary?: string;
-}) {
-  const effectiveRunId = runId ?? message?.runId ?? null;
-  const lines = [
-    "继续上一个任务。",
-    "请基于当前线程、最近一次运行状态和工作区当前文件状态继续推进。",
-    "不要重复执行已经成功完成的副作用操作；如果需要再次写入、删除、执行复杂命令，请先说明原因并遵守审批策略。",
-  ];
-
-  if (effectiveRunId) {
-    lines.push("", `最近 Run: ${effectiveRunId}`);
-  }
-  if (message?.content?.trim()) {
-    lines.push("", "上一条失败消息摘要:", truncateForPrompt(message.content.trim(), 1200));
-  }
-  if (summary?.trim()) {
-    lines.push("", "已执行内容摘要:", summary.trim());
-  }
-
-  return lines.join("\n");
-}
-
-async function loadRunResumeSummary(runId: string) {
-  try {
-    const [events, tools] = await Promise.all([
-      listRunEvents(runId),
-      listToolCalls(runId),
-    ]);
-    const outputEntries = await Promise.all(
-      tools.slice(0, 8).map(async (tool) => {
-        try {
-          return [tool.id, await listToolOutputs(tool.id)] as const;
-        }
-        catch {
-          return [tool.id, [] as StoredToolOutput[]] as const;
-        }
-      }),
-    );
-    const outputsByTool = Object.fromEntries(outputEntries);
-    return summarizeRunForPrompt(events, tools, outputsByTool);
-  }
-  catch (error) {
-    return `Run 摘要加载失败：${error instanceof Error ? error.message : String(error)}`;
-  }
-}
-
-function summarizeRunForPrompt(
-  events: StoredRunEvent[],
-  tools: StoredToolCall[],
-  outputsByTool: Record<string, StoredToolOutput[]>,
-) {
-  const lines: string[] = [];
-  if (tools.length > 0) {
-    lines.push("工具调用:");
-    for (const tool of tools.slice(0, 8)) {
-      const command = toolCommand(tool.input) ?? tool.input ?? tool.name;
-      const outputs = outputsByTool[tool.id] ?? [];
-      const outputSummary = outputs
-        .map(output => output.content ?? output.kind)
-        .filter(Boolean)
-        .map(value => truncateForPrompt(value, 240))
-        .join(" | ");
-      lines.push(`- ${tool.name} [${tool.status}]: ${truncateForPrompt(command, 360)}${outputSummary ? ` => ${outputSummary}` : ""}`);
-    }
-    if (tools.length > 8) {
-      lines.push(`- 还有 ${tools.length - 8} 个工具调用未展开。`);
-    }
-  }
-
-  const finalEvents = events
-    .filter(event => ["error", "agent_error", "agent_end", "tool_end", "tool_result"].includes(event.eventType))
-    .slice(-6);
-  if (finalEvents.length > 0) {
-    lines.push("最近事件:");
-    for (const event of finalEvents) {
-      lines.push(`- ${event.eventType}: ${truncateForPrompt(event.payload ?? "", 360)}`);
-    }
-  }
-
-  return lines.join("\n");
-}
-
-function previousUserForRun(messages: AgentMessage[], runId: string) {
-  const runMessageIndex = messages.findIndex(message => message.runId === runId && message.role === "assistant");
-  const startIndex = runMessageIndex >= 0 ? runMessageIndex - 1 : messages.length - 1;
-  for (let index = startIndex; index >= 0; index -= 1) {
-    if (messages[index].role === "user") {
-      return messages[index];
-    }
-  }
-  return null;
-}
-
-function toolCommand(input: string | null | undefined) {
-  if (!input)
-    return null;
-
-  let current: unknown = input;
-  for (let index = 0; index < 3; index += 1) {
-    if (isRecord(current)) {
-      const value = current.command;
-      return typeof value === "string" && value.trim() ? value : null;
-    }
-    if (typeof current !== "string")
-      return null;
-
-    try {
-      current = JSON.parse(current) as unknown;
-    }
-    catch {
-      return null;
-    }
-  }
-
-  return null;
-}
-
-function truncateForPrompt(value: string, limit: number) {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  return normalized.length > limit ? `${normalized.slice(0, limit)}...` : normalized;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -6,6 +6,7 @@ import type {
   StoredRun,
   StoredToolCall,
 } from "../../integrations/storage/types";
+import { isRecord, singleLine } from "../../lib/objects";
 import { referenceKey } from "../markdown/futureMarkdownTypes";
 import { parseFutureMarkdown } from "../markdown/parseFutureMarkdown";
 import { resolveFutureReferences } from "../markdown/resolveFutureReferences";
@@ -141,10 +142,6 @@ function summarizeResearch(index: number, targetId: string, data: unknown) {
   ].filter(Boolean).join(" | ");
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
 function isArtifact(value: unknown): value is StoredArtifact {
   return isRecord(value)
     && typeof value.id === "string"
@@ -187,10 +184,6 @@ function isResearch(value: unknown): value is StoredResearchResource {
     && typeof value.id === "string"
     && typeof value.title === "string"
     && typeof value.resourceType === "string";
-}
-
-function singleLine(value: string) {
-  return value.replace(/\s+/g, " ").trim();
 }
 
 function field(name: string, value?: string | null, maxLength = 240) {
