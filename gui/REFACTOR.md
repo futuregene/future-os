@@ -244,14 +244,15 @@ make run-gui
 - **验证**: 后端基线三连。
 - **关联**: N-2；ER.md §6.8。
 
-### [ ] M-9. ReviewPanel 两个近重复的可折叠文件 diff 组件 + 两套展开状态机
+### [x] M-9. ReviewPanel 两个近重复的可折叠文件 diff 组件 + 两套展开状态机
 - **类别 / 严重度**: module / 中
 - **位置**: `src/features/review/ReviewPanel.tsx`：`ChangesetFileChange`(325-381)、`GitFileDiff`(504-547)；状态机 `WorkingTreeReview`(157-188, 按 `file.path`)、`LastRunReview` openFiles(216、249-267, 按 `file.id`)；`ExpandCollapseAll`(190-198)已共用。
 - **现状**: 两组件 header 结构相同（FileDiff 图标 + 路径 + `+/-` 计数 + chevron），body 都是 `open ? <DiffView> : null`；`ChangesetFileChange` 是超集（额外 previousPath 箭头 344-346、changeType 标签 349-351、binary/sensitive/truncated 366-375）。两套状态机仅 key 字段不同。
 - **问题**: header+折叠壳重复；`text-orange-500` 两处各写一遍（见 U-10）；状态机重复。
 - **改造方案**: 抽 `src/features/review/CollapsibleFileDiff.tsx`，props `{ title, headerExtras?, additions?, deletions?, showCounts?, open, onToggle, children }`；两组件退化为组装 title/extras/body 后渲染它。可选抽 `useExpandableFiles<T>(files, keyOf)` 供两视图共用。图标色统一在组件里改语义 token（联动 U-10）。
 - **复核结论**: CONFIRMED（两组件 header 一致、两套状态机属实）。
-- **验证**: 前端基线三连 + `make run-gui` 确认折叠/计数/重命名箭头一致。
+- **落地结论**: 抽出 `src/features/review/CollapsibleFileDiff.tsx`（props 同方案）+ `src/features/review/useExpandableFiles.ts`（泛型展开状态机，工作树按 `path`、上一轮按 `id`，hook 因 react-refresh lint 单独成文件）。`ChangesetFileChange`/`GitFileDiff` 退化为组装 title/extras/body 渲染 `CollapsibleFileDiff`，`WorkingTreeReview`/`LastRunReview` 改用 hook（LastRunReview 的 hook 调用上移到早 return 之前，`files = review?.files ?? []`）。图标色仍是语义 `text-ink-soft`（U-10 已统一，未回退）。class 串逐字保留。
+- **验证**: 前端基线三连已过；两个 diff 视图折叠/计数/重命名箭头待 `make run-gui` 实机确认。
 - **关联**: U-10、M-4。
 
 ---

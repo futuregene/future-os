@@ -4,7 +4,7 @@ import type {
   LastRunReviewData,
   StoredReviewFileChange,
 } from "../../integrations/storage/types";
-import { AlertTriangle, ChevronDown, ChevronRight, FileDiff, GitBranch } from "lucide-react";
+import { AlertTriangle, GitBranch } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { DiffView } from "../../components/ui/DiffView";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -12,6 +12,8 @@ import { Select } from "../../components/ui/Select";
 import { getLastRunReview, retryRunReview, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { formatTime } from "../../lib/date";
 import { onFutureEvent } from "../../lib/futureEvents";
+import { CollapsibleFileDiff } from "./CollapsibleFileDiff";
+import { useExpandableFiles } from "./useExpandableFiles";
 
 export type ReviewBase = "custom" | "head" | "merge-base" | "upstream";
 
@@ -157,20 +159,12 @@ function ViewTab({ active, label, onClick }: { active: boolean; label: string; o
 
 function WorkingTreeReview({ files }: { files: GitReviewFile[] }) {
   // Files default collapsed; open state is keyed by path.
-  const [openFiles, setOpenFiles] = useState<Record<string, boolean>>({});
-  const allOpen = files.length > 0 && files.every(file => openFiles[file.path]);
+  const { allOpen, isOpen, toggle, toggleAll } = useExpandableFiles(files, file => file.path);
 
   return (
     <>
       {files.length > 0
-        ? (
-            <ExpandCollapseAll
-              allOpen={allOpen}
-              onToggle={() => setOpenFiles(
-                allOpen ? {} : Object.fromEntries(files.map(file => [file.path, true])),
-              )}
-            />
-          )
+        ? <ExpandCollapseAll allOpen={allOpen} onToggle={toggleAll} />
         : null}
       <div className="space-y-3">
         {files.length === 0
@@ -179,8 +173,8 @@ function WorkingTreeReview({ files }: { files: GitReviewFile[] }) {
               <GitFileDiff
                 file={file}
                 key={file.path}
-                open={openFiles[file.path] ?? false}
-                onToggle={() => setOpenFiles(current => ({ ...current, [file.path]: !(current[file.path] ?? false) }))}
+                open={isOpen(file)}
+                onToggle={() => toggle(file)}
               />
             ))}
       </div>
@@ -214,7 +208,8 @@ function LastRunReview({
   review: LastRunReviewData | null;
 }) {
   // Files default collapsed; open state is keyed by file-change id.
-  const [openFiles, setOpenFiles] = useState<Record<string, boolean>>({});
+  const files = review?.files ?? [];
+  const { allOpen, isOpen, toggle, toggleAll } = useExpandableFiles(files, file => file.id);
 
   if (changePreview === "unsupported_too_large")
     return <EmptyState title="目录过大，已关闭改动预览" detail="该 Workspace 文件过多，暂不生成改动预览。" />;
@@ -228,7 +223,7 @@ function LastRunReview({
   if (!review)
     return <EmptyState title="还没有可供审查的上一轮运行" detail="完成一轮 Agent 运行后，文件变化会显示在这里。" />;
 
-  const { changeset, files } = review;
+  const { changeset } = review;
   return (
     <div className="space-y-3">
       <RunReviewBanners review={review} retrying={retrying} onRetry={onRetry} />
@@ -245,16 +240,7 @@ function LastRunReview({
         </div>
       </section>
       {files.length > 0
-        ? (
-            <ExpandCollapseAll
-              allOpen={files.every(file => openFiles[file.id])}
-              onToggle={() => setOpenFiles(
-                files.every(file => openFiles[file.id])
-                  ? {}
-                  : Object.fromEntries(files.map(file => [file.id, true])),
-              )}
-            />
-          )
+        ? <ExpandCollapseAll allOpen={allOpen} onToggle={toggleAll} />
         : null}
       <div className="space-y-2">
         {files.length === 0
@@ -263,8 +249,8 @@ function LastRunReview({
               <ChangesetFileChange
                 file={file}
                 key={file.id}
-                open={openFiles[file.id] ?? false}
-                onToggle={() => setOpenFiles(current => ({ ...current, [file.id]: !(current[file.id] ?? false) }))}
+                open={isOpen(file)}
+                onToggle={() => toggle(file)}
               />
             ))}
       </div>
@@ -333,51 +319,35 @@ function ChangesetFileChange({
   open: boolean;
 }) {
   return (
-    <section className="overflow-hidden rounded-md border border-line-soft bg-surface">
-      <button
-        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
-        onClick={onToggle}
-        type="button"
-      >
-        <span className="flex min-w-0 items-center gap-2">
-          <FileDiff className="size-4 shrink-0 text-ink-soft" />
-          <span className="min-w-0 truncate text-sm font-medium text-ink-soft">
-            {file.previousPath ? `${file.previousPath} → ` : ""}
-            {file.path ?? "Unknown file"}
-          </span>
+    <CollapsibleFileDiff
+      title={(
+        <>
+          {file.previousPath ? `${file.previousPath} → ` : ""}
+          {file.path ?? "Unknown file"}
+        </>
+      )}
+      headerExtras={(
+        <span className="rounded bg-surface-subtle px-1.5 py-0.5 text-[11px] text-ink-muted">
+          {changeTypeLabel(file)}
         </span>
-        <span className="flex shrink-0 items-center gap-2 text-xs">
-          <span className="rounded bg-surface-subtle px-1.5 py-0.5 text-[11px] text-ink-muted">
-            {changeTypeLabel(file)}
-          </span>
-          {!file.binary
-            ? (
-                <>
-                  <span className="text-success">{`+${file.additions}`}</span>
-                  <span className="text-danger">{`-${file.deletions}`}</span>
-                </>
-              )
-            : null}
-          {open ? <ChevronDown className="size-4 text-ink-muted" /> : <ChevronRight className="size-4 text-ink-muted" />}
-        </span>
-      </button>
-      {open
-        ? (
-            <div className="border-t border-line-soft">
-              {file.omissionReason === "sensitive"
-                ? <div className="px-3 py-3 text-xs text-warning">敏感文件发生变化，内容未保存。</div>
-                : file.binary
-                  ? <BinaryFileDetail file={file} />
-                  : file.diff
-                    ? <DiffView diff={file.diff} />
-                    : <div className="px-3 py-3 text-xs text-ink-muted">无文本 diff。</div>}
-              {file.diffTruncated
-                ? <div className="px-3 py-2 text-xs text-warning">diff 过大，已截断显示。</div>
-                : null}
-            </div>
-          )
+      )}
+      additions={file.additions}
+      deletions={file.deletions}
+      showCounts={!file.binary}
+      open={open}
+      onToggle={onToggle}
+    >
+      {file.omissionReason === "sensitive"
+        ? <div className="px-3 py-3 text-xs text-warning">敏感文件发生变化，内容未保存。</div>
+        : file.binary
+          ? <BinaryFileDetail file={file} />
+          : file.diff
+            ? <DiffView diff={file.diff} />
+            : <div className="px-3 py-3 text-xs text-ink-muted">无文本 diff。</div>}
+      {file.diffTruncated
+        ? <div className="px-3 py-2 text-xs text-warning">diff 过大，已截断显示。</div>
         : null}
-    </section>
+    </CollapsibleFileDiff>
   );
 }
 
@@ -513,37 +483,16 @@ function GitFileDiff({
   open: boolean;
 }) {
   return (
-    <section className="overflow-hidden rounded-md border border-line-soft bg-surface">
-      <button
-        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
-        onClick={onToggle}
-        type="button"
-      >
-        <span className="flex min-w-0 items-center gap-2">
-          <FileDiff className="size-4 shrink-0 text-ink-soft" />
-          <span className="min-w-0 truncate text-sm font-medium text-ink-soft">{file.path}</span>
-        </span>
-        <span className="flex shrink-0 items-center gap-2 text-xs">
-          <span className="text-success">
-            +
-            {file.additions}
-          </span>
-          <span className="text-danger">
-            -
-            {file.deletions}
-          </span>
-          {open ? <ChevronDown className="size-4 text-ink-muted" /> : <ChevronRight className="size-4 text-ink-muted" />}
-        </span>
-      </button>
-      {open
-        ? (
-            <div className="border-t border-line-soft">
-              {file.diff
-                ? <DiffView diff={file.diff} />
-                : <div className="px-3 py-3 text-xs text-ink-muted">No textual diff available.</div>}
-            </div>
-          )
-        : null}
-    </section>
+    <CollapsibleFileDiff
+      title={file.path}
+      additions={file.additions}
+      deletions={file.deletions}
+      open={open}
+      onToggle={onToggle}
+    >
+      {file.diff
+        ? <DiffView diff={file.diff} />
+        : <div className="px-3 py-3 text-xs text-ink-muted">No textual diff available.</div>}
+    </CollapsibleFileDiff>
   );
 }
