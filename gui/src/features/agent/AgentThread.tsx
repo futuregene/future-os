@@ -230,7 +230,7 @@ function AgentConnectionNotice({
 }) {
   const notice = agentNotice(connection, { onOpenModels, onOpenProviders, onRetry });
   return (
-    <div className="pointer-events-auto mx-auto w-full max-w-3xl rounded-md border border-warning-line bg-warning-soft px-3 py-2 text-xs leading-5 text-warning shadow-sm">
+    <div className="pointer-events-auto mx-auto w-full max-w-3xl rounded-md border border-warning-line bg-warning-soft px-3 py-2 text-xs leading-5 text-warning shadow-xs">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-medium">{notice.title}</span>
         <button

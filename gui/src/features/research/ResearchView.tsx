@@ -101,7 +101,7 @@ function ResearchResourceCard({
   resource: StoredResearchResource;
 }) {
   return (
-    <article className={highlighted ? "rounded-lg border border-info-line bg-surface p-4 shadow-sm" : "rounded-lg border border-line-soft bg-surface p-4"}>
+    <article className={highlighted ? "rounded-lg border border-info-line bg-surface p-4 shadow-xs" : "rounded-lg border border-line-soft bg-surface p-4"}>
       <div className="flex items-start gap-3">
         {resource.sourceArtifactId
           ? <FileText className="mt-0.5 size-4 shrink-0 text-accent" />
