@@ -6,7 +6,7 @@ export function DiffView({ diff }: { diff: string }) {
   const rows = diffRows(diff);
 
   return (
-    <div className="max-h-[70vh] overflow-auto bg-surface font-mono text-[12px] leading-5">
+    <div className="max-h-[70vh] overflow-auto bg-surface font-mono text-xs leading-5">
       {rows.map(row => (
         <DiffLine
           key={row.key}
@@ -38,7 +38,7 @@ function DiffLine({
         <span className="inline-block w-2" />
         {newLineNumber ?? ""}
       </span>
-      <code className="min-w-0 flex-1 whitespace-pre-wrap break-words px-3">{content}</code>
+      <code className="min-w-0 flex-1 whitespace-pre-wrap wrap-break-word px-3">{content}</code>
     </div>
   );
 }

@@ -75,7 +75,7 @@ export function SettingsDialog({
       <section
         aria-label="设置"
         aria-modal="true"
-        className="relative z-10 flex h-[560px] w-full max-w-3xl overflow-hidden rounded-xl border border-line-soft bg-surface shadow-dialog"
+        className="relative z-10 flex h-140 w-full max-w-3xl overflow-hidden rounded-xl border border-line-soft bg-surface shadow-dialog"
         role="dialog"
       >
         <nav className="flex w-52 shrink-0 flex-col border-r border-line-soft bg-surface-subtle p-3">

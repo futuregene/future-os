@@ -108,7 +108,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
 
       <section className="rounded-md border border-line-soft bg-surface p-3">
         <div className="min-w-0">
-          <h3 className="break-words text-sm font-semibold leading-5 text-ink">{artifact.title}</h3>
+          <h3 className="wrap-break-word text-sm font-semibold leading-5 text-ink">{artifact.title}</h3>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <Badge>{artifact.artifactType}</Badge>
             {artifact.contentStorage ? <Badge>{artifact.contentStorage}</Badge> : null}
@@ -120,7 +120,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
         {artifact.path
           ? (
               <div className="mt-3 flex items-start gap-2 rounded-md bg-surface-subtle px-2 py-1.5 text-xs leading-5 text-ink-muted">
-                <span className="min-w-0 flex-1 break-words" title={artifact.path}>{artifact.path}</span>
+                <span className="min-w-0 flex-1 wrap-break-word" title={artifact.path}>{artifact.path}</span>
                 <CopyButton
                   className="shrink-0"
                   copied={copiedKey === "path"}

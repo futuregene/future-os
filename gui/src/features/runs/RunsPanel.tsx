@@ -156,7 +156,7 @@ function RunRow({
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
             <div
-              className="min-w-0 flex-1 whitespace-pre-wrap break-words text-sm font-normal leading-5 text-ink"
+              className="min-w-0 flex-1 whitespace-pre-wrap wrap-break-word text-sm font-normal leading-5 text-ink"
               title={command}
             >
               {command}
