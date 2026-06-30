@@ -1,7 +1,7 @@
 import type {
   GitReview,
   GitReviewFile,
-  RunReview,
+  LastRunReviewData,
   StoredReviewFileChange,
 } from "../../integrations/storage/types";
 import { AlertTriangle, ChevronDown, ChevronRight, FileDiff, GitBranch } from "lucide-react";
@@ -36,7 +36,7 @@ export function ReviewPanel({
 }) {
   const isGit = review?.isGitWorkspace ?? false;
   const [activeView, setActiveView] = useState<ReviewView>(isGit ? "git_changes" : "last_run");
-  const [runReview, setRunReview] = useState<RunReview | null>(null);
+  const [runReview, setRunReview] = useState<LastRunReviewData | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [loadingRun, setLoadingRun] = useState(false);
   const [retrying, setRetrying] = useState(false);
@@ -211,7 +211,7 @@ function LastRunReview({
   loading: boolean;
   onRetry: () => void;
   retrying: boolean;
-  review: RunReview | null;
+  review: LastRunReviewData | null;
 }) {
   // Files default collapsed; open state is keyed by file-change id.
   const [openFiles, setOpenFiles] = useState<Record<string, boolean>>({});
@@ -279,7 +279,7 @@ function RunReviewBanners({
 }: {
   onRetry: () => void;
   retrying: boolean;
-  review: RunReview;
+  review: LastRunReviewData;
 }) {
   const banners: Array<{ key: string; text: string; retry?: boolean }> = [];
   if (review.overlapped)

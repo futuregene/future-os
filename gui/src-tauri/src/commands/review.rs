@@ -21,7 +21,7 @@ pub struct WorkspaceReviewCapabilities {
 /// The "上一轮变更" payload for a Thread (§10.3).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RunReview {
+pub struct LastRunReviewData {
     changeset: store::ReviewChangesetRecord,
     files: Vec<store::ReviewFileChangeRecord>,
     run: Option<store::RunRecord>,
@@ -66,23 +66,27 @@ pub fn get_workspace_review_capabilities(
 }
 
 #[tauri::command]
-pub fn get_last_run_review(thread_id: String) -> Result<Option<RunReview>, crate::AppError> {
+pub fn get_last_run_review(
+    thread_id: String,
+) -> Result<Option<LastRunReviewData>, crate::AppError> {
     let Some(changeset) = store::get_last_run_changeset(&thread_id)? else {
         return Ok(None);
     };
-    Ok(Some(build_run_review(changeset)?))
+    Ok(Some(build_last_run_review(changeset)?))
 }
 
 #[tauri::command]
-pub fn retry_run_review(run_id: String) -> Result<Option<RunReview>, crate::AppError> {
+pub fn retry_run_review(run_id: String) -> Result<Option<LastRunReviewData>, crate::AppError> {
     agent_bridge::retry_run_review(&run_id)?;
     let Some(changeset) = store::get_run_changeset(&run_id)? else {
         return Ok(None);
     };
-    Ok(Some(build_run_review(changeset)?))
+    Ok(Some(build_last_run_review(changeset)?))
 }
 
-fn build_run_review(changeset: store::ReviewChangesetRecord) -> Result<RunReview, crate::AppError> {
+fn build_last_run_review(
+    changeset: store::ReviewChangesetRecord,
+) -> Result<LastRunReviewData, crate::AppError> {
     let files = store::list_review_file_changes(&changeset.id)?;
     let run = changeset
         .run_id
@@ -107,7 +111,7 @@ fn build_run_review(changeset: store::ReviewChangesetRecord) -> Result<RunReview
 
     let snapshot_status = derive_snapshot_status(is_git, &changeset, &before, &after);
 
-    Ok(RunReview {
+    Ok(LastRunReviewData {
         snapshot_status,
         confidence: changeset.confidence.clone(),
         overlapped: changeset.overlapped,

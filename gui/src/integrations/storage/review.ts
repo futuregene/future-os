@@ -1,4 +1,4 @@
-import type { GitReview, RunReview, WorkspaceReviewCapabilities } from "./types";
+import type { GitReview, LastRunReviewData, WorkspaceReviewCapabilities } from "./types";
 import { invokeCommand } from "../tauri/invoke";
 
 export async function getWorkspaceReviewCapabilities(workspaceId: string) {
@@ -8,11 +8,11 @@ export async function getWorkspaceReviewCapabilities(workspaceId: string) {
 }
 
 export async function getLastRunReview(threadId: string) {
-  return invokeCommand<RunReview | null>("get_last_run_review", { threadId });
+  return invokeCommand<LastRunReviewData | null>("get_last_run_review", { threadId });
 }
 
 export async function retryRunReview(runId: string) {
-  return invokeCommand<RunReview | null>("retry_run_review", { runId });
+  return invokeCommand<LastRunReviewData | null>("retry_run_review", { runId });
 }
 
 export async function getGitReview(input: {

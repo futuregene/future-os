@@ -229,7 +229,7 @@ fn persist_written_file_artifact(run_id: &str, tool_name: &str, output: Option<&
     let Some(path) = output.and_then(written_path_from_tool_output) else {
         return;
     };
-    match path_is_inside_run_workspace(run_id, &path) {
+    match path_allowed_for_run(run_id, Some(&path)) {
         Ok(true) => {}
         Ok(false) => return,
         Err(error) => {
@@ -260,21 +260,6 @@ fn persist_written_file_artifact(run_id: &str, tool_name: &str, output: Option<&
     }
 }
 
-fn path_is_inside_run_workspace(run_id: &str, path: &str) -> Result<bool, crate::AppError> {
-    let run = store::get_run(run_id)?.ok_or_else(|| "Run could not be loaded.".to_string())?;
-    let thread = store::get_thread(&run.thread_id)?
-        .ok_or_else(|| "Thread could not be loaded.".to_string())?;
-    let workspace = store::get_workspace(&thread.workspace_id)?
-        .ok_or_else(|| "Workspace could not be loaded.".to_string())?;
-    if git_review::is_git_workspace(Path::new(&workspace.path)) {
-        return Ok(false);
-    }
-
-    let workspace_path = git_review::canonical_or_raw(&workspace.path);
-    let candidate_path = git_review::canonical_or_raw(path);
-    Ok(candidate_path.starts_with(workspace_path))
-}
-
 fn written_path_from_tool_output(output: &str) -> Option<String> {
     output
         .trim()
@@ -289,7 +274,7 @@ fn persist_artifact(run_id: &str, value: &serde_json::Value) {
     let artifact_type = value_string(value, &["type", "artifact_type", "artifactType"])
         .unwrap_or_else(|| "document".to_string());
     let path = value_string(value, &["path", "file_path", "filePath"]);
-    match artifact_is_allowed_for_run(run_id, path.as_deref()) {
+    match path_allowed_for_run(run_id, path.as_deref()) {
         Ok(true) => {}
         Ok(false) => return,
         Err(error) => {
@@ -315,7 +300,11 @@ fn persist_artifact(run_id: &str, value: &serde_json::Value) {
     }
 }
 
-fn artifact_is_allowed_for_run(run_id: &str, path: Option<&str>) -> Result<bool, crate::AppError> {
+/// True when `path` (a write target / artifact path) is inside the Run's
+/// workspace, so it's safe to persist as an artifact. Git workspaces opt out
+/// entirely (their changes flow through the review pipeline, not artifacts); a
+/// `None` path (inline artifact) is always allowed.
+fn path_allowed_for_run(run_id: &str, path: Option<&str>) -> Result<bool, crate::AppError> {
     let run = store::get_run(run_id)?.ok_or_else(|| "Run could not be loaded.".to_string())?;
     let thread = store::get_thread(&run.thread_id)?
         .ok_or_else(|| "Thread could not be loaded.".to_string())?;
