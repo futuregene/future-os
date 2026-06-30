@@ -1,27 +1,35 @@
+mod approval;
 mod client;
+mod models;
 mod persist;
 mod review;
+mod run_control;
+mod session;
 mod stream;
 
+pub use self::approval::decide_approval;
 pub(crate) use self::client::raw_agent_addr;
+pub use self::models::{list_agent_models, AgentModelOption};
+pub use self::run_control::abort_run;
 pub use review::retry as retry_run_review;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::{
     collections::HashSet,
     sync::{Mutex, OnceLock},
 };
 
 use self::client::{
-    approval_decision_command, base_command, connect_agent, get_state_command, new_session_command,
-    prompt_command, set_model_command, set_permission_level_command, set_thinking_level_command,
+    base_command, connect_agent, prompt_command, set_model_command, set_thinking_level_command,
     RpcResponseExt,
 };
-use self::stream::collect_agent_response;
-use crate::{
-    agent_proto::{FutureAgentClient, StreamRequest},
-    store,
+use self::run_control::{mark_run_failed_if_active, wait_for_agent_idle};
+use self::session::{
+    ensure_agent_session, prior_user_message_count, set_agent_permission_level,
+    workspace_path_for_thread,
 };
+use self::stream::collect_agent_response;
+use crate::agent_proto::StreamRequest;
 
 static ACTIVE_AGENT_PROMPTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
@@ -29,42 +37,6 @@ static ACTIVE_AGENT_PROMPTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 #[serde(rename_all = "camelCase")]
 pub struct AgentPromptResponse {
     content: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentModelOption {
-    id: String,
-    label: String,
-    provider: String,
-    #[serde(default)]
-    supports_images: bool,
-    #[serde(default)]
-    thinking_level: Option<String>,
-    #[serde(default)]
-    context_window: Option<i32>,
-    #[serde(default)]
-    is_default: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AgentModelsResponse {
-    models: Vec<AgentModelOption>,
-}
-
-pub async fn list_agent_models() -> Result<Vec<AgentModelOption>, crate::AppError> {
-    let mut client = connect_agent().await?;
-    let response = client
-        .execute_command(base_command("list_models", String::new()))
-        .await
-        .map_err(|error| format!("Unable to load Future Agent models: {error}"))?
-        .into_inner()
-        .ok_or_rpc_error("Future Agent rejected the model list request.")?;
-
-    let parsed = serde_json::from_str::<AgentModelsResponse>(&response.data)
-        .map_err(|error| format!("Future Agent returned invalid model data: {error}"))?;
-    Ok(parsed.models)
 }
 
 pub async fn agent_prompt(
@@ -264,233 +236,4 @@ impl Drop for PromptSessionGuard {
             }
         }
     }
-}
-
-/// Poll the Agent's `get_state.isStreaming` until it reports idle (or a short
-/// timeout / the agent disappears). Best-effort confirmation that the Agent has
-/// stopped writing files before the after snapshot (§6.2).
-async fn wait_for_agent_idle(session_id: &str) {
-    let Ok(mut client) = connect_agent().await else {
-        return;
-    };
-    // ~5s budget at 200ms intervals.
-    for _ in 0..25 {
-        match client
-            .execute_command(get_state_command(session_id.to_string()))
-            .await
-        {
-            Ok(response) => {
-                let data = response.into_inner().data;
-                let streaming = serde_json::from_str::<serde_json::Value>(&data)
-                    .ok()
-                    .and_then(|value| value.get("isStreaming").and_then(|s| s.as_bool()))
-                    .unwrap_or(false);
-                if !streaming {
-                    return;
-                }
-            }
-            // Agent unreachable → treat as idle; nothing more we can confirm.
-            Err(_) => return,
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
-}
-
-fn mark_run_failed_if_active(run_id: Option<&str>, error: &str) {
-    let Some(run_id) = run_id else {
-        return;
-    };
-    let error_type = crate::run_error::classify_run_error(error);
-    // Compare-and-set: only fails a run that isn't already terminal, atomically,
-    // so a concurrent `abort_run` (which sets `cancelled`) is never overwritten.
-    if let Err(update_error) = store::fail_run_if_active(run_id, error, error_type) {
-        eprintln!("FutureOS run failure status update failed: {update_error}");
-    }
-}
-
-pub async fn notify_agent_approval_decision(
-    approval: &store::ApprovalRequestRecord,
-    input: &store::DecideApprovalRequestInput,
-) -> Result<(), crate::AppError> {
-    let thread = store::get_thread(&approval.thread_id)?
-        .ok_or_else(|| "Approval thread could not be loaded.".to_string())?;
-    let mut client = connect_agent().await?;
-    client
-        .execute_command(approval_decision_command(
-            approval.id.clone(),
-            input.status.clone(),
-            input.decision_note.clone().unwrap_or_default(),
-            thread.agent_session_id.unwrap_or(thread.id),
-        ))
-        .await
-        .map_err(|error| format!("Unable to send approval decision to Future Agent: {error}"))?
-        .into_inner()
-        .ok_or_rpc_error("Future Agent rejected the approval decision.")?;
-    Ok(())
-}
-
-pub async fn abort_agent_thread(thread_id: &str) -> Result<(), crate::AppError> {
-    let thread =
-        store::get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
-    let mut client = connect_agent().await?;
-    client
-        .execute_command(base_command(
-            "abort",
-            thread.agent_session_id.unwrap_or(thread.id),
-        ))
-        .await
-        .map_err(|error| format!("Unable to abort Future Agent run: {error}"))?
-        .into_inner()
-        .ok_or_rpc_error("Future Agent rejected the abort request.")?;
-    Ok(())
-}
-
-/// Abort an in-flight agent run, then mark its store run cancelled. A missing
-/// agent (e.g. the backend is down) is tolerated — the run is still cancelled
-/// locally so the UI doesn't strand on a "running" row.
-pub async fn abort_run(
-    thread_id: String,
-    run_id: String,
-) -> Result<store::RunRecord, crate::AppError> {
-    if let Err(error) = abort_agent_thread(&thread_id).await {
-        if !is_agent_unavailable_error(&error) {
-            return Err(error);
-        }
-        eprintln!("FutureOS agent abort skipped because agent is unavailable: {error}");
-    }
-    store::update_run_status(store::UpdateRunStatusInput {
-        run_id,
-        status: "cancelled".to_string(),
-        error_message: Some("Terminated by user.".to_string()),
-        error_type: Some("abort_requested".to_string()),
-    })
-}
-
-/// Record an approval decision: notify the agent while the request is still
-/// pending, persist the decision, and resume the owning run. A request the
-/// agent already dropped is reconciled by cancelling it locally.
-pub async fn decide_approval(
-    input: store::DecideApprovalRequestInput,
-) -> Result<store::ApprovalRequestRecord, crate::AppError> {
-    let current = store::get_approval_request(&input.approval_request_id)?
-        .ok_or_else(|| "Approval request could not be loaded.".to_string())?;
-    if current.status == "pending" {
-        if let Err(error) = notify_agent_approval_decision(&current, &input).await {
-            if is_stale_approval_error(&error.to_string()) {
-                return store::decide_approval_request(store::DecideApprovalRequestInput {
-                    approval_request_id: input.approval_request_id,
-                    status: "cancelled".to_string(),
-                    decision_note: Some("Cancelled because the approval request is no longer active in Future Agent.".to_string()),
-                });
-            }
-            return Err(error);
-        }
-    }
-    let updated = store::decide_approval_request(input)?;
-    if let Some(run_id) = &updated.run_id {
-        if let Ok(Some(run)) = store::get_run(run_id) {
-            if !matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
-                let _ = store::update_run_status(store::UpdateRunStatusInput {
-                    run_id: run_id.clone(),
-                    status: "running".to_string(),
-                    error_message: None,
-                    error_type: None,
-                });
-            }
-        }
-    }
-    Ok(updated)
-}
-
-fn is_stale_approval_error(error: &str) -> bool {
-    let normalized = error.to_ascii_lowercase();
-    normalized.contains("approval request") && normalized.contains("not pending")
-}
-
-fn is_agent_unavailable_error(error: &crate::AppError) -> bool {
-    matches!(error, crate::AppError::AgentUnavailable(_))
-}
-
-async fn ensure_agent_session(
-    client: &mut FutureAgentClient<tonic::transport::Channel>,
-    session_id: &str,
-    cwd: &str,
-    force_reset: bool,
-) -> Result<(), crate::AppError> {
-    if force_reset {
-        return create_agent_session(client, session_id, cwd).await;
-    }
-
-    let response = client
-        .execute_command(get_state_command(session_id.to_string()))
-        .await
-        .map_err(|error| format!("Unable to inspect Future Agent session: {error}"))?
-        .into_inner();
-
-    if response.success {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&response.data) {
-            let active_session_id = value
-                .get("sessionId")
-                .and_then(|session_id| session_id.as_str())
-                .unwrap_or_default();
-            let active_cwd = value
-                .get("cwd")
-                .and_then(|cwd| cwd.as_str())
-                .unwrap_or_default();
-
-            if active_session_id == session_id && active_cwd == cwd {
-                return Ok(());
-            }
-        }
-    }
-
-    create_agent_session(client, session_id, cwd).await
-}
-
-async fn create_agent_session(
-    client: &mut FutureAgentClient<tonic::transport::Channel>,
-    session_id: &str,
-    cwd: &str,
-) -> Result<(), crate::AppError> {
-    client
-        .execute_command(new_session_command(session_id.to_string(), cwd.to_string()))
-        .await
-        .map_err(|error| format!("Unable to create Future Agent session: {error}"))?
-        .into_inner()
-        .ok_or_rpc_error("Future Agent rejected the session initialization.")?;
-    Ok(())
-}
-
-async fn set_agent_permission_level(
-    client: &mut FutureAgentClient<tonic::transport::Channel>,
-    session_id: &str,
-    level: &str,
-) -> Result<(), crate::AppError> {
-    client
-        .execute_command(set_permission_level_command(
-            level.to_string(),
-            session_id.to_string(),
-        ))
-        .await
-        .map_err(|error| format!("Unable to set Future Agent permission level: {error}"))?
-        .into_inner()
-        .ok_or_rpc_error("Future Agent rejected the permission level selection.")?;
-    Ok(())
-}
-
-fn prior_user_message_count(thread_id: &str) -> Result<usize, crate::AppError> {
-    let messages = store::list_messages(thread_id)?;
-    let user_message_count = messages
-        .iter()
-        .filter(|message| message.role == "user")
-        .count();
-    Ok(user_message_count.saturating_sub(1))
-}
-
-fn workspace_path_for_thread(thread_id: &str) -> Result<String, crate::AppError> {
-    let thread =
-        store::get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
-    let workspace = store::get_workspace(&thread.workspace_id)?
-        .ok_or_else(|| "Thread workspace could not be loaded.".to_string())?;
-    Ok(workspace.path)
 }

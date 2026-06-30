@@ -214,7 +214,7 @@ make run-gui
 - **验证**: 后端基线三连。
 - **关联**: B-5、N-2；ER.md §6.8。
 
-### [ ] M-7. `agent_bridge/mod.rs`（574 行）混杂多职责
+### [x] M-7. `agent_bridge/mod.rs`（574 行）混杂多职责
 - **类别 / 严重度**: module / 中
 - **位置**: `src-tauri/src/agent_bridge/mod.rs`（574 行）。已有子模块 `client.rs`（薄请求构造）/`persist.rs`/`review.rs`/`stream.rs`。
 - **现状**: mod.rs 一文件承担：模型列举(`list_agent_models` 55-78 + 类型 33-53)；prompt 生命周期(`agent_prompt` 80-156、`agent_prompt_inner` 158-275)；并发守卫(`PromptSessionGuard` 277-306 + `ACTIVE_AGENT_PROMPTS` 25 + `wait_for_agent_idle` 311-337 + `mark_run_failed_if_active` 339-349)；会话/权限(`ensure_agent_session` 476-510、`create_agent_session` 512-532、`set_agent_permission_level` 534-557、`workspace_path_for_thread` 568-574、`prior_user_message_count` 559-566)；审批/中止(`notify_agent_approval_decision` 351-381、`abort_agent_thread` 383-408、`abort_run` 413-429、`decide_approval` 434-465 + matcher 467-474)。
