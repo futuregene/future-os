@@ -499,7 +499,7 @@ make run-gui
 - **验证**: `grep -rn 'fn agent_dir\|const FUTURE_PROVIDER_ID' src/` 改后各 1 处 + 后端基线三连。
 - **关联**: ER.md §6.9。
 
-### [ ] C-6. 把 `*_COLUMNS` 列常量模式推广到所有表
+### [x] C-6. 把 `*_COLUMNS` 列常量模式推广到所有表
 - **类别 / 严重度**: consistency / 中
 - **位置**: 现有常量（仅 3）`records.rs:722/758/793`；threads SELECT 重复 3×（`threads.rs:11-13/26-28/94-96`）；workspaces 4×（`workspaces.rs:11/49/86` + `db.rs:139-141`）；artifacts 读取 3×（`artifacts.rs:16/210` + `resolve.rs:128`）；runs 3×（`runs.rs:31` + `db.rs:81` + `resolve.rs:145`）；approval_requests 3×（`approvals.rs:64` + `db.rs:117` + `resolve.rs:182`）
 - **现状**: 只有 review 三表用共享常量 + `format!` 注入；其余手写 SELECT 列清单，与 `*_from_row`(588 起) 靠位置对应。

@@ -7,14 +7,12 @@ use super::util::*;
 
 pub fn list_workspaces() -> Result<Vec<WorkspaceRecord>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt = conn.prepare(
-        "SELECT id, name, kind, path, description, cleanup_status,
-                    cleanup_requested_at, cleaned_at, last_opened_at,
-                    created_at, updated_at, deleted_at
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {WORKSPACE_COLUMNS}
              FROM workspaces
              WHERE deleted_at IS NULL
-             ORDER BY COALESCE(last_opened_at, updated_at) DESC",
-    )?;
+             ORDER BY COALESCE(last_opened_at, updated_at) DESC"
+    ))?;
     let rows = stmt.query_map([], workspace_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(crate::AppError::from)
@@ -45,12 +43,12 @@ pub fn get_or_create_chat_workspace(
     let conn = connect()?;
     let existing = conn
         .query_row(
-            "SELECT id, name, kind, path, description, cleanup_status,
-                    cleanup_requested_at, cleaned_at, last_opened_at,
-                    created_at, updated_at, deleted_at
+            &format!(
+                "SELECT {WORKSPACE_COLUMNS}
              FROM workspaces
              WHERE kind = 'temporary' AND path = ?1 AND deleted_at IS NULL
-             LIMIT 1",
+             LIMIT 1"
+            ),
             params![chat_workspace_path(thread_id)?.display().to_string()],
             workspace_from_row,
         )
@@ -81,11 +79,7 @@ pub fn get_or_create_chat_workspace(
 pub fn get_workspace(workspace_id: &str) -> Result<Option<WorkspaceRecord>, crate::AppError> {
     let conn = connect()?;
     conn.query_row(
-        "SELECT id, name, kind, path, description, cleanup_status,
-                cleanup_requested_at, cleaned_at, last_opened_at,
-                created_at, updated_at, deleted_at
-         FROM workspaces
-         WHERE id = ?1",
+        &format!("SELECT {WORKSPACE_COLUMNS} FROM workspaces WHERE id = ?1"),
         params![workspace_id],
         workspace_from_row,
     )

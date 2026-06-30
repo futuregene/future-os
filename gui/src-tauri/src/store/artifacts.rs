@@ -12,15 +12,14 @@ use super::util::*;
 pub fn list_artifacts(thread_id: &str) -> Result<Vec<ArtifactRecord>, crate::AppError> {
     let thread = loaded(get_thread(thread_id)?, "Thread")?;
     let conn = connect()?;
-    let mut stmt = conn.prepare(
-        "SELECT id, workspace_id, thread_id, run_id, title, artifact_type, path, content,
-                    content_storage, summary, created_at, updated_at, deleted_at
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {ARTIFACT_COLUMNS}
              FROM artifacts
              WHERE deleted_at IS NULL
                AND workspace_id = ?1
                AND (?2 = 'workspace' OR thread_id = ?3)
-             ORDER BY created_at DESC",
-    )?;
+             ORDER BY created_at DESC"
+    ))?;
     let rows = stmt.query_map(
         params![thread.workspace_id, thread.mode, thread.id],
         artifact_from_row,
@@ -211,10 +210,7 @@ fn unique_attachment_path(dir: &Path, now: i64, file_name: &str) -> PathBuf {
 pub fn get_artifact(id: &str) -> Result<Option<ArtifactRecord>, crate::AppError> {
     let conn = connect()?;
     conn.query_row(
-        "SELECT id, workspace_id, thread_id, run_id, title, artifact_type, path, content,
-                content_storage, summary, created_at, updated_at, deleted_at
-         FROM artifacts
-         WHERE id = ?1",
+        &format!("SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE id = ?1"),
         params![id],
         artifact_from_row,
     )

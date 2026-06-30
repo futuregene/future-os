@@ -9,15 +9,13 @@ pub fn list_research_resources(
     workspace_id: &str,
 ) -> Result<Vec<ResearchResourceRecord>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt = conn.prepare(
-        "SELECT r.id, r.collection_id, c.workspace_id, r.source_artifact_id, r.title, r.resource_type,
-                    r.source_uri, r.content, r.content_storage, r.summary, r.metadata,
-                    r.created_at, r.updated_at
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {RESEARCH_RESOURCE_COLUMNS}
              FROM research_resources r
              JOIN research_collections c ON c.id = r.collection_id
              WHERE c.workspace_id = ?1
-             ORDER BY r.created_at DESC",
-    )?;
+             ORDER BY r.created_at DESC"
+    ))?;
     let rows = stmt.query_map(params![workspace_id], research_resource_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(crate::AppError::from)
@@ -37,14 +35,14 @@ pub fn promote_artifact_to_research(
     let conn = connect()?;
     let existing = conn
         .query_row(
-            "SELECT r.id, r.collection_id, c.workspace_id, r.source_artifact_id, r.title, r.resource_type,
-                    r.source_uri, r.content, r.content_storage, r.summary, r.metadata,
-                    r.created_at, r.updated_at
+            &format!(
+                "SELECT {RESEARCH_RESOURCE_COLUMNS}
              FROM research_resources r
              JOIN research_collections c ON c.id = r.collection_id
              WHERE r.source_artifact_id = ?1
                AND c.workspace_id = ?2
-             LIMIT 1",
+             LIMIT 1"
+            ),
             params![artifact.id, artifact.workspace_id],
             research_resource_from_row,
         )
@@ -81,12 +79,12 @@ pub fn promote_artifact_to_research(
 fn get_research_resource(id: &str) -> Result<Option<ResearchResourceRecord>, crate::AppError> {
     let conn = connect()?;
     conn.query_row(
-        "SELECT r.id, r.collection_id, c.workspace_id, r.source_artifact_id, r.title, r.resource_type,
-                r.source_uri, r.content, r.content_storage, r.summary, r.metadata,
-                r.created_at, r.updated_at
+        &format!(
+            "SELECT {RESEARCH_RESOURCE_COLUMNS}
          FROM research_resources r
          JOIN research_collections c ON c.id = r.collection_id
-         WHERE r.id = ?1",
+         WHERE r.id = ?1"
+        ),
         params![id],
         research_resource_from_row,
     )
@@ -100,10 +98,12 @@ fn get_or_create_default_research_collection(
     let conn = connect()?;
     let existing = conn
         .query_row(
-            "SELECT id, workspace_id, name, description, created_at, updated_at
+            &format!(
+                "SELECT {RESEARCH_COLLECTION_COLUMNS}
              FROM research_collections
              WHERE workspace_id = ?1 AND name = 'Research'
-             LIMIT 1",
+             LIMIT 1"
+            ),
             params![workspace_id],
             research_collection_from_row,
         )
@@ -127,9 +127,7 @@ fn get_or_create_default_research_collection(
     )?;
 
     conn.query_row(
-        "SELECT id, workspace_id, name, description, created_at, updated_at
-         FROM research_collections
-         WHERE id = ?1",
+        &format!("SELECT {RESEARCH_COLLECTION_COLUMNS} FROM research_collections WHERE id = ?1"),
         params![id],
         research_collection_from_row,
     )

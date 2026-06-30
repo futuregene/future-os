@@ -28,13 +28,12 @@ pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::AppError> {
 
 pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt = conn.prepare(
-        "SELECT id, thread_id, trigger_message_id, status, model_provider, model_id,
-                    started_at, ended_at, error_message, error_type, created_at, updated_at
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {RUN_COLUMNS}
              FROM runs
              WHERE thread_id = ?1
-             ORDER BY created_at DESC",
-    )?;
+             ORDER BY created_at DESC"
+    ))?;
     let rows = stmt.query_map(params![thread_id], run_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(crate::AppError::from)
@@ -120,12 +119,12 @@ pub fn fail_run_if_active(
 
 pub fn list_run_events(run_id: &str) -> Result<Vec<RunEventRecord>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt = conn.prepare(
-        "SELECT id, run_id, event_type, payload, sequence, created_at
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {RUN_EVENT_COLUMNS}
              FROM run_events
              WHERE run_id = ?1
-             ORDER BY sequence ASC, created_at ASC",
-    )?;
+             ORDER BY sequence ASC, created_at ASC"
+    ))?;
     let rows = stmt.query_map(params![run_id], run_event_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(crate::AppError::from)
@@ -153,12 +152,12 @@ pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, cr
 
 pub fn list_tool_calls(run_id: &str) -> Result<Vec<ToolCallRecord>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt = conn.prepare(
-        "SELECT id, run_id, name, kind, input, status, started_at, ended_at, created_at
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {TOOL_CALL_COLUMNS}
              FROM tool_calls
              WHERE run_id = ?1
-             ORDER BY COALESCE(started_at, created_at) ASC",
-    )?;
+             ORDER BY COALESCE(started_at, created_at) ASC"
+    ))?;
     let rows = stmt.query_map(params![run_id], tool_call_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(crate::AppError::from)
@@ -166,12 +165,12 @@ pub fn list_tool_calls(run_id: &str) -> Result<Vec<ToolCallRecord>, crate::AppEr
 
 pub fn list_tool_outputs(tool_call_id: &str) -> Result<Vec<ToolOutputRecord>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt = conn.prepare(
-        "SELECT id, tool_call_id, kind, content, created_at
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {TOOL_OUTPUT_COLUMNS}
              FROM tool_outputs
              WHERE tool_call_id = ?1
-             ORDER BY created_at ASC",
-    )?;
+             ORDER BY created_at ASC"
+    ))?;
     let rows = stmt.query_map(params![tool_call_id], tool_output_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(crate::AppError::from)

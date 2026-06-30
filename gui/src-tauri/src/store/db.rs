@@ -65,9 +65,7 @@ fn is_duplicate_column_error(error: &rusqlite::Error) -> bool {
 pub(super) fn get_message(id: &str) -> Result<Option<MessageRecord>, crate::AppError> {
     let conn = connect()?;
     conn.query_row(
-        "SELECT id, thread_id, run_id, role, content_type, content, status, created_at, updated_at
-         FROM messages
-         WHERE id = ?1",
+        &format!("SELECT {MESSAGE_COLUMNS} FROM messages WHERE id = ?1"),
         params![id],
         message_from_row,
     )
@@ -78,10 +76,7 @@ pub(super) fn get_message(id: &str) -> Result<Option<MessageRecord>, crate::AppE
 pub fn get_run(id: &str) -> Result<Option<RunRecord>, crate::AppError> {
     let conn = connect()?;
     conn.query_row(
-        "SELECT id, thread_id, trigger_message_id, status, model_provider, model_id,
-                started_at, ended_at, error_message, error_type, created_at, updated_at
-         FROM runs
-         WHERE id = ?1",
+        &format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1"),
         params![id],
         run_from_row,
     )
@@ -92,9 +87,7 @@ pub fn get_run(id: &str) -> Result<Option<RunRecord>, crate::AppError> {
 pub(super) fn get_run_event(id: &str) -> Result<Option<RunEventRecord>, crate::AppError> {
     let conn = connect()?;
     conn.query_row(
-        "SELECT id, run_id, event_type, payload, sequence, created_at
-         FROM run_events
-         WHERE id = ?1",
+        &format!("SELECT {RUN_EVENT_COLUMNS} FROM run_events WHERE id = ?1"),
         params![id],
         run_event_from_row,
     )
@@ -114,11 +107,7 @@ pub(super) fn run_thread_id(conn: &Connection, run_id: &str) -> Result<String, c
 pub fn get_approval_request(id: &str) -> Result<Option<ApprovalRequestRecord>, crate::AppError> {
     let conn = connect()?;
     conn.query_row(
-        "SELECT id, thread_id, run_id, tool_call_id, kind, status, title, summary,
-                risk_level, requested_action, decision_note, decided_at, created_at, updated_at,
-                action_category, action_payload, sandbox_boundary, reviewer, decision_scope, decision_source
-         FROM approval_requests
-         WHERE id = ?1",
+        &format!("SELECT {APPROVAL_REQUEST_COLUMNS} FROM approval_requests WHERE id = ?1"),
         params![id],
         approval_request_from_row,
     )
@@ -135,12 +124,12 @@ pub(super) fn get_or_create_user_workspace(
     let conn = connect()?;
     let existing = conn
         .query_row(
-            "SELECT id, name, kind, path, description, cleanup_status,
-                    cleanup_requested_at, cleaned_at, last_opened_at,
-                    created_at, updated_at, deleted_at
+            &format!(
+                "SELECT {WORKSPACE_COLUMNS}
              FROM workspaces
              WHERE kind = 'user' AND path = ?1 AND deleted_at IS NULL
-             LIMIT 1",
+             LIMIT 1"
+            ),
             params![normalized_path],
             workspace_from_row,
         )
