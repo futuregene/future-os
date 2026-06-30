@@ -7,7 +7,7 @@ use std::{fs, path::PathBuf};
 
 use super::records::*;
 use super::schema::{ADDED_COLUMNS, ADDED_INDEXES, SCHEMA};
-use super::util::{create_id, now_millis};
+use super::util::{create_id, loaded, now_millis};
 use super::{get_thread, get_workspace};
 
 pub(super) fn app_dir() -> Result<PathBuf, crate::AppError> {
@@ -160,8 +160,7 @@ pub(super) fn get_or_create_user_workspace(
         params![workspace_id, name, normalized_path, description, now],
     )?;
 
-    get_workspace(&workspace_id)?
-        .ok_or_else(|| "Created workspace could not be loaded.".to_string().into())
+    loaded(get_workspace(&workspace_id)?, "Created workspace")
 }
 
 pub(super) fn update_thread_status(
@@ -182,7 +181,7 @@ pub(super) fn update_thread_status(
         params![status, archived_at, now, thread_id],
     )?;
 
-    get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string().into())
+    loaded(get_thread(thread_id)?, "Thread")
 }
 
 #[cfg(test)]

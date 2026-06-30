@@ -59,6 +59,14 @@ pub(super) fn now_millis() -> i64 {
         .unwrap_or_default()
 }
 
+/// Turn an "expected to exist" lookup into a hard error when the row is missing.
+/// Collapses the `get_X(&id)?.ok_or_else(|| "X could not be loaded.".into())`
+/// boilerplate that follows almost every insert/update read-back. `what` names
+/// the row (e.g. `"Created thread"`), yielding `"<what> could not be loaded."`.
+pub(super) fn loaded<T>(opt: Option<T>, what: &str) -> Result<T, crate::AppError> {
+    opt.ok_or_else(|| format!("{what} could not be loaded.").into())
+}
+
 pub(super) fn count_workspace_files(path: &str) -> Result<i64, crate::AppError> {
     let root = PathBuf::from(path);
     if !root.exists() {

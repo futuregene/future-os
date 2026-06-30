@@ -11,6 +11,7 @@ mod research;
 mod review_snapshots;
 mod runs;
 mod schema;
+mod status;
 mod threads;
 mod util;
 mod workspaces;
