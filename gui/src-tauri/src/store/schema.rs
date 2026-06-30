@@ -399,6 +399,17 @@ pub(super) const ADDED_COLUMNS: &[(&str, &str)] = &[
     ("review_file_changes", "omission_reason TEXT"),
 ];
 
+/// Columns renamed after their table's initial creation (N-3 aligned the DB
+/// `type` columns with the Rust `*_type` fields). `CREATE TABLE IF NOT EXISTS`
+/// can't rename a column on an existing table, so migrate in place. Applied
+/// idempotently: only when the old name still exists and the new one does not.
+/// `(table, old, new)`.
+pub(super) const RENAMED_COLUMNS: &[(&str, &str, &str)] = &[
+    ("run_events", "type", "event_type"),
+    ("artifacts", "type", "artifact_type"),
+    ("research_resources", "type", "resource_type"),
+];
+
 /// Indexes that reference columns from `ADDED_COLUMNS`. These must run *after*
 /// the `ALTER`s, not inside `SCHEMA`, or they fail with "no such column" on a
 /// database created before those columns existed.
