@@ -17,6 +17,12 @@ pub enum AppError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    /// The Future Agent gRPC endpoint was unreachable. A distinct variant (not
+    /// `Message`) so callers like `abort_run` can tolerate a down agent by
+    /// matching the type instead of sniffing the error string. The message is
+    /// carried verbatim, so the serialized string the frontend sees is unchanged.
+    #[error("{0}")]
+    AgentUnavailable(String),
     #[error("{0}")]
     Message(String),
 }

@@ -2,6 +2,7 @@
 //! between the before/after commits, split per file and persisted into SQLite
 //! so the result no longer depends on shadow objects surviving.
 
+use crate::git_diff_parse::{parse_numstat, split_unified_patch_by_path};
 use crate::store::InsertReviewFileChangeInput;
 use crate::AppError;
 
@@ -28,7 +29,7 @@ pub fn materialize(
 ) -> Result<MaterializedDiff, AppError> {
     let entries = name_status(repo, before_commit, after_commit)?;
     let stats = numstat(repo, before_commit, after_commit)?;
-    let patches = split_patch(&unified_patch(repo, before_commit, after_commit)?);
+    let patches = split_unified_patch_by_path(&unified_patch(repo, before_commit, after_commit)?);
 
     let mut out = MaterializedDiff::default();
     for (index, entry) in entries.iter().enumerate() {
@@ -202,24 +203,12 @@ fn numstat(
         ],
         None,
     )?;
-    Ok(parse_numstat(&text))
-}
-
-/// Parse `--numstat` lines positionally. `<add>\t<del>\t<path>`; `-` marks a
-/// binary file.
-fn parse_numstat(text: &str) -> Vec<(i64, i64, bool)> {
-    let mut stats = Vec::new();
-    for line in text.lines() {
-        let mut parts = line.splitn(3, '\t');
-        let add = parts.next().unwrap_or("0");
-        let del = parts.next().unwrap_or("0");
-        if parts.next().is_none() {
-            continue;
-        }
-        let binary = add == "-" || del == "-";
-        stats.push((add.parse().unwrap_or(0), del.parse().unwrap_or(0), binary));
-    }
-    stats
+    // The shadow pipeline matches stats to `name_status` entries positionally and
+    // only needs the counts + binary flag, so drop the row paths here.
+    Ok(parse_numstat(&text)
+        .into_iter()
+        .map(|row| (row.additions, row.deletions, row.binary))
+        .collect())
 }
 
 fn unified_patch(repo: &ShadowRepo, before: &str, after: &str) -> Result<String, AppError> {
@@ -238,44 +227,6 @@ fn unified_patch(repo: &ShadowRepo, before: &str, after: &str) -> Result<String,
         None,
     )?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
-}
-
-/// Split a unified patch into `new-path -> patch text` sections.
-fn split_patch(patch: &str) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    let mut current_path: Option<String> = None;
-    let mut current = String::new();
-
-    let flush =
-        |path: &Option<String>, body: &str, map: &mut std::collections::HashMap<String, String>| {
-            if let Some(path) = path {
-                if !body.is_empty() {
-                    map.insert(path.clone(), body.trim_end().to_string());
-                }
-            }
-        };
-
-    for line in patch.lines() {
-        if line.starts_with("diff --git ") {
-            flush(&current_path, &current, &mut map);
-            current = String::new();
-            current_path = parse_diff_git_new_path(line);
-        }
-        if let Some(stripped) = line.strip_prefix("+++ b/") {
-            current_path = Some(stripped.to_string());
-        }
-        current.push_str(line);
-        current.push('\n');
-    }
-    flush(&current_path, &current, &mut map);
-    map
-}
-
-/// Extract the post-image path from a `diff --git a/<x> b/<y>` header.
-fn parse_diff_git_new_path(line: &str) -> Option<String> {
-    let rest = line.strip_prefix("diff --git ")?;
-    let idx = rest.find(" b/")?;
-    Some(rest[idx + 3..].to_string())
 }
 
 fn truncate_diff(text: String, limits: &Limits) -> (Option<String>, bool) {
@@ -318,40 +269,6 @@ mod tests {
         assert_eq!(entries[2].change_type, "R");
         assert_eq!(entries[2].previous_path.as_deref(), Some("old.rs"));
         assert_eq!(entries[2].path, "new.rs");
-    }
-
-    #[test]
-    fn numstat_parses_text_and_binary() {
-        let stats = parse_numstat("5\t2\tsrc/a.rs\n-\t-\timg.png\n");
-        assert_eq!(stats, vec![(5, 2, false), (0, 0, true)]);
-    }
-
-    #[test]
-    fn split_patch_maps_by_new_path() {
-        let patch = "diff --git a/src/a.rs b/src/a.rs\n\
-                     index 111..222 100644\n\
-                     --- a/src/a.rs\n\
-                     +++ b/src/a.rs\n\
-                     @@ -1 +1 @@\n\
-                     -old\n\
-                     +new\n\
-                     diff --git a/b.txt b/b.txt\n\
-                     --- a/b.txt\n\
-                     +++ b/b.txt\n\
-                     @@ -0,0 +1 @@\n\
-                     +hi\n";
-        let map = split_patch(patch);
-        assert!(map.contains_key("src/a.rs"));
-        assert!(map.contains_key("b.txt"));
-        assert!(map["src/a.rs"].contains("+new"));
-    }
-
-    #[test]
-    fn diff_git_header_new_path() {
-        assert_eq!(
-            parse_diff_git_new_path("diff --git a/src/x.rs b/src/x.rs").as_deref(),
-            Some("src/x.rs")
-        );
     }
 
     #[test]

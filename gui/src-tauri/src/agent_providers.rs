@@ -13,8 +13,9 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::auth_store::{agent_dir, FUTURE_PROVIDER_ID};
+
 const DEFAULT_FUTURE_BASE_URL: &str = "http://api.westlakefuturegene.com";
-const FUTURE_PROVIDER_ID: &str = "future";
 const FUTURE_PROVIDER_NAME: &str = "FutureGene";
 
 // Field-validation limits for custom providers (see PLAN.md「自定义 Provider 字段校验」).
@@ -371,11 +372,6 @@ fn auth_has_key(auth: &Value, id: &str) -> bool {
         .and_then(Value::as_str)
         .map(|key| !key.trim().is_empty())
         .unwrap_or(false)
-}
-
-fn agent_dir() -> Result<PathBuf, crate::AppError> {
-    let home = crate::home_dir().ok_or("HOME/USERPROFILE environment variable is not set.")?;
-    Ok(PathBuf::from(home).join(".future").join("agent"))
 }
 
 fn models_json_path() -> Result<PathBuf, crate::AppError> {

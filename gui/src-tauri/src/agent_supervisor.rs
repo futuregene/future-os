@@ -19,12 +19,12 @@ use tauri_plugin_shell::ShellExt;
 /// attached to an externally-managed agent (or failed to spawn).
 static AGENT_CHILD: Mutex<Option<CommandChild>> = Mutex::new(None);
 
-/// Bare `host:port` the GUI talks to — mirrors `agent_bridge::client::agent_endpoint`,
-/// minus any URL scheme (the agent's `--grpc-addr` wants a bare address).
+/// Bare `host:port` the GUI talks to — the shared `raw_agent_addr` (single source
+/// of the default), minus any URL scheme (the agent's `--grpc-addr` wants a bare
+/// address).
 fn bare_addr() -> String {
-    let raw =
-        std::env::var("FUTURE_AGENT_GRPC_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
-    raw.trim_start_matches("http://")
+    crate::agent_bridge::raw_agent_addr()
+        .trim_start_matches("http://")
         .trim_start_matches("https://")
         .to_string()
 }

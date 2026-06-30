@@ -197,7 +197,7 @@ make run-gui
 - **验证**: 后端基线三连。
 - **关联**: C-6、C-7、N-3。
 
-### [ ] M-6. git-diff 解析在 git_review.rs 与 shadow_review/diff.rs 重复两套
+### [x] M-6. git-diff 解析在 git_review.rs 与 shadow_review/diff.rs 重复两套
 - **类别 / 严重度**: module / 中
 - **位置**: `src-tauri/src/git_review.rs:284-321`（`split_git_diff_by_path`/`flush_diff_chunk`/`diff_path_from_header`）、`:336-361`（`normalize_numstat_path`/`parse_numstat`，numstat 消费 117-148）；`src-tauri/src/shadow_review/diff.rs:244-279`（`split_patch`/`parse_diff_git_new_path`）、`:208-223`（`parse_numstat`）
 - **现状**: 两处都把 unified diff 按 `diff --git ... b/<path>` 与 `+++ b/` 切成 per-path map 并解析 `--numstat`，但 split 细节有别：git_review `line.split(" b/").nth(1)` vs diff.rs `strip_prefix("diff --git ")? + find(" b/")` 切片；numstat 处理也不同（rename 归一化 vs 位置+binary 标志）。
@@ -449,7 +449,7 @@ make run-gui
 - **验证**: `cd gui && grep -rn "createId\|lib/ids" src/`（删后零）+ 基线三连。
 - **关联**: gui/CLAUDE.md 第 29 行。
 
-### [ ] C-3. RpcResponse 成功/错误判定样板在 `agent_bridge/mod.rs` 重复 8 次
+### [x] C-3. RpcResponse 成功/错误判定样板在 `agent_bridge/mod.rs` 重复 8 次
 - **类别 / 严重度**: consistency / 高（按出现量）
 - **位置**: 否定式（4）`mod.rs:66,202,222,248`；肯定式（4）`mod.rs:372,399,523,548`。（`:492` 只读 data、无 fallback-err，**不算**。）
 - **现状**: 两等价形态各 4 处，例如 `if !response.success { return Err(if response.error.is_empty() {fallback} else {response.error}.into()) }` 与 `if response.success { Ok } else if response.error.is_empty() {fallback} else {err}`，仅 fallback 文案不同。
@@ -473,7 +473,7 @@ make run-gui
 - **验证**: 后端基线三连；`grep -c "response.error.is_empty()" agent_bridge/mod.rs` 改后应为 0。
 - **关联**: C-4、M-7。
 
-### [ ] C-4. gRPC connect 样板重复 6 次 + 默认地址两处独立定义
+### [x] C-4. gRPC connect 样板重复 6 次 + 默认地址两处独立定义
 - **类别 / 严重度**: consistency / 中
 - **位置**: connect 6 处 `mod.rs:57,177,183,313,358,387`；默认地址 `agent_bridge/client.rs:15-23`（`agent_endpoint`）与 `agent_supervisor.rs:24-30`（`bare_addr`）
 - **现状**: 5 处形态相同 `FutureAgentClient::connect(endpoint.clone()).await.map_err(|e| format!("Unable to connect to Future Agent at {endpoint}: {e}"))?`；第 6 处 `:313`(`wait_for_agent_idle`) 是 let-else 静默返回。默认 `127.0.0.1:50051` 在两文件各硬编码一份（supervisor 注释自承 mirrors client）。
@@ -485,7 +485,7 @@ make run-gui
 - **验证**: `grep -rn '127.0.0.1:50051' src/` 改后应仅 1 处 + 后端基线三连。
 - **关联**: B-15、C-3、M-7。
 
-### [ ] C-5. `agent_dir()` 与 `FUTURE_PROVIDER_ID` 在两文件各定义一份
+### [x] C-5. `agent_dir()` 与 `FUTURE_PROVIDER_ID` 在两文件各定义一份
 - **类别 / 严重度**: consistency / 中
 - **位置**: `auth_store.rs:19`(const)、`:21-24`(`agent_dir`)；`agent_providers.rs:17`(const)、`:376-379`(`agent_dir`)
 - **现状**: `agent_dir()`（home→`.future/agent`）两份逐字相同；`const FUTURE_PROVIDER_ID = "future"` 两处同值。
@@ -761,7 +761,7 @@ make run-gui
 - **验证**: 前端基线三连；在 `refreshThreadRunStatuses` 起始处临时 `console.count`，切换/重命名线程改前 +2、改后 +1。
 - **关联**: `lib/usePolling`；CLAUDE.md §4、§5。
 
-### [ ] B-15. 靠错误字符串子串匹配判定 agent 不可用 / 审批失效，脆弱且与 C-4 文案耦合
+### [x] B-15. 靠错误字符串子串匹配判定 agent 不可用 / 审批失效，脆弱且与 C-4 文案耦合
 - **类别 / 严重度**: bug / 中
 - **位置**: `agent_bridge/mod.rs:467-470`(`is_stale_approval_error`)、`:472-474`(`is_agent_unavailable_error`)；消费 `:418`(`abort_run`)、`:441`(`decide_approval`)
 - **现状**: `is_agent_unavailable_error` 用 `starts_with("Unable to connect to Future Agent")`（与 C-4 的 6 处 format! 文案逐字耦合）；`is_stale_approval_error` 匹配 agent 返回串 `contains("approval request") && contains("not pending")`。

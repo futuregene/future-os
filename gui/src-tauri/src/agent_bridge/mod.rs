@@ -3,6 +3,7 @@ mod persist;
 mod review;
 mod stream;
 
+pub(crate) use self::client::raw_agent_addr;
 pub use review::retry as retry_run_review;
 
 use serde::{Deserialize, Serialize};
@@ -12,9 +13,9 @@ use std::{
 };
 
 use self::client::{
-    agent_endpoint, approval_decision_command, base_command, get_state_command,
-    new_session_command, prompt_command, set_model_command, set_permission_level_command,
-    set_thinking_level_command,
+    approval_decision_command, base_command, connect_agent, get_state_command, new_session_command,
+    prompt_command, set_model_command, set_permission_level_command, set_thinking_level_command,
+    RpcResponseExt,
 };
 use self::stream::collect_agent_response;
 use crate::{
@@ -53,24 +54,13 @@ struct AgentModelsResponse {
 }
 
 pub async fn list_agent_models() -> Result<Vec<AgentModelOption>, crate::AppError> {
-    let endpoint = agent_endpoint();
-    let mut client = FutureAgentClient::connect(endpoint.clone())
-        .await
-        .map_err(|error| format!("Unable to connect to Future Agent at {endpoint}: {error}"))?;
+    let mut client = connect_agent().await?;
     let response = client
         .execute_command(base_command("list_models", String::new()))
         .await
         .map_err(|error| format!("Unable to load Future Agent models: {error}"))?
-        .into_inner();
-
-    if !response.success {
-        return Err(if response.error.is_empty() {
-            "Future Agent rejected the model list request.".to_string()
-        } else {
-            response.error
-        }
-        .into());
-    }
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the model list request.")?;
 
     let parsed = serde_json::from_str::<AgentModelsResponse>(&response.data)
         .map_err(|error| format!("Future Agent returned invalid model data: {error}"))?;
@@ -164,7 +154,6 @@ async fn agent_prompt_inner(
     model_id: Option<String>,
     thinking_level: Option<String>,
 ) -> Result<AgentPromptResponse, crate::AppError> {
-    let endpoint = agent_endpoint();
     let session_id = session_id
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| thread_id.clone());
@@ -174,15 +163,11 @@ async fn agent_prompt_inner(
     let prior_user_message_count = prior_user_message_count(&thread_id)?;
     let force_reset_session = prior_user_message_count == 0;
 
-    let mut command_client = FutureAgentClient::connect(endpoint.clone())
-        .await
-        .map_err(|error| format!("Unable to connect to Future Agent at {endpoint}: {error}"))?;
+    let mut command_client = connect_agent().await?;
     ensure_agent_session(&mut command_client, &session_id, &cwd, force_reset_session).await?;
     set_agent_permission_level(&mut command_client, &session_id, "workspace").await?;
 
-    let mut event_client = FutureAgentClient::connect(endpoint.clone())
-        .await
-        .map_err(|error| format!("Unable to connect to Future Agent at {endpoint}: {error}"))?;
+    let mut event_client = connect_agent().await?;
     let mut event_stream = event_client
         .stream_events(StreamRequest {
             event_types: vec![],
@@ -193,40 +178,24 @@ async fn agent_prompt_inner(
         .into_inner();
 
     if let Some(model_id) = model_id.filter(|value| !value.trim().is_empty()) {
-        let response = command_client
+        command_client
             .execute_command(set_model_command(model_id, session_id.clone()))
             .await
             .map_err(|error| format!("Unable to set Future Agent model: {error}"))?
-            .into_inner();
-
-        if !response.success {
-            return Err(if response.error.is_empty() {
-                "Future Agent rejected the model selection.".to_string()
-            } else {
-                response.error
-            }
-            .into());
-        }
+            .into_inner()
+            .ok_or_rpc_error("Future Agent rejected the model selection.")?;
     }
 
     if let Some(thinking_level) = thinking_level.filter(|value| !value.trim().is_empty()) {
-        let response = command_client
+        command_client
             .execute_command(set_thinking_level_command(
                 thinking_level,
                 session_id.clone(),
             ))
             .await
             .map_err(|error| format!("Unable to set Future Agent thinking level: {error}"))?
-            .into_inner();
-
-        if !response.success {
-            return Err(if response.error.is_empty() {
-                "Future Agent rejected the thinking level selection.".to_string()
-            } else {
-                response.error
-            }
-            .into());
-        }
+            .into_inner()
+            .ok_or_rpc_error("Future Agent rejected the thinking level selection.")?;
     }
 
     // §6.1: before snapshot, after session/model setup but right before the
@@ -235,7 +204,7 @@ async fn agent_prompt_inner(
         review::capture_before(&thread_id, run_id);
     }
 
-    let response = command_client
+    command_client
         .execute_command(prompt_command(
             message,
             session_id.clone(),
@@ -243,16 +212,8 @@ async fn agent_prompt_inner(
         )?)
         .await
         .map_err(|error| format!("Unable to send prompt to Future Agent: {error}"))?
-        .into_inner();
-
-    if !response.success {
-        return Err(if response.error.is_empty() {
-            "Future Agent rejected the prompt.".to_string()
-        } else {
-            response.error
-        }
-        .into());
-    }
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the prompt.")?;
 
     match collect_agent_response(&mut event_stream, run_id.as_deref()).await {
         Ok(content) => Ok(AgentPromptResponse { content }),
@@ -309,8 +270,7 @@ impl Drop for PromptSessionGuard {
 /// timeout / the agent disappears). Best-effort confirmation that the Agent has
 /// stopped writing files before the after snapshot (§6.2).
 async fn wait_for_agent_idle(session_id: &str) {
-    let endpoint = agent_endpoint();
-    let Ok(mut client) = FutureAgentClient::connect(endpoint).await else {
+    let Ok(mut client) = connect_agent().await else {
         return;
     };
     // ~5s budget at 200ms intervals.
@@ -354,11 +314,8 @@ pub async fn notify_agent_approval_decision(
 ) -> Result<(), crate::AppError> {
     let thread = store::get_thread(&approval.thread_id)?
         .ok_or_else(|| "Approval thread could not be loaded.".to_string())?;
-    let endpoint = agent_endpoint();
-    let mut client = FutureAgentClient::connect(endpoint.clone())
-        .await
-        .map_err(|error| format!("Unable to connect to Future Agent at {endpoint}: {error}"))?;
-    let response = client
+    let mut client = connect_agent().await?;
+    client
         .execute_command(approval_decision_command(
             approval.id.clone(),
             input.status.clone(),
@@ -367,44 +324,25 @@ pub async fn notify_agent_approval_decision(
         ))
         .await
         .map_err(|error| format!("Unable to send approval decision to Future Agent: {error}"))?
-        .into_inner();
-
-    if response.success {
-        Ok(())
-    } else if response.error.is_empty() {
-        Err("Future Agent rejected the approval decision."
-            .to_string()
-            .into())
-    } else {
-        Err(response.error.into())
-    }
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the approval decision.")?;
+    Ok(())
 }
 
 pub async fn abort_agent_thread(thread_id: &str) -> Result<(), crate::AppError> {
     let thread =
         store::get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
-    let endpoint = agent_endpoint();
-    let mut client = FutureAgentClient::connect(endpoint.clone())
-        .await
-        .map_err(|error| format!("Unable to connect to Future Agent at {endpoint}: {error}"))?;
-    let response = client
+    let mut client = connect_agent().await?;
+    client
         .execute_command(base_command(
             "abort",
             thread.agent_session_id.unwrap_or(thread.id),
         ))
         .await
         .map_err(|error| format!("Unable to abort Future Agent run: {error}"))?
-        .into_inner();
-
-    if response.success {
-        Ok(())
-    } else if response.error.is_empty() {
-        Err("Future Agent rejected the abort request."
-            .to_string()
-            .into())
-    } else {
-        Err(response.error.into())
-    }
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the abort request.")?;
+    Ok(())
 }
 
 /// Abort an in-flight agent run, then mark its store run cancelled. A missing
@@ -415,7 +353,7 @@ pub async fn abort_run(
     run_id: String,
 ) -> Result<store::RunRecord, crate::AppError> {
     if let Err(error) = abort_agent_thread(&thread_id).await {
-        if !is_agent_unavailable_error(&error.to_string()) {
+        if !is_agent_unavailable_error(&error) {
             return Err(error);
         }
         eprintln!("FutureOS agent abort skipped because agent is unavailable: {error}");
@@ -469,8 +407,8 @@ fn is_stale_approval_error(error: &str) -> bool {
     normalized.contains("approval request") && normalized.contains("not pending")
 }
 
-fn is_agent_unavailable_error(error: &str) -> bool {
-    error.starts_with("Unable to connect to Future Agent")
+fn is_agent_unavailable_error(error: &crate::AppError) -> bool {
+    matches!(error, crate::AppError::AgentUnavailable(_))
 }
 
 async fn ensure_agent_session(
@@ -514,21 +452,13 @@ async fn create_agent_session(
     session_id: &str,
     cwd: &str,
 ) -> Result<(), crate::AppError> {
-    let response = client
+    client
         .execute_command(new_session_command(session_id.to_string(), cwd.to_string()))
         .await
         .map_err(|error| format!("Unable to create Future Agent session: {error}"))?
-        .into_inner();
-
-    if response.success {
-        Ok(())
-    } else if response.error.is_empty() {
-        Err("Future Agent rejected the session initialization."
-            .to_string()
-            .into())
-    } else {
-        Err(response.error.into())
-    }
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the session initialization.")?;
+    Ok(())
 }
 
 async fn set_agent_permission_level(
@@ -536,24 +466,16 @@ async fn set_agent_permission_level(
     session_id: &str,
     level: &str,
 ) -> Result<(), crate::AppError> {
-    let response = client
+    client
         .execute_command(set_permission_level_command(
             level.to_string(),
             session_id.to_string(),
         ))
         .await
         .map_err(|error| format!("Unable to set Future Agent permission level: {error}"))?
-        .into_inner();
-
-    if response.success {
-        Ok(())
-    } else if response.error.is_empty() {
-        Err("Future Agent rejected the permission level selection."
-            .to_string()
-            .into())
-    } else {
-        Err(response.error.into())
-    }
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the permission level selection.")?;
+    Ok(())
 }
 
 fn prior_user_message_count(thread_id: &str) -> Result<usize, crate::AppError> {
