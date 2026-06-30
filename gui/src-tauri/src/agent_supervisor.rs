@@ -3,7 +3,7 @@
 //! In a packaged build the Future Agent ships as a Tauri sidecar (see
 //! `bundle.externalBin` in tauri.conf.json). We start it on launch so the app
 //! works out of the box, and stop it on exit. If an agent is already reachable
-//! — dev runs it separately, or `future-cli` manages it as a service — we
+//! — dev runs it separately, or `future` manages it as a service — we
 //! attach to that one instead of spawning a duplicate that would just fail to
 //! bind the port.
 

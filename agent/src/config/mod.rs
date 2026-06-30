@@ -76,7 +76,6 @@ pub struct Settings {
 
 fn default_permission_level() -> String { "all".to_string() }
 fn default_true() -> Option<bool> { Some(true) }
-fn default_false() -> Option<bool> { Some(false) }
 fn default_steering_mode() -> String { "one-at-a-time".to_string() }
 fn default_follow_up_mode() -> String { "one-at-a-time".to_string() }
 fn default_compaction() -> Option<Box<CompactionSettings>> {

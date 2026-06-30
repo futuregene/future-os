@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Rust (agent, channel) + TypeScript (TUI, CLI) + Tauri/React GUI. The Rust agent is the backend; the TS TUI provides the terminal interface. The TS CLI (`future-cli`) handles auth, service management, MCP tool calls, and skill bundle discovery. The GUI module (`gui/`) is a desktop app that connects to the agent over gRPC via its Tauri backend. The channel binary bridges external messaging platforms (Feishu, DingTalk) to the agent via gRPC.
+Rust (agent, channel) + TypeScript (TUI, CLI) + Tauri/React GUI. The Rust agent is the backend; the TS TUI provides the terminal interface. The TS CLI (`future`) handles auth, service management, MCP tool calls, and skill bundle discovery. The GUI module (`gui/`) is a desktop app that connects to the agent over gRPC via its Tauri backend. The channel binary bridges external messaging platforms (Feishu, DingTalk) to the agent via gRPC.
 
 ## Build/Run/Test
 
@@ -56,7 +56,7 @@ cd gui && npm run tauri:dev            # Run desktop GUI (connects to agent via 
 
 The Rust binary (`future-agent`) is the backend, always running as a gRPC server at `127.0.0.1:50051`. The TS TUI, GUI Tauri backend, and channel bridge all connect to it via gRPC. The Rust binary itself has only one CLI flag: `--grpc-addr`.
 
-The TypeScript CLI (`future-cli`) is a separate management tool — see the CLI section below.
+The TypeScript CLI (`future`) is a separate management tool — see the CLI section below.
 
 ## Config
 
@@ -86,7 +86,7 @@ On first run, `config.json` is created with defaults if it doesn't exist.
                   ┌─────────────────┼─────────────────┐
                   │                 │                  │
            TypeScript TUI     Channel bridge       TypeScript CLI
-           (tui/ via gRPC)   (channels/)            (cli/ future-cli)
+           (tui/ via gRPC)   (channels/)            (cli/ future)
                               Feishu ←→ WS+REST     auth, service mgmt,
                               DingTalk ←→ Stream    MCP tools, skills,
                               Mode WebSocket         launches TUI
@@ -145,7 +145,7 @@ Follows a `Component`/`Container`/`Focusable` pattern with overlay stack:
 
 ### TypeScript CLI (`cli/src/`)
 
-Entry point: `index.ts` — subcommand dispatcher. The CLI is installed via `npm link` as `future-cli`.
+Entry point: `index.ts` — subcommand dispatcher. The CLI is installed via `npm link` as `future`.
 
 | Command group | Subcommands | Role |
 |---------------|-------------|------|

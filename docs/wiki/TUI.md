@@ -18,12 +18,12 @@ FutureOS includes a **terminal interface**, `future-tui`, in your download. It's
 
 ## Launch it
 
-Make sure the agent is running first — if the desktop app is open, it already is; otherwise run `future-cli agent start` (see [[CLI|CLI]]).
+Make sure the agent is running first — if the desktop app is open, it already is; otherwise run `future agent start` (see [[CLI|CLI]]).
 
 Then start the TUI either way:
 
 - run the binary directly — `./future-tui` (macOS/Linux) or `future-tui.exe` (Windows), or
-- launch it through the CLI — `future-cli tui`.
+- launch it through the CLI — `future tui`.
 
 It connects to the agent at `127.0.0.1:50051` by default.
 
@@ -36,7 +36,7 @@ The TUI is a full chat client for the agent:
 - create, switch, and fork **sessions** (your history is saved by the agent),
 - watch tool calls run and see their results inline.
 
-Because everything is stored on the agent side, a conversation you start in the TUI is the same one you can continue from `future-cli run --continue` or pick up in the desktop app.
+Because everything is stored on the agent side, a conversation you start in the TUI is the same one you can continue from `future run --continue` or pick up in the desktop app.
 
 ## Getting around
 
@@ -46,7 +46,7 @@ Because everything is stored on the agent side, a conversation you start in the 
 
 ## Troubleshooting
 
-- **"Connection refused" / nothing happens** → the agent isn't running. Start it with `future-cli agent start` or open the desktop app.
+- **"Connection refused" / nothing happens** → the agent isn't running. Start it with `future agent start` or open the desktop app.
 - **macOS blocked it** → open the app once (right-click → Open) to clear the security prompt, then the inner `future-tui` runs fine. See [[Installation]].
 
 See also: [[CLI|CLI]] · [[Using FutureOS|Using-FutureOS]] · [[FAQ]]

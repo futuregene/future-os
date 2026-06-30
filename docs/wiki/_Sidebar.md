@@ -12,7 +12,7 @@
 - [[Skills]]
 
 **Command line (advanced)**
-- [[CLI (future-cli)|CLI]]
+- [[CLI (future)|CLI]]
 - [[Terminal UI (future-tui)|TUI]]
 
 **Help**

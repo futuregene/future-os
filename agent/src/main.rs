@@ -76,7 +76,7 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
         Some(m) => m,
         None => {
             eprintln!(
-                "No model configured.  Add an API key via 'future-cli auth login' \
+                "No model configured.  Add an API key via 'future auth login' \
                  or configure a provider in ~/.future/agent/models.json."
             );
             std::process::exit(1);
