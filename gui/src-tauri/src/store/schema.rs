@@ -347,6 +347,13 @@ CREATE INDEX IF NOT EXISTS idx_reference_targets_scope ON reference_targets(scop
 CREATE INDEX IF NOT EXISTS idx_review_snapshots_run ON review_snapshots(run_id, phase);
 CREATE INDEX IF NOT EXISTS idx_review_snapshots_workspace ON review_snapshots(workspace_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_review_changesets_run ON review_changesets(run_id);
+-- FK columns used by hot list/join/cleanup queries (B-12).
+CREATE INDEX IF NOT EXISTS idx_tool_calls_run ON tool_calls(run_id);
+CREATE INDEX IF NOT EXISTS idx_tool_outputs_call ON tool_outputs(tool_call_id);
+CREATE INDEX IF NOT EXISTS idx_review_file_changes_changeset ON review_file_changes(changeset_id);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_thread ON approval_requests(thread_id);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_run_status ON approval_requests(run_id, status);
+CREATE INDEX IF NOT EXISTS idx_artifacts_workspace ON artifacts(workspace_id, deleted_at);
 "#;
 
 /// Columns added to pre-existing tables after their initial `CREATE`. SQLite's

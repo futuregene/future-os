@@ -42,13 +42,16 @@ pub fn cancel_stale_approval_requests() -> Result<usize, crate::AppError> {
     let now = now_millis();
     let mut conn = connect()?;
     let tx = conn.transaction()?;
+    // Cancel every non-terminal run that owns a pending approval — the same set
+    // the second UPDATE cancels — so a run and its approval never end up in
+    // mismatched states (e.g. a still-`running` run whose approval was cancelled).
     tx.execute(
         "UPDATE runs
          SET status = 'cancelled',
              error_message = 'Pending approval was cancelled because FutureOS restarted.',
              ended_at = COALESCE(ended_at, ?1),
              updated_at = ?1
-         WHERE status = 'waiting_approval'
+         WHERE status NOT IN ('completed', 'failed', 'cancelled')
            AND id IN (
              SELECT run_id
              FROM approval_requests

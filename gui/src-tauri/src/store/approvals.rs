@@ -5,9 +5,13 @@ use super::records::*;
 use super::util::*;
 
 pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), crate::AppError> {
-    let conn = connect()?;
-    let thread_id = run_thread_id(&conn, &input.run_id)?;
-    let existing: Option<String> = conn
+    // BEGIN IMMEDIATE so the existence check and the insert are one atomic
+    // write — the agent can stream concurrent events for the same tool call, and
+    // a plain check-then-insert would let two of them both insert a duplicate.
+    let mut conn = connect()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let thread_id = run_thread_id(&tx, &input.run_id)?;
+    let existing: Option<String> = tx
         .query_row(
             "SELECT id
              FROM approval_requests
@@ -25,7 +29,7 @@ pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), 
 
     let now = now_millis();
     let reviewer = input.reviewer.unwrap_or_else(|| "user".to_string());
-    conn.execute(
+    tx.execute(
         "INSERT INTO approval_requests (
              id, thread_id, run_id, tool_call_id, kind, status, title, summary,
              risk_level, requested_action, created_at, updated_at,
@@ -52,6 +56,7 @@ pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), 
             reviewer,
         ],
     )?;
+    tx.commit()?;
     Ok(())
 }
 

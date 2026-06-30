@@ -54,6 +54,8 @@ make run-gui
 **批次 4 — store 健壮性（事务 / 索引 / 列常量）**
 `B-11`（共享连接 + 复合事务）`B-3`（去重竞态）`B-4`（cancel_stale 错位）`B-10`（TOCTOU）`B-12`（缺索引）`C-6`（列常量）`C-7`（元数据构造去重）`C-8`（读回样板 + 状态常量）`N-3`（type 列命名）。
 
+> **进度**：4 个 store **bug** 已落地（`B-3` `B-4` `B-10` `B-12`，见各条 `[x]`）。`B-3`/`B-10` 采用 `BEGIN IMMEDIATE` 事务序列化「检查后写入」，而非加唯一索引——避免唯一索引影响 artifacts 的其它插入路径、以及在已有重复数据上建索引失败。**暂缓**（独立的「store 一致性 + 连接模型」专项 pass）：`B-11`（共享连接/池——架构级，影响每个 store 函数与测试模型）、`C-6`（列常量推广到 11 张表——纯机械且列序错位会**静默损坏**数据，需集中 review）、`C-7`（markdown_refs 元数据去重）、`C-8`（读回样板 + 状态常量——面广）、`N-3`（`type` 列改名——面广且漏改即运行期 SQL 报错）。这些大多共享同一批 SELECT 列清单，宜一起做。
+
 **批次 5 — 结构性大改（影响面大，最后做）**
 `M-1`（拆 handleSend）`M-2`（AppShell 下沉 hooks）`M-3`（迁 prompt 逻辑）`M-5`（拆 records.rs）`M-7`（拆 agent_bridge/mod.rs）`M-8`（workspace 解析去重）`C-13`（审批决策收口）`C-9`（isRecord 共享 util）`N-1` `N-2` `N-4`（命名）。
 
@@ -603,7 +605,7 @@ make run-gui
 - **验证**: 前端基线三连；可加单测 mock `listRuns` reject + `listMessages` resolve，断言 `messages` 为真实消息。
 - **关联**: C-11、B-1。
 
-### [ ] B-3. check-then-insert 缺唯一索引/事务 → 并发下可能插入重复行
+### [x] B-3. check-then-insert 缺唯一索引/事务 → 并发下可能插入重复行
 - **类别 / 严重度**: bug / 中
 - **位置**: `store/approvals.rs:7-56`（`ensure_approval_request`，SELECT 10-20 → 条件 INSERT 28-54，dedup 键 `(tool_call_id, kind)`）；`store/artifacts.rs:111-157`（`ensure_artifact`，dedup 键 `(run_id, title, COALESCE(path,''))`）。唯一约束仅 `schema.rs:168` `UNIQUE(run_id, phase)`。
 - **现状**: 两者都在单条 `connect()`（自动提交）上「先查后插」，无事务、无唯一索引。`upsert_tool_call`(runs.rs:177) 已用 `ON CONFLICT(id) DO ...` 正确处理同类问题。
@@ -622,7 +624,7 @@ make run-gui
 - **验证**: 后端基线三连；建议补并发回归测试（同 input 连续两次 ensure 后断言行数=1）。
 - **关联**: B-11、`runs.rs:177` upsert 范式。
 
-### [ ] B-4. `cancel_stale_approval_requests` 两条 UPDATE 的 WHERE 不对齐 → run/approval 状态错位
+### [x] B-4. `cancel_stale_approval_requests` 两条 UPDATE 的 WHERE 不对齐 → run/approval 状态错位
 - **类别 / 严重度**: bug / 中
 - **位置**: `store/cleanup.rs:41-71`
 - **现状**: 第一条 UPDATE 只把 `status='waiting_approval'` 且有 pending approval 的 run 置 cancelled(45-59)；第二条把**每条** `status='pending'` approval 置 cancelled，不看 run 状态(60-68)。两条同一事务内(44/69)。
@@ -689,7 +691,7 @@ make run-gui
 - **验证**: 前端基线三连 + StrictMode 下粘贴超 `MAX_ATTACHMENTS_PER_TURN` 文件，确认错误提示只设一次。
 - **关联**: M-1。
 
-### [ ] B-10. `mark_run_overlapped` 多步读写无事务（TOCTOU）
+### [x] B-10. `mark_run_overlapped` 多步读写无事务（TOCTOU）
 - **类别 / 严重度**: bug / 中
 - **位置**: `store/review_snapshots.rs:217-268`（辅助 `set_overlapped` 270-278）
 - **现状**: 单条 `connect()`（无事务）依次 SELECT before_ts(221-227)→ after_ts(231-238)→ peers(242-257)→ 逐个 `set_overlapped` UPDATE(263-266)。
@@ -714,7 +716,7 @@ make run-gui
 - **验证**: 后端基线三连（确保 in-memory 测试仍可运行）。
 - **关联**: B-3、B-10、C-8(a)、M-5。
 
-### [ ] B-12. 热点查询缺索引
+### [x] B-12. 热点查询缺索引
 - **类别 / 严重度**: bug/perf / 中
 - **位置**: 现有索引 `schema.rs:342-349` + `ADDED_INDEXES`(398-400)
 - **现状**: 下列高频 WHERE/JOIN 列确认无索引：
