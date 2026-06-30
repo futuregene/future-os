@@ -90,7 +90,7 @@ fmt:
 run-agent:
 	cd agent && cargo run
 
-run-tui: install
+run-tui: install-tui
 	cd tui && npm run dev
 
 run-cli: install-cli
