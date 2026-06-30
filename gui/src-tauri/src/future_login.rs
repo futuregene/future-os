@@ -77,17 +77,19 @@ fn client() -> Result<reqwest::Client, AppError> {
         .map_err(|error| AppError::Message(format!("无法创建 HTTP 客户端：{error}")))
 }
 
-fn base_url() -> String {
+/// Device-code OAuth lives on the platform root (`{platform}/client/v1/...`),
+/// not the model API base — mirror the CLI (`cli/src/commands/auth.ts`).
+fn platform_url() -> String {
     let auth = Value::Object(crate::auth_store::read().unwrap_or_default());
-    crate::agent_providers::resolve_future_base_url(&auth)
+    crate::agent_providers::resolve_future_platform_url(&auth)
 }
 
 /// Begin device authorization: fetch a device/user code and open the
 /// verification page. Returns the codes for the dialog to display and poll.
 pub async fn start() -> Result<FutureLoginStart, AppError> {
-    let base = base_url();
+    let platform = platform_url();
     let response = client()?
-        .post(format!("{base}/v1/oauth/device/code"))
+        .post(format!("{platform}/client/v1/oauth/device/code"))
         .json(&json!({ "client_name": CLIENT_NAME }))
         .send()
         .await
@@ -143,9 +145,9 @@ pub async fn start() -> Result<FutureLoginStart, AppError> {
 /// Exchange the device code for an API key once. On success the key is written
 /// to `auth.json`; the returned status drives the frontend poll loop.
 pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
-    let base = base_url();
+    let platform = platform_url();
     let response = client()?
-        .post(format!("{base}/v1/oauth/device/token"))
+        .post(format!("{platform}/client/v1/oauth/device/token"))
         .json(&json!({ "device_code": device_code }))
         .send()
         .await

@@ -203,6 +203,14 @@ Research / Data / Skill 暂不投入，左侧导航图标已隐藏（`ActivityRa
   3. 单用户桌面应用并发极低，「每调用 open + 3 PRAGMA」的性能收益相对上述风险偏小。
 - **建议**：作为独立一次 pass，配 `make run-gui` 实机回归（线程切换、复合写、`clear_all_data` 后的 PRAGMA 状态）再做。
 
+### 账户能力：余额 / 充值（暂缓）
+
+平台侧已提供账户接口，CLI 已接入 `account profile / balance / recharge`（`{platform}/client/v1/account/*`，见 `cli/src/commands/account.ts`）。GUI 目前无账户面板。
+
+- **暂缓**：本期不在 GUI 暴露账户/余额/充值入口。
+- **若做**：在 Settings 加「账户」页，复用已对齐的平台 URL 解析（`agent_providers::resolve_future_platform_url`）+ `future` API key，调 `/client/v1/account/profile`、`/balance`；充值下单 `/recharge/orders` 走外部浏览器，**GUI 不直接处理支付凭证**（遵守凭证边界）。
+- **前置**：FutureGene 登录已可用（见下方平台 URL 对齐说明）。
+
 ## Provider 配置现状（P10 基线）
 
 模型 Provider 配置落在 agent 的两个文件：`~/.future/agent/models.json`（providers + models，合并在内置 catalog 之上）与 `~/.future/agent/auth.json`（按 provider id 存 API key）。

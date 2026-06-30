@@ -16,7 +16,9 @@ use serde_json::{json, Map, Value};
 
 use crate::auth_store::{agent_dir, FUTURE_PROVIDER_ID};
 
-const DEFAULT_FUTURE_BASE_URL: &str = "https://future-os.cn/api/v1";
+/// Future platform root (no `/api`); auth/account endpoints hang off this and
+/// the model API base is derived as `{platform}/api/v1`.
+const DEFAULT_FUTURE_PLATFORM_URL: &str = "https://future-os.cn";
 const FUTURE_PROVIDER_NAME: &str = "FutureGene";
 
 // Field-validation limits for custom providers (see PLAN.md「自定义 Provider 字段校验」).
@@ -359,20 +361,34 @@ pub fn delete_custom_provider(id: String) -> Result<ProvidersView, crate::AppErr
     list_agent_providers()
 }
 
-pub(crate) fn resolve_future_base_url(auth: &Value) -> String {
-    let future = match auth.get(FUTURE_PROVIDER_ID) {
-        Some(f) => f,
-        None => return DEFAULT_FUTURE_BASE_URL.to_string(),
+/// Resolve the Future **platform** root (no `/api`), mirroring the CLI's
+/// `getPlatformUrl()` precedence (see `cli/src/utils/platform.ts`):
+///   1. `future.platform_base_url`
+///   2. `future.base_url` with a trailing `/api` stripped (the CLI writes
+///      `base_url = {platform}/api`)
+///   3. [`DEFAULT_FUTURE_PLATFORM_URL`]
+///
+/// Auth/account endpoints live here (`{platform}/client/v1/...`); the model API
+/// base is [`resolve_future_base_url`].
+pub(crate) fn resolve_future_platform_url(auth: &Value) -> String {
+    let Some(future) = auth.get(FUTURE_PROVIDER_ID) else {
+        return DEFAULT_FUTURE_PLATFORM_URL.to_string();
     };
-    // legacy: explicit base_url in auth.json
-    if let Some(url) = future.get("base_url").and_then(Value::as_str) {
-        return url.trim_end_matches('/').to_string();
-    }
-    // new: derive from platform_base_url
     if let Some(platform_url) = future.get("platform_base_url").and_then(Value::as_str) {
-        return format!("{}/api/v1", platform_url.trim_end_matches('/'));
+        return platform_url.trim_end_matches('/').to_string();
     }
-    DEFAULT_FUTURE_BASE_URL.to_string()
+    if let Some(base_url) = future.get("base_url").and_then(Value::as_str) {
+        let trimmed = base_url.trim_end_matches('/');
+        let platform = trimmed.strip_suffix("/api").unwrap_or(trimmed);
+        return platform.trim_end_matches('/').to_string();
+    }
+    DEFAULT_FUTURE_PLATFORM_URL.to_string()
+}
+
+/// Resolve the FutureGene **model API** base URL: `{platform}/api/v1`. This is
+/// what the Providers page shows and what model calls use.
+pub(crate) fn resolve_future_base_url(auth: &Value) -> String {
+    format!("{}/api/v1", resolve_future_platform_url(auth))
 }
 
 fn auth_has_key(auth: &Value, id: &str) -> bool {
@@ -616,5 +632,61 @@ mod tests {
             },
         ];
         assert!(upsert_custom_provider(dup).is_err());
+    }
+
+    #[test]
+    fn platform_url_defaults_when_absent() {
+        assert_eq!(
+            resolve_future_platform_url(&json!({})),
+            DEFAULT_FUTURE_PLATFORM_URL
+        );
+        assert_eq!(
+            resolve_future_base_url(&json!({})),
+            format!("{DEFAULT_FUTURE_PLATFORM_URL}/api/v1")
+        );
+    }
+
+    #[test]
+    fn platform_url_strips_trailing_api_from_base_url() {
+        // The CLI writes `base_url = {platform}/api`; the platform is that minus /api.
+        let auth = json!({ "future": { "base_url": "https://future-os.cn/api" } });
+        assert_eq!(resolve_future_platform_url(&auth), "https://future-os.cn");
+        assert_eq!(
+            resolve_future_base_url(&auth),
+            "https://future-os.cn/api/v1"
+        );
+
+        let trailing = json!({ "future": { "base_url": "https://future-os.cn/api/" } });
+        assert_eq!(
+            resolve_future_platform_url(&trailing),
+            "https://future-os.cn"
+        );
+    }
+
+    #[test]
+    fn platform_url_prefers_platform_base_url() {
+        let auth = json!({ "future": { "platform_base_url": "https://staging.example.com/" } });
+        assert_eq!(
+            resolve_future_platform_url(&auth),
+            "https://staging.example.com"
+        );
+        assert_eq!(
+            resolve_future_base_url(&auth),
+            "https://staging.example.com/api/v1"
+        );
+    }
+
+    #[test]
+    fn base_url_without_api_suffix_is_used_as_platform() {
+        // A bare host (no /api) is treated as the platform root verbatim.
+        let auth = json!({ "future": { "base_url": "https://custom.example.com" } });
+        assert_eq!(
+            resolve_future_platform_url(&auth),
+            "https://custom.example.com"
+        );
+        assert_eq!(
+            resolve_future_base_url(&auth),
+            "https://custom.example.com/api/v1"
+        );
     }
 }
