@@ -359,7 +359,7 @@ make run-gui
 - **验证**: `grep -rn "setTimeout(setCopied" gui/src`（替换后归零）+ 基线三连；可加单测「快速二次 copy 只保留一个 timer」「unmount 清理」。
 - **关联**: U-2。
 
-### [ ] U-6. 下拉菜单 popover 模式重复四处
+### [x] U-6. 下拉菜单 popover 模式重复四处（仅迁 model/thinking）
 - **类别 / 严重度**: ui / 中
 - **位置**: `src/features/agent/Composer.tsx`：model 菜单(382-410)、thinking 菜单(427-440)、reference 菜单(490 起)；`src/features/agent/NewConversation.tsx`：workspace 菜单(265-292)
 - **现状**: 四处同构 popover：`useDismissableLayer`(Composer 63/67、NewConversation 97) + 绝对定位 `bg-surface shadow-panel border-line-soft` 面板 + 列表项 `hover:bg-surface-subtle` + 选中项尾随 `<Check className="size-4 text-ink-soft">`(404/439/292)。
@@ -367,7 +367,8 @@ make run-gui
 - **改造方案**: 抽通用 `<SelectMenu options renderOption selected onSelect anchor>`（含 `useDismissableLayer` + 面板 + MenuItem + Check），放 `src/components/ui/`。四处改用之。注意各菜单定位不同（bottom-9 right-0 / bottom-full / top-9）——经 `placement` prop 或透传 className 支持。
   - **坑**：reference 菜单(490)宽度/内容较特殊（`w-[min(30rem,...)]`），先迁 model/thinking/workspace 三个结构最一致的，reference 视情况。
 - **复核结论**: CONFIRMED（我亲自核对：useDismissableLayer 3 处、四个 `shadow-panel` 绝对定位面板 + `<Check>` 选中态）。
-- **验证**: 前端基线三连 + `make run-gui` 确认四个下拉的开合/选中/外点关闭。
+- **落地结论**: 抽出 `src/components/ui/SelectMenu.tsx`（`SelectMenu` + `SelectMenuItem`，含 `useDismissableLayer` + `shadow-panel` 面板 + 选中 `<Check>`），**仅迁 Composer 的 model / thinking 两个结构一致的菜单**（class 串逐字保留，placement `bottom-9 right-0` 内置，宽度/overflow 经 `panelClassName` 透传）。**NewConversation workspace 菜单（搜索头 + 底部动作）与 Composer reference 菜单（键盘导航搜索 + `w-[min(30rem,…)]`）结构差异大，按原计划暂缓**——强行统一会让 SelectMenu 长出搜索/动作/键盘导航等分支，过度抽象、收益为负。
+- **验证**: 前端基线三连已过；model/thinking 两个下拉开合/选中/外点关闭待 `make run-gui` 实机确认。
 - **关联**: U-3、`lib/useDismissableLayer`。
 
 ### [x] U-7. focus ring token 不一致

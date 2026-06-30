@@ -4,13 +4,13 @@ import type { ReferenceTargetSearchResult } from "../../integrations/storage/thr
 import type { MessageAttachment } from "./agentThreadTypes";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { AlertTriangle, ArrowUp, Beaker, Box, Brain, Check, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, X } from "lucide-react";
+import { AlertTriangle, ArrowUp, Beaker, Box, Brain, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
 import { modelLabel, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { savePastedImage, searchReferenceTargets } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
-import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, MAX_ATTACHMENTS_PER_TURN, PICKER_EXTENSIONS } from "./attachments";
 
 export interface ComposerSendPayload {
@@ -60,14 +60,6 @@ export function Composer({
   const activeModelId = modelId || modelOptions[0]?.id || "";
   const activeThinkingLevel = normalizeThinkingLevel(thinkingLevel);
   const activeMention = useMemo(() => findActiveMention(value, caretPosition), [caretPosition, value]);
-  const modelMenuRef = useDismissableLayer<HTMLDivElement>({
-    enabled: modelMenuOpen,
-    onDismiss: () => setModelMenuOpen(false),
-  });
-  const thinkingMenuRef = useDismissableLayer<HTMLDivElement>({
-    enabled: thinkingMenuOpen,
-    onDismiss: () => setThinkingMenuOpen(false),
-  });
 
   useEffect(() => {
     let cancelled = false;
@@ -365,85 +357,84 @@ export function Composer({
           </button>
         </div>
         <div className="flex items-center gap-2">
-          <div className="relative hidden md:block" ref={modelMenuRef}>
-            <button
-              className="inline-flex h-7 max-w-48 items-center gap-1.5 rounded-md bg-surface-subtle px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink"
-              onClick={() => {
-                setThinkingMenuOpen(false);
-                setModelMenuOpen(open => !open);
-              }}
-              type="button"
-              title="Model"
-            >
-              <span className="truncate">{modelLabel(activeModelId, modelOptions)}</span>
-              <ChevronDown className="size-3 shrink-0" />
-            </button>
-            {modelMenuOpen
+          <SelectMenu
+            className="hidden md:block"
+            open={modelMenuOpen}
+            onDismiss={() => setModelMenuOpen(false)}
+            panelClassName="max-h-[40vh] w-56 overflow-y-auto"
+            trigger={(
+              <button
+                className="inline-flex h-7 max-w-48 items-center gap-1.5 rounded-md bg-surface-subtle px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink"
+                onClick={() => {
+                  setThinkingMenuOpen(false);
+                  setModelMenuOpen(open => !open);
+                }}
+                type="button"
+                title="Model"
+              >
+                <span className="truncate">{modelLabel(activeModelId, modelOptions)}</span>
+                <ChevronDown className="size-3 shrink-0" />
+              </button>
+            )}
+          >
+            {modelOptions.length === 0
               ? (
-                  <div className="absolute bottom-9 right-0 z-30 max-h-[40vh] w-56 divide-y divide-line-soft overflow-y-auto rounded-lg border border-line-soft bg-surface shadow-panel">
-                    {modelOptions.length === 0
-                      ? (
-                          <div className="px-3 py-2 text-sm text-ink-muted">Start Future Agent to load models.</div>
-                        )
-                      : null}
-                    {modelOptions.map(model => (
-                      <button
-                        className="flex w-full items-center gap-2 px-3 py-1 text-left text-sm transition-colors hover:bg-surface-subtle"
-                        key={`${model.provider}/${model.id}`}
-                        onClick={() => {
-                          onModelChange?.(model.id);
-                          setModelMenuOpen(false);
-                        }}
-                        type="button"
-                      >
-                        <span className="min-w-0 flex-1 space-y-0.5">
-                          <span className="block truncate font-medium leading-tight text-ink">{model.label}</span>
-                          <span className="block truncate text-xs leading-tight text-ink-muted">
-                            {providerNames[model.provider] ?? model.provider}
-                          </span>
-                        </span>
-                        {activeModelId === model.id ? <Check className="size-4 shrink-0 text-ink-soft" /> : null}
-                      </button>
-                    ))}
-                  </div>
+                  <div className="px-3 py-2 text-sm text-ink-muted">Start Future Agent to load models.</div>
                 )
               : null}
-          </div>
-          <div className="relative hidden md:block" ref={thinkingMenuRef}>
-            <button
-              className="inline-flex h-7 max-w-40 items-center gap-1.5 rounded-md bg-surface-subtle px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink"
-              onClick={() => {
-                setModelMenuOpen(false);
-                setThinkingMenuOpen(open => !open);
-              }}
-              type="button"
-              title="Thinking level"
-            >
-              <Brain className="size-3 shrink-0" />
-              <span className="truncate">{thinkingLevelLabel(activeThinkingLevel)}</span>
-              <ChevronDown className="size-3 shrink-0" />
-            </button>
-            {thinkingMenuOpen
-              ? (
-                  <div className="absolute bottom-9 right-0 z-30 w-40 divide-y divide-line-soft overflow-hidden rounded-lg border border-line-soft bg-surface shadow-panel">
-                    {thinkingLevels.map(level => (
-                      <button
-                        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-surface-subtle"
-                        key={level}
-                        onClick={() => {
-                          onThinkingLevelChange?.(level);
-                          setThinkingMenuOpen(false);
-                        }}
-                        type="button"
-                      >
-                        <span className="min-w-0 flex-1 truncate font-medium text-ink">{thinkingLevelLabel(level)}</span>
-                        {activeThinkingLevel === level ? <Check className="size-4 shrink-0 text-ink-soft" /> : null}
-                      </button>
-                    ))}
-                  </div>
-                )
-              : null}
-          </div>
+            {modelOptions.map(model => (
+              <SelectMenuItem
+                className="py-1"
+                key={`${model.provider}/${model.id}`}
+                selected={activeModelId === model.id}
+                onSelect={() => {
+                  onModelChange?.(model.id);
+                  setModelMenuOpen(false);
+                }}
+              >
+                <span className="min-w-0 flex-1 space-y-0.5">
+                  <span className="block truncate font-medium leading-tight text-ink">{model.label}</span>
+                  <span className="block truncate text-xs leading-tight text-ink-muted">
+                    {providerNames[model.provider] ?? model.provider}
+                  </span>
+                </span>
+              </SelectMenuItem>
+            ))}
+          </SelectMenu>
+          <SelectMenu
+            className="hidden md:block"
+            open={thinkingMenuOpen}
+            onDismiss={() => setThinkingMenuOpen(false)}
+            panelClassName="w-40 overflow-hidden"
+            trigger={(
+              <button
+                className="inline-flex h-7 max-w-40 items-center gap-1.5 rounded-md bg-surface-subtle px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink"
+                onClick={() => {
+                  setModelMenuOpen(false);
+                  setThinkingMenuOpen(open => !open);
+                }}
+                type="button"
+                title="Thinking level"
+              >
+                <Brain className="size-3 shrink-0" />
+                <span className="truncate">{thinkingLevelLabel(activeThinkingLevel)}</span>
+                <ChevronDown className="size-3 shrink-0" />
+              </button>
+            )}
+          >
+            {thinkingLevels.map(level => (
+              <SelectMenuItem
+                key={level}
+                selected={activeThinkingLevel === level}
+                onSelect={() => {
+                  onThinkingLevelChange?.(level);
+                  setThinkingMenuOpen(false);
+                }}
+              >
+                <span className="min-w-0 flex-1 truncate font-medium text-ink">{thinkingLevelLabel(level)}</span>
+              </SelectMenuItem>
+            ))}
+          </SelectMenu>
           <button
             className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
             disabled={(!value.trim() && attachments.length === 0) || disabled}
