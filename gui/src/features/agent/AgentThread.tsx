@@ -70,6 +70,12 @@ export function AgentThread({
     onThreadActivity,
   });
 
+  // A run is in flight while its assistant bubble is still streaming; the agent
+  // rejects a concurrent prompt, so the composer is disabled until it settles.
+  const isSending = messages.some(
+    message => message.role === "assistant" && message.status === "streaming",
+  );
+
   const handleRetryMessage = useCallback((_message: AgentMessage, source: AgentMessage) => {
     void handleSend({
       attachments: source.attachments ?? [],
@@ -183,7 +189,7 @@ export function AgentThread({
               : null}
             <Composer
               className="pointer-events-auto mx-auto w-full max-w-3xl"
-              disabled={!thread || loadingThread || loadingStore}
+              disabled={!thread || loadingThread || loadingStore || isSending}
               modelId={modelId}
               modelOptions={modelOptions}
               onModelChange={onModelChange}

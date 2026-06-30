@@ -52,6 +52,9 @@ export function useAgentThreadState({
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const consumedPromptRef = useRef<string | null>(null);
   const sendGenerationRef = useRef(0);
+  // True while a prompt is in flight for this thread. The agent rejects a second
+  // concurrent prompt for the same session, so guard every send path with it.
+  const sendingRef = useRef(false);
   const streamTimerRef = useRef<number | null>(null);
   const threadId = thread?.id ?? null;
 
@@ -114,6 +117,12 @@ export function useAgentThreadState({
   const handleSend = useCallback(async ({ attachments, content }: ComposerSendPayload) => {
     if (!thread)
       return;
+    // One prompt at a time per session: a second send (composer, retry, or
+    // continue) while one is running would be rejected by the agent
+    // ("already running"), so drop it before anything is optimistically added.
+    if (sendingRef.current)
+      return;
+    sendingRef.current = true;
 
     const sendGeneration = sendGenerationRef.current + 1;
     sendGenerationRef.current = sendGeneration;
@@ -312,6 +321,12 @@ export function useAgentThreadState({
         onThreadActivity();
       }
     }
+    finally {
+      // Release the in-flight lock — but only if a newer send/thread switch
+      // hasn't already taken over (it owns the flag then).
+      if (isCurrentSend())
+        sendingRef.current = false;
+    }
   }, [modelId, onThreadActivity, refreshRecentRun, thinkingLevel, thread]);
 
   useEffect(() => {
@@ -339,6 +354,9 @@ export function useAgentThreadState({
   useEffect(() => {
     return () => {
       sendGenerationRef.current += 1;
+      // A switch away abandons any in-flight send for this thread; let the new
+      // thread send freely (its run is a different session).
+      sendingRef.current = false;
       if (streamTimerRef.current !== null) {
         window.clearInterval(streamTimerRef.current);
         streamTimerRef.current = null;
