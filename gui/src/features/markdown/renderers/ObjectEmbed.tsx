@@ -10,7 +10,7 @@ import { AlertTriangle, Beaker, FileDiff, Maximize2, Microscope } from "lucide-r
 import { Badge } from "../../../components/ui/Badge";
 import { Button } from "../../../components/ui/Button";
 import { emitFutureEvent } from "../../../lib/futureEvents";
-import { isRecord } from "../../../lib/objects";
+import { toolCommand } from "../../runs/toolInput";
 
 export function ApprovalEmbed({
   approval,
@@ -169,28 +169,4 @@ function ObjectFrame({
       </div>
     </article>
   );
-}
-
-function toolCommand(input: string | null | undefined) {
-  if (!input)
-    return null;
-
-  let current: unknown = input;
-  for (let index = 0; index < 3; index += 1) {
-    if (isRecord(current)) {
-      const value = current.command;
-      return typeof value === "string" && value.trim() ? value : null;
-    }
-    if (typeof current !== "string")
-      return null;
-
-    try {
-      current = JSON.parse(current) as unknown;
-    }
-    catch {
-      return null;
-    }
-  }
-
-  return null;
 }
