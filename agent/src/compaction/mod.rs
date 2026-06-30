@@ -212,9 +212,26 @@ pub fn compact(
 
     let cut = find_cut_point(&messages, opts.keep_recent_tokens);
     if cut == 0 {
+        // find_cut_point may return 0 when its char-based estimate is much
+        // lower than the API-reported tokens (e.g. after a prior compaction
+        // produced short summary messages).  When should_compact already
+        // confirmed action is needed, fall back to the smallest non-zero
+        // valid cut point so we still trim something.
+        let valid = find_valid_cut_points(&messages);
+        if let Some(&fallback) = valid.iter().find(|&&cp| cp > 0) {
+            return compact_from(messages, fallback, tokens_before);
+        }
         return (messages, None);
     }
 
+    compact_from(messages, cut, tokens_before)
+}
+
+fn compact_from(
+    messages: Vec<Message>,
+    cut: usize,
+    tokens_before: i32,
+) -> (Vec<Message>, Option<CompactionResult>) {
     let (read_files, modified_files) = extract_file_operations(&messages);
     let summary = format!(
         "Previous conversation summarized. Files read: {}. Modified: {}.",
