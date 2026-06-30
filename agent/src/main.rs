@@ -271,6 +271,7 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
         approval_gate.clone(),
     );
     server_session.model = resolved_model.clone();
+    *server_session.compaction_model.write().unwrap() = resolved_model.clone();
 
     if let Some(ref level) = thinking {
         server_session.set_thinking_level(level);

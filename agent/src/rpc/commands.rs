@@ -145,6 +145,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             );
             // Preserve model and thinking level from the current session
             new_sess.model = sess.model.clone();
+            *new_sess.compaction_model.write().unwrap() = sess.model.clone();
             new_sess.thinking_level = sess.thinking_level.clone();
             drop(sess);
 
