@@ -190,28 +190,88 @@ pub fn update_run_status(input: UpdateRunStatusInput) -> Result<RunRecord, crate
         ],
     )?;
     if input.status == "cancelled" {
-        tx.execute(
-            "UPDATE approval_requests
+        cancel_run_side_effects(&tx, &input.run_id, now)?;
+    }
+    tx.commit()?;
+    loaded(get_run(&input.run_id)?, "Updated run")
+}
+
+/// Cancel a run's still-open approvals and running tool calls. Shared by the
+/// `cancelled` paths of `update_run_status` and `update_run_status_if_active`.
+fn cancel_run_side_effects(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    now: i64,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE approval_requests
              SET status = 'cancelled',
                  decision_note = COALESCE(decision_note, 'Cancelled because the run was terminated.'),
                  decided_at = COALESCE(decided_at, ?1),
                  updated_at = ?1
              WHERE run_id = ?2
                AND status = 'pending'",
-            params![now, input.run_id],
-        )
-        ?;
-        tx.execute(
-            "UPDATE tool_calls
+        params![now, run_id],
+    )?;
+    tx.execute(
+        "UPDATE tool_calls
              SET status = 'cancelled',
                  ended_at = COALESCE(ended_at, ?1)
              WHERE run_id = ?2
                AND status = 'running'",
-            params![now, input.run_id],
-        )?;
-    }
+        params![now, run_id],
+    )?;
+    Ok(())
+}
+
+/// Like [`update_run_status`], but only transitions a run that is *not already
+/// terminal* — the guard is part of the `UPDATE`'s `WHERE`, so a concurrent
+/// `abort_run`/`fail_run_if_active` (which sets `cancelled`/`failed`) is never
+/// clobbered by a late read-then-write. Returns whether a row changed; the
+/// `cancelled` cascade runs only when it did.
+pub fn update_run_status_if_active(input: UpdateRunStatusInput) -> Result<bool, crate::AppError> {
+    let now = now_millis();
+    let mut conn = connect()?;
+    let tx = conn.transaction()?;
+    let changed = update_run_status_if_active_tx(&tx, &input, now)?;
     tx.commit()?;
-    loaded(get_run(&input.run_id)?, "Updated run")
+    Ok(changed)
+}
+
+fn update_run_status_if_active_tx(
+    tx: &rusqlite::Transaction<'_>,
+    input: &UpdateRunStatusInput,
+    now: i64,
+) -> rusqlite::Result<bool> {
+    let ended_at = if TERMINAL_RUN_STATUSES.contains(&input.status.as_str()) {
+        Some(now)
+    } else {
+        None
+    };
+    let affected = tx.execute(
+        &format!(
+            "UPDATE runs
+         SET status = ?1,
+             error_message = ?2,
+             error_type = COALESCE(?3, error_type),
+             ended_at = COALESCE(?4, ended_at),
+             updated_at = ?5
+         WHERE id = ?6
+           AND status NOT IN ({TERMINAL_RUN_STATUSES_SQL})"
+        ),
+        params![
+            input.status,
+            input.error_message,
+            input.error_type,
+            ended_at,
+            now,
+            input.run_id
+        ],
+    )?;
+    if affected > 0 && input.status == "cancelled" {
+        cancel_run_side_effects(tx, &input.run_id, now)?;
+    }
+    Ok(affected > 0)
 }
 
 /// Transition a run to `failed` only if it is not already in a terminal state,
@@ -362,4 +422,94 @@ pub fn complete_tool_call(input: CompleteToolCallInput) -> Result<(), crate::App
     )?;
     tx.commit()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::{params, Connection};
+
+    use super::*;
+    use crate::store::schema::SCHEMA;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        conn.execute_batch(SCHEMA).expect("initialize test schema");
+        // These tests exercise the run-status CAS in isolation, so insert run
+        // rows directly without their thread/workspace parents.
+        conn.execute_batch("PRAGMA foreign_keys = OFF;")
+            .expect("disable foreign keys");
+        conn
+    }
+
+    fn insert_run(conn: &Connection, id: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+             VALUES (?1, 'thread', ?2, 1, 1)",
+            params![id, status],
+        )
+        .expect("insert run");
+    }
+
+    fn run_status(conn: &Connection, id: &str) -> String {
+        conn.query_row(
+            "SELECT status FROM runs WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .expect("read run status")
+    }
+
+    fn running_input(run_id: &str) -> UpdateRunStatusInput {
+        UpdateRunStatusInput {
+            run_id: run_id.to_string(),
+            status: "running".to_string(),
+            error_message: None,
+            error_type: None,
+        }
+    }
+
+    /// B-13: a terminal run is never resurrected by the if-active CAS.
+    #[test]
+    fn if_active_skips_terminal_run() {
+        let mut conn = test_conn();
+        insert_run(&conn, "run_cancelled", "cancelled");
+        let tx = conn.transaction().unwrap();
+        let changed =
+            update_run_status_if_active_tx(&tx, &running_input("run_cancelled"), 99).unwrap();
+        tx.commit().unwrap();
+        assert!(!changed);
+        assert_eq!(run_status(&conn, "run_cancelled"), "cancelled");
+    }
+
+    /// A non-terminal run does transition, and the cancelled cascade fires.
+    #[test]
+    fn if_active_cancels_active_run_and_cascades() {
+        let mut conn = test_conn();
+        insert_run(&conn, "run_live", "running");
+        conn.execute(
+            "INSERT INTO approval_requests (id, thread_id, run_id, kind, status, title, created_at, updated_at)
+             VALUES ('ap1', 'thread', 'run_live', 'bash', 'pending', 't', 1, 1)",
+            [],
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        let input = UpdateRunStatusInput {
+            run_id: "run_live".to_string(),
+            status: "cancelled".to_string(),
+            error_message: Some("stop".to_string()),
+            error_type: None,
+        };
+        let changed = update_run_status_if_active_tx(&tx, &input, 99).unwrap();
+        tx.commit().unwrap();
+        assert!(changed);
+        assert_eq!(run_status(&conn, "run_live"), "cancelled");
+        let approval_status: String = conn
+            .query_row(
+                "SELECT status FROM approval_requests WHERE id = 'ap1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(approval_status, "cancelled");
+    }
 }
