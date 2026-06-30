@@ -171,13 +171,7 @@ export function useAgentThreadState({
       );
 
       if (isCurrentSend()) {
-        setMessages(current =>
-          current.map(message =>
-            message.id === optimisticUserId
-              ? { ...message, attachments: importedAttachments }
-              : message,
-          ),
-        );
+        patchMessage(setMessages, optimisticUserId, { attachments: importedAttachments });
       }
 
       const storedUserMessage = await appendMessage({
@@ -189,17 +183,10 @@ export function useAgentThreadState({
       });
 
       if (isCurrentSend()) {
-        setMessages(current =>
-          current.map(message =>
-            message.id === optimisticUserId
-              ? {
-                  ...message,
-                  id: storedUserMessage.id,
-                  createdAt: storedTimeToIso(storedUserMessage.createdAt),
-                }
-              : message,
-          ),
-        );
+        patchMessage(setMessages, optimisticUserId, {
+          id: storedUserMessage.id,
+          createdAt: storedTimeToIso(storedUserMessage.createdAt),
+        });
       }
 
       run = await createRun({
@@ -211,13 +198,7 @@ export function useAgentThreadState({
       if (isCurrentSend()) {
         setRecentRun(run);
         upsertFutureReferenceData(thread.workspaceId, "run", run.id, run);
-        setMessages(current =>
-          current.map(message =>
-            message.id === pendingId
-              ? { ...message, runId: run?.id ?? null }
-              : message,
-          ),
-        );
+        patchMessage(setMessages, pendingId, { runId: run?.id ?? null });
       }
 
       clearStreamTimer();
@@ -281,24 +262,17 @@ export function useAgentThreadState({
       const durationMs = runDurationMs(settledRun, runStartAnchorMs);
 
       if (isCurrentSend()) {
-        setMessages(current =>
-          current.map(message =>
-            message.id === pendingId
-              ? {
-                  ...message,
-                  id: storedAssistantMessage.id,
-                  runId: storedAssistantMessage.runId,
-                  content: finalRender.content,
-                  segments: finalRender.segments,
-                  status: storedAssistantMessage.status,
-                  createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
-                  modelId: settledRun?.modelId ?? modelId,
-                  durationMs,
-                  outputTokens: finalRender.outputTokens,
-                }
-              : message,
-          ),
-        );
+        patchMessage(setMessages, pendingId, {
+          id: storedAssistantMessage.id,
+          runId: storedAssistantMessage.runId,
+          content: finalRender.content,
+          segments: finalRender.segments,
+          status: storedAssistantMessage.status,
+          createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
+          modelId: settledRun?.modelId ?? modelId,
+          durationMs,
+          outputTokens: finalRender.outputTokens,
+        });
         onThreadActivity();
       }
     }
@@ -326,22 +300,15 @@ export function useAgentThreadState({
           })
         : null;
       if (isCurrentSend()) {
-        setMessages(current =>
-          current.map(item =>
-            item.id === pendingId
-              ? {
-                  ...item,
-                  id: storedAssistantMessage?.id ?? item.id,
-                  runId: storedAssistantMessage?.runId ?? item.runId,
-                  content: storedAssistantMessage?.content ?? buildAgentFailureContent(message),
-                  status: storedAssistantMessage?.status ?? "failed",
-                  createdAt: storedAssistantMessage
-                    ? storedTimeToIso(storedAssistantMessage.createdAt)
-                    : item.createdAt,
-                }
-              : item,
-          ),
-        );
+        patchMessage(setMessages, pendingId, previous => ({
+          id: storedAssistantMessage?.id ?? previous.id,
+          runId: storedAssistantMessage?.runId ?? previous.runId,
+          content: storedAssistantMessage?.content ?? buildAgentFailureContent(message),
+          status: storedAssistantMessage?.status ?? "failed",
+          createdAt: storedAssistantMessage
+            ? storedTimeToIso(storedAssistantMessage.createdAt)
+            : previous.createdAt,
+        }));
         onThreadActivity();
       }
     }
@@ -457,6 +424,21 @@ export function useAgentThreadState({
     scrollRef,
     scrollbar,
   };
+}
+
+/** Apply a patch to the single message with `id`, leaving the rest untouched. */
+function patchMessage(
+  setMessages: Dispatch<SetStateAction<AgentMessage[]>>,
+  id: string,
+  patch: Partial<AgentMessage> | ((message: AgentMessage) => Partial<AgentMessage>),
+) {
+  setMessages(current =>
+    current.map(message =>
+      message.id === id
+        ? { ...message, ...(typeof patch === "function" ? patch(message) : patch) }
+        : message,
+    ),
+  );
 }
 
 async function updatePendingMessageFromRunEvents(
