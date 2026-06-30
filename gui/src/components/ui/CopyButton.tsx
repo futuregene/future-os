@@ -25,7 +25,7 @@ export function CopyButton({
       className={cn(
         "inline-flex size-6 items-center justify-center rounded-md transition-colors",
         variant === "floating"
-          ? "absolute right-1.5 top-1.5 bg-surface/90 text-ink-muted shadow-sm ring-1 ring-line-soft hover:text-ink"
+          ? "absolute right-1.5 top-1.5 bg-surface/90 text-ink-muted shadow-xs ring-1 ring-line-soft hover:text-ink"
           : "text-ink-muted hover:text-ink",
         className,
       )}

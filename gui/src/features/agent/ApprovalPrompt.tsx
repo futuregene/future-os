@@ -108,7 +108,7 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
         : null}
       <div className="mt-4 flex items-center justify-between gap-3">
         <Button
-          className="shadow-sm"
+          className="shadow-xs"
           disabled={deciding !== null}
           leftIcon={<X className="size-3.5" />}
           onClick={() => void decide("rejected")}
@@ -117,7 +117,7 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
           {deciding === "rejected" ? "Denying" : "Deny"}
         </Button>
         <Button
-          className="shadow-sm"
+          className="shadow-xs"
           disabled={deciding !== null}
           leftIcon={<Check className="size-3.5" />}
           onClick={() => void decide("approved")}
