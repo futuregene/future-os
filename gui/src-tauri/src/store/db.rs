@@ -5,10 +5,11 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{fs, path::PathBuf};
 
+use super::get_thread;
 use super::records::*;
 use super::schema::{ADDED_COLUMNS, ADDED_INDEXES, SCHEMA};
 use super::util::{create_id, loaded, now_millis};
-use super::{get_thread, get_workspace};
+use super::workspaces::get_workspace_in;
 
 pub(super) fn app_dir() -> Result<PathBuf, crate::AppError> {
     let home = crate::home_dir().ok_or("HOME/USERPROFILE environment variable is not set.")?;
@@ -120,8 +121,19 @@ pub(super) fn get_or_create_user_workspace(
     path: PathBuf,
     description: Option<String>,
 ) -> Result<WorkspaceRecord, crate::AppError> {
-    let normalized_path = path.display().to_string();
     let conn = connect()?;
+    get_or_create_user_workspace_in(&conn, name, path, description)
+}
+
+/// Connection-injecting variant so a composite write (e.g. `create_thread`) can
+/// resolve/create the workspace and insert its own row in one transaction.
+pub(super) fn get_or_create_user_workspace_in(
+    conn: &Connection,
+    name: String,
+    path: PathBuf,
+    description: Option<String>,
+) -> Result<WorkspaceRecord, crate::AppError> {
+    let normalized_path = path.display().to_string();
     let existing = conn
         .query_row(
             &format!(
@@ -149,7 +161,7 @@ pub(super) fn get_or_create_user_workspace(
         params![workspace_id, name, normalized_path, description, now],
     )?;
 
-    loaded(get_workspace(&workspace_id)?, "Created workspace")
+    loaded(get_workspace_in(conn, &workspace_id)?, "Created workspace")
 }
 
 pub(super) fn update_thread_status(

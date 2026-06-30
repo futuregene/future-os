@@ -54,7 +54,9 @@ make run-gui
 **批次 4 — store 健壮性（事务 / 索引 / 列常量）**
 `B-11`（共享连接 + 复合事务）`B-3`（去重竞态）`B-4`（cancel_stale 错位）`B-10`（TOCTOU）`B-12`（缺索引）`C-6`（列常量）`C-7`（元数据构造去重）`C-8`（读回样板 + 状态常量）`N-3`（type 列命名）。
 
-> **进度**：4 个 store **bug** 已落地（`B-3` `B-4` `B-10` `B-12`，见各条 `[x]`）。`B-3`/`B-10` 采用 `BEGIN IMMEDIATE` 事务序列化「检查后写入」，而非加唯一索引——避免唯一索引影响 artifacts 的其它插入路径、以及在已有重复数据上建索引失败。**暂缓**（独立的「store 一致性 + 连接模型」专项 pass）：`B-11`（共享连接/池——架构级，影响每个 store 函数与测试模型）、`C-6`（列常量推广到 11 张表——纯机械且列序错位会**静默损坏**数据，需集中 review）、`C-7`（markdown_refs 元数据去重）、`C-8`（读回样板 + 状态常量——面广）、`N-3`（`type` 列改名——面广且漏改即运行期 SQL 报错）。这些大多共享同一批 SELECT 列清单，宜一起做。
+> **进度**：4 个 store **bug** 已落地（`B-3` `B-4` `B-10` `B-12`，见各条 `[x]`）。`B-3`/`B-10` 采用 `BEGIN IMMEDIATE` 事务序列化「检查后写入」，而非加唯一索引——避免唯一索引影响 artifacts 的其它插入路径、以及在已有重复数据上建索引失败。
+>
+> **「store 一致性」专项 pass 已完成**：`C-8`（`loaded()` 读回 helper + 终态状态常量化）、`C-7`（markdown_refs 元数据 builder 去重）、`N-3`（`type` 列改名 `event_type`/`artifact_type`/`resource_type`）、`C-6`（11 张表列常量推广，逐表机检 ↔ `*_from_row` 顺序）均 `[x]`。`B-11` **部分落地**（`[~]`）：核心原子性 bug（`create_thread` 单事务）已修，架构级「全局共享连接/池」暂缓——理由见该条。
 
 **批次 5 — 结构性大改（影响面大，最后做）**
 `M-1`（拆 handleSend）`M-2`（AppShell 下沉 hooks）`M-3`（迁 prompt 逻辑）`M-5`（拆 records.rs）`M-7`（拆 agent_bridge/mod.rs）`M-8`（workspace 解析去重）`C-13`（审批决策收口）`C-9`（isRecord 共享 util）`N-1` `N-2` `N-4`（命名）。
@@ -704,7 +706,7 @@ make run-gui
 - **验证**: 后端基线三连。
 - **关联**: B-11；ER.md §6.8。
 
-### [ ] B-11. 每个 store 函数各开新连接；复合操作跨多连接、非原子
+### [~] B-11. 每个 store 函数各开新连接；复合操作跨多连接、非原子
 - **类别 / 严重度**: bug/perf / 高
 - **位置**: `store/db.rs:30-39`（`connect()`，每次 open + 3 条 PRAGMA）。典型：`threads.rs:40-89`(`create_thread`)、`messages.rs:21-63`(`append_message`)
 - **现状**: `create_thread` 调 `get_or_create_*_workspace`/`get_workspace`（各 connect）→ connect 做 INSERT(68)→ `get_thread`（又一 connect，88）= 3-4 连接，workspace 创建与 thread INSERT 不在同事务；`append_message` 提交 tx 后(26) 又开第二条连接 `get_message` 读回(62)。
@@ -715,6 +717,7 @@ make run-gui
   3. 写后读回改 `RETURNING`（SQLite≥3.35），消除第二次查询——同时落地 C-8(a)。
   - **坑**：`Mutex<Connection>` 串行化所有访问，需并发读用池+WAL；`clear_all_data`(store.rs:78) 的 `PRAGMA foreign_keys=OFF` 不能污染共享连接长期状态；测试 `db.rs:188-235` 用 in-memory DB，重构须保留可注入连接的测试入口（共享连接对 in-memory 是必要的）。
 - **复核结论**: CONFIRMED（connect 每次新建 + 3 PRAGMA；create_thread 跨 3-4 连接非同事务；append_message 提交后第二条连接读回）。
+- **进度（本批，部分落地）**: 已修复**核心正确性 bug**——`create_thread` 现在单连接单事务（workspace 解析/创建 + thread INSERT + 读回同一 `tx`），崩溃不再留孤儿 workspace。手段：给 `get_or_create_chat_workspace`/`get_workspace`/`get_or_create_user_workspace`/`get_thread` 加 `*_in(&Connection, …)` 注入变体（公有版退化为自开连接的薄包装），`&tx` deref 成 `&Connection`；补两条 in-memory 回归测试（原子写可见 / 回滚不留孤儿）。**暂缓**架构级的「全局共享连接 / 连接池 + RETURNING」部分，理由：(1) 把 `connect()` 改成返回 guard 会让每条「持锁后再调用另一个 store 函数」的复合链（create_thread→workspace、append_message→read-back、promote_artifact→get_artifact+collection、get_thread_cleanup_summary→get_thread+get_workspace 等数十处）变成**编译期发现不了的运行期死锁**，安全地做需要把 `&Connection` 串进整个 store 层（~60 个函数、每文件都动）；(2) 现有测试全部绕过 `connect()`（直接 `open_in_memory` 注入 `&Connection`），没有走 `connect()` 的集成测试能在 CI 兜住死锁回归，而此环境跑不起 Tauri GUI 实机验证；(3) 单用户桌面应用并发极低，「每调用 open + 3 PRAGMA」的性能收益相对上述风险偏小。建议把全局连接/池作为独立一次 pass，配 `make run-gui` 实机回归（含线程切换、复合写、`clear_all_data` 后 PRAGMA 状态）再做。
 - **验证**: 后端基线三连（确保 in-memory 测试仍可运行）。
 - **关联**: B-3、B-10、C-8(a)、M-5。
 
