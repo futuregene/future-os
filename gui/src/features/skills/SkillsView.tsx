@@ -113,7 +113,7 @@ function TabButton({ active, label, onClick }: { active: boolean; label: string;
     <button
       className={cn(
         "h-8 rounded text-sm font-medium transition-colors",
-        active ? "bg-surface text-ink shadow-sm" : "text-ink-muted hover:text-ink",
+        active ? "bg-surface text-ink shadow-xs" : "text-ink-muted hover:text-ink",
       )}
       onClick={onClick}
       type="button"

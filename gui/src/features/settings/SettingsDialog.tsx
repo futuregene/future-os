@@ -90,7 +90,7 @@ export function SettingsDialog({
                       key={item.value}
                       className={cn(
                         "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink",
-                        tab === item.value && "border-line-soft bg-surface text-ink shadow-sm",
+                        tab === item.value && "border-line-soft bg-surface text-ink shadow-xs",
                       )}
                       onClick={() => setTab(item.value)}
                       type="button"
