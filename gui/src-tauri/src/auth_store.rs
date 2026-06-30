@@ -106,9 +106,13 @@ fn set_owner_only(_path: &PathBuf) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Set a provider's API key, preserving any other fields on the entry (e.g. the
-/// FutureGene entry's `base_url`). Defaults `type` to `api_key` when absent.
-pub(crate) fn set_provider_key(id: &str, key: &str) -> Result<(), AppError> {
+/// Read `auth.json`, upsert the provider's entry (creating it / normalizing a
+/// non-object to `{}`, defaulting `type` to `api_key`), let `mutate` set fields,
+/// then write atomically. Single read+write — shared by all key writers.
+fn upsert_provider_entry(
+    id: &str,
+    mutate: impl FnOnce(&mut Map<String, Value>),
+) -> Result<(), AppError> {
     let mut auth = read()?;
     let entry = auth.entry(id.to_string()).or_insert_with(|| json!({}));
     if !entry.is_object() {
@@ -120,8 +124,16 @@ pub(crate) fn set_provider_key(id: &str, key: &str) -> Result<(), AppError> {
     object
         .entry("type".to_string())
         .or_insert_with(|| Value::String("api_key".to_string()));
-    object.insert("key".to_string(), Value::String(key.to_string()));
+    mutate(object);
     write(&auth)
+}
+
+/// Set a provider's API key, preserving any other fields on the entry (e.g. the
+/// FutureGene entry's `base_url`). Defaults `type` to `api_key` when absent.
+pub(crate) fn set_provider_key(id: &str, key: &str) -> Result<(), AppError> {
+    upsert_provider_entry(id, |object| {
+        object.insert("key".to_string(), Value::String(key.to_string()));
+    })
 }
 
 /// Remove a provider's API key but keep the rest of the entry (e.g. FutureGene
@@ -150,9 +162,15 @@ pub(crate) fn remove_provider_entry(id: &str) -> Result<bool, AppError> {
     Ok(removed)
 }
 
-/// FutureGene login: store the device-flow API key under the `future` entry.
-pub(crate) fn set_future_key(key: &str) -> Result<(), AppError> {
-    set_provider_key(FUTURE_PROVIDER_ID, key)
+/// FutureGene login: store the device-flow API key and pin `base_url` under the
+/// `future` entry. Mirrors the CLI's `saveAuth` (which writes
+/// `base_url = {platform}/api`) so a GUI login and a CLI login leave identical
+/// `auth.json` state — and the agent/Providers page resolve the same platform.
+pub(crate) fn set_future_login(key: &str, base_url: &str) -> Result<(), AppError> {
+    upsert_provider_entry(FUTURE_PROVIDER_ID, |object| {
+        object.insert("key".to_string(), Value::String(key.to_string()));
+        object.insert("base_url".to_string(), Value::String(base_url.to_string()));
+    })
 }
 
 /// FutureGene logout: drop the key, keep `base_url`. Returns whether removed.
@@ -239,25 +257,26 @@ mod tests {
     }
 
     #[test]
-    fn set_future_key_preserves_other_fields() {
-        let _home = HomeGuard::new("preserve");
+    fn set_future_login_writes_key_and_base_url() {
+        let _home = HomeGuard::new("login");
         let path = auth_json_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
-            r#"{"future":{"type":"api_key","base_url":"https://example.com"},"zai":{"type":"api_key","key":"keep"}}"#,
+            r#"{"future":{"type":"api_key","base_url":"https://old.example.com/api"},"zai":{"type":"api_key","key":"keep"}}"#,
         )
         .unwrap();
 
-        set_future_key("new-key").unwrap();
+        set_future_login("new-key", "https://future-os.cn/api").unwrap();
 
         let auth = read().unwrap();
         let future = auth["future"].as_object().unwrap();
         assert_eq!(future["key"], Value::String("new-key".to_string()));
+        assert_eq!(future["type"], Value::String("api_key".to_string()));
         assert_eq!(
             future["base_url"],
-            Value::String("https://example.com".to_string()),
-            "base_url must be preserved on login"
+            Value::String("https://future-os.cn/api".to_string()),
+            "login pins base_url to the resolved platform (mirrors the CLI)"
         );
         assert_eq!(
             auth["zai"]["key"],
