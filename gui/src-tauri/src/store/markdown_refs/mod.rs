@@ -5,6 +5,7 @@
 //! - [`sync`] — keep the denormalized reference tables in step with messages.
 
 mod extract;
+mod metadata;
 mod resolve;
 mod search;
 mod sync;
