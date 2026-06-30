@@ -521,43 +521,25 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "abort_bash", serde_json::json!({}))
         }
         "cycle_model" => {
-            // Cycle to next model, respecting enabled_models from settings.
+            // Cycle to next available model.  Scoping is client-side (TUI/GUI).
             let registry = crate::models::Registry::new();
             let auth = crate::AuthStore::load();
-            let settings_path = std::path::PathBuf::from(crate::models::settings_path());
-            let settings = crate::config::load_settings(&settings_path).unwrap_or_default();
 
-            let models: Vec<String> = if !settings.enabled_models.is_empty() {
-                // Use scoped models (from enabled_models) filtered by auth
-                let scoped = registry.resolve_scope(&settings.enabled_models, &auth);
-                if scoped.is_empty() {
-                    return RpcResponse::ok(
-                        id,
-                        "cycle_model",
-                        serde_json::json!({"model": "", "thinkingLevel": "", "isScoped": true}),
-                    );
-                }
-                scoped
-            } else {
-                // Fall back to all auth-configured models
-                let available: Vec<String> = registry
-                    .all_models()
-                    .into_iter()
-                    .filter(|m| !m.api_key.is_empty() || auth.get(&m.provider).is_some())
-                    .map(|m| m.id)
-                    .collect();
-                available
-            };
+            let models: Vec<String> = registry
+                .all_models()
+                .into_iter()
+                .filter(|m| !m.api_key.is_empty() || auth.get(&m.provider).is_some())
+                .map(|m| m.id)
+                .collect();
 
             if models.is_empty() {
                 return RpcResponse::ok(
                     id,
                     "cycle_model",
-                    serde_json::json!({"model": "", "thinkingLevel": "", "isScoped": false}),
+                    serde_json::json!({"model": "", "thinkingLevel": ""}),
                 );
             }
 
-            let is_scoped = !settings.enabled_models.is_empty();
             let current = session.read().unwrap().model.clone();
             let idx = models.iter().position(|m| m == &current).unwrap_or(0);
             let next_idx = (idx + 1) % models.len();
@@ -572,7 +554,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 serde_json::json!({
                     "model": next_model,
                     "thinkingLevel": session.read().unwrap().thinking_level.clone(),
-                    "isScoped": is_scoped
+                    "isScoped": false
                 }),
             )
         }
@@ -869,7 +851,7 @@ fn list_models_response(id: &str) -> String {
         serde_json::json!({
             "models": payload_models,
             "defaultModel": effective_default,
-            "isScoped": !settings.enabled_models.is_empty(),
+            "isScoped": false,
         }),
     )
 }
