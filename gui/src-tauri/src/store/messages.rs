@@ -7,12 +7,12 @@ use super::util::*;
 
 pub fn list_messages(thread_id: &str) -> Result<Vec<MessageRecord>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt = conn.prepare(
-        "SELECT id, thread_id, run_id, role, content_type, content, status, created_at, updated_at
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {MESSAGE_COLUMNS}
              FROM messages
              WHERE thread_id = ?1
-             ORDER BY created_at ASC",
-    )?;
+             ORDER BY created_at ASC"
+    ))?;
     let rows = stmt.query_map(params![thread_id], message_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(crate::AppError::from)

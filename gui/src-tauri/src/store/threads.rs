@@ -7,14 +7,12 @@ use super::workspaces::{get_or_create_chat_workspace, get_workspace};
 
 pub fn list_threads() -> Result<Vec<ThreadRecord>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt = conn.prepare(
-        "SELECT id, workspace_id, mode, title, status, pinned, readonly,
-                    model_provider, model_id, thinking_level, agent_session_id, last_message_at,
-                    last_opened_at, created_at, updated_at, archived_at, deleted_at
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {THREAD_COLUMNS}
              FROM threads
              WHERE status != 'deleted'
-             ORDER BY pinned DESC, COALESCE(last_message_at, updated_at) DESC",
-    )?;
+             ORDER BY pinned DESC, COALESCE(last_message_at, updated_at) DESC"
+    ))?;
     let rows = stmt.query_map([], thread_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(crate::AppError::from)
@@ -23,13 +21,13 @@ pub fn list_threads() -> Result<Vec<ThreadRecord>, crate::AppError> {
 pub fn get_recent_thread() -> Result<Option<ThreadRecord>, crate::AppError> {
     let conn = connect()?;
     conn.query_row(
-        "SELECT id, workspace_id, mode, title, status, pinned, readonly,
-                model_provider, model_id, thinking_level, agent_session_id, last_message_at,
-                last_opened_at, created_at, updated_at, archived_at, deleted_at
+        &format!(
+            "SELECT {THREAD_COLUMNS}
          FROM threads
          WHERE status = 'active'
          ORDER BY COALESCE(last_opened_at, last_message_at, updated_at) DESC
-         LIMIT 1",
+         LIMIT 1"
+        ),
         [],
         thread_from_row,
     )
@@ -91,11 +89,7 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
 pub fn get_thread(thread_id: &str) -> Result<Option<ThreadRecord>, crate::AppError> {
     let conn = connect()?;
     conn.query_row(
-        "SELECT id, workspace_id, mode, title, status, pinned, readonly,
-                model_provider, model_id, thinking_level, agent_session_id, last_message_at,
-                last_opened_at, created_at, updated_at, archived_at, deleted_at
-         FROM threads
-         WHERE id = ?1",
+        &format!("SELECT {THREAD_COLUMNS} FROM threads WHERE id = ?1"),
         params![thread_id],
         thread_from_row,
     )

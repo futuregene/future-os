@@ -125,10 +125,11 @@ fn get_artifact_in_workspace(
     id: &str,
 ) -> Result<Option<ArtifactRecord>, crate::AppError> {
     conn.query_row(
-        "SELECT id, workspace_id, thread_id, run_id, title, artifact_type, path, content,
-                content_storage, summary, created_at, updated_at, deleted_at
+        &format!(
+            "SELECT {ARTIFACT_COLUMNS}
          FROM artifacts
-         WHERE id = ?1 AND workspace_id = ?2 AND deleted_at IS NULL",
+         WHERE id = ?1 AND workspace_id = ?2 AND deleted_at IS NULL"
+        ),
         params![id, workspace_id],
         artifact_from_row,
     )
@@ -141,12 +142,17 @@ fn get_run_in_workspace(
     workspace_id: &str,
     id: &str,
 ) -> Result<Option<RunRecord>, crate::AppError> {
+    let cols = RUN_COLUMNS
+        .split(", ")
+        .map(|c| format!("r.{}", c.trim()))
+        .collect::<Vec<_>>()
+        .join(", ");
     conn.query_row(
-        "SELECT r.id, r.thread_id, r.trigger_message_id, r.status, r.model_provider, r.model_id,
-                r.started_at, r.ended_at, r.error_message, r.error_type, r.created_at, r.updated_at
-         FROM runs r
+        &format!(
+            "SELECT {cols} FROM runs r
          JOIN threads t ON t.id = r.thread_id
-         WHERE r.id = ?1 AND t.workspace_id = ?2",
+         WHERE r.id = ?1 AND t.workspace_id = ?2"
+        ),
         params![id, workspace_id],
         run_from_row,
     )
@@ -159,13 +165,18 @@ fn get_tool_call_in_workspace(
     workspace_id: &str,
     id: &str,
 ) -> Result<Option<ToolCallRecord>, crate::AppError> {
+    let cols = TOOL_CALL_COLUMNS
+        .split(", ")
+        .map(|c| format!("tc.{}", c.trim()))
+        .collect::<Vec<_>>()
+        .join(", ");
     conn.query_row(
-        "SELECT tc.id, tc.run_id, tc.name, tc.kind, tc.input, tc.status,
-                tc.started_at, tc.ended_at, tc.created_at
-         FROM tool_calls tc
+        &format!(
+            "SELECT {cols} FROM tool_calls tc
          JOIN runs r ON r.id = tc.run_id
          JOIN threads t ON t.id = r.thread_id
-         WHERE tc.id = ?1 AND t.workspace_id = ?2",
+         WHERE tc.id = ?1 AND t.workspace_id = ?2"
+        ),
         params![id, workspace_id],
         tool_call_from_row,
     )
@@ -178,15 +189,17 @@ fn get_approval_request_in_workspace(
     workspace_id: &str,
     id: &str,
 ) -> Result<Option<ApprovalRequestRecord>, crate::AppError> {
+    let cols = APPROVAL_REQUEST_COLUMNS
+        .split(", ")
+        .map(|c| format!("a.{}", c.trim()))
+        .collect::<Vec<_>>()
+        .join(", ");
     conn.query_row(
-        "SELECT a.id, a.thread_id, a.run_id, a.tool_call_id, a.kind, a.status,
-                a.title, a.summary, a.risk_level, a.requested_action, a.decision_note,
-                a.decided_at, a.created_at, a.updated_at,
-                a.action_category, a.action_payload, a.sandbox_boundary,
-                a.reviewer, a.decision_scope, a.decision_source
-         FROM approval_requests a
+        &format!(
+            "SELECT {cols} FROM approval_requests a
          JOIN threads t ON t.id = a.thread_id
-         WHERE a.id = ?1 AND t.workspace_id = ?2",
+         WHERE a.id = ?1 AND t.workspace_id = ?2"
+        ),
         params![id, workspace_id],
         approval_request_from_row,
     )
@@ -226,12 +239,12 @@ fn get_research_resource_in_workspace(
     id: &str,
 ) -> Result<Option<ResearchResourceRecord>, crate::AppError> {
     conn.query_row(
-        "SELECT r.id, r.collection_id, c.workspace_id, r.source_artifact_id, r.title,
-                r.resource_type, r.source_uri, r.content, r.content_storage, r.summary,
-                r.metadata, r.created_at, r.updated_at
+        &format!(
+            "SELECT {RESEARCH_RESOURCE_COLUMNS}
          FROM research_resources r
          JOIN research_collections c ON c.id = r.collection_id
-         WHERE r.id = ?1 AND c.workspace_id = ?2",
+         WHERE r.id = ?1 AND c.workspace_id = ?2"
+        ),
         params![id, workspace_id],
         research_resource_from_row,
     )

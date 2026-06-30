@@ -585,6 +585,13 @@ pub struct ApprovalRuleRecord {
 // `*_from_row` converters live next to the records they build. Column order
 // must match the `SELECT` lists in the query modules.
 
+/// Column list for `thread_from_row`, in struct order. Reuse this in every
+/// `SELECT` that maps into `ThreadRecord`.
+pub(super) const THREAD_COLUMNS: &str =
+    "id, workspace_id, mode, title, status, pinned, readonly, model_provider, \
+     model_id, thinking_level, agent_session_id, last_message_at, last_opened_at, \
+     created_at, updated_at, archived_at, deleted_at";
+
 pub(super) fn thread_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadRecord> {
     Ok(ThreadRecord {
         id: row.get(0)?,
@@ -607,6 +614,10 @@ pub(super) fn thread_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Threa
     })
 }
 
+/// Column list for `message_from_row`, in struct order.
+pub(super) const MESSAGE_COLUMNS: &str =
+    "id, thread_id, run_id, role, content_type, content, status, created_at, updated_at";
+
 pub(super) fn message_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRecord> {
     Ok(MessageRecord {
         id: row.get(0)?,
@@ -620,6 +631,11 @@ pub(super) fn message_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Mess
         updated_at: row.get(8)?,
     })
 }
+
+/// Column list for `run_from_row`, in struct order.
+pub(super) const RUN_COLUMNS: &str =
+    "id, thread_id, trigger_message_id, status, model_provider, model_id, \
+     started_at, ended_at, error_message, error_type, created_at, updated_at";
 
 pub(super) fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRecord> {
     Ok(RunRecord {
@@ -638,6 +654,11 @@ pub(super) fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRecor
     })
 }
 
+/// Column list for `workspace_from_row`, in struct order.
+pub(super) const WORKSPACE_COLUMNS: &str =
+    "id, name, kind, path, description, cleanup_status, cleanup_requested_at, \
+     cleaned_at, last_opened_at, created_at, updated_at, deleted_at";
+
 pub(super) fn workspace_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceRecord> {
     Ok(WorkspaceRecord {
         id: row.get(0)?,
@@ -655,6 +676,9 @@ pub(super) fn workspace_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Wo
     })
 }
 
+/// Column list for `run_event_from_row`, in struct order.
+pub(super) const RUN_EVENT_COLUMNS: &str = "id, run_id, event_type, payload, sequence, created_at";
+
 pub(super) fn run_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunEventRecord> {
     Ok(RunEventRecord {
         id: row.get(0)?,
@@ -665,6 +689,10 @@ pub(super) fn run_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Ru
         created_at: row.get(5)?,
     })
 }
+
+/// Column list for `tool_call_from_row`, in struct order.
+pub(super) const TOOL_CALL_COLUMNS: &str =
+    "id, run_id, name, kind, input, status, started_at, ended_at, created_at";
 
 pub(super) fn tool_call_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolCallRecord> {
     Ok(ToolCallRecord {
@@ -680,6 +708,9 @@ pub(super) fn tool_call_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<To
     })
 }
 
+/// Column list for `tool_output_from_row`, in struct order.
+pub(super) const TOOL_OUTPUT_COLUMNS: &str = "id, tool_call_id, kind, content, created_at";
+
 pub(super) fn tool_output_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolOutputRecord> {
     Ok(ToolOutputRecord {
         id: row.get(0)?,
@@ -689,6 +720,12 @@ pub(super) fn tool_output_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<
         created_at: row.get(4)?,
     })
 }
+
+/// Column list for `approval_request_from_row`, in struct order.
+pub(super) const APPROVAL_REQUEST_COLUMNS: &str =
+    "id, thread_id, run_id, tool_call_id, kind, status, title, summary, \
+     risk_level, requested_action, decision_note, decided_at, created_at, updated_at, \
+     action_category, action_payload, sandbox_boundary, reviewer, decision_scope, decision_source";
 
 pub(super) fn approval_request_from_row(
     row: &rusqlite::Row<'_>,
@@ -815,6 +852,11 @@ pub(super) fn review_snapshot_from_row(
     })
 }
 
+/// Column list for `artifact_from_row`, in struct order.
+pub(super) const ARTIFACT_COLUMNS: &str =
+    "id, workspace_id, thread_id, run_id, title, artifact_type, path, content, \
+     content_storage, summary, created_at, updated_at, deleted_at";
+
 pub(super) fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtifactRecord> {
     Ok(ArtifactRecord {
         id: row.get(0)?,
@@ -833,6 +875,10 @@ pub(super) fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Art
     })
 }
 
+/// Column list for `research_collection_from_row`, in struct order.
+pub(super) const RESEARCH_COLLECTION_COLUMNS: &str =
+    "id, workspace_id, name, description, created_at, updated_at";
+
 pub(super) fn research_collection_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<ResearchCollectionRecord> {
@@ -845,6 +891,15 @@ pub(super) fn research_collection_from_row(
         updated_at: row.get(5)?,
     })
 }
+
+/// Column list for `research_resource_from_row`, in struct order. Aliases are
+/// baked in because every `SELECT` joins `research_resources r` onto
+/// `research_collections c` and pulls `workspace_id` from the collection — so
+/// unlike the other tables this list can't be re-prefixed with a single alias.
+pub(super) const RESEARCH_RESOURCE_COLUMNS: &str =
+    "r.id, r.collection_id, c.workspace_id, r.source_artifact_id, r.title, \
+     r.resource_type, r.source_uri, r.content, r.content_storage, r.summary, \
+     r.metadata, r.created_at, r.updated_at";
 
 pub(super) fn research_resource_from_row(
     row: &rusqlite::Row<'_>,

@@ -64,16 +64,12 @@ pub fn list_approval_requests(
     thread_id: &str,
 ) -> Result<Vec<ApprovalRequestRecord>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, thread_id, run_id, tool_call_id, kind, status, title, summary,
-                risk_level, requested_action, decision_note, decided_at, created_at, updated_at,
-                action_category, action_payload, sandbox_boundary, reviewer, decision_scope, decision_source
-         FROM approval_requests
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {APPROVAL_REQUEST_COLUMNS}
+             FROM approval_requests
              WHERE thread_id = ?1
-             ORDER BY created_at DESC",
-        )
-        ?;
+             ORDER BY created_at DESC"
+    ))?;
     let rows = stmt.query_map(params![thread_id], approval_request_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(crate::AppError::from)
