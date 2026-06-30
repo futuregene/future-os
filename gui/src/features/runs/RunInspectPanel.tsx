@@ -22,6 +22,7 @@ import { isRecord } from "../../lib/objects";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { formatRunStatus, runTone, shortId, summarizePayload } from "./runDisplayFormatters";
 import { RunError } from "./RunError";
+import { numberOrStringField, parseJsonish, recordOf, stringField } from "./toolInput";
 
 interface RunInspectPanelProps {
   run: StoredRun;
@@ -443,7 +444,7 @@ function ToolOutputPreview({ output }: { output: StoredToolOutput }) {
 }
 
 function toolDetails(tool: StoredToolCall, outputs: StoredToolOutput[]): ToolDetails {
-  const input = toolInputObject(tool.input);
+  const input = recordOf(tool.input);
   const outputObjects = outputs.map(output => toolOutputObject(output)).filter(isRecord);
   const firstOutput = firstRecord(outputObjects);
   const durationMs = tool.startedAt && tool.endedAt ? tool.endedAt - tool.startedAt : null;
@@ -458,11 +459,6 @@ function toolDetails(tool: StoredToolCall, outputs: StoredToolOutput[]): ToolDet
     stderr: stringField(firstOutput, ["stderr", "standardError", "standard_error", "error"]),
     stdout: stringField(firstOutput, ["stdout", "standardOutput", "standard_output", "text", "result"]),
   };
-}
-
-function toolInputObject(input: string | null | undefined) {
-  const value = parseJsonish(input);
-  return isRecord(value) ? value : null;
 }
 
 function toolOutputObject(output: StoredToolOutput) {
@@ -489,50 +485,6 @@ function durationField(value: Record<string, unknown> | null) {
     return null;
   const numeric = Number(raw);
   return Number.isFinite(numeric) ? formatDuration(numeric) : raw;
-}
-
-function numberOrStringField(value: Record<string, unknown> | null, keys: string[]) {
-  if (!value)
-    return null;
-  for (const key of keys) {
-    const field = value[key];
-    if (typeof field === "string" && field.trim())
-      return field;
-    if (typeof field === "number" && Number.isFinite(field))
-      return String(field);
-  }
-  return null;
-}
-
-function stringField(value: Record<string, unknown> | null, keys: string[]) {
-  if (!value)
-    return null;
-  for (const key of keys) {
-    const field = value[key];
-    if (typeof field === "string" && field.trim())
-      return field;
-  }
-  return null;
-}
-
-function parseJsonish(value: unknown) {
-  let current = value;
-  for (let index = 0; index < 3; index += 1) {
-    if (isRecord(current))
-      return current;
-    if (typeof current !== "string")
-      return current;
-    const trimmed = current.trim();
-    if (!trimmed)
-      return null;
-    try {
-      current = JSON.parse(trimmed) as unknown;
-    }
-    catch {
-      return current;
-    }
-  }
-  return current;
 }
 
 function formatDuration(milliseconds: number) {

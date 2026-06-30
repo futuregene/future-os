@@ -179,7 +179,7 @@ make run-gui
 - **验证**: 前端基线三连；纯迁移，回归「继续上一个任务 / 重试 run」（`onFutureEvent("recover-run",...)` AgentThread.tsx:108-114）。
 - **关联**: C-9、M-1。
 
-### [ ] M-4. tool-input JSON 解析逻辑三处重写（各带私有 isRecord/stringField）
+### [x] M-4. tool-input JSON 解析逻辑三处重写（各带私有 isRecord/stringField）
 - **类别 / 严重度**: module / 中
 - **位置**:
   - `src/features/runs/RunsPanel.tsx`：`toolCommand`(257-266)、`parseToolInput`(291-308)、`stringField`(310-313)、`isRecord`(315-317)
@@ -189,8 +189,9 @@ make run-gui
 - **问题**: 同一健壮解析逻辑三份拷贝；改解析层数/容错要改多处。
 - **改造方案**: 新建 `src/features/runs/toolInput.ts`，导出 `isRecord`（不含 array）/`parseJsonish`（宽松版）/`recordOf`/`stringField(rec, keys: string|string[])`/`numberOrStringField`/`toolCommand`。三处删本地实现改 import。
   - **坑**：统一为宽松 parse 即可（只取 command 字段时与严格版等价）；务必保留 `numberOrStringField` 同时接受 number/string（RunInspectPanel exitStatus 依赖）。`MarkdownContent.tsx:433` 的 `isRecord`（允许 array，语义不同）**不并入**。
-- **复核结论**: CONFIRMED（函数与行号核对一致）。
-- **验证**: 前端基线三连；建议为 toolInput.ts 加单测（双层 stringify command / 非 JSON 串 / exit_code 为 number）。
+- **复核结论**: CONFIRMED（函数与行号核对一致）。`isRecord` 此前已随 C-9 收口到 `lib/objects`，本项只合并 parse/字段提取逻辑。
+- **落地结论**: 新建 `src/features/runs/toolInput.ts` 导出 `parseJsonish`（宽松版，统一三处）/`recordOf`/`stringField(rec, string|string[])`/`numberOrStringField`/`toolCommand`。RunsPanel 删 `parseToolInput`+`stringField`+`toolCommand`（调用点改 `toolCommand(tool.input)`）；RunInspectPanel 删 `parseJsonish`+`stringField`+`numberOrStringField`+`toolInputObject`（改 `recordOf`）；ObjectEmbed 删本地 `toolCommand`+`isRecord` import。新增 `toolInput.test.ts`（双层 stringify / 非 JSON 串 / exit_code=0 数字 / array 拒绝等 8 例）。
+- **验证**: 前端基线三连通过（vitest 32 例，含新增 8 例）。
 - **关联**: M-9、C-9。
 
 ### [x] M-5. `records.rs`（867 行）是 god-module：record + `*_from_row` + 列常量与查询分置两文件

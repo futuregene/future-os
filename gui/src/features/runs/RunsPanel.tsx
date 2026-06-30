@@ -3,9 +3,9 @@ import { CircleStop, Maximize2, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { isRecord } from "../../lib/objects";
 import { runStatusLabel } from "./runDisplayFormatters";
 import { RunError } from "./RunError";
+import { toolCommand } from "./toolInput";
 
 interface RunsPanelProps {
   runs: StoredRun[];
@@ -134,10 +134,10 @@ function RunRow({
 }) {
   const active = isActiveRun(run);
   const displayTool = commandToolCall(tools);
-  const command = displayTool ? toolCommand(displayTool) : null;
+  const command = displayTool ? toolCommand(displayTool.input) : null;
   // A run can fire several commands; the card previews the latest one, so call
   // out the total to stay consistent with the thread's "ran N commands" line.
-  const commandCount = tools.filter(tool => toolCommand(tool)).length;
+  const commandCount = tools.filter(tool => toolCommand(tool.input)).length;
   const toolMeta = displayTool
     ? [
         toolLabel(displayTool),
@@ -230,20 +230,9 @@ function compareRunTimeDesc(left: StoredRun, right: StoredRun) {
 
 function commandToolCall(tools: StoredToolCall[]) {
   return [...tools]
-    .filter(tool => toolCommand(tool))
+    .filter(tool => toolCommand(tool.input))
     .sort((left, right) => (right.startedAt ?? right.createdAt) - (left.startedAt ?? left.createdAt))[0]
     ?? null;
-}
-
-function toolCommand(tool: StoredToolCall) {
-  const input = tool.input?.trim();
-  if (!input)
-    return null;
-
-  const command = stringField(parseToolInput(input), "command");
-  if (command)
-    return command;
-  return null;
 }
 
 function toolLabel(tool: StoredToolCall) {
@@ -267,28 +256,4 @@ function toolStatusLabel(tool: StoredToolCall) {
     default:
       return tool.status ? tool.status : "Unknown";
   }
-}
-
-function parseToolInput(input: string) {
-  let current: unknown = input;
-  for (let index = 0; index < 3; index += 1) {
-    if (isRecord(current))
-      return current;
-    if (typeof current !== "string")
-      return null;
-
-    try {
-      current = JSON.parse(current) as unknown;
-    }
-    catch {
-      return null;
-    }
-  }
-
-  return isRecord(current) ? current : null;
-}
-
-function stringField(record: Record<string, unknown> | null, key: string) {
-  const value = record?.[key];
-  return typeof value === "string" && value.trim() ? value : null;
 }
