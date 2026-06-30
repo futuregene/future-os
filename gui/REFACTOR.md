@@ -764,14 +764,15 @@ make run-gui
 - **验证**: 后端基线三连通过（cargo test 53 例，含新增 2 例）。
 - **关联**: B-15、C-3。
 
-### [ ] B-14. `useThreadStore` 的 run-status 刷新有双触发源（重复 fan-out）
+### [x] B-14. `useThreadStore` 的 run-status 刷新有双触发源（重复 fan-out）
 - **类别 / 严重度**: bug / 中
 - **位置**: `src/components/layout/hooks/useThreadStore.ts:87`、`:114`、`:137-140`；guard `:67-80`(`runStatusGenRef`)
 - **现状**: `refreshStore` 显式 `void refreshThreadRunStatuses(...)`(87)、bootstrap 同样(114)，加 1.5s 轮询(137-140，deps `[activeThreads,...]`)。`usePolling` 装载即 tick(usePolling.ts:44)、deps 变即重跑 effect 再 tick。`refreshStore` 的 `setThreads` → `activeThreads` memo 换引用(59-62) → poll effect 重触发立即再跑一次。每次 refresh 产生①显式+②poll 两次近乎同时的 `listRuns` 全量并发；`runStatusGenRef` 只丢弃旧写入(76-78)，不阻止重复工作。
 - **改造方案**: 择一 kickoff 源。推荐**删掉 refreshStore/bootstrap 内显式调用**(87、114)，让 poll effect 驱动（`activeThreads` 引用变后 effect 立即 tick 已覆盖）。坑：bootstrap 首帧 `activeThreads=[]`、poll `enabled` 起初 false；若担心首帧空窗保留 bootstrap 那处、仅删 87。guard 保留。
   - **B-14b（低）**: `refreshStore` 的 `useCallback` 依赖含 `activeThreadId`(97)，每次选中变化重建引用并级联。可改用 `activeThreadIdRef`，依赖收敛到 `[refreshThreadRunStatuses]`（91 的 `else if (activeThreadId && ...)` 改读 ref）。
 - **复核结论**: CONFIRMED（两触发源 + poll 立即 tick + memo 换引用 + guard 不防重复工作；B-14b 依赖数组 :97 核对）。
-- **验证**: 前端基线三连；在 `refreshThreadRunStatuses` 起始处临时 `console.count`，切换/重命名线程改前 +2、改后 +1。
+- **落地结论**: 删掉 `refreshStore`(87) 与 bootstrap(114) 的两处显式 `refreshThreadRunStatuses` 调用，由 poll 单一驱动（`setThreads` → `activeThreads` 换引用 → poll effect 重跑并立即 tick；bootstrap 后 `activeThreads` 由空变非空 → poll `enabled` 翻 true 也立即 tick）。`runStatusGenRef` guard 保留。bootstrap effect deps 收敛为 `[]`。**B-14b 一并做**：加 `activeThreadIdRef`（render 内 `ref.current = activeThreadId`，与 `usePolling` 同款 idiom），`refreshStore` 改读 ref、useCallback deps 收敛为 `[]`，消除每次选中线程重建 refreshStore 的级联。
+- **验证**: 前端基线三连通过。手动：`refreshThreadRunStatuses` 起始 `console.count`，切换/重命名线程现为每次 +1（改前 +2）。
 - **关联**: `lib/usePolling`；CLAUDE.md §4、§5。
 
 ### [x] B-15. 靠错误字符串子串匹配判定 agent 不可用 / 审批失效，脆弱且与 C-4 文案耦合

@@ -45,6 +45,12 @@ export function useThreadStore(): ThreadStore {
   const [loadingStore, setLoadingStore] = useState(true);
   const [storeError, setStoreError] = useState<string | null>(null);
 
+  // Mirror the active id into a ref so `refreshStore` can read the latest value
+  // without listing it as a dependency — that kept it stable-free, recreating
+  // it (and cascading to consumers) on every thread selection (B-14b).
+  const activeThreadIdRef = useRef(activeThreadId);
+  activeThreadIdRef.current = activeThreadId;
+
   const activeThread = useMemo(
     () => threads.find(thread => thread.id === activeThreadId) ?? null,
     [activeThreadId, threads],
@@ -84,17 +90,20 @@ export function useThreadStore(): ThreadStore {
     const selectableThreads = nextThreads.filter(thread => thread.status === "active");
     setThreads(nextThreads);
     setWorkspaces(nextWorkspaces);
-    void refreshThreadRunStatuses(selectableThreads);
+    // Run-status fan-out is driven solely by the poll below: `setThreads` gives
+    // `activeThreads` a new reference, which re-runs the poll effect and ticks
+    // immediately. Kicking it off here too would double every fetch (B-14).
+    const currentActiveThreadId = activeThreadIdRef.current;
     if (nextActiveThreadId && selectableThreads.some(thread => thread.id === nextActiveThreadId)) {
       setActiveThreadId(nextActiveThreadId);
     }
-    else if (activeThreadId && selectableThreads.some(thread => thread.id === activeThreadId)) {
-      setActiveThreadId(activeThreadId);
+    else if (currentActiveThreadId && selectableThreads.some(thread => thread.id === currentActiveThreadId)) {
+      setActiveThreadId(currentActiveThreadId);
     }
     else {
       setActiveThreadId(selectableThreads[0]?.id ?? null);
     }
-  }, [activeThreadId, refreshThreadRunStatuses]);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -111,7 +120,8 @@ export function useThreadStore(): ThreadStore {
         }
         setThreads(nextThreads);
         setWorkspaces(nextWorkspaces);
-        void refreshThreadRunStatuses(nextThreads.filter(thread => thread.status === "active"));
+        // The poll (below) ticks as soon as `activeThreads` becomes non-empty,
+        // so the initial run-status fetch needs no explicit kickoff here (B-14).
         setActiveThreadId(recentThread.id);
         setStoreError(null);
       }
@@ -132,7 +142,7 @@ export function useThreadStore(): ThreadStore {
     return () => {
       cancelled = true;
     };
-  }, [refreshThreadRunStatuses]);
+  }, []);
 
   usePolling(() => refreshThreadRunStatuses(activeThreads), 1500, {
     enabled: activeThreads.length > 0,
