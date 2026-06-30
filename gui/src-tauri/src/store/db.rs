@@ -92,7 +92,7 @@ pub fn get_run(id: &str) -> Result<Option<RunRecord>, crate::AppError> {
 pub(super) fn get_run_event(id: &str) -> Result<Option<RunEventRecord>, crate::AppError> {
     let conn = connect()?;
     conn.query_row(
-        "SELECT id, run_id, type, payload, sequence, created_at
+        "SELECT id, run_id, event_type, payload, sequence, created_at
          FROM run_events
          WHERE id = ?1",
         params![id],

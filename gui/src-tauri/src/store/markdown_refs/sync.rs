@@ -66,7 +66,7 @@ fn resolve_reference_target_metadata(
     match reference.target_type.as_str() {
         "artifact" => conn
             .query_row(
-                "SELECT title, type, path, summary
+                "SELECT title, artifact_type, path, summary
                  FROM artifacts
                  WHERE id = ?1
                    AND workspace_id = ?2
@@ -163,7 +163,7 @@ fn resolve_reference_target_metadata(
             .map_err(crate::AppError::from),
         "research" => conn
             .query_row(
-                "SELECT r.title, r.type, r.source_uri, r.summary
+                "SELECT r.title, r.resource_type, r.source_uri, r.summary
                  FROM research_resources r
                  JOIN research_collections c ON c.id = r.collection_id
                  WHERE r.id = ?1 AND c.workspace_id = ?2",

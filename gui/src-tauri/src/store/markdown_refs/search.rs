@@ -46,7 +46,7 @@ pub(super) fn search_artifact_targets(
     results: &mut Vec<ReferenceTargetSearchResult>,
 ) -> Result<(), crate::AppError> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, type, path, summary, updated_at
+        "SELECT id, title, artifact_type, path, summary, updated_at
              FROM artifacts
              WHERE workspace_id = ?1 AND deleted_at IS NULL
              ORDER BY updated_at DESC
@@ -210,7 +210,7 @@ fn search_research_targets(
     results: &mut Vec<ReferenceTargetSearchResult>,
 ) -> Result<(), crate::AppError> {
     let mut stmt = conn.prepare(
-        "SELECT r.id, r.title, r.type, r.source_uri, r.summary, r.updated_at
+        "SELECT r.id, r.title, r.resource_type, r.source_uri, r.summary, r.updated_at
              FROM research_resources r
              JOIN research_collections c ON c.id = r.collection_id
              WHERE c.workspace_id = ?1

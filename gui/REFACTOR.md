@@ -276,7 +276,7 @@ make run-gui
 - **验证**: 后端基线三连；前端若引用 `RunReview` 序列化字段需同步 `cd gui && npx tsc --noEmit`。
 - **关联**: M-6、M-8；ER.md §6.8、PRODUCT.md §4.7。
 
-### [ ] N-3. 三个 DB 列名 `type` 映射到 Rust 的 `*_type` 字段（靠位置而非名字）
+### [x] N-3. 三个 DB 列名 `type` 映射到 Rust 的 `*_type` 字段（靠位置而非名字）
 - **类别 / 严重度**: naming / 低
 - **位置**: `run_events.type`(schema.rs:72)→`RunEventRecord.event_type`(records.rs:89, 映射 663)；`artifacts.type`(schema.rs:228)→`ArtifactRecord.artifact_type`(records.rs:237, 映射 825)；`research_resources.type`(schema.rs:252)→`ResearchResourceRecord.resource_type`(records.rs:266, 映射 858)
 - **现状**: SQL 列叫 `type`（裸写，如 `artifacts.rs:16`/`runs.rs:121`/`research.rs:13`），Rust 字段叫 `*_type`，`*_from_row` 按位置取值，列名↔字段名不一致在映射点不可见。对照 `tool_calls.kind`/`workspaces.kind` 全程同名。
