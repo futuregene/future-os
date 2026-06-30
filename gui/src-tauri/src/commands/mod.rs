@@ -17,6 +17,7 @@ mod references;
 mod review;
 mod runs;
 mod settings;
+mod skills;
 mod threads;
 mod workspaces;
 
@@ -33,5 +34,6 @@ pub use self::references::*;
 pub use self::review::*;
 pub use self::runs::*;
 pub use self::settings::*;
+pub use self::skills::*;
 pub use self::threads::*;
 pub use self::workspaces::*;

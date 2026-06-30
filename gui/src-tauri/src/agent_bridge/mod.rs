@@ -5,12 +5,14 @@ mod persist;
 mod review;
 mod run_control;
 mod session;
+mod skills;
 mod stream;
 
 pub use self::approval::decide_approval;
 pub(crate) use self::client::raw_agent_addr;
 pub use self::models::{list_agent_models, AgentModelOption};
 pub use self::run_control::abort_run;
+pub use self::skills::{list_installed_skills, InstalledSkill};
 pub use review::retry as retry_run_review;
 
 use serde::Serialize;

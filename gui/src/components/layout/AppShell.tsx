@@ -10,6 +10,7 @@ import { AgentThread } from "../../features/agent/AgentThread";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { ResearchView } from "../../features/research/ResearchView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
+import { SkillsView } from "../../features/skills/SkillsView";
 import { modelThinkingLevel, normalizeThinkingLevel } from "../../integrations/agent/agentClient";
 import {
   createThread,
@@ -322,43 +323,47 @@ export function AppShell() {
                   workspaceName={activeWorkspace?.name ?? "No workspace selected"}
                 />
               )
-            : section === "data" || section === "skill"
+            : section === "skill"
               ? (
-                  <ModulePlaceholder section={section} />
+                  <SkillsView />
                 )
-              : storeError
+              : section === "data"
                 ? (
-                    <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
-                      FutureOS 本地存储初始化失败：
-                      {storeError}
-                    </div>
+                    <ModulePlaceholder section="data" />
                   )
-                : (
-                    <AgentThread
-                      activeApproval={activeApproval}
-                      agentConnection={agentConnection}
-                      loadingStore={loadingStore}
-                      modelId={activeThread?.modelId ?? selectedModelId}
-                      modelOptions={visibleModelOptions}
-                      onModelChange={changeModel}
-                      thinkingLevel={activeThinkingLevel}
-                      onThinkingLevelChange={changeThinkingLevel}
-                      pendingPrompt={pendingPrompt}
-                      thread={activeThread}
-                      onApprovalDecision={handleApprovalDecision}
-                      leftPanelExpanded={leftExpanded}
-                      onRetryAgentConnection={() => void refreshAgentModels()}
-                      onOpenProviders={handleOpenProviders}
-                      onOpenModels={handleOpenModels}
-                      onToggleLeftPanel={handleToggleLeftPanel}
-                      onPromptConsumed={(id) => {
-                        setPendingPrompt(current => (current?.id === id ? null : current));
-                      }}
-                      onThreadActivity={() => {
-                        void refreshStore(activeThread?.id ?? undefined);
-                      }}
-                    />
-                  )}
+                : storeError
+                  ? (
+                      <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
+                        FutureOS 本地存储初始化失败：
+                        {storeError}
+                      </div>
+                    )
+                  : (
+                      <AgentThread
+                        activeApproval={activeApproval}
+                        agentConnection={agentConnection}
+                        loadingStore={loadingStore}
+                        modelId={activeThread?.modelId ?? selectedModelId}
+                        modelOptions={visibleModelOptions}
+                        onModelChange={changeModel}
+                        thinkingLevel={activeThinkingLevel}
+                        onThinkingLevelChange={changeThinkingLevel}
+                        pendingPrompt={pendingPrompt}
+                        thread={activeThread}
+                        onApprovalDecision={handleApprovalDecision}
+                        leftPanelExpanded={leftExpanded}
+                        onRetryAgentConnection={() => void refreshAgentModels()}
+                        onOpenProviders={handleOpenProviders}
+                        onOpenModels={handleOpenModels}
+                        onToggleLeftPanel={handleToggleLeftPanel}
+                        onPromptConsumed={(id) => {
+                          setPendingPrompt(current => (current?.id === id ? null : current));
+                        }}
+                        onThreadActivity={() => {
+                          void refreshStore(activeThread?.id ?? undefined);
+                        }}
+                      />
+                    )}
       </main>
       {/* A new blank conversation has no thread context yet — hide the right
           panel entirely (no expand affordance) until a thread exists. */}

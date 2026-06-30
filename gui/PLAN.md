@@ -186,10 +186,20 @@ GUI 当前已具备：
 
 ### 已下调优先级（入口已从左侧导航隐藏）
 
-Research / Data / Skill 暂不投入，左侧导航图标已隐藏（`ActivityRail` 的 `featureItems` 置空）；后端 section 处理与 markdown research embed 跳转保留，恢复时把导航项加回即可。
+Research / Data 暂不投入，左侧导航图标仍隐藏（`ActivityRail` 的 `featureItems` 置空）；后端 section 处理与 markdown research embed 跳转保留，恢复时把导航项加回即可。
 
 - **P5 Research**：resource 创建、详情、collection 管理（现状仅单一展示视图 + embed 跳转）。
-- **P6 Data / Skill**：从占位变最小可用（Data 源 CRUD + 凭证；Skill 列表 + global/workspace 启用）。Settings 已毕业，不属于此 pass。
+- **P6 Data**：从占位变最小可用（Data 源 CRUD + 凭证）。
+
+### Skill 管理（已落地：安装 / 卸载 / 商店列表）
+
+左导航「Skills」入口已接通（`ActivityRail`，Models 下方），中间面板 `features/skills/SkillsView.tsx` 两个 tab：
+
+- **已安装**：来自 agent gRPC `get_commands`（`source=="skill"`），即 agent 实际加载的技能；可卸载（二次确认）。
+- **全部（商店）**：来自平台 `GET /client/v1/skills`，按"已装/未装"显示 卸载/安装。
+- **安装/卸载在 gui-tauri 用 Rust 重写**（`src-tauri/src/skills.rs`，参考 CLI 但不依赖 CLI）：商店列表/下载解压（`zip` crate）/删目录；平台 URL 走 `resolve_future_platform_url`。**不改 agent。**
+- **启用/停用（toggle）暂不做**：当前等价物即 安装/卸载（文件系统增删），`skills`/`skill_enablements` 表保持未接线。
+- **依赖**：商店 + 安装依赖平台 `future-os.cn` 可达（当前 infra 故障时"全部"tab 显示报错/空态，"已安装 + 卸载"不受影响）。
 
 ### 技术债：store 连接架构 / 池化（暂缓，原 REFACTOR.md B-11）
 

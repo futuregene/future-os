@@ -10,6 +10,7 @@ mod git_diff_parse;
 mod git_review;
 mod run_error;
 mod shadow_review;
+mod skills;
 mod store;
 
 use commands::*;
@@ -156,7 +157,11 @@ pub fn run() {
             resolve_markdown_references,
             search_reference_targets,
             list_agent_models,
-            agent_prompt
+            agent_prompt,
+            list_installed_skills,
+            list_available_skills,
+            install_skill,
+            uninstall_skill
         ])
         .build(tauri::generate_context!())
         .expect("error while running FutureOS")
