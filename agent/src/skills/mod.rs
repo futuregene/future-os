@@ -21,8 +21,10 @@ pub const PROJECT_SKILLS_DIR: &str = ".future/agent/skills/";
 pub const AGENTS_SKILLS_DIR: &str = "~/.agents/skills/";
 
 /// DiscoverSkills finds all skills in the given directories.
+/// Earlier directories take priority; duplicates (by name) are skipped.
 pub fn discover_skills(dirs: &[String]) -> Result<Vec<Skill>> {
     let mut skills = vec![];
+    let mut seen = std::collections::HashSet::new();
     for dir in dirs {
         let expanded = shellexpand::tilde(dir);
         let path = Path::new(&*expanded);
@@ -39,7 +41,9 @@ pub fn discover_skills(dirs: &[String]) -> Result<Vec<Skill>> {
                 let skill_md = entry_path.join("SKILL.md");
                 if skill_md.exists() {
                     if let Some(skill) = parse_skill(&skill_md)? {
-                        skills.push(skill);
+                        if seen.insert(skill.name.clone()) {
+                            skills.push(skill);
+                        }
                     }
                 }
             }
