@@ -59,6 +59,8 @@ make run-gui
 **批次 5 — 结构性大改（影响面大，最后做）**
 `M-1`（拆 handleSend）`M-2`（AppShell 下沉 hooks）`M-3`（迁 prompt 逻辑）`M-5`（拆 records.rs）`M-7`（拆 agent_bridge/mod.rs）`M-8`（workspace 解析去重）`C-13`（审批决策收口）`C-9`（isRecord 共享 util）`N-1` `N-2` `N-4`（命名）。
 
+> **进度**：8/11 已落地（`N-1` `N-2` `N-4` `C-9` `C-13` `M-1` `M-3` `M-8`，见各条 `[x]`）。`M-1` 只做了安全的 `patchMessage` 抽取（prepare/start/finalize 全量分解暂留——generation-guard 穿线是更易出错的部分）。**暂缓**（独立的「大文件拆分」专项，逐项单独验证）：`M-2`（AppShell 下沉 3 个 hook——前端 runtime 行为风险高，effect/乐观更新交织，最好配 `make run-gui` 实机验证）、`M-5`（拆 `records.rs` 867 行）、`M-7`（拆 `agent_bridge/mod.rs` 574 行）——后两者是编译器可保证的纯文件搬移、零功能变化，但很繁琐，宜在专注的一次 pass 里一起做。
+
 **最高优先级（任意批次内先做）**：`B-1`（流式正文被覆写，用户可见数据丢失）、`B-7`（嵌套弹层 Esc 双关）、`B-11`（连接/原子性）、`C-3`（最大体量复制粘贴）。
 
 ### 索引
@@ -131,7 +133,7 @@ make run-gui
 
 # 模块重新划分（Module）
 
-### [ ] M-1. `handleSend` 是约 235 行的「上帝函数」
+### [x] M-1. `handleSend` 是约 235 行的「上帝函数」
 - **类别 / 严重度**: module / 中
 - **位置**: `src/features/agent/useAgentThreadState.ts:129-364`（`handleSend`）
 - **现状**: 单个 `useCallback` 顺序完成：乐观 user+assistant 气泡注入（142-166）、附件导入+缩略图（171-173）、inline-context+messageContent（178-181）、`buildReferencePrompt`（182-186）、持久化 user message（198-204）、`createRun`（220-224）、流式轮询 timer 生命周期（239-246）、gRPC `sendPromptToFutureAgent`（249-263）、temp 附件清理（269-271）、run 状态收尾（273-277）、追加 assistant message（281-288）、最终重投影（292-317），catch 分支失败落库+气泡更新（321-363）。期间 6 处 `setMessages` 调用（165、189、207、230、300、345），其中后 5 处是 `c.map(m => m.id === id ? {...} : m)` 形态。
@@ -164,7 +166,7 @@ make run-gui
 - **验证**: 前端基线三连；`grep -nc "function handle" src/components/layout/AppShell.tsx` 应明显减少。
 - **关联**: C-13、N-1；CLAUDE.md §5、§4。
 
-### [ ] M-3. prompt 构造逻辑堆在视图组件 `AgentThread.tsx` 底部
+### [x] M-3. prompt 构造逻辑堆在视图组件 `AgentThread.tsx` 底部
 - **类别 / 严重度**: module / 中
 - **位置**: `src/features/agent/AgentThread.tsx:287-418`：`buildContinuePrompt`(287-314)、`loadRunResumeSummary`(316-338)、`summarizeRunForPrompt`(340-374)、`previousUserForRun`(376-385)、`toolCommand`(387-409)、`truncateForPrompt`(411-414)、`isRecord`(416-418)
 - **现状**: 这些函数（除依赖 `listRunEvents/listToolCalls/listToolOutputs` 的两个外均无 React 依赖）定义在视图组件尾部，被 `handleContinueMessage`(81-85)/`handleContinueRun`(87-93)/`handleRetryRun`(95-106) 调用。
@@ -226,7 +228,7 @@ make run-gui
 - **验证**: 后端基线三连（无未用 import/可见性告警）。
 - **关联**: C-3、C-4、B-13、B-15。
 
-### [ ] M-8. workspace 解析样板重复 4 处
+### [x] M-8. workspace 解析样板重复 4 处
 - **类别 / 严重度**: module / 中
 - **位置**: `src-tauri/src/agent_bridge/persist.rs:263-276`（`path_is_inside_run_workspace`）、`:318-334`（`artifact_is_allowed_for_run`）；`agent_bridge/mod.rs:568-574`（`workspace_path_for_thread`）；`agent_bridge/review.rs:37-57`（`resolve`）
 - **现状**: persist.rs 两函数近乎相同（run→thread→workspace、git 即 `Ok(false)`、`canonical_or_raw`+`starts_with`），仅 path 必选性不同（后者 `Option<&str>`，`None → Ok(true)`）。mod.rs/review.rs 又各自重做前半段查找。
@@ -254,7 +256,7 @@ make run-gui
 
 # 命名（Naming）
 
-### [ ] N-1. `useAgentConnection` 返回包类型 `AgentConnection` 与状态类型 `AgentConnectionState` 撞名
+### [x] N-1. `useAgentConnection` 返回包类型 `AgentConnection` 与状态类型 `AgentConnectionState` 撞名
 - **类别 / 严重度**: naming / 低
 - **位置**: `src/components/layout/hooks/useAgentConnection.ts:22`（返回包 `AgentConnection`）、`:8`（状态对象 `AgentConnectionState`）、`:23`（包内字段 `agentConnection: AgentConnectionState`）；消费 `AppShell.tsx:94-101`
 - **现状**: 返回包 `AgentConnection` 与状态 `AgentConnectionState` 仅差后缀，且包里就有 `agentConnection` 字段。兄弟 hook 按域命名返回（`ApprovalsState`、`ThreadStore`）。
@@ -264,7 +266,7 @@ make run-gui
 - **验证**: `cd gui && grep -rn "AgentConnection\b" src/` + 基线三连。
 - **关联**: M-2；CLAUDE.md §5。
 
-### [ ] N-2. 三个重叠的「review」概念缺乏命名纪律
+### [x] N-2. 三个重叠的「review」概念缺乏命名纪律
 - **类别 / 严重度**: naming / 中
 - **位置**: Git 源 `src-tauri/src/git_review.rs`（模块 `git_review` / 结构体 `GitReview` :13 / view `"git_changes"` `commands/review.rs:53`）；Shadow 源 `src-tauri/src/shadow_review/` + `agent_bridge/review.rs`（驱动影子流水线，模块名却是无限定 `review`）/ 命令层 `RunReview`（`commands/review.rs:24`）/ view `"last_run"`（51-58）。无 `ShadowReview` 类型。
 - **问题**: 同一源在 模块名/结构体名/view 字符串 三层用词不统一：Git 三层带 `git`；Shadow 的 view 叫 `last_run`、类型叫 `RunReview`、模块叫 `shadow_review`、wiring 又叫裸 `review`。ER.md §6.8 明确只有两源。
@@ -285,7 +287,7 @@ make run-gui
 - **验证**: 后端基线三连（方案 A 后确认 SELECT 列名与 `*_from_row` 顺序仍一致）。
 - **关联**: M-5、C-6；ER.md §3。
 
-### [ ] N-4. `getOrCreateDefaultChatThread` 名实不符（实为「最近线程或新建」）
+### [x] N-4. `getOrCreateDefaultChatThread` 名实不符（实为「最近线程或新建」）
 - **类别 / 严重度**: naming / 低
 - **位置**: `src/integrations/storage/threads.ts:60-67`；去重 promise `defaultChatThreadPromise`(58/61/63)；唯一调用 `src/components/layout/hooks/useThreadStore.ts:107`（import :7）
 - **现状**: `(await getRecentThread()) ?? createDefaultChatThread()` —— 常见路径返回最近一条线程（可能是 workspace 线程），仅无任何线程时才新建。useThreadStore 已把返回值命名为 `recentThread`(107/115)。
@@ -538,7 +540,7 @@ make run-gui
 - **验证**: 后端基线三连。
 - **关联**: B-11（RETURNING 消除读回）、M-5。
 
-### [ ] C-9. `isRecord` 与「空白折叠/截断」工具在多处重复；`buildReferencePrompt` 版缺 `!Array.isArray` 守卫
+### [x] C-9. `isRecord` 与「空白折叠/截断」工具在多处重复；`buildReferencePrompt` 版缺 `!Array.isArray` 守卫
 - **类别 / 严重度**: consistency / 中
 - **位置**: `isRecord` 8 处：`agentActivity.ts:426`(有守卫)、`buildReferencePrompt.ts:144`(**缺**守卫)、`ApprovalPrompt.tsx:288`(有)、`AgentThread.tsx:416`(有)、`MarkdownContent.tsx:433`、`ObjectEmbed.tsx:193`、`RunsPanel.tsx:315`、`RunInspectPanel.tsx:541`；空白/截断：`compactTarget`(agentActivity.ts:418)、`singleLine`(buildReferencePrompt.ts:192)、`truncateForPrompt`(AgentThread.tsx:411)、`escapeMarkdownLinkLabel`(Composer.tsx:554)
 - **现状**: 4 个 agent 域 `isRecord` 中 3 个含 `!Array.isArray(value)`，`buildReferencePrompt.ts:144` 缺该守卫（会把数组判为 record）。`compactTarget`/`singleLine` 字节相同（`value.replace(/\s+/g," ").trim()`）。
@@ -569,7 +571,7 @@ make run-gui
 - **验证**: 前端基线三连；删后确认 hook 返回类型变化无外部报错。
 - **关联**: B-1、B-2。
 
-### [ ] C-13. 审批决策逻辑被 AppShell 与 `useApprovals` 割裂
+### [x] C-13. 审批决策逻辑被 AppShell 与 `useApprovals` 割裂
 - **类别 / 严重度**: module / 中
 - **位置**: 手动决策 `AppShell.tsx:326-337`；自动审批 `useApprovals.ts:50-71`；`pendingApprovals` 导出 `useApprovals.ts:10/73`（AppShell 未消费）；`activeApproval` 重过滤 `:42-48`；loader 已只返 pending `:28-30`
 - **现状**: `useApprovals` 拥有 loader + 自动审批引擎（用 `decideApprovalRequest`），AppShell 又另写一份手动决策（也 import+调 `decideApprovalRequest`）。`pendingApprovals` 无外部消费者（AppShell:90 仅取 activeApproval/reloadApprovals）。`activeApproval` memo 重过滤 `status==="pending"`（loader 已过滤，冗余）。
