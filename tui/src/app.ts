@@ -342,7 +342,7 @@ export class App extends Container {
       }, 100);
     }
 
-    this.applyTuiDefaults();
+    await this.applyTuiDefaults();
     this.showWelcome();
     this.requestRender();
 
@@ -1442,17 +1442,23 @@ export class App extends Container {
     } catch { /* ignore write errors */ }
   }
 
-  private applyTuiDefaults(): void {
+  private async applyTuiDefaults(): Promise<void> {
     const s = this.tuiSettings;
-    if (s.defaultModel) {
-      this.client.setModel(s.defaultModel).catch(() => {});
-    }
-    if (s.defaultThinkingLevel) {
-      this.client.setThinkingLevel(s.defaultThinkingLevel as "off" | "minimal" | "low" | "medium" | "high" | "xhigh").catch(() => {});
-    }
-    if (s.defaultPermissionLevel) {
-      this.client.setPermissionLevel(s.defaultPermissionLevel as "all" | "workspace" | "none").catch(() => {});
-    }
+    try {
+      if (s.defaultModel) {
+        await this.client.setModel(s.defaultModel);
+        this.state.model = s.defaultModel;
+      }
+      if (s.defaultThinkingLevel) {
+        await this.client.setThinkingLevel(s.defaultThinkingLevel as "off" | "minimal" | "low" | "medium" | "high" | "xhigh");
+        this.state.thinking = s.defaultThinkingLevel;
+      }
+      if (s.defaultPermissionLevel) {
+        await this.client.setPermissionLevel(s.defaultPermissionLevel as "all" | "workspace" | "none");
+      }
+      // Re-read agent state so footer reflects changes
+      await this.refresh();
+    } catch { /* ok if agent doesn't support a command yet */ }
   }
 
   private async refresh(): Promise<void> {
