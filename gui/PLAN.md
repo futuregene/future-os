@@ -191,6 +191,18 @@ Research / Data / Skill 暂不投入，左侧导航图标已隐藏（`ActivityRa
 - **P5 Research**：resource 创建、详情、collection 管理（现状仅单一展示视图 + embed 跳转）。
 - **P6 Data / Skill**：从占位变最小可用（Data 源 CRUD + 凭证；Skill 列表 + global/workspace 启用）。Settings 已毕业，不属于此 pass。
 
+### 技术债：store 连接架构 / 池化（暂缓，原 REFACTOR.md B-11）
+
+`src-tauri/src/store/db.rs` 的 `connect()` 每次调用都 `open` + 跑 3 条 PRAGMA（含 WAL）；复合操作曾跨多条连接、非原子。
+
+- **已落地（核心正确性）**：`create_thread` 现为单连接单事务——workspace 解析/创建 + thread INSERT + 读回共用同一 `tx`，崩溃不再留孤儿 workspace。手段：给 `get_or_create_chat_workspace` / `get_workspace` / `get_or_create_user_workspace` / `get_thread` 加 `*_in(&Connection, …)` 注入变体（公有版退化为自开连接的薄包装），补两条 in-memory 回归测试。
+- **暂缓（架构级，本期不做）**：全局共享连接 / 连接池 + 写后读回改 `RETURNING`。
+- **暂缓理由**：
+  1. 把 `connect()` 改成返回 guard 会让每条「持锁后再调另一个 store 函数」的复合链（`create_thread`→workspace、`append_message`→read-back、`promote_artifact`→get_artifact+collection、`get_thread_cleanup_summary`→get_thread+get_workspace 等数十处）变成**编译期发现不了的运行期死锁**；安全做法是把 `&Connection` 串进整个 store 层（约 60 个函数、每文件都动）。
+  2. 现有测试全部绕过 `connect()`（直接 `open_in_memory` 注入 `&Connection`），没有走 `connect()` 的集成测试能在 CI 兜住死锁回归，而本环境跑不起 Tauri GUI 实机验证。
+  3. 单用户桌面应用并发极低，「每调用 open + 3 PRAGMA」的性能收益相对上述风险偏小。
+- **建议**：作为独立一次 pass，配 `make run-gui` 实机回归（线程切换、复合写、`clear_all_data` 后的 PRAGMA 状态）再做。
+
 ## Provider 配置现状（P10 基线）
 
 模型 Provider 配置落在 agent 的两个文件：`~/.future/agent/models.json`（providers + models，合并在内置 catalog 之上）与 `~/.future/agent/auth.json`（按 provider id 存 API key）。
