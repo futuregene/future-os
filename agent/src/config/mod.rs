@@ -55,8 +55,6 @@ fn default_max_retry_delay_ms() -> Option<i32> { Some(60000) }
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub default_provider: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub default_model: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub default_thinking_level: String,
@@ -142,7 +140,6 @@ pub fn load_settings(path: &Path) -> Result<Settings> {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            default_provider: String::new(),
             default_model: String::new(),
             default_thinking_level: String::new(),
             steering_mode: default_steering_mode(),
