@@ -62,19 +62,26 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
     // Load auth store
     let auth_store = future_agent::AuthStore::load();
 
-    // Resolve model from config files only:
-    // settings.json default_model > first auth-configured/api-key model > builtin default
-    let resolved_model = future_agent::models::get_default_model()
+    // Resolve initial model: first available with credentials.
+    // No hardcoded fallback — if nothing is configured the agent exits
+    // with a clear message.  Clients set their own model per-session.
+    let resolved_model = match future_agent::models::get_default_model()
         .or_else(|| {
             all_models
                 .iter()
                 .find(|m| !m.api_key.is_empty() || auth_store.get(&m.provider).is_some())
                 .map(|m| m.id.clone())
         })
-        .unwrap_or_else(|| "deepseek-v4-flash".to_string());
-
-    // Model resolution: built-in default → first available model → hardcoded fallback.
-    // Clients (TUI/GUI) specify their own model preference per-session.
+    {
+        Some(m) => m,
+        None => {
+            eprintln!(
+                "No model configured.  Add an API key via 'future-cli auth login' \
+                 or configure a provider in ~/.future/agent/models.json."
+            );
+            std::process::exit(1);
+        }
+    };
 
     // Resolve model config
     let model_config = model_registry.resolve(&resolved_model);
