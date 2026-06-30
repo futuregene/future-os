@@ -102,9 +102,15 @@ impl ServerSession {
                 let comp_result = r#loop.last_compaction_result.clone();
                 r#loop.config.transform_context = Some(Arc::new(move |msgs, _| {
                     use std::sync::atomic::Ordering;
-                    let context_tokens = comp_tokens.load(Ordering::Relaxed) as i32;
+                    let api_tokens = comp_tokens.load(Ordering::Relaxed) as i32;
+                    // Fall back to heuristic estimate when API doesn't report usage.
+                    let context_tokens = if api_tokens > 0 {
+                        api_tokens
+                    } else {
+                        crate::compaction::estimate_context_tokens(&msgs)
+                    };
                     if context_tokens == 0 {
-                        return msgs; // No API call made yet, nothing to compact
+                        return msgs; // Truly empty — nothing to compact
                     }
                     let model = comp_model.read().unwrap().clone();
                     let context_window = crate::models::Registry::new()
