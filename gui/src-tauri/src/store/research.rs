@@ -10,7 +10,7 @@ pub fn list_research_resources(
 ) -> Result<Vec<ResearchResourceRecord>, crate::AppError> {
     let conn = connect()?;
     let mut stmt = conn.prepare(
-        "SELECT r.id, r.collection_id, c.workspace_id, r.source_artifact_id, r.title, r.type,
+        "SELECT r.id, r.collection_id, c.workspace_id, r.source_artifact_id, r.title, r.resource_type,
                     r.source_uri, r.content, r.content_storage, r.summary, r.metadata,
                     r.created_at, r.updated_at
              FROM research_resources r
@@ -37,7 +37,7 @@ pub fn promote_artifact_to_research(
     let conn = connect()?;
     let existing = conn
         .query_row(
-            "SELECT r.id, r.collection_id, c.workspace_id, r.source_artifact_id, r.title, r.type,
+            "SELECT r.id, r.collection_id, c.workspace_id, r.source_artifact_id, r.title, r.resource_type,
                     r.source_uri, r.content, r.content_storage, r.summary, r.metadata,
                     r.created_at, r.updated_at
              FROM research_resources r
@@ -57,7 +57,7 @@ pub fn promote_artifact_to_research(
     let now = now_millis();
     conn.execute(
         "INSERT INTO research_resources (
-             id, collection_id, source_artifact_id, title, type, source_uri,
+             id, collection_id, source_artifact_id, title, resource_type, source_uri,
              content, content_storage, summary, metadata, created_at, updated_at
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
         params![
@@ -81,7 +81,7 @@ pub fn promote_artifact_to_research(
 fn get_research_resource(id: &str) -> Result<Option<ResearchResourceRecord>, crate::AppError> {
     let conn = connect()?;
     conn.query_row(
-        "SELECT r.id, r.collection_id, c.workspace_id, r.source_artifact_id, r.title, r.type,
+        "SELECT r.id, r.collection_id, c.workspace_id, r.source_artifact_id, r.title, r.resource_type,
                 r.source_uri, r.content, r.content_storage, r.summary, r.metadata,
                 r.created_at, r.updated_at
          FROM research_resources r

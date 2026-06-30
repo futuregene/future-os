@@ -104,7 +104,7 @@ mod tests {
         .expect("insert other thread");
         conn.execute(
             "INSERT INTO artifacts (
-                 id, workspace_id, thread_id, title, type, created_at, updated_at
+                 id, workspace_id, thread_id, title, artifact_type, created_at, updated_at
              ) VALUES (
                  'artifact_other', 'ws_other', 'thread_other', 'Other Poem', 'document', 1, 1
              )",
@@ -113,7 +113,7 @@ mod tests {
         .expect("insert other artifact");
         conn.execute(
             "INSERT INTO artifacts (
-                 id, workspace_id, thread_id, title, type, created_at, updated_at, deleted_at
+                 id, workspace_id, thread_id, title, artifact_type, created_at, updated_at, deleted_at
              ) VALUES (
                  'artifact_deleted', 'ws_test', 'thread_test', 'Deleted Poem',
                  'document', 1, 1, 2
@@ -171,7 +171,7 @@ mod tests {
         .expect("insert thread");
         conn.execute(
             "INSERT INTO artifacts (
-                 id, workspace_id, thread_id, title, type, path, summary,
+                 id, workspace_id, thread_id, title, artifact_type, path, summary,
                  created_at, updated_at
              ) VALUES (
                  'artifact_test', 'ws_test', 'thread_test', 'Poem', 'document',

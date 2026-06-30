@@ -221,7 +221,7 @@ Run Event 表示 Run 过程中的结构化事件。
 | --- | --- |
 | `id` | Run Event 唯一标识 |
 | `run_id` | 所属 Run |
-| `type` | 事件类型 |
+| `event_type` | 事件类型 |
 | `payload` | 事件数据 |
 | `sequence` | Run 内顺序 |
 | `created_at` | 创建时间 |
@@ -458,7 +458,7 @@ Artifact 表示工作过程中产生的可复用产物。
 | `thread_id` | 来源 Thread，可为空 |
 | `run_id` | 来源 Run，可为空 |
 | `title` | 展示标题 |
-| `type` | `document`、`table`、`chart`、`diff`、`summary`、`report`、`data_result` 等 |
+| `artifact_type` | `document`、`table`、`chart`、`diff`、`summary`、`report`、`data_result` 等 |
 | `path` | 本地文件路径，可为空 |
 | `content` | 小型 artifact 内容，可为空 |
 | `content_storage` | `inline` 或 `file` |
@@ -519,7 +519,7 @@ Research Resource 表示 Research 中沉淀的研究材料。
 | `collection_id` | 所属 Research Collection |
 | `source_artifact_id` | 来源 Artifact，可为空 |
 | `title` | 标题 |
-| `type` | `paper`、`webpage`、`note`、`table`、`dataset_note`、`summary`、`artifact` 等 |
+| `resource_type` | `paper`、`webpage`、`note`、`table`、`dataset_note`、`summary`、`artifact` 等 |
 | `source_uri` | 来源链接或文件路径 |
 | `content` | 小型内容，可为空 |
 | `content_storage` | `inline` 或 `file` |

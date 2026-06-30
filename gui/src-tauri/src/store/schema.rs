@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE TABLE IF NOT EXISTS run_events (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(id),
-    type TEXT NOT NULL,
+    event_type TEXT NOT NULL,
     payload TEXT,
     sequence INTEGER NOT NULL,
     created_at INTEGER NOT NULL
@@ -225,7 +225,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
     thread_id TEXT REFERENCES threads(id),
     run_id TEXT REFERENCES runs(id),
     title TEXT NOT NULL,
-    type TEXT NOT NULL,
+    artifact_type TEXT NOT NULL,
     path TEXT,
     content TEXT,
     content_storage TEXT,
@@ -249,7 +249,7 @@ CREATE TABLE IF NOT EXISTS research_resources (
     collection_id TEXT NOT NULL REFERENCES research_collections(id),
     source_artifact_id TEXT REFERENCES artifacts(id),
     title TEXT NOT NULL,
-    type TEXT NOT NULL,
+    resource_type TEXT NOT NULL,
     source_uri TEXT,
     content TEXT,
     content_storage TEXT,

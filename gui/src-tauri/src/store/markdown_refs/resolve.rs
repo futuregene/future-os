@@ -125,7 +125,7 @@ fn get_artifact_in_workspace(
     id: &str,
 ) -> Result<Option<ArtifactRecord>, crate::AppError> {
     conn.query_row(
-        "SELECT id, workspace_id, thread_id, run_id, title, type, path, content,
+        "SELECT id, workspace_id, thread_id, run_id, title, artifact_type, path, content,
                 content_storage, summary, created_at, updated_at, deleted_at
          FROM artifacts
          WHERE id = ?1 AND workspace_id = ?2 AND deleted_at IS NULL",
@@ -227,7 +227,7 @@ fn get_research_resource_in_workspace(
 ) -> Result<Option<ResearchResourceRecord>, crate::AppError> {
     conn.query_row(
         "SELECT r.id, r.collection_id, c.workspace_id, r.source_artifact_id, r.title,
-                r.type, r.source_uri, r.content, r.content_storage, r.summary,
+                r.resource_type, r.source_uri, r.content, r.content_storage, r.summary,
                 r.metadata, r.created_at, r.updated_at
          FROM research_resources r
          JOIN research_collections c ON c.id = r.collection_id

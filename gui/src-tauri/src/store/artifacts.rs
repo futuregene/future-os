@@ -13,7 +13,7 @@ pub fn list_artifacts(thread_id: &str) -> Result<Vec<ArtifactRecord>, crate::App
     let thread = loaded(get_thread(thread_id)?, "Thread")?;
     let conn = connect()?;
     let mut stmt = conn.prepare(
-        "SELECT id, workspace_id, thread_id, run_id, title, type, path, content,
+        "SELECT id, workspace_id, thread_id, run_id, title, artifact_type, path, content,
                     content_storage, summary, created_at, updated_at, deleted_at
              FROM artifacts
              WHERE deleted_at IS NULL
@@ -44,7 +44,7 @@ pub fn create_artifact(input: CreateArtifactInput) -> Result<ArtifactRecord, cra
     let conn = connect()?;
     conn.execute(
         "INSERT INTO artifacts (
-             id, workspace_id, thread_id, run_id, title, type, path, content,
+             id, workspace_id, thread_id, run_id, title, artifact_type, path, content,
              content_storage, summary, created_at, updated_at
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
         params![
@@ -139,7 +139,7 @@ pub fn ensure_artifact(input: EnsureArtifactInput) -> Result<(), crate::AppError
     let now = now_millis();
     tx.execute(
         "INSERT INTO artifacts (
-             id, workspace_id, thread_id, run_id, title, type, path, content,
+             id, workspace_id, thread_id, run_id, title, artifact_type, path, content,
              content_storage, summary, created_at, updated_at
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
         params![
@@ -211,7 +211,7 @@ fn unique_attachment_path(dir: &Path, now: i64, file_name: &str) -> PathBuf {
 pub fn get_artifact(id: &str) -> Result<Option<ArtifactRecord>, crate::AppError> {
     let conn = connect()?;
     conn.query_row(
-        "SELECT id, workspace_id, thread_id, run_id, title, type, path, content,
+        "SELECT id, workspace_id, thread_id, run_id, title, artifact_type, path, content,
                 content_storage, summary, created_at, updated_at, deleted_at
          FROM artifacts
          WHERE id = ?1",

@@ -121,7 +121,7 @@ pub fn fail_run_if_active(
 pub fn list_run_events(run_id: &str) -> Result<Vec<RunEventRecord>, crate::AppError> {
     let conn = connect()?;
     let mut stmt = conn.prepare(
-        "SELECT id, run_id, type, payload, sequence, created_at
+        "SELECT id, run_id, event_type, payload, sequence, created_at
              FROM run_events
              WHERE run_id = ?1
              ORDER BY sequence ASC, created_at ASC",
@@ -136,7 +136,7 @@ pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, cr
     let now = now_millis();
     let conn = connect()?;
     conn.execute(
-        "INSERT INTO run_events (id, run_id, type, payload, sequence, created_at)
+        "INSERT INTO run_events (id, run_id, event_type, payload, sequence, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             id,
