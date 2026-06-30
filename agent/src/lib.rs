@@ -19,7 +19,7 @@ pub mod utils;
 
 pub use agent::Loop;
 pub use auth::AuthStore;
-pub use config::{load_settings, merge_settings, Settings};
+pub use config::{load_settings, Settings};
 pub use engine::{Engine, EngineConfig};
 pub use events::EventBus;
 pub use llm::Client as LLMClient;

@@ -277,8 +277,8 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
         server_session.set_thinking_level(level);
     }
 
-    server_session.set_steering_mode(&settings.steering_mode_or_default());
-    server_session.set_follow_up_mode(&settings.follow_up_mode_or_default());
+    server_session.set_steering_mode(&settings.steering_mode);
+    server_session.set_follow_up_mode(&settings.follow_up_mode);
     server_session.set_auto_compaction(settings.compaction_enabled());
     server_session.set_auto_retry(settings.retry_enabled());
 
