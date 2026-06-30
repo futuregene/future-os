@@ -1,4 +1,4 @@
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::fs;
 
 use super::db::*;
@@ -41,6 +41,16 @@ pub fn get_or_create_chat_workspace(
     title: Option<String>,
 ) -> Result<WorkspaceRecord, crate::AppError> {
     let conn = connect()?;
+    get_or_create_chat_workspace_in(&conn, thread_id, title)
+}
+
+/// Connection-injecting variant so a composite write (e.g. `create_thread`) can
+/// resolve/create the workspace and insert its own row in one transaction.
+pub(super) fn get_or_create_chat_workspace_in(
+    conn: &Connection,
+    thread_id: &str,
+    title: Option<String>,
+) -> Result<WorkspaceRecord, crate::AppError> {
     let existing = conn
         .query_row(
             &format!(
@@ -73,11 +83,18 @@ pub fn get_or_create_chat_workspace(
         params![workspace_id, name, path.display().to_string(), now],
     )?;
 
-    loaded(get_workspace(&workspace_id)?, "Created workspace")
+    loaded(get_workspace_in(conn, &workspace_id)?, "Created workspace")
 }
 
 pub fn get_workspace(workspace_id: &str) -> Result<Option<WorkspaceRecord>, crate::AppError> {
     let conn = connect()?;
+    get_workspace_in(&conn, workspace_id)
+}
+
+pub(super) fn get_workspace_in(
+    conn: &Connection,
+    workspace_id: &str,
+) -> Result<Option<WorkspaceRecord>, crate::AppError> {
     conn.query_row(
         &format!("SELECT {WORKSPACE_COLUMNS} FROM workspaces WHERE id = ?1"),
         params![workspace_id],

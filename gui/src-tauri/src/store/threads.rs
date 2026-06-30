@@ -1,9 +1,9 @@
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use super::db::*;
 use super::records::*;
 use super::util::*;
-use super::workspaces::{get_or_create_chat_workspace, get_workspace};
+use super::workspaces::{get_or_create_chat_workspace_in, get_workspace_in};
 
 pub fn list_threads() -> Result<Vec<ThreadRecord>, crate::AppError> {
     let conn = connect()?;
@@ -48,10 +48,16 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
         }
     });
 
+    // Resolve/create the workspace and insert the thread in one transaction so a
+    // crash between the two writes can't leave an orphan workspace with no thread
+    // pointing at it. `&tx` deref-coerces to `&Connection` for the `_in` helpers.
+    let mut conn = connect()?;
+    let tx = conn.transaction()?;
+
     let workspace = if mode == "chat" {
-        get_or_create_chat_workspace(&thread_id, Some(title.clone()))?
+        get_or_create_chat_workspace_in(&tx, &thread_id, Some(title.clone()))?
     } else if let Some(workspace_id) = input.workspace_id {
-        loaded(get_workspace(&workspace_id)?, "Workspace")?
+        loaded(get_workspace_in(&tx, &workspace_id)?, "Workspace")?
     } else {
         let raw_path = input
             .workspace_path
@@ -60,11 +66,10 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
         let name = input
             .workspace_name
             .unwrap_or_else(|| workspace_name_from_path(&path));
-        get_or_create_user_workspace(name, path, None)?
+        get_or_create_user_workspace_in(&tx, name, path, None)?
     };
 
-    let conn = connect()?;
-    conn.execute(
+    tx.execute(
         "INSERT INTO threads (
              id, workspace_id, mode, title, status, pinned, readonly,
              model_provider, model_id, thinking_level, agent_session_id, last_opened_at,
@@ -83,11 +88,20 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
         ],
     )?;
 
-    loaded(get_thread(&thread_id)?, "Created thread")
+    let thread = loaded(get_thread_in(&tx, &thread_id)?, "Created thread")?;
+    tx.commit()?;
+    Ok(thread)
 }
 
 pub fn get_thread(thread_id: &str) -> Result<Option<ThreadRecord>, crate::AppError> {
     let conn = connect()?;
+    get_thread_in(&conn, thread_id)
+}
+
+pub(super) fn get_thread_in(
+    conn: &Connection,
+    thread_id: &str,
+) -> Result<Option<ThreadRecord>, crate::AppError> {
     conn.query_row(
         &format!("SELECT {THREAD_COLUMNS} FROM threads WHERE id = ?1"),
         params![thread_id],
@@ -205,4 +219,76 @@ fn normalize_optional_thinking_level(level: Option<String>) -> Option<String> {
         let trimmed = value.trim().to_string();
         (!trimmed.is_empty()).then_some(trimmed)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_thread_in;
+    use crate::store::db::get_or_create_user_workspace_in;
+    use crate::store::schema::SCHEMA;
+    use crate::store::workspaces::get_workspace_in;
+    use rusqlite::{params, Connection};
+    use std::path::PathBuf;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        conn.execute_batch(SCHEMA).expect("initialize test schema");
+        conn
+    }
+
+    fn workspace_count(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM workspaces", [], |row| row.get(0))
+            .expect("count workspaces")
+    }
+
+    /// The workspace resolve/create and the thread insert commit together — both
+    /// rows are visible after `commit`. (`create_thread` runs this on one tx; the
+    /// `_in` helpers make that injectable for the in-memory DB here.)
+    #[test]
+    fn create_thread_persists_workspace_and_thread_atomically() {
+        let mut conn = test_conn();
+        let tx = conn.transaction().unwrap();
+        let workspace = get_or_create_user_workspace_in(
+            &tx,
+            "Test Workspace".to_string(),
+            PathBuf::from("/tmp/futureos-test-ws"),
+            None,
+        )
+        .unwrap();
+        tx.execute(
+            "INSERT INTO threads (
+                 id, workspace_id, mode, title, status, pinned, readonly,
+                 agent_session_id, created_at, updated_at
+             ) VALUES ('thread_ok', ?1, 'workspace', 'T', 'active', 0, 0, 'sess', 1, 1)",
+            params![workspace.id],
+        )
+        .unwrap();
+        let thread = get_thread_in(&tx, "thread_ok")
+            .unwrap()
+            .expect("thread row");
+        tx.commit().unwrap();
+
+        assert_eq!(thread.workspace_id, workspace.id);
+        assert!(get_workspace_in(&conn, &workspace.id).unwrap().is_some());
+    }
+
+    /// Regression for B-11: a crash between the workspace write and the thread
+    /// insert (modeled by dropping the tx without committing) must not leave an
+    /// orphan workspace behind.
+    #[test]
+    fn rolled_back_create_thread_leaves_no_orphan_workspace() {
+        let mut conn = test_conn();
+        {
+            let tx = conn.transaction().unwrap();
+            get_or_create_user_workspace_in(
+                &tx,
+                "Doomed".to_string(),
+                PathBuf::from("/tmp/futureos-doomed-ws"),
+                None,
+            )
+            .unwrap();
+            // tx dropped here without commit -> rollback.
+        }
+        assert_eq!(workspace_count(&conn), 0);
+    }
 }
