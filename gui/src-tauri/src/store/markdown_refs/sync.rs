@@ -8,7 +8,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::store::util::{create_id, now_millis};
 
 use super::extract::{extract_markdown_references, MarkdownObjectReference};
-use super::short_id;
+use super::metadata::{
+    approval_metadata, artifact_metadata, research_metadata, review_metadata, run_metadata,
+    tool_metadata, ReferenceMetadata,
+};
 
 pub fn sync_message_markdown_references(
     conn: &Connection,
@@ -55,18 +58,11 @@ pub fn sync_message_markdown_references(
     Ok(())
 }
 
-#[derive(Debug)]
-struct ReferenceTargetMetadata {
-    search_text: Option<String>,
-    subtitle: Option<String>,
-    title: String,
-}
-
 fn resolve_reference_target_metadata(
     conn: &Connection,
     reference: &MarkdownObjectReference,
     workspace_id: &str,
-) -> Result<Option<ReferenceTargetMetadata>, crate::AppError> {
+) -> Result<Option<ReferenceMetadata>, crate::AppError> {
     match reference.target_type.as_str() {
         "artifact" => conn
             .query_row(
@@ -77,21 +73,12 @@ fn resolve_reference_target_metadata(
                    AND deleted_at IS NULL",
                 params![reference.target_id, workspace_id],
                 |row| {
-                    let title: String = row.get(0)?;
-                    let artifact_type: String = row.get(1)?;
-                    let path: Option<String> = row.get(2)?;
-                    let summary: Option<String> = row.get(3)?;
-                    Ok(ReferenceTargetMetadata {
-                        search_text: Some(
-                            [Some(title.clone()), path.clone(), summary.clone()]
-                                .into_iter()
-                                .flatten()
-                                .collect::<Vec<_>>()
-                                .join("\n"),
-                        ),
-                        subtitle: path.or(Some(artifact_type)),
-                        title,
-                    })
+                    Ok(artifact_metadata(
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                    ))
                 },
             )
             .optional()
@@ -107,25 +94,7 @@ fn resolve_reference_target_metadata(
                 params![reference.target_id, workspace_id],
                 |row| {
                     let id: String = row.get(0)?;
-                    let status: String = row.get(1)?;
-                    let model_id: Option<String> = row.get(2)?;
-                    let error_message: Option<String> = row.get(3)?;
-                    Ok(ReferenceTargetMetadata {
-                        search_text: Some(
-                            [
-                                Some(id.clone()),
-                                Some(status.clone()),
-                                model_id.clone(),
-                                error_message.clone(),
-                            ]
-                            .into_iter()
-                            .flatten()
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                        ),
-                        subtitle: model_id.or(Some(status)),
-                        title: format!("Run {}", short_id(&id)),
-                    })
+                    Ok(run_metadata(&id, row.get(1)?, row.get(2)?, row.get(3)?))
                 },
             )
             .optional()
@@ -139,26 +108,12 @@ fn resolve_reference_target_metadata(
                  WHERE tc.id = ?1 AND t.workspace_id = ?2",
                 params![reference.target_id, workspace_id],
                 |row| {
-                    let name: String = row.get(0)?;
-                    let kind: String = row.get(1)?;
-                    let status: String = row.get(2)?;
-                    let input: Option<String> = row.get(3)?;
-                    Ok(ReferenceTargetMetadata {
-                        search_text: Some(
-                            [
-                                Some(name.clone()),
-                                Some(kind.clone()),
-                                Some(status.clone()),
-                                input,
-                            ]
-                            .into_iter()
-                            .flatten()
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                        ),
-                        subtitle: Some(format!("{kind} · {status}")),
-                        title: name,
-                    })
+                    Ok(tool_metadata(
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                    ))
                 },
             )
             .optional()
@@ -173,28 +128,13 @@ fn resolve_reference_target_metadata(
                    )",
                 params![reference.target_id, workspace_id],
                 |row| {
-                    let title: String = row.get(0)?;
-                    let kind: String = row.get(1)?;
-                    let status: String = row.get(2)?;
-                    let summary: Option<String> = row.get(3)?;
-                    let requested_action: Option<String> = row.get(4)?;
-                    Ok(ReferenceTargetMetadata {
-                        search_text: Some(
-                            [
-                                Some(title.clone()),
-                                Some(kind.clone()),
-                                Some(status.clone()),
-                                summary,
-                                requested_action,
-                            ]
-                            .into_iter()
-                            .flatten()
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                        ),
-                        subtitle: Some(format!("{kind} · {status}")),
-                        title,
-                    })
+                    Ok(approval_metadata(
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
                 },
             )
             .optional()
@@ -209,25 +149,14 @@ fn resolve_reference_target_metadata(
                    )",
                 params![reference.target_id, workspace_id],
                 |row| {
-                    let title: String = row.get(0)?;
-                    let status: String = row.get(1)?;
-                    let summary: Option<String> = row.get(2)?;
-                    let files_changed: i64 = row.get(3)?;
-                    let additions: i64 = row.get(4)?;
-                    let deletions: i64 = row.get(5)?;
-                    Ok(ReferenceTargetMetadata {
-                        search_text: Some(
-                            [Some(title.clone()), Some(status.clone()), summary]
-                                .into_iter()
-                                .flatten()
-                                .collect::<Vec<_>>()
-                                .join("\n"),
-                        ),
-                        subtitle: Some(format!(
-                            "{status} · {files_changed} files · +{additions} -{deletions}"
-                        )),
-                        title,
-                    })
+                    Ok(review_metadata(
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
                 },
             )
             .optional()
@@ -240,21 +169,12 @@ fn resolve_reference_target_metadata(
                  WHERE r.id = ?1 AND c.workspace_id = ?2",
                 params![reference.target_id, workspace_id],
                 |row| {
-                    let title: String = row.get(0)?;
-                    let resource_type: String = row.get(1)?;
-                    let source_uri: Option<String> = row.get(2)?;
-                    let summary: Option<String> = row.get(3)?;
-                    Ok(ReferenceTargetMetadata {
-                        search_text: Some(
-                            [Some(title.clone()), source_uri.clone(), summary]
-                                .into_iter()
-                                .flatten()
-                                .collect::<Vec<_>>()
-                                .join("\n"),
-                        ),
-                        subtitle: source_uri.or(Some(resource_type)),
-                        title,
-                    })
+                    Ok(research_metadata(
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                    ))
                 },
             )
             .optional()
@@ -266,7 +186,7 @@ fn resolve_reference_target_metadata(
 fn upsert_reference_target(
     conn: &Connection,
     reference: &MarkdownObjectReference,
-    metadata: ReferenceTargetMetadata,
+    metadata: ReferenceMetadata,
     workspace_id: &str,
     now: i64,
 ) -> Result<String, crate::AppError> {

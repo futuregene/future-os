@@ -512,7 +512,7 @@ make run-gui
 - **验证**: 后端基线三连；另人工核对每个常量与对应 `*_from_row` 字段顺序（列错位会在运行期 panic）。
 - **关联**: M-5、N-3；ER.md §3/§5。
 
-### [ ] C-7. markdown_refs 每类对象的 `{title, subtitle, search_text}` 构造在 sync/search 两处重复
+### [x] C-7. markdown_refs 每类对象的 `{title, subtitle, search_text}` 构造在 sync/search 两处重复
 - **类别 / 严重度**: consistency / 中
 - **位置**: `store/markdown_refs/sync.rs:65-264`（`resolve_reference_target_metadata`，6 分支）vs `search.rs:39-258`（6 个 `search_*_targets`）。（`resolve.rs:122-240` 只取整行、不构造展示元数据。）
 - **现状**: 同对象类型展示元数据两处各写一遍。subtitle 公式 tool/approval 完全相同（`format!("{kind} · {status}")`，sync 159/195、search 139/177）；review subtitle 两处重复（sync 226-228、search 209）；search_text sync 用手写 `flatten().join("\n")`、search 用 `compact_search_text`(294)——两实现做同一件事但不一致，是潜在分歧点。
