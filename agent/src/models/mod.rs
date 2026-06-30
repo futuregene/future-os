@@ -432,14 +432,15 @@ pub(crate) fn load_settings(path: &str) -> Result<Settings, String> {
     serde_json::from_str(&data).map_err(|e| e.to_string())
 }
 
-/// Get default model from settings or builtin defaults.
+/// Get the first available model, or None.
 pub fn get_default_model() -> Option<String> {
-    let path = settings_path();
-    if let Ok(settings) = load_settings(&path) {
-        settings.default_model
-    } else {
-        None
-    }
+    let registry = Registry::new();
+    let auth = crate::AuthStore::load();
+    registry
+        .all_models()
+        .into_iter()
+        .find(|m| !m.api_key.is_empty() || auth.get(&m.provider).is_some())
+        .map(|m| m.id)
 }
 
 /// LoadUserModels reads a models.json file.

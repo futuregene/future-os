@@ -780,12 +780,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
 fn list_models_response(id: &str) -> String {
     let registry = crate::models::Registry::new();
     let auth = crate::AuthStore::load();
-    let settings_path = std::path::PathBuf::from(crate::models::settings_path());
-    let settings = crate::config::load_settings(&settings_path).unwrap_or_default();
-    let default_model = settings.default_model.clone();
-    let default_thinking_level = settings.default_thinking_level.clone();
 
-    // Always return all available models.  Scoping is a client-side concern.
+    // Always return all available models.  Scoping / defaults are client-side.
     let mut models: Vec<crate::models::Model> = registry
         .all_models()
         .into_iter()
@@ -800,47 +796,22 @@ fn list_models_response(id: &str) -> String {
     });
     models.dedup_by(|left, right| left.id == right.id && left.provider == right.provider);
 
-    let fallback_default = models
-        .first()
-        .map(|model| model.id.clone())
-        .unwrap_or_default();
-    let effective_default = if !default_model.is_empty()
-        && models.iter().any(|model| {
-            model.id == default_model || format!("{}/{}", model.provider, model.id) == default_model
-        }) {
-        default_model.clone()
-    } else {
-        fallback_default
-    };
+    let effective_default = models.first().map(|m| m.id.clone()).unwrap_or_default();
 
     let payload_models: Vec<serde_json::Value> = models
         .into_iter()
         .map(|model| {
             let id = model.id;
-            let label = if model.name.is_empty() {
-                id.clone()
-            } else {
-                model.name
-            };
-            let provider = model.provider;
-            let full_id = format!("{provider}/{id}");
-            let thinking_level = if model.reasoning {
-                if default_thinking_level.is_empty() {
-                    "high".to_string()
-                } else {
-                    default_thinking_level.clone()
-                }
-            } else {
-                "off".to_string()
-            };
+            let label = if model.name.is_empty() { id.clone() } else { model.name.clone() };
+            let thinking_level = if model.reasoning { "high" } else { "off" };
             serde_json::json!({
                 "id": id.clone(),
                 "label": label,
-                "provider": provider.clone(),
+                "provider": model.provider.clone(),
                 "supportsImages": model.input.iter().any(|input| input == "image"),
-                "thinkingLevel": thinking_level,
+                "thinkingLevel": thinking_level.to_string(),
                 "contextWindow": model.context_window,
-                "isDefault": id == effective_default || full_id == effective_default,
+                "isDefault": id == effective_default,
             })
         })
         .collect();
