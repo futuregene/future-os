@@ -73,13 +73,8 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
         })
         .unwrap_or_else(|| "deepseek-v4-flash".to_string());
 
-    // Use default_model from settings if set, otherwise keep resolved.
-    let resolved_model = if !settings.default_model.is_empty()
-        && all_models.iter().any(|m| m.id == settings.default_model) {
-        settings.default_model.clone()
-    } else {
-        resolved_model
-    };
+    // Model resolution: built-in default → first available model → hardcoded fallback.
+    // Clients (TUI/GUI) specify their own model preference per-session.
 
     // Resolve model config
     let model_config = model_registry.resolve(&resolved_model);
@@ -114,12 +109,7 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
         .or_else(|| auth_store.default_key())
         .unwrap_or_default();
 
-    // Resolve thinking level from settings.json
-    let thinking = if settings.default_thinking_level.is_empty() {
-        None
-    } else {
-        Some(settings.default_thinking_level.clone())
-    };
+    // Default thinking level (clients override per-session).
 
     // Parse thinking level map from model config
     let thinking_level_map: std::collections::HashMap<String, String> = model_config
@@ -153,7 +143,7 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
         } else {
             50
         },
-        thinking_level: thinking.clone().unwrap_or_default(),
+        thinking_level: "high".to_string(),
         thinking_level_map,
         compat_thinking_format: model_config
             .as_ref()
@@ -259,9 +249,6 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
     server_session.model = resolved_model.clone();
     *server_session.compaction_model.write().unwrap() = resolved_model.clone();
 
-    if let Some(ref level) = thinking {
-        server_session.set_thinking_level(level);
-    }
 
     server_session.set_steering_mode(&settings.steering_mode);
     server_session.set_follow_up_mode(&settings.follow_up_mode);

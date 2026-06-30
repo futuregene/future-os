@@ -54,10 +54,6 @@ fn default_max_retry_delay_ms() -> Option<i32> { Some(60000) }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub default_model: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub default_thinking_level: String,
     #[serde(default = "default_steering_mode", skip_serializing_if = "String::is_empty")]
     pub steering_mode: String,
     #[serde(default = "default_follow_up_mode", skip_serializing_if = "String::is_empty")]
@@ -66,7 +62,8 @@ pub struct Settings {
     pub compaction: Option<Box<CompactionSettings>>,
     #[serde(default = "default_retry", skip_serializing_if = "Option::is_none")]
     pub retry: Option<Box<RetrySettings>>,
-    #[serde(default = "default_max_turns")]
+    /// Maximum LLM + tool turns per prompt (0 = unlimited).
+    #[serde(default)]
     pub max_turns: i32,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub permission_level: String,
@@ -93,7 +90,6 @@ fn default_retry() -> Option<Box<RetrySettings>> {
         provider: None,
     }))
 }
-fn default_max_turns() -> i32 { 50 }
 
 // ─── Convenience accessors ─────────────────────────────────────────────────
 
@@ -136,13 +132,11 @@ pub fn load_settings(path: &Path) -> Result<Settings> {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            default_model: String::new(),
-            default_thinking_level: String::new(),
             steering_mode: default_steering_mode(),
             follow_up_mode: default_follow_up_mode(),
             compaction: default_compaction(),
             retry: default_retry(),
-            max_turns: default_max_turns(),
+            max_turns: 0,
             permission_level: String::new(),
         }
     }
