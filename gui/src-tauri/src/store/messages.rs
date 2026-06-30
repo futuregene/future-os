@@ -1,9 +1,42 @@
 use rusqlite::params;
+use serde::Serialize;
 
 use super::db::*;
 use super::markdown_refs::sync_message_markdown_references;
 use super::records::*;
 use super::util::*;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageRecord {
+    pub id: String,
+    pub thread_id: String,
+    pub run_id: Option<String>,
+    pub role: String,
+    pub content_type: String,
+    pub content: String,
+    pub status: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Column list for `message_from_row`, in struct order.
+pub(super) const MESSAGE_COLUMNS: &str =
+    "id, thread_id, run_id, role, content_type, content, status, created_at, updated_at";
+
+pub(super) fn message_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRecord> {
+    Ok(MessageRecord {
+        id: row.get(0)?,
+        thread_id: row.get(1)?,
+        run_id: row.get(2)?,
+        role: row.get(3)?,
+        content_type: row.get(4)?,
+        content: row.get(5)?,
+        status: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
+}
 
 pub fn list_messages(thread_id: &str) -> Result<Vec<MessageRecord>, crate::AppError> {
     let conn = connect()?;

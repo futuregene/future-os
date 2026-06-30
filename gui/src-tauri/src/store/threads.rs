@@ -1,9 +1,61 @@
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 
 use super::db::*;
 use super::records::*;
 use super::util::*;
 use super::workspaces::{get_or_create_chat_workspace_in, get_workspace_in};
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadRecord {
+    pub id: String,
+    pub workspace_id: String,
+    pub mode: String,
+    pub title: String,
+    pub status: String,
+    pub pinned: bool,
+    pub readonly: bool,
+    pub model_provider: Option<String>,
+    pub model_id: Option<String>,
+    pub thinking_level: Option<String>,
+    pub agent_session_id: Option<String>,
+    pub last_message_at: Option<i64>,
+    pub last_opened_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub archived_at: Option<i64>,
+    pub deleted_at: Option<i64>,
+}
+
+/// Column list for `thread_from_row`, in struct order. Reuse this in every
+/// `SELECT` that maps into `ThreadRecord`.
+pub(super) const THREAD_COLUMNS: &str =
+    "id, workspace_id, mode, title, status, pinned, readonly, model_provider, \
+     model_id, thinking_level, agent_session_id, last_message_at, last_opened_at, \
+     created_at, updated_at, archived_at, deleted_at";
+
+pub(super) fn thread_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadRecord> {
+    Ok(ThreadRecord {
+        id: row.get(0)?,
+        workspace_id: row.get(1)?,
+        mode: row.get(2)?,
+        title: row.get(3)?,
+        status: row.get(4)?,
+        pinned: row.get::<_, i64>(5)? != 0,
+        readonly: row.get::<_, i64>(6)? != 0,
+        model_provider: row.get(7)?,
+        model_id: row.get(8)?,
+        thinking_level: row.get(9)?,
+        agent_session_id: row.get(10)?,
+        last_message_at: row.get(11)?,
+        last_opened_at: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+        archived_at: row.get(15)?,
+        deleted_at: row.get(16)?,
+    })
+}
 
 pub fn list_threads() -> Result<Vec<ThreadRecord>, crate::AppError> {
     let conn = connect()?;

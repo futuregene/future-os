@@ -23,35 +23,38 @@ pub use app_settings::{
 };
 pub use approvals::{
     decide_approval_request, ensure_approval_request, list_approval_requests,
-    list_review_file_changes,
+    list_review_file_changes, ApprovalRequestRecord,
 };
 pub use artifacts::{
     artifact_type_from_path, create_artifact, delete_artifact, ensure_artifact,
-    import_attachment_artifact, list_artifacts,
+    import_attachment_artifact, list_artifacts, ArtifactRecord,
 };
 pub use cleanup::{
     cancel_stale_approval_requests, clear_finished_runs, get_thread_cleanup_summary,
 };
 pub use db::{get_approval_request, get_run};
 pub use markdown_refs::{resolve_markdown_references, search_reference_targets};
-pub use messages::{append_message, list_messages};
+pub use messages::{append_message, list_messages, MessageRecord};
 pub use records::*;
-pub use research::{list_research_resources, promote_artifact_to_research};
+pub use research::{list_research_resources, promote_artifact_to_research, ResearchResourceRecord};
 pub use review_snapshots::{
     create_review_snapshot, get_last_run_changeset, get_review_snapshot, get_run_changeset,
     list_interrupted_runs, list_snapshots_with_commits, mark_run_overlapped, mark_snapshot_failed,
-    prune_thread_changesets, upsert_run_changeset,
+    prune_thread_changesets, upsert_run_changeset, ReviewChangesetRecord, ReviewFileChangeRecord,
+    ReviewSnapshotRecord,
 };
 pub use runs::{
     append_run_event, complete_tool_call, create_run, fail_run_if_active, list_run_events,
     list_runs, list_tool_calls, list_tool_outputs, update_run_status, upsert_tool_call,
+    RunEventRecord, RunRecord, ToolCallRecord, ToolOutputRecord,
 };
 pub use threads::{
     archive_thread, create_thread, delete_thread, get_recent_thread, get_thread, list_threads,
     pin_thread, rename_thread, restore_thread, update_thread_model, update_thread_thinking_level,
+    ThreadRecord,
 };
 pub use workspaces::{
-    create_workspace, get_or_create_chat_workspace, get_workspace, list_workspaces,
+    create_workspace, get_or_create_chat_workspace, get_workspace, list_workspaces, WorkspaceRecord,
 };
 
 pub fn app_data_path() -> Result<AppDataPath, crate::AppError> {

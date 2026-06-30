@@ -192,7 +192,7 @@ make run-gui
 - **验证**: 前端基线三连；建议为 toolInput.ts 加单测（双层 stringify command / 非 JSON 串 / exit_code 为 number）。
 - **关联**: M-9、C-9。
 
-### [ ] M-5. `records.rs`（867 行）是 god-module：record + `*_from_row` + 列常量与查询分置两文件
+### [x] M-5. `records.rs`（867 行）是 god-module：record + `*_from_row` + 列常量与查询分置两文件
 - **类别 / 严重度**: module / 中
 - **位置**: `src-tauri/src/store/records.rs`（867 行）。14 个 `*_from_row`：thread(588)、message(610)、run(624)、workspace(641)、run_event(658)、tool_call(669)、tool_output(683)、approval_request(693)、review_changeset(728)、review_file_change(764)、review_snapshot(797)、artifact(818)、research_collection(836)、research_resource(849)。告警注释在 584-586。
 - **现状**: 单文件含 ~40 类型（output records、`*Input` DTO、P2 config records 547/560/572）+ 全部 `_from_row` + 3 个 `REVIEW_*_COLUMNS`。映射器靠列顺序对应散在他处的 SELECT（如 `thread_from_row`@588 vs `threads.rs:11/26/94`），schema 改一列要动两个相距很远的文件。

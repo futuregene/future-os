@@ -4,8 +4,21 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::store::approvals::{
+    approval_request_from_row, ApprovalRequestRecord, APPROVAL_REQUEST_COLUMNS,
+};
+use crate::store::artifacts::{artifact_from_row, ArtifactRecord, ARTIFACT_COLUMNS};
 use crate::store::db::connect;
 use crate::store::records::*;
+use crate::store::research::{
+    research_resource_from_row, ResearchResourceRecord, RESEARCH_RESOURCE_COLUMNS,
+};
+use crate::store::review_snapshots::{
+    review_changeset_from_row, ReviewChangesetRecord, REVIEW_CHANGESET_COLUMNS,
+};
+use crate::store::runs::{
+    run_from_row, tool_call_from_row, RunRecord, ToolCallRecord, RUN_COLUMNS, TOOL_CALL_COLUMNS,
+};
 
 pub fn resolve_markdown_references(
     input: ResolveMarkdownReferencesInput,

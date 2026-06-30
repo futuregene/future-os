@@ -1,9 +1,133 @@
 use rusqlite::params;
+use serde::Serialize;
 
 use super::db::*;
 use super::records::*;
 use super::status::{TERMINAL_RUN_STATUSES, TERMINAL_RUN_STATUSES_SQL};
 use super::util::*;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunRecord {
+    pub id: String,
+    pub thread_id: String,
+    pub trigger_message_id: Option<String>,
+    pub status: String,
+    pub model_provider: Option<String>,
+    pub model_id: Option<String>,
+    pub started_at: Option<i64>,
+    pub ended_at: Option<i64>,
+    pub error_message: Option<String>,
+    /// Structured error classification. One of:
+    /// 'stream_disconnected', 'command_failed', 'model_failed',
+    /// 'abort_requested', 'timeout', 'unknown'. NULL when the run did not
+    /// fail or the error type is unknown.
+    pub error_type: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunEventRecord {
+    pub id: String,
+    pub run_id: String,
+    pub event_type: String,
+    pub payload: Option<String>,
+    pub sequence: i64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCallRecord {
+    pub id: String,
+    pub run_id: String,
+    pub name: String,
+    pub kind: String,
+    pub input: Option<String>,
+    pub status: String,
+    pub started_at: Option<i64>,
+    pub ended_at: Option<i64>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolOutputRecord {
+    pub id: String,
+    pub tool_call_id: String,
+    pub kind: String,
+    pub content: Option<String>,
+    pub created_at: i64,
+}
+
+/// Column list for `run_from_row`, in struct order.
+pub(super) const RUN_COLUMNS: &str =
+    "id, thread_id, trigger_message_id, status, model_provider, model_id, \
+     started_at, ended_at, error_message, error_type, created_at, updated_at";
+
+pub(super) fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRecord> {
+    Ok(RunRecord {
+        id: row.get(0)?,
+        thread_id: row.get(1)?,
+        trigger_message_id: row.get(2)?,
+        status: row.get(3)?,
+        model_provider: row.get(4)?,
+        model_id: row.get(5)?,
+        started_at: row.get(6)?,
+        ended_at: row.get(7)?,
+        error_message: row.get(8)?,
+        error_type: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
+    })
+}
+
+/// Column list for `run_event_from_row`, in struct order.
+pub(super) const RUN_EVENT_COLUMNS: &str = "id, run_id, event_type, payload, sequence, created_at";
+
+pub(super) fn run_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunEventRecord> {
+    Ok(RunEventRecord {
+        id: row.get(0)?,
+        run_id: row.get(1)?,
+        event_type: row.get(2)?,
+        payload: row.get(3)?,
+        sequence: row.get(4)?,
+        created_at: row.get(5)?,
+    })
+}
+
+/// Column list for `tool_call_from_row`, in struct order.
+pub(super) const TOOL_CALL_COLUMNS: &str =
+    "id, run_id, name, kind, input, status, started_at, ended_at, created_at";
+
+pub(super) fn tool_call_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolCallRecord> {
+    Ok(ToolCallRecord {
+        id: row.get(0)?,
+        run_id: row.get(1)?,
+        name: row.get(2)?,
+        kind: row.get(3)?,
+        input: row.get(4)?,
+        status: row.get(5)?,
+        started_at: row.get(6)?,
+        ended_at: row.get(7)?,
+        created_at: row.get(8)?,
+    })
+}
+
+/// Column list for `tool_output_from_row`, in struct order.
+pub(super) const TOOL_OUTPUT_COLUMNS: &str = "id, tool_call_id, kind, content, created_at";
+
+pub(super) fn tool_output_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolOutputRecord> {
+    Ok(ToolOutputRecord {
+        id: row.get(0)?,
+        tool_call_id: row.get(1)?,
+        kind: row.get(2)?,
+        content: row.get(3)?,
+        created_at: row.get(4)?,
+    })
+}
 
 pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::AppError> {
     let id = create_id("run");

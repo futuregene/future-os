@@ -1,9 +1,84 @@
 use rusqlite::{params, OptionalExtension};
+use serde::Serialize;
 
 use super::artifacts::get_artifact;
 use super::db::*;
-use super::records::*;
 use super::util::*;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchCollectionRecord {
+    pub id: String,
+    pub workspace_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchResourceRecord {
+    pub id: String,
+    pub collection_id: String,
+    pub workspace_id: String,
+    pub source_artifact_id: Option<String>,
+    pub title: String,
+    pub resource_type: String,
+    pub source_uri: Option<String>,
+    pub content: Option<String>,
+    pub content_storage: Option<String>,
+    pub summary: Option<String>,
+    pub metadata: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Column list for `research_collection_from_row`, in struct order.
+pub(super) const RESEARCH_COLLECTION_COLUMNS: &str =
+    "id, workspace_id, name, description, created_at, updated_at";
+
+pub(super) fn research_collection_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ResearchCollectionRecord> {
+    Ok(ResearchCollectionRecord {
+        id: row.get(0)?,
+        workspace_id: row.get(1)?,
+        name: row.get(2)?,
+        description: row.get(3)?,
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
+    })
+}
+
+/// Column list for `research_resource_from_row`, in struct order. Aliases are
+/// baked in because every `SELECT` joins `research_resources r` onto
+/// `research_collections c` and pulls `workspace_id` from the collection — so
+/// unlike the other tables this list can't be re-prefixed with a single alias.
+pub(super) const RESEARCH_RESOURCE_COLUMNS: &str =
+    "r.id, r.collection_id, c.workspace_id, r.source_artifact_id, r.title, \
+     r.resource_type, r.source_uri, r.content, r.content_storage, r.summary, \
+     r.metadata, r.created_at, r.updated_at";
+
+pub(super) fn research_resource_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ResearchResourceRecord> {
+    Ok(ResearchResourceRecord {
+        id: row.get(0)?,
+        collection_id: row.get(1)?,
+        workspace_id: row.get(2)?,
+        source_artifact_id: row.get(3)?,
+        title: row.get(4)?,
+        resource_type: row.get(5)?,
+        source_uri: row.get(6)?,
+        content: row.get(7)?,
+        content_storage: row.get(8)?,
+        summary: row.get(9)?,
+        metadata: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+    })
+}
 
 pub fn list_research_resources(
     workspace_id: &str,

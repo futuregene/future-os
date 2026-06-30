@@ -1,4 +1,5 @@
 use rusqlite::{params, OptionalExtension};
+use serde::Serialize;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -8,6 +9,47 @@ use super::db::*;
 use super::get_thread;
 use super::records::*;
 use super::util::*;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactRecord {
+    pub id: String,
+    pub workspace_id: String,
+    pub thread_id: Option<String>,
+    pub run_id: Option<String>,
+    pub title: String,
+    pub artifact_type: String,
+    pub path: Option<String>,
+    pub content: Option<String>,
+    pub content_storage: Option<String>,
+    pub summary: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub deleted_at: Option<i64>,
+}
+
+/// Column list for `artifact_from_row`, in struct order.
+pub(super) const ARTIFACT_COLUMNS: &str =
+    "id, workspace_id, thread_id, run_id, title, artifact_type, path, content, \
+     content_storage, summary, created_at, updated_at, deleted_at";
+
+pub(super) fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtifactRecord> {
+    Ok(ArtifactRecord {
+        id: row.get(0)?,
+        workspace_id: row.get(1)?,
+        thread_id: row.get(2)?,
+        run_id: row.get(3)?,
+        title: row.get(4)?,
+        artifact_type: row.get(5)?,
+        path: row.get(6)?,
+        content: row.get(7)?,
+        content_storage: row.get(8)?,
+        summary: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
+        deleted_at: row.get(12)?,
+    })
+}
 
 pub fn list_artifacts(thread_id: &str) -> Result<Vec<ArtifactRecord>, crate::AppError> {
     let thread = loaded(get_thread(thread_id)?, "Thread")?;
