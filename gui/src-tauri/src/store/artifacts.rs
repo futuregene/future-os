@@ -109,14 +109,18 @@ pub fn import_attachment_artifact(
 }
 
 pub fn ensure_artifact(input: EnsureArtifactInput) -> Result<(), crate::AppError> {
-    let conn = connect()?;
-    let thread_id = run_thread_id(&conn, &input.run_id)?;
-    let workspace_id: String = conn.query_row(
+    // BEGIN IMMEDIATE so the existence check and the insert are one atomic write;
+    // concurrent agent events for the same artifact would otherwise both pass the
+    // check and insert duplicates.
+    let mut conn = connect()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let thread_id = run_thread_id(&tx, &input.run_id)?;
+    let workspace_id: String = tx.query_row(
         "SELECT workspace_id FROM threads WHERE id = ?1",
         params![thread_id],
         |row| row.get(0),
     )?;
-    let existing: Option<String> = conn
+    let existing: Option<String> = tx
         .query_row(
             "SELECT id
              FROM artifacts
@@ -134,7 +138,7 @@ pub fn ensure_artifact(input: EnsureArtifactInput) -> Result<(), crate::AppError
     }
 
     let now = now_millis();
-    conn.execute(
+    tx.execute(
         "INSERT INTO artifacts (
              id, workspace_id, thread_id, run_id, title, type, path, content,
              content_storage, summary, created_at, updated_at
@@ -153,6 +157,7 @@ pub fn ensure_artifact(input: EnsureArtifactInput) -> Result<(), crate::AppError
             now
         ],
     )?;
+    tx.commit()?;
     Ok(())
 }
 

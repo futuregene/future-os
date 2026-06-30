@@ -215,10 +215,15 @@ pub fn get_last_run_changeset(
 /// same Workspace) as `overlapped` (§12.5). Overlap is derived purely from the
 /// snapshot time windows; no extra in-memory state.
 pub fn mark_run_overlapped(workspace_id: &str, run_id: &str) -> Result<(), crate::AppError> {
-    let conn = connect()?;
+    let mut conn = connect()?;
     let now = now_millis();
+    // BEGIN IMMEDIATE so the window reads, the peer scan, and the overlap updates
+    // all run against one consistent snapshot under the write lock — a concurrent
+    // Run finalizing its snapshot between the scan and the updates can't slip
+    // through unmarked (§12.5).
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
-    let before_ts: Option<i64> = conn
+    let before_ts: Option<i64> = tx
         .query_row(
             "SELECT created_at FROM review_snapshots WHERE run_id = ?1 AND phase = 'before'",
             params![run_id],
@@ -228,7 +233,7 @@ pub fn mark_run_overlapped(workspace_id: &str, run_id: &str) -> Result<(), crate
     let Some(before_ts) = before_ts else {
         return Ok(());
     };
-    let after_ts: i64 = conn
+    let after_ts: i64 = tx
         .query_row(
             "SELECT created_at FROM review_snapshots WHERE run_id = ?1 AND phase = 'after'",
             params![run_id],
@@ -238,32 +243,37 @@ pub fn mark_run_overlapped(workspace_id: &str, run_id: &str) -> Result<(), crate
         .unwrap_or(now);
 
     // Peers in the same Workspace whose [before, after|now] window intersects
-    // this Run's [before_ts, after_ts].
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT b.run_id
-         FROM review_snapshots b
-         LEFT JOIN review_snapshots a ON a.run_id = b.run_id AND a.phase = 'after'
-         WHERE b.phase = 'before'
-           AND b.workspace_id = ?1
-           AND b.run_id != ?2
-           AND b.created_at <= ?3
-           AND COALESCE(a.created_at, ?4) >= ?5",
-    )?;
-    let peers: Vec<String> = stmt
-        .query_map(
-            params![workspace_id, run_id, after_ts, now, before_ts],
-            |row| row.get(0),
-        )?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    // this Run's [before_ts, after_ts]. Scoped so the statement is dropped before
+    // the updates/commit borrow the transaction.
+    let peers: Vec<String> = {
+        let mut stmt = tx.prepare(
+            "SELECT DISTINCT b.run_id
+             FROM review_snapshots b
+             LEFT JOIN review_snapshots a ON a.run_id = b.run_id AND a.phase = 'after'
+             WHERE b.phase = 'before'
+               AND b.workspace_id = ?1
+               AND b.run_id != ?2
+               AND b.created_at <= ?3
+               AND COALESCE(a.created_at, ?4) >= ?5",
+        )?;
+        let rows = stmt
+            .query_map(
+                params![workspace_id, run_id, after_ts, now, before_ts],
+                |row| row.get(0),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
 
     if peers.is_empty() {
         return Ok(());
     }
 
-    set_overlapped(&conn, run_id, now)?;
+    set_overlapped(&tx, run_id, now)?;
     for peer in &peers {
-        set_overlapped(&conn, peer, now)?;
+        set_overlapped(&tx, peer, now)?;
     }
+    tx.commit()?;
     Ok(())
 }
 
