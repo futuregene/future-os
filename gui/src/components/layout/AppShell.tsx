@@ -1,38 +1,31 @@
 import type { MessageAttachment } from "../../features/agent/agentThreadTypes";
 import type { NewConversationStart } from "../../features/agent/NewConversation";
 import type { SettingsTab } from "../../features/settings/SettingsDialog";
-import type { AgentModelOption } from "../../integrations/agent/agentClient";
-import type { AppSettings } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
-import type { DeleteDialogState, RenameDialogState } from "./AppShellDialogs";
 import type { ContextTab } from "./ContextPanel";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { ResearchView } from "../../features/research/ResearchView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
-import { defaultThinkingLevel, modelThinkingLevel, normalizeThinkingLevel } from "../../integrations/agent/agentClient";
-import { getAppSettings, updateAppSettings } from "../../integrations/storage/appSettings";
+import { modelThinkingLevel, normalizeThinkingLevel } from "../../integrations/agent/agentClient";
 import {
   createThread,
   createWorkspace,
-  deleteThread,
-  getThreadCleanupSummary,
   pinThread,
-  renameThread,
   restoreThread,
-  updateThreadModel,
-  updateThreadThinkingLevel,
 } from "../../integrations/storage/threadStore";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
-import { useAsyncResource } from "../../lib/useAsyncResource";
 import { ActivityRail } from "./ActivityRail";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
 import { useAgentConnection } from "./hooks/useAgentConnection";
 import { useApprovals } from "./hooks/useApprovals";
+import { useAppSettings } from "./hooks/useAppSettings";
+import { useModelSelection } from "./hooks/useModelSelection";
+import { useThreadDialogs } from "./hooks/useThreadDialogs";
 import { useThreadStore } from "./hooks/useThreadStore";
 
 export type { AgentConnectionState } from "./hooks/useAgentConnection";
@@ -61,18 +54,10 @@ export function AppShell() {
   const [newWorkspaceCreate, setNewWorkspaceCreate] = useState(false);
   const [selectedResearchResourceId, setSelectedResearchResourceId] = useState<string | null>(null);
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
-  const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState | null>(null);
-  const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
-  const { data: loadedAppSettings } = useAsyncResource<AppSettings>(
-    getAppSettings,
-    [],
-    { autoApprove: false, hiddenModels: [] },
-  );
-  const [appSettings, setAppSettings] = useState<AppSettings>({ autoApprove: false, hiddenModels: [] });
-  const [selectedThinkingLevel, setSelectedThinkingLevel] = useState(defaultThinkingLevel);
-  const draftThinkingModelRef = useRef("");
+
+  const { appSettings, changeSettings } = useAppSettings();
 
   const {
     threads,
@@ -98,22 +83,33 @@ export function AppShell() {
     setSelectedModelId,
     refreshAgentModels,
   } = useAgentConnection(appSettings.hiddenModels);
+  const {
+    selectedThinkingLevel,
+    changeModel,
+    changeDraftModel,
+    changeThinkingLevel,
+    syncSelection,
+  } = useModelSelection({
+    activeThread,
+    selectedModelId,
+    setSelectedModelId,
+    visibleModelOptions,
+    refreshStore,
+  });
+  const {
+    renameDialog,
+    deleteDialog,
+    setRenameDialog,
+    setDeleteDialog,
+    openRename,
+    confirmRename,
+    openDelete,
+    confirmDelete,
+  } = useThreadDialogs({ activeThreadId, refreshStore });
   const activeThreadModelId = activeThread?.modelId ?? selectedModelId;
   const activeThinkingLevel = activeThread
     ? normalizeThinkingLevel(activeThread.thinkingLevel ?? modelThinkingLevel(activeThreadModelId, visibleModelOptions))
     : selectedThinkingLevel;
-
-  useEffect(() => {
-    setAppSettings(loadedAppSettings);
-  }, [loadedAppSettings]);
-
-  useEffect(() => {
-    if (activeThread || draftThinkingModelRef.current === selectedModelId)
-      return;
-
-    draftThinkingModelRef.current = selectedModelId;
-    setSelectedThinkingLevel(thinkingLevelForModel(selectedModelId, visibleModelOptions));
-  }, [activeThread, selectedModelId, visibleModelOptions]);
 
   useEffect(() => onFutureEvent("open-research-resource", (detail) => {
     setSelectedResearchResourceId(detail.resourceId);
@@ -152,17 +148,6 @@ export function AppShell() {
   function handleOpenProviders() {
     setSettingsTab("providers");
     setSettingsOpen(true);
-  }
-
-  async function handleChangeSettings(patch: Partial<AppSettings>) {
-    setAppSettings(current => ({ ...current, ...patch }));
-    try {
-      const next = await updateAppSettings(patch);
-      setAppSettings(next);
-    }
-    catch {
-      // Keep the optimistic value; a later load will reconcile.
-    }
   }
 
   function handleSelectThread(thread: StoredThread) {
@@ -216,9 +201,7 @@ export function AppShell() {
       modelId: input.modelId,
       thinkingLevel: input.thinkingLevel,
     });
-    setSelectedModelId(input.modelId);
-    setSelectedThinkingLevel(normalizeThinkingLevel(input.thinkingLevel));
-    draftThinkingModelRef.current = input.modelId;
+    syncSelection(input.modelId, input.thinkingLevel);
     await refreshStore(thread.id);
     setSection(thread.mode === "workspace" ? "workspace" : "chat");
     setCenterMode("thread");
@@ -235,91 +218,9 @@ export function AppShell() {
     return workspace;
   }
 
-  function handleRenameThread(thread: StoredThread) {
-    setRenameDialog({
-      error: null,
-      submitting: false,
-      thread,
-      value: thread.title,
-    });
-  }
-
-  async function handleConfirmRenameThread() {
-    if (!renameDialog || renameDialog.submitting)
-      return;
-
-    const nextTitle = renameDialog.value.trim();
-    if (!nextTitle) {
-      setRenameDialog(current => current ? { ...current, error: "Title cannot be empty." } : current);
-      return;
-    }
-    if (nextTitle === renameDialog.thread.title) {
-      setRenameDialog(null);
-      return;
-    }
-
-    setRenameDialog(current => current ? { ...current, error: null, submitting: true } : current);
-    try {
-      await renameThread({ threadId: renameDialog.thread.id, title: nextTitle });
-      await refreshStore(renameDialog.thread.id);
-      setRenameDialog(null);
-    }
-    catch (error) {
-      setRenameDialog(current =>
-        current
-          ? {
-              ...current,
-              error: error instanceof Error ? error.message : String(error),
-              submitting: false,
-            }
-          : current,
-      );
-    }
-  }
-
   async function handleTogglePinThread(thread: StoredThread) {
     await pinThread({ threadId: thread.id, pinned: !thread.pinned });
     await refreshStore(thread.id);
-  }
-
-  async function handleModelChange(modelId: string) {
-    setSelectedModelId(modelId);
-    // Follow the new model's default thinking level (same as the draft flow), so
-    // switching models can't leave a thread on a level the model doesn't fit.
-    const nextLevel = thinkingLevelForModel(modelId, visibleModelOptions);
-    setSelectedThinkingLevel(nextLevel);
-    draftThinkingModelRef.current = modelId;
-    if (!activeThread)
-      return;
-
-    await updateThreadModel({
-      threadId: activeThread.id,
-      modelId,
-    });
-    await updateThreadThinkingLevel({
-      threadId: activeThread.id,
-      thinkingLevel: nextLevel,
-    });
-    await refreshStore(activeThread.id);
-  }
-
-  function handleDraftModelChange(modelId: string) {
-    setSelectedModelId(modelId);
-    setSelectedThinkingLevel(thinkingLevelForModel(modelId, visibleModelOptions));
-    draftThinkingModelRef.current = modelId;
-  }
-
-  async function handleThinkingLevelChange(thinkingLevel: string) {
-    const nextLevel = normalizeThinkingLevel(thinkingLevel);
-    setSelectedThinkingLevel(nextLevel);
-    if (!activeThread)
-      return;
-
-    await updateThreadThinkingLevel({
-      threadId: activeThread.id,
-      thinkingLevel: nextLevel,
-    });
-    await refreshStore(activeThread.id);
   }
 
   async function handleApprovalDecision(
@@ -328,57 +229,6 @@ export function AppShell() {
   ) {
     await decideApproval(approval, status);
     await refreshStore(activeThread?.id ?? undefined);
-  }
-
-  function handleDeleteThread(thread: StoredThread) {
-    setDeleteDialog({
-      cleanupSummary: null,
-      error: null,
-      loadingSummary: thread.mode === "chat",
-      submitting: false,
-      thread,
-    });
-
-    if (thread.mode === "chat") {
-      void getThreadCleanupSummary(thread.id)
-        .then((summary) => {
-          setDeleteDialog(current =>
-            current?.thread.id === thread.id
-              ? { ...current, cleanupSummary: summary, loadingSummary: false }
-              : current,
-          );
-        })
-        .catch(() => {
-          setDeleteDialog(current =>
-            current?.thread.id === thread.id
-              ? { ...current, loadingSummary: false }
-              : current,
-          );
-        });
-    }
-  }
-
-  async function handleConfirmDeleteThread() {
-    if (!deleteDialog || deleteDialog.submitting)
-      return;
-
-    setDeleteDialog(current => current ? { ...current, error: null, submitting: true } : current);
-    try {
-      await deleteThread(deleteDialog.thread.id);
-      await refreshStore(deleteDialog.thread.id === activeThreadId ? undefined : activeThreadId ?? undefined);
-      setDeleteDialog(null);
-    }
-    catch (error) {
-      setDeleteDialog(current =>
-        current
-          ? {
-              ...current,
-              error: error instanceof Error ? error.message : String(error),
-              submitting: false,
-            }
-          : current,
-      );
-    }
   }
 
   async function handleRestoreThread(thread: StoredThread) {
@@ -412,8 +262,8 @@ export function AppShell() {
     onOpenModels: handleOpenModels,
     onNewChat: handleOpenNewChat,
     onNewWorkspace: handleOpenNewWorkspace,
-    onDeleteThread: handleDeleteThread,
-    onRenameThread: handleRenameThread,
+    onDeleteThread: openDelete,
+    onRenameThread: openRename,
     onRestoreThread: handleRestoreThread,
     onSelectWorkspace: handleSelectWorkspace,
     onSelectThread: handleSelectThread,
@@ -456,9 +306,9 @@ export function AppShell() {
                 modelId={selectedModelId}
                 modelOptions={visibleModelOptions}
                 onAddWorkspace={handleAddWorkspace}
-                onModelChange={handleDraftModelChange}
+                onModelChange={changeDraftModel}
                 thinkingLevel={selectedThinkingLevel}
-                onThinkingLevelChange={handleThinkingLevelChange}
+                onThinkingLevelChange={changeThinkingLevel}
                 onStart={handleStartNewConversation}
                 onToggleLeftPanel={handleToggleLeftPanel}
                 workspaces={workspaces.filter(workspace => workspace.kind === "user")}
@@ -490,9 +340,9 @@ export function AppShell() {
                       loadingStore={loadingStore}
                       modelId={activeThread?.modelId ?? selectedModelId}
                       modelOptions={visibleModelOptions}
-                      onModelChange={handleModelChange}
+                      onModelChange={changeModel}
                       thinkingLevel={activeThinkingLevel}
-                      onThinkingLevelChange={handleThinkingLevelChange}
+                      onThinkingLevelChange={changeThinkingLevel}
                       pendingPrompt={pendingPrompt}
                       thread={activeThread}
                       onApprovalDecision={handleApprovalDecision}
@@ -529,14 +379,14 @@ export function AppShell() {
         renameDialog={renameDialog}
         setDeleteDialog={setDeleteDialog}
         setRenameDialog={setRenameDialog}
-        onConfirmDeleteThread={() => void handleConfirmDeleteThread()}
-        onConfirmRenameThread={() => void handleConfirmRenameThread()}
+        onConfirmDeleteThread={() => void confirmDelete()}
+        onConfirmRenameThread={() => void confirmRename()}
       />
       <SettingsDialog
         appSettings={appSettings}
         initialTab={settingsTab}
         modelOptions={modelOptions}
-        onChangeSettings={patch => void handleChangeSettings(patch)}
+        onChangeSettings={patch => void changeSettings(patch)}
         onClose={() => setSettingsOpen(false)}
         open={settingsOpen}
       />
@@ -565,10 +415,6 @@ function deriveThreadTitle(content: string) {
   if (!compact)
     return "New Chat";
   return compact.length > 28 ? `${compact.slice(0, 28)}...` : compact;
-}
-
-function thinkingLevelForModel(modelId: string, modelOptions: AgentModelOption[]) {
-  return normalizeThinkingLevel(modelThinkingLevel(modelId, modelOptions));
 }
 
 let pendingPromptCounter = 0;
