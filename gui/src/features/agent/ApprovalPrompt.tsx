@@ -6,6 +6,7 @@ import type {
 import { AlertTriangle, Check, ShieldAlert, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "../../components/ui/Button";
+import { isRecord } from "../../lib/objects";
 
 interface ApprovalPromptProps {
   approval: StoredApprovalRequest;
@@ -284,8 +285,4 @@ function parseNestedJson(value: string) {
     current = JSON.parse(current) as unknown;
   }
   return current;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

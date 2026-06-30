@@ -18,6 +18,7 @@ import {
 import { cn } from "../../lib/cn";
 import { formatTime } from "../../lib/date";
 import { emitFutureEvent } from "../../lib/futureEvents";
+import { isRecord } from "../../lib/objects";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { formatRunStatus, runTone, shortId, summarizePayload } from "./runDisplayFormatters";
 import { RunError } from "./RunError";
@@ -542,8 +543,4 @@ function formatDuration(milliseconds: number) {
   const minutes = Math.floor(milliseconds / 60_000);
   const seconds = Math.round((milliseconds % 60_000) / 1000);
   return `${minutes}m ${seconds}s`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

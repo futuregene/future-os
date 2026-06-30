@@ -3,6 +3,7 @@ import { CircleStop, Maximize2, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { isRecord } from "../../lib/objects";
 import { runStatusLabel } from "./runDisplayFormatters";
 import { RunError } from "./RunError";
 
@@ -290,8 +291,4 @@ function parseToolInput(input: string) {
 function stringField(record: Record<string, unknown> | null, key: string) {
   const value = record?.[key];
   return typeof value === "string" && value.trim() ? value : null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

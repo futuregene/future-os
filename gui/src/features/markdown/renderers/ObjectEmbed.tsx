@@ -10,6 +10,7 @@ import { AlertTriangle, Beaker, FileDiff, Maximize2, Microscope } from "lucide-r
 import { Badge } from "../../../components/ui/Badge";
 import { Button } from "../../../components/ui/Button";
 import { emitFutureEvent } from "../../../lib/futureEvents";
+import { isRecord } from "../../../lib/objects";
 
 export function ApprovalEmbed({
   approval,
@@ -192,8 +193,4 @@ function toolCommand(input: string | null | undefined) {
   }
 
   return null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
