@@ -517,15 +517,24 @@ pub fn prune_thread_changesets(
 /// Runs interrupted by a crash: a `before` snapshot exists but there is no
 /// `after` snapshot and no changeset. Returns `(run_id, thread_id, workspace_id)`
 /// (§6.6).
-pub fn list_interrupted_runs() -> Result<Vec<(String, String, String)>, crate::AppError> {
-    let conn = connect()?;
+/// Runs that have a usable `before` snapshot but no materialized `run_snapshot`
+/// changeset yet. Covers two restart-recovery shapes (§6.6, B-6): an
+/// interrupted Run with no `after` snapshot, and a finished Run whose deferred
+/// materialize never ran before exit (its `after` snapshot is present). The
+/// `after`-present case is deliberately *not* excluded — the old query's
+/// `NOT EXISTS(after)` dropped it, leaving such Runs permanently
+/// changeset-less.
+pub fn list_unmaterialized_runs() -> Result<Vec<(String, String, String)>, crate::AppError> {
+    list_unmaterialized_runs_in(&connect()?)
+}
+
+fn list_unmaterialized_runs_in(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<(String, String, String)>, crate::AppError> {
     let mut stmt = conn.prepare(
         "SELECT s.run_id, s.thread_id, s.workspace_id
          FROM review_snapshots s
          WHERE s.phase = 'before' AND s.status != 'failed'
-           AND NOT EXISTS (
-             SELECT 1 FROM review_snapshots a WHERE a.run_id = s.run_id AND a.phase = 'after'
-           )
            AND NOT EXISTS (
              SELECT 1 FROM review_changesets c
              WHERE c.run_id = s.run_id AND c.source_kind = 'run_snapshot'
@@ -571,4 +580,72 @@ pub fn mark_snapshot_failed(snapshot_id: &str, reason: &str) -> Result<(), crate
         params![snapshot_id, reason],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::{params, Connection};
+
+    use super::*;
+    use crate::store::schema::SCHEMA;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        conn.execute_batch(SCHEMA).expect("initialize test schema");
+        // The recovery query is exercised in isolation; insert snapshot/changeset
+        // rows directly without their workspace/thread/run parents.
+        conn.execute_batch("PRAGMA foreign_keys = OFF;")
+            .expect("disable foreign keys");
+        conn
+    }
+
+    fn insert_snapshot(conn: &Connection, run_id: &str, phase: &str) {
+        conn.execute(
+            "INSERT INTO review_snapshots (id, workspace_id, thread_id, run_id, phase, status, created_at)
+             VALUES (?1, 'ws', 'thread', ?2, ?3, 'complete', 1)",
+            params![format!("{run_id}_{phase}"), run_id, phase],
+        )
+        .expect("insert snapshot");
+    }
+
+    fn insert_changeset(conn: &Connection, run_id: &str) {
+        conn.execute(
+            "INSERT INTO review_changesets (id, thread_id, run_id, title, status, source_kind, created_at, updated_at)
+             VALUES (?1, 'thread', ?2, 't', 'ready', 'run_snapshot', 1, 1)",
+            params![format!("cs_{run_id}"), run_id],
+        )
+        .expect("insert changeset");
+    }
+
+    /// B-6: a Run with before+after but no changeset (deferred materialize never
+    /// ran before exit) must be recoverable — the old `NOT EXISTS(after)` query
+    /// wrongly excluded it.
+    #[test]
+    fn lists_finished_but_unmaterialized_run() {
+        let conn = test_conn();
+        insert_snapshot(&conn, "run_b6", "before");
+        insert_snapshot(&conn, "run_b6", "after");
+        let runs = list_unmaterialized_runs_in(&conn).unwrap();
+        assert!(runs.iter().any(|(run_id, ..)| run_id == "run_b6"));
+    }
+
+    /// The interrupted shape (before only, no after) is still listed.
+    #[test]
+    fn lists_interrupted_run() {
+        let conn = test_conn();
+        insert_snapshot(&conn, "run_int", "before");
+        let runs = list_unmaterialized_runs_in(&conn).unwrap();
+        assert!(runs.iter().any(|(run_id, ..)| run_id == "run_int"));
+    }
+
+    /// A Run that already has a materialized changeset is excluded.
+    #[test]
+    fn excludes_already_materialized_run() {
+        let conn = test_conn();
+        insert_snapshot(&conn, "run_done", "before");
+        insert_snapshot(&conn, "run_done", "after");
+        insert_changeset(&conn, "run_done");
+        let runs = list_unmaterialized_runs_in(&conn).unwrap();
+        assert!(!runs.iter().any(|(run_id, ..)| run_id == "run_done"));
+    }
 }

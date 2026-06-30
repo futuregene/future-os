@@ -657,14 +657,15 @@ make run-gui
 - **验证**: `git init` 建中文名文件 commit+改动，调 `get_git_review` 断言对应 file 的 `diff` 非空 + 后端基线三连。
 - **关联**: M-6（抽共享 helper 时统一）；ER.md §6.8。
 
-### [ ] B-6. fire-and-forget materialize 任务的恢复缺口
+### [x] B-6. fire-and-forget materialize 任务的恢复缺口
 - **类别 / 严重度**: bug / 中
 - **位置**: spawn `agent_bridge/mod.rs:141-149`；恢复 `shadow_review/maintenance.rs:88-95` + `recover_one:97-162`；判定 SQL `store/review_snapshots.rs:338-361`
 - **现状**: after 快照在 `agent_prompt` 同步捕获(mod.rs:130-138)，materialize 丢进 detached `tokio::spawn`，JoinHandle 丢弃。恢复 SQL 只覆盖「有 before、无 after」(345 `NOT EXISTS ... phase='after'`)。
 - **问题**: 若 app 在 materialize 跑完前退出，DB 已有 before+after 但无 changeset 行 → `list_interrupted_runs` 的 `NOT EXISTS(after)` 把它排除 → 启动恢复(lib.rs:92) 不重算 → 该 Run「上一轮变更」永久缺失，`review-updated` 永不发出。
 - **改造方案**（建议 A）扩恢复判定：新增 `list_unmaterialized_runs()`（去掉 after 的 `NOT EXISTS`、保留 changeset 的 `NOT EXISTS`），在 `recover_one` 复用 `materialize`（两端 commit 都在时用 `confidence="normal"`）。与现有 interrupted 集合去重（`upsert_run_changeset` 已幂等，重复执行安全）。方案 B（排空任务）无法覆盖崩溃，不如 A。
 - **复核结论**: CONFIRMED（spawn+丢弃 handle、after 同步捕获、`NOT EXISTS(after)` 排除场景均核对）。
-- **验证**: 单测：写 before+after 但不写 changeset，调恢复后断言 `get_run_changeset(run_id)` 为 `Some` + 后端基线三连。
+- **落地结论**: 采用方案 A。`list_interrupted_runs` → `list_unmaterialized_runs`（去掉 `NOT EXISTS(after)`，保留 `NOT EXISTS(changeset)`），覆盖 interrupted + 完成未 materialize 两种形态。**坑：原 `recover_one` 会把 run 标 cancelled 并重新 capture after——对「已正常完成、仅缺 changeset」的 B-6 是错的。** 故 `recover_one` 按 after 是否存在分支：after 存在→复用、不标 cancelled、不重 capture、`confidence="normal"`（与正常 materialize 一致）；after 缺失→沿用原 interrupted 路径（标 cancelled + capture + `confidence="recovered"`）。共用 materialize+upsert 尾段。抽 `list_unmaterialized_runs_in(conn)` 便于单测，补 3 例（含 B-6 形态被纳入、已 materialize 被排除）。
+- **验证**: 后端基线三连通过（cargo test 56 例，含新增 3 例）。
 - **关联**: review.rs materialize 流水线；maintenance.rs §6.6。
 
 ### [x] B-7. 嵌套 Overlay 的全局 Escape 同时关闭内外两层
