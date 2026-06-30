@@ -7,19 +7,14 @@ import { trimTrailingSlash } from "./string.js";
 /**
  * Resolve the Future Platform base URL with this priority:
  *   1. Explicit override (e.g. --url CLI argument)
- *   2. FUTURE_BASE_URL environment variable
- *   3. auth.json → future.base_url (strip /api)
- *   4. DEFAULT_PLATFORM_URL
+ *   2. auth.json → future.base_url (strip /api)
+ *   3. DEFAULT_PLATFORM_URL
  */
 export async function getPlatformUrl(override?: string): Promise<string> {
   // Priority 1: explicit override
   if (override) return trimTrailingSlash(override);
 
-  // Priority 2: environment variable
-  const envUrl = process.env["FUTURE_BASE_URL"];
-  if (envUrl) return trimTrailingSlash(envUrl);
-
-  // Priority 3: auth.json
+  // Priority 2: auth.json
   try {
     const raw = await readFile(AUTH_FILE, "utf8");
     const auth = JSON.parse(raw) as unknown;
@@ -38,6 +33,6 @@ export async function getPlatformUrl(override?: string): Promise<string> {
     // auth.json not found or unreadable — fall through
   }
 
-  // Priority 4: default
+  // Priority 3: default
   return DEFAULT_PLATFORM_URL;
 }
