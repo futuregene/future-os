@@ -1122,7 +1122,7 @@ export class App extends Container {
       if (cmd === "scoped-models") {
         try {
           const models = await this.client.listModels();
-          const enabledSet = new Set(this.enabledModelIds ?? models.map((m) => m.id));
+          const enabledSet = new Set(this.enabledModelIds ?? models.map((m) => m.provider ? `${m.provider}/${m.id}` : m.id));
           const selector = new ScopedModelsSelector({
             allModels: models,
             enabledModelIds: enabledSet,

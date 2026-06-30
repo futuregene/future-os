@@ -85,10 +85,11 @@ export class ScopedModelsSelector implements Component {
     if (key === "space") {
       const item = this.filteredItems[this.selectedIndex];
       if (item) {
-        if (this.enabledSet.has(item.id)) {
-          this.enabledSet.delete(item.id);
+        const fullId = item.provider ? `${item.provider}/${item.id}` : item.id;
+        if (this.enabledSet.has(fullId)) {
+          this.enabledSet.delete(fullId);
         } else {
-          this.enabledSet.add(item.id);
+          this.enabledSet.add(fullId);
         }
       }
       return true;
@@ -160,11 +161,11 @@ export class ScopedModelsSelector implements Component {
       if (!item) continue;
 
       const selected = idx === this.selectedIndex;
-      const isEnabled = this.enabledSet.has(item.id);
+      const fullId = item.provider ? `${item.provider}/${item.id}` : item.id;
+      const isEnabled = this.enabledSet.has(fullId);
       const status = isEnabled
         ? `${CSI}38;5;${THEME.success}m ✓${RESET}`
         : `${CSI}38;5;${THEME.dimFg}m ✗${RESET}`;
-      const fullId = item.provider ? `${item.provider}/${item.id}` : item.id;
       const labelPart = truncateToWidth(fullId, maxLabelW);
       const descPart = truncateToWidth(item.label, maxDescW);
 
