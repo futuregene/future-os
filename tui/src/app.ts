@@ -77,6 +77,10 @@ export class App extends Container {
   private keybindings = new KeybindingManager();
   private enabledModelIds: string[] | null = null;  // client-side scoped models
 
+  // ── TUI-local settings (persisted to disk, not on agent) ──────────────
+  private tuiSettings: { defaultModel?: string; defaultThinkingLevel?: string; defaultPermissionLevel?: string; enabledModelIds?: string[] } = {};
+  private tuiSettingsPath = path.join(os.homedir(), ".future", "tui", "settings.json");
+
   // Slash commands for autocomplete (with model/session arg flags)
   private readonly slashCommands: SlashCommand[] = [
     { value: "/cwd", label: "/cwd", description: "change working directory" },
@@ -250,6 +254,7 @@ export class App extends Container {
   // ─── Lifecycle ────────────────────────────────────────────────────────────
 
   async start(): Promise<void> {
+    this.loadTuiSettings();
     this.terminal.hideCursor();
     this.running = true;
     this.queryCellSize();
@@ -337,6 +342,7 @@ export class App extends Container {
       }, 100);
     }
 
+    this.applyTuiDefaults();
     this.showWelcome();
     this.requestRender();
 
@@ -790,6 +796,8 @@ export class App extends Container {
           try {
             await this.client.setModel(arg);
             this.state.model = arg;
+            this.tuiSettings.defaultModel = arg;
+            this.saveTuiSettings();
             await this.refresh();
             this.chat.addMessage({
               id: crypto.randomUUID(),
@@ -1121,6 +1129,7 @@ export class App extends Container {
             onSave: async (enabledIds) => {
               try {
                 this.enabledModelIds = enabledIds;
+                this.saveTuiSettings();
                 this.chat.addMessage({
                   id: crypto.randomUUID(),
                   role: "system",
@@ -1415,6 +1424,37 @@ export class App extends Container {
     }
   }
 
+  private loadTuiSettings(): void {
+    try {
+      const data = fs.readFileSync(this.tuiSettingsPath, "utf-8");
+      this.tuiSettings = JSON.parse(data);
+    } catch { /* file doesn't exist yet — use defaults */ }
+    if (this.tuiSettings.enabledModelIds) {
+      this.enabledModelIds = this.tuiSettings.enabledModelIds;
+    }
+  }
+
+  private saveTuiSettings(): void {
+    this.tuiSettings.enabledModelIds = this.enabledModelIds ?? undefined;
+    try {
+      fs.mkdirSync(path.dirname(this.tuiSettingsPath), { recursive: true });
+      fs.writeFileSync(this.tuiSettingsPath, JSON.stringify(this.tuiSettings, null, 2));
+    } catch { /* ignore write errors */ }
+  }
+
+  private applyTuiDefaults(): void {
+    const s = this.tuiSettings;
+    if (s.defaultModel) {
+      this.client.setModel(s.defaultModel).catch(() => {});
+    }
+    if (s.defaultThinkingLevel) {
+      this.client.setThinkingLevel(s.defaultThinkingLevel as "off" | "minimal" | "low" | "medium" | "high" | "xhigh").catch(() => {});
+    }
+    if (s.defaultPermissionLevel) {
+      this.client.setPermissionLevel(s.defaultPermissionLevel as "all" | "workspace" | "none").catch(() => {});
+    }
+  }
+
   private async refresh(): Promise<void> {
     try {
       const s = await this.client.getState();
@@ -1482,6 +1522,8 @@ export class App extends Container {
         try {
           await this.client.setModel(item.value);
           this.state.model = item.value;
+          this.tuiSettings.defaultModel = item.value;
+          this.saveTuiSettings();
           await this.refresh();
           this.chat.addMessage({
             id: crypto.randomUUID(),
@@ -1522,7 +1564,11 @@ export class App extends Container {
   private async cycleThinking(): Promise<void> {
     try {
       const r = await this.client.cycleThinkingLevel();
-      if (r) this.state.thinking = r.level;
+      if (r) {
+        this.state.thinking = r.level;
+        this.tuiSettings.defaultThinkingLevel = r.level;
+        this.saveTuiSettings();
+      }
     } catch { /* ignore */ }
     this.requestRender();
   }
