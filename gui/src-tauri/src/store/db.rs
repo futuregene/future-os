@@ -5,11 +5,18 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{fs, path::PathBuf};
 
+use super::approvals::{
+    approval_request_from_row, ApprovalRequestRecord, APPROVAL_REQUEST_COLUMNS,
+};
 use super::get_thread;
-use super::records::*;
+use super::messages::{message_from_row, MessageRecord, MESSAGE_COLUMNS};
+use super::runs::{
+    run_event_from_row, run_from_row, RunEventRecord, RunRecord, RUN_COLUMNS, RUN_EVENT_COLUMNS,
+};
 use super::schema::{ADDED_COLUMNS, ADDED_INDEXES, SCHEMA};
+use super::threads::ThreadRecord;
 use super::util::{create_id, loaded, now_millis};
-use super::workspaces::get_workspace_in;
+use super::workspaces::{get_workspace_in, workspace_from_row, WorkspaceRecord, WORKSPACE_COLUMNS};
 
 pub(super) fn app_dir() -> Result<PathBuf, crate::AppError> {
     let home = crate::home_dir().ok_or("HOME/USERPROFILE environment variable is not set.")?;

@@ -1,8 +1,71 @@
 use rusqlite::{params, OptionalExtension};
+use serde::Serialize;
 
 use super::db::*;
 use super::records::*;
+use super::review_snapshots::{
+    review_file_change_from_row, ReviewFileChangeRecord, REVIEW_FILE_CHANGE_COLUMNS,
+};
 use super::util::*;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalRequestRecord {
+    pub id: String,
+    pub thread_id: String,
+    pub run_id: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub kind: String,
+    pub status: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub risk_level: Option<String>,
+    pub requested_action: Option<String>,
+    pub decision_note: Option<String>,
+    pub decided_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    // P2: structured action and sandbox boundary
+    pub action_category: Option<String>,
+    pub action_payload: Option<String>,
+    pub sandbox_boundary: Option<String>,
+    pub reviewer: String,
+    pub decision_scope: String,
+    pub decision_source: String,
+}
+
+/// Column list for `approval_request_from_row`, in struct order.
+pub(super) const APPROVAL_REQUEST_COLUMNS: &str =
+    "id, thread_id, run_id, tool_call_id, kind, status, title, summary, \
+     risk_level, requested_action, decision_note, decided_at, created_at, updated_at, \
+     action_category, action_payload, sandbox_boundary, reviewer, decision_scope, decision_source";
+
+pub(super) fn approval_request_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ApprovalRequestRecord> {
+    Ok(ApprovalRequestRecord {
+        id: row.get(0)?,
+        thread_id: row.get(1)?,
+        run_id: row.get(2)?,
+        tool_call_id: row.get(3)?,
+        kind: row.get(4)?,
+        status: row.get(5)?,
+        title: row.get(6)?,
+        summary: row.get(7)?,
+        risk_level: row.get(8)?,
+        requested_action: row.get(9)?,
+        decision_note: row.get(10)?,
+        decided_at: row.get(11)?,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
+        action_category: row.get(14)?,
+        action_payload: row.get(15)?,
+        sandbox_boundary: row.get(16)?,
+        reviewer: row.get(17)?,
+        decision_scope: row.get(18)?,
+        decision_source: row.get(19)?,
+    })
+}
 
 pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), crate::AppError> {
     // BEGIN IMMEDIATE so the existence check and the insert are one atomic
