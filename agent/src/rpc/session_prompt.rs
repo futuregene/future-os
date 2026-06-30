@@ -98,7 +98,7 @@ impl ServerSession {
         if self.auto_compaction {
             if let Ok(mut r#loop) = self.agent_loop.try_write() {
                 let comp_tokens = self.last_prompt_tokens.clone();
-                let comp_model = self.model.clone();
+                let comp_model = self.compaction_model.clone();
                 let comp_result = r#loop.last_compaction_result.clone();
                 r#loop.config.transform_context = Some(Arc::new(move |msgs, _| {
                     use std::sync::atomic::Ordering;
@@ -106,8 +106,9 @@ impl ServerSession {
                     if context_tokens == 0 {
                         return msgs; // No API call made yet, nothing to compact
                     }
+                    let model = comp_model.read().unwrap().clone();
                     let context_window = crate::models::Registry::new()
-                        .resolve(&comp_model)
+                        .resolve(&model)
                         .map(|m| m.context_window)
                         .unwrap_or(200000);
                     // Compact when context usage exceeds 90% (10% reserve, min 16K)
