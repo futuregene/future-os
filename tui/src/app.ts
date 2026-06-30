@@ -1496,9 +1496,13 @@ export class App extends Container {
     let models: string[] = [];
     try {
       const allModels = await this.client.listModels();
-      models = allModels
-        .map((m) => m.provider ? `${m.provider}/${m.id}` : m.id)
-        .sort((a, b) => a.localeCompare(b));
+      let candidates = allModels.map((m) => m.provider ? `${m.provider}/${m.id}` : m.id);
+      // If scoped, only show enabled models
+      if (this.enabledModelIds && this.enabledModelIds.length > 0) {
+        const scope = new Set(this.enabledModelIds);
+        candidates = candidates.filter((m) => scope.has(m));
+      }
+      models = candidates.sort((a, b) => a.localeCompare(b));
     } catch (err) {
       this.chat.addMessage({
         id: crypto.randomUUID(),
@@ -1549,8 +1553,20 @@ export class App extends Container {
 
   private async cycleModel(): Promise<void> {
     try {
-      await this.client.cycleModel();
-      await this.refresh();
+      // If scoped models are set, cycle within them locally.
+      if (this.enabledModelIds && this.enabledModelIds.length > 0) {
+        const current = this.state.model;
+        const idx = this.enabledModelIds.indexOf(current);
+        const nextIdx = idx < 0 ? 0 : (idx + 1) % this.enabledModelIds.length;
+        const nextModel = this.enabledModelIds[nextIdx];
+        await this.client.setModel(nextModel);
+        this.state.model = nextModel;
+        this.tuiSettings.defaultModel = nextModel;
+        this.saveTuiSettings();
+      } else {
+        await this.client.cycleModel();
+        await this.refresh();
+      }
     } catch { /* ignore */ }
     this.requestRender();
   }
