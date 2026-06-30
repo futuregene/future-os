@@ -13,8 +13,10 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-* {
-  box-sizing: border-box;
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
 }
 
 html,
@@ -31,14 +33,16 @@ body {
   background: #f6f7f9;
 }
 
-button,
-input,
-textarea {
-  font: inherit;
-}
+@layer base {
+  button,
+  input,
+  textarea {
+    font: inherit;
+  }
 
-button {
-  cursor: pointer;
+  button {
+    cursor: pointer;
+  }
 }
 
 ::-webkit-scrollbar {
