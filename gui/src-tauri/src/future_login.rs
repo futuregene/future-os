@@ -180,8 +180,10 @@ pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
                 "授权响应的凭证类型不受支持。",
             ));
         }
-        // Only report success after the key is durably written.
-        crate::auth_store::set_future_key(key.trim())?;
+        // Only report success after the key is durably written. Pin `base_url`
+        // to the resolved platform (`{platform}/api`), exactly as the CLI does,
+        // so a GUI login and a CLI login leave identical `auth.json` state.
+        crate::auth_store::set_future_login(key.trim(), &format!("{platform}/api"))?;
         return Ok(FutureLoginPoll::of("authorized"));
     }
 
