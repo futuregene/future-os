@@ -139,21 +139,19 @@ async function listSkills(): Promise<void> {
   }
 
   // Check which skills are installed across all scopes
-  const installed: Record<string, { scopes: string[]; version: string }> = {};
-  for (const [scope, dir] of [["app", APP_SKILLS] as const, ["project", projectSkillsDir()] as const, ["global", GLOBAL_SKILLS] as const]) {
+  const installed: Record<string, string> = {};
+  for (const dir of [APP_SKILLS, projectSkillsDir(), GLOBAL_SKILLS]) {
     try {
       const entries = await readdir(dir);
       for (const entry of entries) {
+        if (installed[entry]) continue;
         const skillMd = join(dir, entry, "SKILL.md");
         try {
           const ver = await readSkillMdVersion(skillMd);
-          const info = (installed[entry] ??= { scopes: [], version: ver ?? "?" });
-          info.scopes.push(scope);
-          if (ver) info.version = ver;
+          if (ver) installed[entry] = ver;
         } catch {
           // No SKILL.md — still mark as installed (partial install)
-          const info = (installed[entry] ??= { scopes: [], version: "?" });
-          info.scopes.push(scope);
+          if (!installed[entry]) installed[entry] = "?";
         }
       }
     } catch {
@@ -161,12 +159,25 @@ async function listSkills(): Promise<void> {
     }
   }
 
+  // Compute dynamic column widths
+  const idWidth = Math.min(36, Math.max(12, ...skills.map(s => s.id.length)));
+  const verWidth = Math.max(10, ...skills.map(s => (s.latest_version ? `v${s.latest_version}` : "—").length));
+  const instWidth = skills.reduce((max, s) => {
+    const marker = installed[s.id] ? `v${installed[s.id]}` : "—";
+    return Math.max(max, marker.length);
+  }, 9);
+
+  const DESC_MAX = 48;
+  const descWidth = Math.min(DESC_MAX, Math.max(12, ...skills.map(s => s.description.length)));
+
+  console.log(`  ${"NAME".padEnd(idWidth)} ${"LATEST".padEnd(verWidth)} ${"INSTALLED".padEnd(instWidth)} DESCRIPTION`);
+  console.log(`  ${"—".repeat(idWidth)} ${"—".repeat(verWidth)} ${"—".repeat(instWidth)} ${"—".repeat(descWidth)}`);
+
   for (const s of skills) {
-    const info = installed[s.id];
-    const marker = info ? `[${info.scopes.join(", ")}] v${info.version}` : "";
-    const ver = s.latest_version ? `v${s.latest_version}` : "(no version)";
-    console.log(`  ${s.id.padEnd(30)} ${`remote ${ver}`.padEnd(18)} ${marker}`);
-    console.log(`    ${s.name}  |  ${s.price}  |  ${s.formats}`);
+    const marker = installed[s.id] ? `v${installed[s.id]}` : "—";
+    const ver = s.latest_version ? `v${s.latest_version}` : "—";
+    const desc = s.description.length > DESC_MAX ? s.description.slice(0, DESC_MAX - 1) + "…" : s.description;
+    console.log(`  ${s.id.padEnd(idWidth)} ${ver.padEnd(verWidth)} ${marker.padEnd(instWidth)} ${desc.padEnd(descWidth)}`);
   }
   console.log(`\n${skills.length} skills available. Use "future skills install <name>" to install.`);
 }
