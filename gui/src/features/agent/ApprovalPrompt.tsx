@@ -93,7 +93,7 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
       {action ? <ActionDetails action={action} /> : null}
       {fallbackAction
         ? (
-            <pre className="mt-3 max-h-[33vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface-subtle p-3 text-xs leading-5 text-ink-soft">
+            <pre className="mt-3 max-h-[33vh] overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-surface-subtle p-3 text-xs leading-5 text-ink-soft">
               <code className="block min-w-0">{fallbackAction}</code>
             </pre>
           )
@@ -141,7 +141,7 @@ function ActionDetails({ action }: ActionDetailsProps) {
         <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
           Shell command
         </div>
-        <pre className="max-h-[33vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface-subtle p-3 font-mono text-xs leading-5 text-ink">
+        <pre className="max-h-[33vh] overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-surface-subtle p-3 font-mono text-xs leading-5 text-ink">
           <code className="block min-w-0">{action.command}</code>
         </pre>
       </div>
@@ -162,7 +162,7 @@ function ActionDetails({ action }: ActionDetailsProps) {
             <div className="font-mono text-xs text-ink">{entry.path}</div>
             {entry.preview
               ? (
-                  <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-ink-soft">
+                  <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap wrap-break-word text-xs leading-5 text-ink-soft">
                     <code className="block min-w-0">{entry.preview}</code>
                   </pre>
                 )

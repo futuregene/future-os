@@ -42,7 +42,7 @@ export function MessageBlock({
           className={cn(
             "text-sm leading-6 text-ink",
             isUser
-              ? "ml-auto w-fit max-w-2xl break-words rounded-lg bg-surface-subtle px-4 py-3 text-right"
+              ? "ml-auto w-fit max-w-2xl wrap-break-word rounded-lg bg-surface-subtle px-4 py-3 text-right"
               : "w-full",
           )}
         >

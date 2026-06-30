@@ -131,7 +131,7 @@ export function AgentThread({
           ref={scrollRef}
           className={cn(
             "floating-scrollbar h-full overflow-auto overscroll-none px-8 pt-6",
-            activeApproval ? "pb-[28rem]" : "pb-48",
+            activeApproval ? "pb-112" : "pb-48",
           )}
           data-chat-scroll="true"
           onScroll={handleScroll}
@@ -165,7 +165,7 @@ export function AgentThread({
             transform: `translateY(${scrollbar.top}px)`,
           }}
         />
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-surface from-80% to-transparent px-8 pb-5 pt-10">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-linear-to-t from-surface from-80% to-transparent px-8 pb-5 pt-10">
           <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
             {activeApproval
               ? (
