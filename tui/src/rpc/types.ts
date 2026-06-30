@@ -139,12 +139,12 @@ export interface SessionSummary {
 
 export interface ModelInfo {
   id: string;
-  name: string;
+  label: string;       // display name (was "name")
   provider: string;
-  reasoning: boolean;
-  image: boolean;
+  supportsImages: boolean;  // was "image"
+  thinkingLevel: string;    // default thinking level for this model
   contextWindow: number;
-  maxTokens: number;
+  isDefault: boolean;
 }
 
 // ============================================================================

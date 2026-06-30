@@ -166,7 +166,7 @@ export class ScopedModelsSelector implements Component {
         : `${CSI}38;5;${THEME.dimFg}m ✗${RESET}`;
       const fullId = item.provider ? `${item.provider}/${item.id}` : item.id;
       const labelPart = truncateToWidth(fullId, maxLabelW);
-      const descPart = truncateToWidth(item.name, maxDescW);
+      const descPart = truncateToWidth(item.label, maxDescW);
 
       if (selected) {
         const prefix = `${CSI}38;5;${THEME.selectedFg}m${CSI}48;5;${THEME.selectedBg}m ▶ ${status} `;

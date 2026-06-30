@@ -75,6 +75,7 @@ export class App extends Container {
   private autocomplete = new AutocompletePopup();
   private acManager = new AutocompleteManager();
   private keybindings = new KeybindingManager();
+  private enabledModelIds: string[] | null = null;  // client-side scoped models
 
   // Slash commands for autocomplete (with model/session arg flags)
   private readonly slashCommands: SlashCommand[] = [
@@ -98,8 +99,8 @@ export class App extends Container {
   // Autocomplete provider callbacks
   private getModels = async (): Promise<string[]> => {
     try {
-      const r = await this.client.getAvailableModels();
-      return r.models.map((m) => m.id);
+      const models = await this.client.listModels();
+      return models.map((m) => m.id);
     } catch { return []; }
   };
 
@@ -1112,15 +1113,14 @@ export class App extends Container {
 
       if (cmd === "scoped-models") {
         try {
-          const r = await this.client.getAvailableModels();
-          const models = r.models;
-          const enabledSet = new Set(r.enabled_model_ids ?? models.map((m) => m.id));
+          const models = await this.client.listModels();
+          const enabledSet = new Set(this.enabledModelIds ?? models.map((m) => m.id));
           const selector = new ScopedModelsSelector({
             allModels: models,
             enabledModelIds: enabledSet,
             onSave: async (enabledIds) => {
               try {
-                await this.client.setEnabledModels(enabledIds);
+                this.enabledModelIds = enabledIds;
                 this.chat.addMessage({
                   id: crypto.randomUUID(),
                   role: "system",
@@ -1234,16 +1234,14 @@ export class App extends Container {
       if (cmd === "status") {
         try {
           const s = await this.client.getState();
-          const models = await this.client.getAvailableModels();
-          const currentModel = models.models.find((m) => m.id === s.model);
+          const models = await this.client.listModels();
+          const currentModel = models.find((m) => m.id === s.model);
           const modelInfo = currentModel
             ? [
-                `**Model:** ${currentModel.name} (\`${currentModel.id}\`)`,
+                `**Model:** ${currentModel.label} (\`${currentModel.id}\`)`,
                 `**Provider:** ${currentModel.provider}`,
-                `**Reasoning:** ${currentModel.reasoning ? "yes" : "no"}`,
-                `**Image support:** ${currentModel.image ? "yes" : "no"}`,
+                `**Image support:** ${currentModel.supportsImages ? "yes" : "no"}`,
                 `**Context window:** ${(currentModel.contextWindow / 1000).toFixed(0)}K`,
-                `**Max output tokens:** ${currentModel.maxTokens ? (currentModel.maxTokens / 1000).toFixed(0) + "K" : "unlimited"}`,
               ]
             : [`**Model:** ${s.model || "(unknown)"}`];
           const lines = [
@@ -1457,8 +1455,8 @@ export class App extends Container {
   async showModelSelector(): Promise<void> {
     let models: string[] = [];
     try {
-      const r = await this.client.getAvailableModels();
-      models = r.models
+      const allModels = await this.client.listModels();
+      models = allModels
         .map((m) => m.provider ? `${m.provider}/${m.id}` : m.id)
         .sort((a, b) => a.localeCompare(b));
     } catch (err) {

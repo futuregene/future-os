@@ -645,12 +645,13 @@ export class GrpcClient {
     return this.call("cycle_model", {}) as Promise<{ model: string; thinkingLevel: string; isScoped: boolean } | null>;
   }
 
-  async getAvailableModels(): Promise<{ models: import("./types.js").ModelInfo[]; enabled_model_ids?: string[] }> {
-    return this.call("get_available_models", {}) as Promise<{ models: import("./types.js").ModelInfo[]; enabled_model_ids?: string[] }>;
+  async listModels(): Promise<import("./types.js").ModelInfo[]> {
+    const resp = await this.call("list_models", {}) as { models: import("./types.js").ModelInfo[] };
+    return resp.models;
   }
 
   async setEnabledModels(modelIds: string[]): Promise<void> {
-    await this.call("set_enabled_models", { enabledModels: modelIds });
+    // Stored client-side in TUI settings; no longer persisted on agent.
   }
 
   async setThinkingLevel(level: RpcCommand["level"]): Promise<void> {

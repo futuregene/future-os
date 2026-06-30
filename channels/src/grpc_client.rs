@@ -192,8 +192,9 @@ impl AgentClient {
 
     /// Get available models.
     pub async fn get_available_models(&mut self, session_id: &str) -> Result<Vec<ModelInfo>> {
+        // Uses list_models (always returns all models; scoping is client-side).
         let resp = self
-            .call("get_available_models", session_id, Default::default())
+            .call("list_models", session_id, Default::default())
             .await?;
         let models = resp["models"]
             .as_array()
@@ -201,12 +202,12 @@ impl AgentClient {
                 arr.iter()
                     .map(|m| ModelInfo {
                         id: m["id"].as_str().unwrap_or("?").to_string(),
-                        name: m["name"].as_str().unwrap_or("?").to_string(),
+                        name: m["label"].as_str().unwrap_or("?").to_string(),
                         provider: m["provider"].as_str().unwrap_or("").to_string(),
-                        image: m["image"].as_bool().unwrap_or(false),
-                        reasoning: m["reasoning"].as_bool().unwrap_or(false),
+                        image: m["supportsImages"].as_bool().unwrap_or(false),
+                        reasoning: false, // Not in list_models response
                         context_window: m["contextWindow"].as_i64().unwrap_or(0),
-                        max_tokens: m["maxTokens"].as_i64().unwrap_or(0),
+                        max_tokens: 0, // Not in list_models response
                     })
                     .collect()
             })
