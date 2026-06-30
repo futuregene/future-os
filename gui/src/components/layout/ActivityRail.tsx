@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import type { StoredRun, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import {
   Archive,
+  Blocks,
   ChevronDown,
   ChevronRight,
   Folder,
@@ -163,6 +164,17 @@ export function ActivityRail({
                   >
                     <Sparkles className="size-4 shrink-0" />
                     <span className="truncate">Models</span>
+                  </button>
+                  <button
+                    className={cn(
+                      "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
+                      active === "skill" && "bg-surface-subtle text-ink",
+                    )}
+                    onClick={() => onChange("skill")}
+                    type="button"
+                  >
+                    <Blocks className="size-4 shrink-0" />
+                    <span className="truncate">Skills</span>
                   </button>
                 </div>
                 {featureItems.length > 0
