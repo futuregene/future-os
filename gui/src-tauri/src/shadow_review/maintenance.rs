@@ -76,9 +76,11 @@ fn try_verify_consistency() -> Result<(), AppError> {
     Ok(())
 }
 
-/// Recover Runs interrupted by a crash (before snapshot present, no after/no
-/// changeset): mark them cancelled and produce a `recovered` changeset whose
-/// diff is the before → current-state delta (§6.6).
+/// Recover Runs left without a materialized changeset by a crash (§6.6, B-6):
+///   - interrupted (no `after`): settle cancelled, capture the current state as
+///     the after, and mark the result `recovered`;
+///   - finished-but-unmaterialized (`after` present): reuse the captured after
+///     verbatim and mark it `normal` — the diff is fully attributable.
 fn recover_interrupted_runs() {
     if let Err(error) = try_recover_interrupted_runs() {
         eprintln!("FutureOS shadow review recovery failed: {error}");
@@ -86,7 +88,7 @@ fn recover_interrupted_runs() {
 }
 
 fn try_recover_interrupted_runs() -> Result<(), AppError> {
-    for (run_id, thread_id, workspace_id) in store::list_interrupted_runs()? {
+    for (run_id, thread_id, workspace_id) in store::list_unmaterialized_runs()? {
         if let Err(error) = recover_one(&run_id, &thread_id, &workspace_id) {
             eprintln!("FutureOS shadow review recovery of run {run_id} failed: {error}");
         }
@@ -95,42 +97,56 @@ fn try_recover_interrupted_runs() -> Result<(), AppError> {
 }
 
 fn recover_one(run_id: &str, thread_id: &str, workspace_id: &str) -> Result<(), AppError> {
-    // The Run was interrupted — settle it as cancelled if still open.
-    if let Ok(Some(run)) = store::get_run(run_id) {
-        if !matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
-            let _ = store::update_run_status(store::UpdateRunStatusInput {
-                run_id: run_id.to_string(),
-                status: "cancelled".to_string(),
-                error_message: Some("Interrupted by application restart.".to_string()),
-                error_type: Some("interrupted".to_string()),
-            });
-        }
-    }
-
     let Some(before) = store::get_review_snapshot(run_id, "before")? else {
         return Ok(());
     };
-    let Some(workspace) = store::get_workspace(workspace_id)? else {
-        return Ok(());
-    };
-    let path = PathBuf::from(&workspace.path);
-    if !path.is_dir() {
-        return Ok(());
-    }
-    let is_git = crate::git_review::is_git_workspace(&path);
-    let repo = ShadowRepo::open(workspace_id, &path, is_git)?;
-    let limits = Limits::default();
 
-    let after = with_workspace_lock(workspace_id, || {
-        capture(&repo, thread_id, run_id, "after", &limits)
-    })?
-    .snapshot;
+    // Two recovery shapes share the materialize + upsert tail below, differing
+    // only in how the `after` snapshot is obtained and how confident we are that
+    // the delta belongs to this Run.
+    let (after, confidence) = match store::get_review_snapshot(run_id, "after")? {
+        // B-6: the Run finished and captured its after, but the deferred
+        // materialize never ran before exit. Reuse the after as-is.
+        Some(after) => (after, "normal"),
+        // §6.6: the Run was interrupted before its after snapshot. Settle it
+        // cancelled, then capture the current workspace state as the after.
+        None => {
+            if let Ok(Some(run)) = store::get_run(run_id) {
+                if !matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+                    let _ = store::update_run_status(store::UpdateRunStatusInput {
+                        run_id: run_id.to_string(),
+                        status: "cancelled".to_string(),
+                        error_message: Some("Interrupted by application restart.".to_string()),
+                        error_type: Some("interrupted".to_string()),
+                    });
+                }
+            }
+
+            let Some(workspace) = store::get_workspace(workspace_id)? else {
+                return Ok(());
+            };
+            let path = PathBuf::from(&workspace.path);
+            if !path.is_dir() {
+                return Ok(());
+            }
+            let is_git = crate::git_review::is_git_workspace(&path);
+            let repo = ShadowRepo::open(workspace_id, &path, is_git)?;
+            let after = with_workspace_lock(workspace_id, || {
+                capture(&repo, thread_id, run_id, "after", &Limits::default())
+            })?
+            .snapshot;
+            (after, "recovered")
+        }
+    };
 
     let (Some(before_commit), Some(after_commit)) =
         (before.commit_id.as_deref(), after.commit_id.as_deref())
     else {
         return Ok(());
     };
+    // Diffing between fixed commits needs only the object DB — a bare handle.
+    let repo = ShadowRepo::open_bare(workspace_id)?;
+    let limits = Limits::default();
     let diff = materialize(&repo, before_commit, after_commit, &limits).unwrap_or_default();
     let completeness = if before.status == "partial" || after.status == "partial" {
         "partial"
@@ -152,9 +168,7 @@ fn recover_one(run_id: &str, thread_id: &str, workspace_id: &str) -> Result<(), 
         binary_files: diff.binary_files,
         omitted_files: after.omitted_count,
         completeness: completeness.to_string(),
-        // §6.6: app was closed during the Run, so the delta can't be fully
-        // attributed to it.
-        confidence: "recovered".to_string(),
+        confidence: confidence.to_string(),
         error_message: None,
         files: diff.files,
     })?;

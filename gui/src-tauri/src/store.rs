@@ -39,9 +39,9 @@ pub use records::*;
 pub use research::{list_research_resources, promote_artifact_to_research, ResearchResourceRecord};
 pub use review_snapshots::{
     create_review_snapshot, get_last_run_changeset, get_review_snapshot, get_run_changeset,
-    list_interrupted_runs, list_snapshots_with_commits, mark_run_overlapped, mark_snapshot_failed,
-    prune_thread_changesets, upsert_run_changeset, ReviewChangesetRecord, ReviewFileChangeRecord,
-    ReviewSnapshotRecord,
+    list_snapshots_with_commits, list_unmaterialized_runs, mark_run_overlapped,
+    mark_snapshot_failed, prune_thread_changesets, upsert_run_changeset, ReviewChangesetRecord,
+    ReviewFileChangeRecord, ReviewSnapshotRecord,
 };
 pub use runs::{
     append_run_event, complete_tool_call, create_run, fail_run_if_active, list_run_events,
