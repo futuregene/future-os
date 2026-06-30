@@ -65,12 +65,16 @@ pub struct Settings {
     /// Maximum LLM + tool turns per prompt (0 = unlimited).
     #[serde(default)]
     pub max_turns: i32,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub permission_level: String,
+    #[serde(
+        default = "default_permission_level",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub default_permission_level: String,
 }
 
 // ─── Defaults ──────────────────────────────────────────────────────────────
 
+fn default_permission_level() -> String { "all".to_string() }
 fn default_true() -> Option<bool> { Some(true) }
 fn default_false() -> Option<bool> { Some(false) }
 fn default_steering_mode() -> String { "one-at-a-time".to_string() }
@@ -137,7 +141,7 @@ impl Default for Settings {
             compaction: default_compaction(),
             retry: default_retry(),
             max_turns: 0,
-            permission_level: String::new(),
+            default_permission_level: default_permission_level(),
         }
     }
 }

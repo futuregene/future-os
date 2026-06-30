@@ -252,6 +252,9 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
 
     server_session.set_steering_mode(&settings.steering_mode);
     server_session.set_follow_up_mode(&settings.follow_up_mode);
+    if !settings.default_permission_level.is_empty() {
+        server_session.set_permission_level(&settings.default_permission_level);
+    }
     server_session.set_auto_compaction(settings.compaction_enabled());
     server_session.set_auto_retry(settings.retry_enabled());
 
