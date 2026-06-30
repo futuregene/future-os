@@ -33,6 +33,10 @@ export function SelectMenu({ open, onDismiss, trigger, children, className, pane
         ? (
             <div
               className={cn(
+                // `divide-line-soft` (child dividers) and `border-line-soft` (panel
+                // border) set different properties; the plugin's contradiction check
+                // is a false positive here.
+                // eslint-disable-next-line tailwindcss/no-contradicting-classname
                 "absolute bottom-9 right-0 z-30 divide-y divide-line-soft rounded-lg border border-line-soft bg-surface shadow-panel",
                 panelClassName,
               )}
