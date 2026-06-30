@@ -1,5 +1,5 @@
 import type { StoredApprovalRequest } from "../../../integrations/storage/threadStore";
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { decideApprovalRequest, listApprovalRequests } from "../../../integrations/storage/threadStore";
 import { useAsyncResource } from "../../../lib/useAsyncResource";
 import { usePolling } from "../../../lib/usePolling";
@@ -7,8 +7,12 @@ import { usePolling } from "../../../lib/usePolling";
 const NO_APPROVALS: StoredApprovalRequest[] = [];
 
 export interface ApprovalsState {
-  pendingApprovals: StoredApprovalRequest[];
   activeApproval: StoredApprovalRequest | null;
+  /** Persist a manual decision (notifying the agent), then refetch the queue. */
+  decideApproval: (
+    approval: StoredApprovalRequest,
+    status: "approved" | "rejected",
+  ) => Promise<void>;
   /** Refetch pending approvals for the active thread. */
   reloadApprovals: () => void;
 }
@@ -40,10 +44,8 @@ export function useApprovals(activeThreadId: string | null, autoApprove: boolean
   usePolling(reload, 1500, { enabled: activeThreadId !== null, deps: [activeThreadId] });
 
   const activeApproval = useMemo(
-    () =>
-      [...pendingApprovals]
-        .filter(approval => approval.status === "pending")
-        .sort((left, right) => left.createdAt - right.createdAt)[0] ?? null,
+    // The loader already returns only pending requests; just take the oldest.
+    () => [...pendingApprovals].sort((left, right) => left.createdAt - right.createdAt)[0] ?? null,
     [pendingApprovals],
   );
 
@@ -70,5 +72,17 @@ export function useApprovals(activeThreadId: string | null, autoApprove: boolean
     }
   }, [autoApprove, pendingApprovals, reload]);
 
-  return { activeApproval, pendingApprovals, reloadApprovals: reload };
+  const decideApproval = useCallback(
+    async (approval: StoredApprovalRequest, status: "approved" | "rejected") => {
+      await decideApprovalRequest({
+        approvalRequestId: approval.id,
+        decisionNote: status === "approved" ? "Approved in GUI." : "Rejected in GUI.",
+        status,
+      });
+      reload();
+    },
+    [reload],
+  );
+
+  return { activeApproval, decideApproval, reloadApprovals: reload };
 }

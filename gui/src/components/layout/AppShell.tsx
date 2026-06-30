@@ -18,7 +18,6 @@ import { getAppSettings, updateAppSettings } from "../../integrations/storage/ap
 import {
   createThread,
   createWorkspace,
-  decideApprovalRequest,
   deleteThread,
   getThreadCleanupSummary,
   pinThread,
@@ -87,7 +86,7 @@ export function AppShell() {
     storeError,
     refreshStore,
   } = useThreadStore();
-  const { activeApproval, reloadApprovals } = useApprovals(
+  const { activeApproval, decideApproval } = useApprovals(
     activeThread?.id ?? null,
     appSettings.autoApprove,
   );
@@ -327,12 +326,7 @@ export function AppShell() {
     approval: StoredApprovalRequest,
     status: "approved" | "rejected",
   ) {
-    await decideApprovalRequest({
-      approvalRequestId: approval.id,
-      decisionNote: status === "approved" ? "Approved in GUI." : "Rejected in GUI.",
-      status,
-    });
-    reloadApprovals();
+    await decideApproval(approval, status);
     await refreshStore(activeThread?.id ?? undefined);
   }
 
