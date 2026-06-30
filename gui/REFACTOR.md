@@ -752,14 +752,15 @@ make run-gui
 - **验证**: 后端基线三连；可选 `EXPLAIN QUERY PLAN` 确认改用索引。
 - **关联**: B-3、ER.md §5。
 
-### [ ] B-13. `decide_approval` 续跑 run 用非原子 read-then-write，可覆盖并发 abort
+### [x] B-13. `decide_approval` 续跑 run 用非原子 read-then-write，可覆盖并发 abort
 - **类别 / 严重度**: bug / 低
 - **位置**: `agent_bridge/mod.rs:451-463`；对照 CAS `store/runs.rs:97-116`(`fail_run_if_active`)；同形 `agent_bridge/persist.rs:140-158`(`update_run_status_if_active`)
 - **现状**: `get_run` 读到非终态 → `update_run_status("running")` 无条件写。对照 `mark_run_failed_if_active` 刻意用 `fail_run_if_active` 单条 SQL CAS。
 - **问题**: 中间 `abort_run`(423) 把状态写 `cancelled` → 本分支再覆盖成 `running`，run 被错误复活。
 - **改造方案**: 新增 `store::set_run_running_if_active(run_id) -> Result<bool, AppError>`（仿 `fail_run_if_active`：单条 `UPDATE ... SET status='running' ... WHERE id=?1 AND status NOT IN ('completed','failed','cancelled')`）。mod.rs:452-463 改 `let _ = store::set_run_running_if_active(run_id);`，删 get_run+matches!。顺带把 `persist.rs:140-158` 用同款 CAS 收口（可共用 `set_run_status_if_active`）。
-- **复核结论**: CONFIRMED（`set_run_running_if_active` 当前不存在；三处行号核对）。
-- **验证**: 后端基线三连；补测：终态 run 调 `set_run_running_if_active` 断言返回 false 且状态仍 cancelled。
+- **复核结论**: CONFIRMED（`set_run_running_if_active` 当前不存在；三处行号核对）。M-7 后 `decide_approval` 已在 `agent_bridge/approval.rs`。
+- **落地结论**: 新增 `store::update_run_status_if_active(input) -> Result<bool, AppError>`（单条 `UPDATE ... WHERE id=?1 AND status NOT IN (terminal)` 的 CAS，命名与 `update_run_status` 对齐）。`approval.rs` 续跑改用之、删 `get_run`+`matches!`。**坑：`persist.rs` 的 `cancelled` 路径依赖 `update_run_status` 的级联**（取消 pending 审批 + running 工具调用），故把级联抽成 `cancel_run_side_effects(tx, run_id, now)` 共享，CAS 仅在 `affected>0 && status=="cancelled"` 时触发，行为不变。`persist.rs` 的本地 `update_run_status_if_active` 删除、两调用点改 `store::update_run_status_if_active`。补测 2 例（终态拒绝、活跃→cancelled 且级联）。
+- **验证**: 后端基线三连通过（cargo test 53 例，含新增 2 例）。
 - **关联**: B-15、C-3。
 
 ### [ ] B-14. `useThreadStore` 的 run-status 刷新有双触发源（重复 fan-out）

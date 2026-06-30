@@ -122,39 +122,25 @@ fn persist_approval_decision(run_id: &str, value: &serde_json::Value) {
     }
 
     if status == "cancelled" {
-        if let Err(error) = update_run_status_if_active(
-            run_id,
-            "cancelled",
-            Some("Approval request was cancelled.".to_string()),
-        ) {
+        if let Err(error) = store::update_run_status_if_active(store::UpdateRunStatusInput {
+            run_id: run_id.to_string(),
+            status: "cancelled".to_string(),
+            error_message: Some("Approval request was cancelled.".to_string()),
+            error_type: None,
+        }) {
             eprintln!("FutureOS run approval cancellation status update failed: {error}");
         }
         return;
     }
 
-    if let Err(error) = update_run_status_if_active(run_id, "running", None) {
+    if let Err(error) = store::update_run_status_if_active(store::UpdateRunStatusInput {
+        run_id: run_id.to_string(),
+        status: "running".to_string(),
+        error_message: None,
+        error_type: None,
+    }) {
         eprintln!("FutureOS run approval decision status update failed: {error}");
     }
-}
-
-fn update_run_status_if_active(
-    run_id: &str,
-    status: &str,
-    error_message: Option<String>,
-) -> Result<(), crate::AppError> {
-    let Some(run) = store::get_run(run_id)? else {
-        return Ok(());
-    };
-    if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
-        return Ok(());
-    }
-    store::update_run_status(store::UpdateRunStatusInput {
-        run_id: run_id.to_string(),
-        status: status.to_string(),
-        error_message,
-        error_type: None,
-    })?;
-    Ok(())
 }
 
 fn persist_tool_start(run_id: &str, value: &serde_json::Value, sequence: i64) {
