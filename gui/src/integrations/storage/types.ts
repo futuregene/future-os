@@ -196,7 +196,7 @@ export interface WorkspaceReviewCapabilities {
 }
 
 /// The "上一轮变更" payload for a Thread (§10.3).
-export interface RunReview {
+export interface LastRunReviewData {
   changeset: StoredReviewChangeset;
   files: StoredReviewFileChange[];
   run?: StoredRun | null;
