@@ -52,8 +52,10 @@ pub fn create_review_snapshot(
         ],
     )?;
 
-    get_review_snapshot(&input.run_id, &input.phase)?
-        .ok_or_else(|| "Review snapshot could not be loaded.".to_string().into())
+    loaded(
+        get_review_snapshot(&input.run_id, &input.phase)?,
+        "Review snapshot",
+    )
 }
 
 pub fn get_review_snapshot(
@@ -165,8 +167,7 @@ pub fn upsert_run_changeset(
 
     tx.commit()?;
 
-    get_run_changeset(&input.run_id)?
-        .ok_or_else(|| "Run changeset could not be loaded.".to_string().into())
+    loaded(get_run_changeset(&input.run_id)?, "Run changeset")
 }
 
 pub fn get_run_changeset(run_id: &str) -> Result<Option<ReviewChangesetRecord>, crate::AppError> {

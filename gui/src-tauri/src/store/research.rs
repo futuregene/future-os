@@ -26,8 +26,7 @@ pub fn list_research_resources(
 pub fn promote_artifact_to_research(
     artifact_id: &str,
 ) -> Result<ResearchResourceRecord, crate::AppError> {
-    let artifact =
-        get_artifact(artifact_id)?.ok_or_else(|| "Artifact could not be loaded.".to_string())?;
+    let artifact = loaded(get_artifact(artifact_id)?, "Artifact")?;
     if artifact.deleted_at.is_some() {
         return Err("deleted artifacts cannot be added to Research."
             .to_string()
@@ -76,11 +75,7 @@ pub fn promote_artifact_to_research(
         ],
     )?;
 
-    get_research_resource(&id)?.ok_or_else(|| {
-        "Created research resource could not be loaded."
-            .to_string()
-            .into()
-    })
+    loaded(get_research_resource(&id)?, "Created research resource")
 }
 
 fn get_research_resource(id: &str) -> Result<Option<ResearchResourceRecord>, crate::AppError> {

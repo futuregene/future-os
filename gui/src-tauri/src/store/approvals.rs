@@ -99,8 +99,10 @@ pub fn decide_approval_request(
         params![status, input.decision_note, now, input.approval_request_id],
     )?;
 
-    get_approval_request(&input.approval_request_id)?
-        .ok_or_else(|| "Approval request could not be loaded.".to_string().into())
+    loaded(
+        get_approval_request(&input.approval_request_id)?,
+        "Approval request",
+    )
 }
 
 pub fn list_review_file_changes(

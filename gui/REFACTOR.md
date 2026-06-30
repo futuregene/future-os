@@ -528,7 +528,7 @@ make run-gui
 - **验证**: 后端基线三连。
 - **关联**: M-5；ER.md §4.20。
 
-### [ ] C-8. 读回样板 + 散落的状态字符串字面量
+### [x] C-8. 读回样板 + 散落的状态字符串字面量
 - **类别 / 严重度**: consistency / 中
 - **位置**:
   - (a) `get_X(&id)?.ok_or_else(|| "X could not be loaded.".into())` 共 **25** 处：`threads.rs:56/88/121/142/158/171/185/206`、`runs.rs:25/90/148`、`workspaces.rs:79`、`messages.rs:62`、`artifacts.rs:13/65/72/231`、`research.rs:30`、`review_snapshots.rs:56/169`、`approvals.rs:98`、`cleanup.rs:11/13`、`db.rs:164/185`

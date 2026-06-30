@@ -10,7 +10,7 @@ use super::records::*;
 use super::util::*;
 
 pub fn list_artifacts(thread_id: &str) -> Result<Vec<ArtifactRecord>, crate::AppError> {
-    let thread = get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
+    let thread = loaded(get_thread(thread_id)?, "Thread")?;
     let conn = connect()?;
     let mut stmt = conn.prepare(
         "SELECT id, workspace_id, thread_id, run_id, title, type, path, content,
@@ -62,14 +62,13 @@ pub fn create_artifact(input: CreateArtifactInput) -> Result<ArtifactRecord, cra
         ],
     )?;
 
-    get_artifact(&id)?.ok_or_else(|| "Created artifact could not be loaded.".to_string().into())
+    loaded(get_artifact(&id)?, "Created artifact")
 }
 
 pub fn import_attachment_artifact(
     input: ImportAttachmentArtifactInput,
 ) -> Result<ArtifactRecord, crate::AppError> {
-    let thread =
-        get_thread(&input.thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
+    let thread = loaded(get_thread(&input.thread_id)?, "Thread")?;
     if thread.mode != "chat" {
         return Err(
             "Attachments are only auto-saved as artifacts for Chat threads."
@@ -233,5 +232,5 @@ pub fn delete_artifact(id: &str) -> Result<ArtifactRecord, crate::AppError> {
         params![now, id],
     )?;
 
-    get_artifact(id)?.ok_or_else(|| "Artifact could not be loaded.".to_string().into())
+    loaded(get_artifact(id)?, "Artifact")
 }

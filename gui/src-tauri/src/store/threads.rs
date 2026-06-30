@@ -53,7 +53,7 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
     let workspace = if mode == "chat" {
         get_or_create_chat_workspace(&thread_id, Some(title.clone()))?
     } else if let Some(workspace_id) = input.workspace_id {
-        get_workspace(&workspace_id)?.ok_or_else(|| "Workspace could not be loaded.".to_string())?
+        loaded(get_workspace(&workspace_id)?, "Workspace")?
     } else {
         let raw_path = input
             .workspace_path
@@ -85,7 +85,7 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
         ],
     )?;
 
-    get_thread(&thread_id)?.ok_or_else(|| "Created thread could not be loaded.".to_string().into())
+    loaded(get_thread(&thread_id)?, "Created thread")
 }
 
 pub fn get_thread(thread_id: &str) -> Result<Option<ThreadRecord>, crate::AppError> {
@@ -118,7 +118,7 @@ pub fn rename_thread(input: RenameThreadInput) -> Result<ThreadRecord, crate::Ap
         params![title, now, input.thread_id],
     )?;
 
-    get_thread(&input.thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string().into())
+    loaded(get_thread(&input.thread_id)?, "Thread")
 }
 
 pub fn update_thread_model(input: UpdateThreadModelInput) -> Result<ThreadRecord, crate::AppError> {
@@ -139,7 +139,7 @@ pub fn update_thread_model(input: UpdateThreadModelInput) -> Result<ThreadRecord
         params![model_provider, model_id, now, input.thread_id],
     )?;
 
-    get_thread(&input.thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string().into())
+    loaded(get_thread(&input.thread_id)?, "Thread")
 }
 
 pub fn update_thread_thinking_level(
@@ -155,7 +155,7 @@ pub fn update_thread_thinking_level(
         params![thinking_level, now, input.thread_id],
     )?;
 
-    get_thread(&input.thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string().into())
+    loaded(get_thread(&input.thread_id)?, "Thread")
 }
 
 pub fn pin_thread(input: PinThreadInput) -> Result<ThreadRecord, crate::AppError> {
@@ -168,7 +168,7 @@ pub fn pin_thread(input: PinThreadInput) -> Result<ThreadRecord, crate::AppError
         params![if input.pinned { 1 } else { 0 }, now, input.thread_id],
     )?;
 
-    get_thread(&input.thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string().into())
+    loaded(get_thread(&input.thread_id)?, "Thread")
 }
 
 pub fn archive_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> {
@@ -182,7 +182,7 @@ pub fn restore_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> 
 pub fn delete_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> {
     let now = now_millis();
     let conn = connect()?;
-    let thread = get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
+    let thread = loaded(get_thread(thread_id)?, "Thread")?;
     conn.execute(
         "UPDATE threads
          SET status = 'deleted', deleted_at = ?1, updated_at = ?1
@@ -203,7 +203,7 @@ pub fn delete_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> {
         )?;
     }
 
-    get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string().into())
+    loaded(get_thread(thread_id)?, "Thread")
 }
 
 fn normalize_optional_thinking_level(level: Option<String>) -> Option<String> {

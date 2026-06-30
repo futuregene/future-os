@@ -59,5 +59,5 @@ pub fn append_message(input: AppendMessageInput) -> Result<MessageRecord, crate:
         eprintln!("FutureOS message reference sync failed for {id}: {error}");
     }
 
-    get_message(&id)?.ok_or_else(|| "Created message could not be loaded.".to_string().into())
+    loaded(get_message(&id)?, "Created message")
 }

@@ -75,8 +75,7 @@ pub fn get_or_create_chat_workspace(
         params![workspace_id, name, path.display().to_string(), now],
     )?;
 
-    get_workspace(&workspace_id)?
-        .ok_or_else(|| "Created workspace could not be loaded.".to_string().into())
+    loaded(get_workspace(&workspace_id)?, "Created workspace")
 }
 
 pub fn get_workspace(workspace_id: &str) -> Result<Option<WorkspaceRecord>, crate::AppError> {

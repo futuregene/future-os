@@ -2,6 +2,7 @@ use rusqlite::params;
 
 use super::db::*;
 use super::records::*;
+use super::status::{TERMINAL_RUN_STATUSES, TERMINAL_RUN_STATUSES_SQL};
 use super::util::*;
 
 pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::AppError> {
@@ -22,7 +23,7 @@ pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::AppError> {
             now
         ],
     )?;
-    get_run(&id)?.ok_or_else(|| "Created run could not be loaded.".to_string().into())
+    loaded(get_run(&id)?, "Created run")
 }
 
 pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::AppError> {
@@ -41,7 +42,7 @@ pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::AppError> {
 
 pub fn update_run_status(input: UpdateRunStatusInput) -> Result<RunRecord, crate::AppError> {
     let now = now_millis();
-    let ended_at = if matches!(input.status.as_str(), "completed" | "failed" | "cancelled") {
+    let ended_at = if TERMINAL_RUN_STATUSES.contains(&input.status.as_str()) {
         Some(now)
     } else {
         None
@@ -87,7 +88,7 @@ pub fn update_run_status(input: UpdateRunStatusInput) -> Result<RunRecord, crate
         )?;
     }
     tx.commit()?;
-    get_run(&input.run_id)?.ok_or_else(|| "Updated run could not be loaded.".to_string().into())
+    loaded(get_run(&input.run_id)?, "Updated run")
 }
 
 /// Transition a run to `failed` only if it is not already in a terminal state,
@@ -102,14 +103,16 @@ pub fn fail_run_if_active(
     let now = now_millis();
     let conn = connect()?;
     let affected = conn.execute(
-        "UPDATE runs
+        &format!(
+            "UPDATE runs
          SET status = 'failed',
              error_message = ?1,
              error_type = ?2,
              ended_at = COALESCE(ended_at, ?3),
              updated_at = ?3
          WHERE id = ?4
-           AND status NOT IN ('completed', 'failed', 'cancelled')",
+           AND status NOT IN ({TERMINAL_RUN_STATUSES_SQL})"
+        ),
         params![error_message, error_type, now, run_id],
     )?;
     Ok(affected > 0)
@@ -145,7 +148,7 @@ pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, cr
         ],
     )?;
 
-    get_run_event(&id)?.ok_or_else(|| "Created run event could not be loaded.".to_string().into())
+    loaded(get_run_event(&id)?, "Created run event")
 }
 
 pub fn list_tool_calls(run_id: &str) -> Result<Vec<ToolCallRecord>, crate::AppError> {
