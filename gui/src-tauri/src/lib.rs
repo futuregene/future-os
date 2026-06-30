@@ -6,6 +6,7 @@ mod auth_store;
 mod commands;
 mod error;
 mod future_login;
+mod git_diff_parse;
 mod git_review;
 mod run_error;
 mod shadow_review;

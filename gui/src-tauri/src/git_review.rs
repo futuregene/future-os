@@ -120,29 +120,25 @@ fn tracked_diff_files(
         ["diff", "--no-color", "--unified=80", base_ref, "--"],
     )
     .unwrap_or_default();
-    let diff_by_path = split_git_diff_by_path(&diff);
+    let diff_by_path = crate::git_diff_parse::split_unified_patch_by_path(&diff);
 
-    numstat
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.splitn(3, '\t');
-            let additions = parse_numstat(parts.next()?);
-            let deletions = parse_numstat(parts.next()?);
-            let path = parts.next()?.to_string();
-            let normalized_path = normalize_numstat_path(&path);
-            Some(GitReviewFile {
+    crate::git_diff_parse::parse_numstat(&numstat)
+        .into_iter()
+        .map(|row| {
+            let normalized_path = normalize_numstat_path(&row.path);
+            GitReviewFile {
                 status: status_by_path
                     .get(&normalized_path)
                     .cloned()
                     .unwrap_or_else(|| "modified".to_string()),
-                additions,
-                deletions,
+                additions: row.additions,
+                deletions: row.deletions,
                 diff: diff_by_path
                     .get(&normalized_path)
                     .cloned()
                     .unwrap_or_default(),
                 path: normalized_path,
-            })
+            }
         })
         .collect()
 }
@@ -281,45 +277,6 @@ fn status_label(code: &str) -> String {
     "modified".to_string()
 }
 
-fn split_git_diff_by_path(diff: &str) -> HashMap<String, String> {
-    let mut chunks = HashMap::new();
-    let mut current_path: Option<String> = None;
-    let mut current = Vec::new();
-
-    for line in diff.lines() {
-        if line.starts_with("diff --git ") {
-            flush_diff_chunk(&mut chunks, current_path.take(), &mut current);
-            current_path = diff_path_from_header(line);
-        } else if let Some(path) = line.strip_prefix("+++ b/") {
-            current_path = Some(path.to_string());
-        }
-        current.push(line.to_string());
-    }
-    flush_diff_chunk(&mut chunks, current_path, &mut current);
-    chunks
-}
-
-fn flush_diff_chunk(
-    chunks: &mut HashMap<String, String>,
-    path: Option<String>,
-    current: &mut Vec<String>,
-) {
-    if let Some(path) = path {
-        if !current.is_empty() {
-            chunks.insert(path, current.join("\n"));
-        }
-    }
-    current.clear();
-}
-
-fn diff_path_from_header(line: &str) -> Option<String> {
-    line.split(" b/")
-        .nth(1)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
 fn pseudo_added_file_diff(path: &str, content: &str) -> String {
     let lines: Vec<&str> = content.lines().take(300).collect();
     let mut diff = vec![
@@ -354,10 +311,6 @@ fn normalize_numstat_path(path: &str) -> String {
         .map(|(_, next)| next)
         .unwrap_or(path)
         .to_string()
-}
-
-fn parse_numstat(value: &str) -> i64 {
-    value.parse::<i64>().unwrap_or(0)
 }
 
 fn git_output<const N: usize>(

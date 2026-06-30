@@ -16,9 +16,13 @@ use serde_json::{json, Map, Value};
 
 use crate::AppError;
 
-const FUTURE_PROVIDER_ID: &str = "future";
+/// The built-in FutureGene provider id. Shared so `agent_providers` doesn't keep
+/// its own copy (see gui/ER.md §6.9).
+pub(crate) const FUTURE_PROVIDER_ID: &str = "future";
 
-fn agent_dir() -> Result<PathBuf, AppError> {
+/// `~/.future/agent` — the agent config dir that owns `auth.json` and
+/// `models.json`. Single source, shared with `agent_providers`.
+pub(crate) fn agent_dir() -> Result<PathBuf, AppError> {
     let home = crate::home_dir().ok_or("HOME/USERPROFILE environment variable is not set.")?;
     Ok(PathBuf::from(home).join(".future").join("agent"))
 }

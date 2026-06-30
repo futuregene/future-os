@@ -10,15 +10,54 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::agent_proto::{image_content, ImageContent, RpcCommand};
+use tonic::transport::Channel;
 
-pub(super) fn agent_endpoint() -> String {
-    let raw =
-        std::env::var("FUTURE_AGENT_GRPC_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
+use crate::agent_proto::{image_content, FutureAgentClient, ImageContent, RpcCommand, RpcResponse};
+
+/// Bare `host:port` the GUI talks to (env override or the default). The single
+/// source of the default address, shared with the bundled-agent supervisor.
+pub(crate) fn raw_agent_addr() -> String {
+    std::env::var("FUTURE_AGENT_GRPC_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string())
+}
+
+fn agent_endpoint() -> String {
+    let raw = raw_agent_addr();
     if raw.starts_with("http://") || raw.starts_with("https://") {
         raw
     } else {
         format!("http://{raw}")
+    }
+}
+
+/// Resolve the agent endpoint and open a gRPC client. A connection failure maps
+/// to `AppError::AgentUnavailable` so callers can tolerate a down agent (e.g.
+/// `abort_run` still cancels the run locally).
+pub(super) async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppError> {
+    let endpoint = agent_endpoint();
+    FutureAgentClient::connect(endpoint.clone())
+        .await
+        .map_err(|error| {
+            crate::AppError::AgentUnavailable(format!(
+                "Unable to connect to Future Agent at {endpoint}: {error}"
+            ))
+        })
+}
+
+/// Turn a gRPC `RpcResponse` into a `Result`, surfacing the agent's own error
+/// message, or `fallback` when the agent reported failure without one.
+pub(super) trait RpcResponseExt {
+    fn ok_or_rpc_error(self, fallback: &str) -> Result<RpcResponse, crate::AppError>;
+}
+
+impl RpcResponseExt for RpcResponse {
+    fn ok_or_rpc_error(self, fallback: &str) -> Result<RpcResponse, crate::AppError> {
+        if self.success {
+            Ok(self)
+        } else if self.error.is_empty() {
+            Err(fallback.to_string().into())
+        } else {
+            Err(self.error.into())
+        }
     }
 }
 
