@@ -55,8 +55,6 @@ fn default_max_retry_delay_ms() -> Option<i32> { Some(60000) }
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub default_provider: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub default_model: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub default_thinking_level: String,
@@ -64,14 +62,10 @@ pub struct Settings {
     pub steering_mode: String,
     #[serde(default = "default_follow_up_mode", skip_serializing_if = "String::is_empty")]
     pub follow_up_mode: String,
-    #[serde(default = "default_false", skip_serializing_if = "Option::is_none")]
-    pub quiet_startup: Option<bool>,
     #[serde(default = "default_compaction", skip_serializing_if = "Option::is_none")]
     pub compaction: Option<Box<CompactionSettings>>,
     #[serde(default = "default_retry", skip_serializing_if = "Option::is_none")]
     pub retry: Option<Box<RetrySettings>>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub enabled_models: Vec<String>,
     #[serde(default = "default_max_turns")]
     pub max_turns: i32,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -142,15 +136,12 @@ pub fn load_settings(path: &Path) -> Result<Settings> {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            default_provider: String::new(),
             default_model: String::new(),
             default_thinking_level: String::new(),
             steering_mode: default_steering_mode(),
             follow_up_mode: default_follow_up_mode(),
-            quiet_startup: Some(false),
             compaction: default_compaction(),
             retry: default_retry(),
-            enabled_models: vec![],
             max_turns: default_max_turns(),
             permission_level: String::new(),
         }

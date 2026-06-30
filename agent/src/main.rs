@@ -73,24 +73,10 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
         })
         .unwrap_or_else(|| "deepseek-v4-flash".to_string());
 
-    // Apply scoped models from settings
-    let resolved_model = if !settings.enabled_models.is_empty() {
-        let scoped = model_registry.resolve_scope(&settings.enabled_models, &auth_store);
-        if !scoped.is_empty() {
-            let default_model = &settings.default_model;
-            let saved_in_scope = if !default_model.is_empty() {
-                scoped.iter().find(|m| *m == default_model)
-            } else {
-                None
-            };
-            if let Some(m) = saved_in_scope {
-                m.clone()
-            } else {
-                scoped[0].clone()
-            }
-        } else {
-            resolved_model
-        }
+    // Use default_model from settings if set, otherwise keep resolved.
+    let resolved_model = if !settings.default_model.is_empty()
+        && all_models.iter().any(|m| m.id == settings.default_model) {
+        settings.default_model.clone()
     } else {
         resolved_model
     };
