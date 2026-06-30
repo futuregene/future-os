@@ -109,6 +109,8 @@ pub fn run() {
             get_app_settings,
             update_app_settings,
             clear_app_data,
+            get_future_environment,
+            set_future_environment,
             list_agent_providers,
             upsert_custom_provider,
             delete_custom_provider,

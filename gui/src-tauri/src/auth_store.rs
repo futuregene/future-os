@@ -178,6 +178,19 @@ pub(crate) fn clear_future_key() -> Result<bool, AppError> {
     remove_provider_key(FUTURE_PROVIDER_ID)
 }
 
+/// Switch the FutureGene environment: pin `base_url` to `{platform}/api` (as the
+/// CLI's `auth login --url` does) and drop the now-stale API key plus any
+/// `platform_base_url`, so the resolved platform is unambiguous and the user
+/// re-logs in against the target environment (credentials don't carry across
+/// environments). Mirrors [`set_future_login`] minus the key.
+pub(crate) fn set_future_base_url(base_url: &str) -> Result<(), AppError> {
+    upsert_provider_entry(FUTURE_PROVIDER_ID, |object| {
+        object.remove("key");
+        object.remove("platform_base_url");
+        object.insert("base_url".to_string(), Value::String(base_url.to_string()));
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,6 +317,38 @@ mod tests {
         assert_eq!(future["base_url"], json!("https://example.com"));
         // Idempotent: clearing again reports nothing removed.
         assert!(!clear_future_key().unwrap());
+    }
+
+    #[test]
+    fn set_future_base_url_switches_env_and_drops_key() {
+        let _home = HomeGuard::new("switch-env");
+        let path = auth_json_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"future":{"type":"api_key","key":"old","base_url":"https://future-os.cn/api","platform_base_url":"https://future-os.cn"},"zai":{"type":"api_key","key":"keep"}}"#,
+        )
+        .unwrap();
+
+        set_future_base_url("https://test.future-os.cn/api").unwrap();
+
+        let auth = read().unwrap();
+        let future = auth["future"].as_object().unwrap();
+        assert_eq!(
+            future["base_url"],
+            json!("https://test.future-os.cn/api"),
+            "base_url is pinned to the target environment"
+        );
+        assert!(future.get("key").is_none(), "stale key is dropped");
+        assert!(
+            future.get("platform_base_url").is_none(),
+            "ambiguous platform_base_url is dropped"
+        );
+        assert_eq!(
+            auth["zai"]["key"],
+            json!("keep"),
+            "other providers must be untouched"
+        );
     }
 
     #[test]
