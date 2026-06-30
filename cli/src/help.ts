@@ -13,13 +13,15 @@ Usage:
   future channel stop
   future channel restart
   future channel status
+  future account profile
+  future account balance [--json]
+  future account recharge --amount <yuan> --channel <alipay|wechat>
   future run [options] [@files...] [message...]
   future tools list
   future tools call <name> [--args '<json>' | --stdin]
   future skills list
-  future skills install <name>
-  future skills update <name>
-  future skills uninstall <name>
+  future skills install <name> [--version <ver>] [--scope <app|project|global>]
+  future skills uninstall <name> [--scope <app|project|global>]
   future tui [tui options]
 
 Run 'future run --help' for run command options.

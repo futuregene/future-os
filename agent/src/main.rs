@@ -5,7 +5,7 @@ use chrono::Local;
 use clap::Parser;
 use future_agent::{
     Engine, EngineConfig, Manager, ModelRegistry, ServerSession, AGENTS_SKILLS_DIR,
-    PROJECT_SKILLS_DIR, USER_SKILLS_DIR,
+    PROJECT_SKILLS_DIR, APP_SKILLS_DIR,
 };
 use std::sync::Arc;
 
@@ -219,7 +219,7 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
     };
     // Discover skills
     let skill_dirs = vec![
-        USER_SKILLS_DIR.to_string(),
+        APP_SKILLS_DIR.to_string(),
         format!("{}/{}", cwd, PROJECT_SKILLS_DIR),
         AGENTS_SKILLS_DIR.to_string(),
     ];
@@ -271,6 +271,7 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
         approval_gate.clone(),
     );
     server_session.model = resolved_model.clone();
+    *server_session.compaction_model.write().unwrap() = resolved_model.clone();
 
     if let Some(ref level) = thinking {
         server_session.set_thinking_level(level);

@@ -9,13 +9,14 @@ use walkdir::WalkDir;
 pub struct Skill {
     pub name: String,
     pub description: String,
+    pub version: Option<String>,
     pub location: String,
     #[serde(rename = "disableModelInvocation", default)]
     pub disable_model_invocation: bool,
 }
 
 /// Predefined skill directories (matching Go internal/skills/skills.go)
-pub const USER_SKILLS_DIR: &str = "~/.future/agent/skills/";
+pub const APP_SKILLS_DIR: &str = "~/.future/agent/skills/";
 pub const PROJECT_SKILLS_DIR: &str = ".future/agent/skills/";
 pub const AGENTS_SKILLS_DIR: &str = "~/.agents/skills/";
 
@@ -51,6 +52,7 @@ fn parse_skill(skill_md: &Path) -> Result<Option<Skill>> {
     let content = std::fs::read_to_string(skill_md)?;
     let name = extract_name(&content, skill_md)?;
     let description = extract_description(&content);
+    let version = extract_frontmatter_field(&content, "version");
     let location = skill_md.to_string_lossy().to_string();
     let disable =
         content.contains("disableModelInvocation") || content.contains("disable_model_invocation");
@@ -58,6 +60,7 @@ fn parse_skill(skill_md: &Path) -> Result<Option<Skill>> {
     Ok(Some(Skill {
         name,
         description,
+        version,
         location,
         disable_model_invocation: disable,
     }))
@@ -130,16 +133,19 @@ fn extract_yaml_value(line: &str, key: &str) -> Option<String> {
 }
 
 fn extract_description(content: &str) -> String {
-    // Parse YAML frontmatter to extract description (matching Go parseFrontmatter)
+    extract_frontmatter_field(content, "description").unwrap_or_default()
+}
+
+fn extract_frontmatter_field(content: &str, key: &str) -> Option<String> {
     let trimmed = content.trim_start_matches(['\r', '\n']);
     if !trimmed.starts_with("---") {
-        return String::new();
+        return None;
     }
 
     let rest = &trimmed[3..];
     let end_idx = rest.find("\n---").or_else(|| rest.find("---"));
     if end_idx.is_none() {
-        return String::new();
+        return None;
     }
 
     let frontmatter = &rest[..end_idx.unwrap()];
@@ -150,12 +156,12 @@ fn extract_description(content: &str) -> String {
             continue;
         }
 
-        if let Some(val) = extract_yaml_value(trimmed_line, "description") {
-            return val;
+        if let Some(val) = extract_yaml_value(trimmed_line, key) {
+            return Some(val);
         }
     }
 
-    String::new()
+    None
 }
 
 /// ResolveCollisionsWithDiagnostics resolves skill name collisions.

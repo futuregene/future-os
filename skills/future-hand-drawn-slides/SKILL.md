@@ -1,9 +1,11 @@
 ---
+version: 1.0.0
 name: future-hand-drawn-slides
 description: Generate hand-drawn sketchnote style presentation slides from a Markdown report using Future OS image tools. Default style is Japanese illustration with ink splatters, pastel watercolor, and comic sketch texture. Triggered when the user asks to create PPT/slides in hand-drawn, sketchnote, or Japanese illustration style.
 allowed-tools: Bash(future:*)
 category: creative
 ---
+version: 1.0.0
 
 # Future Hand-Drawn Sketchnote Slides Generator
 
@@ -56,10 +58,10 @@ Use `--stdin` for slide tools by default because prompts often contain quotes, n
 
 ## Output Directory Convention
 
-**Never save directly to `/tmp/`.** Always create a timestamped subdirectory:
+**Never save directly as bare files in the working directory.** Always create a timestamped subdirectory:
 
 ```bash
-WORK_DIR="/tmp/slides_$(date +%Y%m%d_%H%M%S)"
+WORK_DIR="./slides_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$WORK_DIR"
 ```
 
@@ -242,7 +244,7 @@ Create one standalone script per slide. Each script generates exactly one image 
 set -u
 
 SLIDE="01"
-WORK_DIR="/tmp/slides_YYYYMMDD_HHMMSS"
+WORK_DIR="./slides_YYYYMMDD_HHMMSS"
 LOG="$WORK_DIR/gen_${SLIDE}.log"
 
 echo "[$(date '+%H:%M:%S')] STARTED" > "$LOG"
@@ -269,7 +271,7 @@ Create a master runner script that launches per-slide scripts in batches of 3 to
 #!/bin/bash
 set -u
 
-WORK_DIR="/tmp/slides_YYYYMMDD_HHMMSS"
+WORK_DIR="./slides_YYYYMMDD_HHMMSS"
 
 bash "$WORK_DIR/gen_01.sh" &
 bash "$WORK_DIR/gen_02.sh" &

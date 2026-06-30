@@ -6,15 +6,24 @@ import { login, logout, status } from "./commands/auth.js";
 import { tui } from "./commands/tui.js";
 import { tools, isToolsCommand } from "./commands/tools.js";
 import { skills, isSkillsCommand } from "./commands/skills.js";
+import { account, isAccountCommand } from "./commands/account.js";
 import { run as runCommand } from "./commands/run.js";
 import { printHelp } from "./help.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const [group, command] = args;
+  const [group, command, ...rest] = args;
 
   if (group === "auth" && command === "login") {
-    await login();
+    const urlIdx = rest.indexOf("--url");
+    let urlOverride: string | undefined;
+    if (urlIdx !== -1 && urlIdx + 1 < rest.length) {
+      urlOverride = rest[urlIdx + 1];
+    } else {
+      const urlEq = rest.find(a => a.startsWith("--url="));
+      urlOverride = urlEq?.slice("--url=".length);
+    }
+    await login(urlOverride);
     return;
   }
 
@@ -50,6 +59,11 @@ async function main(): Promise<void> {
 
   if (group === "skills" && isSkillsCommand(command)) {
     await skills(command, args.slice(2));
+    return;
+  }
+
+  if (group === "account" && isAccountCommand(command)) {
+    await account(command, rest);
     return;
   }
 

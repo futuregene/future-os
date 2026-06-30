@@ -97,7 +97,8 @@ impl AppState {
                 if new_sess.model.is_empty() {
                     let default_model = self.session.read().unwrap().model.clone();
                     if !default_model.is_empty() {
-                        new_sess.model = default_model;
+                        new_sess.model = default_model.clone();
+                        *new_sess.compaction_model.write().unwrap() = default_model;
                     }
                 }
                 let sess_arc = Arc::new(RwLock::new(new_sess));

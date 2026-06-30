@@ -99,9 +99,11 @@ pub fn find_valid_cut_points(messages: &[Message]) -> Vec<usize> {
     let mut points = vec![];
     for (i, msg) in messages.iter().enumerate() {
         match msg.role.as_str() {
-            "user" | "assistant" if msg.tool_calls.as_ref().is_none_or(|v| v.is_empty()) => {
+            "user" => points.push(i),
+            "assistant" if msg.tool_calls.as_ref().is_none_or(|v| v.is_empty()) => {
                 points.push(i);
             }
+            "tool" => points.push(i),
             "system" => points.push(i),
             _ => {}
         }
@@ -113,6 +115,7 @@ pub fn find_valid_cut_points(messages: &[Message]) -> Vec<usize> {
 pub fn find_cut_point(messages: &[Message], keep_recent_tokens: i32) -> usize {
     let cut_points = find_valid_cut_points(messages);
     if cut_points.is_empty() {
+        // No valid cut point at all — return 0 (below caller falls back).
         return 0;
     }
 
@@ -120,7 +123,14 @@ pub fn find_cut_point(messages: &[Message], keep_recent_tokens: i32) -> usize {
     for i in (0..messages.len()).rev() {
         accumulated += estimate_tokens(&messages[i]);
         if accumulated >= keep_recent_tokens {
-            return cut_points.iter().find(|&&cp| cp >= i).copied().unwrap_or(0);
+            // unwrap_or: if no cut point >= i, use the LAST valid cut point
+            // before i instead of 0, so compaction still happens.
+            return cut_points
+                .iter()
+                .find(|&&cp| cp >= i)
+                .copied()
+                .or_else(|| cut_points.iter().rev().find(|&&cp| cp < i).copied())
+                .unwrap_or(cut_points[0]);
         }
     }
     cut_points[0]
@@ -202,9 +212,26 @@ pub fn compact(
 
     let cut = find_cut_point(&messages, opts.keep_recent_tokens);
     if cut == 0 {
+        // find_cut_point may return 0 when its char-based estimate is much
+        // lower than the API-reported tokens (e.g. after a prior compaction
+        // produced short summary messages).  When should_compact already
+        // confirmed action is needed, fall back to the smallest non-zero
+        // valid cut point so we still trim something.
+        let valid = find_valid_cut_points(&messages);
+        if let Some(&fallback) = valid.iter().find(|&&cp| cp > 0) {
+            return compact_from(messages, fallback, tokens_before);
+        }
         return (messages, None);
     }
 
+    compact_from(messages, cut, tokens_before)
+}
+
+fn compact_from(
+    messages: Vec<Message>,
+    cut: usize,
+    tokens_before: i32,
+) -> (Vec<Message>, Option<CompactionResult>) {
     let (read_files, modified_files) = extract_file_operations(&messages);
     let summary = format!(
         "Previous conversation summarized. Files read: {}. Modified: {}.",

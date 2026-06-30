@@ -1,8 +1,10 @@
 ---
+version: 1.0.0
 name: future-browser
 description: Control a local visible Chrome or Edge browser through Future CLI tools. Use for opening local apps, inspecting pages, clicking, typing, screenshots, and reading console output without modifying the Rust agent.
 allowed-tools: Bash(future:*)
 ---
+version: 1.0.0
 
 # Local Browser
 

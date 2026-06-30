@@ -1,9 +1,11 @@
 ---
+version: 1.0.0
 name: future-hand-drawn-posters
 description: Generate hand-drawn Japanese illustration style infographic posters from transcripts, articles, or reports using Future OS image tools. Vertical mobile-first layout with dense modular sections. Use when the user asks for posters, infographics, visual summaries, or hand-drawn visual cards.
 allowed-tools: Bash(future:*)
 category: creative
 ---
+version: 1.0.0
 
 # Future Hand-Drawn Posters Generator
 
@@ -58,10 +60,10 @@ Use `--stdin` by default because poster prompts often contain quotes, newlines, 
 
 ## Output Directory Convention
 
-**Never save directly to `/tmp/`.** Always create a timestamped subdirectory:
+**Never save directly as bare files in the working directory.** Always create a timestamped subdirectory:
 
 ```bash
-WORK_DIR="/tmp/posters_$(date +%Y%m%d_%H%M%S)"
+WORK_DIR="./posters_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$WORK_DIR"
 ```
 
