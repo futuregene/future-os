@@ -87,10 +87,15 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install protobuf
 
-      - name: Install Windows system dependencies
+      # `choco install protoc` exits 0 but doesn't reliably expose protoc on PATH
+      # for the cargo/Tauri build (the failure only surfaces on a rust-cache miss,
+      # when build.rs actually re-runs proto codegen). setup-protoc installs it and
+      # puts it on PATH deterministically. repo-token avoids GitHub API rate limits.
+      - name: Install Windows protoc
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: choco install protoc --yes
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install npm dependencies (GUI)
         working-directory: gui
