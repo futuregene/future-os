@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { platform as osPlatform } from "node:os";
 import { dirname } from "node:path";
 
-import { AUTH_FILE, FUTURE_AUTH_PROVIDER } from "../constants.js";
+import { AUTH_FILE, DEFAULT_PLATFORM_URL, FUTURE_AUTH_PROVIDER } from "../constants.js";
 import { isNodeError, isRecord } from "../utils/object.js";
 import { getPlatformUrl } from "../utils/platform.js";
 import { sleep } from "../utils/time.js";
@@ -38,7 +38,9 @@ type AuthFile = Record<string, unknown>;
 
 export async function login(platformUrlOverride?: string): Promise<void> {
   const authFile = await loadAuthFile();
-  const platformUrl = await getPlatformUrl(platformUrlOverride);
+  const platformUrl = platformUrlOverride
+    ? platformUrlOverride.replace(/\/+$/, "")
+    : DEFAULT_PLATFORM_URL;
   const device = await post<DeviceCodeResponse>(platformUrl, "/client/v1/oauth/device/code", {
     client_name: "Future OS CLI",
   });
