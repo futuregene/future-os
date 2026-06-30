@@ -15,6 +15,7 @@ export function MessageList({ messages, onContinue, onRetry, workspaceId }: Mess
         <MessageBlock
           key={message.id}
           message={message}
+          isLast={index === messages.length - 1}
           recoverySource={previousUserMessage(messages, index)}
           workspaceId={workspaceId}
           onContinue={onContinue}

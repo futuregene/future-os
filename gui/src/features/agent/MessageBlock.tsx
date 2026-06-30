@@ -9,6 +9,8 @@ import { MessageMeta } from "./MessageMeta";
 
 interface MessageBlockProps {
   message: AgentMessage;
+  /** Whether this is the last message in the thread. */
+  isLast?: boolean;
   recoverySource?: AgentMessage | null;
   onContinue?: (message: AgentMessage) => void;
   onRetry?: (message: AgentMessage, source: AgentMessage) => void;
@@ -17,13 +19,16 @@ interface MessageBlockProps {
 
 export function MessageBlock({
   message,
+  isLast,
   recoverySource,
   onContinue,
   onRetry,
   workspaceId,
 }: MessageBlockProps) {
   const isUser = message.role === "user";
-  const canRecover = !isUser && message.status === "failed";
+  // Retry/Continue only make sense on the latest turn — once a newer round has
+  // started, recovering an earlier failed turn would fork the conversation.
+  const canRecover = !isUser && message.status === "failed" && isLast === true;
   const hasSegments = !isUser && !!message.segments && message.segments.length > 0;
 
   return (
