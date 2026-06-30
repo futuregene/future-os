@@ -410,28 +410,6 @@ fn get_future_models_with_cache(api_key: &str, base_url: &str) -> Vec<Model> {
     }
 }
 
-/// Settings represents the FutureAgent settings.json format.
-#[derive(Debug, Deserialize)]
-pub(crate) struct Settings {
-    #[serde(rename = "defaultProvider", default)]
-    #[allow(dead_code)]
-    default_provider: Option<String>,
-    #[serde(rename = "defaultModel", default)]
-    default_model: Option<String>,
-    #[serde(rename = "defaultThinkingLevel", default)]
-    #[allow(dead_code)]
-    default_thinking_level: Option<String>,
-    #[serde(rename = "enabledModels", default)]
-    #[allow(dead_code)]
-    enabled_models: Option<Vec<String>>,
-}
-
-/// LoadSettings reads ~/.future/agent/settings.json.
-pub(crate) fn load_settings(path: &str) -> Result<Settings, String> {
-    let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&data).map_err(|e| e.to_string())
-}
-
 /// Get the first available model, or None.
 pub fn get_default_model() -> Option<String> {
     let registry = Registry::new();

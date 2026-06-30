@@ -14,7 +14,7 @@ Go to the **[Releases page](https://github.com/futuregene/future-os/releases)** 
 
 Always grab the newest release — that's how you get updates.
 
-> **Want the command-line tools too?** Optional `future-cli` and `future-tui` binaries are included in the **macOS app** and in the **Windows/Linux portable** packages (not the plain Windows installer or Linux `.deb`). See [[CLI|CLI]] and [[Terminal UI|TUI]].
+> **Want the command-line tools too?** Optional `future` and `future-tui` binaries are included in the **macOS app** and in the **Windows/Linux portable** packages (not the plain Windows installer or Linux `.deb`). See [[CLI|CLI]] and [[Terminal UI|TUI]].
 
 ## 2. First launch
 

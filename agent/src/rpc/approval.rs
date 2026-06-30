@@ -400,7 +400,7 @@ fn is_workspace_read_command(cwd: &str, command: &str) -> bool {
                 | "echo"
                 | "find"
                 | "future"
-                | "future-cli"
+                | "future"
                 | "grep"
                 | "head"
                 | "ls"
