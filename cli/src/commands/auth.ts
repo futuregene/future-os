@@ -3,9 +3,9 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { platform as osPlatform } from "node:os";
 import { dirname } from "node:path";
 
-import { AUTH_FILE, DEFAULT_API_URL, FUTURE_AUTH_PROVIDER } from "../constants.js";
+import { AUTH_FILE, FUTURE_AUTH_PROVIDER } from "../constants.js";
 import { isNodeError, isRecord } from "../utils/object.js";
-import { trimTrailingSlash } from "../utils/string.js";
+import { getPlatformUrl } from "../utils/platform.js";
 import { sleep } from "../utils/time.js";
 
 type DeviceCodeResponse = {
@@ -36,10 +36,10 @@ type FutureAuthEntry = {
 
 type AuthFile = Record<string, unknown>;
 
-export async function login(): Promise<void> {
+export async function login(platformUrlOverride?: string): Promise<void> {
   const authFile = await loadAuthFile();
-  const apiUrl = resolveApiUrl(authFile);
-  const device = await post<DeviceCodeResponse>(apiUrl, "/v1/oauth/device/code", {
+  const platformUrl = await getPlatformUrl(platformUrlOverride);
+  const device = await post<DeviceCodeResponse>(platformUrl, "/client/v1/oauth/device/code", {
     client_name: "Future OS CLI",
   });
 
@@ -56,7 +56,7 @@ export async function login(): Promise<void> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < device.expires_in * 1000) {
     await sleep(device.interval * 1000);
-    const response = await fetch(`${apiUrl}/v1/oauth/device/token`, {
+    const response = await tryFetch(`${platformUrl}/client/v1/oauth/device/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ device_code: device.device_code }),
@@ -65,7 +65,7 @@ export async function login(): Promise<void> {
     const body = (await response.json()) as DeviceTokenResponse | DeviceErrorResponse;
     if (response.ok) {
       const token = body as DeviceTokenResponse;
-      await saveAuth(authFile, token);
+      await saveAuth(authFile, token, platformUrl);
       console.log(`Saved Future API key to ${AUTH_FILE}`);
       return;
     }
@@ -91,7 +91,11 @@ export async function status(): Promise<void> {
       return;
     }
 
-    console.log(`API: ${auth.base_url ?? DEFAULT_API_URL}`);
+    const platformUrl = auth.base_url
+      ? auth.base_url.replace(/\/api\/?$/, "")
+      : await getPlatformUrl();
+    console.log(`Platform: ${platformUrl}`);
+    console.log(`API: ${platformUrl}/api/v1`);
   } catch {
     console.log("Not logged in.");
   }
@@ -117,8 +121,22 @@ export async function logout(): Promise<void> {
   }
 }
 
+async function tryFetch(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    const cause = error instanceof Error && error.cause;
+    const causeMsg = cause instanceof Error ? cause.message : "";
+    if (causeMsg) {
+      throw new Error(`Network error: ${causeMsg} (${msg})`);
+    }
+    throw new Error(`Network error: ${msg}`);
+  }
+}
+
 async function post<T>(apiUrl: string, path: string, body: unknown): Promise<T> {
-  const response = await fetch(`${apiUrl}${path}`, {
+  const response = await tryFetch(`${apiUrl}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -148,17 +166,13 @@ async function loadAuthFile(): Promise<AuthFile> {
   return parsed;
 }
 
-function resolveApiUrl(authFile: AuthFile): string {
-  const auth = getFutureAuthEntry(authFile);
-  return trimTrailingSlash(auth?.base_url ?? DEFAULT_API_URL);
-}
-
-async function saveAuth(authFile: AuthFile, token: DeviceTokenResponse): Promise<void> {
+async function saveAuth(authFile: AuthFile, token: DeviceTokenResponse, platformUrl: string): Promise<void> {
   const current = getFutureAuthEntry(authFile) ?? {};
   authFile[FUTURE_AUTH_PROVIDER] = {
     ...current,
     type: current.type ?? "api_key",
     key: token.api_key,
+    base_url: `${platformUrl}/api`,
   } satisfies FutureAuthEntry;
 
   await writeAuthFile(authFile);

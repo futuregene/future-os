@@ -19,7 +19,7 @@ impl ServerSession {
 
             // Discover skills so they appear in the system prompt's <available_skills> block.
             let skill_dirs = vec![
-                crate::skills::USER_SKILLS_DIR.to_string(),
+                crate::skills::APP_SKILLS_DIR.to_string(),
                 format!("{}/{}", self.cwd, crate::skills::PROJECT_SKILLS_DIR),
                 crate::skills::AGENTS_SKILLS_DIR.to_string(),
             ];
@@ -98,16 +98,23 @@ impl ServerSession {
         if self.auto_compaction {
             if let Ok(mut r#loop) = self.agent_loop.try_write() {
                 let comp_tokens = self.last_prompt_tokens.clone();
-                let comp_model = self.model.clone();
+                let comp_model = self.compaction_model.clone();
                 let comp_result = r#loop.last_compaction_result.clone();
                 r#loop.config.transform_context = Some(Arc::new(move |msgs, _| {
                     use std::sync::atomic::Ordering;
-                    let context_tokens = comp_tokens.load(Ordering::Relaxed) as i32;
+                    let api_tokens = comp_tokens.load(Ordering::Relaxed) as i32;
+                    // Fall back to heuristic estimate when API doesn't report usage.
+                    let context_tokens = if api_tokens > 0 {
+                        api_tokens
+                    } else {
+                        crate::compaction::estimate_context_tokens(&msgs)
+                    };
                     if context_tokens == 0 {
-                        return msgs; // No API call made yet, nothing to compact
+                        return msgs; // Truly empty — nothing to compact
                     }
+                    let model = comp_model.read().unwrap().clone();
                     let context_window = crate::models::Registry::new()
-                        .resolve(&comp_model)
+                        .resolve(&model)
                         .map(|m| m.context_window)
                         .unwrap_or(200000);
                     // Compact when context usage exceeds 90% (10% reserve, min 16K)

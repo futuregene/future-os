@@ -4,7 +4,8 @@
 //! The agent loads providers from `~/.future/agent/models.json` (merged over
 //! its built-in catalog) and API keys from `~/.future/agent/auth.json`. The
 //! built-in "FutureGene" provider is dynamic (its base URL comes from
-//! `auth.json` `future.base_url`, defaulting to the Future API host) and is
+//! `auth.json` `future.platform_base_url` or legacy `future.base_url`,
+//! defaulting to the Future API host) and is
 //! presented read-only; user-defined providers live under
 //! `models.json.providers` and are fully editable here.
 
@@ -15,7 +16,7 @@ use serde_json::{json, Map, Value};
 
 use crate::auth_store::{agent_dir, FUTURE_PROVIDER_ID};
 
-const DEFAULT_FUTURE_BASE_URL: &str = "http://api.westlakefuturegene.com";
+const DEFAULT_FUTURE_BASE_URL: &str = "https://future-os.cn/api/v1";
 const FUTURE_PROVIDER_NAME: &str = "FutureGene";
 
 // Field-validation limits for custom providers (see PLAN.md「自定义 Provider 字段校验」).
@@ -359,11 +360,19 @@ pub fn delete_custom_provider(id: String) -> Result<ProvidersView, crate::AppErr
 }
 
 pub(crate) fn resolve_future_base_url(auth: &Value) -> String {
-    auth.get(FUTURE_PROVIDER_ID)
-        .and_then(|future| future.get("base_url"))
-        .and_then(Value::as_str)
-        .map(|value| value.trim_end_matches('/').to_string())
-        .unwrap_or_else(|| DEFAULT_FUTURE_BASE_URL.to_string())
+    let future = match auth.get(FUTURE_PROVIDER_ID) {
+        Some(f) => f,
+        None => return DEFAULT_FUTURE_BASE_URL.to_string(),
+    };
+    // legacy: explicit base_url in auth.json
+    if let Some(url) = future.get("base_url").and_then(Value::as_str) {
+        return url.trim_end_matches('/').to_string();
+    }
+    // new: derive from platform_base_url
+    if let Some(platform_url) = future.get("platform_base_url").and_then(Value::as_str) {
+        return format!("{}/api/v1", platform_url.trim_end_matches('/'));
+    }
+    DEFAULT_FUTURE_BASE_URL.to_string()
 }
 
 fn auth_has_key(auth: &Value, id: &str) -> bool {

@@ -145,6 +145,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             );
             // Preserve model and thinking level from the current session
             new_sess.model = sess.model.clone();
+            *new_sess.compaction_model.write().unwrap() = sess.model.clone();
             new_sess.thinking_level = sess.thinking_level.clone();
             drop(sess);
 
@@ -480,7 +481,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "get_commands" => {
             // Return commands from skills (similar to Go's extensions + prompts)
             let skill_dirs = vec![
-                crate::skills::USER_SKILLS_DIR.to_string(),
+                crate::skills::APP_SKILLS_DIR.to_string(),
                 crate::skills::PROJECT_SKILLS_DIR.to_string(),
                 crate::skills::AGENTS_SKILLS_DIR.to_string(),
             ];
@@ -774,7 +775,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
 
             // Re-discover skills (blocking I/O, no locks held)
             let skill_dirs = vec![
-                crate::skills::USER_SKILLS_DIR.to_string(),
+                crate::skills::APP_SKILLS_DIR.to_string(),
                 format!("{}/{}", cwd, crate::skills::PROJECT_SKILLS_DIR),
                 crate::skills::AGENTS_SKILLS_DIR.to_string(),
             ];
