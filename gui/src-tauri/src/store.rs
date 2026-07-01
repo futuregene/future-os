@@ -68,6 +68,14 @@ pub fn initialize_app_store() -> Result<(), crate::AppError> {
     ensure_app_dirs()?;
     let conn = connect()?;
     apply_schema(&conn)?;
+    drop(conn);
+    // Reconcile GUI threads against the agent's base data: a thread whose
+    // session JSONL was deleted externally (TUI/CLI/manual) is soft-deleted so
+    // the UI can't show a conversation the model has silently lost. Best-effort
+    // — a reconcile failure must never block app startup.
+    if let Err(error) = cleanup::reconcile_orphan_sessions() {
+        eprintln!("reconcile_orphan_sessions failed: {error}");
+    }
     Ok(())
 }
 
