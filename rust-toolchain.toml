@@ -1,0 +1,7 @@
+# Pin the Rust toolchain so local dev and CI build with the same compiler
+# (avoids drift like the rusqlite 0.40 / cfg_select! mismatch between an older
+# local rustc and CI's floating stable). Bump deliberately, in step with the
+# `dtolnay/rust-toolchain` pin in .github/workflows/build.yml.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
