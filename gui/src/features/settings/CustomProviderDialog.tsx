@@ -36,6 +36,14 @@ export interface CustomProviderSubmit {
   create: boolean;
 }
 
+/**
+ * An editable model row. `key` is a stable identity for React reconciliation —
+ * the model `id` is user-editable and starts empty, so it can't be the key.
+ */
+interface ModelRow extends CustomProviderModel {
+  key: string;
+}
+
 export function CustomProviderDialog({
   existing,
   initial,
@@ -56,7 +64,7 @@ export function CustomProviderDialog({
   const [api, setApi] = useState("openai-completions");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [models, setModels] = useState<CustomProviderModel[]>([]);
+  const [models, setModels] = useState<ModelRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -69,7 +77,7 @@ export function CustomProviderDialog({
     setApi(initial?.api || "openai-completions");
     setBaseUrl(initial?.baseUrl ?? "");
     setApiKey("");
-    setModels(initial?.models.map(model => ({ ...model })) ?? []);
+    setModels(initial?.models.map(model => ({ ...model, key: crypto.randomUUID() })) ?? []);
     setError(null);
     setSaving(false);
   }, [initial, open]);
@@ -242,7 +250,7 @@ export function CustomProviderDialog({
             <span className="text-sm font-medium text-ink">模型</span>
             <button
               className="text-xs font-medium text-accent transition-colors hover:underline"
-              onClick={() => setModels(current => [...current, { id: "", name: "" }])}
+              onClick={() => setModels(current => [...current, { id: "", key: crypto.randomUUID(), name: "" }])}
               type="button"
             >
               + 添加模型
@@ -253,8 +261,7 @@ export function CustomProviderDialog({
             : (
                 <div className="space-y-2">
                   {models.map((model, index) => (
-                    // eslint-disable-next-line react/no-array-index-key
-                    <div className="flex items-center gap-2" key={index}>
+                    <div className="flex items-center gap-2" key={model.key}>
                       <TextInput
                         onChange={event => updateModel(index, { id: event.target.value })}
                         placeholder="模型 ID"

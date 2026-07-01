@@ -29,7 +29,9 @@ export function MessageBlock({
   // Retry/Continue only make sense on the latest turn — once a newer round has
   // started, recovering an earlier failed turn would fork the conversation.
   const canRecover = !isUser && message.status === "failed" && isLast === true;
-  const hasSegments = !isUser && !!message.segments && message.segments.length > 0;
+  // A local narrowed to the non-empty segment array (or null) so the render can
+  // map over it without a non-null assertion.
+  const segments = !isUser && message.segments && message.segments.length > 0 ? message.segments : null;
 
   return (
     <article className="flex justify-center">
@@ -46,10 +48,10 @@ export function MessageBlock({
               : "w-full",
           )}
         >
-          {hasSegments
+          {segments
             ? (
                 <div className="space-y-3">
-                  {message.segments!.map(segment =>
+                  {segments.map(segment =>
                     segment.kind === "text"
                       ? (
                           <MarkdownContent
@@ -76,7 +78,7 @@ export function MessageBlock({
                 </div>
               )
             : null}
-          {!isUser && !hasSegments ? <AgentActivityList items={message.activityItems} /> : null}
+          {!isUser && !segments ? <AgentActivityList items={message.activityItems} /> : null}
           {canRecover
             ? (
                 <div className="mt-3 flex flex-wrap gap-2">

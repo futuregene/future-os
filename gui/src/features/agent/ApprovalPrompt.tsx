@@ -225,34 +225,75 @@ function isEditableTarget(target: EventTarget | null) {
     || tagName === "select";
 }
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(item => typeof item === "string");
+}
+
+function isPathEntryArray(value: unknown): value is Array<{ path: string; preview?: string }> {
+  return Array.isArray(value) && value.every(item =>
+    isRecord(item)
+    && typeof item.path === "string"
+    && (item.preview === undefined || typeof item.preview === "string"));
+}
+
+function isScope(value: unknown): value is NonNullable<ApprovalAction["scope"]> {
+  return isRecord(value)
+    && typeof value.cwd === "string"
+    && typeof value.insideWorkspace === "boolean"
+    && (value.estimatedBlastRadius === "low"
+      || value.estimatedBlastRadius === "medium"
+      || value.estimatedBlastRadius === "high");
+}
+
+// Parse the P2 structured payloads field-by-field rather than asserting the
+// whole shape: required scalars are validated, and each optional field the UI
+// iterates is dropped unless it has the expected shape, so malformed backend
+// data can never reach the render as an unchecked value.
 function parseAction(payload: string | null | undefined): ApprovalAction | null {
   if (!payload)
     return null;
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(payload) as unknown;
-    if (isRecord(parsed) && typeof parsed.tool === "string" && typeof parsed.category === "string") {
-      return parsed as unknown as ApprovalAction;
-    }
-    return null;
+    parsed = JSON.parse(payload);
   }
   catch {
     return null;
   }
+  if (!isRecord(parsed) || typeof parsed.tool !== "string" || typeof parsed.category !== "string")
+    return null;
+  return {
+    category: parsed.category,
+    command: typeof parsed.command === "string" ? parsed.command : undefined,
+    deletes: isPathEntryArray(parsed.deletes) ? parsed.deletes : undefined,
+    paths: isStringArray(parsed.paths) ? parsed.paths : undefined,
+    scope: isScope(parsed.scope) ? parsed.scope : undefined,
+    summary: typeof parsed.summary === "string" ? parsed.summary : undefined,
+    tool: parsed.tool,
+    writes: isPathEntryArray(parsed.writes) ? parsed.writes : undefined,
+  };
 }
 
 function parseSandbox(payload: string | null | undefined): SandboxBoundary | null {
   if (!payload)
     return null;
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(payload) as unknown;
-    if (isRecord(parsed) && typeof parsed.mode === "string") {
-      return parsed as unknown as SandboxBoundary;
-    }
-    return null;
+    parsed = JSON.parse(payload);
   }
   catch {
     return null;
   }
+  if (!isRecord(parsed) || typeof parsed.mode !== "string")
+    return null;
+  // Only `mode` and `violation` are surfaced in the UI today; cwd/insideSandbox
+  // are part of the P2 wire type but currently unread, so tolerate their absence.
+  return {
+    cwd: typeof parsed.cwd === "string" ? parsed.cwd : "",
+    insideSandbox: typeof parsed.insideSandbox === "boolean" ? parsed.insideSandbox : true,
+    mode: parsed.mode,
+    violation: typeof parsed.violation === "string" ? parsed.violation : null,
+    writableRoots: isStringArray(parsed.writableRoots) ? parsed.writableRoots : undefined,
+  };
 }
 
 function formatViolation(violation: string) {

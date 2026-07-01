@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from "react";
 import { DiffView } from "../../components/ui/DiffView";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { Select } from "../../components/ui/Select";
+import { TextInput } from "../../components/ui/TextInput";
 import { getLastRunReview, retryRunReview, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { formatTime } from "../../lib/date";
 import { onFutureEvent } from "../../lib/futureEvents";
@@ -460,8 +461,8 @@ function ReviewHeader({
         </Select>
         {reviewBase === "custom"
           ? (
-              <input
-                className="h-8 rounded-md border border-line-soft bg-surface px-2 text-sm text-ink outline-none transition-colors placeholder:text-ink-muted hover:border-line focus:border-focus focus:ring-2 focus:ring-focus"
+              <TextInput
+                className="h-8 w-auto px-2 hover:border-line"
                 onChange={event => onCustomBaseChange(event.target.value)}
                 placeholder="Commit, tag, or branch"
                 value={customBase}

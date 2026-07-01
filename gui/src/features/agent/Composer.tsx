@@ -62,6 +62,9 @@ export function Composer({
   const activeMention = useMemo(() => findActiveMention(value, caretPosition), [caretPosition, value]);
 
   useEffect(() => {
+    // Hand-rolled cancel guard (not useAsyncResource): this effect drives several
+    // states (results + open flag) with an early-return branch, which doesn't map
+    // onto the primitive's single-resource shape. See gui/CLAUDE.md §4.
     let cancelled = false;
 
     async function loadReferenceResults() {
@@ -128,7 +131,9 @@ export function Composer({
       }
       if (event.key === "Enter" || event.key === "Tab") {
         event.preventDefault();
-        insertReference(referenceResults[selectedReferenceIndex]);
+        const selected = referenceResults[selectedReferenceIndex];
+        if (selected)
+          insertReference(selected);
         return;
       }
     }
@@ -534,7 +539,8 @@ function findActiveMention(value: string, caretPosition: number) {
   if (!match)
     return null;
 
-  const markerOffset = match[1].length;
+  // Group 1 `(^|\s)` is a required capture — present whenever `match` is.
+  const markerOffset = match[1]!.length;
   const start = caretPosition - match[0].length + markerOffset;
   return {
     end: caretPosition,

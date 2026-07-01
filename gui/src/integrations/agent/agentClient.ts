@@ -66,10 +66,6 @@ export function modelLabel(modelId: string, models: AgentModelOption[]) {
   return modelOption(modelId, models)?.label ?? (modelId || "Model");
 }
 
-export function modelSupportsImages(modelId: string, models: AgentModelOption[]) {
-  return Boolean(modelOption(modelId, models)?.supportsImages);
-}
-
 export function modelThinkingLevel(modelId: string, models: AgentModelOption[]) {
   return modelOption(modelId, models)?.thinkingLevel ?? undefined;
 }

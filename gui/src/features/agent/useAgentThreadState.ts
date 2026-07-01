@@ -365,6 +365,9 @@ export function useAgentThreadState({
   }, [threadId]);
 
   useEffect(() => {
+    // Hand-rolled cancel guard (not useAsyncResource): loads messages, refreshes
+    // the recent run, and restores activities into several states at once, which
+    // doesn't map onto the primitive's single-resource shape. See gui/CLAUDE.md §4.
     let cancelled = false;
 
     async function loadThreadMessages() {

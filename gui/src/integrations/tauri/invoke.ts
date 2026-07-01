@@ -32,7 +32,7 @@ export async function invokeCommand<T>(
 /**
  * Convert an arbitrary value thrown by Tauri into a consistent `Error`.
  */
-export function normalizeInvokeError(command: string, error: unknown): Error {
+function normalizeInvokeError(command: string, error: unknown): Error {
   if (error instanceof Error)
     return error;
 
