@@ -197,6 +197,19 @@ impl crate::types::LLMProvider for Client {
                 })
                 .collect();
             body["tools"] = serde_json::json!(openai_tools);
+
+            // Z.AI (GLM) models require tool_stream=true for incremental
+            // tool-call argument streaming. Without it, every chunk repeats
+            // id+name, causing parse_sse_chunk to emit toolcall_start for
+            // each fragment instead of toolcall_delta.
+            let model_lower = model.to_lowercase();
+            let base_url_lower = base_url.to_lowercase();
+            if model_lower.contains("glm")
+                || model_lower.contains("zai")
+                || base_url_lower.contains("bigmodel")
+            {
+                body["tool_stream"] = serde_json::json!(true);
+            }
         }
 
         // Add temperature
