@@ -45,23 +45,26 @@ body {
   }
 }
 
-::-webkit-scrollbar {
+/* Custom classic scrollbar for the whole app, EXCEPT elements opting into
+   `.scrollbar-hover` — those are left unstyled so macOS gives them native
+   overlay scrollbars (auto-hiding, floating over content, no reserved gutter). */
+:not(.scrollbar-hover)::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 
-::-webkit-scrollbar-track {
+:not(.scrollbar-hover)::-webkit-scrollbar-track {
   background: transparent;
 }
 
-::-webkit-scrollbar-thumb {
+:not(.scrollbar-hover)::-webkit-scrollbar-thumb {
   background: #c8ced9;
   border: 3px solid transparent;
   border-radius: 999px;
   background-clip: padding-box;
 }
 
-::-webkit-scrollbar-thumb:hover {
+:not(.scrollbar-hover)::-webkit-scrollbar-thumb:hover {
   background: #aeb7c6;
   border: 3px solid transparent;
   background-clip: padding-box;
@@ -74,4 +77,13 @@ body {
 .floating-scrollbar::-webkit-scrollbar {
   width: 0;
   height: 0;
+}
+
+/* Opt into macOS native overlay scrollbars: no `::-webkit-scrollbar` styling
+   (see the `:not(.scrollbar-hover)` scoping above), so the bar auto-hides,
+   floats over the content, and reserves no gutter. `scrollbar-width: thin`
+   keeps it slim on Firefox/Linux. */
+.scrollbar-hover {
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
