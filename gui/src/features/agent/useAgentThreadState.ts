@@ -2,6 +2,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredRunEvent, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment, MessageSegment } from "./agentThreadTypes";
 import type { ComposerSendPayload } from "./Composer";
+import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
 import {
@@ -440,6 +441,30 @@ export function useAgentThreadState({
       void reloadMessagesQuiet(threadId);
     }
   }, [activeRunId, reloadMessagesQuiet, threadId]);
+
+  // A remote (phone/web) client can drive this thread's session in the
+  // background. This view never started that run, and the recent-run poll below
+  // only self-sustains once a run is already in flight — so a fresh remote run
+  // on an idle foreground thread would otherwise go unnoticed here (only the
+  // sidebar's independent run-status poll would spin). On the backend's
+  // remote-activity signal for THIS thread, pull the new run (which arms the
+  // live-preview + settle-reload machinery) and reload messages so the phone's
+  // user bubble shows immediately. Skip while a local send owns the view.
+  useEffect(() => {
+    if (!threadId)
+      return;
+    let cancelled = false;
+    const unlisten = listen<string>("remote-activity", (event) => {
+      if (cancelled || event.payload !== threadId || sendingRef.current)
+        return;
+      void refreshRecentRun(threadId, thread?.workspaceId);
+      void reloadMessagesQuiet(threadId);
+    });
+    return () => {
+      cancelled = true;
+      void unlisten.then(stop => stop());
+    };
+  }, [refreshRecentRun, reloadMessagesQuiet, thread?.workspaceId, threadId]);
 
   useEffect(() => {
     // Hand-rolled cancel guard (not useAsyncResource): loads messages, refreshes

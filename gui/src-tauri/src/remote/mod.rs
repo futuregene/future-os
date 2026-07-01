@@ -100,7 +100,7 @@ pub fn status() -> RemoteStatus {
 
 /// 事件 tap（Step B）：若远程在运行，把一条 agent 事件镜像发布到
 /// `p.{pairId}.evt.{session}`。无连接时直接返回，不阻塞 GUI 的事件消费。
-pub async fn publish_event(session_id: &str, event_type: &str, data: &str) {
+pub async fn publish_event(session_id: &str, event_type: &str, data: &str, run_id: &str, idx: i64) {
     let target = {
         let guard = STATE.lock().unwrap();
         guard
@@ -111,7 +111,7 @@ pub async fn publish_event(session_id: &str, event_type: &str, data: &str) {
         return;
     };
     let subject = format!("p.{pair_id}.evt.{session_id}");
-    let body = json!({ "type": event_type, "data": data });
+    let body = json!({ "type": event_type, "data": data, "runId": run_id, "idx": idx });
     if let Ok(payload) = serde_json::to_vec(&body) {
         let _ = client.publish(subject, payload.into()).await;
     }
@@ -120,7 +120,7 @@ pub async fn publish_event(session_id: &str, event_type: &str, data: &str) {
 // ─── Step C：命令订阅 + 路由 ────────────────────────────────────────────────
 
 /// 客户端经 NATS 发来的命令（camelCase JSON，取 Bridge 需要的字段）。
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct IncomingCmd {
     id: String,
@@ -128,6 +128,22 @@ struct IncomingCmd {
     cmd_type: String,
     session_id: String,
     message: String,
+    // get_events_since (P1c backfill)
+    run_id: String,
+    since_idx: i64,
+}
+
+impl Default for IncomingCmd {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            cmd_type: String::new(),
+            session_id: String::new(),
+            message: String::new(),
+            run_id: String::new(),
+            since_idx: -1,
+        }
+    }
 }
 
 async fn command_loop(client: async_nats::Client, pair_id: String) {
@@ -193,6 +209,19 @@ async fn handle_command(client: &async_nats::Client, pair_id: &str, msg: async_n
                 }
             })();
             match result {
+                Ok(data) => reply(client, &msg, true, data, None).await,
+                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+            }
+        }
+        "get_events_since" => {
+            // P1c：回放当前进行中这一轮的缓冲事件，让中途加入的客户端补齐丢失的前缀。
+            match crate::agent_bridge::get_events_since(
+                cmd.session_id.clone(),
+                cmd.run_id.clone(),
+                cmd.since_idx,
+            )
+            .await
+            {
                 Ok(data) => reply(client, &msg, true, data, None).await,
                 Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
             }
