@@ -49,7 +49,7 @@ describe("buildAssistantRunProjection segments", () => {
     );
 
     expect(projection.segments).toHaveLength(1);
-    const [segment] = projection.segments;
+    const segment = projection.segments[0]!;
     expect(segment.kind).toBe("activity");
     if (segment.kind === "activity") {
       expect(segment.item.kind).toBe("edit");
@@ -89,7 +89,7 @@ describe("buildAssistantRunProjection segments", () => {
     );
 
     expect(projection.segments).toHaveLength(1);
-    const [segment] = projection.segments;
+    const segment = projection.segments[0]!;
     expect(segment.kind === "activity" && segment.item.count).toBe(2);
   });
 
@@ -103,7 +103,7 @@ describe("buildAssistantRunProjection segments", () => {
 
     expect(projection.content.trim()).toBe("");
     expect(projection.segments).toHaveLength(1);
-    expect(projection.segments[0].kind).toBe("activity");
+    expect(projection.segments[0]!.kind).toBe("activity");
   });
 });
 

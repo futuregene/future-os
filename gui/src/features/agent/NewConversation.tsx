@@ -104,10 +104,11 @@ export function NewConversation({
     = workspaceOptions.find(workspace => workspace.id === selectedWorkspace) ?? workspaceOptions[0];
 
   useEffect(() => {
-    if (activeWorkspace || workspaceOptions.length === 0)
+    const first = workspaceOptions[0];
+    if (activeWorkspace || !first)
       return;
 
-    setSelectedWorkspace(workspaceOptions[0].id);
+    setSelectedWorkspace(first.id);
   }, [activeWorkspace, workspaceOptions]);
 
   useEffect(() => {
