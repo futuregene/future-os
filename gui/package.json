@@ -22,7 +22,6 @@
     "pdfjs-dist": "^6.1.200",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "react-refresh": "^0.18.0",
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
     "shiki": "^4.3.0",

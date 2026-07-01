@@ -9,10 +9,10 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 
 export const MAX_ATTACHMENTS_PER_TURN = 4;
 
-export const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"] as const;
+const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"] as const;
 
 /** Text/source extensions accepted for inline extraction (must also pass the Rust binary sniff). */
-export const TEXT_EXTENSIONS = new Set([
+const TEXT_EXTENSIONS = new Set([
   "txt",
   "md",
   "markdown",
@@ -77,7 +77,7 @@ const INLINE_MAX_LINES_PER_FILE = 2000;
 const INLINE_MAX_TOTAL_BYTES = 60 * 1024;
 const READ_SOURCE_MAX_BYTES = 25 * 1024 * 1024;
 
-export type AttachmentKind = "image" | "pdf" | "text";
+type AttachmentKind = "image" | "pdf" | "text";
 
 const IMAGE_MIME_EXTENSIONS: Record<string, string> = {
   "image/bmp": "bmp",
@@ -111,7 +111,7 @@ interface StoredMixedMessage {
 
 export function fileNameFromPath(path: string) {
   const segments = path.split(/[\\/]/).filter(Boolean);
-  return segments.length > 0 ? segments[segments.length - 1] : path;
+  return segments[segments.length - 1] ?? path;
 }
 
 function extOf(path: string) {
@@ -120,7 +120,7 @@ function extOf(path: string) {
   return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
 }
 
-export function isImagePath(path: string) {
+function isImagePath(path: string) {
   return /\.(?:jpe?g|png|gif|webp|bmp|svg)$/i.test(path);
 }
 

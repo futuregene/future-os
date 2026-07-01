@@ -10,6 +10,7 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { CopyablePre } from "../../components/ui/CopyablePre";
 import { Select } from "../../components/ui/Select";
+import { TextInput } from "../../components/ui/TextInput";
 import {
   listRunEvents,
   listToolOutputs,
@@ -146,8 +147,8 @@ export function RunInspectPanel({ onBack, run, tools }: RunInspectPanelProps) {
         <label className="relative block">
           <span className="sr-only">Search run details</span>
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-ink-muted" />
-          <input
-            className="h-8 w-full rounded-md border border-line-soft bg-surface pl-8 pr-2 text-sm text-ink outline-none transition-colors placeholder:text-ink-muted hover:border-line focus:border-focus focus:ring-2 focus:ring-focus"
+          <TextInput
+            className="h-8 pl-8 pr-2 hover:border-line"
             onChange={event => setQuery(event.target.value)}
             placeholder="Search run details..."
             value={query}

@@ -106,6 +106,9 @@ export function useThreadStore(): ThreadStore {
   }, []);
 
   useEffect(() => {
+    // Hand-rolled cancel guard (not useAsyncResource): a multi-step bootstrap
+    // (init store → cancel stale approvals → recent thread → threads+workspaces)
+    // writing several states, not a single resource. See gui/CLAUDE.md §4.
     let cancelled = false;
 
     async function bootstrapStore() {

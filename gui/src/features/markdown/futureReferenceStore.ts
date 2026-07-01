@@ -40,7 +40,7 @@ export function useFutureReference(
   );
 }
 
-export function loadFutureReferences(workspaceId: string, references: ReferenceIdentity[]) {
+function loadFutureReferences(workspaceId: string, references: ReferenceIdentity[]) {
   const workspaceLoads = pendingLoads.get(workspaceId) ?? new Map<string, ReferenceIdentity>();
   for (const reference of references) {
     workspaceLoads.set(referenceIdentityKey(reference), reference);
@@ -53,16 +53,6 @@ export function loadFutureReferences(workspaceId: string, references: ReferenceI
       void flushPendingReferenceLoads();
     }, 0);
   }
-}
-
-export function invalidateFutureReference(
-  workspaceId: string | null | undefined,
-  reference: ReferenceIdentity,
-) {
-  if (!workspaceId)
-    return;
-
-  void resolveAndStoreReferences(workspaceId, [reference]);
 }
 
 export function upsertFutureReferenceData(
@@ -93,7 +83,7 @@ export function upsertFutureReferenceEntries(
   notifyFutureReferenceSubscribers();
 }
 
-export function getFutureReferenceSnapshot(
+function getFutureReferenceSnapshot(
   workspaceId: string | null | undefined,
   reference: ReferenceIdentity,
 ) {
