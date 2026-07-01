@@ -58,6 +58,24 @@ export function useAgentThreadState({
   const streamTimerRef = useRef<number | null>(null);
   const threadId = thread?.id ?? null;
 
+  // The run this thread is currently executing, if any. Runs stream server-side
+  // and persist their events regardless of which thread is in the foreground, so
+  // this is the anchor for re-attaching a live preview to a conversation that was
+  // started, backgrounded, and returned to (or picked up after an app reload) —
+  // the in-flight `handleSend` only drives the view while its own thread stays
+  // foreground. Guarded on `threadId` because `recentRun` lags a thread switch by
+  // one poll, and a stale run from the previous thread must not leak into this
+  // one. Null once the run settles.
+  const activeRunId
+    = recentRun && recentRun.threadId === threadId && !matchesSettledRun(recentRun.status)
+      ? recentRun.id
+      : null;
+  // Epoch-ms anchor for the live elapsed timer of a re-attached run. Stable while
+  // the run stays active (derived from persisted run times), so it doesn't churn
+  // the resume effect the way the `recentRun` object identity would.
+  const activeRunStartedAt = activeRunId ? (recentRun?.startedAt ?? recentRun?.createdAt ?? null) : null;
+  const prevActiveRunIdRef = useRef<string | null>(null);
+
   const updateFloatingScrollbar = useCallback((visible: boolean) => {
     const scrollContainer = scrollRef.current;
     if (!scrollContainer)
@@ -111,6 +129,21 @@ export function useAgentThreadState({
       // Promise.all) or abort an in-flight send. Keep the previous recentRun
       // until the next poll. The waiting-approval prompt is rendered separately
       // by AgentThread from `activeApproval`, so no message rewrite is needed.
+    }
+  }, []);
+
+  // Reload a thread's messages from the store without flipping the full-screen
+  // loading state — used to swap a synthetic streaming bubble for the persisted
+  // assistant message once a background run settles.
+  const reloadMessagesQuiet = useCallback(async (targetThreadId: string) => {
+    try {
+      const storedMessages = await listMessages(targetThreadId);
+      const agentMessages = storedMessages.map(toAgentMessage);
+      const restoredMessages = await restoreMessageActivities(agentMessages, targetThreadId);
+      setMessages(restoredMessages);
+    }
+    catch {
+      // Best-effort refresh: keep the current messages on failure.
     }
   }, []);
 
@@ -357,12 +390,56 @@ export function useAgentThreadState({
       // A switch away abandons any in-flight send for this thread; let the new
       // thread send freely (its run is a different session).
       sendingRef.current = false;
+      // Drop the run tracked for the outgoing thread so the incoming thread's
+      // settle detection doesn't fire against a stale run id.
+      prevActiveRunIdRef.current = null;
       if (streamTimerRef.current !== null) {
         window.clearInterval(streamTimerRef.current);
         streamTimerRef.current = null;
       }
     };
   }, [threadId]);
+
+  // Re-attach a live preview to a run that this view didn't start (or is no
+  // longer driving): a conversation started, backgrounded, and returned to while
+  // still running, or one picked up after an app reload. While a local send owns
+  // the view (`sendingRef`), that path renders the stream itself, so skip.
+  //
+  // The poll UPSERTS the streaming bubble every tick (not a one-time insert) so it
+  // survives a `loadThreadMessages` array-replace that lands mid-stream — the next
+  // tick simply re-inserts it. That resilience is what makes a returned-to run
+  // reconnect instead of showing an empty bubble the reload silently dropped.
+  useEffect(() => {
+    if (!threadId || !activeRunId || sendingRef.current)
+      return;
+
+    const runId = activeRunId;
+    const startedAt = activeRunStartedAt;
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled)
+        return;
+      void upsertStreamingPreview(runId, startedAt, setMessages, () => !cancelled);
+    };
+    tick();
+    const timer = window.setInterval(tick, 220);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeRunId, activeRunStartedAt, threadId]);
+
+  // When a run this view was previewing (but did not itself start) settles,
+  // reload the thread so the synthetic streaming bubble is replaced by the
+  // persisted assistant message.
+  useEffect(() => {
+    const previous = prevActiveRunIdRef.current;
+    prevActiveRunIdRef.current = activeRunId;
+    if (previous && !activeRunId && !sendingRef.current && threadId) {
+      void reloadMessagesQuiet(threadId);
+    }
+  }, [activeRunId, reloadMessagesQuiet, threadId]);
 
   useEffect(() => {
     // Hand-rolled cancel guard (not useAsyncResource): loads messages, refreshes
@@ -460,6 +537,77 @@ function patchMessage(
         : message,
     ),
   );
+}
+
+/**
+ * Render an in-flight run's live events as a streaming assistant bubble, keyed by
+ * a stable `stream_<runId>` id. Unlike {@link updatePendingMessageFromRunEvents}
+ * (which patches an existing optimistic bubble), this UPSERTS: it inserts the
+ * bubble when missing and updates it in place otherwise, so it re-attaches to a
+ * conversation the current view didn't start and survives store reloads that
+ * replace the message array. Once a persisted assistant message for the run
+ * exists (the run settled and was reloaded), it steps aside and adds nothing.
+ */
+async function upsertStreamingPreview(
+  runId: string,
+  runStartedAt: number | null,
+  setMessages: Dispatch<SetStateAction<AgentMessage[]>>,
+  shouldApply: () => boolean = () => true,
+) {
+  try {
+    const events = await listRunEvents(runId);
+    if (!shouldApply())
+      return;
+
+    const projection = buildAssistantRunProjection(events);
+    const bubbleId = `stream_${runId}`;
+
+    setMessages((current) => {
+      // A persisted assistant message already carries this run — the run
+      // settled and the thread was reloaded; don't resurrect a synthetic bubble.
+      if (current.some(message => message.runId === runId && message.id !== bubbleId))
+        return current;
+
+      const content = projection.content.trim();
+      const activityItems = projection.activityItems.length > 0 ? projection.activityItems : thinkingActivity();
+      const existingIndex = current.findIndex(message => message.id === bubbleId);
+
+      if (existingIndex === -1) {
+        const bubble: AgentMessage = {
+          id: bubbleId,
+          role: "assistant",
+          author: "Research Copilot",
+          content,
+          status: "streaming",
+          createdAt: new Date().toISOString(),
+          activityItems,
+          segments: projection.segments,
+          outputTokens: projection.outputTokens,
+          // Feed MessageMeta's live elapsed timer so a re-attached run keeps
+          // ticking instead of dropping its duration stat on switch-back.
+          runStartedAt: runStartedAt ?? undefined,
+          runId,
+        };
+        return [...current, bubble];
+      }
+
+      return current.map((message, index) =>
+        index === existingIndex
+          ? {
+              ...message,
+              activityItems,
+              segments: projection.segments,
+              content: content || message.content,
+              outputTokens: projection.outputTokens,
+            }
+          : message,
+      );
+    });
+  }
+  catch {
+    // Live preview is best-effort; the final assistant message still lands when
+    // the run settles and the thread reloads.
+  }
 }
 
 async function updatePendingMessageFromRunEvents(
