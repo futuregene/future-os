@@ -145,11 +145,11 @@ export function ActivityRail({
               )}
         </button>
       </div>
-      <div className={cn("flex flex-1 flex-col p-2", expanded ? "w-full" : "items-center gap-2")}>
+      <div className={cn("flex min-h-0 flex-1 flex-col p-2", expanded ? "w-full" : "items-center gap-2")}>
         {expanded
           ? (
               <>
-                <div className="mb-3 space-y-0.5">
+                <div className="mb-3 shrink-0 space-y-0.5">
                   <button
                     className="flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink transition-colors hover:bg-surface-subtle"
                     onClick={() => onNewChat()}
@@ -191,7 +191,7 @@ export function ActivityRail({
                 </div>
                 {featureItems.length > 0
                   ? (
-                      <div className="mb-3 space-y-0.5">
+                      <div className="mb-3 shrink-0 space-y-0.5">
                         {featureItems.map((item) => {
                           const Icon = item.icon;
                           return (
@@ -212,115 +212,117 @@ export function ActivityRail({
                       </div>
                     )
                   : null}
-                <div className="space-y-0.5">
-                  <div className="flex h-6 items-center justify-between px-2 text-xs font-medium text-ink-muted">
-                    <span>Workspace</span>
-                    <button
-                      aria-label="New workspace"
-                      className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
-                      onClick={onNewWorkspace}
-                      title="New workspace"
-                      type="button"
-                    >
-                      <Plus className="size-3.5" />
-                    </button>
-                  </div>
-                  {workspaceGroups.length === 0
-                    ? (
-                        <div className="px-2 py-1 text-xs text-ink-muted">No workspace threads</div>
-                      )
-                    : null}
-                  {workspaceGroups.map(({ workspace, threads: groupThreads }) => {
-                    const collapsed = collapsedWorkspaces.has(workspace.id);
-                    return (
-                      <div key={workspace.id} className="space-y-0.5">
-                        {/* Group header: hover only, no selected state (req 4). */}
-                        <div className="group flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle">
-                          <button
-                            aria-label={collapsed ? "Expand workspace" : "Collapse workspace"}
-                            className="inline-flex size-4 shrink-0 items-center justify-center text-ink-muted transition-colors hover:text-ink-soft"
-                            onClick={() => toggleWorkspaceCollapsed(workspace.id)}
-                            type="button"
-                          >
-                            {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
-                          </button>
-                          <button
-                            className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                            onClick={() => onSelectWorkspace(workspace, groupThreads)}
-                            type="button"
-                          >
-                            <Folder className="size-4 shrink-0 text-ink-soft" />
-                            <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-soft">
-                              {workspace.name}
-                            </span>
-                          </button>
-                          <button
-                            aria-label={`New chat in ${workspace.name}`}
-                            className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-surface hover:text-ink-soft group-hover:opacity-100"
-                            onClick={() => onNewChat(workspace.id)}
-                            title={`New chat in ${workspace.name}`}
-                            type="button"
-                          >
-                            <Plus className="size-3.5" />
-                          </button>
+                <div className="scrollbar-hover -mx-2 flex min-h-0 flex-1 flex-col px-2">
+                  <div className="space-y-0.5">
+                    <div className="sticky top-0 z-10 flex h-6 items-center justify-between bg-surface px-2 text-xs font-medium text-ink-muted">
+                      <span>Workspace</span>
+                      <button
+                        aria-label="New workspace"
+                        className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                        onClick={onNewWorkspace}
+                        title="New workspace"
+                        type="button"
+                      >
+                        <Plus className="size-3.5" />
+                      </button>
+                    </div>
+                    {workspaceGroups.length === 0
+                      ? (
+                          <div className="px-2 py-1 text-xs text-ink-muted">No workspace threads</div>
+                        )
+                      : null}
+                    {workspaceGroups.map(({ workspace, threads: groupThreads }) => {
+                      const collapsed = collapsedWorkspaces.has(workspace.id);
+                      return (
+                        <div key={workspace.id} className="space-y-0.5">
+                          {/* Group header: hover only, no selected state (req 4). */}
+                          <div className="group flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle">
+                            <button
+                              aria-label={collapsed ? "Expand workspace" : "Collapse workspace"}
+                              className="inline-flex size-4 shrink-0 items-center justify-center text-ink-muted transition-colors hover:text-ink-soft"
+                              onClick={() => toggleWorkspaceCollapsed(workspace.id)}
+                              type="button"
+                            >
+                              {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+                            </button>
+                            <button
+                              className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                              onClick={() => onSelectWorkspace(workspace, groupThreads)}
+                              type="button"
+                            >
+                              <Folder className="size-4 shrink-0 text-ink-soft" />
+                              <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-soft">
+                                {workspace.name}
+                              </span>
+                            </button>
+                            <button
+                              aria-label={`New chat in ${workspace.name}`}
+                              className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-surface hover:text-ink-soft group-hover:opacity-100"
+                              onClick={() => onNewChat(workspace.id)}
+                              title={`New chat in ${workspace.name}`}
+                              type="button"
+                            >
+                              <Plus className="size-3.5" />
+                            </button>
+                          </div>
+                          {!collapsed && groupThreads.length > 0
+                            ? (
+                                <div className="space-y-0.5">
+                                  {groupThreads.map(thread => (
+                                    <ThreadListItem
+                                      active={thread.id === activeThreadId}
+                                      archived={thread.status === "archived"}
+                                      key={thread.id}
+                                      menuOpen={openThreadMenuId === thread.id}
+                                      runStatus={threadRunStatuses[thread.id]}
+                                      thread={thread}
+                                      compact
+                                      onDeleteThread={onDeleteThread}
+                                      onMenuOpenChange={open => setOpenThreadMenuId(open ? thread.id : null)}
+                                      onRenameThread={onRenameThread}
+                                      onRestoreThread={onRestoreThread}
+                                      onSelectThread={onSelectThread}
+                                      onTogglePinThread={onTogglePinThread}
+                                    />
+                                  ))}
+                                </div>
+                              )
+                            : null}
                         </div>
-                        {!collapsed && groupThreads.length > 0
-                          ? (
-                              <div className="space-y-0.5">
-                                {groupThreads.map(thread => (
-                                  <ThreadListItem
-                                    active={thread.id === activeThreadId}
-                                    archived={thread.status === "archived"}
-                                    key={thread.id}
-                                    menuOpen={openThreadMenuId === thread.id}
-                                    runStatus={threadRunStatuses[thread.id]}
-                                    thread={thread}
-                                    compact
-                                    onDeleteThread={onDeleteThread}
-                                    onMenuOpenChange={open => setOpenThreadMenuId(open ? thread.id : null)}
-                                    onRenameThread={onRenameThread}
-                                    onRestoreThread={onRestoreThread}
-                                    onSelectThread={onSelectThread}
-                                    onTogglePinThread={onTogglePinThread}
-                                  />
-                                ))}
-                              </div>
-                            )
-                          : null}
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="mt-3 space-y-0.5">
-                  <div className="flex h-6 items-center justify-between px-2 text-xs font-medium text-ink-muted">
-                    <span>Chat</span>
-                    <button
-                      aria-label="New chat"
-                      className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
-                      onClick={() => onNewChat()}
-                      title="New chat"
-                      type="button"
-                    >
-                      <Plus className="size-3.5" />
-                    </button>
+                      );
+                    })}
                   </div>
-                  {chatThreads.length === 0 ? <div className="px-2 py-1 text-xs text-ink-muted">No chats</div> : null}
-                  {chatThreads.map(thread => (
-                    <ThreadListItem
-                      active={thread.id === activeThreadId && active === "chat"}
-                      archived={thread.status === "archived"}
-                      key={thread.id}
-                      menuOpen={openThreadMenuId === thread.id}
-                      runStatus={threadRunStatuses[thread.id]}
-                      thread={thread}
-                      onDeleteThread={onDeleteThread}
-                      onMenuOpenChange={open => setOpenThreadMenuId(open ? thread.id : null)}
-                      onRenameThread={onRenameThread}
-                      onRestoreThread={onRestoreThread}
-                      onSelectThread={onSelectThread}
-                      onTogglePinThread={onTogglePinThread}
-                    />
-                  ))}
+                  <div className="mt-3 space-y-0.5">
+                    <div className="sticky top-0 z-10 flex h-6 items-center justify-between bg-surface px-2 text-xs font-medium text-ink-muted">
+                      <span>Chat</span>
+                      <button
+                        aria-label="New chat"
+                        className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                        onClick={() => onNewChat()}
+                        title="New chat"
+                        type="button"
+                      >
+                        <Plus className="size-3.5" />
+                      </button>
+                    </div>
+                    {chatThreads.length === 0 ? <div className="px-2 py-1 text-xs text-ink-muted">No chats</div> : null}
+                    {chatThreads.map(thread => (
+                      <ThreadListItem
+                        active={thread.id === activeThreadId && active === "chat"}
+                        archived={thread.status === "archived"}
+                        key={thread.id}
+                        menuOpen={openThreadMenuId === thread.id}
+                        runStatus={threadRunStatuses[thread.id]}
+                        thread={thread}
+                        onDeleteThread={onDeleteThread}
+                        onMenuOpenChange={open => setOpenThreadMenuId(open ? thread.id : null)}
+                        onRenameThread={onRenameThread}
+                        onRestoreThread={onRestoreThread}
+                        onSelectThread={onSelectThread}
+                        onTogglePinThread={onTogglePinThread}
+                      />
+                    ))}
+                  </div>
                 </div>
               </>
             )
