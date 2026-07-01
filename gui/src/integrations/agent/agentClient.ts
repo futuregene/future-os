@@ -58,8 +58,20 @@ function normalizeAgentModelOptions(models: AgentModelOption[]) {
     });
 }
 
+/**
+ * Provider-qualified model identifier (`provider/id`) — the canonical id passed
+ * around the GUI and down to the agent. A bare `id` is ambiguous: two providers
+ * can expose the same model id, and the agent resolves a bare id to the first
+ * match, which may be the wrong provider (wrong base URL / API key). The agent's
+ * `resolve()` handles the `provider/model` form exactly.
+ */
+export function modelKey(model: Pick<AgentModelOption, "id" | "provider">) {
+  return model.provider ? `${model.provider}/${model.id}` : model.id;
+}
+
 export function defaultModelId(models: AgentModelOption[]) {
-  return models.find(model => model.isDefault)?.id ?? models[0]?.id ?? defaultAgentModelId;
+  const preferred = models.find(model => model.isDefault) ?? models[0];
+  return preferred ? modelKey(preferred) : defaultAgentModelId;
 }
 
 export function modelLabel(modelId: string, models: AgentModelOption[]) {
@@ -74,7 +86,14 @@ export function normalizeThinkingLevel(level?: string | null): ThinkingLevel {
   return thinkingLevels.includes(level as ThinkingLevel) ? level as ThinkingLevel : defaultThinkingLevel;
 }
 
-function modelOption(modelId: string, models: AgentModelOption[]) {
-  const normalizedId = modelId.includes("/") ? modelId.split("/").pop() ?? modelId : modelId;
-  return models.find(model => model.id === modelId || model.id === normalizedId);
+export function modelOption(modelId: string, models: AgentModelOption[]) {
+  // Prefer an exact provider-qualified match so we resolve the right provider
+  // when several expose the same model id.
+  const exact = models.find(model => modelKey(model) === modelId);
+  if (exact)
+    return exact;
+  // Fall back to a bare-id match for legacy selections / threads persisted
+  // before ids were provider-qualified (ambiguous, so first match wins).
+  const bareId = modelId.includes("/") ? modelId.split("/").pop() ?? modelId : modelId;
+  return models.find(model => model.id === bareId);
 }
