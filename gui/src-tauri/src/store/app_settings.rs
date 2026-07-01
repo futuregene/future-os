@@ -13,6 +13,14 @@ pub struct AppSettings {
     pub auto_approve: bool,
     /// Model identifiers (`provider/id`) hidden from the model picker.
     pub hidden_models: Vec<String>,
+    /// Remote control: whether it should be running.
+    pub remote_enabled: bool,
+    /// Remote control: pairing id (isolation unit / subject prefix).
+    pub remote_pair_id: String,
+    /// Remote control: NATS **client-port** URL the GUI backend connects to
+    /// (e.g. `nats://localhost:4222` locally, or the online relay later). Not
+    /// the browser ws:// port.
+    pub remote_nats_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -20,10 +28,18 @@ pub struct AppSettings {
 pub struct UpdateAppSettingsInput {
     pub auto_approve: Option<bool>,
     pub hidden_models: Option<Vec<String>>,
+    pub remote_enabled: Option<bool>,
+    pub remote_pair_id: Option<String>,
+    pub remote_nats_url: Option<String>,
 }
 
 const KEY_AUTO_APPROVE: &str = "auto_approve";
 const KEY_HIDDEN_MODELS: &str = "hidden_models";
+const KEY_REMOTE_ENABLED: &str = "remote_enabled";
+const KEY_REMOTE_PAIR_ID: &str = "remote_pair_id";
+const KEY_REMOTE_NATS_URL: &str = "remote_nats_url";
+const DEFAULT_REMOTE_PAIR_ID: &str = "DEVPAIR";
+const DEFAULT_REMOTE_NATS_URL: &str = "nats://localhost:4222";
 
 pub fn get_app_settings() -> Result<AppSettings, crate::AppError> {
     let conn = connect()?;
@@ -46,6 +62,20 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
         let json = serde_json::to_string(&hidden_models)?;
         write_value(&conn, KEY_HIDDEN_MODELS, &json, now)?;
     }
+    if let Some(remote_enabled) = input.remote_enabled {
+        write_value(
+            &conn,
+            KEY_REMOTE_ENABLED,
+            if remote_enabled { "true" } else { "false" },
+            now,
+        )?;
+    }
+    if let Some(remote_pair_id) = input.remote_pair_id {
+        write_value(&conn, KEY_REMOTE_PAIR_ID, &remote_pair_id, now)?;
+    }
+    if let Some(remote_nats_url) = input.remote_nats_url {
+        write_value(&conn, KEY_REMOTE_NATS_URL, &remote_nats_url, now)?;
+    }
 
     read_app_settings(&conn)
 }
@@ -57,9 +87,21 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
     let hidden_models = read_value(conn, KEY_HIDDEN_MODELS)?
         .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
         .unwrap_or_default();
+    let remote_enabled = read_value(conn, KEY_REMOTE_ENABLED)?
+        .map(|value| value == "true")
+        .unwrap_or(false);
+    let remote_pair_id = read_value(conn, KEY_REMOTE_PAIR_ID)?
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_REMOTE_PAIR_ID.to_string());
+    let remote_nats_url = read_value(conn, KEY_REMOTE_NATS_URL)?
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_REMOTE_NATS_URL.to_string());
     Ok(AppSettings {
         auto_approve,
         hidden_models,
+        remote_enabled,
+        remote_pair_id,
+        remote_nats_url,
     })
 }
 

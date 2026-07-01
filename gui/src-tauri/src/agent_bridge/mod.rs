@@ -38,7 +38,7 @@ static ACTIVE_AGENT_PROMPTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentPromptResponse {
-    content: String,
+    pub content: String,
 }
 
 pub async fn agent_prompt(
@@ -189,7 +189,7 @@ async fn agent_prompt_inner(
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the prompt.")?;
 
-    match collect_agent_response(&mut event_stream, run_id.as_deref()).await {
+    match collect_agent_response(&mut event_stream, run_id.as_deref(), &session_id).await {
         Ok(content) => Ok(AgentPromptResponse { content }),
         Err(error) => {
             // The prompt was already accepted, so the Agent keeps running
