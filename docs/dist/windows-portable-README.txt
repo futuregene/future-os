@@ -16,6 +16,28 @@ FutureOS 免安装版（Windows Portable）使用说明
 “Windows 已保护你的电脑”。这是正常的：
   点击“更多信息” → 点击“仍要运行”。
 
+二·五、如果窗口能打开、但提示“后台服务未连接 / agent 不可用”
+------------------------------------------------------------
+从网上下载的压缩包，Windows 会给里面每个文件打上“来自 Internet”的
+标记（Mark-of-the-Web）。这会导致：你手动放行了 FutureOS.exe，但它
+去启动 future-agent.exe 时，后者仍被系统拦下，于是应用能开、后台却连
+不上。解决办法二选一：
+
+  方法 A（推荐，解压前处理一次即可）：
+    右键点“下载下来的 .zip 压缩包” → 属性 →
+    勾选底部的“解除锁定（Unblock）” → 确定 → 再解压。
+    这样解压出来的所有文件都不带标记。
+
+  方法 B（已经解压了，用 PowerShell 批量解除）：
+    在解压出的文件夹里，按住 Shift 右键 → “在此处打开 PowerShell
+    窗口”，执行：
+      Get-ChildItem -Recurse | Unblock-File
+    然后重新双击 FutureOS.exe。
+
+  方法 C（只解锁两个 exe）：
+    分别右键 FutureOS.exe 和 future-agent.exe → 属性 →
+    勾选“解除锁定” → 确定。
+
 三、运行环境要求（WebView2）
 ---------------------------
 FutureOS 需要 Microsoft Edge WebView2 运行时。
