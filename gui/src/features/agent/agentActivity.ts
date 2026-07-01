@@ -212,6 +212,8 @@ function buildSegments(
 
   while (index < slots.length) {
     const slot = slots[index];
+    if (!slot)
+      break;
 
     if (slot.type === "text") {
       if (slot.text.trim()) {
@@ -226,6 +228,8 @@ function buildSegments(
     let cursor = index;
     while (cursor < slots.length) {
       const current = slots[cursor];
+      if (!current)
+        break;
       if (current.type === "tool") {
         const tool = toolActivities.get(current.id);
         if (tool)
@@ -275,16 +279,17 @@ function collapseToolActivities(tools: ToolActivity[]): AgentActivityItem[] {
 
   while (index < tools.length) {
     const current = tools[index];
+    if (!current)
+      break;
 
     if (current.status === "completed" && (current.kind === "bash" || current.kind === "edit" || current.kind === "write")) {
       const group = [current];
       let cursor = index + 1;
-      while (
-        cursor < tools.length
-        && tools[cursor].status === "completed"
-        && tools[cursor].kind === current.kind
-      ) {
-        group.push(tools[cursor]);
+      while (cursor < tools.length) {
+        const next = tools[cursor];
+        if (!next || next.status !== "completed" || next.kind !== current.kind)
+          break;
+        group.push(next);
         cursor += 1;
       }
 

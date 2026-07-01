@@ -90,8 +90,9 @@ function parseHunkHeader(line: string) {
   if (!match)
     return null;
   return {
-    newStart: Number.parseInt(match[2], 10),
-    oldStart: Number.parseInt(match[1], 10),
+    // Groups 1 and 2 are required `(\d+)` captures — present whenever `match` is.
+    newStart: Number.parseInt(match[2]!, 10),
+    oldStart: Number.parseInt(match[1]!, 10),
   };
 }
 

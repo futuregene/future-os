@@ -180,7 +180,9 @@ export function ContextPanel({
 
   useEffect(() => {
     if (!tabs.some(tab => tab.value === activeTab)) {
-      onTabChange(tabs[0].value);
+      const first = tabs[0];
+      if (first)
+        onTabChange(first.value);
     }
   }, [activeTab, onTabChange, tabs]);
 

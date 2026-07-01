@@ -28,8 +28,9 @@ export function MessageList({ messages, onContinue, onRetry, workspaceId }: Mess
 
 function previousUserMessage(messages: AgentMessage[], index: number) {
   for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-    if (messages[cursor].role === "user") {
-      return messages[cursor];
+    const message = messages[cursor];
+    if (message?.role === "user") {
+      return message;
     }
   }
   return null;

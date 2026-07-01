@@ -64,8 +64,9 @@ export function previousUserForRun(messages: AgentMessage[], runId: string) {
   const runMessageIndex = messages.findIndex(message => message.runId === runId && message.role === "assistant");
   const startIndex = runMessageIndex >= 0 ? runMessageIndex - 1 : messages.length - 1;
   for (let index = startIndex; index >= 0; index -= 1) {
-    if (messages[index].role === "user") {
-      return messages[index];
+    const message = messages[index];
+    if (message?.role === "user") {
+      return message;
     }
   }
   return null;
