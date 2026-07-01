@@ -8,6 +8,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { NewConversation } from "../../features/agent/NewConversation";
+import { RemoteView } from "../../features/remote/RemoteView";
 import { ResearchView } from "../../features/research/ResearchView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
@@ -129,6 +130,17 @@ export function AppShell() {
       void unlisten.then(stop => stop());
     };
   }, []);
+
+  // Remote (phone) activity: a phone client created or drove a thread. Refresh
+  // the thread list + runs so it appears and updates live in the GUI.
+  useEffect(() => {
+    const unlisten = listen("remote-activity", () => {
+      void refreshStore();
+    });
+    return () => {
+      void unlisten.then(stop => stop());
+    };
+  }, [refreshStore]);
 
   function handleSectionChange(nextSection: ActivitySection) {
     if (nextSection === "settings") {
@@ -327,43 +339,47 @@ export function AppShell() {
               ? (
                   <SkillsView />
                 )
-              : section === "data"
+              : section === "remote"
                 ? (
-                    <ModulePlaceholder section="data" />
+                    <RemoteView appSettings={appSettings} onChangeSettings={patch => void changeSettings(patch)} />
                   )
-                : storeError
+                : section === "data"
                   ? (
-                      <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
-                        FutureOS 本地存储初始化失败：
-                        {storeError}
-                      </div>
+                      <ModulePlaceholder section="data" />
                     )
-                  : (
-                      <AgentThread
-                        activeApproval={activeApproval}
-                        agentConnection={agentConnection}
-                        loadingStore={loadingStore}
-                        modelId={activeThread?.modelId ?? selectedModelId}
-                        modelOptions={visibleModelOptions}
-                        onModelChange={changeModel}
-                        thinkingLevel={activeThinkingLevel}
-                        onThinkingLevelChange={changeThinkingLevel}
-                        pendingPrompt={pendingPrompt}
-                        thread={activeThread}
-                        onApprovalDecision={handleApprovalDecision}
-                        leftPanelExpanded={leftExpanded}
-                        onRetryAgentConnection={() => void refreshAgentModels()}
-                        onOpenProviders={handleOpenProviders}
-                        onOpenModels={handleOpenModels}
-                        onToggleLeftPanel={handleToggleLeftPanel}
-                        onPromptConsumed={(id) => {
-                          setPendingPrompt(current => (current?.id === id ? null : current));
-                        }}
-                        onThreadActivity={() => {
-                          void refreshStore(activeThread?.id ?? undefined);
-                        }}
-                      />
-                    )}
+                  : storeError
+                    ? (
+                        <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
+                          FutureOS 本地存储初始化失败：
+                          {storeError}
+                        </div>
+                      )
+                    : (
+                        <AgentThread
+                          activeApproval={activeApproval}
+                          agentConnection={agentConnection}
+                          loadingStore={loadingStore}
+                          modelId={activeThread?.modelId ?? selectedModelId}
+                          modelOptions={visibleModelOptions}
+                          onModelChange={changeModel}
+                          thinkingLevel={activeThinkingLevel}
+                          onThinkingLevelChange={changeThinkingLevel}
+                          pendingPrompt={pendingPrompt}
+                          thread={activeThread}
+                          onApprovalDecision={handleApprovalDecision}
+                          leftPanelExpanded={leftExpanded}
+                          onRetryAgentConnection={() => void refreshAgentModels()}
+                          onOpenProviders={handleOpenProviders}
+                          onOpenModels={handleOpenModels}
+                          onToggleLeftPanel={handleToggleLeftPanel}
+                          onPromptConsumed={(id) => {
+                            setPendingPrompt(current => (current?.id === id ? null : current));
+                          }}
+                          onThreadActivity={() => {
+                            void refreshStore(activeThread?.id ?? undefined);
+                          }}
+                        />
+                      )}
       </main>
       {/* A new blank conversation has no thread context yet — hide the right
           panel entirely (no expand affordance) until a thread exists. */}
