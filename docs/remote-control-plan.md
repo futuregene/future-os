@@ -1,7 +1,7 @@
 # future-os 手机远程控制（Remote Control）实施计划
 
 > 目标：手机/网页作为**瘦客户端**远程接管桌面上正在进行的 agent 会话——**会话状态与工具都在 PC/Mac 本机执行，客户端只做展示与操控**。
-> 文档集：**本文=总纲**（唯一真源：决策/术语/命名/阶段）· [消息中枢设计（NATS）](remote-control-relay.md) · [鉴权/配对/连接](remote-control-auth.md)。
+> 文档集：**本文=总纲**（唯一真源：决策/术语/命名/阶段）· [消息中枢设计（NATS）](remote-control-relay.md) · [鉴权/配对/连接](remote-control-auth.md) · [实现进度](remote-control-status.md)。
 
 ---
 
@@ -37,7 +37,7 @@
 - **用户 run / run_id**：**run_id 当且仅当 `is_streaming` false→true 时新分配一次**。因此一次 `prompt`、**运行中注入的 `steer`、运行中排队并被同一循环 drain 的 `follow_up`** 都**共享同一 run_id**（内部虽多次 `agent_start`）；而**空闲时到达的 `follow_up`**（`is_streaming` 已 false → `follow_up()` 直接调 `prompt()` → 再翻真）**是新 run_id**。run 到最终 `agent_end` 结束。
 - **Bridge**：桌面上的新组件，对内是本地 agent 的 gRPC 客户端，对外是 NATS 客户端（出站-only）。
 - **消息中枢**：= NATS + JetStream 部署（future-os.cn），**只中转**。
-- **签发服务**：极小鉴权层，校验 Future 账号后签发 scoped NATS creds、并在配对时创建 `EVT_{pairId}` 流（L1 起需要）。
+- **签发服务**：极小鉴权层，校验 Future 账号后签发 scoped NATS creds、并在配对时创建 `EVT_{pairId}` 流（L1 起需要）。**实现在 `future-server`/platform-service**（详见 `future-server/docs/remote-control.md`）。
 
 ### 0.3 两条正交阶段轴
 **交付轴**：P0–P6（§6）。**鉴权成熟度轴**：
@@ -226,7 +226,7 @@ CLI（仿 `future channel`/`future agent`）：`future remote start | stop | sta
 ---
 
 ## 9. 待定项
-1. **Bridge 落位**：独立 `remote/`+CLI（推荐）vs. 内嵌 agent 的 `--remote-control` 开关。
+1. ~~Bridge 落位~~ **已决**：内嵌 **GUI Tauri 后端**（远程走 GUI 持久化路径，对话自动落 SQLite + 页面显示）；独立 `remote/` crate 保留为传输骨架/headless 参考。见 [实现进度](remote-control-status.md)。
 2. **NATS 部署**：自建集群 vs. Synadia Cloud（评估国内可用性）。
 3. **App 框架**：RN+`nats.ws`（推荐）vs. Flutter（P2 spike 后定）。
 4. **设备凭证有效期/重复配对策略/是否升级 account 硬隔离**：见 [auth §7](remote-control-auth.md)。

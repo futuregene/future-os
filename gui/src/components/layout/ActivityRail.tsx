@@ -15,6 +15,7 @@ import {
   Pin,
   Plus,
   Settings,
+  Smartphone,
   Sparkles,
   SquarePen,
   Trash2,
@@ -26,7 +27,7 @@ import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { IconButton } from "../ui/IconButton";
 
-export type ActivitySection = "chat" | "workspace" | "research" | "data" | "skill" | "settings";
+export type ActivitySection = "chat" | "workspace" | "research" | "data" | "skill" | "remote" | "settings";
 
 interface ActivityRailProps {
   active: ActivitySection;
@@ -175,6 +176,17 @@ export function ActivityRail({
                   >
                     <Blocks className="size-4 shrink-0" />
                     <span className="truncate">Skills</span>
+                  </button>
+                  <button
+                    className={cn(
+                      "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
+                      active === "remote" && "bg-surface-subtle text-ink",
+                    )}
+                    onClick={() => onChange("remote")}
+                    type="button"
+                  >
+                    <Smartphone className="size-4 shrink-0" />
+                    <span className="truncate">Remote</span>
                   </button>
                 </div>
                 {featureItems.length > 0
@@ -325,6 +337,12 @@ export function ActivityRail({
                   label="Models"
                   active={false}
                   onClick={onOpenModels}
+                />
+                <IconButton
+                  icon={<Smartphone className="size-4" />}
+                  label="Remote"
+                  active={active === "remote"}
+                  onClick={() => onChange("remote")}
                 />
                 {featureItems.map((item) => {
                   const Icon = item.icon;
