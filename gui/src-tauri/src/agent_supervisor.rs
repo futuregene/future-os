@@ -93,7 +93,22 @@ pub fn ensure_agent_running(app: &AppHandle) {
     }
 }
 
-/// Kill the bundled agent if we started it. Idempotent.
+/// Kill the bundled agent if we started it. Idempotent, and a no-op when we
+/// attached to an externally-managed agent (`AGENT_CHILD` is `None`) — we only
+/// ever kill a child we own.
+///
+/// Called from two places:
+///   1. The `RunEvent::Exit` handler in lib.rs (normal window-close shutdown).
+///   2. Explicitly, *before* `app.restart()`, by the commands that relaunch the
+///      app (`set_future_environment`, `clear_app_data`). This second path is
+///      mandatory: a main-thread `restart()` skips `RunEvent::Exit`, so path 1
+///      never fires on restart and the sidecar would otherwise be orphaned. See
+///      `commands/debug.rs::set_future_environment` for the full rationale.
+///
+/// After the child dies its gRPC port is released immediately (the listening
+/// socket closes with the process — no TIME_WAIT lingering on a dead listener),
+/// so the relaunched GUI's `ensure_agent_running` probe correctly sees the port
+/// as free and spawns a fresh agent.
 pub fn shutdown_agent() {
     if let Some(child) = AGENT_CHILD.lock().unwrap().take() {
         if let Err(error) = child.kill() {

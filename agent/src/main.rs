@@ -62,26 +62,39 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
     // Load auth store
     let auth_store = future_agent::AuthStore::load();
 
-    // Resolve initial model: first available with credentials.
-    // No hardcoded fallback — if nothing is configured the agent exits
-    // with a clear message.  Clients set their own model per-session.
-    let resolved_model = match future_agent::models::get_default_model()
+    // Resolve the *initial* model: the settings default, else the first model
+    // that has credentials (a built-in key or an auth.json entry for its
+    // provider). This is only a starting point — clients (GUI/TUI) set their own
+    // model per session via the `set_model` RPC, which rebuilds the registry and
+    // reloads auth.json, so the initial choice is not authoritative.
+    //
+    // IMPORTANT — do NOT turn "nothing configured" back into `process::exit(1)`.
+    // The agent runs as a Tauri sidecar that the GUI spawns and connects to over
+    // gRPC. On a fresh install there is no auth.json yet, so no model resolves —
+    // but the user logs in *from inside the GUI*, which needs the agent already
+    // reachable to drive the flow. If the agent exited here, that first-run login
+    // could never complete (the GUI spawns the sidecar exactly once at startup;
+    // see gui/src-tauri/src/agent_supervisor.rs), and the app would look broken
+    // out of the box. So when nothing is configured we log a warning and start
+    // the server anyway with an empty model. The endpoint stays unconfigured
+    // until the first `set_model` call, which resolves base_url + api_key from a
+    // freshly loaded auth.json (see agent/src/rpc/session.rs::set_model).
+    let resolved_model = future_agent::models::get_default_model()
         .or_else(|| {
             all_models
                 .iter()
                 .find(|m| !m.api_key.is_empty() || auth_store.get(&m.provider).is_some())
                 .map(|m| m.id.clone())
         })
-    {
-        Some(m) => m,
-        None => {
-            eprintln!(
-                "No model configured.  Add an API key via 'future auth login' \
-                 or configure a provider in ~/.future/agent/models.json."
-            );
-            std::process::exit(1);
-        }
-    };
+        .unwrap_or_default();
+    if resolved_model.is_empty() {
+        eprintln!(
+            "future-agent: no model configured yet — starting the gRPC server \
+             anyway so a client can log in and pick a model. Add an API key via \
+             'future auth login' or the desktop app, or configure a provider in \
+             ~/.future/agent/models.json."
+        );
+    }
 
     // Resolve model config
     let model_config = model_registry.resolve(&resolved_model);
