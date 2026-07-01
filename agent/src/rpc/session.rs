@@ -290,25 +290,50 @@ impl ServerSession {
                     .or_else(|| auth.default_key())
                     .unwrap_or_default();
 
-                loop_.provider.update_compat(
-                    &thinking_format,
-                    supports_reasoning_effort,
-                    requires_reasoning_on_assistant,
-                    tlm,
-                );
+                // Build a FRESH provider (its own reqwest client) and swap it in,
+                // rather than mutating the existing provider's endpoint. Sessions
+                // are seeded from a shared provider `Arc` in `new_session`, so
+                // mutating it in place would (a) serialize concurrent sessions onto
+                // one HTTP connection and (b) let one session's endpoint change
+                // clobber another's mid-run. A per-session client makes concurrent
+                // conversations use independent connections. The GUI calls
+                // `set_model` on every session before prompting, so this is where
+                // each session gets its own client.
+                let max_tokens = if model_config.max_tokens > 0 {
+                    Some(std::cmp::min(model_config.max_tokens, 32000))
+                } else if model_config.reasoning {
+                    Some(32000)
+                } else {
+                    Some(16384)
+                };
                 // maxTokensField: compat field controlling max_tokens vs max_completion_tokens
-                if let Some(field) = model_config
+                let max_tokens_field = model_config
                     .compat
                     .get("maxTokensField")
                     .and_then(|v| v.as_str())
-                {
-                    loop_.provider.update_max_tokens_field(field);
-                } else {
-                    loop_.provider.update_max_tokens_field("max_tokens");
+                    .unwrap_or("max_tokens")
+                    .to_string();
+
+                let mut client =
+                    crate::llm::Client::new(&model_config.base_url, &api_key, None, max_tokens)
+                        .with_compat(
+                            &thinking_format,
+                            supports_reasoning_effort,
+                            requires_reasoning_on_assistant,
+                        )
+                        .with_max_tokens_field(&max_tokens_field)
+                        .with_thinking_level_map(tlm);
+                // Carry the session's current thinking level/budget onto the new
+                // client; an explicit set_thinking_level afterward still overrides.
+                if !self.thinking_level.is_empty() {
+                    client = client.with_thinking_level(&self.thinking_level);
                 }
-                loop_
-                    .provider
-                    .update_endpoint(&model_config.base_url, &api_key);
+                let thinking_budget = loop_.config.thinking_budget;
+                if thinking_budget > 0 {
+                    client = client.with_thinking_budget(thinking_budget);
+                }
+
+                loop_.provider = std::sync::Arc::new(client);
             }
         }
         Ok(())

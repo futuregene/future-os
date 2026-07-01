@@ -98,31 +98,66 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             };
             let active_id = state.get_active_session_id();
             let session = state.get_session(&active_id);
-            let sess = session.read().unwrap();
-            let agent_loop = sess.agent_loop.clone();
-            let (provider, model, tools, config, verbose) = {
-                let Ok(loop_guard) = agent_loop.try_read() else {
-                    return RpcResponse::build_fail(
-                        id,
-                        "new_session",
-                        "agent is busy; wait for the current run to finish before starting a new session",
-                    );
-                };
-                let config = crate::types::AgentConfig {
-                    system_prompt: loop_guard.config.system_prompt.clone(),
-                    max_turns: loop_guard.config.max_turns,
-                    thinking_budget: loop_guard.config.thinking_budget,
-                    max_retries: loop_guard.config.max_retries,
-                    tools_execution_mode: loop_guard.config.tools_execution_mode.clone(),
-                    ..Default::default()
-                };
+            // Snapshot everything we need from the active session up front, then
+            // drop its lock — nothing below should keep the active ServerSession
+            // borrowed while we fall back to other loops for the config template.
+            let (
+                active_loop,
+                inherit_model,
+                inherit_thinking,
+                event_bus,
+                broadcaster,
+                approval_gate,
+            ) = {
+                let sess = session.read().unwrap();
                 (
-                    loop_guard.provider.clone(),
-                    loop_guard.model.clone(),
-                    loop_guard.tools.clone(),
-                    config,
-                    loop_guard.verbose,
+                    sess.agent_loop.clone(),
+                    sess.model.clone(),
+                    sess.thinking_level.clone(),
+                    sess.event_bus.clone(),
+                    sess.broadcaster.clone(),
+                    sess.approval_gate.clone(),
                 )
+            };
+
+            // Build the fresh loop's config template from an *idle* loop. The
+            // active session's loop is held under a write lock for the whole turn
+            // while it streams, so a `try_read` on it fails mid-run — which used to
+            // make "start a second conversation while the first is running" fail
+            // outright. Fall back to the default session's loop (never used for
+            // prompts by the GUI, so effectively always idle) so concurrent
+            // sessions can be created. Clients call `set_model` on the new session
+            // right after, so this template is only a seed.
+            let snapshot = |loop_arc: &Arc<tokio::sync::RwLock<crate::agent::Loop>>| {
+                loop_arc.try_read().ok().map(|loop_guard| {
+                    let config = crate::types::AgentConfig {
+                        system_prompt: loop_guard.config.system_prompt.clone(),
+                        max_turns: loop_guard.config.max_turns,
+                        thinking_budget: loop_guard.config.thinking_budget,
+                        max_retries: loop_guard.config.max_retries,
+                        tools_execution_mode: loop_guard.config.tools_execution_mode.clone(),
+                        ..Default::default()
+                    };
+                    (
+                        loop_guard.provider.clone(),
+                        loop_guard.model.clone(),
+                        loop_guard.tools.clone(),
+                        config,
+                        loop_guard.verbose,
+                    )
+                })
+            };
+
+            let template = snapshot(&active_loop).or_else(|| {
+                let default_loop = state.session.read().unwrap().agent_loop.clone();
+                snapshot(&default_loop)
+            });
+            let Some((provider, model, tools, config, verbose)) = template else {
+                return RpcResponse::build_fail(
+                    id,
+                    "new_session",
+                    "agent is busy; wait for the current run to finish before starting a new session",
+                );
             };
             let mut fresh_loop = crate::agent::Loop::new(provider, &model)
                 .with_tools(tools)
@@ -139,15 +174,14 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 Arc::new(tokio::sync::RwLock::new(fresh_loop)),
                 Arc::new(crate::session::Manager::default_for(&session_cwd)),
                 &session_cwd,
-                sess.event_bus.clone(),
-                sess.broadcaster.clone(),
-                sess.approval_gate.clone(),
+                event_bus,
+                broadcaster,
+                approval_gate,
             );
             // Preserve model and thinking level from the current session
-            new_sess.model = sess.model.clone();
-            *new_sess.compaction_model.write().unwrap() = sess.model.clone();
-            new_sess.thinking_level = sess.thinking_level.clone();
-            drop(sess);
+            new_sess.model = inherit_model.clone();
+            *new_sess.compaction_model.write().unwrap() = inherit_model;
+            new_sess.thinking_level = inherit_thinking;
 
             // Add to sessions map
             let new_id = state.create_session(new_sess);
