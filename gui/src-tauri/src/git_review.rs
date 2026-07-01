@@ -125,7 +125,7 @@ fn tracked_diff_files(
     crate::git_diff_parse::parse_numstat(&numstat)
         .into_iter()
         .map(|row| {
-            let normalized_path = normalize_numstat_path(&row.path);
+            let normalized_path = crate::git_diff_parse::normalize_numstat_path(&row.path);
             GitReviewFile {
                 status: status_by_path
                     .get(&normalized_path)
@@ -290,29 +290,6 @@ fn pseudo_added_file_diff(path: &str, content: &str) -> String {
     diff.join("\n")
 }
 
-fn normalize_numstat_path(path: &str) -> String {
-    if !path.contains(" => ") {
-        return path.to_string();
-    }
-
-    if let Some(open_brace) = path.find('{') {
-        if let Some(close_brace) = path[open_brace + 1..].find('}') {
-            let close_brace = open_brace + 1 + close_brace;
-            let before = &path[..open_brace];
-            let inside = &path[open_brace + 1..close_brace];
-            let after = &path[close_brace + 1..];
-            if let Some((_, next)) = inside.rsplit_once(" => ") {
-                return format!("{before}{next}{after}");
-            }
-        }
-    }
-
-    path.rsplit_once(" => ")
-        .map(|(_, next)| next)
-        .unwrap_or(path)
-        .to_string()
-}
-
 fn git_output<const N: usize>(
     workspace_path: &Path,
     args: [&str; N],
@@ -335,27 +312,4 @@ fn git_output<const N: usize>(
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::normalize_numstat_path;
-
-    #[test]
-    fn normalize_numstat_path_keeps_plain_paths() {
-        assert_eq!(normalize_numstat_path("src/main.rs"), "src/main.rs");
-    }
-
-    #[test]
-    fn normalize_numstat_path_handles_simple_rename() {
-        assert_eq!(normalize_numstat_path("old.txt => new.txt"), "new.txt");
-    }
-
-    #[test]
-    fn normalize_numstat_path_handles_brace_rename() {
-        assert_eq!(
-            normalize_numstat_path("dir/{old => new}/file.txt"),
-            "dir/new/file.txt",
-        );
-    }
 }

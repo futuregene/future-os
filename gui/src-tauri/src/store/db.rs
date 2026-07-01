@@ -152,8 +152,13 @@ pub(super) fn get_or_create_user_workspace(
     path: PathBuf,
     description: Option<String>,
 ) -> Result<WorkspaceRecord, crate::AppError> {
-    let conn = connect()?;
-    get_or_create_user_workspace_in(&conn, name, path, description)
+    let mut conn = connect()?;
+    // BEGIN IMMEDIATE so the SELECT-then-INSERT is atomic against a concurrent
+    // create for the same path (mirrors the approvals/artifacts write paths).
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let workspace = get_or_create_user_workspace_in(&tx, name, path, description)?;
+    tx.commit()?;
+    Ok(workspace)
 }
 
 /// Connection-injecting variant so a composite write (e.g. `create_thread`) can
