@@ -230,10 +230,11 @@ impl ServerSession {
         // Resolve model config from registry to get base_url, compat settings, etc.
         let registry = crate::models::Registry::new();
         let resolved = registry.resolve(model);
-        // Use canonical model ID (strip provider prefix if present)
+        // Store full provider/id as the canonical model identifier for display
+        // and session persistence. Resolve bare ID to provider/id when possible.
         self.model = resolved
             .as_ref()
-            .map(|m| m.id.clone())
+            .map(|m| format!("{}/{}", m.provider, m.id))
             .unwrap_or_else(|| model.to_string());
         // Keep compaction closure in sync so /model changes are reflected.
         *self.compaction_model.write().unwrap() = self.model.clone();
@@ -242,7 +243,8 @@ impl ServerSession {
         // Uses try_write: if a prompt is actively streaming (holding the write lock),
         // skip this update. The caller should retry or set_model before prompting.
         if let Ok(mut loop_) = self.agent_loop.try_write() {
-            // Use resolved model's canonical ID (strip provider prefix if present)
+            // Set agent loop model to bare canonical ID for LLM API calls.
+            // The session-level self.model already holds the full provider/id.
             if let Some(ref mc) = resolved {
                 loop_.model = mc.id.clone();
             } else {
@@ -391,12 +393,6 @@ impl ServerSession {
         let context_window = crate::models::Registry::new()
             .resolve(&self.model)
             .map(|m| m.context_window)
-            .or_else(|| {
-                crate::models::builtin_models()
-                    .into_iter()
-                    .find(|m| m.id == self.model)
-                    .map(|m| m.context_window)
-            })
             .unwrap_or(200000);
 
         let (compacted, result) = crate::compaction::compact(
