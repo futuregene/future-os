@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::warn;
+use tracing::{info, warn};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
 const STREAM_IDLE_TIMEOUT_SECS: u64 = 45;
@@ -232,6 +232,13 @@ impl crate::types::LLMProvider for Client {
             .json(&body)
             .build()?;
 
+        let msg_count = body["messages"].as_array().map(|a| a.len()).unwrap_or(0);
+        let body_bytes = serde_json::to_string(&body).unwrap_or_default().len();
+        info!(
+            model = %body["model"], msgs = %msg_count, body_kb = body_bytes / 1024,
+            "LLM request"
+        );
+
         let resp = self.http.execute(req).await?;
 
         let status = resp.status();
@@ -248,6 +255,18 @@ impl crate::types::LLMProvider for Client {
         if !status.is_success() {
             let status_code = status.as_u16();
             let text = resp.text().await.unwrap_or_default();
+
+            // Diagnostic: log request size and model on failure
+            let body_str = serde_json::to_string(&body).unwrap_or_default();
+            let msg_count = body["messages"].as_array().map(|a| a.len()).unwrap_or(0);
+            warn!(
+                model = %body["model"], status = %status_code,
+                msgs = %msg_count, body_kb = body_str.len() / 1024,
+                "LLM API error"
+            );
+            if text.len() < 500 && !text.is_empty() {
+                warn!("LLM error body: {}", text);
+            }
 
             // Parse Azure/OpenAI error body for a user-friendly message
             if let Ok(err_body) = serde_json::from_str::<serde_json::Value>(&text) {
