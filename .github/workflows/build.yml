@@ -56,8 +56,10 @@ jobs:
         with:
           bun-version: latest
 
+      # Pinned to match rust-toolchain.toml so CI and local dev use the same
+      # compiler. Bump both together.
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.96.0
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
