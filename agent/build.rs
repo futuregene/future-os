@@ -34,16 +34,20 @@ fn main() {
 
     println!("cargo:rerun-if-changed=../proto");
 
-    if !has_protoc() {
-        let generated = PathBuf::from("src/grpc/generated/proto.rs");
-        if generated.exists() {
-            println!(
-                "cargo:warning=protoc not found; reusing checked-in generated proto at {:?}",
-                generated
-            );
-            return;
-        }
+    let generated = PathBuf::from("src/grpc/generated/proto.rs");
 
+    // If the generated file already exists, skip proto compilation.
+    // Proto files change rarely; re-running protoc every build is wasteful and
+    // can fail in sandboxed environments where prost-build can't write temp files.
+    if generated.exists() {
+        println!(
+            "cargo:warning=Generated proto at {:?} already exists; skipping proto compilation",
+            generated
+        );
+        return;
+    }
+
+    if !has_protoc() {
         panic!(
             "Could not find `protoc`, and {:?} does not exist. Install protobuf with `brew install protobuf` or set PROTOC.",
             generated

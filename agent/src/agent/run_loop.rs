@@ -350,6 +350,59 @@ impl Loop {
                         }
                     }
                     "toolcall_start" => {
+                        // Some providers (e.g. GLM/Z.AI without tool_stream) send
+                        // id+name in every argument chunk instead of just the first.
+                        // When the tool ID matches the current tool call, treat it
+                        // as a delta (append args) rather than starting a new call.
+                        if let Some(ref mut existing) = current_tc {
+                            if existing.id == event.tool_id {
+                                // Same tool call — append args from this chunk
+                                if let Some(ref tc) = event.tool_call {
+                                    if let serde_json::Value::String(ref new_args) =
+                                        tc.function.arguments
+                                    {
+                                        if let serde_json::Value::String(ref mut s) = existing.args {
+                                            s.push_str(new_args);
+                                        } else {
+                                            existing.args =
+                                                serde_json::Value::String(new_args.clone());
+                                        }
+                                    }
+                                }
+                                // Emit toolcall_delta so the TUI can stream arg display
+                                if let Some(ref bus) = self.event_bus {
+                                    bus.emit(toolcall_delta(
+                                        &event
+                                            .tool_call
+                                            .as_ref()
+                                            .and_then(|tc| {
+                                                if let serde_json::Value::String(ref s) =
+                                                    tc.function.arguments
+                                                {
+                                                    Some(s.as_str())
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                            .unwrap_or(""),
+                                    ));
+                                }
+                                // Check if args are now complete
+                                if tool_call_args_complete(existing) {
+                                    if let Some(tc) = current_tc.take() {
+                                        tool_calls.push(finalize_agent_tool_call(tc));
+                                        if let Some(ref bus) = self.event_bus {
+                                            bus.emit(toolcall_end());
+                                        }
+                                        break;
+                                    }
+                                }
+                                // continue to next event (don't create a new tool call)
+                                continue;
+                            }
+                        }
+
+                        // Different tool call or first one — finalize previous and start new
                         if let Some(tc) = current_tc.take() {
                             tool_calls.push(finalize_agent_tool_call(tc));
                             if let Some(ref bus) = self.event_bus {

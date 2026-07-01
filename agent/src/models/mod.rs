@@ -417,7 +417,7 @@ pub fn get_default_model() -> Option<String> {
         .all_models()
         .into_iter()
         .find(|m| !m.api_key.is_empty() || auth.get(&m.provider).is_some())
-        .map(|m| m.id)
+        .map(|m| format!("{}/{}", m.provider, m.id))
 }
 
 /// LoadUserModels reads a models.json file.

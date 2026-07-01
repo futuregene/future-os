@@ -104,7 +104,7 @@ export class App extends Container {
   private getModels = async (): Promise<string[]> => {
     try {
       const models = await this.client.listModels();
-      return models.map((m) => m.id);
+      return models.map((m) => m.provider ? `${m.provider}/${m.id}` : m.id);
     } catch { return []; }
   };
 
@@ -792,17 +792,16 @@ export class App extends Container {
 
       if (cmd === "model") {
         if (arg) {
-          // Set model directly
+          // Set model directly — agent resolves and stores provider/id
           try {
             await this.client.setModel(arg);
-            this.state.model = arg;
-            this.tuiSettings.defaultModel = arg;
-            this.saveTuiSettings();
             await this.refresh();
+            this.tuiSettings.defaultModel = this.state.model;
+            this.saveTuiSettings();
             this.chat.addMessage({
               id: crypto.randomUUID(),
               role: "system",
-              content: `Model: ${arg}`,
+              content: `Model: ${this.state.model}`,
             });
           } catch (err) {
             this.chat.addMessage({
@@ -1447,7 +1446,6 @@ export class App extends Container {
     try {
       if (s.defaultModel) {
         await this.client.setModel(s.defaultModel);
-        this.state.model = s.defaultModel;
       }
       if (s.defaultThinkingLevel) {
         await this.client.setThinkingLevel(s.defaultThinkingLevel as "off" | "minimal" | "low" | "medium" | "high" | "xhigh");

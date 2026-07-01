@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use super::{
-    generate_session_html, get_state_internal, AppState, ApprovalDecision, ApprovalDecisionStatus,
-    RpcCommand, RpcResponse, ServerSession, SseBroadcaster,
+    AppState, ApprovalDecision, ApprovalDecisionStatus, RpcCommand, RpcResponse, ServerSession,
+    SseBroadcaster, generate_session_html, get_state_internal,
 };
 
 pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
@@ -69,7 +69,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                         id,
                         "approval_decision",
                         "mode must be approved, rejected, or cancelled",
-                    )
+                    );
                 }
             };
             match state.approval_gate.decide(
@@ -586,7 +586,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 .all_models()
                 .into_iter()
                 .filter(|m| !m.api_key.is_empty() || auth.get(&m.provider).is_some())
-                .map(|m| m.id)
+                .map(|m| format!("{}/{}", m.provider, m.id))
                 .collect();
 
             if models.is_empty() {
@@ -746,7 +746,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                             id,
                             "reload_config",
                             "agent is busy, retry in a moment",
-                        )
+                        );
                     }
                 };
                 (sess.cwd.clone(), loop_.tools.clone())
