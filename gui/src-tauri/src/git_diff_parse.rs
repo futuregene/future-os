@@ -34,6 +34,32 @@ pub(crate) fn parse_numstat(text: &str) -> Vec<NumstatRow> {
         .collect()
 }
 
+/// Normalize a `--numstat` path to the post-image (new) path, resolving git's
+/// rename/copy arrow forms (`old => new`, `foo/{a => b}.rs`, `{a => b}/c.rs`) so
+/// it can be keyed against `--name-status` paths. Non-rename paths pass through.
+pub(crate) fn normalize_numstat_path(path: &str) -> String {
+    if !path.contains(" => ") {
+        return path.to_string();
+    }
+
+    if let Some(open_brace) = path.find('{') {
+        if let Some(close_brace) = path[open_brace + 1..].find('}') {
+            let close_brace = open_brace + 1 + close_brace;
+            let before = &path[..open_brace];
+            let inside = &path[open_brace + 1..close_brace];
+            let after = &path[close_brace + 1..];
+            if let Some((_, next)) = inside.rsplit_once(" => ") {
+                return format!("{before}{next}{after}");
+            }
+        }
+    }
+
+    path.rsplit_once(" => ")
+        .map(|(_, next)| next)
+        .unwrap_or(path)
+        .to_string()
+}
+
 /// Split a unified patch into `new-path -> patch text`. The post-image path is
 /// taken from the `diff --git a/<x> b/<y>` header and overridden by a later
 /// `+++ b/<path>` line (authoritative for the new name). Section bodies are
@@ -105,6 +131,24 @@ mod tests {
         let rows = parse_numstat("oops\n3\t1\tsrc/b.rs\n");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].path, "src/b.rs");
+    }
+
+    #[test]
+    fn normalize_numstat_path_keeps_plain_paths() {
+        assert_eq!(normalize_numstat_path("src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn normalize_numstat_path_handles_simple_rename() {
+        assert_eq!(normalize_numstat_path("old.txt => new.txt"), "new.txt");
+    }
+
+    #[test]
+    fn normalize_numstat_path_handles_brace_rename() {
+        assert_eq!(
+            normalize_numstat_path("dir/{old => new}/file.txt"),
+            "dir/new/file.txt",
+        );
     }
 
     #[test]

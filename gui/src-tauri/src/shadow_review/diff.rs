@@ -2,7 +2,9 @@
 //! between the before/after commits, split per file and persisted into SQLite
 //! so the result no longer depends on shadow objects surviving.
 
-use crate::git_diff_parse::{parse_numstat, split_unified_patch_by_path};
+use std::collections::HashMap;
+
+use crate::git_diff_parse::{normalize_numstat_path, parse_numstat, split_unified_patch_by_path};
 use crate::store::InsertReviewFileChangeInput;
 use crate::AppError;
 
@@ -32,8 +34,9 @@ pub fn materialize(
     let patches = split_unified_patch_by_path(&unified_patch(repo, before_commit, after_commit)?);
 
     let mut out = MaterializedDiff::default();
-    for (index, entry) in entries.iter().enumerate() {
-        let (additions, deletions, binary) = stats.get(index).copied().unwrap_or((0, 0, false));
+    for entry in &entries {
+        let (additions, deletions, binary) =
+            stats.get(&entry.path).copied().unwrap_or((0, 0, false));
         let diff_text = if binary {
             None
         } else {
@@ -184,15 +187,18 @@ fn parse_name_status(tokens: &[String]) -> Vec<FileEntry> {
     entries
 }
 
-/// `--numstat` (line-based), parsed positionally to match `name_status` order.
-/// Only the counts matter here; `-` marks a binary file.
+/// `--numstat` (line-based), keyed by post-image path so counts can be looked up
+/// per `name_status` entry. Only the counts matter here; `-` marks a binary file.
 fn numstat(
     repo: &ShadowRepo,
     before: &str,
     after: &str,
-) -> Result<Vec<(i64, i64, bool)>, AppError> {
+) -> Result<HashMap<String, (i64, i64, bool)>, AppError> {
     let text = repo.git(
         &[
+            // Keep paths literal so they key against the `-z` name-status paths.
+            "-c",
+            "core.quotePath=false",
             "diff",
             "--no-color",
             "--find-renames",
@@ -203,11 +209,17 @@ fn numstat(
         ],
         None,
     )?;
-    // The shadow pipeline matches stats to `name_status` entries positionally and
-    // only needs the counts + binary flag, so drop the row paths here.
+    // Key stats by post-image path (resolving rename arrows) rather than by row
+    // position, so counts can't be misattributed if numstat and name-status ever
+    // emit their rows in a different order.
     Ok(parse_numstat(&text)
         .into_iter()
-        .map(|row| (row.additions, row.deletions, row.binary))
+        .map(|row| {
+            (
+                normalize_numstat_path(&row.path),
+                (row.additions, row.deletions, row.binary),
+            )
+        })
         .collect())
 }
 
