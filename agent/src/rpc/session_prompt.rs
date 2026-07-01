@@ -79,9 +79,12 @@ impl ServerSession {
                 serde_json::Value::Array(content),
             ));
 
-        // Set streaming flag
+        // Set streaming flag + start a new run. P1: run_id is assigned once per
+        // user run at the is_streaming false→true edge (resets idx + event buffer);
+        // every event this run then carries the same run_id.
         self.is_streaming
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.broadcaster.start_run(crate::utils::generate_id());
 
         // Swap per-session token counters into the agent loop so updates are tracked per-session
         {
@@ -187,6 +190,7 @@ impl ServerSession {
                         broadcaster_tool.broadcast(crate::rpc::SseEvent {
                             event_type: event.event_type.clone(),
                             data: serde_json::to_string(&data).unwrap_or_default(),
+                            ..Default::default()
                         });
                     }));
                 let approval_gate = approval_gate.clone();
@@ -270,6 +274,7 @@ impl ServerSession {
                                     bt.broadcast(crate::rpc::SseEvent {
                                         event_type: "text_chunk".to_string(),
                                         data: serde_json::json!({"text": text}).to_string(),
+                                        ..Default::default()
                                     });
                                 },
                                 move |event| {
@@ -320,6 +325,7 @@ impl ServerSession {
                                     be.broadcast(crate::rpc::SseEvent {
                                         event_type: event.event_type.clone(),
                                         data: serde_json::to_string(&data).unwrap_or_default(),
+                                        ..Default::default()
                                     });
                                 },
                                 current_interrupt_rx.take(),
@@ -435,6 +441,7 @@ impl ServerSession {
                     broadcaster.broadcast(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),
                         data: serde_json::json!({"type": "agent_end"}).to_string(),
+                        ..Default::default()
                     });
                     is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
@@ -444,11 +451,13 @@ impl ServerSession {
                     broadcaster.broadcast(crate::rpc::SseEvent {
                         event_type: "error".to_string(),
                         data: serde_json::json!({"error": &full_error}).to_string(),
+                        ..Default::default()
                     });
                     broadcaster.broadcast(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),
                         data: serde_json::json!({"type": "agent_end", "error": &full_error})
                             .to_string(),
+                        ..Default::default()
                     });
                     is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
                 }

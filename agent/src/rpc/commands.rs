@@ -196,6 +196,29 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             let msgs = session.read().unwrap().get_messages();
             RpcResponse::ok(id, "get_messages", serde_json::json!({"messages": msgs}))
         }
+        "get_events_since" => {
+            // P1: backfill current-run events with idx > since_idx (Bridge reconnect).
+            let (run_id, events) = {
+                let sess = session.read().unwrap();
+                sess.broadcaster.events_since(&cmd.run_id, cmd.since_idx)
+            };
+            let events: Vec<serde_json::Value> = events
+                .into_iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "type": e.event_type,
+                        "data": e.data,
+                        "runId": e.run_id,
+                        "idx": e.idx,
+                    })
+                })
+                .collect();
+            RpcResponse::ok(
+                id,
+                "get_events_since",
+                serde_json::json!({"runId": run_id, "events": events}),
+            )
+        }
         "set_model" => {
             let _ = session.write().unwrap().set_model(&cmd.model_id);
             RpcResponse::ok(id, "set_model", serde_json::json!({"model": cmd.model_id}))
@@ -836,7 +859,11 @@ fn list_models_response(id: &str) -> String {
         .into_iter()
         .map(|model| {
             let id = model.id;
-            let label = if model.name.is_empty() { id.clone() } else { model.name.clone() };
+            let label = if model.name.is_empty() {
+                id.clone()
+            } else {
+                model.name.clone()
+            };
             let thinking_level = if model.reasoning { "high" } else { "off" };
             serde_json::json!({
                 "id": id.clone(),

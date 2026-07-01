@@ -7,7 +7,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { AlertTriangle, ArrowUp, Beaker, Box, Brain, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
-import { modelLabel, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
+import { modelKey, modelLabel, modelOption, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { savePastedImage, searchReferenceTargets } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
@@ -57,7 +57,8 @@ export function Composer({
   const [referenceSearchOpen, setReferenceSearchOpen] = useState(false);
   const [selectedReferenceIndex, setSelectedReferenceIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const activeModelId = modelId || modelOptions[0]?.id || "";
+  const activeModelId = modelId || (modelOptions[0] ? modelKey(modelOptions[0]) : "");
+  const activeModel = modelOption(activeModelId, modelOptions);
   const activeThinkingLevel = normalizeThinkingLevel(thinkingLevel);
   const activeMention = useMemo(() => findActiveMention(value, caretPosition), [caretPosition, value]);
 
@@ -391,9 +392,9 @@ export function Composer({
               <SelectMenuItem
                 className="py-1"
                 key={`${model.provider}/${model.id}`}
-                selected={activeModelId === model.id}
+                selected={model === activeModel}
                 onSelect={() => {
-                  onModelChange?.(model.id);
+                  onModelChange?.(modelKey(model));
                   setModelMenuOpen(false);
                 }}
               >

@@ -128,6 +128,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             ephemeral: cmd.ephemeral,
             cwd: cmd.cwd,
             enabled_models: Some(cmd.enabled_models),
+            run_id: cmd.run_id,
+            since_idx: cmd.since_idx,
         };
 
         // Handle the command
@@ -193,11 +195,15 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         let ping = tokio_stream::once(Ok(proto::StreamEvent {
             r#type: "ping".to_string(),
             data: r#"{"type":"ping"}"#.to_string(),
+            run_id: String::new(),
+            idx: 0,
         }));
         let events = BroadcastStream::new(rx).map(|r| match r {
             Ok(event) => Ok(proto::StreamEvent {
                 r#type: event.event_type,
                 data: event.data,
+                run_id: event.run_id,
+                idx: event.idx,
             }),
             Err(e) => {
                 eprintln!("SSE stream error: {}", e);

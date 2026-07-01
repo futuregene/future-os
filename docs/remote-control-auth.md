@@ -68,6 +68,8 @@ Future 账号 OAuth（已有 cli/auth）→ 证明账号归属
   ⇒ 措辞：撤销"≤TTL 生效"，"活跃连接需 server kick 才断"——**不是即时**。
 ```
 
+> **签发服务的落点（已定）**：实现在 **`future-server`（platform-service 的一个路由模块）**，复用其账号/session/device-flow OAuth/Postgres/密钥体系（`resolve_user_from_session`、`routes/device_flow.rs`、`config.rs`）。它持有 **NATS account 签名密钥**（签 user JWT）+ NATS admin creds（配对时建/删 `EVT_{pairId}` 流）；只在**配对/鉴权控制面**，**不在消息数据面**（运行时客户端/Bridge 直连 NATS）。**唯一技术不确定点**：Rust 侧签出 NATS 专有格式的 user JWT——**开工前先 spike**。future-server 侧完整需求见 `future-server/docs/remote-control.md`。
+
 ---
 
 ## 4. 配对与持久连接（详细 + 评估）
