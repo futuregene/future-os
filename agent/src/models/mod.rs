@@ -178,8 +178,7 @@ fn resolve_future_base_url() -> String {
                     return base_url.trim_end_matches('/').to_string();
                 }
                 // new: derive from platform_base_url
-                if let Some(platform_url) =
-                    future.get("platform_base_url").and_then(|v| v.as_str())
+                if let Some(platform_url) = future.get("platform_base_url").and_then(|v| v.as_str())
                 {
                     return format!("{}/api", platform_url.trim_end_matches('/'));
                 }

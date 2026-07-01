@@ -141,6 +141,8 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         tools: vec![],
         ephemeral: false,
         enabled_models: vec![],
+        run_id: String::new(),
+        since_idx: 0,
     }
 }
 

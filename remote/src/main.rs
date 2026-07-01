@@ -166,7 +166,7 @@ async fn ensure_pump(
             match stream.message().await {
                 Ok(Some(ev)) => {
                     // 骨架：转发 {type, data}（data 仍是 JSON 字符串）。P1 会补 run_id/idx。
-                    let body = serde_json::json!({ "type": ev.r#type, "data": ev.data });
+                    let body = serde_json::json!({ "type": ev.r#type, "data": ev.data, "runId": ev.run_id, "idx": ev.idx });
                     if let Ok(bytes) = serde_json::to_vec(&body) {
                         if let Err(e) = nats.publish(subj.clone(), bytes.into()).await {
                             tracing::warn!("发布事件失败: {}", e);
