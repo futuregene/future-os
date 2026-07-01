@@ -1,4 +1,4 @@
-.PHONY: build build-agent build-tui build-tui-single build-cli build-gui test test-agent lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean clean-gui run run-agent run-tui run-cli run-gui package-gui install install-tui install-cli install-skills install-gui
+.PHONY: build build-agent build-tui build-tui-single build-cli build-gui test test-agent lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean clean-gui run run-agent run-tui run-cli run-gui package-gui install install-tui install-cli-deps install-cli install-skills install-gui
 
 # ─── Install ──────────────────────────────────────────────────────────────────
 
@@ -7,8 +7,11 @@ install: install-tui install-cli install-gui
 install-tui:
 	cd tui && npm install
 
-install-cli: install-skills build-tui
-	cd cli && npm install && npm run build && chmod +x dist/index.js && npm link
+install-cli-deps:
+	cd cli && npm install
+
+install-cli: install-cli-deps install-skills build-tui
+	cd cli && npm run build && chmod +x dist/index.js && npm link
 
 install-skills:
 	@mkdir -p ~/.future/agent/skills
@@ -37,7 +40,7 @@ build-tui: install-tui
 build-tui-single:
 	cd tui && npm run build && bun build --compile dist/index.js --outfile dist/future-tui
 
-build-cli:
+build-cli: install-cli-deps
 	cd cli && npm run build
 
 build-gui: install-gui
