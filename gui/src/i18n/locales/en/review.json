@@ -1,0 +1,66 @@
+{
+  "lastRunHeading": "Last run changes",
+  "tab": {
+    "gitChanges": "Git changes",
+    "lastRun": "Last run changes"
+  },
+  "workingTree": {
+    "emptyTitle": "No uncommitted changes in the working tree",
+    "emptyDetail": "The current branch has no changes relative to the selected base."
+  },
+  "expandAll": "Expand all",
+  "collapseAll": "Collapse all",
+  "lastRun": {
+    "tooLargeTitle": "Directory too large, change preview disabled",
+    "tooLargeDetail": "This Workspace has too many files; change preview is not generated for now.",
+    "loading": "Loading last run changes...",
+    "noReviewTitle": "No previous run to review yet",
+    "noReviewDetail": "After an Agent run completes, file changes will appear here.",
+    "filesChanged_one": "{{count}} file",
+    "filesChanged_other": "{{count}} files",
+    "noFilesTitle": "No file changes in the last run",
+    "noFilesDetail": "This run produced no workspace file changes."
+  },
+  "banner": {
+    "overlapped": "Other runs occurred in this Workspace during this run; some changes may come from concurrent runs",
+    "recovered": "Snapshot recovered after an app restart; change attribution may be imprecise",
+    "partial": "Some files exceeded the size limit and no diff was generated",
+    "incomplete": "This run's snapshot is incomplete; click to retry",
+    "unavailable": "This run's change snapshot is unavailable",
+    "retrying": "Retrying...",
+    "retry": "Retry"
+  },
+  "file": {
+    "unknown": "Unknown file",
+    "sensitiveContent": "A sensitive file changed; its contents were not saved.",
+    "noTextDiff": "No text diff.",
+    "diffTruncated": "The diff is too large and has been truncated."
+  },
+  "changeType": {
+    "sensitive": "Sensitive file",
+    "binary": "Binary",
+    "added": "Added",
+    "modified": "Modified",
+    "deleted": "Deleted",
+    "renamed": "Renamed",
+    "copied": "Copied"
+  },
+  "binary": {
+    "notSupported": "Binary file; text diff not supported.",
+    "type": "Type: ",
+    "size": "Size: "
+  },
+  "header": {
+    "diffBase": "Diff base",
+    "base": {
+      "head": "HEAD",
+      "upstream": "Upstream",
+      "mergeBase": "Merge base",
+      "custom": "Custom commit"
+    },
+    "customPlaceholder": "Commit, tag, or branch"
+  },
+  "git": {
+    "noTextDiff": "No textual diff available."
+  }
+}

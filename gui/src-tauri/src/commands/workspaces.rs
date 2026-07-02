@@ -37,3 +37,15 @@ pub fn get_or_create_chat_workspace(
 ) -> Result<store::WorkspaceRecord, crate::AppError> {
     store::get_or_create_chat_workspace(&thread_id, title)
 }
+
+#[tauri::command]
+pub fn rename_workspace(
+    input: store::RenameWorkspaceInput,
+) -> Result<store::WorkspaceRecord, crate::AppError> {
+    store::rename_workspace(input)
+}
+
+#[tauri::command]
+pub fn delete_workspace(workspace_id: String) -> Result<store::WorkspaceRecord, crate::AppError> {
+    store::delete_workspace(&workspace_id)
+}

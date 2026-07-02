@@ -1,9 +1,9 @@
 import type { StoredArtifact } from "../../integrations/storage/threadStore";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
-import { ArrowLeft, BookMarked, Download, ExternalLink, Trash2 } from "lucide-react";
+import { ArrowLeft, Download, ExternalLink, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Badge } from "../../components/ui/Badge";
+import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { CopyButton } from "../../components/ui/CopyButton";
 import { useCopyState } from "../../components/ui/useCopyState";
@@ -11,7 +11,6 @@ import {
   deleteArtifact,
   exportArtifactFile,
   openPath,
-  promoteArtifactToResearch,
   readTextFilePreview,
   storedTimeToIso,
 } from "../../integrations/storage/threadStore";
@@ -26,8 +25,9 @@ interface ArtifactDetailPanelProps {
 }
 
 export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDetailPanelProps) {
+  const { t } = useTranslation("artifacts");
   const [error, setError] = useState<string | null>(null);
-  const [busyAction, setBusyAction] = useState<"delete" | "export" | "open" | "promote" | null>(null);
+  const [busyAction, setBusyAction] = useState<"delete" | "export" | "open" | null>(null);
   const { copiedKey, copy } = useCopyState<"content" | "path">();
   const [imageFailed, setImageFailed] = useState(false);
   const imageSrc = useMemo(
@@ -59,7 +59,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
     setImageFailed(false);
   }, [artifact.path]);
 
-  async function runAction(action: "delete" | "export" | "open" | "promote", task: () => Promise<void>) {
+  async function runAction(action: "delete" | "export" | "open", task: () => Promise<void>) {
     setBusyAction(action);
     setError(null);
     try {
@@ -82,7 +82,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
   async function handleExport() {
     const destinationPath = await save({
       defaultPath: artifactFileName(artifact),
-      title: "Export artifact",
+      title: t("detail.exportTitle"),
     });
     if (!destinationPath)
       return;
@@ -103,20 +103,15 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
         type="button"
       >
         <ArrowLeft className="size-3.5" />
-        Artifacts
+        {t("detail.back")}
       </button>
 
       <section className="rounded-md border border-line-soft bg-surface p-3">
         <div className="min-w-0">
           <h3 className="wrap-break-word text-sm font-semibold leading-5 text-ink">{artifact.title}</h3>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <Badge>{artifact.artifactType}</Badge>
-            {artifact.contentStorage ? <Badge>{artifact.contentStorage}</Badge> : null}
-            <span className="text-xs text-ink-muted">{formatTime(storedTimeToIso(artifact.createdAt))}</span>
-          </div>
+          <div className="mt-2 text-xs text-ink-muted">{formatTime(storedTimeToIso(artifact.createdAt))}</div>
         </div>
 
-        {artifact.summary ? <p className="mt-3 text-sm leading-5 text-ink-soft">{artifact.summary}</p> : null}
         {artifact.path
           ? (
               <div className="mt-3 flex items-start gap-2 rounded-md bg-surface-subtle px-2 py-1.5 text-xs leading-5 text-ink-muted">
@@ -124,7 +119,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
                 <CopyButton
                   className="shrink-0"
                   copied={copiedKey === "path"}
-                  label="Copy path"
+                  label={t("detail.copyPath")}
                   onCopy={() => void copy(artifact.path ?? "", "path")}
                   variant="inline"
                 />
@@ -136,7 +131,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
               <div className="relative mt-3">
                 <CopyButton
                   copied={copiedKey === "content"}
-                  label="Copy content"
+                  label={t("detail.copyContent")}
                   onCopy={() => void copy(artifact.content ?? "", "content")}
                   variant="floating"
                 />
@@ -152,8 +147,8 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
                 {imageFailed
                   ? (
                       <PreviewFallback
-                        detail="The image could not be loaded. You can still open or export the original file."
-                        title="Image preview unavailable"
+                        detail={t("detail.imagePreviewUnavailableDetail")}
+                        title={t("detail.imagePreviewUnavailableTitle")}
                       />
                     )
                   : (
@@ -172,7 +167,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
               <div className="relative mt-3">
                 <CopyButton
                   copied={copiedKey === "content"}
-                  label="Copy preview"
+                  label={t("detail.copyPreview")}
                   onCopy={() => void copy(filePreview.content, "content")}
                   variant="floating"
                 />
@@ -180,10 +175,9 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
                   <code>{filePreview.content}</code>
                 </pre>
                 <div className="mt-1 text-[11px] text-ink-muted">
-                  {filePreview.size.toLocaleString()}
-                  {" "}
-                  bytes
-                  {filePreview.truncated ? " · preview truncated" : ""}
+                  {filePreview.truncated
+                    ? t("detail.sizeBytesTruncated", { size: filePreview.size.toLocaleString() })
+                    : t("detail.sizeBytes", { size: filePreview.size.toLocaleString() })}
                 </div>
               </div>
             )
@@ -199,8 +193,8 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
           ? (
               <div className="mt-3">
                 <PreviewFallback
-                  detail="This file type does not have an inline preview yet. Use Open or Export to inspect the original file."
-                  title="Preview unavailable"
+                  detail={t("detail.previewUnavailableDetail")}
+                  title={t("detail.previewUnavailableTitle")}
                 />
               </div>
             )
@@ -219,21 +213,10 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
                 size="sm"
                 variant="toolbar"
               >
-                {busyAction === "open" ? "Opening" : "Open"}
+                {busyAction === "open" ? t("detail.opening") : t("detail.open")}
               </Button>
             )
           : null}
-        <Button
-          disabled={busyAction !== null}
-          leftIcon={<BookMarked className="size-3.5" />}
-          onClick={() => void runAction("promote", async () => {
-            await promoteArtifactToResearch(artifact.id);
-          })}
-          size="sm"
-          variant="toolbar"
-        >
-          {busyAction === "promote" ? "Adding" : "Add to Research"}
-        </Button>
         <Button
           disabled={busyAction !== null || (!artifact.path && !artifact.content && !filePreview)}
           leftIcon={<Download className="size-3.5" />}
@@ -241,7 +224,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
           size="sm"
           variant="toolbar"
         >
-          {busyAction === "export" ? "Exporting" : "Export"}
+          {busyAction === "export" ? t("detail.exporting") : t("detail.export")}
         </Button>
         <Button
           disabled={busyAction !== null}
@@ -252,7 +235,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
           size="sm"
           variant="danger-soft"
         >
-          {busyAction === "delete" ? "Deleting" : "Delete"}
+          {busyAction === "delete" ? t("detail.deleting") : t("detail.deleteAction")}
         </Button>
       </div>
     </div>

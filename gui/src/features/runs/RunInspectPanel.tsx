@@ -1,27 +1,24 @@
 import type {
   StoredRun,
-  StoredRunEvent,
   StoredToolCall,
   StoredToolOutput,
 } from "../../integrations/storage/threadStore";
-import { ArrowLeft, History, RotateCcw, Search, StepForward, Terminal, Wrench } from "lucide-react";
+import { ArrowLeft, RotateCcw, Search, StepForward, Terminal, Wrench } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { CopyablePre } from "../../components/ui/CopyablePre";
-import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
 import {
-  listRunEvents,
   listToolOutputs,
   storedTimeToIso,
 } from "../../integrations/storage/threadStore";
-import { cn } from "../../lib/cn";
 import { formatTime } from "../../lib/date";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { isRecord } from "../../lib/objects";
 import { useAsyncResource } from "../../lib/useAsyncResource";
-import { formatRunStatus, runTone, shortId, summarizePayload } from "./runDisplayFormatters";
+import { formatRunStatus, runTone, shortId } from "./runDisplayFormatters";
 import { RunError } from "./RunError";
 import { numberOrStringField, parseJsonish, recordOf, stringField } from "./toolInput";
 
@@ -32,55 +29,32 @@ interface RunInspectPanelProps {
 }
 
 interface RunDetails {
-  events: StoredRunEvent[];
   outputsByTool: Record<string, StoredToolOutput[]>;
 }
 
-type EventFilter = "all" | "approval" | "artifact" | "error" | "review" | "text" | "tool";
-
-const eventFilters: Array<{ label: string; value: EventFilter }> = [
-  { label: "All", value: "all" },
-  { label: "Text", value: "text" },
-  { label: "Tools", value: "tool" },
-  { label: "Approvals", value: "approval" },
-  { label: "Review", value: "review" },
-  { label: "Artifacts", value: "artifact" },
-  { label: "Errors", value: "error" },
-];
-
 export function RunInspectPanel({ onBack, run, tools }: RunInspectPanelProps) {
-  const [eventFilter, setEventFilter] = useState<EventFilter>("all");
+  const { t } = useTranslation("runs");
   const [query, setQuery] = useState("");
   const sortedTools = useMemo(
     () => [...tools].sort((left, right) => (left.startedAt ?? left.createdAt) - (right.startedAt ?? right.createdAt)),
     [tools],
   );
-  const { data: details, error, loading } = useAsyncResource<RunDetails>(
+  const { data: details, error } = useAsyncResource<RunDetails>(
     async () => {
-      const [nextEvents, outputEntries] = await Promise.all([
-        listRunEvents(run.id),
-        Promise.all(sortedTools.map(async (tool) => {
-          try {
-            return [tool.id, await listToolOutputs(tool.id)] as const;
-          }
-          catch {
-            return [tool.id, [] as StoredToolOutput[]] as const;
-          }
-        })),
-      ]);
-      return { events: nextEvents, outputsByTool: Object.fromEntries(outputEntries) };
+      const outputEntries = await Promise.all(sortedTools.map(async (tool) => {
+        try {
+          return [tool.id, await listToolOutputs(tool.id)] as const;
+        }
+        catch {
+          return [tool.id, [] as StoredToolOutput[]] as const;
+        }
+      }));
+      return { outputsByTool: Object.fromEntries(outputEntries) };
     },
-    [run.id, sortedTools],
-    { events: [], outputsByTool: {} },
+    [sortedTools],
+    { outputsByTool: {} },
   );
-  const events = details.events;
   const outputsByTool = details.outputsByTool;
-  const filteredEvents = useMemo(
-    () => events
-      .filter(event => eventMatchesFilter(event, eventFilter))
-      .filter(event => eventMatchesQuery(eventSearchText(event), query)),
-    [eventFilter, events, query],
-  );
   const filteredTools = useMemo(
     () => sortedTools.filter(tool => eventMatchesQuery(toolSearchText(tool, outputsByTool[tool.id] ?? []), query)),
     [outputsByTool, query, sortedTools],
@@ -94,7 +68,7 @@ export function RunInspectPanel({ onBack, run, tools }: RunInspectPanelProps) {
         type="button"
       >
         <ArrowLeft className="size-3.5" />
-        Runs
+        {t("runInspect.back")}
       </button>
 
       <section className="rounded-md border border-line-soft bg-surface p-3">
@@ -110,11 +84,11 @@ export function RunInspectPanel({ onBack, run, tools }: RunInspectPanelProps) {
         </div>
         <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
           <div>
-            <dt className="text-ink-muted">Model</dt>
+            <dt className="text-ink-muted">{t("runInspect.model")}</dt>
             <dd className="mt-0.5 truncate text-ink-soft">{run.modelId ?? "-"}</dd>
           </div>
           <div>
-            <dt className="text-ink-muted">Tools</dt>
+            <dt className="text-ink-muted">{t("runInspect.tools")}</dt>
             <dd className="mt-0.5 text-ink-soft">{sortedTools.length}</dd>
           </div>
         </dl>
@@ -128,7 +102,7 @@ export function RunInspectPanel({ onBack, run, tools }: RunInspectPanelProps) {
                   size="sm"
                   variant="toolbar"
                 >
-                  Retry
+                  {t("runInspect.retry")}
                 </Button>
                 <Button
                   leftIcon={<StepForward className="size-3.5" />}
@@ -136,7 +110,7 @@ export function RunInspectPanel({ onBack, run, tools }: RunInspectPanelProps) {
                   size="sm"
                   variant="toolbar"
                 >
-                  Continue
+                  {t("runInspect.continue")}
                 </Button>
               </div>
             )
@@ -145,12 +119,12 @@ export function RunInspectPanel({ onBack, run, tools }: RunInspectPanelProps) {
 
       <section className="space-y-2">
         <label className="relative block">
-          <span className="sr-only">Search run details</span>
+          <span className="sr-only">{t("runInspect.searchLabel")}</span>
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-ink-muted" />
           <TextInput
             className="h-8 pl-8 pr-2 hover:border-line"
             onChange={event => setQuery(event.target.value)}
-            placeholder="Search run details..."
+            placeholder={t("runInspect.searchPlaceholder")}
             value={query}
           />
         </label>
@@ -159,11 +133,11 @@ export function RunInspectPanel({ onBack, run, tools }: RunInspectPanelProps) {
       <section className="space-y-2">
         <div className="flex items-center gap-1.5 text-xs font-medium text-ink-muted">
           <Wrench className="size-3.5" />
-          Tool Calls
+          {t("runInspect.toolCalls")}
         </div>
         {error ? <div className="rounded-md border border-danger-line bg-danger-soft p-2 text-xs leading-5 text-danger">{error}</div> : null}
         {filteredTools.length === 0
-          ? <div className="rounded-md border border-dashed border-line-soft p-3 text-sm text-ink-muted">{sortedTools.length === 0 ? "No tool calls recorded." : "No matching tool calls."}</div>
+          ? <div className="rounded-md border border-dashed border-line-soft p-3 text-sm text-ink-muted">{sortedTools.length === 0 ? t("runInspect.noToolCalls") : t("runInspect.noMatchingToolCalls")}</div>
           : filteredTools.map(tool => (
               <ToolCallDetail
                 key={tool.id}
@@ -172,118 +146,8 @@ export function RunInspectPanel({ onBack, run, tools }: RunInspectPanelProps) {
               />
             ))}
       </section>
-
-      <section className="space-y-2">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-ink-muted">
-            <History className="size-3.5" />
-            Timeline
-          </div>
-          <Select
-            aria-label="Filter run events"
-            className="w-auto text-ink-soft"
-            onChange={event => setEventFilter(event.target.value as EventFilter)}
-            size="xs"
-            value={eventFilter}
-            wrapperClassName="w-auto"
-          >
-            {eventFilters.map(filter => (
-              <option key={filter.value} value={filter.value}>{filter.label}</option>
-            ))}
-          </Select>
-        </div>
-        {loading
-          ? <div className="rounded-md border border-line-soft bg-surface p-3 text-sm text-ink-muted">Loading run details...</div>
-          : filteredEvents.length === 0
-            ? <div className="rounded-md border border-dashed border-line-soft p-3 text-sm text-ink-muted">No events recorded.</div>
-            : filteredEvents.map(event => <TimelineEvent event={event} key={event.id} />)}
-      </section>
     </div>
   );
-}
-
-function TimelineEvent({ event }: { event: StoredRunEvent }) {
-  const [expanded, setExpanded] = useState(false);
-  const payload = event.payload ?? "";
-  const category = eventCategory(event.eventType);
-
-  return (
-    <div className="rounded-md border border-line-soft bg-surface p-3">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className={eventCategoryClass(category)}>{category}</span>
-          <div className="truncate text-xs font-medium text-ink">{event.eventType}</div>
-        </div>
-        <div className="text-[11px] text-ink-muted">{formatTime(storedTimeToIso(event.createdAt))}</div>
-      </div>
-      {payload
-        ? (
-            <>
-              <pre
-                className={cn(
-                  "mt-2 overflow-auto whitespace-pre-wrap rounded-md bg-surface-subtle p-2 text-[11px] leading-4 text-ink-soft",
-                  expanded ? "max-h-96" : "max-h-40",
-                )}
-              >
-                <code>{expanded ? payload : summarizePayload(payload)}</code>
-              </pre>
-              <button
-                className="mt-2 h-6 rounded px-1.5 text-[11px] font-medium text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
-                onClick={() => setExpanded(value => !value)}
-                type="button"
-              >
-                {expanded ? "Show summary" : "Show raw payload"}
-              </button>
-            </>
-          )
-        : null}
-    </div>
-  );
-}
-
-function eventMatchesFilter(event: StoredRunEvent, filter: EventFilter) {
-  if (filter === "all")
-    return true;
-
-  return eventCategory(event.eventType) === filter;
-}
-
-function eventCategory(eventType: string): Exclude<EventFilter, "all"> {
-  const type = eventType.toLowerCase();
-  if (type.includes("approval"))
-    return "approval";
-  if (type.includes("artifact"))
-    return "artifact";
-  if (type.includes("review") || type.includes("diff"))
-    return "review";
-  if (type.includes("error") || type.includes("fail"))
-    return "error";
-  if (type.includes("tool"))
-    return "tool";
-  return "text";
-}
-
-function eventCategoryClass(category: Exclude<EventFilter, "all">) {
-  const base = "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium";
-  switch (category) {
-    case "approval":
-      return `${base} bg-warning-soft text-warning`;
-    // artifact/review have no semantic equivalent — intentional category colors (COLOR.md).
-    case "artifact":
-      return `${base} bg-purple-50 text-purple-700`;
-    case "error":
-      return `${base} bg-danger-soft text-danger`;
-    case "review":
-      return `${base} bg-orange-50 text-orange-700`;
-    case "tool":
-      return `${base} bg-info-soft text-info`;
-    default:
-      return `${base} bg-surface-subtle text-ink-muted`;
-  }
-}
-
-function eventSearchText(event: StoredRunEvent) {
-  return `${event.eventType}\n${event.payload ?? ""}`;
 }
 
 function toolSearchText(tool: StoredToolCall, outputs: StoredToolOutput[]) {
@@ -319,8 +183,9 @@ function ToolCallDetail({
   outputs: StoredToolOutput[];
   tool: StoredToolCall;
 }) {
+  const { t } = useTranslation("runs");
   const details = toolDetails(tool, outputs);
-  const inputText = details.command ?? details.path ?? tool.input ?? "No input";
+  const inputText = details.command ?? details.path ?? tool.input ?? t("runInspect.noInput");
   const rawOutputs = outputs.filter(output => !isStructuredOutput(output));
 
   return (
@@ -329,7 +194,7 @@ function ToolCallDetail({
         <Terminal className="mt-0.5 size-4 shrink-0 text-ink-muted" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
-            <div className="truncate text-xs font-medium text-ink">{tool.name || "Tool"}</div>
+            <div className="truncate text-xs font-medium text-ink">{tool.name || t("runInspect.toolFallback")}</div>
             <Badge tone={tool.status === "completed" ? "success" : tool.status === "failed" ? "danger" : "neutral"}>
               {tool.status}
             </Badge>
@@ -337,7 +202,7 @@ function ToolCallDetail({
           <ToolDetailFields details={details} tool={tool} />
           <div className="mt-2">
             <div className="mb-1 text-[11px] font-medium text-ink-muted">
-              {details.command ? "Command" : details.path ? "Target" : "Input"}
+              {details.command ? t("runInspect.command") : details.path ? t("runInspect.target") : t("runInspect.input")}
             </div>
             <CopyablePre maxHeightClassName="max-h-40" text={inputText} />
           </div>
@@ -389,23 +254,24 @@ function ToolDetailFields({
   details: ToolDetails;
   tool: StoredToolCall;
 }) {
+  const { t } = useTranslation("runs");
   const fields = [
-    ["Kind", tool.kind],
-    ["Started", tool.startedAt ? formatTime(storedTimeToIso(tool.startedAt)) : null],
-    ["Ended", tool.endedAt ? formatTime(storedTimeToIso(tool.endedAt)) : null],
-    ["Duration", details.duration],
-    ["CWD", details.cwd],
-    ["Exit", details.exitStatus],
-    ["Path", details.path],
-  ].filter((field): field is [string, string] => Boolean(field[1]));
+    ["kind", t("runInspect.field.kind"), tool.kind],
+    ["started", t("runInspect.field.started"), tool.startedAt ? formatTime(storedTimeToIso(tool.startedAt)) : null],
+    ["ended", t("runInspect.field.ended"), tool.endedAt ? formatTime(storedTimeToIso(tool.endedAt)) : null],
+    ["duration", t("runInspect.field.duration"), details.duration],
+    ["cwd", t("runInspect.field.cwd"), details.cwd],
+    ["exit", t("runInspect.field.exit"), details.exitStatus],
+    ["path", t("runInspect.field.path"), details.path],
+  ].filter((field): field is [string, string, string] => Boolean(field[2]));
 
   if (fields.length === 0)
     return null;
 
   return (
     <dl className="mt-2 grid grid-cols-2 gap-2 rounded-md bg-surface-subtle p-2 text-[11px]">
-      {fields.map(([label, value]) => (
-        <div className={label === "CWD" || label === "Path" ? "col-span-2 min-w-0" : "min-w-0"} key={label}>
+      {fields.map(([key, label, value]) => (
+        <div className={key === "cwd" || key === "path" ? "col-span-2 min-w-0" : "min-w-0"} key={key}>
           <dt className="text-ink-muted">{label}</dt>
           <dd className="mt-0.5 truncate text-ink-soft" title={value}>{value}</dd>
         </div>
@@ -415,6 +281,7 @@ function ToolDetailFields({
 }
 
 function ToolOutputPreview({ output }: { output: StoredToolOutput }) {
+  const { t } = useTranslation("runs");
   const [expanded, setExpanded] = useState(false);
   const text = output.content ?? output.kind;
   const long = text.length > 800 || text.split("\n").length > 8;
@@ -430,7 +297,7 @@ function ToolOutputPreview({ output }: { output: StoredToolOutput }) {
                 onClick={() => setExpanded(value => !value)}
                 type="button"
               >
-                {expanded ? "Collapse" : "Expand"}
+                {expanded ? t("runInspect.collapse") : t("runInspect.expand")}
               </button>
             )
           : null}

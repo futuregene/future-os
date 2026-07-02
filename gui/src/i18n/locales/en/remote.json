@@ -1,0 +1,12 @@
+{
+  "title": "Remote control",
+  "description": "Let a phone/web client remotely take over this machine's session (tools still run locally). Once enabled, local conversations are mirrored to the phone, and the phone can drive the same session.",
+  "running": "Running",
+  "notRunning": "Not running",
+  "natsUrlLabel": "NATS address (client port)",
+  "natsUrlHint": "For local testing use <0>nats://localhost:4222</0>; later use the address of the online relay server.",
+  "pairIdLabel": "Pair ID",
+  "stop": "Stop remote",
+  "start": "Start remote",
+  "note": "Note: remote control requires the desktop (GUI + agent) to be online and awake — this is an inherent prerequisite, not a cloud failure."
+}

@@ -1,8 +1,10 @@
 import type { StoredRun, StoredToolCall } from "../../integrations/storage/threadStore";
-import { CircleStop, Maximize2, Trash2 } from "lucide-react";
+import { CircleStop, Eye, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
+import i18n from "../../i18n";
 import { runStatusLabel } from "./runDisplayFormatters";
 import { RunError } from "./RunError";
 import { toolCommand } from "./toolInput";
@@ -16,6 +18,7 @@ interface RunsPanelProps {
 }
 
 export function RunsPanel({ onClearFinished, onInspectRun, onTerminateRun, runs, toolsByRun }: RunsPanelProps) {
+  const { t } = useTranslation("runs");
   const [confirmRunId, setConfirmRunId] = useState<string | null>(null);
   const [busyRunId, setBusyRunId] = useState<string | null>(null);
   const [actionErrors, setActionErrors] = useState<Record<string, string | undefined>>({});
@@ -35,7 +38,7 @@ export function RunsPanel({ onClearFinished, onInspectRun, onTerminateRun, runs,
   );
 
   if (visibleRuns.length === 0) {
-    return <EmptyState title="No background programs" detail="Agent work will appear here while it is running." />;
+    return <EmptyState title={t("runsPanel.emptyTitle")} detail={t("runsPanel.emptyDetail")} />;
   }
 
   async function terminate(run: StoredRun) {
@@ -73,13 +76,7 @@ export function RunsPanel({ onClearFinished, onInspectRun, onTerminateRun, runs,
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div className="text-xs text-ink-muted">
-          {runningRuns.length}
-          {" "}
-          running /
-          {" "}
-          {finishedRuns.length}
-          {" "}
-          finished
+          {t("runsPanel.runningFinished", { running: runningRuns.length, finished: finishedRuns.length })}
         </div>
         <Button
           disabled={clearing || finishedRuns.length === 0}
@@ -88,7 +85,7 @@ export function RunsPanel({ onClearFinished, onInspectRun, onTerminateRun, runs,
           size="xs"
           variant="toolbar"
         >
-          {clearing ? "Clearing" : "Clear finished"}
+          {clearing ? t("runsPanel.clearing") : t("runsPanel.clearFinished")}
         </Button>
       </div>
       <div className="space-y-2">
@@ -132,6 +129,7 @@ function RunRow({
   run: StoredRun;
   tools: StoredToolCall[];
 }) {
+  const { t } = useTranslation("runs");
   const active = isActiveRun(run);
   const displayTool = commandToolCall(tools);
   const command = displayTool ? toolCommand(displayTool.input) : null;
@@ -141,7 +139,7 @@ function RunRow({
   const toolMeta = displayTool
     ? [
         toolLabel(displayTool),
-        commandCount > 1 ? `${commandCount} commands` : null,
+        commandCount > 1 ? t("runsPanel.commands", { count: commandCount }) : null,
         toolStatusLabel(displayTool),
       ].filter(Boolean).join(" · ")
     : runStatusLabel(run.status);
@@ -162,13 +160,13 @@ function RunRow({
               {command}
             </div>
             <button
-              aria-label="Inspect run"
+              aria-label={t("runsPanel.inspectRun")}
               className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
               onClick={onInspect}
-              title="Inspect run"
+              title={t("runsPanel.inspectRun")}
               type="button"
             >
-              <Maximize2 className="size-3.5" />
+              <Eye className="size-3.5" />
             </button>
           </div>
           <div className="mt-2 text-xs font-medium text-ink-muted">
@@ -186,9 +184,9 @@ function RunRow({
                   {confirming
                     ? (
                         <div className="flex items-center gap-2">
-                          <span className="text-xs text-ink-muted">Terminate this program?</span>
+                          <span className="text-xs text-ink-muted">{t("runsPanel.confirmTerminate")}</span>
                           <Button disabled={busy} onClick={onCancelConfirm} size="xs" variant="ghost">
-                            Cancel
+                            {t("runsPanel.cancel")}
                           </Button>
                           <Button
                             disabled={busy}
@@ -197,7 +195,7 @@ function RunRow({
                             size="xs"
                             variant="danger"
                           >
-                            {busy ? "Stopping" : "Terminate"}
+                            {busy ? t("runsPanel.stopping") : t("runsPanel.terminate")}
                           </Button>
                         </div>
                       )
@@ -208,7 +206,7 @@ function RunRow({
                           size="xs"
                           variant="danger-soft"
                         >
-                          Terminate
+                          {t("runsPanel.terminate")}
                         </Button>
                       )}
                 </div>
@@ -238,7 +236,7 @@ function commandToolCall(tools: StoredToolCall[]) {
 function toolLabel(tool: StoredToolCall) {
   const name = tool.name.trim();
   if (!name)
-    return "Tool";
+    return i18n.t("runs:runInspect.toolFallback");
 
   return name.slice(0, 1).toUpperCase() + name.slice(1);
 }
@@ -246,14 +244,14 @@ function toolLabel(tool: StoredToolCall) {
 function toolStatusLabel(tool: StoredToolCall) {
   switch (tool.status) {
     case "completed":
-      return "Completed";
+      return i18n.t("runs:toolStatus.completed");
     case "failed":
-      return "Failed";
+      return i18n.t("runs:toolStatus.failed");
     case "cancelled":
-      return "Cancelled";
+      return i18n.t("runs:toolStatus.cancelled");
     case "running":
-      return "Running";
+      return i18n.t("runs:toolStatus.running");
     default:
-      return tool.status ? tool.status : "Unknown";
+      return tool.status ? tool.status : i18n.t("runs:toolStatus.unknown");
   }
 }

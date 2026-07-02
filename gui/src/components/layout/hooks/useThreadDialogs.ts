@@ -2,6 +2,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { StoredThread } from "../../../integrations/storage/threadStore";
 import type { DeleteDialogState, RenameDialogState } from "../AppShellDialogs";
 import { useState } from "react";
+import i18n from "../../../i18n";
 import { deleteThread, getThreadCleanupSummary, renameThread } from "../../../integrations/storage/threadStore";
 
 interface UseThreadDialogsParams {
@@ -44,7 +45,7 @@ export function useThreadDialogs({ activeThreadId, refreshStore }: UseThreadDial
 
     const nextTitle = renameDialog.value.trim();
     if (!nextTitle) {
-      setRenameDialog(current => current ? { ...current, error: "Title cannot be empty." } : current);
+      setRenameDialog(current => current ? { ...current, error: i18n.t("layout:threadDialogs.titleEmpty") } : current);
       return;
     }
     if (nextTitle === renameDialog.thread.title) {

@@ -1,0 +1,65 @@
+{
+  "lastRunHeading": "上一轮变更",
+  "tab": {
+    "gitChanges": "Git changes",
+    "lastRun": "上一轮变更"
+  },
+  "workingTree": {
+    "emptyTitle": "工作树没有未提交变化",
+    "emptyDetail": "当前分支相对所选 base 没有变化。"
+  },
+  "expandAll": "全部展开",
+  "collapseAll": "全部收起",
+  "lastRun": {
+    "tooLargeTitle": "目录过大，已关闭改动预览",
+    "tooLargeDetail": "该工作区文件过多，暂不生成改动预览。",
+    "loading": "加载上一轮变更…",
+    "noReviewTitle": "还没有可供审查的上一轮运行",
+    "noReviewDetail": "完成一轮 Agent 运行后，文件变化会显示在这里。",
+    "filesChanged": "{{count}} 个文件",
+    "noFilesTitle": "上一轮没有文件变化",
+    "noFilesDetail": "该轮运行没有产生工作区文件变化。"
+  },
+  "banner": {
+    "overlapped": "本轮运行期间该工作区有其他运行，部分变更可能来自并发运行",
+    "recovered": "应用重启后恢复的快照，变更归属可能不精确",
+    "partial": "部分文件因大小限制未生成 diff",
+    "incomplete": "本轮快照不完整，可点击重试",
+    "unavailable": "本轮变更快照不可用",
+    "retrying": "重试中…",
+    "retry": "重试"
+  },
+  "file": {
+    "unknown": "Unknown file",
+    "sensitiveContent": "敏感文件发生变化，内容未保存。",
+    "noTextDiff": "无文本 diff。",
+    "diffTruncated": "diff 过大，已截断显示。"
+  },
+  "changeType": {
+    "sensitive": "敏感文件",
+    "binary": "二进制",
+    "added": "已添加",
+    "modified": "已修改",
+    "deleted": "已删除",
+    "renamed": "已重命名",
+    "copied": "已复制"
+  },
+  "binary": {
+    "notSupported": "二进制文件，不支持文本 diff。",
+    "type": "类型：",
+    "size": "大小："
+  },
+  "header": {
+    "diffBase": "Diff base",
+    "base": {
+      "head": "HEAD",
+      "upstream": "Upstream",
+      "mergeBase": "Merge base",
+      "custom": "Custom commit"
+    },
+    "customPlaceholder": "Commit, tag, or branch"
+  },
+  "git": {
+    "noTextDiff": "No textual diff available."
+  }
+}

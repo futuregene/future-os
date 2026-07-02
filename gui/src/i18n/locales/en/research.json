@@ -1,0 +1,14 @@
+{
+  "title": "Research",
+  "resources": "Resources",
+  "description": "Artifacts promoted from chats and workspace runs become reusable research material here.",
+  "resourceCount_one": "{{count}} resource",
+  "resourceCount_other": "{{count}} resources",
+  "loading": "Loading research resources...",
+  "noWorkspaceTitle": "No workspace selected",
+  "noWorkspaceDetail": "Open a workspace or chat before collecting research resources.",
+  "noResourcesTitle": "No resources yet",
+  "noResourcesDetail": "Use the Artifacts panel to add generated work into Research.",
+  "selectedFromChat": "Selected from chat",
+  "artifact": "Artifact"
+}

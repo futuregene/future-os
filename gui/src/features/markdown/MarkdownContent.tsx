@@ -10,6 +10,7 @@ import type {
 } from "../../integrations/storage/types";
 import type { FutureReference, InlineNode, MarkdownNode } from "./futureMarkdownTypes";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { CopyButton } from "../../components/ui/CopyButton";
 import { useCopyState } from "../../components/ui/useCopyState";
 import { useFutureReference, useFutureReferences } from "./futureReferenceStore";
@@ -130,6 +131,7 @@ function CodeBlock({
   code: string;
   language?: string;
 }) {
+  const { t } = useTranslation("markdown");
   const { copiedKey, copy } = useCopyState();
   const { highlight, isLoaded } = useCodeHighlighter();
   const highlighted = useMemo(() => highlight(code, language), [highlight, code, language]);
@@ -140,7 +142,7 @@ function CodeBlock({
       <div className="relative">
         <CopyButton
           copied={copiedKey !== null}
-          label="Copy code"
+          label={t("codeBlock.copyCode")}
           onCopy={() => void copy(code)}
           variant="floating"
         />
@@ -157,7 +159,7 @@ function CodeBlock({
       <CopyButton
         className="z-10"
         copied={copiedKey !== null}
-        label="Copy code"
+        label={t("codeBlock.copyCode")}
         onCopy={() => void copy(code)}
         variant="floating"
       />
@@ -302,6 +304,7 @@ function FutureEmbed({
   reference: FutureReference;
   resolved?: ResolvedMarkdownReference;
 }) {
+  const { t } = useTranslation("markdown");
   if (!resolved || resolved.status !== "resolved") {
     return <MissingReference error={resolved?.error} reference={reference} />;
   }
@@ -310,45 +313,45 @@ function FutureEmbed({
     if (isStoredArtifact(resolved.data)) {
       return <ArtifactEmbed artifact={resolved.data} reference={reference} />;
     }
-    return <MissingReference error="artifact payload is invalid" reference={reference} />;
+    return <MissingReference error={t("embed.artifactPayloadInvalid")} reference={reference} />;
   }
 
   if (reference.targetType === "run" && resolved.targetType === "run") {
     if (isStoredRun(resolved.data)) {
       return <RunEmbed reference={reference} run={resolved.data} />;
     }
-    return <MissingReference error="run payload is invalid" reference={reference} />;
+    return <MissingReference error={t("embed.runPayloadInvalid")} reference={reference} />;
   }
 
   if (reference.targetType === "approval" && resolved.targetType === "approval") {
     if (isStoredApproval(resolved.data)) {
       return <ApprovalEmbed approval={resolved.data} reference={reference} />;
     }
-    return <MissingReference error="approval payload is invalid" reference={reference} />;
+    return <MissingReference error={t("embed.approvalPayloadInvalid")} reference={reference} />;
   }
 
   if (reference.targetType === "review" && resolved.targetType === "review") {
     if (isStoredReview(resolved.data)) {
       return <ReviewEmbed reference={reference} review={resolved.data} />;
     }
-    return <MissingReference error="review payload is invalid" reference={reference} />;
+    return <MissingReference error={t("embed.reviewPayloadInvalid")} reference={reference} />;
   }
 
   if (reference.targetType === "research" && resolved.targetType === "research") {
     if (isStoredResearch(resolved.data)) {
       return <ResearchEmbed reference={reference} resource={resolved.data} />;
     }
-    return <MissingReference error="research payload is invalid" reference={reference} />;
+    return <MissingReference error={t("embed.researchPayloadInvalid")} reference={reference} />;
   }
 
   if (reference.targetType === "tool" && resolved.targetType === "tool") {
     if (isStoredTool(resolved.data)) {
       return <ToolEmbed reference={reference} tool={resolved.data} />;
     }
-    return <MissingReference error="tool payload is invalid" reference={reference} />;
+    return <MissingReference error={t("embed.toolPayloadInvalid")} reference={reference} />;
   }
 
-  return <MissingReference error="reference type mismatch" reference={reference} />;
+  return <MissingReference error={t("embed.typeMismatch")} reference={reference} />;
 }
 
 function SafeLink({
@@ -385,6 +388,7 @@ function SafeImage({
   src: string;
   title?: string;
 }) {
+  const { t } = useTranslation("markdown");
   const [failed, setFailed] = useState(false);
   const safeSrc = safeExternalUrl(src, ["http:", "https:"]);
   if (!safeSrc || failed) {
@@ -393,7 +397,7 @@ function SafeImage({
         className="inline-flex max-w-full items-center rounded-md border border-dashed border-line-soft bg-surface-subtle px-2 py-1 text-sm text-ink-muted"
         title={src}
       >
-        {alt || "Image unavailable"}
+        {alt || t("image.unavailable")}
       </span>
     );
   }

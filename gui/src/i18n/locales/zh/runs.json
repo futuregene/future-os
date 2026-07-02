@@ -1,0 +1,75 @@
+{
+  "runInspect": {
+    "back": "Runs",
+    "model": "模型",
+    "tools": "工具",
+    "retry": "重试",
+    "continue": "继续",
+    "searchLabel": "搜索运行详情",
+    "searchPlaceholder": "搜索运行详情…",
+    "toolCalls": "工具调用",
+    "noToolCalls": "没有记录工具调用。",
+    "noMatchingToolCalls": "没有匹配的工具调用。",
+    "toolFallback": "工具",
+    "field": {
+      "kind": "类型",
+      "started": "开始",
+      "ended": "结束",
+      "duration": "耗时",
+      "cwd": "CWD",
+      "exit": "退出",
+      "path": "路径"
+    },
+    "command": "命令",
+    "target": "目标",
+    "input": "输入",
+    "noInput": "无输入",
+    "expand": "展开",
+    "collapse": "收起"
+  },
+  "runsPanel": {
+    "emptyTitle": "没有后台程序",
+    "emptyDetail": "Agent 运行时的工作会显示在这里。",
+    "runningFinished": "{{running}} 运行中 / {{finished}} 已完成",
+    "clearing": "清理中",
+    "clearFinished": "清理已完成",
+    "commands_one": "{{count}} 条命令",
+    "commands_other": "{{count}} 条命令",
+    "inspectRun": "查看运行",
+    "confirmTerminate": "要终止此程序吗？",
+    "cancel": "取消",
+    "stopping": "停止中",
+    "terminate": "终止"
+  },
+  "status": {
+    "completed": "已完成",
+    "failed": "失败",
+    "running": "运行中",
+    "approval": "待审批",
+    "cancelled": "已取消",
+    "queued": "排队中"
+  },
+  "statusLabel": {
+    "success": "成功",
+    "failed": "失败",
+    "cancelled": "已取消",
+    "waiting": "等待中",
+    "queued": "排队中",
+    "running": "运行中"
+  },
+  "toolStatus": {
+    "completed": "已完成",
+    "failed": "失败",
+    "cancelled": "已取消",
+    "running": "运行中",
+    "unknown": "未知"
+  },
+  "errorType": {
+    "streamDisconnected": "流已断开",
+    "commandFailed": "命令失败",
+    "modelFailed": "模型失败",
+    "abortRequested": "已被用户中止",
+    "timeout": "超时",
+    "unknown": "未知错误"
+  }
+}

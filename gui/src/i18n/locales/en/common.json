@@ -1,0 +1,15 @@
+{
+  "copy": "Copy",
+  "copied": "Copied",
+  "close": "Close",
+  "save": "Save",
+  "cancel": "Cancel",
+  "delete": "Delete",
+  "loading": "Loading…",
+  "retry": "Retry",
+  "confirm": "Confirm",
+  "restore": "Restore",
+  "rename": "Rename",
+  "newChat": "New Chat",
+  "modelFallback": "Model"
+}

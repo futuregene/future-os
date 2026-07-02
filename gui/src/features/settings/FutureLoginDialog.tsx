@@ -1,5 +1,6 @@
 import type { FutureLoginStart } from "../../integrations/agent/providers";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { pollFutureLogin, startFutureLogin } from "../../integrations/agent/providers";
@@ -23,6 +24,7 @@ export function FutureLoginDialog({
   /** Called once login succeeds; parent refreshes providers and closes. */
   onAuthorized: () => void;
 }) {
+  const { t } = useTranslation("settings");
   const [phase, setPhase] = useState<Phase>("starting");
   const [start, setStart] = useState<FutureLoginStart | null>(null);
   const [pollIntervalMs, setPollIntervalMs] = useState(FAST_POLL_MS);
@@ -79,7 +81,7 @@ export function FutureLoginDialog({
         // expiry and fire onAuthorized.
         attemptRef.current += 1;
         setPhase("expired");
-        setMessage("授权码已过期，请重试。");
+        setMessage(t("futureLogin.expired"));
         return;
       }
 
@@ -109,15 +111,15 @@ export function FutureLoginDialog({
           setPollIntervalMs(ms => ms + SLOW_DOWN_STEP_MS);
           break;
         case "denied":
-          setMessage(result.message ?? "授权被拒绝。");
+          setMessage(result.message ?? t("futureLogin.denied"));
           setPhase("denied");
           break;
         case "expired":
-          setMessage(result.message ?? "授权码已过期，请重试。");
+          setMessage(result.message ?? t("futureLogin.expired"));
           setPhase("expired");
           break;
         default:
-          setMessage(result.message ?? "授权失败。");
+          setMessage(result.message ?? t("futureLogin.failed"));
           setPhase("error");
           break;
       }
@@ -138,52 +140,52 @@ export function FutureLoginDialog({
       className="max-w-md"
       onClose={onClose}
       open={open}
-      title="连接 FutureGene"
-      description="已为你打开浏览器中的授权页面；如果没有自动打开，可复制下面的链接手动访问。"
+      title={t("futureLogin.title")}
+      description={t("futureLogin.description")}
       footer={(
         <>
-          <Button onClick={onClose} variant="secondary">取消</Button>
+          <Button onClick={onClose} variant="secondary">{t("futureLogin.cancel")}</Button>
           {phase === "denied" || phase === "expired" || phase === "error"
-            ? <Button onClick={() => void begin()} variant="primary">重试</Button>
+            ? <Button onClick={() => void begin()} variant="primary">{t("futureLogin.retry")}</Button>
             : null}
         </>
       )}
     >
       <div className="space-y-4">
-        {phase === "starting" ? <p className="text-sm text-ink-muted">正在获取设备码…</p> : null}
+        {phase === "starting" ? <p className="text-sm text-ink-muted">{t("futureLogin.gettingDeviceCode")}</p> : null}
 
         {phase === "waiting" && start
           ? (
               <>
                 <div className="space-y-1">
-                  <span className="text-xs font-medium text-ink-muted">验证码</span>
+                  <span className="text-xs font-medium text-ink-muted">{t("futureLogin.verifyCode")}</span>
                   <div className="flex items-center gap-3">
                     <code className="select-all rounded-md bg-surface-subtle px-3 py-2 font-mono text-2xl font-semibold tracking-[0.2em] text-ink">
                       {start.userCode}
                     </code>
                     <Button onClick={() => void copyText(start.userCode)} size="sm" variant="secondary">
-                      复制验证码
+                      {t("futureLogin.copyCode")}
                     </Button>
                   </div>
                 </div>
                 <div className="space-y-1">
-                  <span className="text-xs font-medium text-ink-muted">授权链接</span>
+                  <span className="text-xs font-medium text-ink-muted">{t("futureLogin.authLink")}</span>
                   <div className="flex items-center gap-2">
                     <span className="min-w-0 flex-1 truncate rounded-md bg-surface-subtle px-2 py-1.5 text-sm text-ink-soft" title={start.verificationUriComplete}>
                       {start.verificationUriComplete}
                     </span>
                     <Button onClick={() => void handleCopyLink()} size="sm" variant="secondary">
-                      {copied ? "已复制" : "复制链接"}
+                      {copied ? t("futureLogin.copied") : t("futureLogin.copyLink")}
                     </Button>
                   </div>
                 </div>
-                <p className="text-sm text-ink-muted">在浏览器中确认验证码并授权后，这里会自动完成连接…</p>
+                <p className="text-sm text-ink-muted">{t("futureLogin.waiting")}</p>
               </>
             )
           : null}
 
         {phase === "denied" || phase === "expired" || phase === "error"
-          ? <p className="text-sm text-danger">{message ?? "连接失败。"}</p>
+          ? <p className="text-sm text-danger">{message ?? t("futureLogin.connectFailed")}</p>
           : null}
       </div>
     </Dialog>
