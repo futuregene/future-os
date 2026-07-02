@@ -275,6 +275,19 @@ impl AgentClient {
         Ok(())
     }
 
+    /// Set permission level.
+    pub async fn set_permission_level(&mut self, session_id: &str, level: &str) -> Result<()> {
+        self.call(
+            "set_permission_level",
+            session_id,
+            RpcCommand {
+                level: level.to_string(),
+                ..Default::default()
+            },
+        ).await?;
+        Ok(())
+    }
+
     /// Set thinking level.
     pub async fn set_thinking_level(&mut self, session_id: &str, level: &str) -> Result<()> {
         self.call(
