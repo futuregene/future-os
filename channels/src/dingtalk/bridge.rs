@@ -274,7 +274,10 @@ impl DingtalkBridge {
             let sid = agent.new_session(&self.agent_cfg.cwd).await?;
             // Apply channel defaults
             if !self.agent_cfg.model.is_empty() {
-                let _ = agent.set_model(&sid, &self.agent_cfg.model).await;
+                match agent.set_model(&sid, &self.agent_cfg.model).await {
+                    Ok(()) => tracing::info!("[ding] set model={}", self.agent_cfg.model),
+                    Err(e) => tracing::warn!("[ding] set model failed: {}", e),
+                }
             }
             if !self.agent_cfg.thinking_level.is_empty() {
                 let _ = agent.set_thinking_level(&sid, &self.agent_cfg.thinking_level).await;
