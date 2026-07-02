@@ -257,6 +257,13 @@ impl DingtalkBridge {
         }
         let mut agent = self.agent.write().await;
         let sid = agent.new_session(&self.agent_cfg.cwd).await?;
+        // Apply channel defaults for slash-command sessions.
+        if !self.agent_cfg.model.is_empty() {
+            let _ = agent.set_model(&sid, &self.agent_cfg.model).await;
+        }
+        if !self.agent_cfg.thinking_level.is_empty() {
+            let _ = agent.set_thinking_level(&sid, &self.agent_cfg.thinking_level).await;
+        }
         *self.session_id.write().await = Some(sid.clone());
         Ok(sid)
     }
@@ -264,7 +271,21 @@ impl DingtalkBridge {
     async fn process_prompt(&self, text: &str, webhook: Option<String>) -> Result<()> {
         let session_id = {
             let mut agent = self.agent.write().await;
-            agent.new_session(&self.agent_cfg.cwd).await?
+            let sid = agent.new_session(&self.agent_cfg.cwd).await?;
+            // Apply channel defaults
+            if !self.agent_cfg.model.is_empty() {
+                match agent.set_model(&sid, &self.agent_cfg.model).await {
+                    Ok(()) => tracing::info!("[ding] set model={}", self.agent_cfg.model),
+                    Err(e) => tracing::warn!("[ding] set model failed: {}", e),
+                }
+            }
+            if !self.agent_cfg.thinking_level.is_empty() {
+                let _ = agent.set_thinking_level(&sid, &self.agent_cfg.thinking_level).await;
+            }
+            if !self.agent_cfg.permission_level.is_empty() {
+                let _ = agent.set_permission_level(&sid, &self.agent_cfg.permission_level).await;
+            }
+            sid
         };
         // Cache for subsequent slash commands
         *self.session_id.write().await = Some(session_id.clone());

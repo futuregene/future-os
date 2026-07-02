@@ -69,6 +69,12 @@ pub struct RpcCommand {
     // set_enabled_models
     #[serde(default)]
     pub enabled_models: Option<Vec<String>>,
+
+    // get_events_since (P1)
+    #[serde(default)]
+    pub run_id: String,
+    #[serde(default)]
+    pub since_idx: i64,
 }
 
 // ─── RPC Response (stdout) ───────────────────────────────────────────────
@@ -117,16 +123,39 @@ impl RpcResponse {
 
 // ─── SSE Event Broadcaster ──────────────────────────────────────────────
 
-/// Global SSE broadcaster shared across all connections
+/// Max buffered events per run (for `events_since` backfill). Oldest dropped.
+/// Only the *current* run is buffered (cleared on `start_run`), so this is a
+/// per-session ceiling, not cumulative. Sized to comfortably hold a long
+/// generation's per-token `text_chunk` stream; on overflow the oldest are
+/// dropped and `events_since` reports the resulting gap via `min_idx`.
+const MAX_RUN_EVENTS: usize = 20000;
+
+struct RunState {
+    run_id: String,
+    idx: i64,
+    events: Vec<SseEvent>,
+}
+
+/// Per-session SSE broadcaster. Also the **single stamping point** (P1): it
+/// assigns each event's `run_id` + monotonic `idx` and buffers the current run
+/// for `events_since` — all under one lock, so broadcast order matches idx order.
 #[derive(Clone)]
 pub struct SseBroadcaster {
     tx: broadcast::Sender<SseEvent>,
+    run: std::sync::Arc<std::sync::Mutex<RunState>>,
 }
 
 impl SseBroadcaster {
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(4096);
-        Self { tx }
+        Self {
+            tx,
+            run: std::sync::Arc::new(std::sync::Mutex::new(RunState {
+                run_id: String::new(),
+                idx: 0,
+                events: Vec::new(),
+            })),
+        }
     }
 
     /// Subscribe to SSE events
@@ -134,9 +163,50 @@ impl SseBroadcaster {
         self.tx.subscribe()
     }
 
-    /// Broadcast an event to all subscribers
-    pub fn broadcast(&self, event: SseEvent) {
+    /// Stamp `run_id` + monotonic `idx`, buffer the event, and broadcast — all
+    /// under one lock so stream order matches idx order (no reordering race).
+    pub fn broadcast(&self, mut event: SseEvent) {
+        let mut run = self.run.lock().unwrap();
+        event.run_id = run.run_id.clone();
+        event.idx = run.idx;
+        run.idx += 1;
+        run.events.push(event.clone());
+        if run.events.len() > MAX_RUN_EVENTS {
+            let overflow = run.events.len() - MAX_RUN_EVENTS;
+            run.events.drain(0..overflow);
+        }
         let _ = self.tx.send(event);
+    }
+
+    /// Begin a new user run: set `run_id`, reset `idx`, clear the buffer.
+    pub fn start_run(&self, run_id: String) {
+        let mut run = self.run.lock().unwrap();
+        run.run_id = run_id;
+        run.idx = 0;
+        run.events.clear();
+    }
+
+    /// Current-run events with `idx > since_idx`, plus the earliest idx still in
+    /// the buffer (`min_idx`, 0 if empty). If `run_id` no longer matches (a new
+    /// run started), return the current run_id + all its buffered events. A
+    /// full backfill (`since_idx < 0`) whose result starts above `min_idx == 0`
+    /// — i.e. `min_idx > 0` — means the run's prefix was dropped on overflow, so
+    /// the caller can surface the gap instead of silently reconstructing a
+    /// truncated message.
+    pub fn events_since(&self, run_id: &str, since_idx: i64) -> (String, Vec<SseEvent>, i64) {
+        let run = self.run.lock().unwrap();
+        let min_idx = run.events.first().map(|e| e.idx).unwrap_or(0);
+        if run.run_id == run_id {
+            let events = run
+                .events
+                .iter()
+                .filter(|e| e.idx > since_idx)
+                .cloned()
+                .collect();
+            (run.run_id.clone(), events, min_idx)
+        } else {
+            (run.run_id.clone(), run.events.clone(), min_idx)
+        }
     }
 }
 
@@ -147,10 +217,13 @@ impl Default for SseBroadcaster {
 }
 
 /// SSE Event structure
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SseEvent {
     pub event_type: String,
     pub data: String,
+    /// P1: stamped by `SseBroadcaster::broadcast` (callers leave default).
+    pub run_id: String,
+    pub idx: i64,
 }
 
 impl SseEvent {
@@ -158,8 +231,56 @@ impl SseEvent {
         Self {
             event_type: event_type.to_string(),
             data: serde_json::to_string(&data).unwrap_or_default(),
+            run_id: String::new(),
+            idx: 0,
         }
     }
 }
 
 // ─── Approval Gate ─────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod p1_broadcaster_tests {
+    use super::*;
+
+    #[test]
+    fn stamps_run_id_idx_and_backfills() {
+        let b = SseBroadcaster::new();
+        b.start_run("run1".to_string());
+        b.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
+        b.broadcast(SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text": "a"}),
+        ));
+        b.broadcast(SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text": "b"}),
+        ));
+
+        // Backfill from idx 0 → the two events after idx 0 (idx 1, 2), in order.
+        let (rid, evs, min_idx) = b.events_since("run1", 0);
+        assert_eq!(rid, "run1");
+        assert_eq!(evs.len(), 2);
+        assert_eq!((evs[0].idx, evs[1].idx), (1, 2));
+        assert_eq!(evs[0].run_id, "run1");
+        // Nothing dropped yet → earliest buffered idx is still 0 (no gap).
+        assert_eq!(min_idx, 0);
+
+        // From -1 → all three (idx 0,1,2).
+        let (_, all, _) = b.events_since("run1", -1);
+        assert_eq!(all.iter().map(|e| e.idx).collect::<Vec<_>>(), vec![0, 1, 2]);
+
+        // New run resets idx + clears buffer.
+        b.start_run("run2".to_string());
+        b.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
+        let (rid2, evs2, _) = b.events_since("run2", -1);
+        assert_eq!(rid2, "run2");
+        assert_eq!(evs2.len(), 1);
+        assert_eq!((evs2[0].idx, evs2[0].run_id.as_str()), (0, "run2"));
+
+        // Stale run_id → returns current run + all its events (caller realigns).
+        let (rid3, evs3, _) = b.events_since("run1", 100);
+        assert_eq!(rid3, "run2");
+        assert_eq!(evs3.len(), 1);
+    }
+}

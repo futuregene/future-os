@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { AgentModelOption } from "../../../integrations/agent/agentClient";
 import { useCallback, useMemo, useState } from "react";
-import { defaultAgentModelId, defaultModelId, loadAgentModelOptions } from "../../../integrations/agent/agentClient";
+import { defaultAgentModelId, defaultModelId, loadAgentModelOptions, modelOption } from "../../../integrations/agent/agentClient";
 import { listAgentProviders } from "../../../integrations/agent/providers";
 import { usePolling } from "../../../lib/usePolling";
 
@@ -65,7 +65,7 @@ export function useAgentConnection(hiddenModels: string[]): UseAgentConnectionRe
       const nextModels = await loadAgentModelOptions();
       setModelOptions(nextModels);
       setSelectedModelId(current =>
-        nextModels.some(model => model.id === current)
+        current && modelOption(current, nextModels)
           ? current
           : defaultModelId(nextModels),
       );

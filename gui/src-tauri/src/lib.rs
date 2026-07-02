@@ -8,6 +8,7 @@ mod error;
 mod future_login;
 mod git_diff_parse;
 mod git_review;
+mod remote;
 mod run_error;
 mod shadow_review;
 mod skills;
@@ -70,6 +71,15 @@ pub(crate) fn emit_review_updated(thread_id: &str) {
     if let Some(handle) = APP_HANDLE.get() {
         use tauri::Emitter;
         let _ = handle.emit("review-updated", thread_id.to_string());
+    }
+}
+
+/// Notify the frontend that a remote (phone) client created/drove a thread, so
+/// the thread list + runs refresh and the conversation shows up live.
+pub(crate) fn emit_remote_activity(thread_id: &str) {
+    if let Some(handle) = APP_HANDLE.get() {
+        use tauri::Emitter;
+        let _ = handle.emit("remote-activity", thread_id.to_string());
     }
 }
 
@@ -163,7 +173,10 @@ pub fn run() {
             list_installed_skills,
             list_available_skills,
             install_skill,
-            uninstall_skill
+            uninstall_skill,
+            remote_start,
+            remote_stop,
+            remote_status
         ])
         .build(tauri::generate_context!())
         .expect("error while running FutureOS")

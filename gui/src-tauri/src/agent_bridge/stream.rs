@@ -29,6 +29,7 @@ async fn persist_run_event_off_thread(
 pub(super) async fn collect_agent_response(
     stream: &mut tonic::Streaming<crate::agent_proto::StreamEvent>,
     run_id: Option<&str>,
+    session_id: &str,
 ) -> Result<String, crate::AppError> {
     let mut content = String::new();
     let mut saw_agent_end = false;
@@ -70,6 +71,15 @@ pub(super) async fn collect_agent_response(
 
         persist_run_event_off_thread(run_id, event.r#type.clone(), event.data.clone(), sequence)
             .await;
+        // 远程 tap（Step B/P1）：镜像事件到手机/网页（无远程连接时 no-op）。
+        crate::remote::publish_event(
+            session_id,
+            &event.r#type,
+            &event.data,
+            &event.run_id,
+            event.idx,
+        )
+        .await;
         sequence += 1;
 
         match event.r#type.as_str() {
