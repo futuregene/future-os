@@ -23,7 +23,7 @@ pub mod proto {
 
 /// Start a gRPC-only server (no HTTP).
 pub async fn serve(state: AppState, host: &str, port: u16) -> Result<()> {
-    eprintln!("gRPC server listening on {}:{}", host, port);
+    tracing::info!("gRPC server listening on {}:{}", host, port);
 
     // Build gRPC service
     let grpc_service = FutureAgentService { state };
@@ -58,8 +58,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
 
         // Log requests in verbose mode
         if self.state.verbose {
-            eprintln!(
-                "[grpc] {} session={} msg={:.80}",
+            tracing::warn!("[grpc] {} session={} msg={:.80}",
                 cmd.r#type,
                 if cmd.session_id.is_empty() {
                     "-"
@@ -180,8 +179,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             let session = self.state.get_session(&session_id);
             let sess = session.read().unwrap();
             if self.state.verbose {
-                eprintln!(
-                    "[stream] subscribe session={} has_msgs={}",
+                tracing::warn!("[stream] subscribe session={} has_msgs={}",
                     session_id,
                     sess.messages.read().unwrap().len()
                 );
@@ -206,7 +204,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                 idx: event.idx,
             }),
             Err(e) => {
-                eprintln!("SSE stream error: {}", e);
+                tracing::warn!("SSE stream error: {}", e);
                 Err(tonic::Status::internal(e.to_string()))
             }
         });

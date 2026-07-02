@@ -62,8 +62,7 @@ impl Loop {
         let mut retry_attempt = 0;
 
         if self.verbose {
-            eprintln!(
-                "[agent] starting run model={} msgs={} tools={}",
+            tracing::warn!("[agent] starting run model={} msgs={} tools={}",
                 self.model,
                 messages.len(),
                 tool_defs.len()
@@ -154,8 +153,7 @@ impl Loop {
             let llm_messages: Vec<Message> = ConvertToLLM(&work_messages);
 
             if self.verbose {
-                eprintln!(
-                    "[agent] turn={} calling LLM model={} msgs={} tools={} sys_prompt_len={} msg_chars={}",
+                tracing::warn!("[agent] turn={} calling LLM model={} msgs={} tools={} sys_prompt_len={} msg_chars={}",
                     turn,
                     self.model,
                     llm_messages.len(),
@@ -236,7 +234,7 @@ impl Loop {
                         bus.emit(agent_end("error", None));
                     }
                     let err = last_error.unwrap();
-                    eprintln!("[agent] LLM call failed: {:#}", err);
+                    tracing::error!("LLM call failed: {:#}", err);
                     return Err(err);
                 }
             };
@@ -299,7 +297,7 @@ impl Loop {
                         "thinking_delta" | "text_delta" | "toolcall_delta"
                     )
                 {
-                    eprintln!("[EVENT] {} len={}", event.event_type, event.text.len());
+                    tracing::debug!("[EVENT] {} len={}", event.event_type, event.text.len());
                 }
 
                 match event.event_type.as_str() {
@@ -322,7 +320,6 @@ impl Loop {
                     }
                     "thinking_end" => {
                         if self.verbose {
-                            eprintln!();
                         }
                         if let Some(ref bus) = self.event_bus {
                             bus.emit(thinking_end());
@@ -332,7 +329,6 @@ impl Loop {
                         assistant_text.push_str(&event.text);
                         if self.verbose && !output_started {
                             output_started = true;
-                            eprintln!();
                         }
                         on_text(event.text.clone());
                         if let Some(ref bus) = self.event_bus {
@@ -622,8 +618,7 @@ impl Loop {
                     ));
                 }
                 if self.verbose {
-                    eprintln!(
-                        "[agent] complete turns={} output_len={}",
+                    tracing::warn!("[agent] complete turns={} output_len={}",
                         turn + 1,
                         assistant_text.len()
                     );
@@ -633,8 +628,7 @@ impl Loop {
 
             // Execute tools
             if self.verbose {
-                eprintln!(
-                    "[agent] turn={} executing {} tools: {}",
+                tracing::warn!("[agent] turn={} executing {} tools: {}",
                     turn,
                     tool_calls.len(),
                     tool_calls

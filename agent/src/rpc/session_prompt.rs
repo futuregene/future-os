@@ -435,7 +435,7 @@ impl ServerSession {
                             updated_at: chrono::Local::now(),
                         };
                         if let Err(e) = session_manager.save(&session) {
-                            eprintln!("Failed to save session: {}", e);
+                            tracing::error!("Failed to save session: {}", e);
                         }
                     }
                     broadcaster.broadcast(crate::rpc::SseEvent {
@@ -447,7 +447,7 @@ impl ServerSession {
                 }
                 Err(e) => {
                     let full_error = format!("{:#}", e);
-                    eprintln!("Agent loop error: {}", full_error);
+                    tracing::error!("Agent loop error: {}", full_error);
                     broadcaster.broadcast(crate::rpc::SseEvent {
                         event_type: "error".to_string(),
                         data: serde_json::json!({"error": &full_error}).to_string(),
