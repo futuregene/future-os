@@ -346,24 +346,30 @@ impl Bridge {
     /// Ensure a session exists for this chat/thread, creating one if needed.
     /// Returns the session_id.
     async fn ensure_session(&self, chat_id: &str, thread_id: Option<&str>) -> Result<String> {
-        if let Some(sid) = self.sessions.get(chat_id, thread_id) {
+        let sid = if let Some(sid) = self.sessions.get(chat_id, thread_id) {
             if !sid.is_empty() {
                 // Re-activate session on the agent side (agent may have restarted)
                 let mut agent = self.agent.write().await;
                 let _ = agent.switch_session(&sid).await;
-                let cache = agent
-                    .get_state(&sid)
-                    .await
-                    .map(|s| s.image_support)
-                    .unwrap_or(false);
                 drop(agent);
-                *self.image_support.write().await = cache;
-                return Ok(sid);
+                sid
+            } else {
+                let mut agent = self.agent.write().await;
+                let sid = agent.new_session(&self.agent_cfg.cwd).await?;
+                self.sessions.set_session_id(chat_id, thread_id, &sid);
+                drop(agent);
+                sid
             }
-        }
+        } else {
+            let mut agent = self.agent.write().await;
+            let sid = agent.new_session(&self.agent_cfg.cwd).await?;
+            self.sessions.set_session_id(chat_id, thread_id, &sid);
+            drop(agent);
+            sid
+        };
+        // Always re-apply channel defaults so config changes take effect,
+        // including after channel restart when sessions are recreated.
         let mut agent = self.agent.write().await;
-        let sid = agent.new_session(&self.agent_cfg.cwd).await?;
-        // Apply channel defaults for model, thinking, and permission.
         if !self.agent_cfg.model.is_empty() {
             let _ = agent.set_model(&sid, &self.agent_cfg.model).await;
         }
@@ -373,7 +379,6 @@ impl Bridge {
         if !self.agent_cfg.permission_level.is_empty() {
             let _ = agent.set_permission_level(&sid, &self.agent_cfg.permission_level).await;
         }
-        self.sessions.set_session_id(chat_id, thread_id, &sid);
         let cache = agent
             .get_state(&sid)
             .await

@@ -257,6 +257,13 @@ impl DingtalkBridge {
         }
         let mut agent = self.agent.write().await;
         let sid = agent.new_session(&self.agent_cfg.cwd).await?;
+        // Apply channel defaults for slash-command sessions.
+        if !self.agent_cfg.model.is_empty() {
+            let _ = agent.set_model(&sid, &self.agent_cfg.model).await;
+        }
+        if !self.agent_cfg.thinking_level.is_empty() {
+            let _ = agent.set_thinking_level(&sid, &self.agent_cfg.thinking_level).await;
+        }
         *self.session_id.write().await = Some(sid.clone());
         Ok(sid)
     }
