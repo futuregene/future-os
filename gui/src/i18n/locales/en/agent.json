@@ -131,6 +131,7 @@
   "message": {
     "retry": "Retry",
     "continue": "Continue",
+    "generating": "Generating",
     "tokens": "{{formattedCount}} tokens"
   }
 }

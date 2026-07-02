@@ -4,7 +4,7 @@ import type { ReferenceTargetSearchResult } from "../../integrations/storage/thr
 import type { MessageAttachment } from "./agentThreadTypes";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { AlertTriangle, ArrowUp, Beaker, Box, Brain, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, ShieldCheck, X } from "lucide-react";
+import { AlertTriangle, ArrowUp, Beaker, Box, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, ShieldCheck, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
@@ -313,25 +313,9 @@ export function Composer({
             />
           )
         : null}
-      <textarea
-        ref={textareaRef}
-        className={cn(
-          "h-14 w-full resize-none border-0 bg-transparent px-2 py-1 text-sm leading-5 text-ink outline-none placeholder:text-ink-muted",
-          textareaClassName,
-        )}
-        placeholder={placeholder ?? t("composer.placeholder")}
-        value={value}
-        disabled={disabled}
-        onKeyDown={handleKeyDown}
-        onChange={handleChange}
-        onPaste={handlePaste}
-        onClick={updateCaret}
-        onKeyUp={updateCaret}
-        onSelect={updateCaret}
-      />
       {attachments.length > 0
         ? (
-            <div className="flex flex-wrap gap-1.5 px-1 pb-1">
+            <div className="flex flex-wrap gap-1.5 px-1 pb-2">
               {attachments.map(attachment => (
                 <span
                   className="inline-flex max-w-64 items-center gap-1.5 rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-soft"
@@ -353,6 +337,22 @@ export function Composer({
             </div>
           )
         : null}
+      <textarea
+        ref={textareaRef}
+        className={cn(
+          "h-14 w-full resize-none border-0 bg-transparent px-2 py-1 text-sm leading-5 text-ink outline-none placeholder:text-ink-muted",
+          textareaClassName,
+        )}
+        placeholder={placeholder ?? t("composer.placeholder")}
+        value={value}
+        disabled={disabled}
+        onKeyDown={handleKeyDown}
+        onChange={handleChange}
+        onPaste={handlePaste}
+        onClick={updateCaret}
+        onKeyUp={updateCaret}
+        onSelect={updateCaret}
+      />
       {attachError
         ? <div className="px-1 pb-1 text-xs text-warning">{attachError}</div>
         : null}
@@ -376,7 +376,7 @@ export function Composer({
                   panelClassName="w-44 overflow-hidden"
                   trigger={(
                     <button
-                      className="inline-flex h-7 max-w-40 items-center gap-1.5 rounded-md bg-surface-subtle px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink"
+                      className="inline-flex h-7 max-w-40 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
                       onClick={() => {
                         setModelMenuOpen(false);
                         setThinkingMenuOpen(false);
@@ -421,7 +421,7 @@ export function Composer({
             panelClassName="max-h-[40vh] w-56 overflow-y-auto"
             trigger={(
               <button
-                className="inline-flex h-7 max-w-48 items-center gap-1.5 rounded-md bg-surface-subtle px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink"
+                className="inline-flex h-7 max-w-48 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
                 onClick={() => {
                   setThinkingMenuOpen(false);
                   setApprovalMenuOpen(false);
@@ -466,7 +466,7 @@ export function Composer({
             panelClassName="w-40 overflow-hidden"
             trigger={(
               <button
-                className="inline-flex h-7 max-w-40 items-center gap-1.5 rounded-md bg-surface-subtle px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink"
+                className="inline-flex h-7 max-w-40 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
                 onClick={() => {
                   setModelMenuOpen(false);
                   setApprovalMenuOpen(false);
@@ -475,7 +475,6 @@ export function Composer({
                 type="button"
                 title={t("composer.thinkingLevel")}
               >
-                <Brain className="size-3 shrink-0" />
                 <span className="truncate">{thinkingLevelLabel(activeThinkingLevel)}</span>
                 <ChevronDown className="size-3 shrink-0" />
               </button>

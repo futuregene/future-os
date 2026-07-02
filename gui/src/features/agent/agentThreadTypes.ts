@@ -20,6 +20,7 @@ export interface AgentActivityItem {
  */
 export type MessageSegment
   = | { kind: "text"; id: string; text: string }
+    | { kind: "thinking"; id: string; text: string }
     | { kind: "activity"; id: string; item: AgentActivityItem };
 
 export interface MessageAttachment {

@@ -125,6 +125,8 @@ export function SettingsDialog({
                   <GeneralPage
                     autoApprove={appSettings.autoApprove}
                     onToggleAutoApprove={value => onChangeSettings({ autoApprove: value })}
+                    showThinking={appSettings.showThinking}
+                    onToggleShowThinking={value => onChangeSettings({ showThinking: value })}
                   />
                 )
               : null}

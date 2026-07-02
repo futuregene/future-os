@@ -52,6 +52,8 @@ interface NewConversationProps {
   onModelChange: (modelId: string) => void;
   thinkingLevel: string;
   onThinkingLevelChange: (thinkingLevel: string) => void;
+  autoApprove: boolean;
+  onToggleAutoApprove: (value: boolean) => void;
   onStart: (input: NewConversationStart) => void;
   onAddWorkspace: (input: WorkspaceCreateRequest) => Promise<StoredWorkspace | null>;
   onToggleLeftPanel: () => void;
@@ -69,6 +71,8 @@ export function NewConversation({
   onModelChange,
   thinkingLevel,
   onThinkingLevelChange,
+  autoApprove,
+  onToggleAutoApprove,
   onStart,
   onToggleLeftPanel,
   workspaces,
@@ -236,6 +240,8 @@ export function NewConversation({
               onModelChange={onModelChange}
               thinkingLevel={thinkingLevel}
               onThinkingLevelChange={onThinkingLevelChange}
+              autoApprove={autoApprove}
+              onToggleAutoApprove={onToggleAutoApprove}
               onSend={handleSend}
               placeholder={t("newConversation.placeholder")}
               textareaClassName="h-16 text-base leading-6"

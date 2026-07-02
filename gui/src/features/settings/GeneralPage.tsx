@@ -7,9 +7,13 @@ import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPr
 export function GeneralPage({
   autoApprove,
   onToggleAutoApprove,
+  showThinking,
+  onToggleShowThinking,
 }: {
   autoApprove: boolean;
   onToggleAutoApprove: (value: boolean) => void;
+  showThinking: boolean;
+  onToggleShowThinking: (value: boolean) => void;
 }) {
   const { t } = useTranslation("settings");
 
@@ -38,6 +42,12 @@ export function GeneralPage({
           description={t("autoApprove.description")}
         >
           <Switch checked={autoApprove} label={t("autoApprove.title")} onChange={onToggleAutoApprove} />
+        </SettingsRow>
+        <SettingsRow
+          title={t("showThinking.title")}
+          description={t("showThinking.description")}
+        >
+          <Switch checked={showThinking} label={t("showThinking.title")} onChange={onToggleShowThinking} />
         </SettingsRow>
       </SettingsList>
     </SettingsSection>
