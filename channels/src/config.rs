@@ -20,6 +20,16 @@ pub struct AgentConfig {
     pub grpc_addr: String,
     #[serde(default = "default_cwd")]
     pub cwd: String,
+    /// Default model for channel sessions (e.g. "deepseek-v4-flash").
+    /// If empty, the agent's boot-time default is used.
+    #[serde(default)]
+    pub model: String,
+    /// Default thinking level: "off", "minimal", "low", "medium", "high", "xhigh".
+    #[serde(default = "default_thinking_level")]
+    pub thinking_level: String,
+    /// Default permission level: "all", "workspace", "none".
+    #[serde(default = "default_permission_level")]
+    pub permission_level: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -90,6 +100,8 @@ fn default_cwd() -> String {
         .to_string_lossy()
         .into()
 }
+fn default_thinking_level() -> String { "xhigh".into() }
+fn default_permission_level() -> String { "all".into() }
 fn default_domain() -> String {
     "feishu".into()
 }
@@ -149,6 +161,9 @@ impl Default for AgentConfig {
         Self {
             grpc_addr: default_grpc_addr(),
             cwd: default_cwd(),
+            model: String::new(),
+            thinking_level: default_thinking_level(),
+            permission_level: default_permission_level(),
         }
     }
 }

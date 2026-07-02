@@ -363,6 +363,16 @@ impl Bridge {
         }
         let mut agent = self.agent.write().await;
         let sid = agent.new_session(&self.agent_cfg.cwd).await?;
+        // Apply channel defaults for model, thinking, and permission.
+        if !self.agent_cfg.model.is_empty() {
+            let _ = agent.set_model(&sid, &self.agent_cfg.model).await;
+        }
+        if !self.agent_cfg.thinking_level.is_empty() {
+            let _ = agent.set_thinking_level(&sid, &self.agent_cfg.thinking_level).await;
+        }
+        if !self.agent_cfg.permission_level.is_empty() {
+            let _ = agent.set_permission_level(&sid, &self.agent_cfg.permission_level).await;
+        }
         self.sessions.set_session_id(chat_id, thread_id, &sid);
         let cache = agent
             .get_state(&sid)
