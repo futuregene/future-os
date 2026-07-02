@@ -19,7 +19,7 @@ function projectSkillsDir(): string {
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type SkillsCommand = "list" | "install" | "uninstall";
+export type SkillsCommand = "list" | "install" | "uninstall" | "install-builtin";
 type Scope = "app" | "project" | "global";
 
 interface SkillInfo {
@@ -38,6 +38,12 @@ interface SkillInfo {
 export async function skills(command: SkillsCommand, args: string[]): Promise<void> {
   if (command === "list") {
     await listSkills();
+    return;
+  }
+
+  if (command === "install-builtin") {
+    const scope = parseScope(args);
+    await installBuiltinSkills(scope);
     return;
   }
 
@@ -64,7 +70,7 @@ export async function skills(command: SkillsCommand, args: string[]): Promise<vo
 }
 
 export function isSkillsCommand(command: string): command is SkillsCommand {
-  return command === "list" || command === "install" || command === "uninstall";
+  return command === "list" || command === "install" || command === "uninstall" || command === "install-builtin";
 }
 
 // ── Scope ────────────────────────────────────────────────────────────────────
@@ -94,8 +100,11 @@ function scopeLabel(scope: Scope, dir: string): string {
 
 // ── Remote API ───────────────────────────────────────────────────────────────
 
-async function fetchSkills(platformUrl: string): Promise<SkillInfo[]> {
-  const resp = await fetch(`${platformUrl}/client/v1/skills`);
+async function fetchSkills(platformUrl: string, category?: string): Promise<SkillInfo[]> {
+  const url = category
+    ? `${platformUrl}/client/v1/skills?category=${encodeURIComponent(category)}`
+    : `${platformUrl}/client/v1/skills`;
+  const resp = await fetch(url);
   if (!resp.ok) {
     throw new Error(`Failed to fetch skills: ${resp.status} ${resp.statusText}`);
   }
@@ -255,6 +264,75 @@ async function installSkill(skillId: string, version?: string, scope: Scope = "a
     // Clean up temp file
     try { await rm(tmpZip, { force: true }); } catch { /* ignore */ }
   }
+}
+
+async function installBuiltinSkills(scope: Scope = "app"): Promise<void> {
+  const platformUrl = await getPlatformUrl();
+
+  // 1. Fetch builtin skills
+  let skills: SkillInfo[];
+  try {
+    skills = await fetchSkills(platformUrl, "builtin");
+  } catch (err) {
+    console.error("Failed to fetch builtin skills.");
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+    return;
+  }
+
+  if (skills.length === 0) {
+    console.log("No builtin skills available.");
+    return;
+  }
+
+  // 2. Get already installed skill IDs
+  const installed = await getInstalledSkillIds(scope);
+
+  // 3. Filter out already installed
+  const toInstall = skills.filter(s => !installed.has(s.id));
+
+  if (toInstall.length === 0) {
+    console.log(`All ${skills.length} builtin skills are already installed.`);
+    return;
+  }
+
+  const skipped = skills.length - toInstall.length;
+  console.log(`Installing ${toInstall.length} builtin skills${skipped > 0 ? ` (${skipped} already installed)` : ""}...`);
+
+  // 4. Install one by one
+  for (const skill of toInstall) {
+    if (!skill.latest_version) {
+      console.log(`  Skipping ${skill.id} — no version available.`);
+      continue;
+    }
+    try {
+      await installSkill(skill.id, skill.latest_version, scope);
+    } catch (err) {
+      console.error(`  Failed to install ${skill.id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  console.log(`Done. ${toInstall.length} skills installed.`);
+}
+
+async function getInstalledSkillIds(scope: Scope): Promise<Set<string>> {
+  const dir = skillsDirFor(scope);
+  const ids = new Set<string>();
+  try {
+    const entries = await readdir(dir);
+    for (const entry of entries) {
+      const skillMd = join(dir, entry, "SKILL.md");
+      try {
+        await stat(skillMd);
+        ids.add(entry);
+      } catch {
+        // No SKILL.md — skip
+      }
+    }
+  } catch {
+    // Dir doesn't exist — nothing installed
+  }
+  return ids;
 }
 
 async function uninstallSkill(skillId: string, scope: Scope = "app"): Promise<void> {

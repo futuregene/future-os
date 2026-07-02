@@ -1,4 +1,4 @@
-.PHONY: build build-agent build-tui build-tui-single build-cli build-gui test test-agent lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean clean-gui run run-agent run-tui run-cli run-gui package-gui install install-tui install-cli-deps install-cli install-skills install-gui
+.PHONY: build build-agent build-tui build-tui-single build-cli build-gui test test-agent lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean clean-gui run run-agent run-tui run-cli run-gui package-gui install install-tui install-cli-deps install-cli install-gui
 
 # ─── Install ──────────────────────────────────────────────────────────────────
 
@@ -10,16 +10,10 @@ install-tui:
 install-cli-deps:
 	cd cli && npm install
 
-install-cli: install-cli-deps install-skills build-tui
+install-cli: install-cli-deps build-tui
 	cd cli && npm run build && chmod +x dist/index.js && npm link
-
-install-skills:
-	@mkdir -p ~/.future/agent/skills
-	@for dir in skills/*/; do \
-		name=$$(basename "$$dir"); \
-		echo "  installing $$name"; \
-		rsync -a "$$dir" ~/.future/agent/skills/"$$name"/; \
-	done
+	@echo "  installing builtin skills..."
+	@future skills install-builtin
 
 install-gui:
 	cd gui && npm install
