@@ -1,6 +1,7 @@
 import type { CustomProvider, CustomProviderModel } from "../../integrations/agent/providers";
 import { Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { Field } from "../../components/ui/Field";
@@ -58,6 +59,7 @@ export function CustomProviderDialog({
   onSubmit: (input: CustomProviderSubmit) => Promise<void>;
   open: boolean;
 }) {
+  const { t } = useTranslation("settings");
   const editing = Boolean(initial);
   const [name, setName] = useState("");
   const [id, setId] = useState("");
@@ -94,26 +96,26 @@ export function CustomProviderDialog({
     // Provider id (only validated when creating; disabled while editing).
     if (!editing) {
       if (!trimmedId) {
-        setError("请填写提供商 ID。");
+        setError(t("customProvider.errors.idRequired"));
         return;
       }
       if (trimmedId.length < PROVIDER_ID_MIN_LEN || trimmedId.length > PROVIDER_ID_MAX_LEN) {
-        setError(`提供商 ID 长度需在 ${PROVIDER_ID_MIN_LEN}–${PROVIDER_ID_MAX_LEN} 个字符之间。`);
+        setError(t("customProvider.errors.idLength", { min: PROVIDER_ID_MIN_LEN, max: PROVIDER_ID_MAX_LEN }));
         return;
       }
       if (!PROVIDER_ID_RE.test(trimmedId)) {
-        setError("提供商 ID 只能包含小写字母、数字、'-' 和 '_'。");
+        setError(t("customProvider.errors.idPattern"));
         return;
       }
       if (existing.some(provider => provider.id === trimmedId)) {
-        setError("提供商 ID 已存在，请换一个。");
+        setError(t("customProvider.errors.idExists"));
         return;
       }
     }
 
     // Base URL.
     if (!trimmedBaseUrl) {
-      setError("请填写 Base URL。");
+      setError(t("customProvider.errors.baseUrlRequired"));
       return;
     }
     const parsedUrl = (() => {
@@ -125,18 +127,18 @@ export function CustomProviderDialog({
       }
     })();
     if (!parsedUrl || (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:")) {
-      setError("Base URL 必须是合法的 http/https 地址。");
+      setError(t("customProvider.errors.baseUrlInvalid"));
       return;
     }
 
     // Name (optional; falls back to id on the backend).
     if (trimmedName) {
       if (trimmedName.length > PROVIDER_NAME_MAX_LEN) {
-        setError(`提供商名称不能超过 ${PROVIDER_NAME_MAX_LEN} 个字符。`);
+        setError(t("customProvider.errors.nameLength", { max: PROVIDER_NAME_MAX_LEN }));
         return;
       }
       if (!PROVIDER_NAME_RE.test(trimmedName)) {
-        setError("提供商名称只能包含字母、数字、空格和 _.()-，不支持中文 / emoji / 全角字符。");
+        setError(t("customProvider.errors.namePattern"));
         return;
       }
       const nameTaken = existing.some(
@@ -144,7 +146,7 @@ export function CustomProviderDialog({
           && provider.name.trim().toLowerCase() === trimmedName.toLowerCase(),
       );
       if (nameTaken) {
-        setError("提供商名称已存在，请换一个。");
+        setError(t("customProvider.errors.nameExists"));
         return;
       }
     }
@@ -156,25 +158,25 @@ export function CustomProviderDialog({
     const seenModelIds = new Set<string>();
     for (const model of cleanedModels) {
       if (model.id.length > MODEL_ID_MAX_LEN) {
-        setError(`模型 ID「${model.id}」过长。`);
+        setError(t("customProvider.errors.modelIdLength", { id: model.id }));
         return;
       }
       if (!MODEL_ID_RE.test(model.id)) {
-        setError(`模型 ID「${model.id}」含非法字符。`);
+        setError(t("customProvider.errors.modelIdPattern", { id: model.id }));
         return;
       }
       if (seenModelIds.has(model.id)) {
-        setError(`模型 ID「${model.id}」重复。`);
+        setError(t("customProvider.errors.modelIdDuplicate", { id: model.id }));
         return;
       }
       seenModelIds.add(model.id);
       if (model.name.length > MODEL_NAME_MAX_LEN) {
-        setError(`模型名称「${model.name}」过长。`);
+        setError(t("customProvider.errors.modelNameLength", { name: model.name }));
         return;
       }
     }
     if (cleanedModels.length > MAX_MODELS) {
-      setError(`模型数量不能超过 ${MAX_MODELS} 个。`);
+      setError(t("customProvider.errors.modelsMax", { max: MAX_MODELS }));
       return;
     }
 
@@ -203,43 +205,43 @@ export function CustomProviderDialog({
       className="max-w-lg"
       onClose={onClose}
       open={open}
-      title={editing ? "编辑自定义提供商" : "添加自定义提供商"}
-      description="提供商写入 ~/.future/agent/models.json，Agent 可能需要重启后才能加载新模型。"
+      title={editing ? t("customProvider.editTitle") : t("customProvider.addTitle")}
+      description={t("customProvider.description")}
       footer={(
         <>
-          <Button onClick={onClose} variant="secondary">取消</Button>
+          <Button onClick={onClose} variant="secondary">{t("customProvider.cancel")}</Button>
           <Button disabled={saving} onClick={() => void handleSubmit()} variant="primary">
-            {saving ? "保存中…" : "保存"}
+            {saving ? t("customProvider.saving") : t("customProvider.save")}
           </Button>
         </>
       )}
     >
       <div className="space-y-3">
-        <Field label="名称">
-          <TextInput onChange={event => setName(event.target.value)} placeholder="例如 DashScope" value={name} />
+        <Field label={t("customProvider.nameLabel")}>
+          <TextInput onChange={event => setName(event.target.value)} placeholder={t("customProvider.namePlaceholder")} value={name} />
         </Field>
-        <Field label="提供商 ID">
+        <Field label={t("customProvider.idLabel")}>
           <TextInput
             disabled={editing}
             onChange={event => setId(event.target.value.toLowerCase())}
-            placeholder="例如 dashscope-coding"
+            placeholder={t("customProvider.idPlaceholder")}
             value={id}
           />
         </Field>
-        <Field label="API 类型">
+        <Field label={t("customProvider.apiTypeLabel")}>
           <Select onChange={event => setApi(event.target.value)} value={api}>
             {API_OPTIONS.map(option => (
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
           </Select>
         </Field>
-        <Field label="Base URL">
-          <TextInput onChange={event => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" value={baseUrl} />
+        <Field label={t("customProvider.baseUrlLabel")}>
+          <TextInput onChange={event => setBaseUrl(event.target.value)} placeholder={t("customProvider.baseUrlPlaceholder")} value={baseUrl} />
         </Field>
-        <Field label={editing ? "API Key（留空保持不变）" : "API Key"}>
+        <Field label={editing ? t("customProvider.apiKeyLabelEditing") : t("customProvider.apiKeyLabel")}>
           <TextInput
             onChange={event => setApiKey(event.target.value)}
-            placeholder="sk-…"
+            placeholder={t("customProvider.apiKeyPlaceholder")}
             type="password"
             value={apiKey}
           />
@@ -247,35 +249,35 @@ export function CustomProviderDialog({
 
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-ink">模型</span>
+            <span className="text-sm font-medium text-ink">{t("customProvider.modelsHeading")}</span>
             <button
               className="text-xs font-medium text-accent transition-colors hover:underline"
               onClick={() => setModels(current => [...current, { id: "", key: crypto.randomUUID(), name: "" }])}
               type="button"
             >
-              + 添加模型
+              {t("customProvider.addModel")}
             </button>
           </div>
           {models.length === 0
-            ? <p className="text-xs text-ink-muted">尚未添加模型。</p>
+            ? <p className="text-xs text-ink-muted">{t("customProvider.noModels")}</p>
             : (
                 <div className="space-y-2">
                   {models.map((model, index) => (
                     <div className="flex items-center gap-2" key={model.key}>
                       <TextInput
                         onChange={event => updateModel(index, { id: event.target.value })}
-                        placeholder="模型 ID"
+                        placeholder={t("customProvider.modelIdPlaceholder")}
                         value={model.id}
                       />
                       <TextInput
                         onChange={event => updateModel(index, { name: event.target.value })}
-                        placeholder="显示名称"
+                        placeholder={t("customProvider.modelNamePlaceholder")}
                         value={model.name}
                       />
                       <IconButton
                         className="shrink-0 hover:text-danger"
                         icon={<Trash2 className="size-4" />}
-                        label="移除模型"
+                        label={t("customProvider.removeModel")}
                         onClick={() => setModels(current => current.filter((_, modelIndex) => modelIndex !== index))}
                       />
                     </div>

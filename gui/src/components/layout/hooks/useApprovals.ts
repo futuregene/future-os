@@ -1,5 +1,6 @@
 import type { StoredApprovalRequest } from "../../../integrations/storage/threadStore";
 import { useCallback, useEffect, useMemo, useRef } from "react";
+import i18n from "../../../i18n";
 import { decideApprovalRequest, listApprovalRequests } from "../../../integrations/storage/threadStore";
 import { useAsyncResource } from "../../../lib/useAsyncResource";
 import { usePolling } from "../../../lib/usePolling";
@@ -61,7 +62,7 @@ export function useApprovals(activeThreadId: string | null, autoApprove: boolean
       autoApprovingRef.current.add(approval.id);
       void decideApprovalRequest({
         approvalRequestId: approval.id,
-        decisionNote: "Auto-approved by settings.",
+        decisionNote: i18n.t("layout:approvals.autoApproved"),
         status: "approved",
       })
         .catch(() => undefined)
@@ -76,7 +77,7 @@ export function useApprovals(activeThreadId: string | null, autoApprove: boolean
     async (approval: StoredApprovalRequest, status: "approved" | "rejected") => {
       await decideApprovalRequest({
         approvalRequestId: approval.id,
-        decisionNote: status === "approved" ? "Approved in GUI." : "Rejected in GUI.",
+        decisionNote: status === "approved" ? i18n.t("layout:approvals.approvedInGui") : i18n.t("layout:approvals.rejectedInGui"),
         status,
       });
       reload();

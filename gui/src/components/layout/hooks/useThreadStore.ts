@@ -11,7 +11,12 @@ import {
 } from "../../../integrations/storage/threadStore";
 import { usePolling } from "../../../lib/usePolling";
 
-type ThreadRunStatuses = Record<string, StoredRun["status"] | undefined>;
+export interface ThreadRunInfo {
+  status: StoredRun["status"];
+  endedAt: number | null;
+}
+
+type ThreadRunStatuses = Record<string, ThreadRunInfo | undefined>;
 
 export interface ThreadStore {
   threads: StoredThread[];
@@ -76,7 +81,8 @@ export function useThreadStore(): ThreadStore {
     const entries = await Promise.all(
       nextThreads.map(async (thread) => {
         const runs = await listRuns(thread.id);
-        return [thread.id, runs[0]?.status] as const;
+        const latest = runs[0];
+        return [thread.id, latest ? { endedAt: latest.endedAt ?? null, status: latest.status } : undefined] as const;
       }),
     );
     if (generation !== runStatusGenRef.current) {

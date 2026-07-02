@@ -1,6 +1,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import * as pdfjs from "pdfjs-dist";
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 // 设置 worker
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -13,6 +14,7 @@ interface PdfPreviewProps {
 }
 
 export function PdfPreview({ path }: PdfPreviewProps) {
+  const { t } = useTranslation("artifacts");
   const containerRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -48,7 +50,7 @@ export function PdfPreview({ path }: PdfPreviewProps) {
       }
       catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load PDF");
+          setError(err instanceof Error ? err.message : t("pdfPreview.failedToLoad"));
           setLoading(false);
         }
       }
@@ -63,7 +65,7 @@ export function PdfPreview({ path }: PdfPreviewProps) {
         loadingTaskRef.current = null;
       }
     };
-  }, [path]);
+  }, [path, t]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -103,7 +105,7 @@ export function PdfPreview({ path }: PdfPreviewProps) {
       }
       catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to render page");
+          setError(err instanceof Error ? err.message : t("pdfPreview.failedToRender"));
         }
       }
     }
@@ -113,12 +115,12 @@ export function PdfPreview({ path }: PdfPreviewProps) {
     return () => {
       cancelled = true;
     };
-  }, [currentPage, pdfDoc]);
+  }, [currentPage, pdfDoc, t]);
 
   if (loading) {
     return (
       <div className="flex items-center justify-center p-8">
-        <div className="text-sm text-ink-muted">Loading PDF...</div>
+        <div className="text-sm text-ink-muted">{t("pdfPreview.loading")}</div>
       </div>
     );
   }
@@ -126,7 +128,7 @@ export function PdfPreview({ path }: PdfPreviewProps) {
   if (error) {
     return (
       <div className="rounded-md border border-danger-line bg-danger-soft p-3">
-        <div className="text-sm font-medium text-danger">PDF Preview Error</div>
+        <div className="text-sm font-medium text-danger">{t("pdfPreview.errorTitle")}</div>
         <div className="mt-1 text-xs text-danger">{error}</div>
       </div>
     );
@@ -141,23 +143,17 @@ export function PdfPreview({ path }: PdfPreviewProps) {
             disabled={currentPage <= 1}
             className="rounded-md border border-line bg-surface px-2 py-1 text-xs disabled:opacity-50"
           >
-            ← Prev
+            {t("pdfPreview.prev")}
           </button>
           <span className="text-xs text-ink-muted">
-            Page
-            {" "}
-            {currentPage}
-            {" "}
-            /
-            {" "}
-            {totalPages}
+            {t("pdfPreview.pageIndicator", { current: currentPage, total: totalPages })}
           </span>
           <button
             onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
             disabled={currentPage >= totalPages}
             className="rounded-md border border-line bg-surface px-2 py-1 text-xs disabled:opacity-50"
           >
-            Next →
+            {t("pdfPreview.next")}
           </button>
         </div>
       </div>

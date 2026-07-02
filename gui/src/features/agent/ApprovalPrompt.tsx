@@ -5,6 +5,7 @@ import type {
 } from "../../integrations/storage/types";
 import { AlertTriangle, Check, ShieldAlert, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { isRecord } from "../../lib/objects";
 
@@ -14,6 +15,7 @@ interface ApprovalPromptProps {
 }
 
 export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
+  const { t } = useTranslation("agent");
   const [error, setError] = useState<string | null>(null);
   const [deciding, setDeciding] = useState<"approved" | "rejected" | null>(null);
 
@@ -83,7 +85,8 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
               <span>{formatViolation(sandboxBoundary.violation)}</span>
               <span className="text-warning/70">·</span>
               <span className="text-warning/70">
-                sandbox:
+                {t("approval.sandbox")}
+                :
                 {" "}
                 {sandboxBoundary.mode}
               </span>
@@ -114,7 +117,7 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
           onClick={() => void decide("rejected")}
           variant="toolbar"
         >
-          {deciding === "rejected" ? "Denying" : "Deny"}
+          {deciding === "rejected" ? t("approval.denying") : t("approval.deny")}
         </Button>
         <Button
           className="shadow-xs"
@@ -123,7 +126,7 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
           onClick={() => void decide("approved")}
           variant="primary"
         >
-          {deciding === "approved" ? "Allowing" : "Allow once"}
+          {deciding === "approved" ? t("approval.allowing") : t("approval.allowOnce")}
         </Button>
       </div>
     </section>
@@ -135,11 +138,12 @@ interface ActionDetailsProps {
 }
 
 function ActionDetails({ action }: ActionDetailsProps) {
+  const { t } = useTranslation("agent");
   if (action.command) {
     return (
       <div className="mt-3">
         <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
-          Shell command
+          {t("approval.shellCommand")}
         </div>
         <pre className="max-h-[33vh] overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-surface-subtle p-3 font-mono text-xs leading-5 text-ink">
           <code className="block min-w-0">{action.command}</code>
@@ -152,7 +156,7 @@ function ActionDetails({ action }: ActionDetailsProps) {
     return (
       <div className="mt-3 space-y-2">
         <div className="text-[11px] font-medium uppercase tracking-wide text-ink-soft">
-          {action.writes.length === 1 ? "Write file" : `Write ${action.writes.length} files`}
+          {action.writes.length === 1 ? t("approval.writeFile") : t("approval.writeFiles", { count: action.writes.length })}
         </div>
         {action.writes.map((entry, index) => (
           <div
@@ -177,7 +181,7 @@ function ActionDetails({ action }: ActionDetailsProps) {
     return (
       <div className="mt-3">
         <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
-          {action.deletes.length === 1 ? "Delete file" : `Delete ${action.deletes.length} files`}
+          {action.deletes.length === 1 ? t("approval.deleteFile") : t("approval.deleteFiles", { count: action.deletes.length })}
         </div>
         <ul className="space-y-1 rounded-md bg-surface-subtle p-3 font-mono text-xs text-ink">
           {action.deletes.map((entry, index) => (
@@ -192,7 +196,7 @@ function ActionDetails({ action }: ActionDetailsProps) {
     return (
       <div className="mt-3">
         <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
-          Paths
+          {t("approval.paths")}
         </div>
         <ul className="space-y-1 rounded-md bg-surface-subtle p-3 font-mono text-xs text-ink">
           {action.paths.map((entry, index) => (

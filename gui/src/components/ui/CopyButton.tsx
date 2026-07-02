@@ -1,4 +1,5 @@
 import { Check, Clipboard } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
 
 /**
@@ -9,7 +10,7 @@ import { cn } from "../../lib/cn";
 export function CopyButton({
   className,
   copied,
-  label = "Copy",
+  label,
   onCopy,
   variant = "inline",
 }: {
@@ -19,9 +20,11 @@ export function CopyButton({
   onCopy: () => void;
   variant?: "floating" | "inline";
 }) {
+  const { t } = useTranslation("common");
+  const resolvedLabel = label ?? t("copy");
   return (
     <button
-      aria-label={label}
+      aria-label={resolvedLabel}
       className={cn(
         "inline-flex size-6 items-center justify-center rounded-md transition-colors",
         variant === "floating"
@@ -30,7 +33,7 @@ export function CopyButton({
         className,
       )}
       onClick={onCopy}
-      title={label}
+      title={resolvedLabel}
       type="button"
     >
       {copied ? <Check className="size-3.5" /> : <Clipboard className="size-3.5" />}

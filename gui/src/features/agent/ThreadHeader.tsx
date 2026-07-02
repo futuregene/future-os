@@ -1,4 +1,5 @@
 import type { StoredThread } from "../../integrations/storage/threadStore";
+import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
 import { startWindowDrag } from "../../lib/windowDrag";
 
@@ -13,6 +14,7 @@ export function ThreadHeader({
   leftPanelExpanded,
   onToggleLeftPanel,
 }: ThreadHeaderProps) {
+  const { t } = useTranslation("agent");
   return (
     <header
       className="flex h-12 shrink-0 select-none items-center border-b border-line-soft pl-4 pr-14"
@@ -24,7 +26,7 @@ export function ThreadHeader({
           onToggle={onToggleLeftPanel}
         />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold text-ink">{thread?.title ?? "FutureOS"}</div>
+          <div className="truncate text-sm font-semibold text-ink">{thread?.title ?? t("thread.defaultTitle")}</div>
         </div>
       </div>
     </header>

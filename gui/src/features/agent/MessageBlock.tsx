@@ -1,6 +1,9 @@
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { FileText, Paperclip, RotateCcw, StepForward } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { CopyButton } from "../../components/ui/CopyButton";
+import { useCopyState } from "../../components/ui/useCopyState";
 import { cn } from "../../lib/cn";
 import { formatTime } from "../../lib/date";
 import { MarkdownContent } from "../markdown/MarkdownContent";
@@ -25,6 +28,8 @@ export function MessageBlock({
   onRetry,
   workspaceId,
 }: MessageBlockProps) {
+  const { t } = useTranslation("agent");
+  const { copiedKey, copy } = useCopyState();
   const isUser = message.role === "user";
   // Retry/Continue only make sense on the latest turn — once a newer round has
   // started, recovering an earlier failed turn would fork the conversation.
@@ -32,12 +37,19 @@ export function MessageBlock({
   // A local narrowed to the non-empty segment array (or null) so the render can
   // map over it without a non-null assertion.
   const segments = !isUser && message.segments && message.segments.length > 0 ? message.segments : null;
+  // Plain-text payload for the copy button: joined text slices when the reply is
+  // segmented, otherwise the raw content. Activity lines are excluded.
+  const copyableText = (segments
+    ? segments.flatMap(segment => (segment.kind === "text" ? [segment.text] : [])).join("\n\n")
+    : message.content ?? "").trim();
 
   return (
     <article className="flex justify-center">
       <div className="group/msg min-w-0 w-full max-w-3xl">
         <div className={cn("mb-1 flex items-center gap-2", isUser && "justify-end")}>
-          <span className="text-sm font-semibold text-ink">{message.author}</span>
+          <span className="text-sm font-semibold text-ink">
+            {message.authorKey ? t(message.authorKey) : message.author}
+          </span>
           <span className="text-xs text-ink-muted">{formatTime(message.createdAt)}</span>
         </div>
         <div
@@ -90,7 +102,7 @@ export function MessageBlock({
                           type="button"
                         >
                           <RotateCcw className="size-3.5" />
-                          Retry
+                          {t("message.retry")}
                         </button>
                       )
                     : null}
@@ -102,7 +114,7 @@ export function MessageBlock({
                           type="button"
                         >
                           <StepForward className="size-3.5" />
-                          Continue
+                          {t("message.continue")}
                         </button>
                       )
                     : null}
@@ -110,7 +122,18 @@ export function MessageBlock({
               )
             : null}
         </div>
-        {!isUser ? <MessageMeta message={message} /> : null}
+        <div className={cn("flex items-center gap-2", isUser ? "mt-1 justify-end" : "mt-3")}>
+          {copyableText
+            ? (
+                <CopyButton
+                  className="pointer-events-none opacity-0 transition-opacity duration-200 group-hover/msg:pointer-events-auto group-hover/msg:opacity-100"
+                  copied={copiedKey === "default"}
+                  onCopy={() => void copy(copyableText)}
+                />
+              )
+            : null}
+          {!isUser ? <MessageMeta message={message} /> : null}
+        </div>
       </div>
     </article>
   );

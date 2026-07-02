@@ -1,5 +1,6 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { TextInput } from "../../components/ui/TextInput";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
@@ -17,6 +18,7 @@ export function ModelsPage({
   modelOptions: AgentModelOption[];
   onChangeHidden: (next: string[]) => void;
 }) {
+  const { t } = useTranslation("settings");
   const [query, setQuery] = useState("");
   const providerNames = useProviderNames();
   const hidden = useMemo(() => new Set(hiddenModels), [hiddenModels]);
@@ -57,12 +59,12 @@ export function ModelsPage({
     <div className="space-y-6">
       <TextInput
         onChange={event => setQuery(event.target.value)}
-        placeholder="搜索模型…"
+        placeholder={t("models.searchPlaceholder")}
         value={query}
       />
 
       {modelOptions.length === 0
-        ? <p className="text-sm text-ink-muted">未从 Agent 读取到模型。请确认 Agent 已启动并完成登录。</p>
+        ? <p className="text-sm text-ink-muted">{t("models.noModels")}</p>
         : null}
 
       {groups.map(([provider, models]) => (
@@ -72,7 +74,7 @@ export function ModelsPage({
               <SettingsRow
                 key={modelKey(model)}
                 title={model.label}
-                description={model.isDefault ? "默认模型" : model.id}
+                description={model.isDefault ? t("models.defaultModel") : model.id}
               >
                 <Switch
                   checked={!hidden.has(modelKey(model))}
@@ -86,7 +88,7 @@ export function ModelsPage({
       ))}
 
       {modelOptions.length > 0 && groups.length === 0
-        ? <p className="text-sm text-ink-muted">没有匹配的模型。</p>
+        ? <p className="text-sm text-ink-muted">{t("models.noMatch")}</p>
         : null}
     </div>
   );

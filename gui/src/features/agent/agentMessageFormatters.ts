@@ -1,5 +1,6 @@
 import type { StoredMessage, StoredRun } from "../../integrations/storage/threadStore";
 import type { AgentMessage } from "./agentThreadTypes";
+import i18n from "../../i18n";
 import {
   storedTimeToIso,
   updateRunStatus,
@@ -17,7 +18,8 @@ export function toAgentMessage(message: StoredMessage): AgentMessage {
     id: message.id,
     runId: message.runId,
     role: message.role === "user" ? "user" : "assistant",
-    author: message.role === "user" ? "You" : "Research Copilot",
+    author: message.role === "user" ? i18n.t("agent:author.you") : i18n.t("agent:author.researchCopilot"),
+    authorKey: message.role === "user" ? "author.you" : "author.researchCopilot",
     content: content.text,
     status: message.status,
     createdAt: storedTimeToIso(message.createdAt),
@@ -32,9 +34,9 @@ export function buildAgentFailureContent(message: string) {
   // failures, not connectivity problems, and mislabeling them as 连接失败 sends
   // users to debug the wrong thing.
   if (message.includes("Unable to connect to Future Agent")) {
-    return `Future Agent 连接失败：${message}\n\n请确认 agent 已启动，并且 FUTURE_AGENT_GRPC_ADDR 指向 127.0.0.1:50051。`;
+    return i18n.t("agent:failure.connect", { message });
   }
-  return `运行失败：${message}`;
+  return i18n.t("agent:failure.run", { message });
 }
 
 export async function updateRunStatusSafe(

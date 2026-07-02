@@ -54,7 +54,8 @@ pub use threads::{
     update_thread_thinking_level, ThreadRecord,
 };
 pub use workspaces::{
-    create_workspace, get_or_create_chat_workspace, get_workspace, list_workspaces, WorkspaceRecord,
+    create_workspace, delete_workspace, get_or_create_chat_workspace, get_workspace,
+    list_workspaces, rename_workspace, WorkspaceRecord,
 };
 
 pub fn app_data_path() -> Result<AppDataPath, crate::AppError> {
