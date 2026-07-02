@@ -28,13 +28,13 @@ type DeviceErrorResponse = {
   message: string;
 };
 
-type FutureAuthEntry = {
+export type FutureAuthEntry = {
   type?: string;
   key?: string;
   base_url?: string;
 };
 
-type AuthFile = Record<string, unknown>;
+export type AuthFile = Record<string, unknown>;
 
 export async function login(platformUrlOverride?: string): Promise<void> {
   const authFile = await loadAuthFile();
@@ -150,7 +150,7 @@ async function post<T>(apiUrl: string, path: string, body: unknown): Promise<T> 
   return data as T;
 }
 
-async function loadAuthFile(): Promise<AuthFile> {
+export async function loadAuthFile(): Promise<AuthFile> {
   let contents: string;
   try {
     contents = await readFile(AUTH_FILE, "utf8");
@@ -186,7 +186,7 @@ async function writeAuthFile(authFile: AuthFile): Promise<void> {
   await chmod(AUTH_FILE, 0o600);
 }
 
-function getFutureAuthEntry(authFile: AuthFile): FutureAuthEntry | undefined {
+export function getFutureAuthEntry(authFile: AuthFile): FutureAuthEntry | undefined {
   const value = authFile[FUTURE_AUTH_PROVIDER];
   if (!isRecord(value)) {
     return undefined;
