@@ -272,9 +272,10 @@ impl crate::types::LLMProvider for Client {
             // Diagnostic: log request size and model on failure
             let body_str = serde_json::to_string(&body).unwrap_or_default();
             let msg_count = body["messages"].as_array().map(|a| a.len()).unwrap_or(0);
+            let body_kb = body_str.len() / 1024;
             warn!(
                 model = %body["model"], status = %status_code,
-                msgs = %msg_count, body_kb = body_str.len() / 1024,
+                msgs = %msg_count, body_kb = body_kb,
                 "LLM API error"
             );
             if text.len() < 500 && !text.is_empty() {
@@ -287,6 +288,11 @@ impl crate::types::LLMProvider for Client {
                     .get("error")
                     .and_then(|e| e.get("code"))
                     .and_then(|c| c.as_str())
+                    .unwrap_or("");
+                let message = err_body
+                    .get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(|m| m.as_str())
                     .unwrap_or("");
                 match (status_code, code) {
                     (404, "DeploymentNotFound") => {
@@ -309,20 +315,83 @@ impl crate::types::LLMProvider for Client {
                              Try again in a few seconds."
                         ));
                     }
+                    (400, "content_filter") | (400, "content_policy_violation") => {
+                        return Err(anyhow!(
+                            "Content was flagged by the provider's safety system (HTTP 400). \
+                             Try rephrasing the request or reducing potentially sensitive content.{}",
+                            if message.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" Detail: {}", message)
+                            }
+                        ));
+                    }
+                    (400, "context_length_exceeded") | (400, "invalid_request_error")
+                        if message.contains("maximum context")
+                            || message.contains("context_length")
+                            || message.contains("too long")
+                            || message.contains("reduce") =>
+                    {
+                        return Err(anyhow!(
+                            "Request exceeds the model's maximum context length (HTTP 400). \
+                             The conversation history may be too long. Consider starting a \
+                             new session or reducing the message count (current: {} messages, \
+                             {} KB).{}",
+                            msg_count,
+                            body_kb,
+                            if message.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" Detail: {}", message)
+                            }
+                        ));
+                    }
+                    (400, _) if !code.is_empty() => {
+                        return Err(anyhow!(
+                            "API request failed (HTTP 400): code={}, message=\"{}\". \
+                             Request: {} messages, {} KB.",
+                            code,
+                            if message.is_empty() {
+                                "(none)"
+                            } else {
+                                message
+                            },
+                            msg_count,
+                            body_kb,
+                        ));
+                    }
                     _ => {}
                 }
             }
 
+            // If body is empty, the 400 likely comes from a reverse proxy /
+            // gateway (e.g. nginx body size limit, Cloudflare challenge page).
+            // The run-loop retry will back off and re-send, but the request
+            // size is the more likely culprit when this happens repeatedly.
+            if text.is_empty() {
+                return Err(anyhow!(
+                    "API request failed (HTTP 400). No response body. \
+                     This usually indicates a reverse-proxy or gateway issue \
+                     (e.g. request body too large for nginx client_max_body_size, \
+                     or Cloudflare rejecting the connection). \
+                     Request: {} messages, {} KB.",
+                    msg_count,
+                    body_kb,
+                ));
+            }
+
             return Err(anyhow!(
-                "API request failed (HTTP {}). {}",
+                "API request failed (HTTP {}).{} Request: {} messages, {} KB.",
                 status_code,
                 if text.is_empty() {
-                    "No response body.".to_string()
+                    " No response body.".to_string()
                 } else if text.len() > 200 {
-                    format!("{}…", &text[..200])
+                    format!(" {}…", &text[..200])
                 } else {
-                    text
-                }
+                    format!(" {}", text)
+                },
+                msg_count,
+                body_kb,
             ));
         }
 

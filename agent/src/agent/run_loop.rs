@@ -188,16 +188,12 @@ impl Loop {
                     if self.config.max_retries > 0
                         && retry_attempt < self.config.max_retries as usize
                     {
-                        // If this looks like a context-length error, try
-                        // compacting before the next retry. Auto-compaction
+                        // If this looks like a context-length or body-size
+                        // error, compact before retrying. Auto-compaction
                         // only runs BEFORE a turn (based on last turn's token
                         // count), so it can't help on the first call.
                         let err_msg = format!("{}", last_error.as_ref().unwrap());
-                        if err_msg.contains("maximum context")
-                            || err_msg.contains("context_length")
-                            || err_msg.contains("reduce the length")
-                            || err_msg.contains("too long")
-                        {
+                        if is_retryable_size_error(&err_msg) {
                             if let Some(ref bus) = self.event_bus {
                                 bus.emit(events::compaction_start("auto"));
                             }
@@ -361,7 +357,8 @@ impl Loop {
                                     if let serde_json::Value::String(ref new_args) =
                                         tc.function.arguments
                                     {
-                                        if let serde_json::Value::String(ref mut s) = existing.args {
+                                        if let serde_json::Value::String(ref mut s) = existing.args
+                                        {
                                             s.push_str(new_args);
                                         } else {
                                             existing.args =
@@ -729,4 +726,75 @@ fn has_unclosed_string(value: &str) -> bool {
         }
     }
     in_string
+}
+
+/// Returns true when the error message indicates the request was rejected
+/// because the body is too large — either exceeding the model's context window
+/// or hitting a reverse-proxy / gateway body-size limit.
+///
+/// These errors are retryable if we compact the conversation history first.
+fn is_retryable_size_error(err_msg: &str) -> bool {
+    // ── Explicit context-length errors from the LLM provider ──────────
+    if err_msg.contains("maximum context")
+        || err_msg.contains("context_length")
+        || err_msg.contains("reduce the length")
+        || err_msg.contains("too long")
+    {
+        return true;
+    }
+
+    // ── Empty-body HTTP 400 — typical of reverse-proxy / gateway ─────
+    //     rejection (nginx client_max_body_size, Cloudflare WAF, etc.)
+    if err_msg.contains("No response body") {
+        return true;
+    }
+
+    // ── Our improved diagnostic messages from llm/mod.rs ─────────────
+    if err_msg.contains("reverse-proxy or gateway") || err_msg.contains("request body too large") {
+        return true;
+    }
+
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn size_error_matches_context_length() {
+        assert!(is_retryable_size_error("maximum context length exceeded"));
+        assert!(is_retryable_size_error("context_length_exceeded"));
+        assert!(is_retryable_size_error("reduce the length of the messages"));
+        assert!(is_retryable_size_error("request too long"));
+    }
+
+    #[test]
+    fn size_error_matches_empty_body_400() {
+        assert!(is_retryable_size_error(
+            "API request failed (HTTP 400). No response body."
+        ));
+    }
+
+    #[test]
+    fn size_error_matches_gateway_rejection() {
+        assert!(is_retryable_size_error(
+            "API request failed (HTTP 400). No response body. This usually indicates a reverse-proxy or gateway issue"
+        ));
+        assert!(is_retryable_size_error(
+            "request body too large for nginx client_max_body_size"
+        ));
+    }
+
+    #[test]
+    fn size_error_ignores_unrelated_errors() {
+        assert!(!is_retryable_size_error(
+            "Authentication failed (401). Check your API key."
+        ));
+        assert!(!is_retryable_size_error(
+            "Rate limited (429). The API is throttling requests."
+        ));
+        assert!(!is_retryable_size_error("Connection timed out"));
+        assert!(!is_retryable_size_error(""));
+    }
 }
