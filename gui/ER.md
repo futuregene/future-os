@@ -8,7 +8,7 @@
 
 第一阶段设计重点：
 
-- 支持 Workspace 与普通 Chat 两种工作入口。
+- 支持 Workspace 与普通 Chat 两种工作入口；Workspace 支持打开（按路径去重）、重命名、软删除（级联软删子对话）。
 - 支持 Thread 创建、恢复、重命名、置顶、归档、删除。
 - 支持消息、Run、Run Event 的持久化。
 - 支持 artifacts、Research resources、Data sources、Skills。
@@ -100,10 +100,11 @@ Workspace 表示一个项目或工作上下文。
 
 说明：
 
-- 用户明确选择项目目录时，创建 `kind = user` 的 Workspace。
+- 用户明确选择项目目录时，创建 `kind = user` 的 Workspace。按 `path` 去重：打开一个已登记（未软删）的目录会复用现有 `kind = user` 记录，不新建。
 - 普通 Chat 背后自动创建 `kind = temporary` 的 Workspace，但 UI 不突出展示。
 - 删除 Workspace 对话不删除 Workspace 目录。
 - 清理普通 Chat 时，可以把对应临时 Workspace 标记为 `pending_cleanup`，清理完成后标记为 `cleaned`。
+- 支持重命名（改 `name`）与删除 Workspace。删除是**软删除**：在一个事务里给 Workspace 置 `deleted_at`，并把其名下未删除的 Thread 级联软删除（`status = 'deleted'` + `deleted_at`）；磁盘目录与文件不动。若被删的是 `temporary` Workspace，额外标记 `cleanup_status = 'pending_cleanup'`。对应后端 `store::workspaces::{rename_workspace, delete_workspace}`。
 
 ### 4.2 Thread
 

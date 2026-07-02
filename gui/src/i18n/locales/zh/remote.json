@@ -1,0 +1,12 @@
+{
+  "title": "Remote 远程控制",
+  "description": "让手机/网页远程接管本机会话（工具在本机执行）。开启后，本地对话会镜像给手机，手机也可驱动同一会话。",
+  "running": "运行中",
+  "notRunning": "未运行",
+  "natsUrlLabel": "NATS 地址（客户端端口）",
+  "natsUrlHint": "本地测试填 <0>nats://localhost:4222</0>；以后填线上 relay 服务器地址。",
+  "pairIdLabel": "Pair ID",
+  "stop": "停止远程",
+  "start": "启动远程",
+  "note": "注：远程依赖桌面（GUI + Agent）在线且未睡眠——这是固有前提，非云故障。"
+}

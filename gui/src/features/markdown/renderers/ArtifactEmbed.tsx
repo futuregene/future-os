@@ -1,6 +1,7 @@
 import type { StoredArtifact } from "../../../integrations/storage/types";
 import type { FutureReference } from "../futureMarkdownTypes";
 import { Check, Clipboard, ExternalLink, FileText, Maximize2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "../../../components/ui/Button";
 import { useCopyState } from "../../../components/ui/useCopyState";
 import { openPath, storedTimeToIso } from "../../../integrations/storage/threadStore";
@@ -14,6 +15,7 @@ export function ArtifactEmbed({
   artifact: StoredArtifact;
   reference: FutureReference;
 }) {
+  const { t } = useTranslation("markdown");
   const { copiedKey, copy } = useCopyState();
 
   function inspectArtifact() {
@@ -54,7 +56,7 @@ export function ArtifactEmbed({
               size="xs"
               variant="toolbar"
             >
-              Details
+              {t("artifactEmbed.details")}
             </Button>
             {artifact.path
               ? (
@@ -64,7 +66,7 @@ export function ArtifactEmbed({
                     size="xs"
                     variant="toolbar"
                   >
-                    Copy path
+                    {t("artifactEmbed.copyPath")}
                   </Button>
                 )
               : null}
@@ -76,7 +78,7 @@ export function ArtifactEmbed({
                     size="xs"
                     variant="toolbar"
                   >
-                    Open
+                    {t("artifactEmbed.open")}
                   </Button>
                 )
               : null}

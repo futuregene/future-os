@@ -1,0 +1,48 @@
+{
+  "panel": {
+    "emptyTitle": "暂无工作成果",
+    "emptyDetail": "生成的报告、摘要、表格和文件会显示在这里。",
+    "noMatch": "没有匹配的工作成果",
+    "filterPlaceholder": "筛选工作成果…",
+    "upload": "上传",
+    "uploading": "上传中…",
+    "uploadDialogTitle": "上传文件",
+    "uploadNotFile": "不支持文件夹。",
+    "uploadTooLarge": "文件过大，最大 {{max}}。",
+    "uploadFailed": "上传失败：{{message}}"
+  },
+  "card": {
+    "viewArtifact": "查看工作成果 {{title}}",
+    "viewDetails": "查看详情",
+    "deleteArtifact": "删除工作成果 {{title}}",
+    "delete": "删除工作成果"
+  },
+  "detail": {
+    "back": "工作成果",
+    "copyPath": "复制路径",
+    "copyContent": "复制内容",
+    "copyPreview": "复制预览",
+    "exportTitle": "导出工作成果",
+    "imagePreviewUnavailableTitle": "无法预览图片",
+    "imagePreviewUnavailableDetail": "无法加载该图片。你仍可打开或导出原始文件。",
+    "previewUnavailableTitle": "暂无预览",
+    "previewUnavailableDetail": "该文件类型暂不支持内联预览。请使用「打开」或「导出」查看原始文件。",
+    "sizeBytes": "{{size}} 字节",
+    "sizeBytesTruncated": "{{size}} 字节 · 预览已截断",
+    "open": "打开",
+    "opening": "打开中",
+    "export": "导出",
+    "exporting": "导出中",
+    "deleteAction": "删除",
+    "deleting": "删除中"
+  },
+  "pdfPreview": {
+    "loading": "正在加载 PDF…",
+    "errorTitle": "PDF 预览出错",
+    "failedToLoad": "PDF 加载失败",
+    "failedToRender": "页面渲染失败",
+    "prev": "← 上一页",
+    "next": "下一页 →",
+    "pageIndicator": "第 {{current}} / {{total}} 页"
+  }
+}

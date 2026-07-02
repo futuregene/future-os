@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -5,6 +6,9 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   clearScreen: false,
+  test: {
+    setupFiles: ["./src/test/i18nTestSetup.ts"],
+  },
   build: {
     chunkSizeWarningLimit: 2000, // suppress "chunk larger than 500 kB" warnings
   },

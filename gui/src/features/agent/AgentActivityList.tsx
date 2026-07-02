@@ -1,5 +1,6 @@
 import type { AgentActivityItem, AgentActivityKind } from "./agentThreadTypes";
 import { Brain, FileText, Pencil, TerminalSquare } from "lucide-react";
+import i18n from "../../i18n";
 import { cn } from "../../lib/cn";
 
 interface AgentActivityListProps {
@@ -73,7 +74,7 @@ function renderActivityIcon(kind: AgentActivityKind, running: boolean) {
 
 function labelForActivity(item: AgentActivityItem) {
   if (item.kind === "thinking")
-    return "正在思考";
+    return i18n.t("agent:activity.thinking");
 
   const count = item.count ?? 0;
   if (item.status === "failed")
@@ -82,30 +83,30 @@ function labelForActivity(item: AgentActivityItem) {
   const prefix = statusPrefix(item.status);
   if (count > 1) {
     if (item.kind === "bash")
-      return `${prefix}运行 ${count} 条命令`;
+      return i18n.t("agent:activity.runCommands", { prefix, count });
     if (item.kind === "write")
-      return `${prefix}写入 ${count} 个文件`;
-    return `${prefix}编辑 ${count} 个文件`;
+      return i18n.t("agent:activity.writeFiles", { prefix, count });
+    return i18n.t("agent:activity.editFiles", { prefix, count });
   }
 
   switch (item.kind) {
     case "read":
-      return `${prefix}读取`;
+      return i18n.t("agent:activity.read", { prefix });
     case "bash":
-      return `${prefix}运行`;
+      return i18n.t("agent:activity.run", { prefix });
     case "write":
-      return `${prefix}写入`;
+      return i18n.t("agent:activity.write", { prefix });
     case "edit":
-      return `${prefix}编辑`;
+      return i18n.t("agent:activity.edit", { prefix });
   }
 }
 
 function statusPrefix(status: AgentActivityItem["status"]) {
   switch (status) {
     case "running":
-      return "正在";
+      return i18n.t("agent:activity.prefix.running");
     case "completed":
-      return "已";
+      return i18n.t("agent:activity.prefix.completed");
     case "failed":
       return "";
   }
@@ -114,12 +115,12 @@ function statusPrefix(status: AgentActivityItem["status"]) {
 function failedLabel(kind: Exclude<AgentActivityKind, "thinking">) {
   switch (kind) {
     case "bash":
-      return "运行失败";
+      return i18n.t("agent:activity.failed.bash");
     case "edit":
-      return "编辑失败";
+      return i18n.t("agent:activity.failed.edit");
     case "read":
-      return "读取失败";
+      return i18n.t("agent:activity.failed.read");
     case "write":
-      return "写入失败";
+      return i18n.t("agent:activity.failed.write");
   }
 }

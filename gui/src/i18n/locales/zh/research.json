@@ -1,0 +1,13 @@
+{
+  "title": "Research",
+  "resources": "Resources",
+  "description": "从对话与工作区运行中提升的产物，会在这里成为可复用的研究材料。",
+  "resourceCount": "{{count}} 项资源",
+  "loading": "正在加载研究资源…",
+  "noWorkspaceTitle": "未选择工作区",
+  "noWorkspaceDetail": "在收集研究资源前，先打开一个工作区或对话。",
+  "noResourcesTitle": "还没有资源",
+  "noResourcesDetail": "使用 Artifacts 面板把生成的内容添加到 Research。",
+  "selectedFromChat": "从对话中选中",
+  "artifact": "Artifact"
+}

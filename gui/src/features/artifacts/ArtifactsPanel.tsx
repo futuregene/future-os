@@ -1,35 +1,122 @@
 import type { StoredArtifact } from "../../integrations/storage/threadStore";
-import { BookMarked, FileText, Maximize2, Trash2 } from "lucide-react";
-import { Badge } from "../../components/ui/Badge";
+import { open } from "@tauri-apps/plugin-dialog";
+import { Eye, FileText, Trash2, Upload } from "lucide-react";
+import { useState } from "react";
+import { useTranslation } from "react-i18next";
+import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { deleteArtifact, promoteArtifactToResearch, storedTimeToIso } from "../../integrations/storage/threadStore";
+import { TextInput } from "../../components/ui/TextInput";
+import {
+  deleteArtifact,
+  importAttachmentArtifact,
+  inspectAttachment,
+  storedTimeToIso,
+} from "../../integrations/storage/threadStore";
 import { formatTime } from "../../lib/date";
+import { READ_SOURCE_MAX_BYTES } from "../agent/attachments";
 
 export function ArtifactsPanel({
   artifacts,
+  threadId,
   onChanged,
   onSelectArtifact,
 }: {
   artifacts: StoredArtifact[];
+  threadId: string;
   onChanged: () => void;
   onSelectArtifact: (artifactId: string) => void;
 }) {
-  if (artifacts.length === 0) {
-    return <EmptyState title="No artifacts yet" detail="Generated reports, summaries, tables, and files will appear here." />;
+  const { t } = useTranslation("artifacts");
+  const [filter, setFilter] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const hasArtifacts = artifacts.length > 0;
+  const query = filter.trim().toLowerCase();
+  const filtered = query
+    ? artifacts.filter(artifact => artifact.title.toLowerCase().includes(query))
+    : artifacts;
+
+  async function handleUpload() {
+    if (uploading)
+      return;
+    setUploadError(null);
+    const selected = await open({ multiple: false, title: t("panel.uploadDialogTitle") });
+    const path = Array.isArray(selected) ? selected[0] : selected;
+    if (!path)
+      return;
+
+    setUploading(true);
+    try {
+      const info = await inspectAttachment(path);
+      if (info.isDir) {
+        setUploadError(t("panel.uploadNotFile"));
+        return;
+      }
+      if (info.size > READ_SOURCE_MAX_BYTES) {
+        setUploadError(t("panel.uploadTooLarge", { max: formatBytes(READ_SOURCE_MAX_BYTES) }));
+        return;
+      }
+      await importAttachmentArtifact({ threadId, path });
+      onChanged();
+    }
+    catch (error) {
+      setUploadError(t("panel.uploadFailed", { message: error instanceof Error ? error.message : String(error) }));
+    }
+    finally {
+      setUploading(false);
+    }
   }
 
   return (
     <div className="space-y-3">
-      {artifacts.map(artifact => (
-        <ArtifactCard
-          artifact={artifact}
-          key={artifact.id}
-          onChanged={onChanged}
-          onSelectArtifact={onSelectArtifact}
-        />
-      ))}
+      <div className="flex items-center gap-2">
+        {hasArtifacts
+          ? (
+              <TextInput
+                className="h-8 flex-1"
+                onChange={event => setFilter(event.target.value)}
+                placeholder={t("panel.filterPlaceholder")}
+                value={filter}
+              />
+            )
+          : null}
+        <Button
+          className={hasArtifacts ? undefined : "ml-auto"}
+          disabled={uploading}
+          leftIcon={<Upload className="size-3.5" />}
+          onClick={() => void handleUpload()}
+          size="sm"
+          variant="toolbar"
+        >
+          {uploading ? t("panel.uploading") : t("panel.upload")}
+        </Button>
+      </div>
+      {uploadError ? <div className="rounded-md bg-danger-soft p-2 text-xs leading-5 text-danger">{uploadError}</div> : null}
+
+      {hasArtifacts
+        ? filtered.length > 0
+          ? (
+              <div className="space-y-3">
+                {filtered.map(artifact => (
+                  <ArtifactCard
+                    artifact={artifact}
+                    key={artifact.id}
+                    onChanged={onChanged}
+                    onSelectArtifact={onSelectArtifact}
+                  />
+                ))}
+              </div>
+            )
+          : <EmptyState title={t("panel.noMatch")} />
+        : <EmptyState title={t("panel.emptyTitle")} detail={t("panel.emptyDetail")} />}
     </div>
   );
+}
+
+function formatBytes(bytes: number) {
+  const mb = bytes / (1024 * 1024);
+  return Number.isInteger(mb) ? `${mb} MB` : `${mb.toFixed(1)} MB`;
 }
 
 function ArtifactCard({
@@ -41,11 +128,7 @@ function ArtifactCard({
   onChanged: () => void;
   onSelectArtifact: (artifactId: string) => void;
 }) {
-  async function handlePromote() {
-    await promoteArtifactToResearch(artifact.id);
-    onChanged();
-  }
-
+  const { t } = useTranslation("artifacts");
   async function handleDelete() {
     await deleteArtifact(artifact.id);
     onChanged();
@@ -59,40 +142,29 @@ function ArtifactCard({
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold text-ink">{artifact.title}</div>
-              <div className="mt-1 flex items-center gap-2">
-                <Badge>{artifact.artifactType}</Badge>
-                <span className="text-xs text-ink-muted">{formatTime(storedTimeToIso(artifact.createdAt))}</span>
-              </div>
+              <div className="mt-1 text-xs text-ink-muted">{formatTime(storedTimeToIso(artifact.createdAt))}</div>
             </div>
-            <button
-              aria-label={`View artifact ${artifact.title}`}
-              className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
-              onClick={() => onSelectArtifact(artifact.id)}
-              title="View details"
-              type="button"
-            >
-              <Maximize2 className="size-3.5" />
-            </button>
-            <button
-              aria-label={`Add artifact ${artifact.title} to Research`}
-              className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-accent-soft hover:text-accent"
-              onClick={() => void handlePromote()}
-              title="Add to Research"
-              type="button"
-            >
-              <BookMarked className="size-3.5" />
-            </button>
-            <button
-              aria-label={`Delete artifact ${artifact.title}`}
-              className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-danger-soft hover:text-danger"
-              onClick={() => void handleDelete()}
-              title="Delete artifact"
-              type="button"
-            >
-              <Trash2 className="size-3.5" />
-            </button>
+            <div className="flex shrink-0 items-center gap-1">
+              <button
+                aria-label={t("card.viewArtifact", { title: artifact.title })}
+                className="inline-flex size-7 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
+                onClick={() => onSelectArtifact(artifact.id)}
+                title={t("card.viewDetails")}
+                type="button"
+              >
+                <Eye className="size-3.5" />
+              </button>
+              <button
+                aria-label={t("card.deleteArtifact", { title: artifact.title })}
+                className="inline-flex size-7 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-danger-soft hover:text-danger"
+                onClick={() => void handleDelete()}
+                title={t("card.delete")}
+                type="button"
+              >
+                <Trash2 className="size-3.5" />
+              </button>
+            </div>
           </div>
-          {artifact.summary ? <p className="mt-2 text-sm leading-5 text-ink-soft">{artifact.summary}</p> : null}
           {artifact.path
             ? (
                 <div className="mt-2 truncate rounded-md bg-surface-subtle px-2 py-1.5 text-xs text-ink-muted" title={artifact.path}>

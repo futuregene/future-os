@@ -1,5 +1,6 @@
 import type { MessageAttachment } from "./agentThreadTypes";
 import * as pdfjs from "pdfjs-dist";
+import i18n from "../../i18n";
 import { inspectAttachment, readFileBase64, readTextFilePreview, writeThumbnail } from "../../integrations/storage/files";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -75,7 +76,8 @@ export const PICKER_EXTENSIONS = [...IMAGE_EXTENSIONS, "pdf", ...TEXT_EXTENSIONS
 const INLINE_MAX_BYTES_PER_FILE = 30 * 1024;
 const INLINE_MAX_LINES_PER_FILE = 2000;
 const INLINE_MAX_TOTAL_BYTES = 60 * 1024;
-const READ_SOURCE_MAX_BYTES = 25 * 1024 * 1024;
+/** Per-file byte cap shared by attachments and artifact uploads. */
+export const READ_SOURCE_MAX_BYTES = 25 * 1024 * 1024;
 
 type AttachmentKind = "image" | "pdf" | "text";
 
@@ -138,10 +140,10 @@ export async function classifyAttachment(
     info = await inspectAttachment(path);
   }
   catch {
-    return { kind: null, reason: "无法读取" };
+    return { kind: null, reason: i18n.t("agent:attachment.readFailed") };
   }
   if (info.isDir)
-    return { kind: null, reason: "不支持文件夹" };
+    return { kind: null, reason: i18n.t("agent:attachment.directoryUnsupported") };
 
   if (IMAGE_EXTENSIONS.includes(ext as (typeof IMAGE_EXTENSIONS)[number]))
     return { kind: "image" };
@@ -149,7 +151,7 @@ export async function classifyAttachment(
     return { kind: "pdf" };
   if ((TEXT_EXTENSIONS.has(ext) || TEXT_BASENAMES.has(base)) && !info.isBinary)
     return { kind: "text" };
-  return { kind: null, reason: info.isBinary ? "不支持二进制文件" : "不支持的文件类型" };
+  return { kind: null, reason: info.isBinary ? i18n.t("agent:attachment.binaryUnsupported") : i18n.t("agent:attachment.typeUnsupported") };
 }
 
 function byteLength(text: string) {

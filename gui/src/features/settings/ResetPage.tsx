@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { invokeCommand } from "../../integrations/tauri/invoke";
@@ -16,12 +17,13 @@ interface FutureEnvironment {
 
 // The platform URL for each environment is owned by the Tauri backend
 // (`set_future_environment`); the frontend only sends the id.
-const ENVIRONMENTS: { id: EnvironmentId; label: string }[] = [
-  { id: "production", label: "正式环境" },
-  { id: "test", label: "测试环境" },
+const ENVIRONMENTS: { id: EnvironmentId; labelKey: string }[] = [
+  { id: "production", labelKey: "reset.environmentProduction" },
+  { id: "test", labelKey: "reset.environmentTest" },
 ];
 
 function EnvironmentSection() {
+  const { t } = useTranslation("settings");
   const current = useAsyncResource<FutureEnvironment | null>(
     () => invokeCommand<FutureEnvironment>("get_future_environment"),
     [],
@@ -56,13 +58,12 @@ function EnvironmentSection() {
   }
 
   return (
-    <SettingsSection title="环境">
+    <SettingsSection title={t("reset.environmentTitle")}>
       <div className="space-y-3 rounded-lg border border-line-soft p-4">
         <div>
-          <div className="text-sm font-medium text-ink">切换环境</div>
+          <div className="text-sm font-medium text-ink">{t("reset.switchEnvironment")}</div>
           <p className="mt-1 text-xs leading-5 text-ink-muted">
-            在正式环境与测试环境之间切换登录与接口地址。切换后会清除当前登录并自动重启应用，
-            需在新环境重新登录。
+            {t("reset.switchEnvironmentDescription")}
           </p>
         </div>
 
@@ -74,19 +75,19 @@ function EnvironmentSection() {
             value={value}
             wrapperClassName="w-44"
           >
-            {value === "" ? <option value="">{current.loading ? "加载中…" : "自定义环境"}</option> : null}
+            {value === "" ? <option value="">{current.loading ? t("reset.loading") : t("reset.customEnvironment")}</option> : null}
             {ENVIRONMENTS.map(env => (
-              <option key={env.id} value={env.id}>{env.label}</option>
+              <option key={env.id} value={env.id}>{t(env.labelKey)}</option>
             ))}
           </Select>
           <Button disabled={!changed || busy} onClick={() => void handleSwitch()} size="sm" variant="primary">
-            {busy ? "切换中…" : "切换并重启"}
+            {busy ? t("reset.switching") : t("reset.switch")}
           </Button>
         </div>
 
         <p className="text-xs text-ink-muted">
-          当前：
-          {current.loading ? "加载中…" : (current.data?.platformUrl ?? "未知")}
+          {t("reset.current")}
+          {current.loading ? t("reset.loading") : (current.data?.platformUrl ?? t("reset.unknown"))}
         </p>
 
         {current.error ? <p className="text-xs text-danger">{current.error}</p> : null}
@@ -97,6 +98,7 @@ function EnvironmentSection() {
 }
 
 export function ResetPage() {
+  const { t } = useTranslation("settings");
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -120,13 +122,12 @@ export function ResetPage() {
     <div className="space-y-6">
       <EnvironmentSection />
 
-      <SettingsSection title="重置">
+      <SettingsSection title={t("reset.resetTitle")}>
         <div className="space-y-3 rounded-lg border border-line-soft p-4">
           <div>
-            <div className="text-sm font-medium text-ink">清空数据</div>
+            <div className="text-sm font-medium text-ink">{t("reset.clearData")}</div>
             <p className="mt-1 text-xs leading-5 text-ink-muted">
-              清空 GUI 本地数据库与临时 workspace（对话、后台程序、审查记录等），完成后自动重启应用。
-              登录与提供商配置不受影响。此操作不可撤销。
+              {t("reset.clearDataDescription")}
             </p>
           </div>
 
@@ -135,18 +136,18 @@ export function ResetPage() {
           {confirming
             ? (
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs text-ink-muted">确认清空全部本地数据并重启？</span>
+                  <span className="text-xs text-ink-muted">{t("reset.confirmClear")}</span>
                   <Button disabled={busy} onClick={() => void handleClear()} size="sm" variant="danger">
-                    {busy ? "清空中…" : "确认清空"}
+                    {busy ? t("reset.clearing") : t("reset.confirmClearButton")}
                   </Button>
                   <Button disabled={busy} onClick={() => setConfirming(false)} size="sm" variant="secondary">
-                    取消
+                    {t("reset.cancel")}
                   </Button>
                 </div>
               )
             : (
                 <Button onClick={() => setConfirming(true)} size="sm" variant="danger">
-                  清空数据
+                  {t("reset.clearData")}
                 </Button>
               )}
         </div>

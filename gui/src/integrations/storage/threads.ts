@@ -1,4 +1,5 @@
 import type { StoredMessage, StoredThread, StoredWorkspace, ThreadCleanupSummary } from "./types";
+import i18n from "../../i18n";
 import { invokeCommand } from "../tauri/invoke";
 
 // ─── Workspaces ──────────────────────────────────────────────────────────
@@ -27,6 +28,14 @@ export async function ensureWorkspaceGit(workspaceId: string) {
   return invokeCommand<boolean>("ensure_workspace_git", { workspaceId });
 }
 
+export async function renameWorkspace(input: { workspaceId: string; name: string }) {
+  return invokeCommand<StoredWorkspace>("rename_workspace", { input });
+}
+
+export async function deleteWorkspace(workspaceId: string) {
+  return invokeCommand<StoredWorkspace>("delete_workspace", { workspaceId });
+}
+
 // ─── Threads ─────────────────────────────────────────────────────────────
 
 export async function getRecentThread() {
@@ -45,7 +54,7 @@ export async function createDefaultChatThread() {
   return invokeCommand<StoredThread>("create_thread", {
     input: {
       mode: "chat",
-      title: "New Chat",
+      title: i18n.t("common:newChat"),
     },
   });
 }
