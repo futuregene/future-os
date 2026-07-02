@@ -38,7 +38,37 @@ static ACTIVE_AGENT_PROMPTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentPromptResponse {
-    content: String,
+    pub content: String,
+}
+
+/// Fetch the agent's buffered events for a session's current run (P1c backfill).
+/// `since_idx = -1` returns the whole current run; a stale/empty `run_id` also
+/// returns the whole current run (the agent realigns). Returns the parsed `data`
+/// JSON — shape `{ runId, events: [{ type, data, runId, idx }] }`. Lets a phone /
+/// web client that joined an in-flight run mid-stream reconstruct the prefix it
+/// missed, keyed by the same `runId`/`idx` the live events carry (so it dedupes).
+pub async fn get_events_since(
+    session_id: String,
+    run_id: String,
+    since_idx: i64,
+) -> Result<serde_json::Value, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let command = crate::agent_proto::RpcCommand {
+        run_id,
+        since_idx,
+        ..base_command("get_events_since", session_id)
+    };
+    let response = client
+        .execute_command(command)
+        .await
+        .map_err(|status| format!("get_events_since failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("get_events_since returned an error")?;
+    if response.data.is_empty() {
+        Ok(serde_json::json!({ "events": [] }))
+    } else {
+        Ok(serde_json::from_str(&response.data)?)
+    }
 }
 
 pub async fn agent_prompt(
@@ -189,7 +219,7 @@ async fn agent_prompt_inner(
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the prompt.")?;
 
-    match collect_agent_response(&mut event_stream, run_id.as_deref()).await {
+    match collect_agent_response(&mut event_stream, run_id.as_deref(), &session_id).await {
         Ok(content) => Ok(AgentPromptResponse { content }),
         Err(error) => {
             // The prompt was already accepted, so the Agent keeps running

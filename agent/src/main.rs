@@ -23,6 +23,16 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
+    // Initialise tracing with timestamps before anything else.
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .with_timer(tracing_subscriber::fmt::time::SystemTime::default())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     // Build model registry BEFORE tokio runtime starts.
     // Registry::new() uses reqwest::blocking::Client internally,
     // which creates a nested runtime that cannot be dropped in async context.
@@ -50,7 +60,7 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
     let settings = match future_agent::config::load_settings(&settings_path) {
         Ok(settings) => settings,
         Err(error) => {
-            eprintln!(
+            tracing::warn!(
                 "Failed to load settings from {}: {}. Falling back to defaults.",
                 settings_path.display(),
                 error
@@ -88,8 +98,7 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
         })
         .unwrap_or_default();
     if resolved_model.is_empty() {
-        eprintln!(
-            "future-agent: no model configured yet — starting the gRPC server \
+        tracing::info!("future-agent: no model configured yet — starting the gRPC server \
              anyway so a client can log in and pick a model. Add an API key via \
              'future auth login' or the desktop app, or configure a provider in \
              ~/.future/agent/models.json."

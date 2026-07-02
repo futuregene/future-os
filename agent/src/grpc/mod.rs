@@ -23,7 +23,7 @@ pub mod proto {
 
 /// Start a gRPC-only server (no HTTP).
 pub async fn serve(state: AppState, host: &str, port: u16) -> Result<()> {
-    eprintln!("gRPC server listening on {}:{}", host, port);
+    tracing::info!("gRPC server listening on {}:{}", host, port);
 
     // Build gRPC service
     let grpc_service = FutureAgentService { state };
@@ -58,8 +58,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
 
         // Log requests in verbose mode
         if self.state.verbose {
-            eprintln!(
-                "[grpc] {} session={} msg={:.80}",
+            tracing::debug!("[grpc] {} session={} msg={:.80}",
                 cmd.r#type,
                 if cmd.session_id.is_empty() {
                     "-"
@@ -128,6 +127,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             ephemeral: cmd.ephemeral,
             cwd: cmd.cwd,
             enabled_models: Some(cmd.enabled_models),
+            run_id: cmd.run_id,
+            since_idx: cmd.since_idx,
         };
 
         // Handle the command
@@ -178,8 +179,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             let session = self.state.get_session(&session_id);
             let sess = session.read().unwrap();
             if self.state.verbose {
-                eprintln!(
-                    "[stream] subscribe session={} has_msgs={}",
+                tracing::debug!("[stream] subscribe session={} has_msgs={}",
                     session_id,
                     sess.messages.read().unwrap().len()
                 );
@@ -193,14 +193,18 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         let ping = tokio_stream::once(Ok(proto::StreamEvent {
             r#type: "ping".to_string(),
             data: r#"{"type":"ping"}"#.to_string(),
+            run_id: String::new(),
+            idx: 0,
         }));
         let events = BroadcastStream::new(rx).map(|r| match r {
             Ok(event) => Ok(proto::StreamEvent {
                 r#type: event.event_type,
                 data: event.data,
+                run_id: event.run_id,
+                idx: event.idx,
             }),
             Err(e) => {
-                eprintln!("SSE stream error: {}", e);
+                tracing::warn!("SSE stream error: {}", e);
                 Err(tonic::Status::internal(e.to_string()))
             }
         });

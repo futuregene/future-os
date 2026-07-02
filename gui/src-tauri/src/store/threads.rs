@@ -87,6 +87,24 @@ pub fn get_recent_thread() -> Result<Option<ThreadRecord>, crate::AppError> {
     .map_err(crate::AppError::from)
 }
 
+/// Find an active thread by its `agent_session_id` (used to map a remote
+/// (phone) session id back to the GUI thread that owns it).
+pub fn find_thread_by_agent_session(
+    session_id: &str,
+) -> Result<Option<ThreadRecord>, crate::AppError> {
+    let conn = connect()?;
+    conn.query_row(
+        &format!(
+            "SELECT {THREAD_COLUMNS} FROM threads \
+             WHERE agent_session_id = ?1 AND status != 'deleted' LIMIT 1"
+        ),
+        params![session_id],
+        thread_from_row,
+    )
+    .optional()
+    .map_err(crate::AppError::from)
+}
+
 pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::AppError> {
     let mode = normalize_mode(&input.mode)?;
     let now = now_millis();

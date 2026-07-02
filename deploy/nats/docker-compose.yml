@@ -1,0 +1,17 @@
+# 本地 L0 dev NATS（JetStream + WebSocket）。用法见同目录 README.md。
+services:
+  nats:
+    image: nats:2.10-alpine
+    container_name: future-nats-dev
+    command: ["-c", "/etc/nats/nats.conf"]
+    ports:
+      - "4222:4222"   # NATS 客户端端口（Bridge / async-nats）
+      - "8080:8080"   # WebSocket（浏览器 / nats.ws）
+      - "8222:8222"   # 监控 HTTP（可选）
+    volumes:
+      - ./nats.conf:/etc/nats/nats.conf:ro
+      - nats-data:/data
+    restart: unless-stopped
+
+volumes:
+  nats-data:

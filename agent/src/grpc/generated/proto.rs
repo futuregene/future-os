@@ -70,6 +70,13 @@ pub struct RpcCommand {
     /// all models are available.
     #[prost(string, repeated, tag = "130")]
     pub enabled_models: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// ── get_events_since (P1) ──────────────────────────────────────────────
+    /// Replay current-run events with idx > since_idx; run_id scopes the request
+    /// (a mismatch means the run rolled over and the caller must realign).
+    #[prost(int64, tag = "140")]
+    pub since_idx: i64,
+    #[prost(string, tag = "141")]
+    pub run_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ImageContent {
@@ -236,6 +243,12 @@ pub struct StreamEvent {
     ///    agent_end:     {"error": "..."}  (error present only on failure)
     #[prost(string, tag = "2")]
     pub data: ::prost::alloc::string::String,
+    /// P1: client-side ordering/dedup. run_id is unique per user run (assigned once
+    /// at the is_streaming false→true edge); idx is monotonic within a run.
+    #[prost(string, tag = "3")]
+    pub run_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "4")]
+    pub idx: i64,
 }
 /// Generated server implementations.
 pub mod future_agent_server {

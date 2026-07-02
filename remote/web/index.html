@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Remote Control · Web 验证端 (L0)</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; font: 14px/1.5 -apple-system, system-ui, sans-serif;
+    background:#0f1115; color:#e6e6e6;
+    display:flex; flex-direction:column; height:100dvh; overflow:hidden;
+  }
+
+  /* ── 顶部连接设置 ───────────────────────────────────────── */
+  header {
+    display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+    padding:8px 12px; padding-top:max(8px, env(safe-area-inset-top));
+    background:#171a21; border-bottom:1px solid #262a33; flex:none;
+  }
+  header input { background:#0f1115; color:#e6e6e6; border:1px solid #333; border-radius:6px; padding:6px 8px; font-size:13px; }
+  header input.url { flex:1; min-width:130px; } header input.pair { width:96px; }
+  button { background:#2b6cff; color:#fff; border:0; border-radius:6px; padding:6px 12px; cursor:pointer; font-size:13px; }
+  button.ghost { background:#262a33; }
+  button.sm { padding:4px 10px; font-size:12px; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  #status { margin-left:auto; font-size:12px; padding:3px 8px; border-radius:999px; background:#333; white-space:nowrap; }
+  #status.ok { background:#1f6f3f; } #status.err { background:#7f2b2b; }
+
+  /* ── 主体：会话列表 + 对话区 ─────────────────────────────── */
+  #app { flex:1; display:flex; min-height:0; }
+  .pane-head {
+    display:flex; align-items:center; gap:8px; padding:10px 12px;
+    border-bottom:1px solid #262a33; background:#12151c; flex:none; font-size:13px;
+  }
+  .pane-head .title { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pane-head .spacer { flex:1; }
+  .chk { display:flex; align-items:center; gap:4px; font-size:12px; color:#9aa4b2; white-space:nowrap; }
+
+  /* 会话列表 */
+  #sidebar { display:flex; flex-direction:column; min-height:0; width:100%; border-right:1px solid #262a33; }
+  #sessionList { flex:1; overflow:auto; -webkit-overflow-scrolling:touch; }
+  .srow {
+    display:flex; flex-direction:column; gap:2px; padding:11px 12px;
+    border-bottom:1px solid #1c2029; cursor:pointer;
+  }
+  .srow:hover { background:#161a22; }
+  .srow.active { background:#1b2436; box-shadow: inset 3px 0 0 #2b6cff; }
+  .srow .st { font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .srow .ss { font-size:11px; color:#6b7482; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hint { padding:16px 12px; color:#6b7482; font-size:12px; }
+
+  /* 对话区 */
+  #chat { display:none; flex:1; flex-direction:column; min-height:0; }
+  #log { flex:1; overflow:auto; -webkit-overflow-scrolling:touch; display:flex; flex-direction:column; gap:8px; padding:12px; }
+  .bubble { max-width:88%; border:1px solid #262a33; border-radius:12px; padding:9px 12px; background:#141821; white-space:pre-wrap; word-break:break-word; align-self:flex-start; }
+  .bubble.user { background:#1b2436; border-color:#2c3b57; align-self:flex-end; }
+  .role { font-size:11px; color:#9aa4b2; margin-bottom:3px; }
+  .think { color:#8b93a1; font-style:italic; font-size:13px; }
+  .chip { display:inline-block; font-size:12px; padding:2px 8px; margin:2px 4px 2px 0; border-radius:999px; background:#2a2f3a; }
+  .chip.done { background:#1f6f3f; }
+  .err { color:#ff7b72; }
+  .badge { font-size:11px; color:#9aa4b2; align-self:center; }
+  .approval { align-self:stretch; border:1px solid #7a5b1f; background:#241d0e; border-radius:10px; padding:10px 12px; }
+
+  #composer { display:flex; gap:8px; padding:10px 12px; padding-bottom:max(10px, env(safe-area-inset-bottom)); border-top:1px solid #262a33; background:#12151c; flex:none; }
+  #composer textarea { flex:1; background:#0f1115; color:#e6e6e6; border:1px solid #333; border-radius:10px; padding:9px; resize:none; min-height:44px; max-height:140px; font:inherit; }
+  .composer-btns { display:flex; flex-direction:column; gap:6px; }
+  .composer-btns button { min-width:64px; }
+  .back-btn { display:none; }
+
+  .empty { flex:1; display:flex; align-items:center; justify-content:center; color:#6b7482; font-size:13px; padding:20px; text-align:center; }
+
+  /* ── 移动端：单栏切换（列表 ↔ 对话） ─────────────────────── */
+  #app.show-chat #sidebar { display:none; }
+  #app.show-chat #chat { display:flex; }
+  .back-btn { display:inline-block; }
+
+  /* ── 宽屏：左右双栏并排 ─────────────────────────────────── */
+  @media (min-width:720px) {
+    #sidebar { width:300px; flex:none; }
+    #chat { display:flex; }
+    #app.show-chat #sidebar { display:flex; }
+    .back-btn { display:none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <input id="url" class="url" value="ws://localhost:8080" />
+  <input id="pair" class="pair" value="DEVPAIR" />
+  <button id="connect">连接</button>
+  <span id="status">未连接</span>
+</header>
+
+<div id="app">
+  <aside id="sidebar">
+    <div class="pane-head">
+      <span class="title">会话</span>
+      <span class="spacer"></span>
+      <button id="refresh" class="ghost sm" disabled>刷新</button>
+      <button id="newsess" class="sm" disabled>新建</button>
+    </div>
+    <div id="sessionList"><div class="hint">连接后自动加载会话列表</div></div>
+  </aside>
+
+  <section id="chat">
+    <div class="pane-head">
+      <button id="back" class="ghost sm back-btn">‹ 会话</button>
+      <span id="chatTitle" class="title">选择一个会话</span>
+      <span class="spacer"></span>
+      <label class="chk"><input type="checkbox" id="verbose" /> 详细</label>
+    </div>
+    <div id="log"><div class="empty">从左侧选择会话，或点「新建」开始</div></div>
+    <div id="composer">
+      <textarea id="msg" placeholder="输入 prompt，Cmd/Ctrl+Enter 发送" disabled></textarea>
+      <div class="composer-btns">
+        <button id="send" disabled>发送</button>
+        <button id="abort" class="ghost" disabled>中断</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script type="module">
+import { connect } from "https://cdn.jsdelivr.net/npm/nats.ws@1/+esm";
+
+const $ = (id) => document.getElementById(id);
+const enc = (o) => new TextEncoder().encode(JSON.stringify(o));
+const dec = (m) => JSON.parse(new TextDecoder().decode(m.data));
+
+let nc = null, pair = "DEVPAIR", session = "", bubble = null, thinkEl = null;
+let curRun = null; const seenEvents = new Set();
+const toolChips = new Map();
+let sessions = []; // 最近一次 list_sessions 结果，用于标题查找 + 高亮
+
+function setStatus(t, cls) { const s = $("status"); s.textContent = t; s.className = cls || ""; }
+function log(el) { $("log").appendChild(el); el.scrollIntoView({ block: "end" }); }
+function line(text, cls) { const d = document.createElement("div"); d.className = cls || "badge"; d.textContent = text; log(d); return d; }
+function clearLog() { $("log").innerHTML = ""; bubble = null; thinkEl = null; toolChips.clear(); }
+
+function cmdSubject(sid) { return `p.${pair}.cmd.${sid || "new"}`; }
+
+async function request(obj, sid) {
+  const m = await nc.request(cmdSubject(sid ?? session), enc(obj), { timeout: 10000 });
+  return dec(m);
+}
+
+async function doConnect() {
+  const url = $("url").value.trim();
+  pair = $("pair").value.trim() || "DEVPAIR";
+  try {
+    setStatus("连接中…");
+    nc = await connect({ servers: url });
+    setStatus("已连接", "ok");
+    $("newsess").disabled = false; $("refresh").disabled = false; $("connect").disabled = true;
+    // 订阅本 pair 所有会话事件（按 subject 过滤到当前选中会话）
+    const sub = nc.subscribe(`p.${pair}.evt.>`);
+    (async () => { for await (const m of sub) onEvent(dec(m), m.subject); })();
+    watchConnStatus();   // P1：断线/重连感知 → 重连后重放当前轮
+    await listSessions(); // 自动加载会话列表
+  } catch (e) { setStatus("连接失败: " + e.message, "err"); }
+}
+
+// core pub/sub 在断连期间的事件会丢；nats.ws 会自动重连并恢复订阅，但那段空窗的
+// 事件追不回来。重连后若已选会话，重跑一次 selectSession（拉历史 + 回放当前轮），
+// seenEvents 去重保证不重复。
+async function watchConnStatus() {
+  try {
+    for await (const s of nc.status()) {
+      if (s.type === "disconnect") setStatus("连接断开，重连中…", "err");
+      else if (s.type === "reconnect") {
+        setStatus("已重连", "ok");
+        if (session) selectSession(session);
+      }
+    }
+  } catch { /* 连接关闭时迭代结束，正常退出 */ }
+}
+
+async function newSession() {
+  try {
+    const r = await request({ type: "new_session", cwd: "/tmp" }, "new");
+    const sid = r?.data?.sessionId || "";
+    if (!sid) return;
+    await listSessions();
+    selectSession(sid);
+  } catch (e) {
+    setStatus("新建会话失败（Bridge/GUI 在处理命令？）", "err");
+  }
+}
+
+async function listSessions() {
+  try {
+    const r = await request({ type: "list_sessions" }, "list");
+    sessions = r?.data?.sessions || [];
+    renderSessionList();
+  } catch (e) {
+    $("sessionList").innerHTML = `<div class="hint err">会话列表加载失败: ${(e?.message || e)}</div>`;
+  }
+}
+
+function renderSessionList() {
+  const box = $("sessionList");
+  box.innerHTML = "";
+  if (!sessions.length) { box.innerHTML = `<div class="hint">暂无会话，点右上「新建」</div>`; return; }
+  for (const s of sessions) {
+    const row = document.createElement("div");
+    row.className = "srow" + (s.sessionId === session ? " active" : "");
+    row.dataset.sid = s.sessionId;
+    const t = document.createElement("div"); t.className = "st"; t.textContent = s.title || "(未命名)";
+    const sub = document.createElement("div"); sub.className = "ss"; sub.textContent = s.sessionId;
+    row.append(t, sub);
+    row.onclick = () => selectSession(s.sessionId);
+    box.appendChild(row);
+  }
+}
+
+function sessionTitle(sid) {
+  return sessions.find((s) => s.sessionId === sid)?.title || "会话";
+}
+
+// 切换到某会话：清屏 + 重置状态 + 拉历史 + 回放进行中轮 + 移动端切到对话视图。
+async function selectSession(sid) {
+  session = sid;
+  curRun = null; seenEvents.clear();
+  clearLog();
+  $("chatTitle").textContent = sessionTitle(sid);
+  $("msg").disabled = false; $("send").disabled = false; $("abort").disabled = false;
+  $("app").classList.add("show-chat"); // 移动端进入对话；宽屏无副作用
+  // 高亮列表
+  document.querySelectorAll(".srow").forEach((r) => r.classList.toggle("active", r.dataset.sid === sid));
+  await loadHistory(sid);
+  await backfillActiveRun(sid);
+}
+
+// P1c：若该会话正有一轮在进行，回放其缓冲事件（从 idx 0），补齐中途加入丢掉的前缀。
+// 事件带的 runId/idx 与实时事件一致，seenEvents 去重，实时流接着往下走。
+async function backfillActiveRun(sid) {
+  try {
+    const r = await request({ type: "get_events_since", sessionId: sid, sinceIdx: -1 }, sid);
+    const events = r?.data?.events || [];
+    if (!events.length) return;
+    if (r?.data?.truncated) line("⚠ 本轮开头部分超出缓冲已丢弃（仅显示可回放部分）", "err");
+    const subj = `p.${pair}.evt.${sid}`;
+    for (const ev of events) onEvent(ev, subj);
+  } catch { /* 无进行中轮次 / 老版 Bridge 不支持：忽略 */ }
+}
+
+// 从 Bridge 拉该会话的持久化消息（get_messages）并按气泡渲染。
+async function loadHistory(sid) {
+  try {
+    const r = await request({ type: "get_messages", sessionId: sid }, sid);
+    const msgs = r?.data?.messages || [];
+    if (!msgs.length) { line("（无历史消息）"); return; }
+    for (const m of msgs) {
+      if (m.role === "user") renderUser(m.content || "");
+      else renderAssistantStatic(m.content || "");
+    }
+  } catch (e) { line("加载历史失败: " + (e?.message || e), "err"); }
+}
+
+function ensureSession() { return session; }
+
+async function send() {
+  if (!ensureSession()) { setStatus("请先选择会话", "err"); return; }
+  const text = $("msg").value.trim(); if (!text) return;
+  $("msg").value = "";
+  renderUser(text); // 立即显示本端发的 prompt（历史保留，不清屏）
+  bubble = null; thinkEl = null; toolChips.clear();
+  try { await request({ type: "prompt", sessionId: session, message: text }); }
+  catch (e) { line("发送失败: " + e.message, "err"); }
+}
+
+async function abort() {
+  if (!ensureSession()) return;
+  try { await request({ type: "abort", sessionId: session }); line("已请求中断"); }
+  catch (e) { line("中断失败: " + e.message, "err"); }
+}
+
+function assistantBubble() {
+  if (!bubble) {
+    bubble = document.createElement("div"); bubble.className = "bubble";
+    bubble.innerHTML = `<div class="role">assistant</div>`;
+    const span = document.createElement("span"); bubble.appendChild(span); bubble._span = span;
+    log(bubble);
+  }
+  return bubble;
+}
+
+function renderUser(text) {
+  const u = document.createElement("div"); u.className = "bubble user";
+  u.innerHTML = `<div class="role">你</div>`; u.appendChild(document.createTextNode(text)); log(u);
+}
+
+// 历史里的助手消息：一次性整段渲染（非流式）。
+function renderAssistantStatic(text) {
+  const b = document.createElement("div"); b.className = "bubble";
+  b.innerHTML = `<div class="role">assistant</div>`;
+  const span = document.createElement("span"); span.textContent = text; b.appendChild(span);
+  log(b);
+}
+
+function onEvent(ev, subject) {
+  const sess = subject ? subject.split(".").slice(3).join(".") : "";
+  // 只处理当前选中会话的事件（过滤跨会话，避免堆积）
+  if (sess && sess !== session) return;
+  if (ev.type === "ping") return;
+  // 新一轮：换新气泡（历史保留，不清屏），旧轮内容留在上方形成对话流。
+  if (ev.runId && ev.runId !== curRun) {
+    curRun = ev.runId; bubble = null; thinkEl = null; toolChips.clear();
+  }
+  // P1: 按 (runId,idx) 去重（乱序/重连重放都安全）
+  if (ev.runId) {
+    const key = ev.runId + ":" + ev.idx;
+    if (seenEvents.has(key)) return;
+    seenEvents.add(key);
+  }
+  const data = (() => { try { return JSON.parse(ev.data); } catch { return {}; } })();
+  const verbose = $("verbose")?.checked;
+  switch (ev.type) {
+    case "ping": break;
+    case "agent_start": if (verbose) line("▶ agent_start"); break;
+    // 助手文本：始终显示（这是主内容）。
+    case "text_chunk": { const b = assistantBubble(); b._span.textContent += (data.text || ""); break; }
+    case "thinking_start": break;
+    case "thinking_delta": {
+      if (!verbose) break;
+      if (!thinkEl) { thinkEl = document.createElement("div"); thinkEl.className = "think"; log(thinkEl); }
+      thinkEl.textContent += (data.text || ""); break;
+    }
+    case "thinking_end": break;
+    case "tool_start": {
+      if (!verbose) break;
+      const chip = document.createElement("span"); chip.className = "chip"; chip.textContent = "🔧 " + (data.tool_name || "tool");
+      toolChips.set(data.tool_id, chip); const wrap = document.createElement("div"); wrap.appendChild(chip); log(wrap); break;
+    }
+    case "tool_end": { if (!verbose) break; const chip = toolChips.get(data.tool_id); if (chip) chip.className = "chip done"; break; }
+    // 审批 / 错误：始终显示（需要操作/知情）。
+    case "approval_request": renderApproval(data); break;
+    case "error": line("✖ error: " + (data.error || ev.data), "err bubble"); break;
+    case "agent_end": if (verbose) line(data.error ? ("■ agent_end (error)") : "■ agent_end"); break;
+    default: if (verbose) line("· " + ev.type);
+  }
+}
+
+function renderApproval(data) {
+  const box = document.createElement("div"); box.className = "approval";
+  box.innerHTML = `<div class="role">需要审批：${data.tool_name || ""} (${data.risk_level || ""})</div>
+    <div>${data.title || ""} — ${data.summary || ""}</div>`;
+  const approve = document.createElement("button"); approve.textContent = "批准";
+  const reject = document.createElement("button"); reject.textContent = "拒绝"; reject.className = "ghost";
+  const decide = async (mode) => {
+    await request({ type: "approval_decision", sessionId: session, entryId: data.approval_request_id, mode });
+    box.querySelectorAll("button").forEach(b => b.disabled = true);
+    box.appendChild(document.createTextNode("  → " + mode));
+  };
+  approve.onclick = () => decide("approved"); reject.onclick = () => decide("rejected");
+  const row = document.createElement("div"); row.style.marginTop = "8px"; row.append(approve, reject); box.appendChild(row);
+  log(box);
+}
+
+// 自适应高度的输入框
+function autoGrow() { const t = $("msg"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 140) + "px"; }
+
+$("connect").onclick = doConnect;
+$("newsess").onclick = newSession;
+$("refresh").onclick = listSessions;
+$("send").onclick = send;
+$("abort").onclick = abort;
+$("back").onclick = () => $("app").classList.remove("show-chat");
+$("msg").addEventListener("input", autoGrow);
+$("msg").addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") send(); });
+</script>
+</body>
+</html>

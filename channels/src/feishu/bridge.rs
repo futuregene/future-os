@@ -346,24 +346,42 @@ impl Bridge {
     /// Ensure a session exists for this chat/thread, creating one if needed.
     /// Returns the session_id.
     async fn ensure_session(&self, chat_id: &str, thread_id: Option<&str>) -> Result<String> {
-        if let Some(sid) = self.sessions.get(chat_id, thread_id) {
+        let sid = if let Some(sid) = self.sessions.get(chat_id, thread_id) {
             if !sid.is_empty() {
                 // Re-activate session on the agent side (agent may have restarted)
                 let mut agent = self.agent.write().await;
                 let _ = agent.switch_session(&sid).await;
-                let cache = agent
-                    .get_state(&sid)
-                    .await
-                    .map(|s| s.image_support)
-                    .unwrap_or(false);
                 drop(agent);
-                *self.image_support.write().await = cache;
-                return Ok(sid);
+                sid
+            } else {
+                let mut agent = self.agent.write().await;
+                let sid = agent.new_session(&self.agent_cfg.cwd).await?;
+                self.sessions.set_session_id(chat_id, thread_id, &sid);
+                drop(agent);
+                sid
+            }
+        } else {
+            let mut agent = self.agent.write().await;
+            let sid = agent.new_session(&self.agent_cfg.cwd).await?;
+            self.sessions.set_session_id(chat_id, thread_id, &sid);
+            drop(agent);
+            sid
+        };
+        // Always re-apply channel defaults so config changes take effect,
+        // including after channel restart when sessions are recreated.
+        let mut agent = self.agent.write().await;
+        if !self.agent_cfg.model.is_empty() {
+            match agent.set_model(&sid, &self.agent_cfg.model).await {
+                Ok(()) => tracing::info!("[feishu] set model={}", self.agent_cfg.model),
+                Err(e) => tracing::warn!("[feishu] set model failed: {}", e),
             }
         }
-        let mut agent = self.agent.write().await;
-        let sid = agent.new_session(&self.agent_cfg.cwd).await?;
-        self.sessions.set_session_id(chat_id, thread_id, &sid);
+        if !self.agent_cfg.thinking_level.is_empty() {
+            let _ = agent.set_thinking_level(&sid, &self.agent_cfg.thinking_level).await;
+        }
+        if !self.agent_cfg.permission_level.is_empty() {
+            let _ = agent.set_permission_level(&sid, &self.agent_cfg.permission_level).await;
+        }
         let cache = agent
             .get_state(&sid)
             .await
@@ -436,7 +454,7 @@ impl Bridge {
                             Ok(state) => {
                                 let model_info = match agent.get_available_models(&sid).await {
                                     Ok(models) => models.iter().find(|m| m.id == state.model).map(|m| {
-                                        format!("**Provider:** {}\n**Image:** {}\n**Context:** {}K\n**Max output:** {}",
+                                        format!("Provider: {}\nImage: {}\nContext: {}K\nMax output: {}",
                                             m.provider,
                                             if m.image { "yes" } else { "no" },
                                             m.context_window / 1000,
@@ -446,11 +464,16 @@ impl Bridge {
                                     Err(_) => String::new(),
                                 };
                                 let image_tag = if state.image_support { " 🖼️" } else { "" };
+                                let mi_block = if model_info.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!("\n{}", model_info)
+                                };
                                 let text = format!(
-                                    "**Model:** {}{}\n{}\n\n**Session:** {}\n**CWD:** {}\n**Thinking:** {}\n**Queries:** {}\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n**Tokens:** {} in / {} out\n**Cost:** ¥{:.4}",
+                                    "Model: {}{}{}\n\nSession: {}\nCWD: {}\nThinking: {}\nQueries: {}\nAuto compaction: {}\n\nContext: {} / {} ({:.1}%)\nTokens: {} in / {} out\nCost: ¥{:.4}",
                                     state.model,
                                     image_tag,
-                                    model_info,
+                                    mi_block,
                                     state.session_id,
                                     state.cwd,
                                     state.thinking_level,
