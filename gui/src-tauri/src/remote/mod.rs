@@ -13,9 +13,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Mutex;
 
-/// 运行中的远程连接。持有 async-nats client + 命令订阅任务；stop 时 abort 任务并 drop client。
+/// 运行中的远程连接。持有 async-nats client + JetStream 上下文 + 命令订阅任务；
+/// stop 时 abort 任务并 drop client。
 struct RemoteState {
-    client: async_nats::Client,
+    /// JetStream 上下文：事件用它发布（带 `Nats-Msg-Id` 幂等去重 + 落 EVT_* 流做重连回放）。
+    /// 未建流时 publish 仍会把消息投到 subject，实时订阅者照收（仅少了持久化），故可优雅降级。
+    /// 内部持有 NATS client 的克隆，保活连接；stop 时随 RemoteState 一并 drop。
+    js: async_nats::jetstream::Context,
     nats_url: String,
     pair_id: String,
     cmd_task: tokio::task::JoinHandle<()>,
@@ -58,6 +62,7 @@ pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppEr
     let client = async_nats::connect(&input.nats_url)
         .await
         .map_err(|e| crate::AppError::Message(format!("连接 NATS 失败: {e}")))?;
+    let js = async_nats::jetstream::new(client.clone());
 
     // 启动命令订阅任务（Step C）。
     let cmd_task = tokio::spawn(command_loop(client.clone(), input.pair_id.clone()));
@@ -70,7 +75,7 @@ pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppEr
         error: None,
     };
     *STATE.lock().unwrap() = Some(RemoteState {
-        client,
+        js,
         nats_url: input.nats_url,
         pair_id: input.pair_id,
         cmd_task,
@@ -98,22 +103,39 @@ pub fn status() -> RemoteStatus {
     }
 }
 
-/// 事件 tap（Step B）：若远程在运行，把一条 agent 事件镜像发布到
+/// 事件 tap（Step B / P1）：若远程在运行，把一条 agent 事件镜像发布到
 /// `p.{pairId}.evt.{session}`。无连接时直接返回，不阻塞 GUI 的事件消费。
+///
+/// 走 JetStream 发布并带 `Nats-Msg-Id = {session}:{runId}:{idx}`：
+///  - 幂等：断线重发/重放同一事件被 broker 依 dupe-window 去重；
+///  - 持久：落 EVT_* 流，客户端重连可回放(见 web `backfillActiveRun`)；
+///  - 降级：即使未建流，消息仍投到 subject，实时核心订阅者照收(仅少持久化)。
+///    我们不 await ack(避免逐 token 阻塞)——消息在 publish 时即已发出。
 pub async fn publish_event(session_id: &str, event_type: &str, data: &str, run_id: &str, idx: i64) {
     let target = {
         let guard = STATE.lock().unwrap();
-        guard
-            .as_ref()
-            .map(|s| (s.client.clone(), s.pair_id.clone()))
+        guard.as_ref().map(|s| (s.js.clone(), s.pair_id.clone()))
     };
-    let Some((client, pair_id)) = target else {
+    let Some((js, pair_id)) = target else {
         return;
     };
     let subject = format!("p.{pair_id}.evt.{session_id}");
     let body = json!({ "type": event_type, "data": data, "runId": run_id, "idx": idx });
-    if let Ok(payload) = serde_json::to_vec(&body) {
-        let _ = client.publish(subject, payload.into()).await;
+    let Ok(payload) = serde_json::to_vec(&body) else {
+        return;
+    };
+    if run_id.is_empty() {
+        // 无 run_id 的事件(理论上仅早期/边界)不参与去重，直接投递。
+        let _ = js.publish(subject, payload.into()).await;
+    } else {
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert(
+            "Nats-Msg-Id",
+            format!("{session_id}:{run_id}:{idx}").as_str(),
+        );
+        let _ = js
+            .publish_with_headers(subject, headers, payload.into())
+            .await;
     }
 }
 

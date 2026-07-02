@@ -124,7 +124,11 @@ impl RpcResponse {
 // ─── SSE Event Broadcaster ──────────────────────────────────────────────
 
 /// Max buffered events per run (for `events_since` backfill). Oldest dropped.
-const MAX_RUN_EVENTS: usize = 5000;
+/// Only the *current* run is buffered (cleared on `start_run`), so this is a
+/// per-session ceiling, not cumulative. Sized to comfortably hold a long
+/// generation's per-token `text_chunk` stream; on overflow the oldest are
+/// dropped and `events_since` reports the resulting gap via `min_idx`.
+const MAX_RUN_EVENTS: usize = 20000;
 
 struct RunState {
     run_id: String,
@@ -182,10 +186,16 @@ impl SseBroadcaster {
         run.events.clear();
     }
 
-    /// Current-run events with `idx > since_idx`. If `run_id` no longer matches
-    /// (a new run started), return the current run_id + all its buffered events.
-    pub fn events_since(&self, run_id: &str, since_idx: i64) -> (String, Vec<SseEvent>) {
+    /// Current-run events with `idx > since_idx`, plus the earliest idx still in
+    /// the buffer (`min_idx`, 0 if empty). If `run_id` no longer matches (a new
+    /// run started), return the current run_id + all its buffered events. A
+    /// full backfill (`since_idx < 0`) whose result starts above `min_idx == 0`
+    /// — i.e. `min_idx > 0` — means the run's prefix was dropped on overflow, so
+    /// the caller can surface the gap instead of silently reconstructing a
+    /// truncated message.
+    pub fn events_since(&self, run_id: &str, since_idx: i64) -> (String, Vec<SseEvent>, i64) {
         let run = self.run.lock().unwrap();
+        let min_idx = run.events.first().map(|e| e.idx).unwrap_or(0);
         if run.run_id == run_id {
             let events = run
                 .events
@@ -193,9 +203,9 @@ impl SseBroadcaster {
                 .filter(|e| e.idx > since_idx)
                 .cloned()
                 .collect();
-            (run.run_id.clone(), events)
+            (run.run_id.clone(), events, min_idx)
         } else {
-            (run.run_id.clone(), run.events.clone())
+            (run.run_id.clone(), run.events.clone(), min_idx)
         }
     }
 }
@@ -248,26 +258,28 @@ mod p1_broadcaster_tests {
         ));
 
         // Backfill from idx 0 → the two events after idx 0 (idx 1, 2), in order.
-        let (rid, evs) = b.events_since("run1", 0);
+        let (rid, evs, min_idx) = b.events_since("run1", 0);
         assert_eq!(rid, "run1");
         assert_eq!(evs.len(), 2);
         assert_eq!((evs[0].idx, evs[1].idx), (1, 2));
         assert_eq!(evs[0].run_id, "run1");
+        // Nothing dropped yet → earliest buffered idx is still 0 (no gap).
+        assert_eq!(min_idx, 0);
 
         // From -1 → all three (idx 0,1,2).
-        let (_, all) = b.events_since("run1", -1);
+        let (_, all, _) = b.events_since("run1", -1);
         assert_eq!(all.iter().map(|e| e.idx).collect::<Vec<_>>(), vec![0, 1, 2]);
 
         // New run resets idx + clears buffer.
         b.start_run("run2".to_string());
         b.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
-        let (rid2, evs2) = b.events_since("run2", -1);
+        let (rid2, evs2, _) = b.events_since("run2", -1);
         assert_eq!(rid2, "run2");
         assert_eq!(evs2.len(), 1);
         assert_eq!((evs2[0].idx, evs2[0].run_id.as_str()), (0, "run2"));
 
         // Stale run_id → returns current run + all its events (caller realigns).
-        let (rid3, evs3) = b.events_since("run1", 100);
+        let (rid3, evs3, _) = b.events_since("run1", 100);
         assert_eq!(rid3, "run2");
         assert_eq!(evs3.len(), 1);
     }
