@@ -464,11 +464,16 @@ impl Bridge {
                                     Err(_) => String::new(),
                                 };
                                 let image_tag = if state.image_support { " 🖼️" } else { "" };
+                                let mi_block = if model_info.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!("\n{}", model_info)
+                                };
                                 let text = format!(
-                                    "**Model:** {}{}\n{}\n\n**Session:** {}\n**CWD:** {}\n**Thinking:** {}\n**Queries:** {}\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n**Tokens:** {} in / {} out\n**Cost:** ¥{:.4}",
+                                    "**Model:** {}{}{}\n\n**Session:** {}\n**CWD:** {}\n**Thinking:** {}\n**Queries:** {}\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n**Tokens:** {} in / {} out\n**Cost:** ¥{:.4}",
                                     state.model,
                                     image_tag,
-                                    model_info,
+                                    mi_block,
                                     state.session_id,
                                     state.cwd,
                                     state.thinking_level,
