@@ -25,6 +25,7 @@ interface AgentThreadProps {
   onThinkingLevelChange: (thinkingLevel: string) => void;
   autoApprove: boolean;
   onToggleAutoApprove: (value: boolean) => void;
+  showThinking: boolean;
   pendingPrompt: { attachments?: MessageAttachment[]; id: string; content: string } | null;
   activeApproval?: StoredApprovalRequest | null;
   onApprovalDecision: (approval: StoredApprovalRequest, status: "approved" | "rejected") => Promise<void>;
@@ -48,6 +49,7 @@ export function AgentThread({
   onThinkingLevelChange,
   autoApprove,
   onToggleAutoApprove,
+  showThinking,
   pendingPrompt,
   activeApproval,
   onApprovalDecision,
@@ -154,6 +156,7 @@ export function AgentThread({
                   : (
                       <MessageList
                         messages={messages}
+                        showThinking={showThinking}
                         workspaceId={thread?.workspaceId}
                         onContinue={handleContinueMessage}
                         onRetry={handleRetryMessage}

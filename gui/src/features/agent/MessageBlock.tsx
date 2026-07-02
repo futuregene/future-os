@@ -9,6 +9,7 @@ import { formatTime } from "../../lib/date";
 import { MarkdownContent } from "../markdown/MarkdownContent";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
 import { MessageMeta } from "./MessageMeta";
+import { ThinkingBlock } from "./ThinkingBlock";
 
 interface MessageBlockProps {
   message: AgentMessage;
@@ -17,6 +18,8 @@ interface MessageBlockProps {
   /** Whether this is the last message in the thread. */
   isLast?: boolean;
   recoverySource?: AgentMessage | null;
+  /** Show the model's reasoning block (driven by the "show thinking" setting). */
+  showThinking?: boolean;
   onContinue?: (message: AgentMessage) => void;
   onHover: (id: string) => void;
   onLeave: (id: string) => void;
@@ -29,6 +32,7 @@ export function MessageBlock({
   hovered,
   isLast,
   recoverySource,
+  showThinking,
   onContinue,
   onHover,
   onLeave,
@@ -38,6 +42,9 @@ export function MessageBlock({
   const { t } = useTranslation("agent");
   const { copiedKey, copy } = useCopyState();
   const isUser = message.role === "user";
+  // While the reply streams, the footer is pinned open and shows a live activity
+  // indicator instead of the copy button; the copy button returns once it settles.
+  const streaming = !isUser && message.status === "streaming";
   // Retry/Continue only make sense on the latest turn — once a newer round has
   // started, recovering an earlier failed turn would fork the conversation.
   const canRecover = !isUser && message.status === "failed" && isLast === true;
@@ -74,17 +81,31 @@ export function MessageBlock({
           {segments
             ? (
                 <div className="space-y-3">
-                  {segments.map(segment =>
-                    segment.kind === "text"
-                      ? (
-                          <MarkdownContent
-                            content={segment.text}
-                            key={segment.id}
-                            workspaceId={workspaceId}
-                          />
-                        )
-                      : <AgentActivityLine item={segment.item} key={segment.id} />,
-                  )}
+                  {segments.map((segment) => {
+                    if (segment.kind === "text") {
+                      return (
+                        <MarkdownContent
+                          content={segment.text}
+                          key={segment.id}
+                          workspaceId={workspaceId}
+                        />
+                      );
+                    }
+                    if (segment.kind === "thinking") {
+                      // Reasoning stays in timeline order; hidden unless the
+                      // "show thinking" setting is on.
+                      return showThinking
+                        ? (
+                            <ThinkingBlock
+                              key={segment.id}
+                              text={segment.text}
+                              workspaceId={workspaceId}
+                            />
+                          )
+                        : null;
+                    }
+                    return <AgentActivityLine item={segment.item} key={segment.id} />;
+                  })}
                 </div>
               )
             : message.content
@@ -134,28 +155,46 @@ export function MessageBlock({
             : null}
         </div>
         <div className={cn("flex items-center gap-2", isUser ? "mt-1 justify-end" : "mt-3")}>
-          {copyableText
-            ? (
-                <CopyButton
+          {streaming
+            ? <StreamingIndicator label={t("message.generating")} />
+            : copyableText
+              ? (
+                  <CopyButton
                   // `will-change-[opacity]` keeps the button on its own compositor
                   // layer at all times: WKWebView (tauri#12800 family) drops repaints
                   // of in-flow content until a window resize, so hide/show — and the
                   // fade, which is only safe because the compositor animates a
                   // promoted layer's opacity — must never depend on a repaint. Do not
                   // remove the will-change without re-testing stale-paint ghosts.
-                  className={cn(
-                    "will-change-[opacity] transition-opacity duration-200",
-                    hovered ? "opacity-100" : "pointer-events-none opacity-0",
-                  )}
-                  copied={copiedKey === "default"}
-                  onCopy={() => void copy(copyableText)}
-                />
-              )
-            : null}
+                    className={cn(
+                      "will-change-[opacity] transition-opacity duration-200",
+                      hovered ? "opacity-100" : "pointer-events-none opacity-0",
+                    )}
+                    copied={copiedKey === "default"}
+                    onCopy={() => void copy(copyableText)}
+                  />
+                )
+              : null}
           {!isUser ? <MessageMeta message={message} visible={hovered} /> : null}
         </div>
       </div>
     </article>
+  );
+}
+
+/**
+ * Live "generating" marker shown in place of the copy button while a reply
+ * streams: a small amber dot with a pulsing ping halo (no brain icon — the
+ * motion is the signal). `label` is exposed to assistive tech only.
+ */
+function StreamingIndicator({ label }: { label: string }) {
+  return (
+    <div aria-label={label} className="flex items-center px-1 py-1.5" role="status">
+      <span className="relative flex size-2">
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-amber-400 opacity-75" />
+        <span className="relative inline-flex size-2 rounded-full bg-amber-500" />
+      </span>
+    </div>
   );
 }
 

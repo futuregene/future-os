@@ -11,6 +11,7 @@ const HIDE_DELAY_MS = 200;
 
 interface MessageListProps {
   messages: AgentMessage[];
+  showThinking?: boolean;
   onContinue?: (message: AgentMessage) => void;
   onRetry?: (message: AgentMessage, source: AgentMessage) => void;
   workspaceId?: string | null;
@@ -24,7 +25,7 @@ interface MessageListProps {
  * shows its controls: a lost `pointerleave` is corrected by the next row's
  * `pointerover`, and leaving the list clears it outright.
  */
-export function MessageList({ messages, onContinue, onRetry, workspaceId }: MessageListProps) {
+export function MessageList({ messages, showThinking, onContinue, onRetry, workspaceId }: MessageListProps) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const hideTimerRef = useRef<number | null>(null);
 
@@ -69,6 +70,7 @@ export function MessageList({ messages, onContinue, onRetry, workspaceId }: Mess
           hovered={hoveredId === message.id}
           isLast={index === messages.length - 1}
           recoverySource={previousUserMessage(messages, index)}
+          showThinking={showThinking}
           workspaceId={workspaceId}
           onContinue={onContinue}
           onHover={handleHover}

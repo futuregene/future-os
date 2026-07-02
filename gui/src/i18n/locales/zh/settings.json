@@ -7,6 +7,10 @@
     "title": "自动审批",
     "description": "权限请求将被自动批准"
   },
+  "showThinking": {
+    "title": "显示思考过程",
+    "description": "在对话中显示模型的推理内容"
+  },
   "dialog": {
     "ariaLabel": "设置",
     "appName": "FutureOS Desktop",

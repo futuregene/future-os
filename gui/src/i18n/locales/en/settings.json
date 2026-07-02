@@ -7,6 +7,10 @@
     "title": "Auto-approve",
     "description": "Permission requests will be approved automatically"
   },
+  "showThinking": {
+    "title": "Show thinking process",
+    "description": "Display the model's reasoning in the conversation"
+  },
   "dialog": {
     "ariaLabel": "Settings",
     "appName": "FutureOS Desktop",

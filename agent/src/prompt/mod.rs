@@ -70,6 +70,12 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
                 "Current working directory: {}",
                 opts.working_directory
             ));
+            info.push(
+                "When looking for a file, search within the current working directory \
+                 first; only widen the search to the rest of the filesystem if it is \
+                 clearly not there. Avoid scanning the entire filesystem up front."
+                    .to_string(),
+            );
         }
         sections.push(info.join("\n"));
     }

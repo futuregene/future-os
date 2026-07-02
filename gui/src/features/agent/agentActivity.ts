@@ -12,13 +12,22 @@ interface AssistantRunProjection {
    * every LLM call in the run (0 when the provider returned no usage).
    */
   outputTokens: number;
+  /**
+   * The model's reasoning/thinking text for this turn (empty when none). Blocks
+   * separated by blank lines; rendered only when the "show thinking" setting is
+   * on. Extracted from `thinking_delta` events — always captured, gated at render.
+   */
+  thinking: string;
 }
 
 /**
  * Ordered placeholder: a text run or a reference to a tool by id. The tool's
  * latest state lives in the `toolActivities` map; the slot only fixes position.
  */
-type Slot = { type: "text"; text: string } | { type: "tool"; id: string };
+type Slot
+  = | { type: "text"; text: string }
+    | { type: "thinking"; text: string }
+    | { type: "tool"; id: string };
 
 interface ToolActivity {
   id: string;
@@ -40,6 +49,9 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
   const slots: Slot[] = [];
   const slottedToolIds = new Set<string>();
   let openText: Extract<Slot, { type: "text" }> | null = null;
+  // The currently-open reasoning block; thinking_delta text appends here so each
+  // block keeps its own position in the timeline (interleaved with text/tools).
+  let openThinking: Extract<Slot, { type: "thinking" }> | null = null;
   let content = "";
   let thinking = false;
   let sawVisibleWork = false;
@@ -67,6 +79,8 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
     if (event.eventType === "text_chunk") {
       const text = textFromPayload(payload);
       content += text;
+      // Visible text ends any open reasoning block; later thinking opens a new one.
+      openThinking = null;
       if (!openText) {
         openText = { type: "text", text: "" };
         slots.push(openText);
@@ -80,11 +94,31 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
 
     if (event.eventType === "thinking_start") {
       thinking = true;
+      // Open a new reasoning slot at this point in the timeline. A text run ends
+      // here so the block sits between the surrounding text/tools, not hoisted.
+      openThinking = { type: "thinking", text: "" };
+      slots.push(openThinking);
+      openText = null;
+      continue;
+    }
+
+    if (event.eventType === "thinking_delta") {
+      const text = textFromPayload(payload);
+      if (text) {
+        // Tolerate a delta without a preceding start by opening a block lazily.
+        if (!openThinking) {
+          openThinking = { type: "thinking", text: "" };
+          slots.push(openThinking);
+          openText = null;
+        }
+        openThinking.text += text;
+      }
       continue;
     }
 
     if (event.eventType === "thinking_end") {
       thinking = false;
+      openThinking = null;
       continue;
     }
 
@@ -101,8 +135,10 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
           slots.push({ type: "tool", id: tool.id });
           slottedToolIds.add(tool.id);
         }
-        // A tool call ends the current text run; later text starts a new slot.
+        // A tool call ends the current text/thinking run; later output opens a
+        // fresh slot so ordering is preserved.
         openText = null;
+        openThinking = null;
         sawVisibleWork = true;
       }
       continue;
@@ -166,11 +202,20 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
     segments.unshift({ kind: "activity", id: thinkingItem.id, item: thinkingItem });
   }
 
+  // Concatenated reasoning (blocks joined by blank lines) — the inline segments
+  // carry the ordered form; this is the whole-turn text for any non-inline use.
+  const thinkingText = slots
+    .filter((slot): slot is Extract<Slot, { type: "thinking" }> => slot.type === "thinking")
+    .map(slot => slot.text.trim())
+    .filter(Boolean)
+    .join("\n\n");
+
   return {
     activityItems: items,
     content,
     segments,
     outputTokens: sawUsageEvent ? usageOutputSum : agentEndOutput,
+    thinking: thinkingText,
   };
 }
 
@@ -218,6 +263,14 @@ function buildSegments(
     if (slot.type === "text") {
       if (slot.text.trim()) {
         segments.push({ kind: "text", id: `text_${index}`, text: slot.text });
+      }
+      index += 1;
+      continue;
+    }
+
+    if (slot.type === "thinking") {
+      if (slot.text.trim()) {
+        segments.push({ kind: "thinking", id: `thinking_${index}`, text: slot.text });
       }
       index += 1;
       continue;

@@ -9,6 +9,11 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).toString();
 
+// pdf.js v6 decodes JBIG2/JPEG2000/CCITT scanned images via WebAssembly loaded from
+// this base dir (served by the `pdfjsWasm` Vite plugin). Without it, image-only PDFs
+// render as a blank page. Absolute href so pdf.js's `new URL(name, wasmUrl)` resolves.
+const PDF_WASM_URL = new URL("pdfjs-wasm/", document.baseURI).href;
+
 interface PdfPreviewProps {
   path: string;
 }
@@ -33,7 +38,7 @@ export function PdfPreview({ path }: PdfPreviewProps) {
 
         // Tauri asset protocol (convertFileSrc handles per-OS scheme + Windows).
         const url = convertFileSrc(path);
-        const loadingTask = pdfjs.getDocument({ url });
+        const loadingTask = pdfjs.getDocument({ url, wasmUrl: PDF_WASM_URL });
         loadingTaskRef.current = loadingTask;
 
         const pdf = await loadingTask.promise;

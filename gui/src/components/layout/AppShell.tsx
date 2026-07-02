@@ -342,6 +342,8 @@ export function AppShell() {
                 onModelChange={changeDraftModel}
                 thinkingLevel={selectedThinkingLevel}
                 onThinkingLevelChange={changeThinkingLevel}
+                autoApprove={appSettings.autoApprove}
+                onToggleAutoApprove={value => void changeSettings({ autoApprove: value })}
                 onStart={handleStartNewConversation}
                 onToggleLeftPanel={handleToggleLeftPanel}
                 workspaces={workspaces.filter(workspace => workspace.kind === "user")}
@@ -379,6 +381,7 @@ export function AppShell() {
                           activeApproval={activeApproval}
                           agentConnection={agentConnection}
                           autoApprove={appSettings.autoApprove}
+                          showThinking={appSettings.showThinking}
                           loadingStore={loadingStore}
                           modelId={activeThread?.modelId ?? selectedModelId}
                           modelOptions={visibleModelOptions}
