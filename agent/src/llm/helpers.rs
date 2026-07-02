@@ -124,7 +124,21 @@ impl Client {
                             serde_json::json!(msg.reasoning_content),
                         );
                     }
-                    obj.insert("content".to_string(), Self::extract_content(msg.content));
+                    // Only include content field if there's actual content.
+                    // When assistant has tool_calls but no text, content should be
+                    // null/omitted to avoid "text content is empty" errors from
+                    // strict providers like kimi-k2.7-code.
+                    let has_content = msg.content.as_ref().map_or(false, |c| match c {
+                        Value::Array(arr) => !arr.is_empty(),
+                        Value::String(s) => !s.is_empty(),
+                        Value::Null => false,
+                        _ => true,
+                    });
+                    if has_content {
+                        obj.insert("content".to_string(), Self::extract_content(msg.content));
+                    } else {
+                        obj.insert("content".to_string(), Value::Null);
+                    }
                     if let Some(tcs) = msg.tool_calls {
                         let tools: Vec<Value> = tcs
                             .into_iter()
