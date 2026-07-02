@@ -454,7 +454,7 @@ impl Bridge {
                             Ok(state) => {
                                 let model_info = match agent.get_available_models(&sid).await {
                                     Ok(models) => models.iter().find(|m| m.id == state.model).map(|m| {
-                                        format!("**Provider:** {}\n**Image:** {}\n**Context:** {}K\n**Max output:** {}",
+                                        format!("Provider: {}\nImage: {}\nContext: {}K\nMax output: {}",
                                             m.provider,
                                             if m.image { "yes" } else { "no" },
                                             m.context_window / 1000,
@@ -470,7 +470,7 @@ impl Bridge {
                                     format!("\n{}", model_info)
                                 };
                                 let text = format!(
-                                    "**Model:** {}{}{}\n\n**Session:** {}\n**CWD:** {}\n**Thinking:** {}\n**Queries:** {}\n**Auto compaction:** {}\n\n**Context:** {} / {} ({:.1}%)\n**Tokens:** {} in / {} out\n**Cost:** ¥{:.4}",
+                                    "Model: {}{}{}\n\nSession: {}\nCWD: {}\nThinking: {}\nQueries: {}\nAuto compaction: {}\n\nContext: {} / {} ({:.1}%)\nTokens: {} in / {} out\nCost: ¥{:.4}",
                                     state.model,
                                     image_tag,
                                     mi_block,
