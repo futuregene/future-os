@@ -25,6 +25,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
 import { isMacOS } from "../../lib/platform";
+import { useBuildInfo } from "../../lib/useBuildInfo";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { IconButton } from "../ui/IconButton";
@@ -90,6 +91,11 @@ export function ActivityRail({
   onToggleExpanded,
 }: ActivityRailProps) {
   const { t } = useTranslation("layout");
+  // The Remote (phone) feature is still under development — show its nav entry
+  // only in dev builds. Hidden while build info is loading so it never flashes
+  // into a release build.
+  const build = useBuildInfo();
+  const showRemote = build.data ? !build.data.isRelease : false;
   const [openThreadMenuId, setOpenThreadMenuId] = useState<string | null>(null);
   const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Set<string>>(() => new Set());
 
@@ -193,17 +199,21 @@ export function ActivityRail({
                     <Blocks className="size-4 shrink-0" />
                     <span className="truncate">{t("activityRail.skills")}</span>
                   </button>
-                  <button
-                    className={cn(
-                      "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
-                      active === "remote" && "bg-surface-subtle text-ink",
-                    )}
-                    onClick={() => onChange("remote")}
-                    type="button"
-                  >
-                    <Smartphone className="size-4 shrink-0" />
-                    <span className="truncate">{t("activityRail.remote")}</span>
-                  </button>
+                  {showRemote
+                    ? (
+                        <button
+                          className={cn(
+                            "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
+                            active === "remote" && "bg-surface-subtle text-ink",
+                          )}
+                          onClick={() => onChange("remote")}
+                          type="button"
+                        >
+                          <Smartphone className="size-4 shrink-0" />
+                          <span className="truncate">{t("activityRail.remote")}</span>
+                        </button>
+                      )
+                    : null}
                 </div>
                 {featureItems.length > 0
                   ? (
@@ -389,12 +399,16 @@ export function ActivityRail({
                   active={false}
                   onClick={onOpenModels}
                 />
-                <IconButton
-                  icon={<Smartphone className="size-4" />}
-                  label={t("activityRail.remote")}
-                  active={active === "remote"}
-                  onClick={() => onChange("remote")}
-                />
+                {showRemote
+                  ? (
+                      <IconButton
+                        icon={<Smartphone className="size-4" />}
+                        label={t("activityRail.remote")}
+                        active={active === "remote"}
+                        onClick={() => onChange("remote")}
+                      />
+                    )
+                  : null}
                 {featureItems.map((item) => {
                   const Icon = item.icon;
                   return (

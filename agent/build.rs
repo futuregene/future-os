@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
+    emit_build_version();
+
     // Find the proto directory (sibling to agent)
     let proto_dir = PathBuf::from("../proto");
 
@@ -61,6 +63,22 @@ fn main() {
         .out_dir("src/grpc/generated")
         .compile_protos(&proto_files, &[&proto_dir])
         .expect("Failed to compile proto files");
+}
+
+/// Inject the build version (see `scripts/version.mjs`) as a compile-time env so
+/// code can read it via `env!("FUTURE_VERSION")`. Falls back to a local dev
+/// marker for a bare `cargo build` where FUTURE_VERSION isn't set — the `-dev`
+/// suffix is what marks it a non-release build everywhere downstream.
+fn emit_build_version() {
+    let base = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string());
+    // Treat an empty FUTURE_VERSION as unset (matches scripts/version.mjs), so a
+    // failed `$(shell …)` in the Makefile can't inject an empty version string.
+    let version = std::env::var("FUTURE_VERSION")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| format!("{base}-dev.local"));
+    println!("cargo:rustc-env=FUTURE_VERSION={version}");
+    println!("cargo:rerun-if-env-changed=FUTURE_VERSION");
 }
 
 fn has_protoc() -> bool {
