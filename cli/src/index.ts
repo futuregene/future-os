@@ -8,6 +8,7 @@ import { tools, isToolsCommand } from "./commands/tools.js";
 import { skills, isSkillsCommand } from "./commands/skills.js";
 import { account, isAccountCommand } from "./commands/account.js";
 import { run as runCommand } from "./commands/run.js";
+import { docker } from "./commands/docker.js";
 import { printHelp } from "./help.js";
 
 async function main(): Promise<void> {
@@ -69,6 +70,13 @@ async function main(): Promise<void> {
 
   if (group === "run") {
     await runCommand(args.slice(1));
+    return;
+  }
+
+  if (group === "docker") {
+    const restArgs = args.slice(1);
+    const fix = restArgs.includes("--fix");
+    await docker(fix);
     return;
   }
 

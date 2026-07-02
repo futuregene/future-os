@@ -20,7 +20,7 @@ function projectSkillsDir(): string {
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export type SkillsCommand = "list" | "install" | "uninstall" | "install-builtin";
-type Scope = "app" | "project" | "global";
+export type Scope = "app" | "project" | "global";
 
 interface SkillInfo {
   id: string;
@@ -100,7 +100,7 @@ function scopeLabel(scope: Scope, dir: string): string {
 
 // ── Remote API ───────────────────────────────────────────────────────────────
 
-async function fetchSkills(platformUrl: string, category?: string): Promise<SkillInfo[]> {
+export async function fetchSkills(platformUrl: string, category?: string): Promise<SkillInfo[]> {
   const url = category
     ? `${platformUrl}/client/v1/skills?category=${encodeURIComponent(category)}`
     : `${platformUrl}/client/v1/skills`;
@@ -266,7 +266,7 @@ async function installSkill(skillId: string, version?: string, scope: Scope = "a
   }
 }
 
-async function installBuiltinSkills(scope: Scope = "app"): Promise<void> {
+export async function installBuiltinSkills(scope: Scope = "app"): Promise<void> {
   const platformUrl = await getPlatformUrl();
 
   // 1. Fetch builtin skills
@@ -315,7 +315,7 @@ async function installBuiltinSkills(scope: Scope = "app"): Promise<void> {
   console.log(`Done. ${toInstall.length} skills installed.`);
 }
 
-async function getInstalledSkillIds(scope: Scope): Promise<Set<string>> {
+export async function getInstalledSkillIds(scope: Scope): Promise<Set<string>> {
   const dir = skillsDirFor(scope);
   const ids = new Set<string>();
   try {
