@@ -361,7 +361,8 @@ impl Loop {
                                     if let serde_json::Value::String(ref new_args) =
                                         tc.function.arguments
                                     {
-                                        if let serde_json::Value::String(ref mut s) = existing.args {
+                                        if let serde_json::Value::String(ref mut s) = existing.args
+                                        {
                                             s.push_str(new_args);
                                         } else {
                                             existing.args =

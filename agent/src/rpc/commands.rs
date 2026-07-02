@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use super::{
-    AppState, ApprovalDecision, ApprovalDecisionStatus, RpcCommand, RpcResponse, ServerSession,
-    SseBroadcaster, generate_session_html, get_state_internal,
+    generate_session_html, get_state_internal, AppState, ApprovalDecision, ApprovalDecisionStatus,
+    RpcCommand, RpcResponse, ServerSession, SseBroadcaster,
 };
 
 pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
@@ -198,10 +198,15 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         }
         "get_events_since" => {
             // P1: backfill current-run events with idx > since_idx (Bridge reconnect).
-            let (run_id, events) = {
+            let (run_id, events, min_idx) = {
                 let sess = session.read().unwrap();
                 sess.broadcaster.events_since(&cmd.run_id, cmd.since_idx)
             };
+            // A full backfill (`since_idx < 0`) whose earliest buffered event is
+            // past idx 0 means the run's opening was dropped on buffer overflow —
+            // tell the client so it can flag the gap rather than show a truncated
+            // reconstruction as if complete.
+            let truncated = cmd.since_idx < 0 && min_idx > 0;
             let events: Vec<serde_json::Value> = events
                 .into_iter()
                 .map(|e| {
@@ -216,7 +221,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(
                 id,
                 "get_events_since",
-                serde_json::json!({"runId": run_id, "events": events}),
+                serde_json::json!({"runId": run_id, "events": events, "truncated": truncated}),
             )
         }
         "set_model" => {
