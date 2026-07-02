@@ -4,8 +4,8 @@ use anyhow::Result;
 use chrono::Local;
 use clap::Parser;
 use future_agent::{
-    Engine, EngineConfig, Manager, ModelRegistry, ServerSession, AGENTS_SKILLS_DIR,
-    PROJECT_SKILLS_DIR, APP_SKILLS_DIR,
+    Engine, EngineConfig, Manager, ModelRegistry, ServerSession, AGENTS_SKILLS_DIR, APP_SKILLS_DIR,
+    PROJECT_SKILLS_DIR,
 };
 use std::sync::Arc;
 
@@ -268,7 +268,6 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
     );
     server_session.model = resolved_model.clone();
     *server_session.compaction_model.write().unwrap() = resolved_model.clone();
-
 
     server_session.set_steering_mode(&settings.steering_mode);
     server_session.set_follow_up_mode(&settings.follow_up_mode);
