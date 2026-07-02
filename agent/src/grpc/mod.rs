@@ -58,7 +58,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
 
         // Log requests in verbose mode
         if self.state.verbose {
-            tracing::warn!("[grpc] {} session={} msg={:.80}",
+            tracing::debug!("[grpc] {} session={} msg={:.80}",
                 cmd.r#type,
                 if cmd.session_id.is_empty() {
                     "-"
@@ -179,7 +179,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             let session = self.state.get_session(&session_id);
             let sess = session.read().unwrap();
             if self.state.verbose {
-                tracing::warn!("[stream] subscribe session={} has_msgs={}",
+                tracing::debug!("[stream] subscribe session={} has_msgs={}",
                     session_id,
                     sess.messages.read().unwrap().len()
                 );
