@@ -371,7 +371,10 @@ impl Bridge {
         // including after channel restart when sessions are recreated.
         let mut agent = self.agent.write().await;
         if !self.agent_cfg.model.is_empty() {
-            let _ = agent.set_model(&sid, &self.agent_cfg.model).await;
+            match agent.set_model(&sid, &self.agent_cfg.model).await {
+                Ok(()) => tracing::info!("[feishu] set model={}", self.agent_cfg.model),
+                Err(e) => tracing::warn!("[feishu] set model failed: {}", e),
+            }
         }
         if !self.agent_cfg.thinking_level.is_empty() {
             let _ = agent.set_thinking_level(&sid, &self.agent_cfg.thinking_level).await;
