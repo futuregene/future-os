@@ -17,8 +17,12 @@ pub struct CompactionSettings {
     pub keep_recent_tokens: i32,
 }
 
-fn default_compaction_reserve_tokens() -> i32 { 16384 }
-fn default_compaction_keep_recent_tokens() -> i32 { 20000 }
+fn default_compaction_reserve_tokens() -> i32 {
+    16384
+}
+fn default_compaction_keep_recent_tokens() -> i32 {
+    20000
+}
 
 // ─── Retry ─────────────────────────────────────────────────────────────────
 
@@ -28,7 +32,10 @@ pub struct ProviderRetrySettings {
     pub timeout_ms: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_retries: Option<i32>,
-    #[serde(default = "default_max_retry_delay_ms", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default = "default_max_retry_delay_ms",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub max_retry_delay_ms: Option<i32>,
 }
 
@@ -44,9 +51,15 @@ pub struct RetrySettings {
     pub provider: Option<Box<ProviderRetrySettings>>,
 }
 
-fn default_max_retries() -> i32 { 3 }
-fn default_base_delay_ms() -> i32 { 2000 }
-fn default_max_retry_delay_ms() -> Option<i32> { Some(60000) }
+fn default_max_retries() -> i32 {
+    3
+}
+fn default_base_delay_ms() -> i32 {
+    2000
+}
+fn default_max_retry_delay_ms() -> Option<i32> {
+    Some(60000)
+}
 
 // ─── Main Settings ─────────────────────────────────────────────────────────
 
@@ -54,11 +67,20 @@ fn default_max_retry_delay_ms() -> Option<i32> { Some(60000) }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
-    #[serde(default = "default_steering_mode", skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default = "default_steering_mode",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub steering_mode: String,
-    #[serde(default = "default_follow_up_mode", skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default = "default_follow_up_mode",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub follow_up_mode: String,
-    #[serde(default = "default_compaction", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default = "default_compaction",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub compaction: Option<Box<CompactionSettings>>,
     #[serde(default = "default_retry", skip_serializing_if = "Option::is_none")]
     pub retry: Option<Box<RetrySettings>>,
@@ -74,10 +96,18 @@ pub struct Settings {
 
 // ─── Defaults ──────────────────────────────────────────────────────────────
 
-fn default_permission_level() -> String { "all".to_string() }
-fn default_true() -> Option<bool> { Some(true) }
-fn default_steering_mode() -> String { "one-at-a-time".to_string() }
-fn default_follow_up_mode() -> String { "one-at-a-time".to_string() }
+fn default_permission_level() -> String {
+    "all".to_string()
+}
+fn default_true() -> Option<bool> {
+    Some(true)
+}
+fn default_steering_mode() -> String {
+    "one-at-a-time".to_string()
+}
+fn default_follow_up_mode() -> String {
+    "one-at-a-time".to_string()
+}
 fn default_compaction() -> Option<Box<CompactionSettings>> {
     Some(Box::new(CompactionSettings {
         enabled: Some(true),
@@ -98,13 +128,22 @@ fn default_retry() -> Option<Box<RetrySettings>> {
 
 impl Settings {
     pub fn compaction_enabled(&self) -> bool {
-        self.compaction.as_ref().and_then(|c| c.enabled).unwrap_or(true)
+        self.compaction
+            .as_ref()
+            .and_then(|c| c.enabled)
+            .unwrap_or(true)
     }
     pub fn compaction_reserve_tokens(&self) -> i32 {
-        self.compaction.as_ref().map(|c| c.reserve_tokens).unwrap_or(16384)
+        self.compaction
+            .as_ref()
+            .map(|c| c.reserve_tokens)
+            .unwrap_or(16384)
     }
     pub fn compaction_keep_recent_tokens(&self) -> i32 {
-        self.compaction.as_ref().map(|c| c.keep_recent_tokens).unwrap_or(20000)
+        self.compaction
+            .as_ref()
+            .map(|c| c.keep_recent_tokens)
+            .unwrap_or(20000)
     }
     pub fn retry_enabled(&self) -> bool {
         self.retry.as_ref().and_then(|r| r.enabled).unwrap_or(true)
