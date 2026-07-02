@@ -848,7 +848,7 @@ fn list_models_response(id: &str) -> String {
         .all_models()
         .into_iter()
         .filter(|model| !model.api_key.is_empty() || auth.get(&model.provider).is_some())
-        .filter(|model| !model.output.iter().any(|o| o == "image"))
+        .filter(|model| model.output.iter().any(|o| o == "text"))
         .collect();
 
     models.sort_by(|left, right| {
