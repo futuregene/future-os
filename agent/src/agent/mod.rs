@@ -197,11 +197,11 @@ impl Loop {
                 };
                 let color = if err_str.is_some() { C_RED } else { C_GREEN };
                 if let Some(ref err) = err_str {
-                    tracing::warn!("\n{}{}{} ✗ {:-12} {:6}ms  {}",
+                    tracing::error!("\n{}{}{} ✗ {:-12} {:6}ms  {}",
                         color, tag, C_RESET, tool_name, duration, err
                     );
                 } else {
-                    tracing::warn!("\n{}{}{} ✓ {:-12} {:6}ms",
+                    tracing::info!("\n{}{}{} ✓ {:-12} {:6}ms",
                         color, tag, C_RESET, tool_name, duration
                     );
                 }

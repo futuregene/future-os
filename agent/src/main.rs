@@ -97,7 +97,7 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
         })
         .unwrap_or_default();
     if resolved_model.is_empty() {
-        tracing::warn!("future-agent: no model configured yet — starting the gRPC server \
+        tracing::info!("future-agent: no model configured yet — starting the gRPC server \
              anyway so a client can log in and pick a model. Add an API key via \
              'future auth login' or the desktop app, or configure a provider in \
              ~/.future/agent/models.json."

@@ -62,7 +62,7 @@ impl Loop {
         let mut retry_attempt = 0;
 
         if self.verbose {
-            tracing::warn!("[agent] starting run model={} msgs={} tools={}",
+            tracing::info!("[agent] starting run model={} msgs={} tools={}",
                 self.model,
                 messages.len(),
                 tool_defs.len()
@@ -153,7 +153,7 @@ impl Loop {
             let llm_messages: Vec<Message> = ConvertToLLM(&work_messages);
 
             if self.verbose {
-                tracing::warn!("[agent] turn={} calling LLM model={} msgs={} tools={} sys_prompt_len={} msg_chars={}",
+                tracing::info!("[agent] turn={} calling LLM model={} msgs={} tools={} sys_prompt_len={} msg_chars={}",
                     turn,
                     self.model,
                     llm_messages.len(),
@@ -320,6 +320,7 @@ impl Loop {
                     }
                     "thinking_end" => {
                         if self.verbose {
+                            eprintln!(); // blank line after thinking
                         }
                         if let Some(ref bus) = self.event_bus {
                             bus.emit(thinking_end());
@@ -618,7 +619,7 @@ impl Loop {
                     ));
                 }
                 if self.verbose {
-                    tracing::warn!("[agent] complete turns={} output_len={}",
+                    tracing::info!("[agent] complete turns={} output_len={}",
                         turn + 1,
                         assistant_text.len()
                     );
@@ -628,7 +629,7 @@ impl Loop {
 
             // Execute tools
             if self.verbose {
-                tracing::warn!("[agent] turn={} executing {} tools: {}",
+                tracing::info!("[agent] turn={} executing {} tools: {}",
                     turn,
                     tool_calls.len(),
                     tool_calls
