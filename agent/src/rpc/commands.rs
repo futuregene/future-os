@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use super::{
-    AppState, ApprovalDecision, ApprovalDecisionStatus, RpcCommand, RpcResponse, ServerSession,
-    SseBroadcaster, generate_session_html, get_state_internal,
+    generate_session_html, get_state_internal, AppState, ApprovalDecision, ApprovalDecisionStatus,
+    RpcCommand, RpcResponse, ServerSession, SseBroadcaster,
 };
 
 pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
