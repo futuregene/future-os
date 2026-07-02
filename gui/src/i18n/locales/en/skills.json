@@ -1,0 +1,30 @@
+{
+  "title": "Skills",
+  "subtitle": "Manage the skills available to the Agent: install, uninstall, and browse the skill marketplace.",
+  "tab": {
+    "installed": "Installed",
+    "all": "All"
+  },
+  "installed": {
+    "emptyTitle": "No skills installed yet",
+    "emptyDetail": "Browse the skill marketplace under \"All\" and install one."
+  },
+  "all": {
+    "loadError": "Failed to load the skill marketplace: ",
+    "retry": "Retry",
+    "emptyTitle": "The skill marketplace is empty",
+    "emptyDetail": "Try again later, or check that the platform connection is working."
+  },
+  "install": {
+    "installing": "Installing...",
+    "install": "Install",
+    "noVersion": "No version"
+  },
+  "uninstall": {
+    "uninstalling": "Uninstalling...",
+    "uninstall": "Uninstall",
+    "cancel": "Cancel",
+    "confirm": "Confirm uninstall"
+  },
+  "loading": "Loading..."
+}

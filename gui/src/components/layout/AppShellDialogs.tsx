@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredThread, ThreadCleanupSummary } from "../../integrations/storage/threadStore";
+import { useTranslation } from "react-i18next";
 import { Button } from "../ui/Button";
 import { Dialog } from "../ui/Dialog";
 
@@ -35,10 +36,11 @@ export function AppShellDialogs({
   setDeleteDialog,
   setRenameDialog,
 }: AppShellDialogsProps) {
+  const { t } = useTranslation("layout");
   return (
     <>
       <Dialog
-        description="Give this conversation a short name that will be easy to find in the sidebar."
+        description={t("appShellDialogs.renameDescription")}
         footer={(
           <>
             <Button
@@ -47,7 +49,7 @@ export function AppShellDialogs({
               type="button"
               variant="ghost"
             >
-              Cancel
+              {t("common:cancel")}
             </Button>
             <Button
               disabled={renameDialog?.submitting}
@@ -55,16 +57,16 @@ export function AppShellDialogs({
               type="button"
               variant="primary"
             >
-              {renameDialog?.submitting ? "Saving..." : "Save"}
+              {renameDialog?.submitting ? t("appShellDialogs.saving") : t("common:save")}
             </Button>
           </>
         )}
         onClose={() => setRenameDialog(null)}
         open={Boolean(renameDialog)}
-        title="Rename Chat"
+        title={t("appShellDialogs.renameTitle")}
       >
         <label className="block text-sm font-medium text-ink-soft" htmlFor="thread-title">
-          Name
+          {t("appShellDialogs.nameLabel")}
         </label>
         <input
           autoFocus
@@ -84,7 +86,7 @@ export function AppShellDialogs({
         {renameDialog?.error ? <div className="mt-2 text-xs leading-5 text-danger">{renameDialog.error}</div> : null}
       </Dialog>
       <Dialog
-        description={deleteDialog ? deleteThreadDescription(deleteDialog.thread) : undefined}
+        description={deleteDialog ? deleteThreadDescription(deleteDialog.thread, t) : undefined}
         footer={(
           <>
             <Button
@@ -93,7 +95,7 @@ export function AppShellDialogs({
               type="button"
               variant="ghost"
             >
-              Cancel
+              {t("common:cancel")}
             </Button>
             <Button
               disabled={deleteDialog?.submitting}
@@ -101,13 +103,13 @@ export function AppShellDialogs({
               type="button"
               variant="danger"
             >
-              {deleteDialog?.submitting ? "Deleting..." : "Delete"}
+              {deleteDialog?.submitting ? t("appShellDialogs.deleting") : t("common:delete")}
             </Button>
           </>
         )}
         onClose={() => setDeleteDialog(null)}
         open={Boolean(deleteDialog)}
-        title="Delete Chat"
+        title={t("appShellDialogs.deleteTitle")}
       >
         <div className="space-y-3">
           <div className="rounded-md border border-line-soft bg-surface-subtle p-3 text-sm text-ink">
@@ -126,18 +128,19 @@ export function AppShellDialogs({
 }
 
 function ArtifactCount({ count }: { count: number }) {
+  const { t } = useTranslation("layout");
   return (
     <div className="flex items-center justify-between rounded-md border border-line-soft bg-surface px-3 py-2 text-sm">
-      <span className="text-ink-soft">Artifacts</span>
+      <span className="text-ink-soft">{t("appShellDialogs.artifacts")}</span>
       <span className="font-semibold text-ink">{count}</span>
     </div>
   );
 }
 
-function deleteThreadDescription(thread: StoredThread) {
+function deleteThreadDescription(thread: StoredThread, t: (key: string) => string) {
   if (thread.mode === "workspace") {
-    return "This removes only the chat. Workspace files will not be changed.";
+    return t("appShellDialogs.deleteWorkspaceDescription");
   }
 
-  return "This chat will be removed from the sidebar.";
+  return t("appShellDialogs.deleteChatDescription");
 }

@@ -1,3 +1,4 @@
+import type { TFunction } from "i18next";
 import type {
   GitReview,
   GitReviewFile,
@@ -6,6 +7,7 @@ import type {
 } from "../../integrations/storage/types";
 import { AlertTriangle, GitBranch } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { DiffView } from "../../components/ui/DiffView";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { Select } from "../../components/ui/Select";
@@ -37,6 +39,7 @@ export function ReviewPanel({
   reviewBase: ReviewBase;
   threadId: string;
 }) {
+  const { t } = useTranslation("review");
   const isGit = review?.isGitWorkspace ?? false;
   const [activeView, setActiveView] = useState<ReviewView>(isGit ? "git_changes" : "last_run");
   const [runReview, setRunReview] = useState<LastRunReviewData | null>(null);
@@ -112,7 +115,7 @@ export function ReviewPanel({
   if (!isGit) {
     return (
       <div className="space-y-3">
-        <div className="border-b border-line-soft pb-3 text-xs font-medium text-ink-muted">上一轮变更</div>
+        <div className="border-b border-line-soft pb-3 text-xs font-medium text-ink-muted">{t("lastRunHeading")}</div>
         {lastRun}
       </div>
     );
@@ -134,8 +137,8 @@ export function ReviewPanel({
           )
         : null}
       <div className="grid grid-cols-2 gap-1 rounded-md bg-surface p-1">
-        <ViewTab active={activeView === "git_changes"} label="Git changes" onClick={() => setActiveView("git_changes")} />
-        <ViewTab active={activeView === "last_run"} label="上一轮变更" onClick={() => setActiveView("last_run")} />
+        <ViewTab active={activeView === "git_changes"} label={t("tab.gitChanges")} onClick={() => setActiveView("git_changes")} />
+        <ViewTab active={activeView === "last_run"} label={t("tab.lastRun")} onClick={() => setActiveView("last_run")} />
       </div>
       {activeView === "last_run"
         ? lastRun
@@ -159,6 +162,7 @@ function ViewTab({ active, label, onClick }: { active: boolean; label: string; o
 }
 
 function WorkingTreeReview({ files }: { files: GitReviewFile[] }) {
+  const { t } = useTranslation("review");
   // Files default collapsed; open state is keyed by path.
   const { allOpen, isOpen, toggle, toggleAll } = useExpandableFiles(files, file => file.path);
 
@@ -169,7 +173,7 @@ function WorkingTreeReview({ files }: { files: GitReviewFile[] }) {
         : null}
       <div className="space-y-3">
         {files.length === 0
-          ? <EmptyState title="工作树没有未提交变化" detail="当前分支相对所选 base 没有变化。" />
+          ? <EmptyState title={t("workingTree.emptyTitle")} detail={t("workingTree.emptyDetail")} />
           : files.map(file => (
               <GitFileDiff
                 file={file}
@@ -184,10 +188,11 @@ function WorkingTreeReview({ files }: { files: GitReviewFile[] }) {
 }
 
 function ExpandCollapseAll({ allOpen, onToggle }: { allOpen: boolean; onToggle: () => void }) {
+  const { t } = useTranslation("review");
   return (
     <div className="flex items-center justify-end">
       <button className="text-xs text-ink-muted transition-colors hover:text-ink" onClick={onToggle} type="button">
-        {allOpen ? "全部收起" : "全部展开"}
+        {allOpen ? t("collapseAll") : t("expandAll")}
       </button>
     </div>
   );
@@ -208,21 +213,22 @@ function LastRunReview({
   retrying: boolean;
   review: LastRunReviewData | null;
 }) {
+  const { t } = useTranslation("review");
   // Files default collapsed; open state is keyed by file-change id.
   const files = review?.files ?? [];
   const { allOpen, isOpen, toggle, toggleAll } = useExpandableFiles(files, file => file.id);
 
   if (changePreview === "unsupported_too_large")
-    return <EmptyState title="目录过大，已关闭改动预览" detail="该 Workspace 文件过多，暂不生成改动预览。" />;
+    return <EmptyState title={t("lastRun.tooLargeTitle")} detail={t("lastRun.tooLargeDetail")} />;
 
   if (loading && !review)
-    return <div className="rounded-md border border-line-soft bg-surface p-3 text-sm text-ink-muted">加载上一轮变更…</div>;
+    return <div className="rounded-md border border-line-soft bg-surface p-3 text-sm text-ink-muted">{t("lastRun.loading")}</div>;
 
   if (error)
     return <div className="rounded-md border border-danger-line bg-danger-soft p-3 text-sm text-danger">{error}</div>;
 
   if (!review)
-    return <EmptyState title="还没有可供审查的上一轮运行" detail="完成一轮 Agent 运行后，文件变化会显示在这里。" />;
+    return <EmptyState title={t("lastRun.noReviewTitle")} detail={t("lastRun.noReviewDetail")} />;
 
   const { changeset } = review;
   return (
@@ -233,8 +239,8 @@ function LastRunReview({
         <div className="mt-1 text-xs text-ink-muted">
           {formatTime(storedTimeToIso(changeset.createdAt))}
           {" · "}
-          {changeset.filesChanged}
-          {" 个文件 "}
+          {t("lastRun.filesChanged", { count: changeset.filesChanged })}
+          {" "}
           <span className="text-success">{`+${changeset.additions}`}</span>
           {" "}
           <span className="text-danger">{`-${changeset.deletions}`}</span>
@@ -245,7 +251,7 @@ function LastRunReview({
         : null}
       <div className="space-y-2">
         {files.length === 0
-          ? <EmptyState title="上一轮没有文件变化" detail="该轮运行没有产生工作区文件变化。" />
+          ? <EmptyState title={t("lastRun.noFilesTitle")} detail={t("lastRun.noFilesDetail")} />
           : files.map(file => (
               <ChangesetFileChange
                 file={file}
@@ -268,17 +274,18 @@ function RunReviewBanners({
   retrying: boolean;
   review: LastRunReviewData;
 }) {
+  const { t } = useTranslation("review");
   const banners: Array<{ key: string; text: string; retry?: boolean }> = [];
   if (review.overlapped)
-    banners.push({ key: "overlapped", text: "本轮运行期间该 Workspace 有其他运行，部分变更可能来自并发运行" });
+    banners.push({ key: "overlapped", text: t("banner.overlapped") });
   if (review.confidence === "recovered")
-    banners.push({ key: "recovered", text: "应用重启后恢复的快照，变更归属可能不精确" });
+    banners.push({ key: "recovered", text: t("banner.recovered") });
   if (review.snapshotStatus === "partial")
-    banners.push({ key: "partial", text: "部分文件因大小限制未生成 diff" });
+    banners.push({ key: "partial", text: t("banner.partial") });
   if (review.snapshotStatus === "incomplete")
-    banners.push({ key: "incomplete", text: "本轮快照不完整，可点击重试", retry: true });
+    banners.push({ key: "incomplete", text: t("banner.incomplete"), retry: true });
   if (review.snapshotStatus === "unavailable")
-    banners.push({ key: "unavailable", text: "本轮变更快照不可用" });
+    banners.push({ key: "unavailable", text: t("banner.unavailable") });
 
   if (banners.length === 0)
     return null;
@@ -300,7 +307,7 @@ function RunReviewBanners({
                   onClick={onRetry}
                   type="button"
                 >
-                  {retrying ? "重试中…" : "重试"}
+                  {retrying ? t("banner.retrying") : t("banner.retry")}
                 </button>
               )
             : null}
@@ -319,17 +326,18 @@ function ChangesetFileChange({
   onToggle: () => void;
   open: boolean;
 }) {
+  const { t } = useTranslation("review");
   return (
     <CollapsibleFileDiff
       title={(
         <>
           {file.previousPath ? `${file.previousPath} → ` : ""}
-          {file.path ?? "Unknown file"}
+          {file.path ?? t("file.unknown")}
         </>
       )}
       headerExtras={(
         <span className="rounded bg-surface-subtle px-1.5 py-0.5 text-[11px] text-ink-muted">
-          {changeTypeLabel(file)}
+          {changeTypeLabel(file, t)}
         </span>
       )}
       additions={file.additions}
@@ -339,33 +347,34 @@ function ChangesetFileChange({
       onToggle={onToggle}
     >
       {file.omissionReason === "sensitive"
-        ? <div className="px-3 py-3 text-xs text-warning">敏感文件发生变化，内容未保存。</div>
+        ? <div className="px-3 py-3 text-xs text-warning">{t("file.sensitiveContent")}</div>
         : file.binary
           ? <BinaryFileDetail file={file} />
           : file.diff
             ? <DiffView diff={file.diff} />
-            : <div className="px-3 py-3 text-xs text-ink-muted">无文本 diff。</div>}
+            : <div className="px-3 py-3 text-xs text-ink-muted">{t("file.noTextDiff")}</div>}
       {file.diffTruncated
-        ? <div className="px-3 py-2 text-xs text-warning">diff 过大，已截断显示。</div>
+        ? <div className="px-3 py-2 text-xs text-warning">{t("file.diffTruncated")}</div>
         : null}
     </CollapsibleFileDiff>
   );
 }
 
 function BinaryFileDetail({ file }: { file: StoredReviewFileChange }) {
+  const { t } = useTranslation("review");
   return (
     <div className="space-y-1 px-3 py-3 text-xs text-ink-muted">
-      <div>二进制文件，不支持文本 diff。</div>
+      <div>{t("binary.notSupported")}</div>
       {file.mime
         ? (
             <div>
-              类型：
+              {t("binary.type")}
               {file.mime}
             </div>
           )
         : null}
       <div>
-        大小：
+        {t("binary.size")}
         {formatBytes(file.beforeSize)}
         {" → "}
         {formatBytes(file.afterSize)}
@@ -374,22 +383,22 @@ function BinaryFileDetail({ file }: { file: StoredReviewFileChange }) {
   );
 }
 
-function changeTypeLabel(file: StoredReviewFileChange) {
+function changeTypeLabel(file: StoredReviewFileChange, t: TFunction<"review">) {
   if (file.omissionReason === "sensitive")
-    return "敏感文件";
+    return t("changeType.sensitive");
   if (file.binary)
-    return "二进制";
+    return t("changeType.binary");
   switch (file.changeType) {
     case "A":
-      return "已添加";
+      return t("changeType.added");
     case "M":
-      return "已修改";
+      return t("changeType.modified");
     case "D":
-      return "已删除";
+      return t("changeType.deleted");
     case "R":
-      return "已重命名";
+      return t("changeType.renamed");
     case "C":
-      return "已复制";
+      return t("changeType.copied");
     default:
       return file.changeType;
   }
@@ -418,6 +427,7 @@ function ReviewHeader({
   review: GitReview;
   reviewBase: ReviewBase;
 }) {
+  const { t } = useTranslation("review");
   return (
     <div className="space-y-2 border-b border-line-soft pb-3">
       <div className="flex items-center gap-3 text-sm">
@@ -446,7 +456,7 @@ function ReviewHeader({
           )
         : null}
       <div className="grid grid-cols-1 gap-2">
-        <label className="text-xs font-medium text-ink-muted" htmlFor="review-base-select">Diff base</label>
+        <label className="text-xs font-medium text-ink-muted" htmlFor="review-base-select">{t("header.diffBase")}</label>
         <Select
           className="text-ink-soft hover:border-line"
           id="review-base-select"
@@ -454,17 +464,17 @@ function ReviewHeader({
           size="sm"
           value={reviewBase}
         >
-          <option value="head">HEAD</option>
-          <option disabled={!review.upstream} value="upstream">Upstream</option>
-          <option disabled={!review.upstream} value="merge-base">Merge base</option>
-          <option value="custom">Custom commit</option>
+          <option value="head">{t("header.base.head")}</option>
+          <option disabled={!review.upstream} value="upstream">{t("header.base.upstream")}</option>
+          <option disabled={!review.upstream} value="merge-base">{t("header.base.mergeBase")}</option>
+          <option value="custom">{t("header.base.custom")}</option>
         </Select>
         {reviewBase === "custom"
           ? (
               <TextInput
                 className="h-8 w-auto px-2 hover:border-line"
                 onChange={event => onCustomBaseChange(event.target.value)}
-                placeholder="Commit, tag, or branch"
+                placeholder={t("header.customPlaceholder")}
                 value={customBase}
               />
             )
@@ -483,6 +493,7 @@ function GitFileDiff({
   onToggle: () => void;
   open: boolean;
 }) {
+  const { t } = useTranslation("review");
   return (
     <CollapsibleFileDiff
       title={file.path}
@@ -493,7 +504,7 @@ function GitFileDiff({
     >
       {file.diff
         ? <DiffView diff={file.diff} />
-        : <div className="px-3 py-3 text-xs text-ink-muted">No textual diff available.</div>}
+        : <div className="px-3 py-3 text-xs text-ink-muted">{t("git.noTextDiff")}</div>}
     </CollapsibleFileDiff>
   );
 }

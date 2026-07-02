@@ -1,0 +1,83 @@
+{
+  "activityRail": {
+    "settings": "设置",
+    "newChat": "新对话",
+    "models": "模型",
+    "skills": "技能",
+    "remote": "远程",
+    "workspace": "工作区",
+    "chat": "对话",
+    "pinSidebar": "固定侧边栏",
+    "collapseSidebar": "收起侧边栏",
+    "expandSidebar": "展开侧边栏",
+    "newWorkspace": "新建工作区",
+    "noWorkspaceThreads": "暂无工作区对话",
+    "expandWorkspace": "展开工作区",
+    "collapseWorkspace": "收起工作区",
+    "newChatInWorkspace": "在 {{name}} 中新建对话",
+    "chatHeader": "对话",
+    "newChatShort": "新建对话",
+    "noChats": "暂无对话",
+    "archived": "已归档",
+    "running": "运行中",
+    "completed": "已完成",
+    "failed": "失败",
+    "cancelled": "已取消",
+    "threadActions": "{{title}} 的操作",
+    "restore": "恢复",
+    "rename": "重命名",
+    "pin": "置顶",
+    "unpin": "取消置顶",
+    "delete": "删除",
+    "workspaceActions": "{{name}} 的操作",
+    "pinnedHeader": "置顶"
+  },
+  "appShell": {
+    "storeInitFailed": "FutureOS 本地存储初始化失败：",
+    "noWorkspaceSelected": "未选择工作区",
+    "data": "数据",
+    "skill": "技能",
+    "dataPlaceholder": "数据源与凭据将作为下一个资源模块提供。",
+    "skillPlaceholder": "技能将管理内置及工作区级别的 Agent 能力。",
+    "newChat": "新对话"
+  },
+  "appShellDialogs": {
+    "renameTitle": "重命名对话",
+    "renameDescription": "为这个对话取一个简短、便于在侧边栏查找的名称。",
+    "nameLabel": "名称",
+    "saving": "保存中…",
+    "deleteTitle": "删除对话",
+    "deleting": "删除中…",
+    "artifacts": "Artifacts",
+    "deleteWorkspaceDescription": "仅删除此对话，工作区文件不会被更改。",
+    "deleteChatDescription": "此对话将从侧边栏移除。"
+  },
+  "contextPanel": {
+    "runs": "运行",
+    "review": "审查",
+    "artifacts": "工作成果",
+    "panelView": "上下文面板视图",
+    "collapse": "收起上下文面板",
+    "expand": "展开上下文面板",
+    "loading": "正在加载上下文…",
+    "noThreadSelected": "未选择对话"
+  },
+  "leftPanelTitlebarToggle": {
+    "showSidebar": "显示侧边栏"
+  },
+  "approvals": {
+    "autoApproved": "已按设置自动批准。",
+    "approvedInGui": "已在 GUI 中批准。",
+    "rejectedInGui": "已在 GUI 中拒绝。"
+  },
+  "threadDialogs": {
+    "titleEmpty": "标题不能为空。"
+  },
+  "workspaceDialogs": {
+    "renameTitle": "重命名工作区",
+    "renameDescription": "为这个工作区取一个便于识别的名称。",
+    "deleteTitle": "删除工作区",
+    "deleteDescription": "此工作区及其对话将从侧边栏移除，磁盘上的文件不会被删除。",
+    "nameEmpty": "名称不能为空。"
+  }
+}
