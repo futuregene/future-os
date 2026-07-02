@@ -200,18 +200,22 @@ export async function loadApiKey(): Promise<string> {
     if (!isRecord(auth)) throw new Error("auth.json must be a JSON object");
 
     const future = auth[FUTURE_PROVIDER];
-    if (!isRecord(future)) throw new Error(`No "${FUTURE_PROVIDER}" provider in auth.json`);
+    if (!isRecord(future)) {
+      throw new Error(`Not logged in. Run "future auth login" first, or set FUTURE_API_KEY.`);
+    }
 
     const key = typeof (future as Record<string, unknown>).key === "string"
       ? (future as Record<string, unknown>).key as string
       : undefined;
-    if (!key) throw new Error(`No API key for "${FUTURE_PROVIDER}" in auth.json`);
+    if (!key) {
+      throw new Error(`Not logged in. Run "future auth login" first, or set FUTURE_API_KEY.`);
+    }
     return key;
   } catch (err) {
     const testKey = process.env["FUTURE_API_TEST_KEY"];
     if (testKey) return testKey;
     if (isNodeError(err) && err.code === "ENOENT") {
-      throw new Error(`No API key. Run "future auth login" first, or set FUTURE_API_KEY.`);
+      throw new Error(`Not logged in. Run "future auth login" first, or set FUTURE_API_KEY.`);
     }
     throw err;
   }
