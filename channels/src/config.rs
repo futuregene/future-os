@@ -95,12 +95,17 @@ fn default_grpc_addr() -> String {
     "http://127.0.0.1:50051".into()
 }
 fn default_cwd() -> String {
-    std::env::var("HOME")
-        .unwrap_or_else(|_| "/tmp".into())
+    std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())
 }
-fn default_model() -> String { "future/deepseek-v4-pro".into() }
-fn default_thinking_level() -> String { "xhigh".into() }
-fn default_permission_level() -> String { "all".into() }
+fn default_model() -> String {
+    "future/deepseek-v4-pro".into()
+}
+fn default_thinking_level() -> String {
+    "xhigh".into()
+}
+fn default_permission_level() -> String {
+    "all".into()
+}
 fn default_domain() -> String {
     "feishu".into()
 }

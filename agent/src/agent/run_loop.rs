@@ -62,7 +62,8 @@ impl Loop {
         let mut retry_attempt = 0;
 
         if self.verbose {
-            tracing::info!("[agent] starting run model={} msgs={} tools={}",
+            tracing::info!(
+                "[agent] starting run model={} msgs={} tools={}",
                 self.model,
                 messages.len(),
                 tool_defs.len()
@@ -615,7 +616,8 @@ impl Loop {
                     ));
                 }
                 if self.verbose {
-                    tracing::info!("[agent] complete turns={} output_len={}",
+                    tracing::info!(
+                        "[agent] complete turns={} output_len={}",
                         turn + 1,
                         assistant_text.len()
                     );
@@ -625,7 +627,8 @@ impl Loop {
 
             // Execute tools
             if self.verbose {
-                tracing::info!("[agent] turn={} executing {} tools: {}",
+                tracing::info!(
+                    "[agent] turn={} executing {} tools: {}",
                     turn,
                     tool_calls.len(),
                     tool_calls

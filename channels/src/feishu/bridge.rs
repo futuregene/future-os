@@ -377,10 +377,14 @@ impl Bridge {
             }
         }
         if !self.agent_cfg.thinking_level.is_empty() {
-            let _ = agent.set_thinking_level(&sid, &self.agent_cfg.thinking_level).await;
+            let _ = agent
+                .set_thinking_level(&sid, &self.agent_cfg.thinking_level)
+                .await;
         }
         if !self.agent_cfg.permission_level.is_empty() {
-            let _ = agent.set_permission_level(&sid, &self.agent_cfg.permission_level).await;
+            let _ = agent
+                .set_permission_level(&sid, &self.agent_cfg.permission_level)
+                .await;
         }
         let cache = agent
             .get_state(&sid)
