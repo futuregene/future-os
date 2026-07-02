@@ -145,6 +145,12 @@ message RpcCommand {
   // List of model IDs that the user is allowed to select.  Empty means
   // all models are available.
   repeated string enabled_models = 130;
+
+  // ── get_events_since (P1) ──────────────────────────────────────────────
+  // Replay current-run events with idx > since_idx; run_id scopes the request
+  // (a mismatch means the run rolled over and the caller must realign).
+  int64 since_idx = 140;
+  string run_id = 141;
 }
 
 // ── ImageContent ───────────────────────────────────────────────────────────
@@ -327,6 +333,11 @@ message StreamEvent {
   //   approval_request: {"approval_request_id": "...", "tool_name": "bash", ...}
   //   agent_end:     {"error": "..."}  (error present only on failure)
   string data = 2;
+
+  // P1: client-side ordering/dedup. run_id is unique per user run (assigned once
+  // at the is_streaming false→true edge); idx is monotonic within a run.
+  string run_id = 3;
+  int64 idx = 4;
 }
 `;
 
