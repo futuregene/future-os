@@ -22,6 +22,7 @@ Usage:
   future skills list
   future skills install <name> [--version <ver>] [--scope <app|project|global>]
   future skills uninstall <name> [--scope <app|project|global>]
+  future skills install-builtin [--scope <app|project|global>]
   future tui [tui options]
 
 Run 'future run --help' for run command options.
