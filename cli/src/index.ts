@@ -9,10 +9,16 @@ import { skills, isSkillsCommand } from "./commands/skills.js";
 import { account, isAccountCommand } from "./commands/account.js";
 import { run as runCommand } from "./commands/run.js";
 import { printHelp } from "./help.js";
+import { VERSION } from "./version.generated.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const [group, command, ...rest] = args;
+
+  if (group === "--version" || group === "-v" || group === "version") {
+    console.log(`future v${VERSION}`);
+    return;
+  }
 
   if (group === "auth" && command === "login") {
     const urlIdx = rest.indexOf("--url");

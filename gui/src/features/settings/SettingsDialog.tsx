@@ -4,8 +4,8 @@ import { Boxes, RotateCcw, Settings2, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Overlay } from "../../components/ui/Overlay";
-import { invokeCommand } from "../../integrations/tauri/invoke";
 import { cn } from "../../lib/cn";
+import { useBuildInfo } from "../../lib/useBuildInfo";
 import { GeneralPage } from "./GeneralPage";
 import { ModelsPage } from "./ModelsPage";
 import { ProvidersPage } from "./ProvidersPage";
@@ -56,7 +56,7 @@ export function SettingsDialog({
 }) {
   const { t } = useTranslation("settings");
   const [tab, setTab] = useState<SettingsTab>(initialTab);
-  const [version, setVersion] = useState("");
+  const build = useBuildInfo();
 
   // Reset to the requested tab each time the dialog opens.
   useEffect(() => {
@@ -64,13 +64,6 @@ export function SettingsDialog({
       setTab(initialTab);
     }
   }, [open, initialTab]);
-
-  useEffect(() => {
-    if (!open || version) {
-      return;
-    }
-    void invokeCommand<string>("app_version").then(setVersion).catch(() => undefined);
-  }, [open, version]);
 
   return (
     <Overlay onClose={onClose} open={open}>
@@ -107,11 +100,16 @@ export function SettingsDialog({
           </div>
           <div className="px-2 pt-3 text-xs text-ink-muted">
             <div>{t("dialog.appName")}</div>
-            {version
+            {build.data
               ? (
                   <div className="mt-0.5">
-                    {t("dialog.version", { version })}
+                    {t("dialog.version", { version: build.data.version })}
                   </div>
+                )
+              : null}
+            {build.data && !build.data.isRelease
+              ? (
+                  <div className="mt-0.5 text-warning">{t("dialog.testBuild")}</div>
                 )
               : null}
           </div>

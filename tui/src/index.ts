@@ -40,6 +40,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { App } from "./app.js";
 import { GrpcClient } from "./rpc/grpc-client.js";
+import { VERSION } from "./version.generated.js";
 
 // ─── CLI Types ─────────────────────────────────────────────────────
 
@@ -695,7 +696,7 @@ const args = parseArgs(process.argv.slice(2));
 
 // Handle --version
 if (args.version) {
-  console.log("future-tui TUI v0.3.0");
+  console.log(`future-tui TUI v${VERSION}`);
   process.exit(0);
 }
 

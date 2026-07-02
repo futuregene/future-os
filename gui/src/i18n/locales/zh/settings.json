@@ -11,6 +11,7 @@
     "ariaLabel": "设置",
     "appName": "FutureOS Desktop",
     "version": "v{{version}}",
+    "testBuild": "测试版",
     "nav": {
       "desktop": "桌面",
       "server": "服务器",

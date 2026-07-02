@@ -4,6 +4,7 @@ import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { useAsyncResource } from "../../lib/useAsyncResource";
+import { useBuildInfo } from "../../lib/useBuildInfo";
 import { SettingsSection } from "./SettingsPrimitives";
 
 type EnvironmentId = "production" | "test";
@@ -99,6 +100,9 @@ function EnvironmentSection() {
 
 export function ResetPage() {
   const { t } = useTranslation("settings");
+  // The environment switcher is a dev-build affordance; release builds are
+  // production-locked (the backend also refuses non-production switches).
+  const build = useBuildInfo();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -120,7 +124,7 @@ export function ResetPage() {
 
   return (
     <div className="space-y-6">
-      <EnvironmentSection />
+      {build.data && !build.data.isRelease ? <EnvironmentSection /> : null}
 
       <SettingsSection title={t("reset.resetTitle")}>
         <div className="space-y-3 rounded-lg border border-line-soft p-4">

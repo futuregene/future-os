@@ -1,4 +1,4 @@
-name: Build FutureOS apps (GUI + TUI + CLI + agent)
+name: Build FutureOS app
 
 on:
   workflow_dispatch:
@@ -7,9 +7,35 @@ on:
       - "v*"
 
 jobs:
+  # Compute the build version once (single source of truth: scripts/version.mjs).
+  # A `vX.Y.Z` tag → release ("X.Y.Z"); anything else → dev ("0.0.0-dev.<hash>").
+  # Downstream jobs read these outputs; is_release gates the release job.
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      is_release: ${{ steps.v.outputs.is_release }}
+      bundle_version: ${{ steps.v.outputs.bundle_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Resolve version
+        id: v
+        run: node scripts/version.mjs --github-output
+
   build:
     name: Build ${{ matrix.name }}
+    needs: version
     runs-on: ${{ matrix.os }}
+    # Injected into every build step so Rust build.rs (FUTURE_VERSION → agent,
+    # GUI) and the TS build scripts (generated version module) all agree.
+    env:
+      FUTURE_VERSION: ${{ needs.version.outputs.version }}
     strategy:
       fail-fast: false
       matrix:
@@ -18,15 +44,15 @@ jobs:
             os: macos-latest
             artifact_name: futureos-macos
             # macOS ships as a .dmg: it preserves the .app bundle (exec bit,
-            # symlinks) that a raw upload-artifact zip would strip. The TUI/CLI
-            # binaries are injected into the .app alongside the agent sidecar.
+            # symlinks) that a raw upload-artifact zip would strip. The CLI
+            # binary is injected into the .app alongside the agent sidecar.
             bundle_path: gui/src-tauri/target/release/bundle/dmg/*.dmg
           - name: Windows
             os: windows-latest
             artifact_name: futureos-windows
             # Both installers (NSIS setup .exe + MSI). Coexists with the portable
             # zip (uploaded as futureos-windows-portable below), which carries the
-            # GUI, agent, TUI, and CLI in one directory.
+            # GUI, agent, and CLI in one directory.
             bundle_path: |
               gui/src-tauri/target/release/bundle/nsis/*.exe
               gui/src-tauri/target/release/bundle/msi/*.msi
@@ -46,11 +72,10 @@ jobs:
           cache: npm
           cache-dependency-path: |
             gui/package-lock.json
-            tui/package-lock.json
             cli/package-lock.json
 
-      # Bun is required to build the TUI (proto codegen) and to compile the
-      # TUI/CLI into standalone single-file binaries (bun build --compile).
+      # Bun compiles the CLI into a standalone single-file binary
+      # (bun build --compile). The TUI is not packaged here (local test only).
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -89,22 +114,19 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install protobuf
 
-      # `choco install protoc` exits 0 but doesn't reliably expose protoc on PATH
-      # for the cargo/Tauri build (the failure only surfaces on a rust-cache miss,
-      # when build.rs actually re-runs proto codegen). setup-protoc installs it and
-      # puts it on PATH deterministically. repo-token avoids GitHub API rate limits.
+      # protoc for the cargo/Tauri proto codegen (only re-runs on a rust-cache
+      # miss, when build.rs regenerates). taiki-e/install-action is a composite
+      # action (no Node runtime), so unlike arduino/setup-protoc it doesn't emit
+      # the Node 20 deprecation warning; it fetches protoc from upstream releases
+      # and puts it on PATH. `choco install protoc` was unreliable at exposing it.
       - name: Install Windows protoc
         if: runner.os == 'Windows'
-        uses: arduino/setup-protoc@v3
+        uses: taiki-e/install-action@v2
         with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tool: protoc
 
       - name: Install npm dependencies (GUI)
         working-directory: gui
-        run: npm ci
-
-      - name: Install npm dependencies (TUI)
-        working-directory: tui
         run: npm ci
 
       - name: Install npm dependencies (CLI)
@@ -131,22 +153,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path gui/src-tauri/binaries | Out-Null
           Copy-Item "agent/target/release/future-agent.exe" "gui/src-tauri/binaries/future-agent-$triple.exe"
 
-      # Compile the TUI into a standalone binary (no Node runtime needed).
-      - name: Build TUI binary (Unix)
-        if: runner.os != 'Windows'
-        working-directory: tui
-        run: |
-          npm run build
-          bun build --compile dist/index.js --outfile dist/future-tui
-
-      - name: Build TUI binary (Windows)
-        if: runner.os == 'Windows'
-        working-directory: tui
-        shell: pwsh
-        run: |
-          npm run build
-          bun build --compile dist/index.js --outfile dist/future-tui.exe
-
       # Compile the CLI into a standalone binary. chromium-bidi is a lazily
       # required optional dep of playwright-core (only the WebDriver-BiDi path,
       # never the default CDP path) — mark it external so the bundle resolves.
@@ -165,15 +171,20 @@ jobs:
           npm run build
           bun build --compile dist/index.js --outfile dist/future-cli.exe --external chromium-bidi
 
+      # Pin the Tauri installer version to the plain semver core (MSI/NSIS reject
+      # SemVer suffixes). The display version keeps the full FUTURE_VERSION.
+      - name: Set Tauri bundle version
+        run: node scripts/version.mjs --set-bundle
+
       - name: Build desktop bundle
         working-directory: gui
         run: npm run tauri:build
 
-      # macOS: co-locate the agent (already a sidecar), TUI, and CLI inside the
+      # macOS: co-locate the agent (already a sidecar) and CLI inside the
       # .app's Contents/MacOS, and ship first-launch (Gatekeeper) instructions in
       # the dmg — the .app is unsigned/un-notarized. Tauri's dmg is read-only, so
       # round-trip it through a read-write image to inject everything.
-      - name: Bundle agent, TUI & CLI into macOS .app (inside dmg)
+      - name: Bundle agent & CLI into macOS .app (inside dmg)
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
@@ -187,12 +198,10 @@ jobs:
           hdiutil attach "$work" -mountpoint "$mnt" -nobrowse -noverify
           app=$(ls -d "$mnt"/*.app | head -n1)
           macos_dir="$app/Contents/MacOS"
-          cp "tui/dist/future-tui" "$macos_dir/future-tui"
           cp "cli/dist/future-cli" "$macos_dir/future-cli"
-          chmod +x "$macos_dir/future-tui" "$macos_dir/future-cli"
+          chmod +x "$macos_dir/future-cli"
           cp "docs/dist/macos-first-launch.txt" "$mnt/请先阅读-如何打开.txt"
-          # Ad-hoc sign the injected binaries first, then re-seal the bundle.
-          codesign --force --sign - "$macos_dir/future-tui"
+          # Ad-hoc sign the injected binary first, then re-seal the bundle.
           codesign --force --sign - "$macos_dir/future-cli"
           codesign --force --sign - "$app"
           hdiutil detach "$mnt"
@@ -206,8 +215,8 @@ jobs:
           if-no-files-found: error
           path: ${{ matrix.bundle_path }}
 
-      # Portable (install-free) Windows build: the GUI exe plus the agent, TUI,
-      # and CLI binaries, all in one directory. The agent sidecar is renamed
+      # Portable (install-free) Windows build: the GUI exe plus the agent and
+      # CLI binaries, all in one directory. The agent sidecar is renamed
       # without the triple (as Tauri does on bundling) so the GUI finds it next
       # to the exe. Requires the WebView2 Evergreen runtime (ships with Win 10/11).
       - name: Assemble Windows portable
@@ -219,7 +228,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           Copy-Item "gui/src-tauri/target/release/futureos.exe" "$dir/FutureOS.exe"
           Copy-Item "gui/src-tauri/binaries/future-agent-$triple.exe" "$dir/future-agent.exe"
-          Copy-Item "tui/dist/future-tui.exe" "$dir/future-tui.exe"
           Copy-Item "cli/dist/future-cli.exe" "$dir/future-cli.exe"
           Copy-Item "docs/dist/windows-portable-README.txt" "$dir/使用说明.txt"
           Compress-Archive -Path "$dir/*" -DestinationPath "FutureOS-portable-windows.zip" -Force
@@ -232,8 +240,8 @@ jobs:
           if-no-files-found: error
           path: FutureOS-portable-windows.zip
 
-      # Portable (install-free) Linux build: the GUI binary plus the agent, TUI,
-      # and CLI binaries, all in one directory.
+      # Portable (install-free) Linux build: the GUI binary plus the agent and
+      # CLI binaries, all in one directory.
       - name: Assemble Linux portable
         if: runner.os == 'Linux'
         run: |
@@ -242,7 +250,6 @@ jobs:
           mkdir -p "$dir"
           cp "gui/src-tauri/target/release/futureos" "$dir/futureos"
           cp "agent/target/release/future-agent" "$dir/future-agent"
-          cp "tui/dist/future-tui" "$dir/future-tui"
           cp "cli/dist/future-cli" "$dir/future-cli"
           chmod +x "$dir"/*
           tar -czf FutureOS-portable-linux.tar.gz -C "$dir" .
@@ -254,3 +261,28 @@ jobs:
           name: futureos-linux-portable
           if-no-files-found: error
           path: FutureOS-portable-linux.tar.gz
+
+  # Publish a GitHub Release with all platform bundles attached. Runs only for
+  # release builds (a `vX.Y.Z` tag); manual/dispatch runs are dev and stop at
+  # uploaded artifacts. Release notes are auto-generated from commits/PRs.
+  release:
+    name: Publish release
+    needs: [version, build]
+    if: needs.version.outputs.is_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: release-assets
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: FutureOS ${{ needs.version.outputs.version }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release-assets/**/*

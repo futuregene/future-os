@@ -11,6 +11,7 @@
     "ariaLabel": "Settings",
     "appName": "FutureOS Desktop",
     "version": "v{{version}}",
+    "testBuild": "Test build",
     "nav": {
       "desktop": "Desktop",
       "server": "Server",
