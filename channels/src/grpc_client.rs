@@ -284,7 +284,8 @@ impl AgentClient {
                 level: level.to_string(),
                 ..Default::default()
             },
-        ).await?;
+        )
+        .await?;
         Ok(())
     }
 
