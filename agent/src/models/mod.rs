@@ -75,6 +75,8 @@ pub struct Model {
     pub reasoning: bool,
     #[serde(default)]
     pub input: Vec<String>,
+    #[serde(default)]
+    pub output: Vec<String>,
     #[serde(rename = "ContextWindow")]
     pub context_window: i32,
     #[serde(rename = "MaxTokens", default)]
@@ -115,6 +117,7 @@ pub fn builtin_models() -> Vec<Model> {
             api_key: String::new(),
             reasoning: m.reasoning,
             input: m.input,
+            output: vec!["text".to_string()],
             context_window: m.context_window,
             max_tokens: m.max_tokens,
             cost: Cost {
@@ -283,19 +286,30 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         .iter()
         .any(|p| p == "reasoning" || p == "include_reasoning");
 
-    let input = entry
+    let (input, output) = entry
         .architecture
         .as_ref()
         .and_then(|a| a.modality.as_ref())
         .map(|m| {
-            let input_side = m.split("->").next().unwrap_or(m);
-            input_side
+            let parts: Vec<&str> = m.split("->").collect();
+            let input_str = parts.first().unwrap_or(&"text");
+            let output_str = parts.get(1).unwrap_or(&"text");
+
+            let input: Vec<String> = input_str
                 .split('+')
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
-                .collect()
+                .collect();
+
+            let output: Vec<String> = output_str
+                .split('+')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            (input, output)
         })
-        .unwrap_or_else(|| vec!["text".to_string()]);
+        .unwrap_or_else(|| (vec!["text".to_string()], vec!["text".to_string()]));
 
     let context_window = entry.context_length.map(|v| v as i32).unwrap_or(128000);
 
@@ -332,6 +346,7 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         api_key: String::new(), // Will be resolved from auth_store at runtime
         reasoning,
         input,
+        output,
         context_window,
         max_tokens: 16384,
         cost: Cost {
@@ -469,6 +484,7 @@ fn load_user_models_with_overrides(
                 api_key: api_key.clone(),
                 reasoning: model.reasoning.unwrap_or(false),
                 input: model.modalities.unwrap_or_default(),
+                output: vec!["text".to_string()],
                 context_window: model
                     .context_window
                     .or_else(|| model.limit.as_ref().and_then(|l| l.context))
