@@ -22,7 +22,7 @@ pub struct AgentConfig {
     pub cwd: String,
     /// Default model for channel sessions (e.g. "deepseek-v4-flash").
     /// If empty, the agent's boot-time default is used.
-    #[serde(default)]
+    #[serde(default = "default_model")]
     pub model: String,
     /// Default thinking level: "off", "minimal", "low", "medium", "high", "xhigh".
     #[serde(default = "default_thinking_level")]
@@ -95,11 +95,10 @@ fn default_grpc_addr() -> String {
     "http://127.0.0.1:50051".into()
 }
 fn default_cwd() -> String {
-    std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("/tmp"))
-        .to_string_lossy()
-        .into()
+    std::env::var("HOME")
+        .unwrap_or_else(|_| "/tmp".into())
 }
+fn default_model() -> String { "future/deepseek-v4-pro".into() }
 fn default_thinking_level() -> String { "xhigh".into() }
 fn default_permission_level() -> String { "all".into() }
 fn default_domain() -> String {
@@ -161,7 +160,7 @@ impl Default for AgentConfig {
         Self {
             grpc_addr: default_grpc_addr(),
             cwd: default_cwd(),
-            model: String::new(),
+            model: default_model(),
             thinking_level: default_thinking_level(),
             permission_level: default_permission_level(),
         }
