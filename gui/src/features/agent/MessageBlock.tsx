@@ -12,19 +12,26 @@ import { MessageMeta } from "./MessageMeta";
 
 interface MessageBlockProps {
   message: AgentMessage;
+  /** Whether this row is the hovered one (single-owner state in MessageList). */
+  hovered: boolean;
   /** Whether this is the last message in the thread. */
   isLast?: boolean;
   recoverySource?: AgentMessage | null;
   onContinue?: (message: AgentMessage) => void;
+  onHover: (id: string) => void;
+  onLeave: (id: string) => void;
   onRetry?: (message: AgentMessage, source: AgentMessage) => void;
   workspaceId?: string | null;
 }
 
 export function MessageBlock({
   message,
+  hovered,
   isLast,
   recoverySource,
   onContinue,
+  onHover,
+  onLeave,
   onRetry,
   workspaceId,
 }: MessageBlockProps) {
@@ -45,7 +52,11 @@ export function MessageBlock({
 
   return (
     <article className="flex justify-center">
-      <div className="group/msg min-w-0 w-full max-w-3xl">
+      <div
+        className="min-w-0 w-full max-w-3xl"
+        onPointerLeave={() => onLeave(message.id)}
+        onPointerOver={() => onHover(message.id)}
+      >
         <div className={cn("mb-1 flex items-center gap-2", isUser && "justify-end")}>
           <span className="text-sm font-semibold text-ink">
             {message.authorKey ? t(message.authorKey) : message.author}
@@ -126,13 +137,22 @@ export function MessageBlock({
           {copyableText
             ? (
                 <CopyButton
-                  className="pointer-events-none opacity-0 transition-opacity duration-200 group-hover/msg:pointer-events-auto group-hover/msg:opacity-100"
+                  // `will-change-[opacity]` keeps the button on its own compositor
+                  // layer at all times: WKWebView (tauri#12800 family) drops repaints
+                  // of in-flow content until a window resize, so hide/show — and the
+                  // fade, which is only safe because the compositor animates a
+                  // promoted layer's opacity — must never depend on a repaint. Do not
+                  // remove the will-change without re-testing stale-paint ghosts.
+                  className={cn(
+                    "will-change-[opacity] transition-opacity duration-200",
+                    hovered ? "opacity-100" : "pointer-events-none opacity-0",
+                  )}
                   copied={copiedKey === "default"}
                   onCopy={() => void copy(copyableText)}
                 />
               )
             : null}
-          {!isUser ? <MessageMeta message={message} /> : null}
+          {!isUser ? <MessageMeta message={message} visible={hovered} /> : null}
         </div>
       </div>
     </article>
