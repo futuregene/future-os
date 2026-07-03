@@ -78,6 +78,7 @@
     "startAgentForModels": "Start Future Agent to load models.",
     "thinkingLevel": "Thinking level",
     "send": "Send",
+    "stop": "Stop",
     "noReferences": "No references found.",
     "approval": "Approval mode",
     "approvalAuto": "Auto-approve",
@@ -132,6 +133,7 @@
     "retry": "Retry",
     "continue": "Continue",
     "generating": "Generating",
+    "stopped": "Stopped",
     "tokens": "{{formattedCount}} tokens"
   }
 }

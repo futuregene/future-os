@@ -33,6 +33,9 @@ export default {
         info: "#1d4ed8",
         "info-soft": "#eff6ff",
         "info-line": "#bfdbfe",
+        // ─── Activity ─────────────────────────────────────────
+        // Live "generating" indicator (streaming reply) — amber ping dot.
+        generating: "#f59e0b",
         // ─── Diff ─────────────────────────────────────────────
         "diff-add": "#e6ffec",
         "diff-add-line": "#aadfb8",

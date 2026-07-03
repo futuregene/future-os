@@ -4,7 +4,7 @@ import type { ReferenceTargetSearchResult } from "../../integrations/storage/thr
 import type { MessageAttachment } from "./agentThreadTypes";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { AlertTriangle, ArrowUp, Beaker, Box, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, ShieldCheck, X } from "lucide-react";
+import { AlertTriangle, ArrowUp, Beaker, Box, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, ShieldCheck, Square, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
@@ -30,6 +30,10 @@ interface ComposerProps {
   onThinkingLevelChange?: (thinkingLevel: string) => void;
   autoApprove?: boolean;
   onToggleAutoApprove?: (value: boolean) => void;
+  /** A reply is streaming: the send button becomes an interrupt button. */
+  sending?: boolean;
+  /** Interrupt the in-flight reply (only meaningful while `sending`). */
+  onAbort?: () => void;
   placeholder?: string;
   textareaClassName?: string;
   workspaceId?: string | null;
@@ -46,6 +50,8 @@ export function Composer({
   onThinkingLevelChange,
   autoApprove,
   onToggleAutoApprove,
+  sending,
+  onAbort,
   placeholder,
   textareaClassName,
   workspaceId,
@@ -493,15 +499,29 @@ export function Composer({
               </SelectMenuItem>
             ))}
           </SelectMenu>
-          <button
-            className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
-            disabled={(!value.trim() && attachments.length === 0) || disabled}
-            type="submit"
-            aria-label={t("composer.send")}
-            title={t("composer.send")}
-          >
-            <ArrowUp className="size-3.5" />
-          </button>
+          {sending
+            ? (
+                <button
+                  className="inline-flex size-7 items-center justify-center rounded-md bg-ink text-surface transition-colors hover:bg-ink-soft"
+                  onClick={() => onAbort?.()}
+                  type="button"
+                  aria-label={t("composer.stop")}
+                  title={t("composer.stop")}
+                >
+                  <Square className="size-3 fill-current" />
+                </button>
+              )
+            : (
+                <button
+                  className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
+                  disabled={(!value.trim() && attachments.length === 0) || disabled}
+                  type="submit"
+                  aria-label={t("composer.send")}
+                  title={t("composer.send")}
+                >
+                  <ArrowUp className="size-3.5" />
+                </button>
+              )}
         </div>
       </div>
     </form>

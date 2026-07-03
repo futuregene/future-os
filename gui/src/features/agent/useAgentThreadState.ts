@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import i18n from "../../i18n";
 import { sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
 import {
+  abortRun,
   appendMessage,
   createRun,
   deleteTempAttachment,
@@ -283,6 +284,39 @@ export function useAgentThreadState({
 
       const currentRun = await loadCurrentRun(thread.id, run.id);
       if (currentRun && matchesSettledRun(currentRun.status)) {
+        // The run settled while we awaited the agent. For a user abort
+        // (`cancelled`) the agent stopped mid-reply: keep the partial text so it
+        // survives a reload instead of vanishing, and finalize the streaming
+        // bubble in place. Other settled statuses were finalized by whoever set
+        // them — just release the lock (via `finally`).
+        if (currentRun.status === "cancelled" && isCurrentSend()) {
+          const partial = reply.trim();
+          if (partial) {
+            const storedAssistantMessage = await appendMessage({
+              threadId: thread.id,
+              runId: run.id,
+              role: "assistant",
+              contentType: "markdown",
+              content: partial,
+              status: "complete",
+            });
+            const abortedRender = deriveRenderFields(
+              await safeListRunEvents(run.id),
+              storedAssistantMessage.content,
+            );
+            patchMessage(setMessages, pendingId, {
+              id: storedAssistantMessage.id,
+              runId: storedAssistantMessage.runId,
+              content: abortedRender.content,
+              segments: abortedRender.segments,
+              status: storedAssistantMessage.status,
+              createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
+              outputTokens: abortedRender.outputTokens,
+              stopped: true,
+            });
+          }
+          onThreadActivity();
+        }
         return;
       }
       await updateRunStatusSafe(run.id, "completed");
@@ -365,6 +399,30 @@ export function useAgentThreadState({
         sendingRef.current = false;
     }
   }, [modelId, onThreadActivity, refreshRecentRun, thinkingLevel, thread]);
+
+  // Interrupt the in-flight run for this thread. Best-effort: the backend stops
+  // the agent and marks the run `cancelled`; the in-flight `handleSend` then
+  // settles the streaming bubble to the partial reply (see the cancelled branch
+  // above), and refreshing `recentRun` clears `activeRunId` so the resume effect
+  // reconciles. Safe to call when nothing is running (resolves to a no-op).
+  const handleAbort = useCallback(async () => {
+    if (!threadId)
+      return;
+    const runId
+      = recentRun && recentRun.threadId === threadId && !matchesSettledRun(recentRun.status)
+        ? recentRun.id
+        : messages.find(message => message.role === "assistant" && message.status === "streaming")?.runId ?? null;
+    if (!runId)
+      return;
+    try {
+      await abortRun({ threadId, runId });
+    }
+    catch {
+      // The run may already have finished; the refresh below still reconciles.
+    }
+    await refreshRecentRun(threadId, thread?.workspaceId);
+    onThreadActivity();
+  }, [messages, onThreadActivity, recentRun, refreshRecentRun, thread?.workspaceId, threadId]);
 
   useEffect(() => {
     const scrollContainer = scrollRef.current;
@@ -543,6 +601,7 @@ export function useAgentThreadState({
   }, [handleSend, loadingStore, loadingThread, onPromptConsumed, pendingPrompt, thread]);
 
   return {
+    handleAbort,
     handleScroll,
     handleSend,
     loadingThread,
@@ -763,7 +822,7 @@ async function restoreMessageActivities(messages: AgentMessage[], threadId: stri
     const projection = projectionByMessageId.get(message.id);
     const run = message.runId ? runById.get(message.runId) ?? null : null;
     const meta: Partial<AgentMessage> = run
-      ? { modelId: run.modelId ?? message.modelId, durationMs: runDurationMs(run) }
+      ? { modelId: run.modelId ?? message.modelId, durationMs: runDurationMs(run), stopped: run.status === "cancelled" }
       : {};
     if (!projection)
       return { ...message, ...meta };
