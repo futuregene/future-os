@@ -34,6 +34,10 @@ gui/dist/
 gui/.vite/
 */node_modules/
 
+# Build-time generated version modules (see scripts/version.mjs)
+tui/src/version.generated.ts
+cli/src/version.generated.ts
+
 # FutureOS local app data
 .future/
 .logs/

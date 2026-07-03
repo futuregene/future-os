@@ -1,6 +1,6 @@
 {
   "name": "@future-os/cli",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -12,6 +12,9 @@
     "playwright-core": "^1.57.0"
   },
   "scripts": {
+    "gen-version": "node ../scripts/version.mjs --gen-ts src/version.generated.ts",
+    "postinstall": "node ../scripts/version.mjs --gen-ts src/version.generated.ts",
+    "prebuild": "node ../scripts/version.mjs --gen-ts src/version.generated.ts",
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts"
   },

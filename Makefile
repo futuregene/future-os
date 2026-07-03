@@ -1,4 +1,13 @@
-.PHONY: build build-agent build-tui build-tui-single build-cli build-gui test test-agent lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean clean-gui run run-agent run-tui run-cli run-gui package-gui install install-tui install-cli-deps install-cli install-gui
+.PHONY: version build build-agent build-tui build-tui-single build-cli build-gui test test-agent lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean clean-gui run run-agent run-tui run-cli run-gui package-gui install install-tui install-cli-deps install-cli install-gui
+
+# ─── Version ──────────────────────────────────────────────────────────────────
+# Single source of truth for the build version (see scripts/version.mjs).
+# Exported so cargo build.rs and the TS build scripts pick it up. On a release
+# tag CI sets FUTURE_VERSION in the environment, which wins over this default.
+export FUTURE_VERSION ?= $(shell node scripts/version.mjs)
+
+version:
+	@node scripts/version.mjs --json
 
 # ─── Install ──────────────────────────────────────────────────────────────────
 
@@ -64,10 +73,10 @@ lint-channels:
 	cd channels && cargo fmt --check && cargo clippy
 
 lint-tui:
-	cd tui && npx tsc --noEmit
+	cd tui && npm run gen-version && npx tsc --noEmit
 
 lint-cli:
-	cd cli && npx tsc --noEmit
+	cd cli && npm run gen-version && npx tsc --noEmit
 
 lint-gui:
 	cd gui && npm run lint
@@ -97,6 +106,7 @@ run-gui: install-gui
 	cd gui && npm run tauri:dev
 
 package-gui:
+	node scripts/version.mjs --set-bundle
 	cd gui && npm run tauri:build
 
 run-channels:

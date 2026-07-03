@@ -126,6 +126,58 @@ pub(super) fn get_or_create_chat_workspace_in(
     loaded(get_workspace_in(conn, &workspace_id)?, "Created workspace")
 }
 
+pub fn rename_workspace(input: RenameWorkspaceInput) -> Result<WorkspaceRecord, crate::AppError> {
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err("Workspace name cannot be empty.".to_string().into());
+    }
+
+    let now = now_millis();
+    let conn = connect()?;
+    conn.execute(
+        "UPDATE workspaces
+         SET name = ?1, updated_at = ?2
+         WHERE id = ?3 AND deleted_at IS NULL",
+        params![name, now, input.workspace_id],
+    )?;
+
+    loaded(get_workspace_in(&conn, &input.workspace_id)?, "Workspace")
+}
+
+/// Soft-deletes a Workspace and its threads (they'd otherwise dangle in the
+/// sidebar). Files on disk are left untouched — only the sidebar records are
+/// removed. A temporary Workspace is additionally flagged for cleanup.
+pub fn delete_workspace(workspace_id: &str) -> Result<WorkspaceRecord, crate::AppError> {
+    let now = now_millis();
+    let mut conn = connect()?;
+    let workspace = loaded(get_workspace_in(&conn, workspace_id)?, "Workspace")?;
+    let tx = conn.transaction()?;
+    tx.execute(
+        "UPDATE workspaces
+         SET deleted_at = ?1, updated_at = ?1
+         WHERE id = ?2 AND deleted_at IS NULL",
+        params![now, workspace_id],
+    )?;
+    tx.execute(
+        "UPDATE threads
+         SET status = 'deleted', deleted_at = ?1, updated_at = ?1
+         WHERE workspace_id = ?2 AND status != 'deleted'",
+        params![now, workspace_id],
+    )?;
+    if workspace.kind == "temporary" {
+        tx.execute(
+            "UPDATE workspaces
+             SET cleanup_status = 'pending_cleanup',
+                 cleanup_requested_at = COALESCE(cleanup_requested_at, ?1)
+             WHERE id = ?2 AND cleanup_status = 'active'",
+            params![now, workspace_id],
+        )?;
+    }
+    tx.commit()?;
+
+    loaded(get_workspace_in(&conn, workspace_id)?, "Workspace")
+}
+
 pub fn get_workspace(workspace_id: &str) -> Result<Option<WorkspaceRecord>, crate::AppError> {
     let conn = connect()?;
     get_workspace_in(&conn, workspace_id)

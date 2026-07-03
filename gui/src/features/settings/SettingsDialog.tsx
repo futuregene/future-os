@@ -2,9 +2,10 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { AppSettings } from "../../integrations/storage/appSettings";
 import { Boxes, RotateCcw, Settings2, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Overlay } from "../../components/ui/Overlay";
-import { invokeCommand } from "../../integrations/tauri/invoke";
 import { cn } from "../../lib/cn";
+import { useBuildInfo } from "../../lib/useBuildInfo";
 import { GeneralPage } from "./GeneralPage";
 import { ModelsPage } from "./ModelsPage";
 import { ProvidersPage } from "./ProvidersPage";
@@ -14,27 +15,27 @@ export type SettingsTab = "general" | "providers" | "models" | "reset";
 
 const NAV_GROUPS = [
   {
-    items: [{ icon: Settings2, label: "通用", value: "general" as const }],
-    label: "桌面",
+    items: [{ icon: Settings2, labelKey: "dialog.tabs.general", value: "general" as const }],
+    labelKey: "dialog.nav.desktop",
   },
   {
     items: [
-      { icon: Boxes, label: "提供商", value: "providers" as const },
-      { icon: Sparkles, label: "模型", value: "models" as const },
+      { icon: Boxes, labelKey: "dialog.tabs.providers", value: "providers" as const },
+      { icon: Sparkles, labelKey: "dialog.tabs.models", value: "models" as const },
     ],
-    label: "服务器",
+    labelKey: "dialog.nav.server",
   },
   {
-    items: [{ icon: RotateCcw, label: "重置", value: "reset" as const }],
-    label: "调试",
+    items: [{ icon: RotateCcw, labelKey: "dialog.tabs.reset", value: "reset" as const }],
+    labelKey: "dialog.nav.debug",
   },
 ];
 
-const TAB_TITLES: Record<SettingsTab, string> = {
-  general: "通用",
-  models: "模型",
-  providers: "提供商",
-  reset: "重置",
+const TAB_TITLE_KEYS: Record<SettingsTab, string> = {
+  general: "dialog.tabs.general",
+  models: "dialog.tabs.models",
+  providers: "dialog.tabs.providers",
+  reset: "dialog.tabs.reset",
 };
 
 export function SettingsDialog({
@@ -53,8 +54,9 @@ export function SettingsDialog({
   onClose: () => void;
   open: boolean;
 }) {
+  const { t } = useTranslation("settings");
   const [tab, setTab] = useState<SettingsTab>(initialTab);
-  const [version, setVersion] = useState("");
+  const build = useBuildInfo();
 
   // Reset to the requested tab each time the dialog opens.
   useEffect(() => {
@@ -63,17 +65,10 @@ export function SettingsDialog({
     }
   }, [open, initialTab]);
 
-  useEffect(() => {
-    if (!open || version) {
-      return;
-    }
-    void invokeCommand<string>("app_version").then(setVersion).catch(() => undefined);
-  }, [open, version]);
-
   return (
     <Overlay onClose={onClose} open={open}>
       <section
-        aria-label="设置"
+        aria-label={t("dialog.ariaLabel")}
         aria-modal="true"
         className="relative z-10 flex h-140 w-full max-w-3xl overflow-hidden rounded-xl border border-line-soft bg-surface shadow-dialog"
         role="dialog"
@@ -81,8 +76,8 @@ export function SettingsDialog({
         <nav className="flex w-52 shrink-0 flex-col border-r border-line-soft bg-surface-subtle p-3">
           <div className="flex-1 space-y-4 overflow-y-auto">
             {NAV_GROUPS.map(group => (
-              <div key={group.label} className="space-y-1">
-                <div className="px-2 pb-1 text-xs font-medium uppercase tracking-wide text-ink-muted">{group.label}</div>
+              <div key={group.labelKey} className="space-y-1">
+                <div className="px-2 pb-1 text-xs font-medium uppercase tracking-wide text-ink-muted">{t(group.labelKey)}</div>
                 {group.items.map((item) => {
                   const Icon = item.icon;
                   return (
@@ -96,7 +91,7 @@ export function SettingsDialog({
                       type="button"
                     >
                       <Icon className="size-4 shrink-0" />
-                      <span className="truncate">{item.label}</span>
+                      <span className="truncate">{t(item.labelKey)}</span>
                     </button>
                   );
                 })}
@@ -104,13 +99,17 @@ export function SettingsDialog({
             ))}
           </div>
           <div className="px-2 pt-3 text-xs text-ink-muted">
-            <div>FutureOS Desktop</div>
-            {version
+            <div>{t("dialog.appName")}</div>
+            {build.data
               ? (
                   <div className="mt-0.5">
-                    v
-                    {version}
+                    {t("dialog.version", { version: build.data.version })}
                   </div>
+                )
+              : null}
+            {build.data && !build.data.isRelease
+              ? (
+                  <div className="mt-0.5 text-warning">{t("dialog.testBuild")}</div>
                 )
               : null}
           </div>
@@ -118,7 +117,7 @@ export function SettingsDialog({
 
         <div className="flex min-w-0 flex-1 flex-col">
           <header className="flex h-14 shrink-0 items-center border-b border-line-soft px-6">
-            <h2 className="text-base font-semibold text-ink">{TAB_TITLES[tab]}</h2>
+            <h2 className="text-base font-semibold text-ink">{t(TAB_TITLE_KEYS[tab])}</h2>
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
             {tab === "general"
@@ -126,6 +125,8 @@ export function SettingsDialog({
                   <GeneralPage
                     autoApprove={appSettings.autoApprove}
                     onToggleAutoApprove={value => onChangeSettings({ autoApprove: value })}
+                    showThinking={appSettings.showThinking}
+                    onToggleShowThinking={value => onChangeSettings({ showThinking: value })}
                   />
                 )
               : null}

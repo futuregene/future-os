@@ -1,0 +1,137 @@
+{
+  "author": {
+    "you": "You",
+    "researchCopilot": "Future Copilot",
+    "system": "FutureOS"
+  },
+  "activity": {
+    "thinking": "Thinking",
+    "prefix": {
+      "running": "Running ",
+      "completed": "Ran "
+    },
+    "runCommands_one": "{{prefix}}{{count}} command",
+    "runCommands_other": "{{prefix}}{{count}} commands",
+    "writeFiles_one": "{{prefix}}{{count}} file written",
+    "writeFiles_other": "{{prefix}}{{count}} files written",
+    "editFiles_one": "{{prefix}}{{count}} file edited",
+    "editFiles_other": "{{prefix}}{{count}} files edited",
+    "read": "{{prefix}}read",
+    "run": "{{prefix}}run",
+    "write": "{{prefix}}write",
+    "edit": "{{prefix}}edit",
+    "failed": {
+      "bash": "Command failed",
+      "edit": "Edit failed",
+      "read": "Read failed",
+      "write": "Write failed"
+    }
+  },
+  "thread": {
+    "loading": "Loading FutureOS thread...",
+    "noActiveThread": "No active thread.",
+    "defaultTitle": "FutureOS",
+    "agentDoneNoText": "Future Agent finished but returned no text.",
+    "messagesLoadFailed": "Failed to load FutureOS messages: {{message}}"
+  },
+  "failure": {
+    "connect": "Future Agent connection failed: {{message}}\n\nMake sure the agent is running and FUTURE_AGENT_GRPC_ADDR points to 127.0.0.1:50051.",
+    "run": "Run failed: {{message}}"
+  },
+  "notice": {
+    "retry": "Retry",
+    "agentUnavailable": {
+      "title": "Future Agent is not running",
+      "detail": "Start Future Agent first, then click Retry."
+    },
+    "modelError": {
+      "title": "Failed to load models",
+      "detail": "The agent is reachable, but the model list could not be fetched."
+    },
+    "connectionError": {
+      "title": "Connection error",
+      "detail": "Check FUTURE_AGENT_GRPC_ADDR and try again."
+    },
+    "needsLogin": {
+      "title": "Not signed in",
+      "detail": "Connected to Future Agent, but no models are available yet. Sign in with FutureGene, or add a custom provider.",
+      "action": "Sign in"
+    },
+    "noModels": {
+      "title": "No models available",
+      "detail": "A provider is configured, but the model list is empty. Check that models are enabled, or verify your account quota / permissions.",
+      "action": "Model settings"
+    }
+  },
+  "composer": {
+    "placeholder": "Ask Future Copilot to plan, research, analyze, edit, or prepare a workflow...",
+    "attachFiles": "Attach files",
+    "attachFilesHint": "Attach files (images, PDF, text)",
+    "attachLimitReached": "Attachment limit reached (4 per turn)",
+    "attachDialogFilter": "Supported (images, PDF, text)",
+    "attachDialogTitle": "Attach files",
+    "removeAttachment": "Remove {{name}}",
+    "attachIgnored": "Ignored: {{items}}",
+    "attachRejectedLimit": "{{name}} (up to {{count}})",
+    "attachRejectedReason": "{{name}} ({{reason}})",
+    "model": "Model",
+    "startAgentForModels": "Start Future Agent to load models.",
+    "thinkingLevel": "Thinking level",
+    "send": "Send",
+    "noReferences": "No references found.",
+    "approval": "Approval mode",
+    "approvalAuto": "Auto-approve",
+    "approvalManual": "Manual approval"
+  },
+  "attachment": {
+    "readFailed": "Unable to read",
+    "directoryUnsupported": "Folders are not supported",
+    "binaryUnsupported": "Binary files are not supported",
+    "typeUnsupported": "Unsupported file type"
+  },
+  "newConversation": {
+    "headerTitle": "New conversation",
+    "chatSubtitle": "Chat",
+    "welcome": "Welcome",
+    "placeholder": "Type anything",
+    "workspace": "Workspace",
+    "noWorkspaces": "No workspaces yet.",
+    "openExisting": "Open workspace",
+    "chat": "Chat",
+    "workspaceHint": "Uses this project folder and its workspace resources.",
+    "chatHint": "Starts quickly with a temporary workspace managed by FutureOS.",
+    "errorChooseDir": "Choose a workspace directory.",
+    "openWorkspaceDialog": "Open workspace",
+    "modal": {
+      "openTitle": "Open Existing Workspace",
+      "openDescription": "Use an existing workspace directory.",
+      "chooseWorkspaceAria": "Choose workspace",
+      "selectExisting": "Select existing workspace",
+      "displayNameOpen": "Display name (optional, defaults to selected directory)",
+      "pathPreview": "Workspace path: {{path}}",
+      "chooseExisting": "Choose an existing workspace directory.",
+      "cancel": "Cancel",
+      "open": "Open"
+    },
+    "workspaceExists": "\"{{name}}\" already exists; the existing workspace will be opened."
+  },
+  "approval": {
+    "shellCommand": "Shell command",
+    "writeFile": "Write file",
+    "writeFiles": "Write {{count}} files",
+    "deleteFile": "Delete file",
+    "deleteFiles": "Delete {{count}} files",
+    "paths": "Paths",
+    "sandbox": "sandbox",
+    "denying": "Denying",
+    "deny": "Deny",
+    "allowing": "Allowing",
+    "allowOnce": "Allow once"
+  },
+  "message": {
+    "retry": "Retry",
+    "continue": "Continue",
+    "generating": "Generating",
+    "tokens": "{{formattedCount}} tokens"
+  }
+}

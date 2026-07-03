@@ -1,6 +1,7 @@
 import type { AvailableSkill, InstalledSkill } from "../../integrations/skills/skillsClient";
 import { Blocks, Download, RotateCcw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -15,6 +16,7 @@ import { cn } from "../../lib/cn";
 type SkillsTab = "installed" | "all";
 
 export function SkillsView() {
+  const { t } = useTranslation("skills");
   const [tab, setTab] = useState<SkillsTab>("installed");
   const [installed, setInstalled] = useState<InstalledSkill[]>([]);
   const [available, setAvailable] = useState<AvailableSkill[]>([]);
@@ -71,11 +73,11 @@ export function SkillsView() {
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
       <header className="border-b border-line-soft px-8 pb-3 pt-6">
-        <h1 className="text-base font-semibold text-ink">Skills</h1>
-        <p className="mt-1 text-sm text-ink-muted">管理 Agent 可用的技能：安装、卸载与浏览技能市场。</p>
+        <h1 className="text-base font-semibold text-ink">{t("title")}</h1>
+        <p className="mt-1 text-sm text-ink-muted">{t("subtitle")}</p>
         <div className="mt-4 grid w-64 grid-cols-2 gap-1 rounded-md bg-surface-subtle p-1">
-          <TabButton active={tab === "installed"} label="已安装" onClick={() => setTab("installed")} />
-          <TabButton active={tab === "all"} label="全部" onClick={() => setTab("all")} />
+          <TabButton active={tab === "installed"} label={t("tab.installed")} onClick={() => setTab("installed")} />
+          <TabButton active={tab === "all"} label={t("tab.all")} onClick={() => setTab("all")} />
         </div>
       </header>
 
@@ -134,10 +136,11 @@ function InstalledTab({
   onUninstall: (id: string) => void;
   skills: InstalledSkill[];
 }) {
+  const { t } = useTranslation("skills");
   if (loading && skills.length === 0)
     return <LoadingRow />;
   if (skills.length === 0)
-    return <EmptyState title="还没有安装技能" detail="在“全部”里浏览技能市场并安装。" />;
+    return <EmptyState title={t("installed.emptyTitle")} detail={t("installed.emptyDetail")} />;
 
   return (
     <>
@@ -175,23 +178,24 @@ function AllTab({
   onUninstall: (id: string) => void;
   skills: AvailableSkill[];
 }) {
+  const { t } = useTranslation("skills");
   if (loading && skills.length === 0)
     return <LoadingRow />;
   if (error) {
     return (
       <div className="space-y-3">
         <div className="rounded-md border border-danger-line bg-danger-soft p-3 text-sm text-danger">
-          无法加载技能市场：
+          {t("all.loadError")}
           {error}
         </div>
         <Button leftIcon={<RotateCcw className="size-3.5" />} onClick={onRetry} size="sm" variant="secondary">
-          重试
+          {t("all.retry")}
         </Button>
       </div>
     );
   }
   if (skills.length === 0)
-    return <EmptyState title="技能市场暂无内容" detail="稍后再试，或确认平台连接是否正常。" />;
+    return <EmptyState title={t("all.emptyTitle")} detail={t("all.emptyDetail")} />;
 
   return (
     <>
@@ -216,7 +220,7 @@ function AllTab({
                       size="sm"
                       variant="primary"
                     >
-                      {busy[skill.id] ? "安装中…" : canInstall ? "安装" : "无版本"}
+                      {busy[skill.id] ? t("install.installing") : canInstall ? t("install.install") : t("install.noVersion")}
                     </Button>
                   )
             }
@@ -259,6 +263,7 @@ function SkillRow({
 }
 
 function UninstallButton({ busy, onClick }: { busy?: boolean; onClick: () => void }) {
+  const { t } = useTranslation("skills");
   const [confirming, setConfirming] = useState(false);
   if (!confirming) {
     return (
@@ -269,22 +274,23 @@ function UninstallButton({ busy, onClick }: { busy?: boolean; onClick: () => voi
         size="sm"
         variant="danger-soft"
       >
-        {busy ? "卸载中…" : "卸载"}
+        {busy ? t("uninstall.uninstalling") : t("uninstall.uninstall")}
       </Button>
     );
   }
   return (
     <div className="flex items-center gap-2">
       <Button disabled={busy} onClick={() => setConfirming(false)} size="sm" variant="ghost">
-        取消
+        {t("uninstall.cancel")}
       </Button>
       <Button disabled={busy} onClick={onClick} size="sm" variant="danger">
-        {busy ? "卸载中…" : "确认卸载"}
+        {busy ? t("uninstall.uninstalling") : t("uninstall.confirm")}
       </Button>
     </div>
   );
 }
 
 function LoadingRow() {
-  return <div className="rounded-md border border-line-soft bg-surface p-3 text-sm text-ink-muted">加载中…</div>;
+  const { t } = useTranslation("skills");
+  return <div className="rounded-md border border-line-soft bg-surface p-3 text-sm text-ink-muted">{t("loading")}</div>;
 }

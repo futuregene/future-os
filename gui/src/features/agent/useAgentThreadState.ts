@@ -4,6 +4,7 @@ import type { AgentMessage, MessageAttachment, MessageSegment } from "./agentThr
 import type { ComposerSendPayload } from "./Composer";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
+import i18n from "../../i18n";
 import { sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
 import {
   appendMessage,
@@ -173,7 +174,8 @@ export function useAgentThreadState({
     const optimisticUserMessage: AgentMessage = {
       id: optimisticUserId,
       role: "user",
-      author: "You",
+      author: i18n.t("agent:author.you"),
+      authorKey: "author.you",
       content,
       status: "complete",
       createdAt: new Date().toISOString(),
@@ -182,7 +184,8 @@ export function useAgentThreadState({
     const assistantMessage: AgentMessage = {
       id: pendingId,
       role: "assistant",
-      author: "Research Copilot",
+      author: i18n.t("agent:author.researchCopilot"),
+      authorKey: "author.researchCopilot",
       content: "",
       status: "streaming",
       createdAt: new Date(runStartAnchorMs).toISOString(),
@@ -291,7 +294,7 @@ export function useAgentThreadState({
         runId: run.id,
         role: "assistant",
         contentType: "markdown",
-        content: reply.trim() || "Future Agent 已完成，但没有返回文本。",
+        content: reply.trim() || i18n.t("agent:thread.agentDoneNoText"),
         status: "complete",
       });
 
@@ -495,8 +498,9 @@ export function useAgentThreadState({
             {
               id: "store_error",
               role: "assistant",
-              author: "FutureOS",
-              content: `FutureOS 消息读取失败：${message}`,
+              author: i18n.t("agent:author.system"),
+              authorKey: "author.system",
+              content: i18n.t("agent:thread.messagesLoadFailed", { message }),
               createdAt: new Date().toISOString(),
             },
           ]);
@@ -601,7 +605,8 @@ async function upsertStreamingPreview(
         const bubble: AgentMessage = {
           id: bubbleId,
           role: "assistant",
-          author: "Research Copilot",
+          author: i18n.t("agent:author.researchCopilot"),
+          authorKey: "author.researchCopilot",
           content,
           status: "streaming",
           createdAt: new Date().toISOString(),

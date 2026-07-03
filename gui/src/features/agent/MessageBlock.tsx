@@ -1,43 +1,73 @@
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { FileText, Paperclip, RotateCcw, StepForward } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { CopyButton } from "../../components/ui/CopyButton";
+import { useCopyState } from "../../components/ui/useCopyState";
 import { cn } from "../../lib/cn";
 import { formatTime } from "../../lib/date";
 import { MarkdownContent } from "../markdown/MarkdownContent";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
 import { MessageMeta } from "./MessageMeta";
+import { ThinkingBlock } from "./ThinkingBlock";
 
 interface MessageBlockProps {
   message: AgentMessage;
+  /** Whether this row is the hovered one (single-owner state in MessageList). */
+  hovered: boolean;
   /** Whether this is the last message in the thread. */
   isLast?: boolean;
   recoverySource?: AgentMessage | null;
+  /** Show the model's reasoning block (driven by the "show thinking" setting). */
+  showThinking?: boolean;
   onContinue?: (message: AgentMessage) => void;
+  onHover: (id: string) => void;
+  onLeave: (id: string) => void;
   onRetry?: (message: AgentMessage, source: AgentMessage) => void;
   workspaceId?: string | null;
 }
 
 export function MessageBlock({
   message,
+  hovered,
   isLast,
   recoverySource,
+  showThinking,
   onContinue,
+  onHover,
+  onLeave,
   onRetry,
   workspaceId,
 }: MessageBlockProps) {
+  const { t } = useTranslation("agent");
+  const { copiedKey, copy } = useCopyState();
   const isUser = message.role === "user";
+  // While the reply streams, the footer is pinned open and shows a live activity
+  // indicator instead of the copy button; the copy button returns once it settles.
+  const streaming = !isUser && message.status === "streaming";
   // Retry/Continue only make sense on the latest turn — once a newer round has
   // started, recovering an earlier failed turn would fork the conversation.
   const canRecover = !isUser && message.status === "failed" && isLast === true;
   // A local narrowed to the non-empty segment array (or null) so the render can
   // map over it without a non-null assertion.
   const segments = !isUser && message.segments && message.segments.length > 0 ? message.segments : null;
+  // Plain-text payload for the copy button: joined text slices when the reply is
+  // segmented, otherwise the raw content. Activity lines are excluded.
+  const copyableText = (segments
+    ? segments.flatMap(segment => (segment.kind === "text" ? [segment.text] : [])).join("\n\n")
+    : message.content ?? "").trim();
 
   return (
     <article className="flex justify-center">
-      <div className="group/msg min-w-0 w-full max-w-3xl">
+      <div
+        className="min-w-0 w-full max-w-3xl"
+        onPointerLeave={() => onLeave(message.id)}
+        onPointerOver={() => onHover(message.id)}
+      >
         <div className={cn("mb-1 flex items-center gap-2", isUser && "justify-end")}>
-          <span className="text-sm font-semibold text-ink">{message.author}</span>
+          <span className="text-sm font-semibold text-ink">
+            {message.authorKey ? t(message.authorKey) : message.author}
+          </span>
           <span className="text-xs text-ink-muted">{formatTime(message.createdAt)}</span>
         </div>
         <div
@@ -51,17 +81,31 @@ export function MessageBlock({
           {segments
             ? (
                 <div className="space-y-3">
-                  {segments.map(segment =>
-                    segment.kind === "text"
-                      ? (
-                          <MarkdownContent
-                            content={segment.text}
-                            key={segment.id}
-                            workspaceId={workspaceId}
-                          />
-                        )
-                      : <AgentActivityLine item={segment.item} key={segment.id} />,
-                  )}
+                  {segments.map((segment) => {
+                    if (segment.kind === "text") {
+                      return (
+                        <MarkdownContent
+                          content={segment.text}
+                          key={segment.id}
+                          workspaceId={workspaceId}
+                        />
+                      );
+                    }
+                    if (segment.kind === "thinking") {
+                      // Reasoning stays in timeline order; hidden unless the
+                      // "show thinking" setting is on.
+                      return showThinking
+                        ? (
+                            <ThinkingBlock
+                              key={segment.id}
+                              text={segment.text}
+                              workspaceId={workspaceId}
+                            />
+                          )
+                        : null;
+                    }
+                    return <AgentActivityLine item={segment.item} key={segment.id} />;
+                  })}
                 </div>
               )
             : message.content
@@ -90,7 +134,7 @@ export function MessageBlock({
                           type="button"
                         >
                           <RotateCcw className="size-3.5" />
-                          Retry
+                          {t("message.retry")}
                         </button>
                       )
                     : null}
@@ -102,7 +146,7 @@ export function MessageBlock({
                           type="button"
                         >
                           <StepForward className="size-3.5" />
-                          Continue
+                          {t("message.continue")}
                         </button>
                       )
                     : null}
@@ -110,9 +154,47 @@ export function MessageBlock({
               )
             : null}
         </div>
-        {!isUser ? <MessageMeta message={message} /> : null}
+        <div className={cn("flex items-center gap-2", isUser ? "mt-1 justify-end" : "mt-3")}>
+          {streaming
+            ? <StreamingIndicator label={t("message.generating")} />
+            : copyableText
+              ? (
+                  <CopyButton
+                  // `will-change-[opacity]` keeps the button on its own compositor
+                  // layer at all times: WKWebView (tauri#12800 family) drops repaints
+                  // of in-flow content until a window resize, so hide/show — and the
+                  // fade, which is only safe because the compositor animates a
+                  // promoted layer's opacity — must never depend on a repaint. Do not
+                  // remove the will-change without re-testing stale-paint ghosts.
+                    className={cn(
+                      "will-change-[opacity] transition-opacity duration-200",
+                      hovered ? "opacity-100" : "pointer-events-none opacity-0",
+                    )}
+                    copied={copiedKey === "default"}
+                    onCopy={() => void copy(copyableText)}
+                  />
+                )
+              : null}
+          {!isUser ? <MessageMeta message={message} visible={hovered} /> : null}
+        </div>
       </div>
     </article>
+  );
+}
+
+/**
+ * Live "generating" marker shown in place of the copy button while a reply
+ * streams: a small amber dot with a pulsing ping halo (no brain icon — the
+ * motion is the signal). `label` is exposed to assistive tech only.
+ */
+function StreamingIndicator({ label }: { label: string }) {
+  return (
+    <div aria-label={label} className="flex items-center px-1 py-1.5" role="status">
+      <span className="relative flex size-2">
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-amber-400 opacity-75" />
+        <span className="relative inline-flex size-2 rounded-full bg-amber-500" />
+      </span>
+    </div>
   );
 }
 

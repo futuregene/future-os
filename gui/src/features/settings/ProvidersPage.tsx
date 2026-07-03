@@ -1,5 +1,6 @@
 import type { CustomProvider, ProvidersView } from "../../integrations/agent/providers";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import {
@@ -14,6 +15,7 @@ import { FutureLoginDialog } from "./FutureLoginDialog";
 import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
 
 export function ProvidersPage() {
+  const { t } = useTranslation("settings");
   const { data: loadedProviders, loading, error, reload } = useAsyncResource<ProvidersView | null>(
     listAgentProviders,
     [],
@@ -50,11 +52,11 @@ export function ProvidersPage() {
   function handleAuthorized() {
     setLoginOpen(false);
     reload();
-    setHint("已连接 FutureGene。新会话即可生效；如未生效可运行 future-cli agent restart。");
+    setHint(t("providers.connected"));
   }
 
   if (loading) {
-    return <p className="text-sm text-ink-muted">加载提供商…</p>;
+    return <p className="text-sm text-ink-muted">{t("providers.loading")}</p>;
   }
 
   return (
@@ -62,7 +64,7 @@ export function ProvidersPage() {
       {error ? <p className="text-sm text-danger">{error}</p> : null}
       {hint ? <p className="text-sm text-ink-soft">{hint}</p> : null}
 
-      <SettingsSection title="内置">
+      <SettingsSection title={t("providers.builtinTitle")}>
         <SettingsList>
           {(providers?.builtin ?? []).map(provider => (
             <SettingsRow
@@ -76,15 +78,15 @@ export function ProvidersPage() {
                       {confirmingLogout && provider.hasApiKey
                         ? (
                             <>
-                              <span className="text-xs text-ink-muted">确认退出登录？</span>
-                              <Button onClick={() => void handleLogout()} size="sm" variant="danger">退出</Button>
-                              <Button onClick={() => setConfirmingLogout(false)} size="sm" variant="secondary">取消</Button>
+                              <span className="text-xs text-ink-muted">{t("providers.confirmLogout")}</span>
+                              <Button onClick={() => void handleLogout()} size="sm" variant="danger">{t("providers.logoutConfirm")}</Button>
+                              <Button onClick={() => setConfirmingLogout(false)} size="sm" variant="secondary">{t("providers.cancel")}</Button>
                             </>
                           )
                         : (
                             <>
                               <Badge tone={provider.hasApiKey ? "success" : "neutral"}>
-                                {provider.hasApiKey ? "已配置密钥" : "未配置密钥"}
+                                {provider.hasApiKey ? t("providers.hasApiKey") : t("providers.noApiKey")}
                               </Badge>
                               <Button
                                 onClick={() => {
@@ -94,7 +96,7 @@ export function ProvidersPage() {
                                 size="sm"
                                 variant="secondary"
                               >
-                                {provider.hasApiKey ? "重新登录" : "连接"}
+                                {provider.hasApiKey ? t("providers.reLogin") : t("providers.connect")}
                               </Button>
                               {provider.hasApiKey
                                 ? (
@@ -104,7 +106,7 @@ export function ProvidersPage() {
                                       size="sm"
                                       variant="secondary"
                                     >
-                                      退出登录
+                                      {t("providers.logout")}
                                     </Button>
                                   )
                                 : null}
@@ -114,7 +116,7 @@ export function ProvidersPage() {
                   )
                 : (
                     <Badge tone={provider.hasApiKey ? "success" : "neutral"}>
-                      {provider.hasApiKey ? "已配置密钥" : "未配置密钥"}
+                      {provider.hasApiKey ? t("providers.hasApiKey") : t("providers.noApiKey")}
                     </Badge>
                   )}
             </SettingsRow>
@@ -123,7 +125,7 @@ export function ProvidersPage() {
       </SettingsSection>
 
       <SettingsSection
-        title="自定义"
+        title={t("providers.customTitle")}
         action={(
           <Button
             onClick={() => {
@@ -133,7 +135,7 @@ export function ProvidersPage() {
             size="sm"
             variant="secondary"
           >
-            + 添加自定义提供商
+            {t("providers.addCustom")}
           </Button>
         )}
       >
@@ -144,17 +146,17 @@ export function ProvidersPage() {
                   <SettingsRow
                     key={provider.id}
                     title={provider.name}
-                    description={`${provider.baseUrl} · ${provider.models.length} 个模型`}
+                    description={t("providers.modelsCount", { baseUrl: provider.baseUrl, count: provider.models.length })}
                   >
                     {confirmingDelete === provider.id
                       ? (
                           <div className="flex items-center gap-2">
-                            <span className="text-xs text-ink-muted">确认移除？</span>
+                            <span className="text-xs text-ink-muted">{t("providers.confirmRemove")}</span>
                             <Button onClick={() => void handleDelete(provider.id)} size="sm" variant="danger">
-                              移除
+                              {t("providers.remove")}
                             </Button>
                             <Button onClick={() => setConfirmingDelete(null)} size="sm" variant="secondary">
-                              取消
+                              {t("providers.cancel")}
                             </Button>
                           </div>
                         )
@@ -168,7 +170,7 @@ export function ProvidersPage() {
                               size="sm"
                               variant="secondary"
                             >
-                              编辑
+                              {t("providers.edit")}
                             </Button>
                             <Button
                               className="text-ink-soft hover:text-danger"
@@ -176,7 +178,7 @@ export function ProvidersPage() {
                               size="sm"
                               variant="secondary"
                             >
-                              移除
+                              {t("providers.remove")}
                             </Button>
                           </div>
                         )}
@@ -184,7 +186,7 @@ export function ProvidersPage() {
                 ))}
               </SettingsList>
             )
-          : <p className="text-sm text-ink-muted">还没有自定义提供商。</p>}
+          : <p className="text-sm text-ink-muted">{t("providers.noCustom")}</p>}
       </SettingsSection>
 
       <CustomProviderDialog

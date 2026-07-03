@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { useOverlayLayer } from "./overlayStack";
 
 /**
@@ -16,6 +17,7 @@ export function Overlay({
   onClose: () => void;
   open: boolean;
 }) {
+  const { t } = useTranslation("common");
   const { isTop } = useOverlayLayer(open);
 
   useEffect(() => {
@@ -40,7 +42,7 @@ export function Overlay({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
       <button
-        aria-label="关闭"
+        aria-label={t("close")}
         className="absolute inset-0 cursor-default bg-ink-strong/20 backdrop-blur-[1px]"
         onClick={onClose}
         type="button"

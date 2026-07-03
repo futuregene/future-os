@@ -1,7 +1,7 @@
 {
   "name": "@futureos/desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
@@ -18,10 +18,12 @@
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.1",
+    "i18next": "^26.3.4",
     "lucide-react": "^1.22.0",
     "pdfjs-dist": "^6.1.200",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "react-i18next": "^17.0.8",
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
     "shiki": "^4.3.0",

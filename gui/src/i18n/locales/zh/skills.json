@@ -1,0 +1,30 @@
+{
+  "title": "Skills",
+  "subtitle": "管理 Agent 可用的技能：安装、卸载与浏览技能市场。",
+  "tab": {
+    "installed": "已安装",
+    "all": "全部"
+  },
+  "installed": {
+    "emptyTitle": "还没有安装技能",
+    "emptyDetail": "在“全部”里浏览技能市场并安装。"
+  },
+  "all": {
+    "loadError": "无法加载技能市场：",
+    "retry": "重试",
+    "emptyTitle": "技能市场暂无内容",
+    "emptyDetail": "稍后再试，或确认平台连接是否正常。"
+  },
+  "install": {
+    "installing": "安装中…",
+    "install": "安装",
+    "noVersion": "无版本"
+  },
+  "uninstall": {
+    "uninstalling": "卸载中…",
+    "uninstall": "卸载",
+    "cancel": "取消",
+    "confirm": "确认卸载"
+  },
+  "loading": "加载中…"
+}

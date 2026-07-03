@@ -240,7 +240,7 @@ impl crate::types::LLMProvider for Client {
             .header("Content-Type", "application/json")
             .header(
                 "User-Agent",
-                concat!("future-agent/", env!("CARGO_PKG_VERSION")),
+                concat!("future-agent/", env!("FUTURE_VERSION")),
             )
             .json(&body)
             .build()?;

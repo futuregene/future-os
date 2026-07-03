@@ -4,8 +4,9 @@ import type { ReferenceTargetSearchResult } from "../../integrations/storage/thr
 import type { MessageAttachment } from "./agentThreadTypes";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { AlertTriangle, ArrowUp, Beaker, Box, Brain, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, X } from "lucide-react";
+import { AlertTriangle, ArrowUp, Beaker, Box, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, ShieldCheck, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
 import { modelKey, modelLabel, modelOption, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
@@ -27,6 +28,8 @@ interface ComposerProps {
   onModelChange?: (modelId: string) => void;
   thinkingLevel?: string;
   onThinkingLevelChange?: (thinkingLevel: string) => void;
+  autoApprove?: boolean;
+  onToggleAutoApprove?: (value: boolean) => void;
   placeholder?: string;
   textareaClassName?: string;
   workspaceId?: string | null;
@@ -41,16 +44,20 @@ export function Composer({
   onModelChange,
   thinkingLevel,
   onThinkingLevelChange,
+  autoApprove,
+  onToggleAutoApprove,
   placeholder,
   textareaClassName,
   workspaceId,
 }: ComposerProps) {
+  const { t } = useTranslation("agent");
   const [value, setValue] = useState("");
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [dropActive, setDropActive] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
+  const [approvalMenuOpen, setApprovalMenuOpen] = useState(false);
   const providerNames = useProviderNames();
   const [caretPosition, setCaretPosition] = useState(0);
   const [referenceResults, setReferenceResults] = useState<ReferenceTargetSearchResult[]>([]);
@@ -192,27 +199,27 @@ export function Composer({
       if (next.some(attachment => attachment.path === path))
         continue;
       if (next.length >= MAX_ATTACHMENTS_PER_TURN) {
-        rejected.push(`${fileNameFromPath(path)}（最多 ${MAX_ATTACHMENTS_PER_TURN} 个）`);
+        rejected.push(t("composer.attachRejectedLimit", { name: fileNameFromPath(path), count: MAX_ATTACHMENTS_PER_TURN }));
         continue;
       }
       if (result.kind === null) {
-        rejected.push(`${fileNameFromPath(path)}（${result.reason}）`);
+        rejected.push(t("composer.attachRejectedReason", { name: fileNameFromPath(path), reason: result.reason }));
         continue;
       }
       next.push({ kind: result.kind, name: fileNameFromPath(path), path });
     }
     setAttachments(next);
-    setAttachError(rejected.length > 0 ? `已忽略：${rejected.join("，")}` : null);
-  }, [attachments]);
+    setAttachError(rejected.length > 0 ? t("composer.attachIgnored", { items: rejected.join("，") }) : null);
+  }, [attachments, t]);
 
   async function handleAttachFiles() {
     if (disabled)
       return;
 
     const selected = await open({
-      filters: [{ extensions: PICKER_EXTENSIONS, name: "Supported (images, PDF, text)" }],
+      filters: [{ extensions: PICKER_EXTENSIONS, name: t("composer.attachDialogFilter") }],
       multiple: true,
-      title: "Attach files",
+      title: t("composer.attachDialogTitle"),
     });
     const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
     if (paths.length === 0)
@@ -306,25 +313,9 @@ export function Composer({
             />
           )
         : null}
-      <textarea
-        ref={textareaRef}
-        className={cn(
-          "h-14 w-full resize-none border-0 bg-transparent px-2 py-1 text-sm leading-5 text-ink outline-none placeholder:text-ink-muted",
-          textareaClassName,
-        )}
-        placeholder={placeholder ?? "Ask FutureOS to plan, research, analyze, edit, or prepare a workflow..."}
-        value={value}
-        disabled={disabled}
-        onKeyDown={handleKeyDown}
-        onChange={handleChange}
-        onPaste={handlePaste}
-        onClick={updateCaret}
-        onKeyUp={updateCaret}
-        onSelect={updateCaret}
-      />
       {attachments.length > 0
         ? (
-            <div className="flex flex-wrap gap-1.5 px-1 pb-1">
+            <div className="flex flex-wrap gap-1.5 px-1 pb-2">
               {attachments.map(attachment => (
                 <span
                   className="inline-flex max-w-64 items-center gap-1.5 rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-soft"
@@ -334,7 +325,7 @@ export function Composer({
                   <Paperclip className="size-3 shrink-0" />
                   <span className="truncate">{attachment.name}</span>
                   <button
-                    aria-label={`Remove ${attachment.name}`}
+                    aria-label={t("composer.removeAttachment", { name: attachment.name })}
                     className="inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface hover:text-ink"
                     onClick={() => removeAttachment(attachment.path)}
                     type="button"
@@ -346,6 +337,22 @@ export function Composer({
             </div>
           )
         : null}
+      <textarea
+        ref={textareaRef}
+        className={cn(
+          "h-14 w-full resize-none border-0 bg-transparent px-2 py-1 text-sm leading-5 text-ink outline-none placeholder:text-ink-muted",
+          textareaClassName,
+        )}
+        placeholder={placeholder ?? t("composer.placeholder")}
+        value={value}
+        disabled={disabled}
+        onKeyDown={handleKeyDown}
+        onChange={handleChange}
+        onPaste={handlePaste}
+        onClick={updateCaret}
+        onKeyUp={updateCaret}
+        onSelect={updateCaret}
+      />
       {attachError
         ? <div className="px-1 pb-1 text-xs text-warning">{attachError}</div>
         : null}
@@ -356,11 +363,55 @@ export function Composer({
             disabled={disabled || attachments.length >= MAX_ATTACHMENTS_PER_TURN}
             onClick={() => void handleAttachFiles()}
             type="button"
-            aria-label="Attach files"
-            title={attachments.length >= MAX_ATTACHMENTS_PER_TURN ? "Attachment limit reached (4 per turn)" : "Attach files (images, PDF, text)"}
+            aria-label={t("composer.attachFiles")}
+            title={attachments.length >= MAX_ATTACHMENTS_PER_TURN ? t("composer.attachLimitReached") : t("composer.attachFilesHint")}
           >
             <Paperclip className="size-3.5" />
           </button>
+          {onToggleAutoApprove
+            ? (
+                <SelectMenu
+                  open={approvalMenuOpen}
+                  onDismiss={() => setApprovalMenuOpen(false)}
+                  panelClassName="w-44 overflow-hidden"
+                  trigger={(
+                    <button
+                      className="inline-flex h-7 max-w-40 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+                      onClick={() => {
+                        setModelMenuOpen(false);
+                        setThinkingMenuOpen(false);
+                        setApprovalMenuOpen(open => !open);
+                      }}
+                      type="button"
+                      title={t("composer.approval")}
+                    >
+                      <ShieldCheck className="size-3 shrink-0" />
+                      <span className="truncate">{autoApprove ? t("composer.approvalAuto") : t("composer.approvalManual")}</span>
+                      <ChevronDown className="size-3 shrink-0" />
+                    </button>
+                  )}
+                >
+                  <SelectMenuItem
+                    selected={!autoApprove}
+                    onSelect={() => {
+                      onToggleAutoApprove(false);
+                      setApprovalMenuOpen(false);
+                    }}
+                  >
+                    <span className="min-w-0 flex-1 truncate font-medium text-ink">{t("composer.approvalManual")}</span>
+                  </SelectMenuItem>
+                  <SelectMenuItem
+                    selected={Boolean(autoApprove)}
+                    onSelect={() => {
+                      onToggleAutoApprove(true);
+                      setApprovalMenuOpen(false);
+                    }}
+                  >
+                    <span className="min-w-0 flex-1 truncate font-medium text-ink">{t("composer.approvalAuto")}</span>
+                  </SelectMenuItem>
+                </SelectMenu>
+              )
+            : null}
         </div>
         <div className="flex items-center gap-2">
           <SelectMenu
@@ -370,13 +421,14 @@ export function Composer({
             panelClassName="max-h-[40vh] w-56 overflow-y-auto"
             trigger={(
               <button
-                className="inline-flex h-7 max-w-48 items-center gap-1.5 rounded-md bg-surface-subtle px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink"
+                className="inline-flex h-7 max-w-48 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
                 onClick={() => {
                   setThinkingMenuOpen(false);
+                  setApprovalMenuOpen(false);
                   setModelMenuOpen(open => !open);
                 }}
                 type="button"
-                title="Model"
+                title={t("composer.model")}
               >
                 <span className="truncate">{modelLabel(activeModelId, modelOptions)}</span>
                 <ChevronDown className="size-3 shrink-0" />
@@ -385,7 +437,7 @@ export function Composer({
           >
             {modelOptions.length === 0
               ? (
-                  <div className="px-3 py-2 text-sm text-ink-muted">Start Future Agent to load models.</div>
+                  <div className="px-3 py-2 text-sm text-ink-muted">{t("composer.startAgentForModels")}</div>
                 )
               : null}
             {modelOptions.map(model => (
@@ -414,15 +466,15 @@ export function Composer({
             panelClassName="w-40 overflow-hidden"
             trigger={(
               <button
-                className="inline-flex h-7 max-w-40 items-center gap-1.5 rounded-md bg-surface-subtle px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink"
+                className="inline-flex h-7 max-w-40 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
                 onClick={() => {
                   setModelMenuOpen(false);
+                  setApprovalMenuOpen(false);
                   setThinkingMenuOpen(open => !open);
                 }}
                 type="button"
-                title="Thinking level"
+                title={t("composer.thinkingLevel")}
               >
-                <Brain className="size-3 shrink-0" />
                 <span className="truncate">{thinkingLevelLabel(activeThinkingLevel)}</span>
                 <ChevronDown className="size-3 shrink-0" />
               </button>
@@ -445,8 +497,8 @@ export function Composer({
             className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
             disabled={(!value.trim() && attachments.length === 0) || disabled}
             type="submit"
-            aria-label="Send"
-            title="Send"
+            aria-label={t("composer.send")}
+            title={t("composer.send")}
           >
             <ArrowUp className="size-3.5" />
           </button>
@@ -484,10 +536,11 @@ function ReferenceSearchMenu({
   results: ReferenceTargetSearchResult[];
   selectedIndex: number;
 }) {
+  const { t } = useTranslation("agent");
   return (
     <div className="absolute bottom-full left-2 z-30 mb-2 w-[min(30rem,calc(100%-1rem))] rounded-lg border border-line-soft bg-surface p-1 shadow-panel">
       {results.length === 0
-        ? <div className="px-2 py-2 text-sm text-ink-muted">No references found.</div>
+        ? <div className="px-2 py-2 text-sm text-ink-muted">{t("composer.noReferences")}</div>
         : null}
       {results.map((result, index) => (
         <button

@@ -1,0 +1,75 @@
+{
+  "runInspect": {
+    "back": "Runs",
+    "model": "Model",
+    "tools": "Tools",
+    "retry": "Retry",
+    "continue": "Continue",
+    "searchLabel": "Search run details",
+    "searchPlaceholder": "Search run details...",
+    "toolCalls": "Tool Calls",
+    "noToolCalls": "No tool calls recorded.",
+    "noMatchingToolCalls": "No matching tool calls.",
+    "toolFallback": "Tool",
+    "field": {
+      "kind": "Kind",
+      "started": "Started",
+      "ended": "Ended",
+      "duration": "Duration",
+      "cwd": "CWD",
+      "exit": "Exit",
+      "path": "Path"
+    },
+    "command": "Command",
+    "target": "Target",
+    "input": "Input",
+    "noInput": "No input",
+    "expand": "Expand",
+    "collapse": "Collapse"
+  },
+  "runsPanel": {
+    "emptyTitle": "No background programs",
+    "emptyDetail": "Agent work will appear here while it is running.",
+    "runningFinished": "{{running}} running / {{finished}} finished",
+    "clearing": "Clearing",
+    "clearFinished": "Clear finished",
+    "commands_one": "{{count}} command",
+    "commands_other": "{{count}} commands",
+    "inspectRun": "Inspect run",
+    "confirmTerminate": "Terminate this program?",
+    "cancel": "Cancel",
+    "stopping": "Stopping",
+    "terminate": "Terminate"
+  },
+  "status": {
+    "completed": "completed",
+    "failed": "failed",
+    "running": "running",
+    "approval": "approval",
+    "cancelled": "cancelled",
+    "queued": "queued"
+  },
+  "statusLabel": {
+    "success": "Success",
+    "failed": "Failed",
+    "cancelled": "Cancelled",
+    "waiting": "Waiting",
+    "queued": "Queued",
+    "running": "Running"
+  },
+  "toolStatus": {
+    "completed": "Completed",
+    "failed": "Failed",
+    "cancelled": "Cancelled",
+    "running": "Running",
+    "unknown": "Unknown"
+  },
+  "errorType": {
+    "streamDisconnected": "Stream disconnected",
+    "commandFailed": "Command failed",
+    "modelFailed": "Model failed",
+    "abortRequested": "Aborted by user",
+    "timeout": "Timeout",
+    "unknown": "Unknown error"
+  }
+}
