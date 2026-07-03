@@ -54,12 +54,12 @@ impl ApprovalGate {
         arguments: &serde_json::Value,
         sandbox: &ResolvedSandbox,
     ) -> Option<crate::types::ToolCallResult> {
-        let shape = approval_shape(cwd, tool_name, arguments, sandbox)?;
-
-        // Policy evaluation hook (stub). Today this always returns AskUser.
-        // Future: rule-based auto-approve / auto-reject lives here without
-        // touching the rest of this function.
-        match evaluate_policy(cwd, tool_name, arguments, &shape) {
+        // Step 1 (§2.1): explicit rules run FIRST — before the sandbox
+        // auto-allow — so a deny rule can stop even a command the sandbox would
+        // otherwise contain, and an approve rule can suppress the prompt for a
+        // command that would otherwise ask (e.g. under `untrusted`). An approve
+        // only skips the prompt; the command still runs sandboxed downstream.
+        match evaluate_policy(&sandbox.rules, tool_name, arguments) {
             PolicyDecision::AskUser => {}
             PolicyDecision::AutoApprove => {
                 if let Some(path) = approved_argument_path(cwd, arguments) {
@@ -69,11 +69,15 @@ impl ApprovalGate {
             }
             PolicyDecision::AutoReject(reason) => {
                 return Some(crate::types::ToolCallResult {
-                    result: format!("Tool call `{tool_name}` was rejected by policy: {reason}"),
+                    result: format!("Tool call `{tool_name}` was rejected by a rule ({reason})."),
                     is_error: true,
                 });
             }
         }
+
+        // Step 2: sandbox auto-allow. None means the call stays inside the
+        // boundary (or is an allowlisted read) and needs no approval.
+        let shape = approval_shape(cwd, tool_name, arguments, sandbox)?;
 
         // "never" approval policy: no prompts — boundary-crossing operations
         // fail immediately with a clear error for the model.
@@ -161,6 +165,8 @@ impl ApprovalGate {
             action,
             // The approved re-run happens OUTSIDE the sandbox.
             sandbox_boundary: sandbox.boundary_json(Some("sandbox_escalation"), false),
+            // Escalation is a one-time out-of-sandbox run — never persist it.
+            save_suggestion: None,
         };
         let requested_action = serde_json::json!({
             "command": request.command,
@@ -221,6 +227,7 @@ impl ApprovalGate {
                 "requested_action": requested_action,
                 "action": shape.action,
                 "sandbox_boundary": shape.sandbox_boundary,
+                "save_suggestion": shape.save_suggestion,
                 "reviewer": "user",
             }),
         ));
@@ -305,6 +312,10 @@ pub(super) struct ApprovalShape {
     pub summary: String,
     pub action: serde_json::Value,
     pub sandbox_boundary: serde_json::Value,
+    /// Suggested rule to persist if the user picks "session"/"always" allow:
+    /// `{ "match_kind": ..., "match_value": ..., "decision": "approve" }`.
+    /// `None` for kinds that shouldn't be persisted as a rule (e.g. escalation).
+    pub save_suggestion: Option<serde_json::Value>,
 }
 
 /// Decide whether a tool call needs pre-execution approval, and shape the
@@ -363,6 +374,7 @@ fn approval_shape(
                 summary: "Agent wants to run a shell command.".to_string(),
                 action,
                 sandbox_boundary: sandbox.boundary_json(Some(violation), sandboxed),
+                save_suggestion: command_save_suggestion(&command),
             })
         }
         "write" | "edit" => {
@@ -415,10 +427,43 @@ fn approval_shape(
                 summary: summary.to_string(),
                 action,
                 sandbox_boundary: sandbox.boundary_json(Some(violation), false),
+                save_suggestion: path_save_suggestion(&path),
             })
         }
         _ => None,
     }
+}
+
+/// Suggested `command_prefix` rule for a bash command: program name plus its
+/// first non-flag subcommand, then `*` (e.g. `git push origin` → `git push *`,
+/// `cargo build --release` → `cargo build *`, `rm -rf x` → `rm *`).
+fn command_save_suggestion(command: &str) -> Option<serde_json::Value> {
+    let mut tokens = command.split_whitespace();
+    let program = tokens.next()?;
+    // Only keep a second token if it looks like a subcommand, not a flag/path.
+    let pattern = match tokens.next() {
+        Some(sub) if !sub.starts_with('-') && !sub.contains('/') => {
+            format!("{program} {sub} *")
+        }
+        _ => format!("{program} *"),
+    };
+    Some(serde_json::json!({
+        "match_kind": "command_prefix",
+        "match_value": pattern,
+        "decision": "approve",
+    }))
+}
+
+/// Suggested `path_glob` rule for a write/edit target: everything in its parent
+/// directory (`/a/b/c.txt` → `/a/b/*`).
+fn path_save_suggestion(path: &str) -> Option<serde_json::Value> {
+    let parent = std::path::Path::new(path).parent()?;
+    let glob = format!("{}/*", parent.to_string_lossy());
+    Some(serde_json::json!({
+        "match_kind": "path_glob",
+        "match_value": glob,
+        "decision": "approve",
+    }))
 }
 
 fn command_summary(command: &str) -> String {
@@ -468,7 +513,7 @@ fn normalize_requested_action(arguments: &serde_json::Value) -> serde_json::Valu
     }
 }
 
-fn argument_command(arguments: &serde_json::Value) -> Option<String> {
+pub(super) fn argument_command(arguments: &serde_json::Value) -> Option<String> {
     let normalized = match arguments {
         serde_json::Value::String(raw) => serde_json::from_str(raw)
             .ok()
@@ -570,7 +615,7 @@ fn has_unclosed_string(value: &str) -> bool {
     in_string
 }
 
-fn argument_path(arguments: &serde_json::Value) -> Option<String> {
+pub(super) fn argument_path(arguments: &serde_json::Value) -> Option<String> {
     let normalized = match arguments {
         serde_json::Value::String(raw) => serde_json::from_str(raw).unwrap_or(arguments.clone()),
         _ => arguments.clone(),
@@ -996,23 +1041,89 @@ mod structured_tests {
     }
 
     #[test]
-    fn policy_evaluator_returns_ask_user_by_default() {
-        let workspace = temp_path("workspace");
-        let sandbox = degraded_sandbox(&workspace);
-        let args = serde_json::json!({
-            "command": "rm -rf node_modules"
-        });
+    fn policy_evaluator_asks_when_no_rules() {
+        let args = serde_json::json!({ "command": "rm -rf node_modules" });
+        let decision = evaluate_policy(&[], "bash", &args);
+        assert!(matches!(decision, PolicyDecision::AskUser));
+    }
 
-        let shape = approval_shape(
+    #[test]
+    fn deny_rule_blocks_sandboxed_bash_before_auto_allow() {
+        // A deny rule must stop a command the sandbox would otherwise auto-run.
+        let workspace = temp_path("workspace");
+        let mut sandbox = degraded_sandbox(&workspace);
+        sandbox.available = true; // bash would be auto-allowed (on-request)
+        sandbox.rules = vec![crate::sandbox::SandboxRule {
+            match_kind: "command_prefix".to_string(),
+            match_value: "rm *".to_string(),
+            decision: "reject".to_string(),
+        }];
+
+        let gate = ApprovalGate::default();
+        let broadcaster = SseBroadcaster::new();
+        let result = gate.request(
+            &broadcaster,
+            "session_test",
             workspace.to_string_lossy().as_ref(),
             "bash",
-            &args,
+            "tool_1",
+            &serde_json::json!({ "command": "rm -rf /" }),
             &sandbox,
-        )
-        .expect("rm should require approval");
+        );
+        let result = result.expect("deny rule should reject");
+        assert!(result.is_error);
+        assert!(result.result.contains("deny rule"));
+    }
 
-        let decision = evaluate_policy(workspace.to_string_lossy().as_ref(), "bash", &args, &shape);
+    #[test]
+    fn approve_rule_skips_prompt_under_untrusted() {
+        // Under `untrusted`, a non-allowlisted command normally asks; an
+        // approve rule suppresses the prompt (returns None → proceeds).
+        let workspace = temp_path("workspace");
+        let mut sandbox = degraded_sandbox(&workspace);
+        sandbox.available = true;
+        sandbox.approval_policy = ApprovalPolicy::Untrusted;
+        sandbox.rules = vec![crate::sandbox::SandboxRule {
+            match_kind: "command_prefix".to_string(),
+            match_value: "cargo *".to_string(),
+            decision: "approve".to_string(),
+        }];
 
-        assert!(matches!(decision, PolicyDecision::AskUser));
+        let gate = ApprovalGate::default();
+        let broadcaster = SseBroadcaster::new();
+        let result = gate.request(
+            &broadcaster,
+            "session_test",
+            workspace.to_string_lossy().as_ref(),
+            "bash",
+            "tool_1",
+            &serde_json::json!({ "command": "cargo build" }),
+            &sandbox,
+        );
+        assert!(result.is_none(), "approve rule should skip the prompt");
+    }
+
+    #[test]
+    fn command_save_suggestion_uses_program_and_subcommand() {
+        let s = |cmd: &str| {
+            command_save_suggestion(cmd).map(|v| v["match_value"].as_str().unwrap().to_string())
+        };
+        assert_eq!(s("git push origin main").as_deref(), Some("git push *"));
+        assert_eq!(s("cargo build --release").as_deref(), Some("cargo build *"));
+        assert_eq!(s("rm -rf x").as_deref(), Some("rm *")); // flag → program only
+        assert_eq!(s("ls").as_deref(), Some("ls *"));
+        // A path-like second token collapses to program only.
+        assert_eq!(s("bash ./run.sh").as_deref(), Some("bash *"));
+        let suggestion = command_save_suggestion("git push").unwrap();
+        assert_eq!(suggestion["match_kind"], "command_prefix");
+        assert_eq!(suggestion["decision"], "approve");
+    }
+
+    #[test]
+    fn path_save_suggestion_globs_parent_dir() {
+        let suggestion = path_save_suggestion("/Users/x/proj/src/main.rs").unwrap();
+        assert_eq!(suggestion["match_kind"], "path_glob");
+        assert_eq!(suggestion["match_value"], "/Users/x/proj/src/*");
+        assert_eq!(suggestion["decision"], "approve");
     }
 }
