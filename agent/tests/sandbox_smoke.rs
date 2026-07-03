@@ -102,6 +102,28 @@ fn credential_paths_are_unreadable() {
     );
     let out = run_sandboxed(&default_sandbox(&ws), "cat ~/.future/agent/auth.json");
     assert!(!out.status.success(), "auth.json read should be denied");
+    let out = run_sandboxed(&default_sandbox(&ws), "cat ~/.future/agent/models.json");
+    assert!(!out.status.success(), "models.json read should be denied");
+
+    // Deny a path we create ourselves, so the test distinguishes a real
+    // sandbox EPERM from a plain file-not-found on machines lacking the file.
+    let home = dirs::home_dir().unwrap();
+    let netrc = home.join(".netrc");
+    let created = if netrc.exists() {
+        false
+    } else {
+        std::fs::write(&netrc, "machine example.com login u password p").is_ok()
+    };
+    let out = run_sandboxed(&default_sandbox(&ws), "cat ~/.netrc");
+    if created {
+        std::fs::remove_file(&netrc).ok();
+    }
+    assert!(
+        !out.status.success()
+            && String::from_utf8_lossy(&out.stderr).contains("Operation not permitted"),
+        "~/.netrc read should be denied with EPERM: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
