@@ -132,6 +132,7 @@ pub fn run() {
             set_future_environment,
             list_agent_providers,
             upsert_custom_provider,
+            update_builtin_provider_key,
             delete_custom_provider,
             start_future_login,
             poll_future_login,
