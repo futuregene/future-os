@@ -25,25 +25,66 @@ fn sb_quote(path: &std::path::Path) -> String {
     format!("\"{escaped}\"")
 }
 
-/// Credential paths that stay unreadable even though reads are otherwise
-/// broad (SANDBOX_PLAN.md §2.3 — decided scope for Phase 1).
+/// How a sensitive path is matched in the profile.
+enum Deny {
+    /// The whole directory tree.
+    Subpath(&'static str),
+    /// A single file.
+    File(&'static str),
+}
+
+/// Credential paths that stay unreadable even though reads are otherwise broad
+/// (SANDBOX_PLAN.md §2.3).
 ///
-/// Note: whole-directory denials must NOT cover `~/.future` — chat temp
-/// workspaces live under `~/.future/agent/workspace`, so only the credential
-/// files themselves are denied there.
-fn sensitive_read_denials() -> Vec<(String, std::path::PathBuf)> {
+/// Two hard constraints:
+/// - Whole-directory denials must NOT cover `~/.future` — chat temp workspaces
+///   live under `~/.future/agent/workspace`, so only the specific credential
+///   files there are denied.
+/// - Deny only files/dirs holding secrets, never a directory a build tool
+///   legitimately reads wholesale (e.g. `~/.cargo`, `~/.config`, `~/.docker`) —
+///   pick the exact secret file inside instead. Note some (e.g. `~/.npmrc`,
+///   `~/.pypirc`) also hold non-secret registry config, so denying them can
+///   make private-registry installs fail inside the sandbox → the escalation
+///   flow (§2.6) covers those cases.
+fn sensitive_read_denials() -> Vec<(&'static str, std::path::PathBuf)> {
     let Some(home) = dirs::home_dir() else {
         return vec![];
     };
-    vec![
-        ("subpath".to_string(), home.join(".ssh")),
-        ("subpath".to_string(), home.join(".gnupg")),
-        ("literal".to_string(), home.join(".future/agent/auth.json")),
-        (
-            "literal".to_string(),
-            home.join(".future/agent-app/auth.json"),
-        ),
-    ]
+    const ENTRIES: &[Deny] = &[
+        // SSH / GPG key material
+        Deny::Subpath(".ssh"),
+        Deny::Subpath(".gnupg"),
+        // FutureOS own config (keys + provider configs live here)
+        Deny::File(".future/agent/auth.json"),
+        Deny::File(".future/agent/models.json"),
+        Deny::File(".future/agent-app/auth.json"),
+        Deny::File(".future/agent-app/models.json"),
+        // Package-manager / registry tokens
+        Deny::File(".npmrc"),
+        Deny::File(".pypirc"),
+        Deny::File(".cargo/credentials.toml"),
+        Deny::File(".cargo/credentials"),
+        Deny::File(".gem/credentials"),
+        // Network / git plaintext credentials
+        Deny::File(".netrc"),
+        Deny::File(".git-credentials"),
+        // Loose home-level env file
+        Deny::File(".env"),
+        // Cloud provider credentials
+        Deny::Subpath(".aws"),
+        Deny::Subpath(".azure"),
+        Deny::Subpath(".config/gcloud"),
+        Deny::File(".kube/config"),
+        // Container registry auth
+        Deny::File(".docker/config.json"),
+    ];
+    ENTRIES
+        .iter()
+        .map(|entry| match entry {
+            Deny::Subpath(rel) => ("subpath", home.join(rel)),
+            Deny::File(rel) => ("literal", home.join(rel)),
+        })
+        .collect()
 }
 
 /// Build the SBPL profile for this sandbox configuration.
@@ -163,5 +204,49 @@ mod tests {
         let tricky = std::path::Path::new("/tmp/we\"ird\\path");
         let quoted = sb_quote(tricky);
         assert_eq!(quoted, "\"/tmp/we\\\"ird\\\\path\"");
+    }
+
+    #[test]
+    fn credential_paths_are_denied_in_profile() {
+        let profile = build_profile(&resolved(&SandboxPolicy::default()));
+        // The deny rule follows the broad allow so it wins (last match).
+        let deny_idx = profile
+            .find("(deny file-read*")
+            .expect("has credential deny rule");
+        let allow_idx = profile
+            .find("(allow file-read*")
+            .expect("has broad read allow");
+        assert!(deny_idx > allow_idx, "deny must come after the broad allow");
+        for needle in [
+            ".ssh",
+            ".gnupg",
+            "auth.json",
+            "models.json",
+            ".npmrc",
+            ".pypirc",
+            ".netrc",
+            ".env",
+            ".git-credentials",
+            "credentials.toml",
+            ".aws",
+            ".azure",
+            "gcloud",
+            ".kube/config",
+            "config.json",
+        ] {
+            assert!(
+                profile.contains(needle),
+                "profile should deny reads of {needle}"
+            );
+        }
+        // The workspace itself must never be swept into the credential denials.
+        let deny_line = &profile[deny_idx
+            ..profile[deny_idx..]
+                .find(")\n")
+                .map_or(profile.len(), |i| deny_idx + i)];
+        assert!(
+            !deny_line.contains(".future/agent/workspace"),
+            "chat temp workspaces must stay readable"
+        );
     }
 }

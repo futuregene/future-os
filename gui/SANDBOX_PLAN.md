@@ -134,13 +134,23 @@ bash(command) 到达
 
 ### 2.3 敏感路径读屏蔽
 
-`workspace-write` 允许全盘读是为了让构建链（读 `/usr/lib`、`~/.cargo` 等）不碎裂，但以下路径在 Seatbelt / bwrap 层面**连读也拒绝**（已决策，Q1）：
+`workspace-write` 允许全盘读是为了让构建链（读 `/usr/lib`、`~/.cargo` 等）不碎裂，但以下路径在 Seatbelt / bwrap 层面**连读也拒绝**（实现见 `sandbox/seatbelt.rs::sensitive_read_denials`，实测清单 2026-07-04）：
 
-- `~/.ssh`
-- `~/.gnupg`
-- `~/.future/**` 凭证类文件（本产品自己的密钥，含 `auth.json`）
+| 类别 | 路径 | 匹配 |
+|---|---|---|
+| SSH / GPG | `~/.ssh`、`~/.gnupg` | 整目录 |
+| FutureOS 自身配置 | `~/.future/agent/{auth,models}.json`、`~/.future/agent-app/{auth,models}.json` | 单文件 |
+| 包管理 / registry token | `~/.npmrc`、`~/.pypirc`、`~/.cargo/credentials{,.toml}`、`~/.gem/credentials` | 单文件 |
+| 网络 / git 明文凭证 | `~/.netrc`、`~/.git-credentials` | 单文件 |
+| home 级 env | `~/.env` | 单文件 |
+| 云厂商凭证 | `~/.aws`、`~/.azure`、`~/.config/gcloud`（整目录）、`~/.kube/config`（文件） | 混合 |
+| 容器 registry auth | `~/.docker/config.json` | 单文件 |
 
-第一期仅此三类，其余（`~/.aws`、`~/.kube`、`~/.docker/config.json`、Keychain 等）先观察、后续按需加入；偶发误伤（如构建工具读 registry 配置）由 escalation 流兜底。
+两条硬约束：
+1. **不能整目录屏蔽 `~/.future`**——普通 Chat 临时 workspace 就在 `~/.future/agent/workspace`，只屏蔽其中的具体凭证文件（`auth.json` / `models.json`）。
+2. **只屏蔽真正含密的文件/目录，不整目录屏蔽构建工具会读的目录**（`~/.cargo`、`~/.config`、`~/.docker` 只挑里面的 secret 文件）。个别文件（`~/.npmrc` / `~/.pypirc`）同时含非密的 registry 配置，屏蔽后私有源安装可能在沙盒内失败——由 escalation 流（§2.6）兜底，这是刻意的安全/便利取舍。
+
+Keychain、`~/.config` 下其他凭证等仍未纳入，后续按需补 `sensitive_read_denials`。
 
 ### 2.4 审批策略
 
