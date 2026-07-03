@@ -66,4 +66,6 @@ export interface AgentMessage {
   durationMs?: number | null;
   /** Tokens this reply generated (summed completion tokens across the run). */
   outputTokens?: number | null;
+  /** The reply was interrupted by the user (its run was cancelled mid-stream). */
+  stopped?: boolean;
 }

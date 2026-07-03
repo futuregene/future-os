@@ -43,6 +43,11 @@ GUI 的颜色全部走 [`tailwind.config.js`](tailwind.config.js) 里定义的**
 
 > 状态徽章直接用 `<Badge tone="success|danger|warning|info|accent|neutral">`,组件已把三件套烘进去。
 
+### 活动 / 生成中
+| token | hex | 用途 |
+|---|---|---|
+| `generating` | `#f59e0b` | 流式生成中指示灯（琥珀色 `animate-ping` 圆点；实心点与半透明光晕同用此 token） |
+
 ### Diff(GitHub 风格)
 | token | hex | 用途 |
 |---|---|---|

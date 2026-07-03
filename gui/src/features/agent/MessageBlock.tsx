@@ -175,6 +175,9 @@ export function MessageBlock({
                   />
                 )
               : null}
+          {!isUser && message.stopped
+            ? <span className="select-none text-xs text-ink-muted">{t("message.stopped")}</span>
+            : null}
           {!isUser ? <MessageMeta message={message} visible={hovered} /> : null}
         </div>
       </div>
@@ -191,8 +194,8 @@ function StreamingIndicator({ label }: { label: string }) {
   return (
     <div aria-label={label} className="flex items-center px-1 py-1.5" role="status">
       <span className="relative flex size-2">
-        <span className="absolute inline-flex size-full animate-ping rounded-full bg-amber-400 opacity-75" />
-        <span className="relative inline-flex size-2 rounded-full bg-amber-500" />
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-generating opacity-75" />
+        <span className="relative inline-flex size-2 rounded-full bg-generating" />
       </span>
     </div>
   );
