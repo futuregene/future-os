@@ -103,6 +103,35 @@ export async function status(): Promise<void> {
   }
 }
 
+export async function credential(opts: { json: boolean }): Promise<void> {
+  try {
+    const authFile = await loadAuthFile();
+    const auth = getFutureAuthEntry(authFile);
+    if (!auth?.key) {
+      if (opts.json) {
+        console.log(JSON.stringify({ error: "Not logged in." }));
+      } else {
+        console.log("Not logged in.");
+      }
+      return;
+    }
+    const platformUrl = auth.base_url
+      ? auth.base_url.replace(/\/api\/?$/, "")
+      : await getPlatformUrl();
+    const output = {
+      api_key: auth.key,
+      endpoint: `${platformUrl}/api/v1`,
+    };
+    console.log(JSON.stringify(output));
+  } catch (err) {
+    if (opts.json) {
+      console.log(JSON.stringify({ error: String(err) }));
+    } else {
+      console.log("Not logged in.");
+    }
+  }
+}
+
 export async function logout(): Promise<void> {
   const authFile = await loadAuthFile();
   const current = getFutureAuthEntry(authFile);

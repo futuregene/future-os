@@ -2,7 +2,7 @@
 
 import { agent, isAgentCommand } from "./commands/agent.js";
 import { channel, isChannelCommand } from "./commands/channel.js";
-import { login, logout, status } from "./commands/auth.js";
+import { credential, login, logout, status } from "./commands/auth.js";
 import { tui } from "./commands/tui.js";
 import { tools, isToolsCommand } from "./commands/tools.js";
 import { skills, isSkillsCommand } from "./commands/skills.js";
@@ -36,6 +36,12 @@ async function main(): Promise<void> {
 
   if (group === "auth" && command === "status") {
     await status();
+    return;
+  }
+
+  if (group === "auth" && command === "credential") {
+    const jsonFlag = rest.includes("--json");
+    await credential({ json: jsonFlag });
     return;
   }
 
