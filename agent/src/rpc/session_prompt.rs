@@ -164,11 +164,12 @@ impl ServerSession {
         // Resolve the sandbox boundary once per run: canonicalized writable
         // roots + platform availability. Shared by the approval closure (pre-
         // execution decisions), the bash wrapper, and write/edit boundary
-        // checks so all layers agree (SANDBOX_PLAN.md §2.1).
-        let sandbox = Arc::new(crate::sandbox::ResolvedSandbox::resolve(
-            &self.sandbox_policy,
-            &self.cwd,
-        ));
+        // checks so all layers agree (SANDBOX_PLAN.md §2.1). No explicit policy
+        // (every non-GUI client) → dormant sandbox = legacy behavior.
+        let sandbox = Arc::new(match &self.sandbox_policy {
+            Some(policy) => crate::sandbox::ResolvedSandbox::resolve(policy, &self.cwd),
+            None => crate::sandbox::ResolvedSandbox::disabled(&self.cwd),
+        });
 
         // Set tool event callback so tool_start/tool_end reach the TUI
         {

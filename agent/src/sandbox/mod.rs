@@ -152,6 +152,28 @@ impl ResolvedSandbox {
         }
     }
 
+    /// Legacy / opt-out configuration: no OS sandboxing, workspace-only
+    /// writable boundary — byte-identical to pre-sandbox behavior.
+    ///
+    /// This is what a session resolves to when it has **no** explicit policy,
+    /// i.e. every non-GUI client (TUI / CLI / channels), none of which send
+    /// `set_sandbox_policy`. The sandbox stays dormant until a client opts in;
+    /// only the GUI (which owns the approval UX) does. Note: no temp-dir
+    /// writable roots here — that exception is a sandbox feature, not legacy
+    /// behavior, so `/tmp` writes still go through approval as they did before.
+    pub fn disabled(workspace: &str) -> Self {
+        let workspace = paths::canonicalize_lenient(Path::new(workspace));
+        Self {
+            mode: SandboxMode::WorkspaceWrite,
+            approval_policy: ApprovalPolicy::OnRequest,
+            network_access: false,
+            writable_roots: vec![workspace.clone()],
+            workspace,
+            available: false,
+            rules: vec![],
+        }
+    }
+
     /// Whether bash commands will actually run wrapped in the OS sandbox.
     pub fn wraps_bash(&self) -> bool {
         self.available && self.mode != SandboxMode::DangerFullAccess
@@ -204,12 +226,10 @@ impl ResolvedSandbox {
 }
 
 impl Default for ResolvedSandbox {
-    /// Degraded/legacy default: no OS sandbox, workspace-write semantics with
-    /// only the workspace boundary. Used when no policy has been set and the
+    /// Legacy default: no OS sandbox, workspace-only boundary. Used when the
     /// tool scope has no sandbox context (e.g. bare unit tests).
     fn default() -> Self {
-        ResolvedSandbox::resolve(
-            &SandboxPolicy::default(),
+        ResolvedSandbox::disabled(
             &std::env::current_dir()
                 .unwrap_or_else(|_| PathBuf::from("/"))
                 .to_string_lossy(),

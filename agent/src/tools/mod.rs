@@ -91,11 +91,10 @@ pub async fn with_workspace_scope_with_interrupt<F>(
 where
     F: Future,
 {
-    // Legacy entry point: degraded sandbox (no OS wrapping), workspace-write
-    // boundary semantics. The RPC layer uses with_tool_scope directly.
-    let mut sandbox =
-        ResolvedSandbox::resolve(&crate::sandbox::SandboxPolicy::default(), &workspace);
-    sandbox.available = false;
+    // Legacy entry point: dormant sandbox (no OS wrapping, workspace-only
+    // boundary) — identical to pre-sandbox behavior. The RPC layer uses
+    // with_tool_scope directly with the session's resolved policy.
+    let sandbox = ResolvedSandbox::disabled(&workspace);
     with_tool_scope(
         ScopeOptions {
             workspace,
@@ -967,12 +966,29 @@ mod tests {
             .join("outside.txt")
     }
 
+    /// A tool scope with an active workspace-write sandbox policy (temp dirs
+    /// are writable roots), OS wrapping disabled so only the boundary check is
+    /// exercised. Mirrors what the GUI opts into.
+    fn active_policy_scope(workspace: &Path) -> ScopeOptions {
+        let mut sandbox = crate::sandbox::ResolvedSandbox::resolve(
+            &crate::sandbox::SandboxPolicy::default(),
+            workspace.to_string_lossy().as_ref(),
+        );
+        sandbox.available = false;
+        ScopeOptions {
+            workspace: workspace.to_string_lossy().to_string(),
+            permission_level: "workspace".to_string(),
+            interrupt_flag: Arc::new(AtomicBool::new(false)),
+            sandbox: Arc::new(sandbox),
+            escalation: None,
+            on_sandboxed: None,
+        }
+    }
+
     #[tokio::test]
     async fn scoped_workspace_rejects_unapproved_absolute_outside_write() {
         let workspace = test_path("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
-        // Note: temp dirs are writable roots now (§2.2), so "outside" must be
-        // outside both the workspace and tmp.
         let outside = outside_root_path("reject");
         let workspace_string = workspace.to_string_lossy().to_string();
         let outside_string = outside.to_string_lossy().to_string();
@@ -987,22 +1003,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scoped_workspace_allows_temp_dir_writes() {
-        // Temp dirs are fully-open writable roots (SANDBOX_PLAN.md §2.2).
-        let workspace = test_path("ws-tmp");
+    async fn no_policy_scope_rejects_temp_dir_writes() {
+        // Dormant default (no policy): temp dirs are NOT writable roots — this
+        // is the legacy boundary that TUI/CLI/channels keep. `/tmp` writes
+        // still require approval, exactly as before the sandbox existed.
+        let workspace = test_path("ws-no-policy");
         std::fs::create_dir_all(&workspace).unwrap();
-        let tmp_target = test_path("tmp-write.txt");
+        let tmp_target = test_path("legacy-tmp-write.txt");
 
         let result = with_workspace_scope(
             workspace.to_string_lossy().to_string(),
             "workspace".to_string(),
-            async { run_write(&tmp_target.to_string_lossy(), "tmp ok").await },
+            async { run_write(&tmp_target.to_string_lossy(), "no").await },
         )
         .await;
 
         assert!(
+            result.is_err(),
+            "legacy path must not auto-allow temp writes"
+        );
+        assert!(!tmp_target.exists());
+    }
+
+    #[tokio::test]
+    async fn active_policy_scope_allows_temp_dir_writes() {
+        // With an active sandbox policy (GUI opt-in), temp dirs are writable
+        // roots (SANDBOX_PLAN.md §2.2).
+        let workspace = test_path("ws-tmp");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tmp_target = test_path("tmp-write.txt");
+
+        let result = with_tool_scope(active_policy_scope(&workspace), async {
+            run_write(&tmp_target.to_string_lossy(), "tmp ok").await
+        })
+        .await;
+
+        assert!(
             result.is_ok(),
-            "temp-dir write should be allowed: {result:?}"
+            "temp-dir write should be allowed under an active policy: {result:?}"
         );
         assert_eq!(std::fs::read_to_string(&tmp_target).unwrap(), "tmp ok");
     }
