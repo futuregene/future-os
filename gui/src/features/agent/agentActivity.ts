@@ -18,6 +18,12 @@ interface AssistantRunProjection {
    * on. Extracted from `thinking_delta` events — always captured, gated at render.
    */
   thinking: string;
+  /**
+   * The model is mid-reasoning with nothing else to show yet (no answer text, no
+   * tool work). Drives the footer "thinking…" hint while the show-thinking
+   * setting is off; not rendered as a top-of-message line.
+   */
+  thinkingActive: boolean;
 }
 
 /**
@@ -196,11 +202,9 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
 
   // Flat activity list kept for back-compat (legacy render path / callers).
   const items = collapseToolActivities([...toolActivities.values()].sort((a, b) => a.order - b.order));
-  if (thinking && !content.trim() && !sawVisibleWork) {
-    const thinkingItem: AgentActivityItem = { id: "thinking", kind: "thinking", status: "running" };
-    items.unshift(thinkingItem);
-    segments.unshift({ kind: "activity", id: thinkingItem.id, item: thinkingItem });
-  }
+  // Mid-reasoning with nothing visible yet. Reported as a flag (consumed by the
+  // footer hint) rather than injected as a top-of-message "thinking" activity.
+  const thinkingActive = Boolean(thinking) && !content.trim() && !sawVisibleWork;
 
   // Concatenated reasoning (blocks joined by blank lines) — the inline segments
   // carry the ordered form; this is the whole-turn text for any non-inline use.
@@ -216,6 +220,7 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
     segments,
     outputTokens: sawUsageEvent ? usageOutputSum : agentEndOutput,
     thinking: thinkingText,
+    thinkingActive,
   };
 }
 
@@ -314,16 +319,6 @@ function latestRunningToolId(
     .filter(item => item.kind === kind && item.status === "running")
     .sort((a, b) => b.order - a.order);
   return latestRunning[0]?.id;
-}
-
-export function thinkingActivity(): AgentActivityItem[] {
-  return [
-    {
-      id: "thinking",
-      kind: "thinking",
-      status: "running",
-    },
-  ];
 }
 
 function collapseToolActivities(tools: ToolActivity[]): AgentActivityItem[] {

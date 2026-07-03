@@ -160,6 +160,44 @@ describe("buildAssistantRunProjection thinking", () => {
     const thinkingSegment = projection.segments[1]!;
     expect(thinkingSegment).toMatchObject({ kind: "thinking", text: "The file is under attachments." });
   });
+
+  it("flags thinkingActive while reasoning with nothing else visible, and injects no top activity line", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["thinking_start", {}],
+        ["thinking_delta", { text: "Working on it." }],
+      ]),
+    );
+
+    expect(projection.thinkingActive).toBe(true);
+    // The old top-of-message "thinking" activity line is gone.
+    expect(projection.segments.some(s => s.kind === "activity")).toBe(false);
+  });
+
+  it("clears thinkingActive once answer text appears", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["thinking_start", {}],
+        ["thinking_delta", { text: "Hmm." }],
+        ["thinking_end", {}],
+        ["text_chunk", { text: "Answer." }],
+      ]),
+    );
+
+    expect(projection.thinkingActive).toBe(false);
+  });
+
+  it("clears thinkingActive once tool work is visible", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["thinking_start", {}],
+        ["thinking_delta", { text: "Let me look." }],
+        ["tool_start", read("t1", "/a.pdf")[0]],
+      ]),
+    );
+
+    expect(projection.thinkingActive).toBe(false);
+  });
 });
 
 describe("buildAssistantRunProjection output tokens", () => {
