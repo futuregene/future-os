@@ -1,10 +1,12 @@
 import type { AvailableSkill, InstalledSkill } from "../../integrations/skills/skillsClient";
-import { Blocks, Download, RotateCcw, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Blocks, Download, RotateCcw, Search, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { Select } from "../../components/ui/Select";
+import { TextInput } from "../../components/ui/TextInput";
 import {
   installSkill,
   listAvailableSkills,
@@ -14,20 +16,58 @@ import {
 import { cn } from "../../lib/cn";
 
 type SkillsTab = "installed" | "all";
+interface SkillFilters {
+  category: string;
+  query: string;
+}
+
+const allCategoriesValue = "__all__";
+const emptyFilters: SkillFilters = { category: allCategoriesValue, query: "" };
 
 export function SkillsView() {
   const { t } = useTranslation("skills");
   const [tab, setTab] = useState<SkillsTab>("installed");
   const [installed, setInstalled] = useState<InstalledSkill[]>([]);
   const [available, setAvailable] = useState<AvailableSkill[]>([]);
+  const [installedFilters, setInstalledFilters] = useState<SkillFilters>(emptyFilters);
+  const [allFilters, setAllFilters] = useState<SkillFilters>(emptyFilters);
   const [loading, setLoading] = useState(true);
   const [availableError, setAvailableError] = useState<string | null>(null);
   // Skill ids with an install/uninstall in flight (disables their buttons).
   const [busy, setBusy] = useState<Record<string, boolean>>({});
+  const hasResolvedInitialTabRef = useRef(false);
 
   const installedIds = useMemo(
     () => new Set(installed.map(skill => skill.id)),
     [installed],
+  );
+
+  const categoryBySkillId = useMemo(() => {
+    return new Map(
+      available
+        .filter(skill => skill.category)
+        .map(skill => [skill.id, skill.category] as const),
+    );
+  }, [available]);
+
+  const installedCategories = useMemo(
+    () => uniqueSorted(installed.map(skill => categoryBySkillId.get(skill.id))),
+    [categoryBySkillId, installed],
+  );
+
+  const allCategories = useMemo(
+    () => uniqueSorted(available.map(skill => skill.category)),
+    [available],
+  );
+
+  const filteredInstalled = useMemo(
+    () => installed.filter(skill => matchesInstalledSkill(skill, installedFilters, categoryBySkillId.get(skill.id))),
+    [categoryBySkillId, installed, installedFilters],
+  );
+
+  const filteredAvailable = useMemo(
+    () => available.filter(skill => matchesAvailableSkill(skill, allFilters)),
+    [allFilters, available],
   );
 
   const refresh = useCallback(async () => {
@@ -38,8 +78,14 @@ export function SkillsView() {
       listInstalledSkills(),
       listAvailableSkills(),
     ]);
-    if (installedResult.status === "fulfilled")
+    if (installedResult.status === "fulfilled") {
       setInstalled(installedResult.value);
+      if (!hasResolvedInitialTabRef.current) {
+        hasResolvedInitialTabRef.current = true;
+        if (installedResult.value.length === 0)
+          setTab("all");
+      }
+    }
     if (availableResult.status === "fulfilled") {
       setAvailable(availableResult.value);
       setAvailableError(null);
@@ -87,7 +133,12 @@ export function SkillsView() {
             ? (
                 <InstalledTab
                   loading={loading}
-                  skills={installed}
+                  categories={installedCategories}
+                  filters={installedFilters}
+                  onFiltersChange={setInstalledFilters}
+                  resultCount={filteredInstalled.length}
+                  skills={filteredInstalled}
+                  totalCount={installed.length}
                   busy={busy}
                   onUninstall={id => void runAction(id, () => uninstallSkill(id))}
                 />
@@ -95,7 +146,12 @@ export function SkillsView() {
             : (
                 <AllTab
                   loading={loading}
-                  skills={available}
+                  categories={allCategories}
+                  filters={allFilters}
+                  onFiltersChange={setAllFilters}
+                  resultCount={filteredAvailable.length}
+                  skills={filteredAvailable}
+                  totalCount={available.length}
                   installedIds={installedIds}
                   error={availableError}
                   busy={busy}
@@ -127,23 +183,43 @@ function TabButton({ active, label, onClick }: { active: boolean; label: string;
 
 function InstalledTab({
   busy,
+  categories,
+  filters,
   loading,
+  onFiltersChange,
   onUninstall,
+  resultCount,
   skills,
+  totalCount,
 }: {
   busy: Record<string, boolean>;
+  categories: string[];
+  filters: SkillFilters;
   loading: boolean;
+  onFiltersChange: (filters: SkillFilters) => void;
   onUninstall: (id: string) => void;
+  resultCount: number;
   skills: InstalledSkill[];
+  totalCount: number;
 }) {
   const { t } = useTranslation("skills");
-  if (loading && skills.length === 0)
+  if (loading && totalCount === 0)
     return <LoadingRow />;
-  if (skills.length === 0)
+  if (totalCount === 0)
     return <EmptyState title={t("installed.emptyTitle")} detail={t("installed.emptyDetail")} />;
 
   return (
     <>
+      <SkillFiltersBar
+        categories={categories}
+        filters={filters}
+        onChange={onFiltersChange}
+        resultCount={resultCount}
+        totalCount={totalCount}
+      />
+      {skills.length === 0
+        ? <EmptyState title={t("filter.emptyTitle")} detail={t("filter.emptyDetail")} />
+        : null}
       {skills.map(skill => (
         <SkillRow
           key={skill.id}
@@ -161,25 +237,35 @@ function InstalledTab({
 
 function AllTab({
   busy,
+  categories,
   error,
+  filters,
   installedIds,
   loading,
+  onFiltersChange,
   onInstall,
   onRetry,
   onUninstall,
+  resultCount,
   skills,
+  totalCount,
 }: {
   busy: Record<string, boolean>;
+  categories: string[];
   error: string | null;
+  filters: SkillFilters;
   installedIds: Set<string>;
   loading: boolean;
+  onFiltersChange: (filters: SkillFilters) => void;
   onInstall: (id: string, version: string) => void;
   onRetry: () => void;
   onUninstall: (id: string) => void;
+  resultCount: number;
   skills: AvailableSkill[];
+  totalCount: number;
 }) {
   const { t } = useTranslation("skills");
-  if (loading && skills.length === 0)
+  if (loading && totalCount === 0)
     return <LoadingRow />;
   if (error) {
     return (
@@ -194,11 +280,21 @@ function AllTab({
       </div>
     );
   }
-  if (skills.length === 0)
+  if (totalCount === 0)
     return <EmptyState title={t("all.emptyTitle")} detail={t("all.emptyDetail")} />;
 
   return (
     <>
+      <SkillFiltersBar
+        categories={categories}
+        filters={filters}
+        onChange={onFiltersChange}
+        resultCount={resultCount}
+        totalCount={totalCount}
+      />
+      {skills.length === 0
+        ? <EmptyState title={t("filter.emptyTitle")} detail={t("filter.emptyDetail")} />
+        : null}
       {skills.map((skill) => {
         const isInstalled = installedIds.has(skill.id);
         const canInstall = Boolean(skill.latestVersion);
@@ -228,6 +324,62 @@ function AllTab({
         );
       })}
     </>
+  );
+}
+
+function SkillFiltersBar({
+  categories,
+  filters,
+  onChange,
+  resultCount,
+  totalCount,
+}: {
+  categories: string[];
+  filters: SkillFilters;
+  onChange: (filters: SkillFilters) => void;
+  resultCount: number;
+  totalCount: number;
+}) {
+  const { t } = useTranslation("skills");
+  const hasActiveFilters = filters.category !== allCategoriesValue || filters.query.trim().length > 0;
+
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-line-soft bg-surface p-3 sm:flex-row sm:items-center">
+      <Select
+        aria-label={t("filter.categoryLabel")}
+        onChange={event => onChange({ ...filters, category: event.target.value })}
+        size="sm"
+        value={filters.category}
+        wrapperClassName="w-full sm:w-48"
+      >
+        <option value={allCategoriesValue}>{t("filter.allCategories")}</option>
+        {categories.map(category => (
+          <option key={category} value={category}>{category}</option>
+        ))}
+      </Select>
+      <div className="relative min-w-0 flex-1">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-ink-muted" />
+        <TextInput
+          aria-label={t("filter.keywordLabel")}
+          className="h-8 pl-8"
+          onChange={event => onChange({ ...filters, query: event.target.value })}
+          placeholder={t("filter.keywordPlaceholder")}
+          value={filters.query}
+        />
+      </div>
+      <div className="flex items-center justify-between gap-2 sm:justify-end">
+        <span className="whitespace-nowrap text-xs text-ink-muted">
+          {t("filter.count", { count: resultCount, total: totalCount })}
+        </span>
+        {hasActiveFilters
+          ? (
+              <Button onClick={() => onChange(emptyFilters)} size="sm" variant="ghost">
+                {t("filter.clear")}
+              </Button>
+            )
+          : null}
+      </div>
+    </div>
   );
 }
 
@@ -293,4 +445,53 @@ function UninstallButton({ busy, onClick }: { busy?: boolean; onClick: () => voi
 function LoadingRow() {
   const { t } = useTranslation("skills");
   return <div className="rounded-md border border-line-soft bg-surface p-3 text-sm text-ink-muted">{t("loading")}</div>;
+}
+
+function matchesInstalledSkill(skill: InstalledSkill, filters: SkillFilters, category?: string) {
+  if (!matchesCategory(category, filters.category))
+    return false;
+
+  return matchesQuery(filters.query, [
+    skill.id,
+    skill.name,
+    skill.description,
+    skill.version,
+    category,
+  ]);
+}
+
+function matchesAvailableSkill(skill: AvailableSkill, filters: SkillFilters) {
+  if (!matchesCategory(skill.category, filters.category))
+    return false;
+
+  return matchesQuery(filters.query, [
+    skill.id,
+    skill.name,
+    skill.description,
+    skill.category,
+    skill.formats,
+    skill.limit,
+    skill.price,
+    skill.latestVersion,
+  ]);
+}
+
+function matchesCategory(category: string | undefined, selectedCategory: string) {
+  return selectedCategory === allCategoriesValue || category === selectedCategory;
+}
+
+function matchesQuery(query: string, values: Array<string | null | undefined>) {
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedQuery)
+    return true;
+
+  return values.some(value => normalizeSearchText(value).includes(normalizedQuery));
+}
+
+function normalizeSearchText(value: string | null | undefined) {
+  return (value ?? "").trim().toLowerCase();
+}
+
+function uniqueSorted(values: Array<string | null | undefined>) {
+  return Array.from(new Set(values.filter((value): value is string => Boolean(value)))).sort((a, b) => a.localeCompare(b));
 }
