@@ -289,6 +289,11 @@ jobs:
       OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
       OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
     steps:
+      # Needed for scripts/setup-ossutil.sh (this job otherwise only handles
+      # artifacts and never checks out the repo).
+      - name: Checkout
+        uses: actions/checkout@v5
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v7
         with:
