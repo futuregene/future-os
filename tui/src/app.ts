@@ -1502,13 +1502,10 @@ export class App extends Container {
     let models: string[] = [];
     try {
       const allModels = await this.client.listModels();
-      let candidates = allModels.map((m) => m.provider ? `${m.provider}/${m.id}` : m.id);
-      // If scoped, only show enabled models
-      if (this.enabledModelIds && this.enabledModelIds.length > 0) {
-        const scope = new Set(this.enabledModelIds);
-        candidates = candidates.filter((m) => scope.has(m));
-      }
-      models = candidates.sort((a, b) => a.localeCompare(b));
+      // /model shows all models (scoping only applies to ctrl+p cycling).
+      models = allModels
+        .map((m) => m.provider ? `${m.provider}/${m.id}` : m.id)
+        .sort((a, b) => a.localeCompare(b));
     } catch (err) {
       this.chat.addMessage({
         id: crypto.randomUUID(),
