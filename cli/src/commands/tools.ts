@@ -22,90 +22,12 @@ interface ToolEntry {
 
 export const TOOL_CATALOG: Record<string, ToolEntry> = {
   ...BROWSER_TOOL_CATALOG,
-  case_searcher: {
-    description: "Search similar rare disease cases by patient phenotypes.",
-    args: {
-      patient_phenotypes: "string[] (required)",
-      topk: "int",
-      exclude_case_id: "string|null",
-    },
-    example: '{"patient_phenotypes": ["joint hypermobility", "lens dislocation"], "topk": 5}',
-  },
-  disease_searcher: {
-    description: "Search disease information by disease identifier (MONDO, OMIM, ORPHA, etc.).",
-    args: {
-      id: "string (required)",
-      domain: "string (default: all)",
-      only_show_hpo_with_frequent_or_more: "bool",
-    },
-    example: '{"id": "MONDO:0009061", "domain": "all"}',
-  },
-  normalize_disease: {
-    description: "Normalize a disease name into standard disease identifiers (MONDO, OMIM, ORPHA).",
-    args: { disease: "string (required)" },
-    example: '{"disease": "cystic fibrosis"}',
-  },
-  gene_getter: {
-    description: "Get gene information by gene identifier or symbol.",
-    args: { gene_id_or_symbol: "string (required)" },
-    example: '{"gene_id_or_symbol": "FBN1"}',
-  },
-  extract_phenotype: {
-    description: "Extract patient phenotypes (HPO terms) from free-text clinical descriptions.",
-    args: {
-      patient_info: "string (required)",
-      is_fetal: "bool",
-      extract_family_history: "bool",
-    },
-    example: '{"patient_info": "Patient presents with joint hypermobility and arachnodactyly."}',
-  },
-  get_phenotype_by_hpo_id: {
-    description: "Get detailed phenotype information by HPO identifier.",
-    args: { hpo_id: "string (required)" },
-    example: '{"hpo_id": "HP:0001166"}',
-  },
   search_paper: {
     description: "Search academic papers and extract requested information.",
     args: {
       information_to_extract: "string",
     },
     example: '{"information_to_extract": "inheritance pattern and typical age of onset"}',
-  },
-  phenotype_analyzer: {
-    description: "Analyze phenotype evidence for rare disease interpretation. Produces differential diagnosis with scored disease matches.",
-    args: {
-      hpo_list: "string[]",
-      domain: "string[]",
-      num_differential_diseases: "int",
-    },
-    example: '{"hpo_list": ["HP:0001382", "HP:0001166", "HP:0000486"], "num_differential_diseases": 10}',
-  },
-  think: {
-    description: "Run structured thinking for complex multi-step rare disease analysis.",
-    args: {
-      thought: "string (required)",
-      thoughtNumber: "int (required)",
-      nextThoughtNeeded: "bool",
-    },
-    example: '{"thought": "Considering phenotype matches...", "thoughtNumber": 1, "nextThoughtNeeded": true}',
-  },
-  variant_getter: {
-    description: "Get variant information by variant identifier.",
-    args: {
-      variant_id: "string (required)",
-      assembly: "string (default: hg38)",
-    },
-    example: '{"variant_id": "15-48702977-G-A", "assembly": "hg38"}',
-  },
-  variant_searcher: {
-    description: "Search variants with filter parameters.",
-    args: {
-      gene: "string",
-      consequence: "string",
-      frequency_max: "number",
-      cadd_score_min: "number",
-    },
-    example: '{"gene": "FBN1", "consequence": "missense", "frequency_max": 0.01}',
   },
   get_paper: {
     description: "Get full paper content by identifier (PMID, DOI). Returns structured Paper object with metadata (title, authors, journal, year, DOI) and complete body_text.",
@@ -114,22 +36,6 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
       max_k: "int",
     },
     example: '{"paper_id": "PMID:12345678"}',
-  },
-  get_page: {
-    description: "Fetch and extract content from a web page by URL.",
-    args: {
-      url: "string (required)",
-      max_k: "int",
-    },
-    example: '{"url": "https://pubmed.ncbi.nlm.nih.gov/12345678/"}',
-  },
-  search_page: {
-    description: "Search web pages.",
-    args: {
-      query: "string (required)",
-      limit: "int",
-    },
-    example: '{"query": "BRCA1 variant classification guidelines 2025"}',
   },
   image_gen: {
     description: "Generate images from text prompts.",
