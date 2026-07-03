@@ -20,6 +20,7 @@ mod runs;
 mod settings;
 mod skills;
 mod threads;
+mod update;
 mod workspaces;
 
 pub use self::agent::*;
@@ -38,4 +39,5 @@ pub use self::runs::*;
 pub use self::settings::*;
 pub use self::skills::*;
 pub use self::threads::*;
+pub use self::update::*;
 pub use self::workspaces::*;

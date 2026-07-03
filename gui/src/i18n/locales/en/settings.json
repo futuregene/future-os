@@ -11,6 +11,23 @@
     "title": "Show thinking process",
     "description": "Display the model's reasoning in the conversation"
   },
+  "update": {
+    "sectionTitle": "Software update",
+    "title": "Check for updates",
+    "description": "Check the official source and download the latest installer",
+    "currentVersion": "Current version v{{version}}",
+    "check": "Check for updates",
+    "checking": "Checking…",
+    "upToDate": "You're on the latest version",
+    "available": "New version v{{version}} available",
+    "download": "Download update",
+    "downloading": "Downloading",
+    "downloaded": "Download complete",
+    "reveal": "Show in folder",
+    "noAsset": "No installer for this platform yet — please download from the website",
+    "checkFailed": "Update check failed",
+    "downloadFailed": "Download failed"
+  },
   "dialog": {
     "ariaLabel": "Settings",
     "appName": "FutureOS Desktop",
@@ -23,6 +40,7 @@
     },
     "tabs": {
       "general": "General",
+      "update": "Check for updates",
       "providers": "Providers",
       "models": "Models",
       "environment": "Environment",

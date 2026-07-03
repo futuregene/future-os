@@ -1,6 +1,6 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { AppSettings } from "../../integrations/storage/appSettings";
-import { Boxes, FlaskConical, RotateCcw, Settings2, Sparkles } from "lucide-react";
+import { Boxes, FlaskConical, RefreshCw, RotateCcw, Settings2, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Overlay } from "../../components/ui/Overlay";
@@ -11,14 +11,18 @@ import { GeneralPage } from "./GeneralPage";
 import { ModelsPage } from "./ModelsPage";
 import { ProvidersPage } from "./ProvidersPage";
 import { ResetPage } from "./ResetPage";
+import { UpdatePage } from "./UpdatePage";
 
-export type SettingsTab = "general" | "providers" | "models" | "environment" | "reset";
+export type SettingsTab = "general" | "update" | "providers" | "models" | "environment" | "reset";
 
 // `devOnly` items are only shown on non-release builds — the environment switch
 // is a dev affordance; release builds are production-locked.
 const NAV_GROUPS = [
   {
-    items: [{ icon: Settings2, labelKey: "dialog.tabs.general", value: "general" as const }],
+    items: [
+      { icon: Settings2, labelKey: "dialog.tabs.general", value: "general" as const },
+      { icon: RefreshCw, labelKey: "dialog.tabs.update", value: "update" as const },
+    ],
     labelKey: "dialog.nav.desktop",
   },
   {
@@ -39,6 +43,7 @@ const NAV_GROUPS = [
 
 const TAB_TITLE_KEYS: Record<SettingsTab, string> = {
   general: "dialog.tabs.general",
+  update: "dialog.tabs.update",
   models: "dialog.tabs.models",
   providers: "dialog.tabs.providers",
   environment: "dialog.tabs.environment",
@@ -148,6 +153,7 @@ export function SettingsDialog({
                   />
                 )
               : null}
+            {tab === "update" ? <UpdatePage /> : null}
             {tab === "providers" ? <ProvidersPage /> : null}
             {tab === "models"
               ? (
