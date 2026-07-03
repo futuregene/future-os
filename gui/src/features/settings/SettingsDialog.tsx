@@ -1,18 +1,21 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { AppSettings } from "../../integrations/storage/appSettings";
-import { Boxes, RotateCcw, Settings2, Sparkles } from "lucide-react";
+import { Boxes, FlaskConical, RotateCcw, Settings2, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Overlay } from "../../components/ui/Overlay";
 import { cn } from "../../lib/cn";
 import { useBuildInfo } from "../../lib/useBuildInfo";
+import { EnvironmentPage } from "./EnvironmentPage";
 import { GeneralPage } from "./GeneralPage";
 import { ModelsPage } from "./ModelsPage";
 import { ProvidersPage } from "./ProvidersPage";
 import { ResetPage } from "./ResetPage";
 
-export type SettingsTab = "general" | "providers" | "models" | "reset";
+export type SettingsTab = "general" | "providers" | "models" | "environment" | "reset";
 
+// `devOnly` items are only shown on non-release builds — the environment switch
+// is a dev affordance; release builds are production-locked.
 const NAV_GROUPS = [
   {
     items: [{ icon: Settings2, labelKey: "dialog.tabs.general", value: "general" as const }],
@@ -26,7 +29,10 @@ const NAV_GROUPS = [
     labelKey: "dialog.nav.server",
   },
   {
-    items: [{ icon: RotateCcw, labelKey: "dialog.tabs.reset", value: "reset" as const }],
+    items: [
+      { icon: FlaskConical, labelKey: "dialog.tabs.environment", value: "environment" as const, devOnly: true },
+      { icon: RotateCcw, labelKey: "dialog.tabs.reset", value: "reset" as const },
+    ],
     labelKey: "dialog.nav.debug",
   },
 ];
@@ -35,6 +41,7 @@ const TAB_TITLE_KEYS: Record<SettingsTab, string> = {
   general: "dialog.tabs.general",
   models: "dialog.tabs.models",
   providers: "dialog.tabs.providers",
+  environment: "dialog.tabs.environment",
   reset: "dialog.tabs.reset",
 };
 
@@ -57,6 +64,8 @@ export function SettingsDialog({
   const { t } = useTranslation("settings");
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const build = useBuildInfo();
+  // Environment switching is a dev-build affordance; release builds hide it.
+  const showEnvironment = Boolean(build.data && !build.data.isRelease);
 
   // Reset to the requested tab each time the dialog opens.
   useEffect(() => {
@@ -64,6 +73,13 @@ export function SettingsDialog({
       setTab(initialTab);
     }
   }, [open, initialTab]);
+
+  // Never strand on the (hidden) environment tab on a release build.
+  useEffect(() => {
+    if (!showEnvironment && tab === "environment") {
+      setTab("reset");
+    }
+  }, [showEnvironment, tab]);
 
   return (
     <Overlay onClose={onClose} open={open}>
@@ -78,23 +94,25 @@ export function SettingsDialog({
             {NAV_GROUPS.map(group => (
               <div key={group.labelKey} className="space-y-1">
                 <div className="px-2 pb-1 text-xs font-medium uppercase tracking-wide text-ink-muted">{t(group.labelKey)}</div>
-                {group.items.map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <button
-                      key={item.value}
-                      className={cn(
-                        "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink",
-                        tab === item.value && "border-line-soft bg-surface text-ink shadow-xs",
-                      )}
-                      onClick={() => setTab(item.value)}
-                      type="button"
-                    >
-                      <Icon className="size-4 shrink-0" />
-                      <span className="truncate">{t(item.labelKey)}</span>
-                    </button>
-                  );
-                })}
+                {group.items
+                  .filter(item => showEnvironment || !("devOnly" in item && item.devOnly))
+                  .map((item) => {
+                    const Icon = item.icon;
+                    return (
+                      <button
+                        key={item.value}
+                        className={cn(
+                          "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink",
+                          tab === item.value && "border-line-soft bg-surface text-ink shadow-xs",
+                        )}
+                        onClick={() => setTab(item.value)}
+                        type="button"
+                      >
+                        <Icon className="size-4 shrink-0" />
+                        <span className="truncate">{t(item.labelKey)}</span>
+                      </button>
+                    );
+                  })}
               </div>
             ))}
           </div>
@@ -140,6 +158,7 @@ export function SettingsDialog({
                   />
                 )
               : null}
+            {tab === "environment" && showEnvironment ? <EnvironmentPage /> : null}
             {tab === "reset" ? <ResetPage /> : null}
           </div>
         </div>

@@ -25,6 +25,7 @@
       "general": "General",
       "providers": "Providers",
       "models": "Models",
+      "environment": "Environment",
       "reset": "Reset"
     }
   },
@@ -127,7 +128,6 @@
     "connectFailed": "Connection failed."
   },
   "reset": {
-    "environmentTitle": "Environment",
     "environmentProduction": "Production",
     "environmentTest": "Test",
     "switchEnvironment": "Switch environment",
@@ -138,7 +138,6 @@
     "switching": "Switching…",
     "current": "Current: ",
     "unknown": "Unknown",
-    "resetTitle": "Reset",
     "clearData": "Clear data",
     "clearDataDescription": "Clear the GUI local database and temporary workspace (chats, background programs, review records, etc.); the app restarts automatically when done. Sign-in and provider settings are unaffected. This action cannot be undone.",
     "confirmClear": "Clear all local data and restart?",
