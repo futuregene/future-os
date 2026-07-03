@@ -57,3 +57,11 @@ tonic-build = "0.12"
 
 [dev-dependencies]
 tokio-test = "0.4"
+
+# CI/local release builds are compile-time bound, not runtime bound (the agent is
+# an I/O-heavy gRPC server). Trade a little codegen optimization for parallelism
+# and drop debug info so linking and disk I/O shrink. See ../.cargo/config.toml.
+[profile.release]
+codegen-units = 256
+debug = false
+strip = true
