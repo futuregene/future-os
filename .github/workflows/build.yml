@@ -36,6 +36,12 @@ jobs:
     # GUI) and the TS build scripts (generated version module) all agree.
     env:
       FUTURE_VERSION: ${{ needs.version.outputs.version }}
+      # sccache is a compiler-level cache: it hashes each crate's inputs and
+      # reuses object output across runs even when rust-cache's target-dir key
+      # misses (Cargo.lock/toolchain bumps). RUSTC_WRAPPER routes rustc through
+      # it; SCCACHE_GHA_ENABLED stores hits in the GitHub Actions cache.
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     strategy:
       fail-fast: false
       matrix:
@@ -93,12 +99,23 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@1.96.0
 
+      # Installs the sccache binary and wires up the GHA cache backend. Must run
+      # before the first cargo invocation so RUSTC_WRAPPER=sccache resolves.
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             agent
             gui/src-tauri
+          # Persist the target dir even when a later step fails, so a broken
+          # release run doesn't throw away a full cold compile.
+          cache-on-failure: true
+          # Cache every dependency crate, not just direct workspace deps —
+          # covers transitive/build-dep crates that otherwise recompile.
+          cache-all-crates: true
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -198,6 +215,13 @@ jobs:
       - name: Build desktop bundle
         working-directory: gui
         run: npm run tauri:build
+
+      # Surface sccache's cache hit rate in the job log so the caching is
+      # observable (and regressions are visible) run-to-run. Never fail on it.
+      - name: Show sccache stats
+        if: always()
+        continue-on-error: true
+        run: sccache --show-stats
 
       # macOS: co-locate the agent (already a sidecar) and CLI inside the
       # .app's Contents/MacOS, and ship first-launch (Gatekeeper) instructions in
