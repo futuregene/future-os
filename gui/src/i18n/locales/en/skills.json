@@ -15,6 +15,16 @@
     "emptyTitle": "The skill marketplace is empty",
     "emptyDetail": "Try again later, or check that the platform connection is working."
   },
+  "filter": {
+    "categoryLabel": "Category",
+    "keywordLabel": "Keyword",
+    "allCategories": "All categories",
+    "keywordPlaceholder": "Filter by keyword",
+    "count": "{{count}} / {{total}}",
+    "clear": "Clear",
+    "emptyTitle": "No matching skills",
+    "emptyDetail": "Try another category or keyword."
+  },
   "install": {
     "installing": "Installing...",
     "install": "Install",
