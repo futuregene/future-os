@@ -161,6 +161,15 @@ impl ServerSession {
         let auto_compaction = self.auto_compaction;
         let approval_gate = self.approval_gate.clone();
 
+        // Resolve the sandbox boundary once per run: canonicalized writable
+        // roots + platform availability. Shared by the approval closure (pre-
+        // execution decisions), the bash wrapper, and write/edit boundary
+        // checks so all layers agree (SANDBOX_PLAN.md §2.1).
+        let sandbox = Arc::new(crate::sandbox::ResolvedSandbox::resolve(
+            &self.sandbox_policy,
+            &self.cwd,
+        ));
+
         // Set tool event callback so tool_start/tool_end reach the TUI
         {
             let broadcaster_tool = broadcaster.clone();
@@ -193,10 +202,11 @@ impl ServerSession {
                             ..Default::default()
                         });
                     }));
-                let approval_gate = approval_gate.clone();
+                let approval_gate_hook = approval_gate.clone();
                 let approval_broadcaster = broadcaster.clone();
                 let approval_session_id = session_id.clone();
                 let approval_cwd = session_cwd.clone();
+                let approval_sandbox = sandbox.clone();
                 let permission_level = self.permission_level.clone();
                 r#loop.config.before_tool_call = Some(Arc::new(
                     move |tool_name, tool_id, arguments| {
@@ -213,13 +223,14 @@ impl ServerSession {
                                 result: format!("Tool call `{tool_name}` denied: permission level is set to 'none'."),
                                 is_error: true,
                             }),
-                            _ => approval_gate.request(
+                            _ => approval_gate_hook.request(
                                 &approval_broadcaster,
                                 &approval_session_id,
                                 &approval_cwd,
                                 tool_name,
                                 tool_id,
                                 arguments,
+                                &approval_sandbox,
                             ),
                         }
                     },
@@ -254,13 +265,54 @@ impl ServerSession {
         // agent_loop lock (which the spawned run below holds for its duration).
         self.interrupt_flag = Some(shared_interrupt_flag.clone());
 
+        // Post-hoc escalation channel (SANDBOX_PLAN.md §2.6): lets run_bash
+        // raise a `sandbox_escalation` approval after a sandbox denial without
+        // the tools layer touching RPC internals. Blocks until the user decides.
+        let escalation: crate::sandbox::EscalationRequester = {
+            let gate = approval_gate.clone();
+            let escalation_broadcaster = broadcaster.clone();
+            let escalation_session_id = session_id.clone();
+            let escalation_sandbox = sandbox.clone();
+            Arc::new(move |request: &crate::sandbox::EscalationRequest| {
+                gate.request_escalation(
+                    &escalation_broadcaster,
+                    &escalation_session_id,
+                    request,
+                    &escalation_sandbox,
+                )
+            })
+        };
+
+        // Sandboxed-execution notifier → `tool_sandboxed` run event (Run
+        // Inspect shows which commands ran inside the OS sandbox).
+        let on_sandboxed: crate::tools::SandboxedNotifier = {
+            let sandbox_broadcaster = broadcaster.clone();
+            Arc::new(move |command: &str| {
+                sandbox_broadcaster.broadcast(crate::rpc::SseEvent {
+                    event_type: "tool_sandboxed".to_string(),
+                    data: serde_json::json!({
+                        "type": "tool_sandboxed",
+                        "command": command,
+                    })
+                    .to_string(),
+                    ..Default::default()
+                });
+            })
+        };
+
         // Spawn background task to run agent loop
         let perm = self.permission_level.clone();
+        let scope_sandbox = sandbox.clone();
         tokio::spawn(async move {
-            let result = crate::tools::with_workspace_scope_with_interrupt(
-                session_cwd.clone(),
-                perm,
-                shared_interrupt_flag,
+            let result = crate::tools::with_tool_scope(
+                crate::tools::ScopeOptions {
+                    workspace: session_cwd.clone(),
+                    permission_level: perm,
+                    interrupt_flag: shared_interrupt_flag,
+                    sandbox: scope_sandbox,
+                    escalation: Some(escalation),
+                    on_sandboxed: Some(on_sandboxed),
+                },
                 async {
                     let mut current_messages = initial_messages;
                     let mut current_interrupt_rx = Some(interrupt_rx);
@@ -530,14 +582,8 @@ fn rewrite_path_field(cwd: &str, arguments: &mut serde_json::Value, key: &str) {
 }
 
 fn resolve_workspace_path(cwd: &str, path: &str) -> String {
-    let workspace = PathBuf::from(cwd);
-    let candidate = if let Some(relative) = path.strip_prefix("~/") {
-        workspace.join(relative)
-    } else if Path::new(path).is_absolute() {
-        PathBuf::from(path)
-    } else {
-        workspace.join(path)
-    };
+    // §3.5: `~` resolves to the real home directory, not the workspace.
+    let candidate = crate::sandbox::paths::resolve_against(Path::new(cwd), path);
     normalize_path(&candidate).to_string_lossy().to_string()
 }
 
@@ -664,7 +710,12 @@ mod tests {
     #[tokio::test]
     async fn loop_workspace_scope_blocks_unapproved_absolute_write_from_model_tool_call() {
         let workspace = test_path("workspace");
-        let outside = test_path("outside.txt");
+        // Outside must be outside every writable root — temp dirs are
+        // writable roots now (SANDBOX_PLAN.md §2.2), so use home.
+        let outside = dirs::home_dir().unwrap().join(format!(
+            "futureos-session-outside-{}.txt",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&workspace).unwrap();
 
         let provider = Arc::new(MockWriteProvider {
