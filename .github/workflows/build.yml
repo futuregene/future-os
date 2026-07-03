@@ -315,6 +315,25 @@ jobs:
           echo "==> latest.json:"
           cat latest.json
 
+      # Curate what actually ships to users. The portable builds (Windows zip,
+      # Linux tarball) and the AppImage/rpm are TESTER-ONLY: they remain as
+      # Actions artifacts (downloadable from the run) but are NOT published to
+      # the GitHub Release or OSS. Only the end-user installers ship:
+      #   macOS .dmg · Windows .exe + .msi · Linux .deb
+      # Files are flattened into publish/ (no per-artifact subfolders) so the
+      # Release and the OSS releases/<version>/ layout stay clean.
+      - name: Stage publishable installers
+        run: |
+          set -euo pipefail
+          mkdir -p publish
+          find release-assets -type f \( \
+            -name '*.dmg' -o \
+            -name '*-setup.exe' -o \
+            -name '*.msi' -o \
+            -name '*.deb' \) -exec cp -v {} publish/ \;
+          echo "==> Staged for release/OSS:"
+          ls -1 publish
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -323,7 +342,7 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            release-assets/**/*
+            publish/*
             latest.json
 
       # ─── Mirror the release to Aliyun OSS ──────────────────────────────────
@@ -332,14 +351,14 @@ jobs:
       - name: Setup ossutil
         run: bash scripts/setup-ossutil.sh
 
-      # Each release gets its own versioned folder: releases/<version>/…, keeping
-      # the per-platform artifact subfolders as downloaded. latest.json is written
-      # to a fixed key so consumers always read releases/latest.json.
+      # Each release gets its own versioned folder: releases/<version>/… (flat,
+      # installers only). latest.json is written to a fixed key so consumers
+      # always read releases/latest.json.
       - name: Upload release to OSS
         run: |
           set -euo pipefail
           VERSION="${{ needs.version.outputs.version }}"
-          echo "==> Uploading build artifacts to releases/$VERSION/"
-          ossutil cp -r -f release-assets/ "oss://$OSS_BUCKET/releases/$VERSION/"
+          echo "==> Uploading installers to releases/$VERSION/"
+          ossutil cp -r -f publish/ "oss://$OSS_BUCKET/releases/$VERSION/"
           echo "==> Uploading latest.json to releases/latest.json"
           ossutil cp -f latest.json "oss://$OSS_BUCKET/releases/latest.json"
