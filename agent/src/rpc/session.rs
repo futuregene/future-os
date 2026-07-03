@@ -54,9 +54,12 @@ pub struct ServerSession {
     pub approval_gate: ApprovalGate,
     /// Permission level for tool execution: "all" | "workspace" | "none"
     pub permission_level: String,
-    /// Sandbox + approval policy (set via set_sandbox_policy; defaults to
-    /// workspace-write × on-request for clients that never send one).
-    pub sandbox_policy: crate::sandbox::SandboxPolicy,
+    /// Sandbox + approval policy. `None` = the sandbox stays dormant and the
+    /// session behaves exactly like the pre-sandbox agent (legacy boundary, no
+    /// OS wrapping). Only a client that sends `set_sandbox_policy` opts in —
+    /// today that's just the GUI, which owns the approval UX. TUI / CLI /
+    /// channels never send one, so they are unaffected.
+    pub sandbox_policy: Option<crate::sandbox::SandboxPolicy>,
 }
 
 /// Default workspace directory for new sessions.
@@ -132,7 +135,7 @@ impl ServerSession {
             interrupt_flag: None,
             approval_gate,
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
-            sandbox_policy: crate::sandbox::SandboxPolicy::default(),
+            sandbox_policy: None,
             compaction_model: Arc::new(std::sync::RwLock::new(String::new())),
         }
     }
@@ -185,7 +188,7 @@ impl ServerSession {
             interrupt_flag: None,
             approval_gate,
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
-            sandbox_policy: crate::sandbox::SandboxPolicy::default(),
+            sandbox_policy: None,
             compaction_model: Arc::new(std::sync::RwLock::new(String::new())),
         }
     }
@@ -613,7 +616,7 @@ impl ServerSession {
     }
 
     pub fn set_sandbox_policy(&mut self, policy: crate::sandbox::SandboxPolicy) {
-        self.sandbox_policy = policy;
+        self.sandbox_policy = Some(policy);
     }
 
     pub fn get_permission_level(&self) -> &str {
