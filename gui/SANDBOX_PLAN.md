@@ -143,14 +143,33 @@ bash(command) 到达
 | 包管理 / registry token | `~/.npmrc`、`~/.pypirc`、`~/.cargo/credentials{,.toml}`、`~/.gem/credentials` | 单文件 |
 | 网络 / git 明文凭证 | `~/.netrc`、`~/.git-credentials` | 单文件 |
 | home 级 env | `~/.env` | 单文件 |
-| 云厂商凭证 | `~/.aws`、`~/.azure`、`~/.config/gcloud`（整目录）、`~/.kube/config`（文件） | 混合 |
+| 云厂商凭证 | `~/.aws`、`~/.azure`、`~/.config/gcloud`、`~/.terraform.d`（整目录）、`~/.kube/config`（文件） | 混合 |
 | 容器 registry auth | `~/.docker/config.json` | 单文件 |
+| CLI token / Keychain | `~/.config/gh`、`~/Library/Keychains` | 整目录 |
 
 两条硬约束：
 1. **不能整目录屏蔽 `~/.future`**——普通 Chat 临时 workspace 就在 `~/.future/agent/workspace`，只屏蔽其中的具体凭证文件（`auth.json` / `models.json`）。
 2. **只屏蔽真正含密的文件/目录，不整目录屏蔽构建工具会读的目录**（`~/.cargo`、`~/.config`、`~/.docker` 只挑里面的 secret 文件）。个别文件（`~/.npmrc` / `~/.pypirc`）同时含非密的 registry 配置，屏蔽后私有源安装可能在沙盒内失败——由 escalation 流（§2.6）兜底，这是刻意的安全/便利取舍。
 
-Keychain、`~/.config` 下其他凭证等仍未纳入，后续按需补 `sensitive_read_denials`。
+后续按需补 `sensitive_read_denials`。
+
+#### 2.3.1 项目内 secret（`.env` 等）——已知盲区，待决策
+
+上面这些都是 **home 下、workspace 之外** 的凭证。**项目根目录里的 secret**（`.env`、`config/secrets.yaml`、`*.pem`）**当前完全不受沙盒保护**——workspace 是 agent 工作区，按设计可读可写。
+
+关键点：**沙盒断网挡不住这条泄露路径**。真正的路径是 `cat .env` / read 工具的输出 → agent → **LLM provider 请求**（agent 进程自己发，不受沙盒网络限制）。断网只挡沙盒内命令主动外联，挡不住工具输出回流到模型。所以要防住项目内 secret，唯一办法是**从源头拒读**。
+
+现状：
+- bash `cat .env`：可读（workspace 在沙盒可读范围）。
+- read/write/edit 工具：可读可改（这三个工具**不走 Seatbelt**，是 agent 进程内 fs 调用；`.env` 在 workspace 内 → 通过边界检查）。
+- Shadow Review：已有敏感文件规则，标记但不落盘内容（`.env`/`*.pem`/`*.key`）。
+
+**未做的原因**：硬屏蔽会误伤合法任务（"帮我看下 `.env` 配置"是正常请求），且跨层——要同时改 Seatbelt 拒读 + read/write/edit 工具拒绝，不是一行 deny 能覆盖。
+
+**建议方案（Phase 2/3，opt-in）**：可配置的"项目内 secret 文件 glob"：
+- 默认 pattern `.env` / `.env.*` / `*.pem` / `*.key` / `*.p12` / `id_rsa*` / `credentials.json`（可编辑），与 Shadow Review 敏感文件规则共用。
+- 命中文件：Seatbelt 拒读 + read/write/edit 工具直接拒绝（即使在 workspace 内），走 escalation 放行一次。
+- ⏳ 待用户决策：现在做 / 记为 Phase 2/3 / 认为项目内文件应让 agent 自由读（不做）。
 
 ### 2.4 审批策略
 

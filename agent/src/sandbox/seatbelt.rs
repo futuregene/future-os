@@ -75,8 +75,12 @@ fn sensitive_read_denials() -> Vec<(&'static str, std::path::PathBuf)> {
         Deny::Subpath(".azure"),
         Deny::Subpath(".config/gcloud"),
         Deny::File(".kube/config"),
+        Deny::Subpath(".terraform.d"),
         // Container registry auth
         Deny::File(".docker/config.json"),
+        // GitHub CLI token (hosts.yml) + macOS Keychain
+        Deny::Subpath(".config/gh"),
+        Deny::Subpath("Library/Keychains"),
     ];
     ENTRIES
         .iter()
@@ -232,7 +236,10 @@ mod tests {
             ".azure",
             "gcloud",
             ".kube/config",
+            ".terraform.d",
             "config.json",
+            ".config/gh",
+            "Library/Keychains",
         ] {
             assert!(
                 profile.contains(needle),
