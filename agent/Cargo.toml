@@ -46,6 +46,10 @@ prost = "0.13"
 prost-types = "0.13"
 tower-http = { version = "0.6", features = ["cors"] }
 
+# Kill the whole bash process group on abort/timeout (not just the direct child)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Proto codegen (for building .proto files)
 [build-dependencies]
 prost-build = "0.13"
