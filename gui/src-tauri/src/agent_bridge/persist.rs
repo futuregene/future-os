@@ -76,6 +76,12 @@ fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
         .get("sandbox_boundary")
         .or_else(|| value.get("sandboxBoundary"))
         .map(compact_json);
+    // Only persist a real suggestion object (agent sends JSON null when none).
+    let save_suggestion = value
+        .get("save_suggestion")
+        .or_else(|| value.get("saveSuggestion"))
+        .filter(|v| v.is_object())
+        .map(compact_json);
     let reviewer = value_string(value, &["reviewer"]);
 
     if let Err(error) = store::ensure_approval_request(store::EnsureApprovalRequestInput {
@@ -90,6 +96,7 @@ fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
         action_category,
         action_payload,
         sandbox_boundary,
+        save_suggestion,
         reviewer,
     }) {
         eprintln!("FutureOS approval persistence failed: {error}");

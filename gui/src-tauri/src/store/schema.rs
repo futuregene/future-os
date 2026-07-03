@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS approval_requests (
     action_category TEXT,
     action_payload TEXT,
     sandbox_boundary TEXT,
+    save_suggestion TEXT,
     reviewer TEXT NOT NULL DEFAULT 'user',
     decision_scope TEXT NOT NULL DEFAULT 'once',
     decision_source TEXT NOT NULL DEFAULT 'user',
@@ -397,6 +398,8 @@ pub(super) const ADDED_COLUMNS: &[(&str, &str)] = &[
         "diff_truncated INTEGER NOT NULL DEFAULT 0",
     ),
     ("review_file_changes", "omission_reason TEXT"),
+    // Phase 2 sandbox: suggested rule (JSON) for session/always-allow buttons.
+    ("approval_requests", "save_suggestion TEXT"),
 ];
 
 /// Columns renamed after their table's initial creation (N-3 aligned the DB

@@ -170,7 +170,7 @@ async fn agent_prompt_inner(
     let mut command_client = connect_agent().await?;
     ensure_agent_session(&mut command_client, &session_id, &cwd, force_reset_session).await?;
     set_agent_permission_level(&mut command_client, &session_id, "workspace").await?;
-    set_agent_sandbox_policy(&mut command_client, &session_id).await?;
+    set_agent_sandbox_policy(&mut command_client, &session_id, &thread_id).await?;
 
     let mut event_client = connect_agent().await?;
     let mut event_stream = event_client
