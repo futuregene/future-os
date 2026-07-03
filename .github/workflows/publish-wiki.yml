@@ -24,9 +24,13 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # ossutil v2 auto-reads these OSS_* env vars (endpoint + credentials); the
+    # Setup step derives OSS_REGION from the endpoint for SigV4.
     env:
       OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
       OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+      OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+      OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,29 +47,17 @@ jobs:
       #   run: bash scripts/publish-wiki.sh
 
       # ─── Publish docs to Aliyun OSS ────────────────────────────────────────
-      # ossutil is fetched directly from Aliyun's public CDN (no third-party
-      # action) and pointed at the bucket via a one-off config file.
+      # ossutil v2 is fetched directly from Aliyun's public CDN (no third-party
+      # action). Auth is entirely via the OSS_* env vars set at the job level.
       - name: Setup ossutil
-        env:
-          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
-          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
-        run: |
-          set -euo pipefail
-          curl -fsSL -o ossutil "https://gosspublic.alicdn.com/ossutil/1.7.18/ossutil64"
-          chmod +x ossutil
-          sudo mv ossutil /usr/local/bin/ossutil
-          ossutil config \
-            -e "$OSS_ENDPOINT" \
-            -i "$OSS_ACCESS_KEY_ID" \
-            -k "$OSS_ACCESS_KEY_SECRET"
+        run: bash scripts/setup-ossutil.sh
 
-      # Full replace: wipe the docs/ prefix, then upload the current pages. The
-      # rm is best-effort (empty prefix on a first run is fine).
+      # Full replace via `sync --delete`: uploads/updates the current pages and
+      # removes any object under docs/ that no longer exists locally — in one
+      # pass, with no window where docs/ is empty.
       - name: Publish docs/wiki to OSS
         run: |
           set -euo pipefail
-          echo "==> Clearing existing docs/ prefix"
-          ossutil rm -rf "oss://$OSS_BUCKET/docs/" || true
-          echo "==> Uploading docs/wiki/*.md to docs/"
-          ossutil cp -rf docs/wiki/ "oss://$OSS_BUCKET/docs/"
+          echo "==> Syncing docs/wiki/ → docs/ (with --delete)"
+          ossutil sync docs/wiki/ "oss://$OSS_BUCKET/docs/" --delete -f
           echo "==> Done."
