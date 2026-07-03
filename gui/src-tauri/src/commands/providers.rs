@@ -15,6 +15,13 @@ pub fn upsert_custom_provider(
 }
 
 #[tauri::command]
+pub fn update_builtin_provider_key(
+    input: agent_providers::UpdateBuiltinProviderKeyInput,
+) -> Result<agent_providers::ProvidersView, crate::AppError> {
+    agent_providers::update_builtin_provider_key(input)
+}
+
+#[tauri::command]
 pub fn delete_custom_provider(
     id: String,
 ) -> Result<agent_providers::ProvidersView, crate::AppError> {

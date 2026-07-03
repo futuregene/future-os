@@ -5,6 +5,7 @@ export interface BuiltinProvider {
   name: string;
   baseUrl: string;
   hasApiKey: boolean;
+  modelCount: number;
 }
 
 export interface CustomProviderModel {
@@ -41,6 +42,13 @@ export async function upsertCustomProvider(input: {
   create: boolean;
 }) {
   return invokeCommand<ProvidersView>("upsert_custom_provider", { input });
+}
+
+export async function updateBuiltinProviderKey(input: {
+  id: string;
+  apiKey?: string | null;
+}) {
+  return invokeCommand<ProvidersView>("update_builtin_provider_key", { input });
 }
 
 export async function deleteCustomProvider(id: string) {
