@@ -202,6 +202,7 @@ struct FutureModelsResponse {
 struct FutureModelEntry {
     id: String,
     name: Option<String>,
+    #[serde(alias = "ContextWindow", alias = "contextWindow")]
     context_length: Option<i64>,
     architecture: Option<FutureArchitecture>,
     pricing: Option<FuturePricing>,
