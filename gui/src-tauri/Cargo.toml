@@ -30,10 +30,8 @@ base64 = "0.22"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
-# Faster release links for the desktop bundle: more codegen units = more parallel
-# compile, stripped symbols = smaller binary + less link/scan I/O. Runtime cost is
-# negligible for a Tauri shell. See ../../.cargo/config.toml.
+# Stripped symbols + no debug info: smaller desktop binary and less link/scan
+# I/O, negligible runtime cost for a Tauri shell. See ../../.cargo/config.toml.
 [profile.release]
-codegen-units = 256
 debug = false
 strip = true
