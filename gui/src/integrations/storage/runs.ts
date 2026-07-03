@@ -67,3 +67,13 @@ export async function decideApprovalRequest(input: {
 }) {
   return invokeCommand<StoredApprovalRequest>("decide_approval_request", { input });
 }
+
+export async function saveApprovalRule(input: {
+  threadId: string;
+  matchKind: string;
+  matchValue: string;
+  persistence: "session" | "always";
+  scope?: "workspace" | "global";
+}) {
+  return invokeCommand<void>("save_approval_rule", { input });
+}

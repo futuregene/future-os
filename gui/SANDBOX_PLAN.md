@@ -474,12 +474,17 @@ Agent 侧为主：
 - 顺手修复：`DEFAULT_PERMISSION_LEVEL` 被无关 commit（49eab817）从 `workspace` 误改为 `all`（对应测试当时就红了），已恢复 `workspace`。
 - 行为变化：temp 目录成为可写根后，"写 /tmp 下文件"不再触发审批（原本会）；三个依赖旧语义的既有测试已改用 home 路径作为越界目标。
 
-### Phase 2 — 策略引擎与决策范围（规则 + UI + 审计一起做）
+### Phase 2 — 策略引擎与决策范围（规则 + UI）— ✅ 已完成（2026-07-04）
 
-- [ ] `evaluate_policy` 实现：三态规则匹配（通配符、后匹配优先、deny 优先）、`untrusted`/`never` 策略语义；allow 命中仍进沙盒（§2.5）。
-- [ ] ApprovalPrompt「本会话 / 始终允许」按钮 + 保存模式预览编辑；agent 审批请求携带建议保存模式（`save_suggestion`）。
-- [ ] 规则写回 `approval_rules`（session 规则带 `expires_at`；GUI 启动清理过期规则）+ 经 `set_sandbox_policy` 重新下发。
-- 验收：对 `git push` 选择「始终允许」后同前缀命令不再询问；deny 规则可拦截沙盒内命令；规则单测覆盖通配符与优先级。
+- [x] `evaluate_policy` 实现（`agent/src/rpc/approval_policy.rs`）：三态规则匹配（`command_prefix`/`path_glob`、通配符 `*`/`?`、**deny 恒优先**、`" *"` 结尾兼容裸命令前缀）；规则评估**移到 `ApprovalGate::request` 顶部**（§2.1）——deny 拦得住沙盒内自动放行的命令，approve 跳过 `untrusted` 提示但仍走沙盒（`approve` 只免审批、不出沙盒；full-access bypass 规则不做，§2.5/§7）。
+- [x] ApprovalPrompt「本会话 / 始终允许」按钮 + 保存模式内联编辑（`TextInput`，Esc 先关编辑器再拒绝）；agent 审批请求携带 `save_suggestion`（bash「程序名+子命令+\*」，write/edit 父目录 glob；escalation 不建议规则）。
+- [x] 规则写回 `approval_rules`：`save_approval_rule` 命令（从 thread 解析 workspace）；session 规则用非空 `expires_at` 作标记、启动 `prune_session_rules` 清理，always 规则持久；`list_effective_rules`（workspace + global，enabled）经 `set_sandbox_policy` 每次 prompt 下发。
+- 验收状态：`make test`（agent 67 + GUI tauri 69 + 前端 vitest 39）、`make lint`、`make check-gui` 全绿；规则引擎单测覆盖通配符/优先级/deny-wins + 两个端到端 ApprovalGate 测试（deny 拦沙盒内 bash、approve 跳过 untrusted 提示）。**尚未做**：`make run-gui` 真实模型端到端点「始终允许 git push」→ 下一轮同前缀不再问的实机确认（需真实 LLM key）。
+
+实现备注：
+- 决策范围建模：`approval_rules.expires_at` NULL=always（永久）、非 NULL=session（下次启动清理），运行期不按时间过滤——session 规则整轮有效。语义是"本 app 运行内"，非某个 agent 会话。
+- `untrusted`/`never` 策略语义在 Phase 1 已就位（`approval_shape` + `ApprovalGate` 的 never 检查），Phase 2 未改。
+- 审计（规则来源追溯 `created_from_approval_id`）本期未接线，留 Phase 3 规则管理 UI 一起做。
 
 ### Phase 3 — Settings UI 与 per-workspace 配置
 
