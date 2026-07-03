@@ -140,14 +140,48 @@ interface ActionDetailsProps {
 function ActionDetails({ action }: ActionDetailsProps) {
   const { t } = useTranslation("agent");
   if (action.command) {
+    const isEscalation = action.category === "sandbox_escalation";
     return (
-      <div className="mt-3">
-        <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
-          {t("approval.shellCommand")}
+      <div className="mt-3 space-y-2">
+        <div>
+          <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
+            {t("approval.shellCommand")}
+          </div>
+          <pre className="max-h-[33vh] overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-surface-subtle p-3 font-mono text-xs leading-5 text-ink">
+            <code className="block min-w-0">{action.command}</code>
+          </pre>
         </div>
-        <pre className="max-h-[33vh] overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-surface-subtle p-3 font-mono text-xs leading-5 text-ink">
-          <code className="block min-w-0">{action.command}</code>
-        </pre>
+        {isEscalation && action.justification
+          ? (
+              <div>
+                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
+                  {t("approval.justification")}
+                </div>
+                <p className="rounded-md bg-surface-subtle p-3 text-xs leading-5 text-ink-soft">
+                  {action.justification}
+                </p>
+              </div>
+            )
+          : null}
+        {isEscalation && action.failureSummary
+          ? (
+              <div>
+                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
+                  {t("approval.failureSummary")}
+                </div>
+                <pre className="max-h-32 overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-surface-subtle p-3 font-mono text-xs leading-5 text-ink-soft">
+                  <code className="block min-w-0">{action.failureSummary}</code>
+                </pre>
+              </div>
+            )
+          : null}
+        {isEscalation
+          ? (
+              <p className="text-xs leading-5 text-warning">
+                {t("approval.unsandboxedNote")}
+              </p>
+            )
+          : null}
       </div>
     );
   }
@@ -269,6 +303,12 @@ function parseAction(payload: string | null | undefined): ApprovalAction | null 
     category: parsed.category,
     command: typeof parsed.command === "string" ? parsed.command : undefined,
     deletes: isPathEntryArray(parsed.deletes) ? parsed.deletes : undefined,
+    failureSummary: typeof parsed.failure_summary === "string" && parsed.failure_summary.length > 0
+      ? parsed.failure_summary
+      : undefined,
+    justification: typeof parsed.justification === "string" && parsed.justification.length > 0
+      ? parsed.justification
+      : undefined,
     paths: isStringArray(parsed.paths) ? parsed.paths : undefined,
     scope: isScope(parsed.scope) ? parsed.scope : undefined,
     summary: typeof parsed.summary === "string" ? parsed.summary : undefined,

@@ -120,6 +120,9 @@ export interface ApprovalAction {
   paths?: string[];
   writes?: Array<{ path: string; preview?: string }>;
   deletes?: Array<{ path: string }>;
+  // sandbox_escalation: model-provided reason and sandboxed-run failure tail
+  justification?: string;
+  failureSummary?: string;
   scope?: {
     cwd: string;
     insideWorkspace: boolean;

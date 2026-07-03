@@ -93,6 +93,16 @@ pub(super) fn set_permission_level_command(level: String, session_id: String) ->
     }
 }
 
+pub(super) fn set_sandbox_policy_command(
+    policy: crate::agent_proto::SandboxPolicy,
+    session_id: String,
+) -> RpcCommand {
+    RpcCommand {
+        sandbox_policy: Some(policy),
+        ..base_command("set_sandbox_policy", session_id)
+    }
+}
+
 pub(super) fn prompt_command(
     message: String,
     session_id: String,
@@ -143,6 +153,7 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         enabled_models: vec![],
         run_id: String::new(),
         since_idx: 0,
+        sandbox_policy: None,
     }
 }
 
