@@ -5,7 +5,8 @@
 use tonic::transport::Channel;
 
 use super::client::{
-    get_state_command, new_session_command, set_permission_level_command, RpcResponseExt,
+    get_state_command, new_session_command, set_permission_level_command,
+    set_sandbox_policy_command, RpcResponseExt,
 };
 use crate::{agent_proto::FutureAgentClient, store};
 
@@ -73,6 +74,29 @@ pub(super) async fn set_agent_permission_level(
         .map_err(|error| format!("Unable to set Future Agent permission level: {error}"))?
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the permission level selection.")?;
+    Ok(())
+}
+
+/// Send the session sandbox + approval policy. Phase 1: fixed
+/// `workspace-write × on-request` (SANDBOX_PLAN.md §5 Phase 1) — per-workspace
+/// configuration arrives with the Settings UI in Phase 3.
+pub(super) async fn set_agent_sandbox_policy(
+    client: &mut FutureAgentClient<Channel>,
+    session_id: &str,
+) -> Result<(), crate::AppError> {
+    let policy = crate::agent_proto::SandboxPolicy {
+        sandbox_mode: "workspace-write".to_string(),
+        writable_roots: vec![],
+        network_access: false,
+        approval_policy: "on-request".to_string(),
+        rules: vec![],
+    };
+    client
+        .execute_command(set_sandbox_policy_command(policy, session_id.to_string()))
+        .await
+        .map_err(|error| format!("Unable to set Future Agent sandbox policy: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the sandbox policy.")?;
     Ok(())
 }
 
