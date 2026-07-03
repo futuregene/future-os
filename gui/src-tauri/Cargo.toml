@@ -29,3 +29,9 @@ tauri-plugin-dialog = "2"
 base64 = "0.22"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 zip = { version = "8", default-features = false, features = ["deflate"] }
+
+# Stripped symbols + no debug info: smaller desktop binary and less link/scan
+# I/O, negligible runtime cost for a Tauri shell. See ../../.cargo/config.toml.
+[profile.release]
+debug = false
+strip = true

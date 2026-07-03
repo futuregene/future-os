@@ -401,6 +401,20 @@ pub fn all_tools() -> Vec<AgentTool> {
 
 // ─── Tool runners (async, using tokio) ─────────────────────────────────────
 
+/// SIGKILL an entire process group by its group-leader PID. Used to tear down a
+/// bash command's full process tree on abort/timeout, since `kill_on_drop` only
+/// reaps the direct child and leaves grandchildren (e.g. `sleep`) orphaned.
+#[cfg(unix)]
+fn kill_process_group(pgid: Option<i32>) {
+    if let Some(pgid) = pgid {
+        // SAFETY: killpg is async-signal-safe and we target the group led by our
+        // own just-spawned child. A stale/reaped pgid yields a harmless ESRCH.
+        unsafe {
+            libc::killpg(pgid, libc::SIGKILL);
+        }
+    }
+}
+
 /// Polls the interrupt flag every 50ms. Returns when the flag is set to true.
 /// Used by tokio::select! to cooperatively cancel long-running operations.
 async fn wait_for_interrupt(flag: Arc<AtomicBool>) {
@@ -418,13 +432,28 @@ async fn run_bash(command: &str, timeout_secs: u64) -> Result<String> {
     child
         .args(["-c", command])
         .current_dir(&cwd)
-        .env("PWD", &cwd);
+        .env("PWD", &cwd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     child.kill_on_drop(true);
+    // Run bash as the leader of its own process group so abort/timeout can kill
+    // the whole tree. kill_on_drop alone only SIGKILLs bash itself, leaving
+    // grandchildren (e.g. a `sleep` spawned by the command) running as orphans.
+    #[cfg(unix)]
+    child.process_group(0);
 
     // Get interrupt flag from task-local scope
     let interrupt_flag = TOOL_SCOPE
         .try_with(|scope| scope.interrupt_flag.clone())
         .unwrap_or_else(|_| Arc::new(AtomicBool::new(false)));
+
+    // Spawn (rather than `output()`) so we hold the PID for group teardown.
+    // With process_group(0) the child's PID equals its process-group ID.
+    let spawned = child
+        .spawn()
+        .map_err(|e| anyhow!("Failed to run bash command: {}", e))?;
+    #[cfg(unix)]
+    let pgid = spawned.id().map(|id| id as i32);
 
     // Use tokio::select! to race between:
     // 1. Command completion
@@ -433,19 +462,26 @@ async fn run_bash(command: &str, timeout_secs: u64) -> Result<String> {
     let output = tokio::select! {
         result = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs.max(1)),
-            child.output(),
+            spawned.wait_with_output(),
         ) => {
             match result {
                 Ok(Ok(output)) => output,
                 Ok(Err(e)) => return Err(anyhow!("Failed to run bash command: {}", e)),
-                Err(_) => return Err(anyhow!(
-                    "Bash command timed out after {} seconds",
-                    timeout_secs.max(1)
-                )),
+                Err(_) => {
+                    #[cfg(unix)]
+                    kill_process_group(pgid);
+                    return Err(anyhow!(
+                        "Bash command timed out after {} seconds",
+                        timeout_secs.max(1)
+                    ));
+                }
             }
         }
         _ = wait_for_interrupt(interrupt_flag.clone()) => {
-            // Interrupt received, child will be dropped and killed via kill_on_drop
+            // Kill the whole group; dropping the wait future also kills bash via
+            // kill_on_drop, but only killpg reaches grandchildren.
+            #[cfg(unix)]
+            kill_process_group(pgid);
             return Err(anyhow!("Bash command interrupted by abort"));
         }
     };
@@ -786,6 +822,49 @@ mod tests {
         assert!(
             err.contains("interrupted") || err.contains("Interrupted") || err.contains("abort"),
             "Error message should mention interruption: got '{err}'"
+        );
+    }
+
+    // Aborting a bash command must kill its whole process group, not just bash.
+    // The command backgrounds a `sleep` that writes a marker file after it wakes;
+    // if the grandchild survived the abort, the marker would appear.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_bash_abort_kills_grandchildren() {
+        let workspace = test_path("abort-grandchild");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace_string = workspace.to_string_lossy().to_string();
+        let marker = workspace.join("survived.marker");
+        let marker_string = marker.to_string_lossy().to_string();
+        let interrupt_flag = Arc::new(AtomicBool::new(false));
+
+        // `sh -c 'sleep 2; touch MARKER' &` — a grandchild that outlives bash's
+        // own exit unless the process group is killed.
+        let command = format!("sh -c 'sleep 2; touch {marker_string}' & wait");
+        let flag_clone = interrupt_flag.clone();
+        let bash_task = tokio::spawn(async move {
+            with_workspace_scope_with_interrupt(
+                workspace_string,
+                "all".to_string(),
+                flag_clone,
+                async move { run_bash(&command, 60).await },
+            )
+            .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        interrupt_flag.store(true, Ordering::SeqCst);
+        let result = bash_task.await.unwrap();
+        assert!(
+            result.is_err(),
+            "run_bash should return Err when interrupted"
+        );
+
+        // Wait past the grandchild's sleep; if the group was killed, no marker.
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+        assert!(
+            !marker.exists(),
+            "grandchild process survived abort and wrote the marker file"
         );
     }
 }

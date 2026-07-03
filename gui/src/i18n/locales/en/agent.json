@@ -133,6 +133,7 @@
     "retry": "Retry",
     "continue": "Continue",
     "generating": "Generating",
+    "thinking": "Thinking…",
     "stopped": "Stopped",
     "tokens": "{{formattedCount}} tokens"
   }

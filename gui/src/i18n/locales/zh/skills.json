@@ -15,6 +15,16 @@
     "emptyTitle": "技能市场暂无内容",
     "emptyDetail": "稍后再试，或确认平台连接是否正常。"
   },
+  "filter": {
+    "categoryLabel": "分类",
+    "keywordLabel": "关键字",
+    "allCategories": "全部分类",
+    "keywordPlaceholder": "按关键字过滤",
+    "count": "{{count}} / {{total}}",
+    "clear": "清除",
+    "emptyTitle": "没有匹配的技能",
+    "emptyDetail": "调整分类或关键字后再试。"
+  },
   "install": {
     "installing": "安装中…",
     "install": "安装",

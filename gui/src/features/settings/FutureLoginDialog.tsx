@@ -13,6 +13,11 @@ const SLOW_DOWN_STEP_MS = 5000;
 // Poll faster than the server's suggested interval for snappier "authorized"
 // detection; if the server pushes back with `slow_down` we back off (+5s).
 const FAST_POLL_MS = 2000;
+// usePolling ticks at this fixed cadence; the real poll spacing is gated by
+// `nextPollAtRef`, so a slow_down back-off widens the interval without
+// restarting the timer (a restart would fire an immediate extra poll — the
+// opposite of what slow_down asks for).
+const BASE_TICK_MS = 1000;
 
 export function FutureLoginDialog({
   open,
@@ -27,7 +32,6 @@ export function FutureLoginDialog({
   const { t } = useTranslation("settings");
   const [phase, setPhase] = useState<Phase>("starting");
   const [start, setStart] = useState<FutureLoginStart | null>(null);
-  const [pollIntervalMs, setPollIntervalMs] = useState(FAST_POLL_MS);
   const [message, setMessage] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -36,6 +40,11 @@ export function FutureLoginDialog({
   // async). Also gates the per-attempt expiry deadline.
   const attemptRef = useRef(0);
   const deadlineRef = useRef(0);
+  // Current poll spacing (grows by 5s on each slow_down) and the epoch-ms gate
+  // for the next allowed poll. Kept in refs so back-off never churns the
+  // polling effect's deps (which would restart the timer and poll immediately).
+  const intervalRef = useRef(FAST_POLL_MS);
+  const nextPollAtRef = useRef(0);
 
   const begin = useCallback(async () => {
     const attempt = attemptRef.current + 1;
@@ -50,7 +59,8 @@ export function FutureLoginDialog({
         return;
       setStart(next);
       // Start snappy; respect the server interval only if it asks for slower.
-      setPollIntervalMs(Math.min(Math.max(1, next.interval) * 1000, FAST_POLL_MS));
+      intervalRef.current = Math.min(Math.max(1, next.interval) * 1000, FAST_POLL_MS);
+      nextPollAtRef.current = 0; // first tick polls immediately
       deadlineRef.current = Date.now() + next.expiresIn * 1000;
       setPhase("waiting");
     }
@@ -84,6 +94,11 @@ export function FutureLoginDialog({
         setMessage(t("futureLogin.expired"));
         return;
       }
+      // Back-off gate: only poll once we're past the reserved slot.
+      if (Date.now() < nextPollAtRef.current)
+        return;
+      // Reserve the next slot up front so a slow in-flight poll doesn't stack.
+      nextPollAtRef.current = Date.now() + intervalRef.current;
 
       let result;
       try {
@@ -108,7 +123,10 @@ export function FutureLoginDialog({
         case "pending":
           break;
         case "slow_down":
-          setPollIntervalMs(ms => ms + SLOW_DOWN_STEP_MS);
+          // RFC 8628: widen the interval by 5s and wait it out — no immediate
+          // retry (which is what the gate above enforces).
+          intervalRef.current += SLOW_DOWN_STEP_MS;
+          nextPollAtRef.current = Date.now() + intervalRef.current;
           break;
         case "denied":
           setMessage(result.message ?? t("futureLogin.denied"));
@@ -124,8 +142,8 @@ export function FutureLoginDialog({
           break;
       }
     },
-    pollIntervalMs,
-    { enabled: open && phase === "waiting" && start !== null, deps: [phase, start, pollIntervalMs] },
+    BASE_TICK_MS,
+    { enabled: open && phase === "waiting" && start !== null, deps: [phase, start] },
   );
 
   async function handleCopyLink() {

@@ -1,0 +1,17 @@
+# Repo-wide Cargo config. Cargo discovers this by walking up from the manifest
+# dir, so it applies to every workspace here (agent/, gui/src-tauri/, channels/)
+# for both CI and local builds. Purpose: cut release link/compile time — the
+# Windows/Linux CI jobs were dominated by linking and I/O.
+
+[target.x86_64-unknown-linux-gnu]
+# lld links far faster than the default GNU bfd ld. Installed via apt in
+# .github/workflows/build.yml; gcc 11 on ubuntu-22.04 understands -fuse-ld=lld.
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.x86_64-pc-windows-msvc]
+# Skip PDB generation at link time. Release ships stripped anyway, so the debug
+# info is pure waste — and every PDB write is also scanned by Defender, so this
+# saves both link time and disk I/O on the slowest runner.
+rustflags = ["-C", "link-arg=/DEBUG:NONE"]
+
+# macOS: the default linker (ld-prime on current Xcode) is already fast — no swap.

@@ -9,12 +9,16 @@
 //! presented read-only; user-defined providers live under
 //! `models.json.providers` and are fully editable here.
 
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::auth_store::{agent_dir, FUTURE_PROVIDER_ID};
+
+#[path = "../../../agent/src/models/generated/mod.rs"]
+mod generated_model_catalog;
 
 /// Future platform root (no `/api`); auth/account endpoints hang off this and
 /// the model API base is derived as `{platform}/api/v1`.
@@ -46,6 +50,7 @@ pub struct BuiltinProvider {
     pub name: String,
     pub base_url: String,
     pub has_api_key: bool,
+    pub model_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,18 +95,52 @@ pub struct UpsertCustomProviderInput {
     pub create: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateBuiltinProviderKeyInput {
+    pub id: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CatalogProviderSummary {
+    name: String,
+    base_url: String,
+    model_count: usize,
+}
+
 pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
     let models = read_json(&models_json_path()?);
     // Display path: a corrupt auth.json shouldn't blank the providers list, so
     // fall back to empty (key badges show "未配置"); write paths stay strict.
     let auth = Value::Object(crate::auth_store::read().unwrap_or_default());
 
-    let builtin = vec![BuiltinProvider {
+    let custom_provider_ids = models
+        .get("providers")
+        .and_then(Value::as_object)
+        .map(|providers| providers.keys().cloned().collect::<HashSet<_>>())
+        .unwrap_or_default();
+
+    let mut builtin = vec![BuiltinProvider {
         id: FUTURE_PROVIDER_ID.to_string(),
         name: FUTURE_PROVIDER_NAME.to_string(),
         base_url: resolve_future_base_url(&auth),
         has_api_key: auth_has_key(&auth, FUTURE_PROVIDER_ID),
+        model_count: future_model_count(),
     }];
+    for (id, summary) in builtin_catalog_providers() {
+        if custom_provider_ids.contains(&id) {
+            continue;
+        }
+        builtin.push(BuiltinProvider {
+            has_api_key: auth_has_key(&auth, &id),
+            id,
+            name: summary.name,
+            base_url: summary.base_url,
+            model_count: summary.model_count,
+        });
+    }
 
     let mut custom = Vec::new();
     if let Some(providers) = models.get("providers").and_then(Value::as_object) {
@@ -157,6 +196,40 @@ pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
     custom.sort_by(|left, right| left.id.cmp(&right.id));
 
     Ok(ProvidersView { builtin, custom })
+}
+
+pub fn update_builtin_provider_key(
+    input: UpdateBuiltinProviderKeyInput,
+) -> Result<ProvidersView, crate::AppError> {
+    let id = input.id.trim();
+    if id.is_empty() {
+        return Err("Provider id is required.".to_string().into());
+    }
+    if id == FUTURE_PROVIDER_ID {
+        return Err("FutureGene uses the sign-in flow.".to_string().into());
+    }
+    if !builtin_catalog_providers().contains_key(id) {
+        return Err(format!("未知的内置提供商：`{id}`。").into());
+    }
+
+    let api_key = input
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(key) = api_key {
+        if key.len() > API_KEY_MAX_LEN {
+            return Err("API Key 过长。".into());
+        }
+        if !is_ascii_no_control(key) {
+            return Err("API Key 含非法字符。".into());
+        }
+        crate::auth_store::set_provider_key(id, key)?;
+    } else {
+        crate::auth_store::remove_provider_key(id)?;
+    }
+
+    list_agent_providers()
 }
 
 pub fn upsert_custom_provider(
@@ -298,10 +371,20 @@ pub fn upsert_custom_provider(
     if input.create && providers.contains_key(&id) {
         return Err(format!("提供商 ID `{id}` 已存在。").into());
     }
+    let builtin_catalog = builtin_catalog_providers();
+    if input.create && builtin_catalog.contains_key(&id) {
+        return Err(format!("提供商 ID `{id}` 为内置提供商保留。").into());
+    }
     // Names must be unique (case-insensitive) across the built-in and other
     // custom providers, so the list and model grouping stay unambiguous.
     let normalized_name = name.to_lowercase();
     if normalized_name == FUTURE_PROVIDER_NAME.to_lowercase() {
+        return Err(format!("提供商名称 `{name}` 与内置提供商重复。").into());
+    }
+    let builtin_name_taken = builtin_catalog.iter().any(|(builtin_id, provider)| {
+        builtin_id != &id && provider.name.trim().to_lowercase() == normalized_name
+    });
+    if builtin_name_taken {
         return Err(format!("提供商名称 `{name}` 与内置提供商重复。").into());
     }
     let name_taken = providers.iter().any(|(other_id, config)| {
@@ -399,8 +482,93 @@ fn auth_has_key(auth: &Value, id: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn builtin_catalog_providers() -> BTreeMap<String, CatalogProviderSummary> {
+    let mut providers = BTreeMap::new();
+    for model in generated_model_catalog::init_builtin_models() {
+        if model.provider.is_empty() || model.provider == FUTURE_PROVIDER_ID {
+            continue;
+        }
+        let entry =
+            providers
+                .entry(model.provider.clone())
+                .or_insert_with(|| CatalogProviderSummary {
+                    name: provider_display_name(&model.provider),
+                    base_url: model.base_url.clone(),
+                    model_count: 0,
+                });
+        entry.model_count += 1;
+        if entry.base_url.is_empty() && !model.base_url.is_empty() {
+            entry.base_url = model.base_url;
+        }
+    }
+    providers
+}
+
+fn provider_display_name(id: &str) -> String {
+    match id {
+        "amazon-bedrock" => "Amazon Bedrock".to_string(),
+        "anthropic" => "Anthropic".to_string(),
+        "azure-openai-responses" => "Azure OpenAI Responses".to_string(),
+        "cerebras" => "Cerebras".to_string(),
+        "cloudflare-workers-ai" => "Cloudflare Workers AI".to_string(),
+        "deepseek" => "DeepSeek".to_string(),
+        "github-copilot" => "GitHub Copilot".to_string(),
+        "google" => "Google".to_string(),
+        "google-vertex" => "Google Vertex".to_string(),
+        "groq" => "Groq".to_string(),
+        "huggingface" => "Hugging Face".to_string(),
+        "kimi-coding" => "Kimi Coding".to_string(),
+        "minimax" => "MiniMax".to_string(),
+        "minimax-cn" => "MiniMax CN".to_string(),
+        "mistral" => "Mistral".to_string(),
+        "moonshotai" => "Moonshot AI".to_string(),
+        "moonshotai-cn" => "Moonshot AI CN".to_string(),
+        "openai" => "OpenAI".to_string(),
+        "openai-codex" => "OpenAI Codex".to_string(),
+        "opencode" => "opencode".to_string(),
+        "opencode-go" => "opencode Go".to_string(),
+        "openrouter" => "OpenRouter".to_string(),
+        "vercel-ai-gateway" => "Vercel AI Gateway".to_string(),
+        "xai" => "xAI".to_string(),
+        "xiaomi" => "Xiaomi".to_string(),
+        "xiaomi-token-plan-ams" => "Xiaomi Token Plan AMS".to_string(),
+        "xiaomi-token-plan-cn" => "Xiaomi Token Plan CN".to_string(),
+        "xiaomi-token-plan-sgp" => "Xiaomi Token Plan SGP".to_string(),
+        "zai" => "Z.ai".to_string(),
+        "zhipuai" => "ZhipuAI".to_string(),
+        _ => id
+            .split('-')
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                let mut chars = part.chars();
+                match chars.next() {
+                    Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
 fn models_json_path() -> Result<PathBuf, crate::AppError> {
     Ok(agent_dir()?.join("models.json"))
+}
+
+fn future_models_cache_path() -> Result<PathBuf, crate::AppError> {
+    Ok(agent_dir()?.join(".future-models-cache.json"))
+}
+
+fn future_model_count() -> usize {
+    future_models_cache_path()
+        .ok()
+        .and_then(|path| {
+            read_json(&path)
+                .get("models")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+        })
+        .unwrap_or(0)
 }
 
 fn read_json(path: &PathBuf) -> Value {
@@ -559,6 +727,109 @@ mod tests {
         let view = list_agent_providers().unwrap();
         assert!(view.custom.iter().all(|p| p.id != "future"));
         assert!(view.custom.iter().any(|p| p.id == "zai"));
+    }
+
+    #[test]
+    fn list_includes_catalog_providers_after_future() {
+        let _home = HomeGuard::new("catalog-list");
+        let view = list_agent_providers().unwrap();
+        assert_eq!(view.builtin.first().map(|p| p.id.as_str()), Some("future"));
+        let openai = view.builtin.iter().find(|p| p.id == "openai").unwrap();
+        assert_eq!(openai.name, "OpenAI");
+        assert!(openai.model_count > 0);
+    }
+
+    #[test]
+    fn future_provider_uses_cached_model_count() {
+        let _home = HomeGuard::new("future-count");
+        let path = future_models_cache_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"fetched_at":1,"models":[{"id":"m1"},{"id":"m2"}]}"#,
+        )
+        .unwrap();
+
+        let view = list_agent_providers().unwrap();
+        assert_eq!(
+            view.builtin
+                .iter()
+                .find(|provider| provider.id == "future")
+                .map(|provider| provider.model_count),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn custom_provider_shadows_builtin_catalog_provider() {
+        let _home = HomeGuard::new("catalog-shadow");
+        let path = models_json_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"providers":{"openai":{"name":"My OpenAI","api":"openai-completions","baseUrl":"https://proxy.example.com/v1","models":[]}}}"#,
+        )
+        .unwrap();
+        let view = list_agent_providers().unwrap();
+        assert!(view.builtin.iter().all(|p| p.id != "openai"));
+        assert_eq!(view.custom.len(), 1);
+        assert_eq!(view.custom[0].id, "openai");
+    }
+
+    #[test]
+    fn update_builtin_provider_key_sets_and_clears_auth_entry() {
+        let _home = HomeGuard::new("builtin-key");
+        let view = update_builtin_provider_key(UpdateBuiltinProviderKeyInput {
+            id: "openai".to_string(),
+            api_key: Some("sk-test".to_string()),
+        })
+        .unwrap();
+        assert!(
+            view.builtin
+                .iter()
+                .find(|provider| provider.id == "openai")
+                .unwrap()
+                .has_api_key
+        );
+        assert_eq!(
+            crate::auth_store::read()
+                .unwrap()
+                .get("openai")
+                .and_then(Value::as_object)
+                .and_then(|entry| entry.get("key"))
+                .and_then(Value::as_str),
+            Some("sk-test")
+        );
+
+        let view = update_builtin_provider_key(UpdateBuiltinProviderKeyInput {
+            id: "openai".to_string(),
+            api_key: None,
+        })
+        .unwrap();
+        assert!(
+            !view
+                .builtin
+                .iter()
+                .find(|provider| provider.id == "openai")
+                .unwrap()
+                .has_api_key
+        );
+        assert!(crate::auth_store::read()
+            .unwrap()
+            .get("openai")
+            .and_then(Value::as_object)
+            .and_then(|entry| entry.get("key"))
+            .is_none());
+    }
+
+    #[test]
+    fn create_rejects_builtin_catalog_id_and_name() {
+        let _home = HomeGuard::new("builtin-collision");
+        let id_err = upsert_custom_provider(input("openai", "OpenAI Proxy", true)).unwrap_err();
+        assert!(id_err.to_string().contains("内置"));
+
+        let name_err = upsert_custom_provider(input("p1", "OpenAI", true)).unwrap_err();
+        assert!(name_err.to_string().contains("内置"));
     }
 
     #[test]

@@ -59,7 +59,14 @@ jobs:
           - name: Linux
             os: ubuntu-22.04
             artifact_name: futureos-linux
-            bundle_path: gui/src-tauri/target/release/bundle/**
+            # Only the installers — NOT bundle/** (which also globs the exploded
+            # AppImage tree: hundreds of .so files, data.tar.gz, and a duplicate
+            # future-agent binary that collides with the portable tarball's copy
+            # and breaks the GitHub Release asset upload).
+            bundle_path: |
+              gui/src-tauri/target/release/bundle/appimage/*.AppImage
+              gui/src-tauri/target/release/bundle/deb/*.deb
+              gui/src-tauri/target/release/bundle/rpm/*.rpm
 
     steps:
       - name: Checkout
@@ -92,6 +99,12 @@ jobs:
           workspaces: |
             agent
             gui/src-tauri
+          # Persist the target dir even when a later step fails, so a broken
+          # release run doesn't throw away a full cold compile.
+          cache-on-failure: true
+          # Cache every dependency crate, not just direct workspace deps —
+          # covers transitive/build-dep crates that otherwise recompile.
+          cache-all-crates: true
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -101,6 +114,7 @@ jobs:
             build-essential \
             curl \
             file \
+            lld \
             libayatana-appindicator3-dev \
             libgtk-3-dev \
             librsvg2-dev \
@@ -132,6 +146,17 @@ jobs:
       - name: Install npm dependencies (CLI)
         working-directory: cli
         run: npm ci
+
+      # Windows Defender real-time scanning inspects every intermediate file the
+      # Rust compiler and linker emit — thousands of them — and is the single
+      # biggest drag on the Windows job. Turn it off for the runner (which has
+      # admin rights); it's a throwaway VM. Never fail the build if Defender is
+      # policy-managed and refuses.
+      - name: Disable Windows Defender real-time scanning
+        if: runner.os == 'Windows'
+        shell: pwsh
+        continue-on-error: true
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
 
       # Build the agent and stage it as a Tauri sidecar so the packaged app
       # starts it automatically (see bundle.externalBin in tauri.conf.json).
@@ -272,11 +297,60 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # OSS coordinates come from repo secrets. ossutil v2 auto-reads the OSS_*
+    # env vars (endpoint + credentials) — no config file needed. OSS_REGION is
+    # derived from the endpoint in the Setup step (v2 signs with SigV4, which
+    # requires a region). See docs/WIKI-MAINTENANCE.md / repo settings.
+    env:
+      OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+      OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+      OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+      OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
     steps:
+      # Needed for scripts/setup-ossutil.sh (this job otherwise only handles
+      # artifacts and never checks out the repo).
+      - name: Checkout
+        uses: actions/checkout@v5
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v7
         with:
           path: release-assets
+
+      # latest.json is the auto-upgrade manifest: for now it carries just the
+      # version and publish time (download URLs come later, once the CDN domain
+      # is live). Generated before the release step so it can be attached to the
+      # GitHub Release too, not only pushed to OSS.
+      - name: Generate latest.json
+        run: |
+          set -euo pipefail
+          cat > latest.json <<EOF
+          {
+            "version": "${{ needs.version.outputs.version }}",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          echo "==> latest.json:"
+          cat latest.json
+
+      # Curate what actually ships to users. The portable builds (Windows zip,
+      # Linux tarball) and the AppImage/rpm are TESTER-ONLY: they remain as
+      # Actions artifacts (downloadable from the run) but are NOT published to
+      # the GitHub Release or OSS. Only the end-user installers ship:
+      #   macOS .dmg · Windows .exe + .msi · Linux .deb
+      # Files are flattened into publish/ (no per-artifact subfolders) so the
+      # Release and the OSS releases/<version>/ layout stay clean.
+      - name: Stage publishable installers
+        run: |
+          set -euo pipefail
+          mkdir -p publish
+          find release-assets -type f \( \
+            -name '*.dmg' -o \
+            -name '*-setup.exe' -o \
+            -name '*.msi' -o \
+            -name '*.deb' \) -exec cp -v {} publish/ \;
+          echo "==> Staged for release/OSS:"
+          ls -1 publish
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -285,4 +359,24 @@ jobs:
           name: FutureOS ${{ needs.version.outputs.version }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: release-assets/**/*
+          files: |
+            publish/*
+            latest.json
+
+      # ─── Mirror the release to Aliyun OSS ──────────────────────────────────
+      # ossutil v2 is fetched directly from Aliyun's public CDN (no third-party
+      # action). Auth is entirely via the OSS_* env vars set at the job level.
+      - name: Setup ossutil
+        run: bash scripts/setup-ossutil.sh
+
+      # Each release gets its own versioned folder: releases/<version>/… (flat,
+      # installers only). latest.json is written to a fixed key so consumers
+      # always read releases/latest.json.
+      - name: Upload release to OSS
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.version.outputs.version }}"
+          echo "==> Uploading installers to releases/$VERSION/"
+          ossutil cp -r -f publish/ "oss://$OSS_BUCKET/releases/$VERSION/"
+          echo "==> Uploading latest.json to releases/latest.json"
+          ossutil cp -f latest.json "oss://$OSS_BUCKET/releases/latest.json"

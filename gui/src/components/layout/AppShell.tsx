@@ -148,6 +148,18 @@ export function AppShell() {
     };
   }, []);
 
+  // macOS app menu "About FutureOS" opens the in-app Settings page (there is no
+  // native About dialog). The backend emits this event from the menu handler.
+  useEffect(() => {
+    const unlisten = listen("open-settings", () => {
+      setSettingsTab("general");
+      setSettingsOpen(true);
+    });
+    return () => {
+      void unlisten.then(stop => stop());
+    };
+  }, []);
+
   // Remote (phone) activity: a phone client created or drove a thread. Refresh
   // the thread list + runs so it appears and updates live in the GUI.
   useEffect(() => {

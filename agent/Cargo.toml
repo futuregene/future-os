@@ -46,6 +46,10 @@ prost = "0.13"
 prost-types = "0.13"
 tower-http = { version = "0.6", features = ["cors"] }
 
+# Kill the whole bash process group on abort/timeout (not just the direct child)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Proto codegen (for building .proto files)
 [build-dependencies]
 prost-build = "0.13"
@@ -53,3 +57,9 @@ tonic-build = "0.12"
 
 [dev-dependencies]
 tokio-test = "0.4"
+
+# Drop debug info and strip symbols so release links faster and ships smaller
+# (the agent is an I/O-bound gRPC server — no runtime cost). See ../.cargo/config.toml.
+[profile.release]
+debug = false
+strip = true

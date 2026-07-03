@@ -18,7 +18,7 @@ import {
   storedTimeToIso,
 } from "../../integrations/storage/threadStore";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
-import { buildAssistantRunProjection, thinkingActivity } from "./agentActivity";
+import { buildAssistantRunProjection } from "./agentActivity";
 import {
   buildAgentFailureContent,
   matchesSettledRun,
@@ -190,7 +190,9 @@ export function useAgentThreadState({
       content: "",
       status: "streaming",
       createdAt: new Date(runStartAnchorMs).toISOString(),
-      activityItems: thinkingActivity(),
+      // Mid-reasoning from the outset; the footer shows a "thinking…" hint (when
+      // show-thinking is off) instead of a top-of-message activity line.
+      thinkingActive: true,
       modelId,
       runStartedAt: runStartAnchorMs,
     };
@@ -312,6 +314,19 @@ export function useAgentThreadState({
               status: storedAssistantMessage.status,
               createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
               outputTokens: abortedRender.outputTokens,
+              stopped: true,
+            });
+          }
+          else {
+            // Aborted before any text landed (e.g. still in the thinking phase).
+            // There's nothing to persist, but the pending bubble must leave
+            // "streaming" — otherwise `isSending` stays true, so the composer is
+            // stuck on the stop button and the generating/thinking indicators
+            // linger. Finalize it in place (keeping any thinking the poll
+            // accumulated), drop the thinking flag, and mark it stopped.
+            patchMessage(setMessages, pendingId, {
+              status: "complete",
+              thinkingActive: false,
               stopped: true,
             });
           }
@@ -657,7 +672,6 @@ async function upsertStreamingPreview(
         return current;
 
       const content = projection.content.trim();
-      const activityItems = projection.activityItems.length > 0 ? projection.activityItems : thinkingActivity();
       const existingIndex = current.findIndex(message => message.id === bubbleId);
 
       if (existingIndex === -1) {
@@ -669,8 +683,9 @@ async function upsertStreamingPreview(
           content,
           status: "streaming",
           createdAt: new Date().toISOString(),
-          activityItems,
+          activityItems: projection.activityItems,
           segments: projection.segments,
+          thinkingActive: projection.thinkingActive,
           outputTokens: projection.outputTokens,
           // Feed MessageMeta's live elapsed timer so a re-attached run keeps
           // ticking instead of dropping its duration stat on switch-back.
@@ -684,9 +699,10 @@ async function upsertStreamingPreview(
         index === existingIndex
           ? {
               ...message,
-              activityItems,
+              activityItems: projection.activityItems,
               segments: projection.segments,
               content: content || message.content,
+              thinkingActive: projection.thinkingActive,
               outputTokens: projection.outputTokens,
             }
           : message,
@@ -712,7 +728,11 @@ async function updatePendingMessageFromRunEvents(
 
     const projection = buildAssistantRunProjection(events);
 
-    if (!projection.content.trim() && projection.activityItems.length === 0)
+    // Nothing renderable yet: no answer text, no tool activity, and no inline
+    // segments. Reasoning-only turns DO carry a thinking segment, so this must
+    // check segments too — otherwise the live thinking view (show-thinking on)
+    // is swallowed until the first text/tool lands.
+    if (!projection.content.trim() && projection.activityItems.length === 0 && projection.segments.length === 0)
       return;
 
     setMessages(current =>
@@ -725,6 +745,7 @@ async function updatePendingMessageFromRunEvents(
               // two stay consistent — safe to render segments inline immediately.
               segments: projection.segments,
               content: projection.content.trim() ? projection.content : message.content,
+              thinkingActive: projection.thinkingActive,
               // Tokens accumulate as each LLM call reports usage (lands at the
               // end of each call); shown as the real count, no estimate.
               outputTokens: projection.outputTokens,

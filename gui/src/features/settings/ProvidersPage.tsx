@@ -1,18 +1,34 @@
-import type { CustomProvider, ProvidersView } from "../../integrations/agent/providers";
+import type { BuiltinProvider, CustomProvider, ProvidersView } from "../../integrations/agent/providers";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
+import { Dialog } from "../../components/ui/Dialog";
+import { Field } from "../../components/ui/Field";
+import { TextInput } from "../../components/ui/TextInput";
 import {
   deleteCustomProvider,
   listAgentProviders,
   logoutFutureProvider,
+  updateBuiltinProviderKey,
   upsertCustomProvider,
 } from "../../integrations/agent/providers";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { CustomProviderDialog } from "./CustomProviderDialog";
 import { FutureLoginDialog } from "./FutureLoginDialog";
 import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
+
+const DEFAULT_BUILTIN_PROVIDER_IDS = [
+  "future",
+  "deepseek",
+  "kimi-coding",
+  "minimax-cn",
+  "moonshotai-cn",
+  "zhipuai",
+  "anthropic",
+  "openai",
+  "google",
+];
 
 export function ProvidersPage() {
   const { t } = useTranslation("settings");
@@ -26,9 +42,11 @@ export function ProvidersPage() {
   const [providers, setProviders] = useState<ProvidersView | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<CustomProvider | null>(null);
+  const [editingBuiltinKey, setEditingBuiltinKey] = useState<BuiltinProvider | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
   const [confirmingLogout, setConfirmingLogout] = useState(false);
+  const [showMoreBuiltin, setShowMoreBuiltin] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
 
   useEffect(() => {
@@ -49,6 +67,13 @@ export function ProvidersPage() {
     setHint(null);
   }
 
+  async function handleBuiltinKey(provider: BuiltinProvider, apiKey: string | null) {
+    const view = await updateBuiltinProviderKey({ apiKey, id: provider.id });
+    setProviders(view);
+    setEditingBuiltinKey(null);
+    setHint(apiKey ? t("providers.keySaved", { provider: provider.name }) : t("providers.keyCleared", { provider: provider.name }));
+  }
+
   function handleAuthorized() {
     setLoginOpen(false);
     reload();
@@ -59,6 +84,16 @@ export function ProvidersPage() {
     return <p className="text-sm text-ink-muted">{t("providers.loading")}</p>;
   }
 
+  const builtinProviders = providers?.builtin ?? [];
+  const defaultBuiltinProviders = DEFAULT_BUILTIN_PROVIDER_IDS
+    .map(id => builtinProviders.find(provider => provider.id === id))
+    .filter((provider): provider is BuiltinProvider => Boolean(provider));
+  const defaultBuiltinIds = new Set(defaultBuiltinProviders.map(provider => provider.id));
+  const hiddenBuiltinProviders = builtinProviders.filter(provider => !defaultBuiltinIds.has(provider.id));
+  const visibleBuiltinProviders = showMoreBuiltin
+    ? [...defaultBuiltinProviders, ...hiddenBuiltinProviders]
+    : defaultBuiltinProviders;
+
   return (
     <div className="space-y-6">
       {error ? <p className="text-sm text-danger">{error}</p> : null}
@@ -66,11 +101,11 @@ export function ProvidersPage() {
 
       <SettingsSection title={t("providers.builtinTitle")}>
         <SettingsList>
-          {(providers?.builtin ?? []).map(provider => (
+          {visibleBuiltinProviders.map(provider => (
             <SettingsRow
               key={provider.id}
               title={provider.name}
-              description={provider.baseUrl}
+              description={t("providers.builtinModelsCount", { count: provider.modelCount })}
             >
               {provider.id === "future"
                 ? (
@@ -115,13 +150,38 @@ export function ProvidersPage() {
                     </div>
                   )
                 : (
-                    <Badge tone={provider.hasApiKey ? "success" : "neutral"}>
-                      {provider.hasApiKey ? t("providers.hasApiKey") : t("providers.noApiKey")}
-                    </Badge>
+                    <div className="flex items-center gap-2">
+                      <Badge tone={provider.hasApiKey ? "success" : "neutral"}>
+                        {provider.hasApiKey ? t("providers.hasApiKey") : t("providers.noApiKey")}
+                      </Badge>
+                      <Button
+                        onClick={() => {
+                          setHint(null);
+                          setEditingBuiltinKey(provider);
+                        }}
+                        size="sm"
+                        variant="secondary"
+                      >
+                        {provider.hasApiKey ? t("providers.updateKey") : t("providers.setKey")}
+                      </Button>
+                    </div>
                   )}
             </SettingsRow>
           ))}
         </SettingsList>
+        {hiddenBuiltinProviders.length > 0
+          ? (
+              <Button
+                onClick={() => setShowMoreBuiltin(value => !value)}
+                size="sm"
+                variant="secondary"
+              >
+                {showMoreBuiltin
+                  ? t("providers.hideMoreBuiltin")
+                  : t("providers.showMoreBuiltin", { count: hiddenBuiltinProviders.length })}
+              </Button>
+            )
+          : null}
       </SettingsSection>
 
       <SettingsSection
@@ -208,6 +268,94 @@ export function ProvidersPage() {
         onClose={() => setLoginOpen(false)}
         open={loginOpen}
       />
+
+      <BuiltinProviderKeyDialog
+        onClose={() => setEditingBuiltinKey(null)}
+        onSubmit={apiKey => editingBuiltinKey ? handleBuiltinKey(editingBuiltinKey, apiKey) : Promise.resolve()}
+        open={Boolean(editingBuiltinKey)}
+        provider={editingBuiltinKey}
+      />
     </div>
+  );
+}
+
+function BuiltinProviderKeyDialog({
+  onClose,
+  onSubmit,
+  open,
+  provider,
+}: {
+  onClose: () => void;
+  onSubmit: (apiKey: string | null) => Promise<void>;
+  open: boolean;
+  provider: BuiltinProvider | null;
+}) {
+  const { t } = useTranslation("settings");
+  const [apiKey, setApiKey] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    setApiKey("");
+    setError(null);
+    setSaving(false);
+  }, [open, provider?.id]);
+
+  async function submit(nextKey: string | null) {
+    const trimmed = nextKey?.trim() ?? null;
+    if (nextKey !== null && !trimmed) {
+      setError(t("providers.keyRequired"));
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await onSubmit(trimmed);
+    }
+    catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : String(submitError));
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog
+      className="max-w-md"
+      onClose={onClose}
+      open={open}
+      title={t("providers.keyDialogTitle", { provider: provider?.name ?? "" })}
+      description={t("providers.keyDialogDescription")}
+      footer={(
+        <>
+          {provider?.hasApiKey
+            ? (
+                <Button disabled={saving} onClick={() => void submit(null)} variant="secondary">
+                  {t("providers.clearKey")}
+                </Button>
+              )
+            : null}
+          <Button onClick={onClose} variant="secondary">{t("providers.cancel")}</Button>
+          <Button disabled={saving} onClick={() => void submit(apiKey)} variant="primary">
+            {saving ? t("providers.savingKey") : t("providers.saveKey")}
+          </Button>
+        </>
+      )}
+    >
+      <div className="space-y-3">
+        <Field label={t("customProvider.apiKeyLabel")}>
+          <TextInput
+            autoFocus
+            onChange={event => setApiKey(event.target.value)}
+            placeholder={t("customProvider.apiKeyPlaceholder")}
+            type="password"
+            value={apiKey}
+          />
+        </Field>
+        {error ? <p className="text-sm text-danger">{error}</p> : null}
+      </div>
+    </Dialog>
   );
 }
