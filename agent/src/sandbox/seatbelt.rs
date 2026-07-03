@@ -82,6 +82,9 @@ pub fn build_profile(sandbox: &ResolvedSandbox) -> String {
         "(allow file-write-data\n \
           (literal \"/dev/null\") (literal \"/dev/zero\")\n \
           (literal \"/dev/stdout\") (literal \"/dev/stderr\")\n \
+          ; /dev/stdout|stderr resolve to /dev/fd/N on macOS — the open() hits\n \
+          ; the fd path, so the literal alone is not enough (smoke-tested)\n \
+          (regex #\"^/dev/fd/\")\n \
           (regex #\"^/dev/tty\") (literal \"/dev/dtracehelper\"))\n",
     );
     if sandbox.mode != SandboxMode::ReadOnly {
