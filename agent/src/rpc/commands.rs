@@ -49,11 +49,14 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "follow_up", serde_json::json!({}))
         }
         "abort" => {
-            // Try to abort, but don't fail if lock is busy
-            if let Ok(sess) = session.try_write() {
+            // abort() only needs &self — take a read lock so a concurrent
+            // reader (get_state polling) can never make the abort a no-op,
+            // which a failed try_write() silently did.
+            let session_id = {
+                let sess = session.read().unwrap();
                 sess.abort();
-            }
-            let session_id = session.read().unwrap().session_id.clone();
+                sess.session_id.clone()
+            };
             state
                 .approval_gate
                 .cancel_session(&session_id, "Cancelled because the run was terminated.");
@@ -573,9 +576,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             )
         }
         "abort_retry" => {
-            if let Ok(sess) = session.try_write() {
-                sess.abort();
-            }
+            session.read().unwrap().abort();
             RpcResponse::ok(id, "abort_retry", serde_json::json!({}))
         }
         "abort_bash" => {

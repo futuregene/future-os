@@ -590,6 +590,7 @@ dependencies = [
  "fd-lock",
  "futures",
  "futures-util",
+ "libc",
  "notify",
  "prost",
  "prost-build",

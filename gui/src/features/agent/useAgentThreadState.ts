@@ -315,6 +315,19 @@ export function useAgentThreadState({
               stopped: true,
             });
           }
+          else {
+            // Aborted before any text landed (e.g. still in the thinking phase).
+            // There's nothing to persist, but the pending bubble must leave
+            // "streaming" — otherwise `isSending` stays true, so the composer is
+            // stuck on the stop button and the "generating"/activity indicators
+            // linger. Finalize it in place: keep whatever thinking the poll
+            // accumulated, clear the still-"running" activity lines, mark stopped.
+            patchMessage(setMessages, pendingId, {
+              status: "complete",
+              activityItems: [],
+              stopped: true,
+            });
+          }
           onThreadActivity();
         }
         return;
