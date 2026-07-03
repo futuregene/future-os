@@ -1,5 +1,6 @@
 import type {
   ApprovalAction,
+  ApprovalSaveSuggestion,
   SandboxBoundary,
   StoredApprovalRequest,
 } from "../../integrations/storage/types";
@@ -7,12 +8,16 @@ import { AlertTriangle, Check, ShieldAlert, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
+import { TextInput } from "../../components/ui/TextInput";
+import { saveApprovalRule } from "../../integrations/storage/runs";
 import { isRecord } from "../../lib/objects";
 
 interface ApprovalPromptProps {
   approval: StoredApprovalRequest;
   onDecision: (approval: StoredApprovalRequest, status: "approved" | "rejected") => Promise<void>;
 }
+
+type Persistence = "session" | "always";
 
 export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
   const { t } = useTranslation("agent");
@@ -24,10 +29,26 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
     () => parseSandbox(approval.sandboxBoundary),
     [approval.sandboxBoundary],
   );
+  const saveSuggestion = useMemo(
+    () => parseSaveSuggestion(approval.saveSuggestion),
+    [approval.saveSuggestion],
+  );
   const fallbackAction = useMemo(
     () => (action ? null : formatRequestedAction(approval.requestedAction)),
     [action, approval.requestedAction],
   );
+
+  // Inline rule editor state: which persistence the user picked + the (editable)
+  // pattern to save. Null when the editor is closed.
+  const [ruleMode, setRuleMode] = useState<Persistence | null>(null);
+  const [pattern, setPattern] = useState("");
+
+  const openRuleEditor = useCallback((mode: Persistence) => {
+    if (!saveSuggestion)
+      return;
+    setPattern(saveSuggestion.matchValue);
+    setRuleMode(mode);
+  }, [saveSuggestion]);
 
   const decide = useCallback(async (status: "approved" | "rejected") => {
     if (deciding)
@@ -46,6 +67,32 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
     }
   }, [approval, deciding, onDecision]);
 
+  // Save the (possibly edited) rule, then approve this call once.
+  const confirmRule = useCallback(async () => {
+    if (deciding || !ruleMode || !saveSuggestion)
+      return;
+    const trimmed = pattern.trim();
+    if (!trimmed) {
+      setError(t("approval.rulePatternRequired"));
+      return;
+    }
+    setError(null);
+    setDeciding("approved");
+    try {
+      await saveApprovalRule({
+        threadId: approval.threadId,
+        matchKind: saveSuggestion.matchKind,
+        matchValue: trimmed,
+        persistence: ruleMode,
+      });
+      await onDecision(approval, "approved");
+    }
+    catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setDeciding(null);
+    }
+  }, [approval, deciding, onDecision, pattern, ruleMode, saveSuggestion, t]);
+
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (deciding)
@@ -61,13 +108,18 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
 
       if (event.key === "Escape") {
         event.preventDefault();
+        // Esc closes the rule editor first, then rejects on a second press.
+        if (ruleMode !== null) {
+          setRuleMode(null);
+          return;
+        }
         void decide("rejected");
       }
     }
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [decide, deciding]);
+  }, [decide, deciding, ruleMode]);
 
   return (
     <section className="rounded-lg border border-line bg-surface/95 p-4 shadow-panel backdrop-blur">
@@ -109,6 +161,40 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
             </div>
           )
         : null}
+      {ruleMode !== null && saveSuggestion
+        ? (
+            <div className="mt-3 rounded-md border border-line-soft bg-surface-subtle p-3">
+              <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
+                {ruleMode === "always" ? t("approval.ruleSaveAlways") : t("approval.ruleSaveSession")}
+              </div>
+              <TextInput
+                autoFocus
+                className="font-mono text-xs"
+                onChange={event => setPattern(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void confirmRule();
+                  }
+                }}
+                value={pattern}
+              />
+              <div className="mt-2 flex items-center justify-end gap-2">
+                <Button disabled={deciding !== null} onClick={() => setRuleMode(null)} variant="toolbar">
+                  {t("approval.ruleCancel")}
+                </Button>
+                <Button
+                  disabled={deciding !== null}
+                  leftIcon={<Check className="size-3.5" />}
+                  onClick={() => void confirmRule()}
+                  variant="primary"
+                >
+                  {t("approval.ruleConfirm")}
+                </Button>
+              </div>
+            </div>
+          )
+        : null}
       <div className="mt-4 flex items-center justify-between gap-3">
         <Button
           className="shadow-xs"
@@ -119,18 +205,65 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
         >
           {deciding === "rejected" ? t("approval.denying") : t("approval.deny")}
         </Button>
-        <Button
-          className="shadow-xs"
-          disabled={deciding !== null}
-          leftIcon={<Check className="size-3.5" />}
-          onClick={() => void decide("approved")}
-          variant="primary"
-        >
-          {deciding === "approved" ? t("approval.allowing") : t("approval.allowOnce")}
-        </Button>
+        <div className="flex items-center gap-2">
+          {saveSuggestion
+            ? (
+                <>
+                  <Button
+                    disabled={deciding !== null}
+                    onClick={() => openRuleEditor("session")}
+                    variant="toolbar"
+                  >
+                    {t("approval.allowSession")}
+                  </Button>
+                  <Button
+                    disabled={deciding !== null}
+                    onClick={() => openRuleEditor("always")}
+                    variant="toolbar"
+                  >
+                    {t("approval.allowAlways")}
+                  </Button>
+                </>
+              )
+            : null}
+          <Button
+            className="shadow-xs"
+            disabled={deciding !== null}
+            leftIcon={<Check className="size-3.5" />}
+            onClick={() => void decide("approved")}
+            variant="primary"
+          >
+            {deciding === "approved" ? t("approval.allowing") : t("approval.allowOnce")}
+          </Button>
+        </div>
       </div>
     </section>
   );
+}
+
+function parseSaveSuggestion(payload: string | null | undefined): ApprovalSaveSuggestion | null {
+  if (!payload)
+    return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  }
+  catch {
+    return null;
+  }
+  if (
+    !isRecord(parsed)
+    || typeof parsed.match_kind !== "string"
+    || typeof parsed.match_value !== "string"
+    || typeof parsed.decision !== "string"
+  ) {
+    return null;
+  }
+  return {
+    decision: parsed.decision,
+    matchKind: parsed.match_kind,
+    matchValue: parsed.match_value,
+  };
 }
 
 interface ActionDetailsProps {

@@ -106,9 +106,19 @@ export interface StoredApprovalRequest {
   actionCategory?: string | null;
   actionPayload?: string | null;
   sandboxBoundary?: string | null;
+  // Phase 2: suggested rule (JSON) for session/always-allow persistence.
+  saveSuggestion?: string | null;
   reviewer: string;
   decisionScope: string;
   decisionSource: string;
+}
+
+// Phase 2: parsed save_suggestion — the rule pattern to persist on
+// session/always allow.
+export interface ApprovalSaveSuggestion {
+  matchKind: string;
+  matchValue: string;
+  decision: string;
 }
 
 // P2: structured action payload (parsed from actionPayload JSON)
