@@ -1,11 +1,15 @@
-name: Publish Wiki
+name: Publish Docs
 
-# Sync docs/wiki/ to the GitHub wiki. Manual trigger only for now — run it from
-# the Actions tab ("Run workflow") or with `gh workflow run publish-wiki.yml`.
+# Publish docs/wiki/ to Aliyun OSS (docs/ prefix). Manual trigger only — run it
+# from the Actions tab ("Run workflow") or with `gh workflow run publish-wiki.yml`.
 #
-# Prerequisite: the repository's Wikis feature must be enabled by an admin
-# (Settings → Features → Wikis). Once it's on, the wiki is created and filled
-# automatically — no need to hand-create a first page. See docs/WIKI-MAINTENANCE.md.
+# The GitHub wiki path is disabled for now (Wikis feature not enabled on the
+# repo). The wiki-sync step is kept below, commented out, so it can be restored
+# once an admin turns Wikis on (Settings → Features → Wikis). See
+# docs/WIKI-MAINTENANCE.md.
+#
+# OSS publish is a full replace: the docs/ prefix is deleted first, then the
+# current docs/wiki/*.md is uploaded — so removed pages don't linger.
 
 on:
   workflow_dispatch:
@@ -20,16 +24,48 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+      OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Sync docs/wiki to the GitHub wiki
+      # ─── GitHub wiki sync (disabled until Wikis is enabled) ────────────────
+      # - name: Sync docs/wiki to the GitHub wiki
+      #   env:
+      #     # GITHUB_TOKEN can push to the repo's own wiki. If your org restricts
+      #     # that, create a PAT with repo scope and store it as the WIKI_TOKEN
+      #     # secret — it is used automatically when present.
+      #     WIKI_REMOTE: https://x-access-token:${{ secrets.WIKI_TOKEN || secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git
+      #     GIT_AUTHOR_NAME: 'github-actions[bot]'
+      #     GIT_AUTHOR_EMAIL: '41898282+github-actions[bot]@users.noreply.github.com'
+      #   run: bash scripts/publish-wiki.sh
+
+      # ─── Publish docs to Aliyun OSS ────────────────────────────────────────
+      # ossutil is fetched directly from Aliyun's public CDN (no third-party
+      # action) and pointed at the bucket via a one-off config file.
+      - name: Setup ossutil
         env:
-          # GITHUB_TOKEN can push to the repo's own wiki. If your org restricts
-          # that, create a PAT with repo scope and store it as the WIKI_TOKEN
-          # secret — it is used automatically when present.
-          WIKI_REMOTE: https://x-access-token:${{ secrets.WIKI_TOKEN || secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git
-          GIT_AUTHOR_NAME: 'github-actions[bot]'
-          GIT_AUTHOR_EMAIL: '41898282+github-actions[bot]@users.noreply.github.com'
-        run: bash scripts/publish-wiki.sh
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o ossutil "https://gosspublic.alicdn.com/ossutil/1.7.19/ossutil64"
+          chmod +x ossutil
+          sudo mv ossutil /usr/local/bin/ossutil
+          ossutil config \
+            -e "$OSS_ENDPOINT" \
+            -i "$OSS_ACCESS_KEY_ID" \
+            -k "$OSS_ACCESS_KEY_SECRET"
+
+      # Full replace: wipe the docs/ prefix, then upload the current pages. The
+      # rm is best-effort (empty prefix on a first run is fine).
+      - name: Publish docs/wiki to OSS
+        run: |
+          set -euo pipefail
+          echo "==> Clearing existing docs/ prefix"
+          ossutil rm -rf "oss://$OSS_BUCKET/docs/" || true
+          echo "==> Uploading docs/wiki/*.md to docs/"
+          ossutil cp -rf docs/wiki/ "oss://$OSS_BUCKET/docs/"
+          echo "==> Done."
