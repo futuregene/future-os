@@ -229,6 +229,12 @@ pub fn platform_sandbox_available() -> bool {
     }
 }
 
+/// Expose the generated Seatbelt profile (for smoke tests and diagnostics).
+#[cfg(target_os = "macos")]
+pub fn seatbelt_profile(sandbox: &ResolvedSandbox) -> String {
+    seatbelt::build_profile(sandbox)
+}
+
 // ─── Escalation (post-hoc approval, carried into the tools layer) ──────────
 
 /// A request to re-run (or run) a command outside the sandbox, raised from
