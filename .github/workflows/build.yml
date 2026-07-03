@@ -272,11 +272,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    # OSS coordinates come from repo secrets; endpoint/bucket are also needed to
-    # build the ossutil config. See docs/WIKI-MAINTENANCE.md / repo settings.
+    # OSS coordinates come from repo secrets. ossutil v2 auto-reads the OSS_*
+    # env vars (endpoint + credentials) — no config file needed. OSS_REGION is
+    # derived from the endpoint in the Setup step (v2 signs with SigV4, which
+    # requires a region). See docs/WIKI-MAINTENANCE.md / repo settings.
     env:
       OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
       OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+      OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+      OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
     steps:
       - name: Download all build artifacts
         uses: actions/download-artifact@v7
@@ -311,21 +315,10 @@ jobs:
             latest.json
 
       # ─── Mirror the release to Aliyun OSS ──────────────────────────────────
-      # ossutil is fetched directly from Aliyun's public CDN (no third-party
-      # action) and pointed at the bucket via a one-off config file.
+      # ossutil v2 is fetched directly from Aliyun's public CDN (no third-party
+      # action). Auth is entirely via the OSS_* env vars set at the job level.
       - name: Setup ossutil
-        env:
-          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
-          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
-        run: |
-          set -euo pipefail
-          curl -fsSL -o ossutil "https://gosspublic.alicdn.com/ossutil/1.7.18/ossutil64"
-          chmod +x ossutil
-          sudo mv ossutil /usr/local/bin/ossutil
-          ossutil config \
-            -e "$OSS_ENDPOINT" \
-            -i "$OSS_ACCESS_KEY_ID" \
-            -k "$OSS_ACCESS_KEY_SECRET"
+        run: bash scripts/setup-ossutil.sh
 
       # Each release gets its own versioned folder: releases/<version>/…, keeping
       # the per-platform artifact subfolders as downloaded. latest.json is written
@@ -335,6 +328,6 @@ jobs:
           set -euo pipefail
           VERSION="${{ needs.version.outputs.version }}"
           echo "==> Uploading build artifacts to releases/$VERSION/"
-          ossutil cp -rf release-assets/ "oss://$OSS_BUCKET/releases/$VERSION/"
+          ossutil cp -r -f release-assets/ "oss://$OSS_BUCKET/releases/$VERSION/"
           echo "==> Uploading latest.json to releases/latest.json"
           ossutil cp -f latest.json "oss://$OSS_BUCKET/releases/latest.json"
