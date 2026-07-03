@@ -321,12 +321,12 @@ export function useAgentThreadState({
             // Aborted before any text landed (e.g. still in the thinking phase).
             // There's nothing to persist, but the pending bubble must leave
             // "streaming" — otherwise `isSending` stays true, so the composer is
-            // stuck on the stop button and the "generating"/activity indicators
-            // linger. Finalize it in place: keep whatever thinking the poll
-            // accumulated, clear the still-"running" activity lines, mark stopped.
+            // stuck on the stop button and the generating/thinking indicators
+            // linger. Finalize it in place (keeping any thinking the poll
+            // accumulated), drop the thinking flag, and mark it stopped.
             patchMessage(setMessages, pendingId, {
               status: "complete",
-              activityItems: [],
+              thinkingActive: false,
               stopped: true,
             });
           }
@@ -728,7 +728,11 @@ async function updatePendingMessageFromRunEvents(
 
     const projection = buildAssistantRunProjection(events);
 
-    if (!projection.content.trim() && projection.activityItems.length === 0)
+    // Nothing renderable yet: no answer text, no tool activity, and no inline
+    // segments. Reasoning-only turns DO carry a thinking segment, so this must
+    // check segments too — otherwise the live thinking view (show-thinking on)
+    // is swallowed until the first text/tool lands.
+    if (!projection.content.trim() && projection.activityItems.length === 0 && projection.segments.length === 0)
       return;
 
     setMessages(current =>
