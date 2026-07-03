@@ -9,6 +9,8 @@ mod error;
 mod future_login;
 mod git_diff_parse;
 mod git_review;
+#[cfg(target_os = "macos")]
+mod menu;
 mod remote;
 mod run_error;
 mod shadow_review;
@@ -89,8 +91,40 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .on_menu_event(|app, event| {
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::{Emitter, Manager};
+                match event.id().as_ref() {
+                    menu::MENU_ABOUT => {
+                        // No native About dialog — open the in-app Settings page.
+                        let _ = app.emit("open-settings", ());
+                    }
+                    menu::MENU_RESTART_WEBVIEW => {
+                        // Debug escape hatch: reload a hung/crashed webview in
+                        // place (native reload, so it recovers even when the JS
+                        // context is dead) instead of relaunching the app.
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.reload();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        })
         .setup(|app| {
             let _ = APP_HANDLE.set(app.handle().clone());
+            // Replace Tauri's default macOS menu so the brand name always reads
+            // "FutureOS" (the default falls back to the lowercase executable name
+            // in dev/unbundled runs) and to add the About/Restart Webview items.
+            #[cfg(target_os = "macos")]
+            if let Err(error) =
+                menu::build_macos_menu(app.handle()).and_then(|m| app.set_menu(m).map(|_| ()))
+            {
+                eprintln!("FutureOS menu setup failed: {error}");
+            }
             size_main_window_to_screen(app);
             if let Err(error) = store::initialize_app_store() {
                 eprintln!("FutureOS store initialization failed: {error}");
