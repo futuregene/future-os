@@ -8,6 +8,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::process::Command;
 
+use crate::sandbox::{EscalationDecision, EscalationRequest, EscalationRequester, ResolvedSandbox};
+
+/// Callback invoked when a bash command is about to run inside the OS
+/// sandbox (the RPC layer wires this to a `tool_sandboxed` SSE event).
+pub type SandboxedNotifier = Arc<dyn Fn(&str) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct ToolExecutionScope {
     workspace: PathBuf,
@@ -18,10 +24,45 @@ pub struct ToolExecutionScope {
     /// (e.g., bash commands). When set, in-flight tool work returns an "interrupted"
     /// error promptly and child processes are dropped (kill_on_drop).
     interrupt_flag: Arc<AtomicBool>,
+    /// Resolved sandbox boundary: OS sandbox wrapping for bash, writable-roots
+    /// boundary for write/edit. Shared with the approval layer so both reach
+    /// the same verdicts.
+    sandbox: Arc<ResolvedSandbox>,
+    /// Post-hoc approval hook for escalated (out-of-sandbox) bash runs.
+    /// Injected by the RPC layer; None means escalation is unavailable.
+    escalation: Option<EscalationRequester>,
+    /// Notifier for sandboxed bash executions (progress/event plumbing).
+    on_sandboxed: Option<SandboxedNotifier>,
 }
 
 tokio::task_local! {
     static TOOL_SCOPE: ToolExecutionScope;
+}
+
+/// Full scope configuration for tool execution.
+pub struct ScopeOptions {
+    pub workspace: String,
+    pub permission_level: String,
+    pub interrupt_flag: Arc<AtomicBool>,
+    pub sandbox: Arc<ResolvedSandbox>,
+    pub escalation: Option<EscalationRequester>,
+    pub on_sandboxed: Option<SandboxedNotifier>,
+}
+
+pub async fn with_tool_scope<F>(options: ScopeOptions, future: F) -> F::Output
+where
+    F: Future,
+{
+    let scope = ToolExecutionScope {
+        workspace: normalize_path(&PathBuf::from(options.workspace)),
+        approved_outside_paths: Arc::new(Mutex::new(vec![])),
+        permission_level: options.permission_level,
+        interrupt_flag: options.interrupt_flag,
+        sandbox: options.sandbox,
+        escalation: options.escalation,
+        on_sandboxed: options.on_sandboxed,
+    };
+    TOOL_SCOPE.scope(scope, future).await
 }
 
 pub async fn with_workspace_scope<F>(
@@ -50,17 +91,29 @@ pub async fn with_workspace_scope_with_interrupt<F>(
 where
     F: Future,
 {
-    let scope = ToolExecutionScope {
-        workspace: normalize_path(&PathBuf::from(workspace)),
-        approved_outside_paths: Arc::new(Mutex::new(vec![])),
-        permission_level,
-        interrupt_flag,
-    };
-    TOOL_SCOPE.scope(scope, future).await
+    // Legacy entry point: degraded sandbox (no OS wrapping), workspace-write
+    // boundary semantics. The RPC layer uses with_tool_scope directly.
+    let mut sandbox =
+        ResolvedSandbox::resolve(&crate::sandbox::SandboxPolicy::default(), &workspace);
+    sandbox.available = false;
+    with_tool_scope(
+        ScopeOptions {
+            workspace,
+            permission_level,
+            interrupt_flag,
+            sandbox: Arc::new(sandbox),
+            escalation: None,
+            on_sandboxed: None,
+        },
+        future,
+    )
+    .await
 }
 
 pub fn approve_outside_path(path: &str) {
-    let path = normalize_path(&PathBuf::from(path));
+    // Canonicalize so the later boundary check (which also canonicalizes)
+    // matches regardless of symlinks/case (§3.5).
+    let path = crate::sandbox::paths::canonicalize_lenient(&PathBuf::from(path));
     let _ = TOOL_SCOPE.try_with(|scope| {
         if let Ok(mut approved) = scope.approved_outside_paths.lock() {
             approved.push(path);
@@ -109,6 +162,14 @@ fn bash_schema() -> serde_json::Value {
             "timeout": {
                 "type": "integer",
                 "description": "Optional timeout in seconds"
+            },
+            "escalated": {
+                "type": "boolean",
+                "description": "Request to run this command outside the sandbox (requires user approval). Set only after a command failed due to sandbox restrictions (blocked network or a write outside the workspace) and it genuinely needs those permissions."
+            },
+            "justification": {
+                "type": "string",
+                "description": "One-sentence reason why escalated permissions are needed. Required when escalated is true."
             }
         },
         "required": ["command"]
@@ -122,9 +183,17 @@ fn bash_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<S
         struct BashParams {
             command: String,
             timeout: Option<u64>,
+            escalated: Option<bool>,
+            justification: Option<String>,
         }
         let params: BashParams = serde_json::from_value(args)?;
-        run_bash(&params.command, params.timeout.unwrap_or(120)).await
+        run_bash(
+            &params.command,
+            params.timeout.unwrap_or(120),
+            params.escalated.unwrap_or(false),
+            params.justification.as_deref().unwrap_or(""),
+        )
+        .await
     })
 }
 
@@ -426,11 +495,108 @@ async fn wait_for_interrupt(flag: Arc<AtomicBool>) {
     }
 }
 
-async fn run_bash(command: &str, timeout_secs: u64) -> Result<String> {
+async fn run_bash(
+    command: &str,
+    timeout_secs: u64,
+    escalated: bool,
+    justification: &str,
+) -> Result<String> {
+    let sandbox = TOOL_SCOPE
+        .try_with(|scope| scope.sandbox.clone())
+        .unwrap_or_default();
+    let escalation = TOOL_SCOPE
+        .try_with(|scope| scope.escalation.clone())
+        .unwrap_or(None);
+
+    // Model explicitly requested escalated permissions: approve BEFORE running.
+    // Only honored when the command would actually run sandboxed — in degraded
+    // or full-access modes the pre-execution approval flow already covered it,
+    // and escalating would double-prompt the user.
+    if escalated && sandbox.wraps_bash() {
+        if let Some(requester) = &escalation {
+            let request = EscalationRequest {
+                command: command.to_string(),
+                justification: justification.to_string(),
+                failure_summary: String::new(),
+            };
+            match requester(&request) {
+                EscalationDecision::Approved => {
+                    return spawn_bash(command, timeout_secs, &sandbox, true).await;
+                }
+                EscalationDecision::Denied(note) => {
+                    return Err(anyhow!(
+                        "Escalated execution was not approved{}. Run the command inside the sandbox instead, or explain to the user why it needs these permissions.",
+                        if note.is_empty() { String::new() } else { format!(": {note}") }
+                    ));
+                }
+            }
+        }
+        // No escalation channel: fall through to a normal sandboxed run.
+    }
+
+    let sandboxed = sandbox.wraps_bash();
+    if sandboxed {
+        if let Ok(Some(notify)) = TOOL_SCOPE.try_with(|scope| scope.on_sandboxed.clone()) {
+            notify(command);
+        }
+    }
+    let result = spawn_bash(command, timeout_secs, &sandbox, false).await?;
+
+    // Post-hoc escalation: only when the failure narrowly looks like a sandbox
+    // denial (conservative heuristic — ordinary failures go back to the model).
+    if sandboxed {
+        if let Some(requester) = &escalation {
+            let (exit_code, tail) = parse_result_failure(&result);
+            if exit_code != 0
+                && crate::sandbox::looks_like_sandbox_denial(&sandbox, exit_code, &tail)
+            {
+                let request = EscalationRequest {
+                    command: command.to_string(),
+                    justification: String::new(),
+                    failure_summary: tail,
+                };
+                match requester(&request) {
+                    EscalationDecision::Approved => {
+                        return spawn_bash(command, timeout_secs, &sandbox, true).await;
+                    }
+                    EscalationDecision::Denied(note) => {
+                        return Ok(format!(
+                            "{result}\n[sandbox] The command appears to have been blocked by the sandbox; running it without the sandbox was not approved{}.",
+                            if note.is_empty() { String::new() } else { format!(": {note}") }
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// Extract the exit code and output tail from a formatted run_bash result, for
+/// the sandbox-denial heuristic. Results are formatted "[exit code: N]\n...".
+fn parse_result_failure(result: &str) -> (i32, String) {
+    let exit_code = result
+        .strip_prefix("[exit code: ")
+        .and_then(|rest| rest.split(']').next())
+        .and_then(|code| code.trim().parse::<i32>().ok())
+        .unwrap_or(0);
+    let tail_start = result.len().saturating_sub(2000);
+    let tail = result.get(tail_start..).unwrap_or(result).to_string();
+    (exit_code, tail)
+}
+
+/// Spawn a bash command (sandbox-wrapped unless `escalated`) and wait for it
+/// with timeout + interrupt handling. Returns the formatted combined output.
+async fn spawn_bash(
+    command: &str,
+    timeout_secs: u64,
+    sandbox: &ResolvedSandbox,
+    escalated: bool,
+) -> Result<String> {
     let cwd = active_workspace()?;
-    let mut child = Command::new("bash");
+    let mut child = sandbox.build_bash_command(command, escalated);
     child
-        .args(["-c", command])
         .current_dir(&cwd)
         .env("PWD", &cwd)
         .stdout(std::process::Stdio::piped())
@@ -439,6 +605,7 @@ async fn run_bash(command: &str, timeout_secs: u64) -> Result<String> {
     // Run bash as the leader of its own process group so abort/timeout can kill
     // the whole tree. kill_on_drop alone only SIGKILLs bash itself, leaving
     // grandchildren (e.g. a `sleep` spawned by the command) running as orphans.
+    // sandbox-exec execs its child, so the group covers the wrapped tree too.
     #[cfg(unix)]
     child.process_group(0);
 
@@ -664,17 +831,9 @@ async fn run_ls(path: Option<&str>, limit: usize) -> Result<String> {
 
 fn workspace_path(path: &str) -> Result<PathBuf> {
     let cwd = active_workspace()?;
-    let path = if let Some(relative) = path.strip_prefix("~/") {
-        cwd.join(relative)
-    } else {
-        PathBuf::from(path)
-    };
-    let raw_path = path.as_path();
-    let absolute_path = if raw_path.is_absolute() {
-        raw_path.to_path_buf()
-    } else {
-        cwd.join(raw_path)
-    };
+    // `~` resolves to the real home directory (NOT the workspace — the legacy
+    // behavior disagreed with what the OS sandbox enforces, see §3.5).
+    let absolute_path = crate::sandbox::paths::resolve_against(&cwd, path);
     let normalized_path = normalize_path(&absolute_path);
     Ok(normalized_path)
 }
@@ -686,7 +845,7 @@ fn active_workspace() -> Result<PathBuf> {
     Ok(std::env::current_dir()?)
 }
 
-fn ensure_workspace_access(workspace: &Path, path: &Path) -> Result<()> {
+fn ensure_workspace_access(_workspace: &Path, path: &Path) -> Result<()> {
     if TOOL_SCOPE.try_with(|_| ()).is_err() {
         return Ok(());
     }
@@ -700,16 +859,37 @@ fn ensure_workspace_access(workspace: &Path, path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let workspace = normalize_path(workspace);
-    let path = normalize_path(path);
-    if path.starts_with(&workspace) || is_approved_outside_path(&path) {
+    // §3.5 normalization: symlinks resolve to their final target, `..` cannot
+    // escape, comparison is case-insensitive on macOS.
+    let candidate = crate::sandbox::paths::canonicalize_lenient(path);
+    if is_approved_outside_path(&candidate) {
         return Ok(());
     }
 
-    Err(anyhow!(
-        "Path is outside the current workspace and requires approval: {}",
-        path.display()
-    ))
+    let sandbox = TOOL_SCOPE
+        .try_with(|scope| scope.sandbox.clone())
+        .unwrap_or_default();
+    match sandbox.mode {
+        crate::sandbox::SandboxMode::DangerFullAccess => Ok(()),
+        crate::sandbox::SandboxMode::ReadOnly => Err(anyhow!(
+            "Sandbox mode is read-only; writing {} requires approval.",
+            candidate.display()
+        )),
+        crate::sandbox::SandboxMode::WorkspaceWrite => {
+            if sandbox
+                .writable_roots
+                .iter()
+                .any(|root| crate::sandbox::paths::path_within(&candidate, root))
+            {
+                Ok(())
+            } else {
+                Err(anyhow!(
+                    "Path is outside the writable roots and requires approval: {}",
+                    candidate.display()
+                ))
+            }
+        }
+    }
 }
 
 fn is_approved_outside_path(path: &Path) -> bool {
@@ -720,7 +900,7 @@ fn is_approved_outside_path(path: &Path) -> bool {
                 .lock()
                 .map(|approved| {
                     approved.iter().any(|approved_path| {
-                        path == approved_path || path.starts_with(approved_path)
+                        crate::sandbox::paths::path_within(path, approved_path)
                     })
                 })
                 .unwrap_or(false)
@@ -775,11 +955,25 @@ mod tests {
         );
     }
 
+    /// A path outside every writable root (workspace, tmp). Never created.
+    fn outside_root_path(name: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        dirs::home_dir()
+            .unwrap()
+            .join(format!("futureos-tools-test-{name}-{stamp}"))
+            .join("outside.txt")
+    }
+
     #[tokio::test]
     async fn scoped_workspace_rejects_unapproved_absolute_outside_write() {
         let workspace = test_path("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
-        let outside = test_path("outside.txt");
+        // Note: temp dirs are writable roots now (§2.2), so "outside" must be
+        // outside both the workspace and tmp.
+        let outside = outside_root_path("reject");
         let workspace_string = workspace.to_string_lossy().to_string();
         let outside_string = outside.to_string_lossy().to_string();
 
@@ -790,6 +984,193 @@ mod tests {
 
         assert!(result.is_err());
         assert!(!outside.exists());
+    }
+
+    #[tokio::test]
+    async fn scoped_workspace_allows_temp_dir_writes() {
+        // Temp dirs are fully-open writable roots (SANDBOX_PLAN.md §2.2).
+        let workspace = test_path("ws-tmp");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tmp_target = test_path("tmp-write.txt");
+
+        let result = with_workspace_scope(
+            workspace.to_string_lossy().to_string(),
+            "workspace".to_string(),
+            async { run_write(&tmp_target.to_string_lossy(), "tmp ok").await },
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "temp-dir write should be allowed: {result:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&tmp_target).unwrap(), "tmp ok");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn scoped_workspace_rejects_symlink_escape() {
+        // A symlink inside the workspace pointing outside must not be treated
+        // as an inside-workspace write (§3.5 rule 3).
+        let workspace = test_path("ws-symlink");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let outside_dir = dirs::home_dir()
+            .unwrap()
+            .join(format!("futureos-symlink-escape-{}", std::process::id()));
+        // Target dir does not need to exist for the boundary check to resolve.
+        let link = workspace.join("escape");
+        std::os::unix::fs::symlink(&outside_dir, &link).unwrap();
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        let target = link.join("file.txt");
+
+        let result = with_workspace_scope(
+            workspace.to_string_lossy().to_string(),
+            "workspace".to_string(),
+            async { run_write(&target.to_string_lossy(), "no").await },
+        )
+        .await;
+
+        std::fs::remove_dir_all(&outside_dir).ok();
+        assert!(result.is_err(), "symlink escape should be rejected");
+    }
+
+    /// Scope with a sandbox forced "available" and a mock escalation requester
+    /// that records calls and returns a fixed decision.
+    fn escalation_scope(
+        workspace: &Path,
+        available: bool,
+        decision: EscalationDecision,
+        calls: Arc<Mutex<Vec<EscalationRequest>>>,
+    ) -> ScopeOptions {
+        let mut sandbox = crate::sandbox::ResolvedSandbox::resolve(
+            &crate::sandbox::SandboxPolicy::default(),
+            workspace.to_string_lossy().as_ref(),
+        );
+        sandbox.available = available;
+        let requester: EscalationRequester = Arc::new(move |request: &EscalationRequest| {
+            calls.lock().unwrap().push(request.clone());
+            decision.clone()
+        });
+        ScopeOptions {
+            workspace: workspace.to_string_lossy().to_string(),
+            permission_level: "workspace".to_string(),
+            interrupt_flag: Arc::new(AtomicBool::new(false)),
+            sandbox: Arc::new(sandbox),
+            escalation: Some(requester),
+            on_sandboxed: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn escalated_bash_denied_returns_error_without_running() {
+        let workspace = test_path("escalate-denied");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let marker = workspace.join("ran.marker");
+        let calls = Arc::new(Mutex::new(vec![]));
+
+        let result = with_tool_scope(
+            escalation_scope(
+                &workspace,
+                true,
+                EscalationDecision::Denied("not needed".to_string()),
+                calls.clone(),
+            ),
+            async {
+                run_bash(
+                    &format!("touch {}", marker.to_string_lossy()),
+                    30,
+                    true,
+                    "test needs it",
+                )
+                .await
+            },
+        )
+        .await;
+
+        assert!(result.is_err(), "denied escalation should error");
+        assert!(!marker.exists(), "command must not run when denied");
+        let recorded = calls.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].justification, "test needs it");
+    }
+
+    #[tokio::test]
+    async fn escalated_bash_approved_runs_unsandboxed() {
+        let workspace = test_path("escalate-approved");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let calls = Arc::new(Mutex::new(vec![]));
+
+        let result = with_tool_scope(
+            escalation_scope(
+                &workspace,
+                true,
+                EscalationDecision::Approved,
+                calls.clone(),
+            ),
+            async { run_bash("echo escalated-ok", 30, true, "why").await },
+        )
+        .await;
+
+        assert!(result.unwrap().contains("escalated-ok"));
+        assert_eq!(calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn escalated_flag_is_ignored_when_sandbox_unavailable() {
+        // Degraded mode: pre-execution approval already covered this command;
+        // honoring `escalated` would double-prompt the user.
+        let workspace = test_path("escalate-degraded");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let calls = Arc::new(Mutex::new(vec![]));
+
+        let result = with_tool_scope(
+            escalation_scope(
+                &workspace,
+                false,
+                EscalationDecision::Denied("should never be asked".to_string()),
+                calls.clone(),
+            ),
+            async { run_bash("echo degraded-ok", 30, true, "why").await },
+        )
+        .await;
+
+        assert!(result.unwrap().contains("degraded-ok"));
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "escalation must not be raised in degraded mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_only_mode_rejects_workspace_writes() {
+        let workspace = test_path("ws-readonly");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let inside = workspace.join("f.txt");
+
+        let mut sandbox = crate::sandbox::ResolvedSandbox::resolve(
+            &crate::sandbox::SandboxPolicy {
+                mode: crate::sandbox::SandboxMode::ReadOnly,
+                ..Default::default()
+            },
+            workspace.to_string_lossy().as_ref(),
+        );
+        sandbox.available = false;
+
+        let result = with_tool_scope(
+            ScopeOptions {
+                workspace: workspace.to_string_lossy().to_string(),
+                permission_level: "workspace".to_string(),
+                interrupt_flag: Arc::new(AtomicBool::new(false)),
+                sandbox: Arc::new(sandbox),
+                escalation: None,
+                on_sandboxed: None,
+            },
+            async { run_write(&inside.to_string_lossy(), "no").await },
+        )
+        .await;
+
+        assert!(result.is_err(), "read-only mode should reject writes");
+        assert!(!inside.exists());
     }
 
     #[tokio::test]
@@ -805,7 +1186,7 @@ mod tests {
                 workspace_string,
                 "all".to_string(),
                 flag_clone,
-                async { run_bash("sleep 30", 60).await },
+                async { run_bash("sleep 30", 60, false, "").await },
             )
             .await
         });
@@ -847,7 +1228,7 @@ mod tests {
                 workspace_string,
                 "all".to_string(),
                 flag_clone,
-                async move { run_bash(&command, 60).await },
+                async move { run_bash(&command, 60, false, "").await },
             )
             .await
         });

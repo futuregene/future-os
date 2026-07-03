@@ -6,7 +6,9 @@ use std::{collections::HashMap, sync::Arc};
 
 use super::{ApprovalGate, SseBroadcaster};
 
-const DEFAULT_PERMISSION_LEVEL: &str = "all";
+// Reverted to "workspace": commit 49eab817 flipped this to "all" (no boundary
+// enforcement at all) in an unrelated change and broke the test below.
+const DEFAULT_PERMISSION_LEVEL: &str = "workspace";
 
 // ─── ServerSession ────────────────────────────────────────────────────────
 
@@ -52,6 +54,9 @@ pub struct ServerSession {
     pub approval_gate: ApprovalGate,
     /// Permission level for tool execution: "all" | "workspace" | "none"
     pub permission_level: String,
+    /// Sandbox + approval policy (set via set_sandbox_policy; defaults to
+    /// workspace-write × on-request for clients that never send one).
+    pub sandbox_policy: crate::sandbox::SandboxPolicy,
 }
 
 /// Default workspace directory for new sessions.
@@ -127,6 +132,7 @@ impl ServerSession {
             interrupt_flag: None,
             approval_gate,
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
+            sandbox_policy: crate::sandbox::SandboxPolicy::default(),
             compaction_model: Arc::new(std::sync::RwLock::new(String::new())),
         }
     }
@@ -179,6 +185,7 @@ impl ServerSession {
             interrupt_flag: None,
             approval_gate,
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
+            sandbox_policy: crate::sandbox::SandboxPolicy::default(),
             compaction_model: Arc::new(std::sync::RwLock::new(String::new())),
         }
     }
@@ -603,6 +610,10 @@ impl ServerSession {
 
     pub fn set_permission_level(&mut self, level: &str) {
         self.permission_level = level.to_string();
+    }
+
+    pub fn set_sandbox_policy(&mut self, policy: crate::sandbox::SandboxPolicy) {
+        self.sandbox_policy = policy;
     }
 
     pub fn get_permission_level(&self) -> &str {
