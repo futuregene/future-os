@@ -272,11 +272,32 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # OSS coordinates come from repo secrets; endpoint/bucket are also needed to
+    # build the ossutil config. See docs/WIKI-MAINTENANCE.md / repo settings.
+    env:
+      OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+      OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
     steps:
       - name: Download all build artifacts
         uses: actions/download-artifact@v7
         with:
           path: release-assets
+
+      # latest.json is the auto-upgrade manifest: for now it carries just the
+      # version and publish time (download URLs come later, once the CDN domain
+      # is live). Generated before the release step so it can be attached to the
+      # GitHub Release too, not only pushed to OSS.
+      - name: Generate latest.json
+        run: |
+          set -euo pipefail
+          cat > latest.json <<EOF
+          {
+            "version": "${{ needs.version.outputs.version }}",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          echo "==> latest.json:"
+          cat latest.json
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -285,4 +306,35 @@ jobs:
           name: FutureOS ${{ needs.version.outputs.version }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: release-assets/**/*
+          files: |
+            release-assets/**/*
+            latest.json
+
+      # ─── Mirror the release to Aliyun OSS ──────────────────────────────────
+      # ossutil is fetched directly from Aliyun's public CDN (no third-party
+      # action) and pointed at the bucket via a one-off config file.
+      - name: Setup ossutil
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o ossutil "https://gosspublic.alicdn.com/ossutil/1.7.19/ossutil64"
+          chmod +x ossutil
+          sudo mv ossutil /usr/local/bin/ossutil
+          ossutil config \
+            -e "$OSS_ENDPOINT" \
+            -i "$OSS_ACCESS_KEY_ID" \
+            -k "$OSS_ACCESS_KEY_SECRET"
+
+      # Each release gets its own versioned folder: releases/<version>/…, keeping
+      # the per-platform artifact subfolders as downloaded. latest.json is written
+      # to a fixed key so consumers always read releases/latest.json.
+      - name: Upload release to OSS
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.version.outputs.version }}"
+          echo "==> Uploading build artifacts to releases/$VERSION/"
+          ossutil cp -rf release-assets/ "oss://$OSS_BUCKET/releases/$VERSION/"
+          echo "==> Uploading latest.json to releases/latest.json"
+          ossutil cp -f latest.json "oss://$OSS_BUCKET/releases/latest.json"
