@@ -1,7 +1,7 @@
 import type { AgentModelOption } from "../../../integrations/agent/agentClient";
 import type { StoredThread } from "../../../integrations/storage/threadStore";
 import { useEffect, useRef, useState } from "react";
-import { defaultThinkingLevel, modelThinkingLevel, normalizeThinkingLevel } from "../../../integrations/agent/agentClient";
+import { defaultThinkingLevel, modelThinkingLevel, normalizeThinkingLevel, rememberLastUsedModel } from "../../../integrations/agent/agentClient";
 import { updateThreadModel, updateThreadThinkingLevel } from "../../../integrations/storage/threadStore";
 
 interface UseModelSelectionParams {
@@ -54,6 +54,7 @@ export function useModelSelection({
 
   async function changeModel(modelId: string) {
     setSelectedModelId(modelId);
+    rememberLastUsedModel(modelId);
     // Follow the new model's default thinking level (same as the draft flow), so
     // switching models can't leave a thread on a level the model doesn't fit.
     const nextLevel = thinkingLevelForModel(modelId, visibleModelOptions);
@@ -75,6 +76,7 @@ export function useModelSelection({
 
   function changeDraftModel(modelId: string) {
     setSelectedModelId(modelId);
+    rememberLastUsedModel(modelId);
     setSelectedThinkingLevel(thinkingLevelForModel(modelId, visibleModelOptions));
     draftThinkingModelRef.current = modelId;
   }

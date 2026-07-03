@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { AgentModelOption } from "../../../integrations/agent/agentClient";
 import { useCallback, useMemo, useState } from "react";
-import { defaultAgentModelId, defaultModelId, loadAgentModelOptions, modelOption } from "../../../integrations/agent/agentClient";
+import { defaultAgentModelId, loadAgentModelOptions, modelOption, resolveInitialModelId } from "../../../integrations/agent/agentClient";
 import { listAgentProviders } from "../../../integrations/agent/providers";
 import { usePolling } from "../../../lib/usePolling";
 
@@ -67,7 +67,7 @@ export function useAgentConnection(hiddenModels: string[]): UseAgentConnectionRe
       setSelectedModelId(current =>
         current && modelOption(current, nextModels)
           ? current
-          : defaultModelId(nextModels),
+          : resolveInitialModelId(nextModels),
       );
       // Agent is reachable. If there are no models, find out whether that's
       // because nothing is configured (needs login / a provider) or because the
