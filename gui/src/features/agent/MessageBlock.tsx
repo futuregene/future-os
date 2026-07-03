@@ -175,10 +175,13 @@ export function MessageBlock({
                   />
                 )
               : null}
+          {!isUser ? <MessageMeta message={message} visible={hovered} /> : null}
+          {streaming && !isUser && !showThinking && message.thinkingActive
+            ? <span className="select-none text-xs text-ink-muted">{t("message.thinking")}</span>
+            : null}
           {!isUser && message.stopped
             ? <span className="select-none text-xs text-ink-muted">{t("message.stopped")}</span>
             : null}
-          {!isUser ? <MessageMeta message={message} visible={hovered} /> : null}
         </div>
       </div>
     </article>

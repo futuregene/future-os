@@ -68,4 +68,9 @@ export interface AgentMessage {
   outputTokens?: number | null;
   /** The reply was interrupted by the user (its run was cancelled mid-stream). */
   stopped?: boolean;
+  /**
+   * The model is mid-reasoning with nothing visible yet. Drives the footer
+   * "thinking…" hint (only while streaming and the show-thinking setting is off).
+   */
+  thinkingActive?: boolean;
 }

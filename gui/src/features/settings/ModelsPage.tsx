@@ -74,7 +74,9 @@ export function ModelsPage({
               <SettingsRow
                 key={modelKey(model)}
                 title={model.label}
-                description={model.isDefault ? t("models.defaultModel") : model.id}
+                // Subtitle is the raw model id — omitted when the label already
+                // is the id, so it isn't shown twice.
+                description={model.label === model.id ? undefined : model.id}
               >
                 <Switch
                   checked={!hidden.has(modelKey(model))}

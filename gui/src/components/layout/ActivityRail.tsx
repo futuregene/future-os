@@ -27,6 +27,7 @@ import { cn } from "../../lib/cn";
 import { isMacOS } from "../../lib/platform";
 import { useBuildInfo } from "../../lib/useBuildInfo";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
+import { useIsFullscreen } from "../../lib/useIsFullscreen";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { IconButton } from "../ui/IconButton";
 
@@ -96,6 +97,10 @@ export function ActivityRail({
   // into a release build.
   const build = useBuildInfo();
   const showRemote = build.data ? !build.data.isRelease : false;
+  // Reserve the top-left inset for the macOS traffic lights, except in
+  // fullscreen where the lights are hidden and the inset is dead space.
+  const isFullscreen = useIsFullscreen();
+  const reserveTrafficLights = isMacOS && !isFullscreen;
   const [openThreadMenuId, setOpenThreadMenuId] = useState<string | null>(null);
   const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Set<string>>(() => new Set());
 
@@ -152,8 +157,8 @@ export function ActivityRail({
           className={cn(
             "inline-flex size-8 items-center justify-center rounded-md border border-transparent text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
             // macOS reserves the top-left for the traffic lights; other platforms
-            // don't, so the toggle sits near the edge.
-            expanded && (isMacOS ? "absolute left-20 top-2" : "absolute left-2 top-2"),
+            // (and macOS fullscreen, where the lights hide) sit near the edge.
+            expanded && (reserveTrafficLights ? "absolute left-20 top-2" : "absolute left-2 top-2"),
           )}
           onClick={onToggleExpanded}
           type="button"

@@ -70,9 +70,45 @@ export function modelKey(model: Pick<AgentModelOption, "id" | "provider">) {
   return model.provider ? `${model.provider}/${model.id}` : model.id;
 }
 
-export function defaultModelId(models: AgentModelOption[]) {
-  const preferred = models.find(model => model.isDefault) ?? models[0];
-  return preferred ? modelKey(preferred) : defaultAgentModelId;
+/** Built-in FutureGene provider id (display name "FutureGene"). */
+const FUTURE_PROVIDER_ID = "future";
+/** localStorage key holding the last user-picked model, as `provider/id`. */
+const LAST_USED_MODEL_STORAGE_KEY = "futureos:last-used-model";
+
+/** Persist the last model the user picked in the composer, for the next launch. */
+export function rememberLastUsedModel(modelId: string): void {
+  if (!modelId)
+    return;
+  try {
+    window.localStorage.setItem(LAST_USED_MODEL_STORAGE_KEY, modelId);
+  }
+  catch {
+    // localStorage may be unavailable (private mode / disabled) — best effort.
+  }
+}
+
+function readLastUsedModel(): string | null {
+  try {
+    return window.localStorage.getItem(LAST_USED_MODEL_STORAGE_KEY);
+  }
+  catch {
+    return null;
+  }
+}
+
+/**
+ * Pick the model to select when there is no valid in-session choice yet.
+ * Priority: the last user-picked model (if it still exists) → the first
+ * FutureGene model → the first model in the catalog.
+ */
+export function resolveInitialModelId(models: AgentModelOption[]): string {
+  const lastUsed = readLastUsedModel();
+  if (lastUsed && modelOption(lastUsed, models))
+    return lastUsed;
+  const future = models.find(model => model.provider === FUTURE_PROVIDER_ID);
+  if (future)
+    return modelKey(future);
+  return models[0] ? modelKey(models[0]) : defaultAgentModelId;
 }
 
 export function modelLabel(modelId: string, models: AgentModelOption[]) {

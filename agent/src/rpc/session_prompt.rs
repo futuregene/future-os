@@ -250,6 +250,9 @@ impl ServerSession {
         // Create interrupt channel so steer()/abort() can stop the current stream
         let (interrupt_tx, interrupt_rx) = tokio::sync::mpsc::channel::<()>(1);
         self.interrupt_tx = Some(interrupt_tx);
+        // Capture the loop's interrupt flag so abort() can set it without the
+        // agent_loop lock (which the spawned run below holds for its duration).
+        self.interrupt_flag = Some(shared_interrupt_flag.clone());
 
         // Spawn background task to run agent loop
         let perm = self.permission_level.clone();

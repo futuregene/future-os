@@ -43,6 +43,12 @@ pub struct ServerSession {
     pub follow_up_tx: tokio::sync::mpsc::Sender<String>,
     /// Sender for interrupting the current stream (per-stream, set in prompt())
     pub interrupt_tx: Option<tokio::sync::mpsc::Sender<()>>,
+    /// Interrupt flag cloned from the agent loop (Arc<AtomicBool>), settable
+    /// **without** the agent_loop lock — which `abort()` cannot acquire while a
+    /// run holds `agent_loop.write()`. This is what makes abort actually cancel
+    /// in-flight tools (bash) and break between tool calls, not just the stream.
+    /// Set alongside `interrupt_tx` in `prompt()`.
+    pub interrupt_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub approval_gate: ApprovalGate,
     /// Permission level for tool execution: "all" | "workspace" | "none"
     pub permission_level: String,
@@ -118,6 +124,7 @@ impl ServerSession {
             steering_tx: stx,
             follow_up_tx: ftx,
             interrupt_tx: None,
+            interrupt_flag: None,
             approval_gate,
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
             compaction_model: Arc::new(std::sync::RwLock::new(String::new())),
@@ -169,6 +176,7 @@ impl ServerSession {
             steering_tx: stx,
             follow_up_tx: ftx,
             interrupt_tx: None,
+            interrupt_flag: None,
             approval_gate,
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
             compaction_model: Arc::new(std::sync::RwLock::new(String::new())),
@@ -208,7 +216,15 @@ impl ServerSession {
         if let Some(ref tx) = self.interrupt_tx {
             let _ = tx.try_send(());
         }
-        // Set AgentLoop interrupt flag (works with read lock, even during tool execution)
+        // Set the interrupt flag via the lock-free Arc clone captured at prompt
+        // start. This is the load-bearing part: a run holds `agent_loop.write()`,
+        // so the `try_read()` below fails mid-run and can't set the flag — without
+        // this, abort never cancels an in-flight tool (e.g. a long bash) or breaks
+        // between tool calls; it only stops at the next LLM boundary.
+        if let Some(ref flag) = self.interrupt_flag {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        // Fallback for a run that started before the flag was captured.
         if let Ok(loop_) = self.agent_loop.try_read() {
             loop_.abort();
         }
