@@ -31,105 +31,75 @@ interface BrowserToolEntry {
 }
 
 export const BROWSER_TOOL_CATALOG: Record<string, BrowserToolEntry> = {
-  browser_start: {
-    description: "Start a visible local Chrome/Edge browser with a remote debugging port.",
+  browser: {
+    description: "Control a local visible Chrome/Edge browser. Sub-commands: start, status, tabs, open, snapshot, click, type, press, screenshot, console.",
     args: {
+      command: '"start" | "status" | "tabs" | "open" | "snapshot" | "click" | "type" | "press" | "screenshot" | "console"',
+      // start
       port: "integer (default: 9222)",
       profileDir: "string (default: ~/.future/agent/browser/profile)",
       executablePath: "string (optional)",
-      url: "string (optional)",
-    },
-    example: '{"port": 9222, "url": "http://localhost:3000"}',
-  },
-  browser_status: {
-    description: "Check whether a local browser debugging endpoint is reachable.",
-    args: { endpoint: "string (default: saved endpoint or http://127.0.0.1:9222)" },
-    example: '{}',
-  },
-  browser_tabs: {
-    description: "List, create, select, or close tabs in the connected local browser.",
-    args: {
+      // status
+      endpoint: "string (default: saved endpoint or http://127.0.0.1:9222)",
+      // tabs
       action: '"list" | "new" | "select" | "close"',
       index: "integer (0-based, for select/close)",
-      url: "string (optional, for new)",
-    },
-    example: '{"action": "list"}',
-  },
-  browser_open: {
-    description: "Open a URL in the active local browser tab.",
-    args: { url: "string (required)" },
-    example: '{"url": "http://localhost:3000"}',
-  },
-  browser_snapshot: {
-    description: "Return a compact visible DOM snapshot with stable refs for browser_click/browser_type.",
-    args: { limit: "integer (default: 80)" },
-    example: '{}',
-  },
-  browser_click: {
-    description: "Click an element by ref from browser_snapshot or by explicit selector.",
-    args: { ref: "string", selector: "string", target: "string (ref or selector)" },
-    example: '{"ref": "b1"}',
-  },
-  browser_type: {
-    description: "Fill or type text into an element by ref from browser_snapshot or by selector.",
-    args: {
-      ref: "string",
-      selector: "string",
-      text: "string (required)",
-      submit: "boolean",
-      clear: "boolean (default: true)",
-    },
-    example: '{"ref": "i1", "text": "alice@example.com"}',
-  },
-  browser_press: {
-    description: "Press a keyboard key in the active local browser tab.",
-    args: { key: "string (required, e.g. Enter, Escape, ArrowDown)" },
-    example: '{"key": "Enter"}',
-  },
-  browser_screenshot: {
-    description: "Capture a screenshot of the active local browser tab and save it locally.",
-    args: {
+      // open
+      url: "string (for open / tabs new)",
+      // snapshot
+      limit: "integer (default: 80)",
+      // click / type
+      ref: "string (from snapshot)",
+      selector: "string (CSS selector)",
+      target: "string (ref or selector)",
+      // type
+      text: "string (required for type)",
+      submit: "boolean (for type)",
+      clear: "boolean (default: true, for type)",
+      // press
+      key: "string (required for press, e.g. Enter, Escape)",
+      // screenshot
       fullPage: "boolean",
       path: "string (optional)",
       output: "string (optional alias for path)",
+      // console
+      level: '"log" | "info" | "warn" | "error" (optional)',
     },
-    example: '{"fullPage": true}',
-  },
-  browser_console: {
-    description: "Read console messages captured after Future browser tooling installed its page hook.",
-    args: { level: '"log" | "info" | "warn" | "error" (optional)' },
-    example: '{"level": "error"}',
+    example: '{"command": "snapshot"}',
   },
 };
 
 export function isBrowserTool(name: string): boolean {
-  return Object.hasOwn(BROWSER_TOOL_CATALOG, name);
+  return name === "browser";
 }
 
-export async function callBrowserTool(name: string, args: Record<string, unknown>): Promise<LocalToolResult> {
-  switch (name) {
-    case "browser_start":
+export async function callBrowserTool(_name: string, args: Record<string, unknown>): Promise<LocalToolResult> {
+  const command = stringArg(args, "command");
+  if (!command) throw new Error('browser tool requires "command" argument.');
+
+  switch (command) {
+    case "start":
       return browserStart(args);
-    case "browser_status":
+    case "status":
       return browserStatus(args);
-    case "browser_tabs":
+    case "tabs":
       return withBrowser(args, (ctx) => browserTabs(ctx, args));
-    case "browser_open":
+    case "open":
       return withBrowser(args, (ctx) => browserOpen(ctx, args));
-    case "browser_snapshot":
+    case "snapshot":
       return withBrowser(args, (ctx) => browserSnapshot(ctx, args));
-    case "browser_click":
+    case "click":
       return withBrowser(args, (ctx) => browserClick(ctx, args));
-    case "browser_type":
+    case "type":
       return withBrowser(args, (ctx) => browserType(ctx, args));
-    case "browser_press":
+    case "press":
       return withBrowser(args, (ctx) => browserPress(ctx, args));
-    case "browser_screenshot":
+    case "screenshot":
       return withBrowser(args, (ctx) => browserScreenshot(ctx, args));
-    case "browser_console":
+    case "console":
       return withBrowser(args, (ctx) => browserConsole(ctx, args));
     default:
-      throw new Error(`Unknown browser tool: ${name}`);
+      throw new Error(`Unknown browser command: "${command}". Use: start, status, tabs, open, snapshot, click, type, press, screenshot, console.`);
   }
 }
 
@@ -146,7 +116,7 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
   const executablePath = stringArg(args, "executablePath");
   const launcher = findBrowserLauncher(executablePath);
   if (!launcher) {
-    throw new Error("Could not find Chrome or Edge. Pass executablePath to browser_start.");
+    throw new Error("Could not find Chrome or Edge. Pass executablePath to browser with command=start.");
   }
 
   const profileDir = stringArg(args, "profileDir") ?? (port === requestedPort ? DEFAULT_PROFILE_DIR : join(BROWSER_DIR, `profile-${port}`));
@@ -284,7 +254,7 @@ async function browserTabs(ctx: BrowserContext, args: Record<string, unknown>): 
 
   const index = numberArg(args, "index");
   if (index == null || index < 0 || index >= pages.length) {
-    throw new Error(`browser_tabs action "${action}" requires a valid 0-based index.`);
+    throw new Error(`browser command tabs: action "${action}" requires a valid 0-based index.`);
   }
 
   if (action === "select") {
@@ -301,12 +271,12 @@ async function browserTabs(ctx: BrowserContext, args: Record<string, unknown>): 
     return { structuredContent: { closed: index, url } };
   }
 
-  throw new Error('browser_tabs action must be "list", "new", "select", or "close".');
+  throw new Error('browser command tabs: action must be "list", "new", "select", or "close".');
 }
 
 async function browserOpen(ctx: BrowserContext, args: Record<string, unknown>): Promise<LocalToolResult> {
   const url = stringArg(args, "url");
-  if (!url) throw new Error("browser_open requires url.");
+  if (!url) throw new Error("browser command open requires url.");
   await ctx.page.goto(url, { waitUntil: "domcontentloaded" });
   await installConsoleHook(ctx.page);
   await saveConfig({ ...(await loadConfig()), activeUrl: ctx.page.url(), refs: {} });
@@ -462,7 +432,7 @@ async function browserClick(ctx: BrowserContext, args: Record<string, unknown>):
   const selector = await selectorFor(args);
   const locator = ctx.page.locator(selector);
   const count = await locator.count();
-  if (count !== 1) throw new Error(`browser_click target resolved to ${count} elements; run browser_snapshot and use a unique ref.`);
+  if (count !== 1) throw new Error(`browser click target resolved to ${count} elements; run browser command snapshot and use a unique ref.`);
   await locator.click();
   await ctx.page.waitForLoadState("domcontentloaded", { timeout: 3000 }).catch(() => undefined);
   await saveConfig({ ...(await loadConfig()), activeUrl: ctx.page.url() });
@@ -471,11 +441,11 @@ async function browserClick(ctx: BrowserContext, args: Record<string, unknown>):
 
 async function browserType(ctx: BrowserContext, args: Record<string, unknown>): Promise<LocalToolResult> {
   const text = stringArg(args, "text");
-  if (text == null) throw new Error("browser_type requires text.");
+  if (text == null) throw new Error("browser command type requires text.");
   const selector = await selectorFor(args);
   const locator = ctx.page.locator(selector);
   const count = await locator.count();
-  if (count !== 1) throw new Error(`browser_type target resolved to ${count} elements; run browser_snapshot and use a unique ref.`);
+  if (count !== 1) throw new Error(`browser type target resolved to ${count} elements; run browser command snapshot and use a unique ref.`);
   if (booleanArg(args, "clear") ?? true) {
     await locator.fill(text);
   } else {
@@ -487,7 +457,7 @@ async function browserType(ctx: BrowserContext, args: Record<string, unknown>): 
 
 async function browserPress(ctx: BrowserContext, args: Record<string, unknown>): Promise<LocalToolResult> {
   const key = stringArg(args, "key");
-  if (!key) throw new Error("browser_press requires key.");
+  if (!key) throw new Error("browser command press requires key.");
   await ctx.page.keyboard.press(key);
   await ctx.page.waitForLoadState("domcontentloaded", { timeout: 3000 }).catch(() => undefined);
   await saveConfig({ ...(await loadConfig()), activeUrl: ctx.page.url() });
@@ -551,7 +521,7 @@ async function selectorFor(args: Record<string, unknown>): Promise<string> {
   if (ref) {
     const config = await loadConfig();
     const resolved = config.refs?.[ref];
-    if (!resolved) throw new Error(`Unknown browser ref "${ref}". Run browser_snapshot first.`);
+    if (!resolved) throw new Error(`Unknown browser ref "${ref}". Run browser command snapshot first.`);
     return resolved;
   }
 
