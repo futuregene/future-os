@@ -59,7 +59,14 @@ jobs:
           - name: Linux
             os: ubuntu-22.04
             artifact_name: futureos-linux
-            bundle_path: gui/src-tauri/target/release/bundle/**
+            # Only the installers — NOT bundle/** (which also globs the exploded
+            # AppImage tree: hundreds of .so files, data.tar.gz, and a duplicate
+            # future-agent binary that collides with the portable tarball's copy
+            # and breaks the GitHub Release asset upload).
+            bundle_path: |
+              gui/src-tauri/target/release/bundle/appimage/*.AppImage
+              gui/src-tauri/target/release/bundle/deb/*.deb
+              gui/src-tauri/target/release/bundle/rpm/*.rpm
 
     steps:
       - name: Checkout
