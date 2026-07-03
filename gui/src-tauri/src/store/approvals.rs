@@ -29,6 +29,8 @@ pub struct ApprovalRequestRecord {
     pub action_category: Option<String>,
     pub action_payload: Option<String>,
     pub sandbox_boundary: Option<String>,
+    // Phase 2: suggested rule (JSON) for session/always-allow persistence.
+    pub save_suggestion: Option<String>,
     pub reviewer: String,
     pub decision_scope: String,
     pub decision_source: String,
@@ -38,7 +40,7 @@ pub struct ApprovalRequestRecord {
 pub(super) const APPROVAL_REQUEST_COLUMNS: &str =
     "id, thread_id, run_id, tool_call_id, kind, status, title, summary, \
      risk_level, requested_action, decision_note, decided_at, created_at, updated_at, \
-     action_category, action_payload, sandbox_boundary, reviewer, decision_scope, decision_source";
+     action_category, action_payload, sandbox_boundary, save_suggestion, reviewer, decision_scope, decision_source";
 
 pub(super) fn approval_request_from_row(
     row: &rusqlite::Row<'_>,
@@ -61,9 +63,10 @@ pub(super) fn approval_request_from_row(
         action_category: row.get(14)?,
         action_payload: row.get(15)?,
         sandbox_boundary: row.get(16)?,
-        reviewer: row.get(17)?,
-        decision_scope: row.get(18)?,
-        decision_source: row.get(19)?,
+        save_suggestion: row.get(17)?,
+        reviewer: row.get(18)?,
+        decision_scope: row.get(19)?,
+        decision_source: row.get(20)?,
     })
 }
 
@@ -96,10 +99,10 @@ pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), 
         "INSERT INTO approval_requests (
              id, thread_id, run_id, tool_call_id, kind, status, title, summary,
              risk_level, requested_action, created_at, updated_at,
-             action_category, action_payload, sandbox_boundary,
+             action_category, action_payload, sandbox_boundary, save_suggestion,
              reviewer, decision_scope, decision_source
          ) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8, ?9, ?10, ?10,
-                   ?11, ?12, ?13, ?14, 'once', 'user')",
+                   ?11, ?12, ?13, ?14, ?15, 'once', 'user')",
         params![
             input
                 .approval_request_id
@@ -116,6 +119,7 @@ pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), 
             input.action_category,
             input.action_payload,
             input.sandbox_boundary,
+            input.save_suggestion,
             reviewer,
         ],
     )?;

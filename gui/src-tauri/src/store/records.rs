@@ -103,6 +103,8 @@ pub struct EnsureApprovalRequestInput {
     pub action_category: Option<String>,
     pub action_payload: Option<String>,
     pub sandbox_boundary: Option<String>,
+    // Phase 2: suggested rule (JSON) for session/always-allow persistence.
+    pub save_suggestion: Option<String>,
     pub reviewer: Option<String>,
 }
 

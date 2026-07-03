@@ -129,6 +129,11 @@ pub fn run() {
             if let Err(error) = store::initialize_app_store() {
                 eprintln!("FutureOS store initialization failed: {error}");
             }
+            // Drop session-scoped approval rules from the previous app run
+            // (Phase 2 sandbox rules; "always" rules persist).
+            if let Err(error) = store::prune_session_rules() {
+                eprintln!("FutureOS approval-rule prune failed: {error}");
+            }
             // Pin the FutureGene environment for this build channel before the
             // agent starts: release builds are production-locked, dev builds
             // default to the test environment on first launch. The agent reads
@@ -204,6 +209,7 @@ pub fn run() {
             list_tool_outputs,
             list_approval_requests,
             decide_approval_request,
+            save_approval_rule,
             get_git_review,
             get_workspace_review_capabilities,
             get_last_run_review,

@@ -78,18 +78,33 @@ pub(super) async fn set_agent_permission_level(
 }
 
 /// Send the session sandbox + approval policy. Phase 1: fixed
-/// `workspace-write × on-request` (SANDBOX_PLAN.md §5 Phase 1) — per-workspace
-/// configuration arrives with the Settings UI in Phase 3.
+/// `workspace-write × on-request` mode (SANDBOX_PLAN.md §5 Phase 1) — per-
+/// workspace mode/network config arrives with the Settings UI in Phase 3.
+/// Phase 2: the workspace's effective approval rules are flattened in.
 pub(super) async fn set_agent_sandbox_policy(
     client: &mut FutureAgentClient<Channel>,
     session_id: &str,
+    thread_id: &str,
 ) -> Result<(), crate::AppError> {
+    // Effective rules: workspace-scoped + global, enabled, session-or-always.
+    // A missing thread/workspace just means no rules (fresh session).
+    let rules = store::get_thread(thread_id)?
+        .map(|thread| store::list_effective_rules(&thread.workspace_id))
+        .transpose()?
+        .unwrap_or_default()
+        .into_iter()
+        .map(|rule| crate::agent_proto::SandboxRule {
+            match_kind: rule.match_kind,
+            match_value: rule.match_value,
+            decision: rule.decision,
+        })
+        .collect();
     let policy = crate::agent_proto::SandboxPolicy {
         sandbox_mode: "workspace-write".to_string(),
         writable_roots: vec![],
         network_access: false,
         approval_policy: "on-request".to_string(),
-        rules: vec![],
+        rules,
     };
     client
         .execute_command(set_sandbox_policy_command(policy, session_id.to_string()))

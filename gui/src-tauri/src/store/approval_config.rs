@@ -187,3 +187,86 @@ pub fn delete_approval_rule(id: &str) -> Result<(), crate::AppError> {
     conn.execute("DELETE FROM approval_rules WHERE id = ?1", params![id])?;
     Ok(())
 }
+
+use super::util::{create_id, now_millis};
+
+/// Persist an approval rule from a session/always-allow decision.
+///
+/// `persistence`: `"session"` → active only until the next app startup
+/// (`expires_at` set as a non-null marker; pruned by `prune_session_rules`).
+/// `"always"` → permanent (`expires_at` NULL). `scope`: `"workspace"` binds to
+/// `workspace_id`; `"global"` stores `workspace_id = NULL` (applies everywhere).
+pub fn save_approval_rule(
+    workspace_id: Option<&str>,
+    scope: &str,
+    match_kind: &str,
+    match_value: &str,
+    decision: &str,
+    persistence: &str,
+) -> Result<(), crate::AppError> {
+    let now = now_millis();
+    // Non-null expires_at is our "session-scoped" marker (magnitude is
+    // irrelevant; presence means "drop at next startup"). Effective-rules
+    // queries do NOT filter on it, so session rules stay active this run.
+    let expires_at = match persistence {
+        "session" => Some(now),
+        _ => None, // "always"
+    };
+    let effective_workspace = match scope {
+        "global" => None,
+        _ => workspace_id,
+    };
+    insert_approval_rule(&ApprovalRuleRecord {
+        id: create_id("rule"),
+        workspace_id: effective_workspace.map(str::to_string),
+        scope: scope.to_string(),
+        match_kind: match_kind.to_string(),
+        match_value: match_value.to_string(),
+        decision: decision.to_string(),
+        enabled: true,
+        created_at: now,
+        expires_at,
+    })
+}
+
+/// Enabled rules that apply to `workspace_id`: workspace-scoped rules for that
+/// workspace plus all global rules. Ordered by `created_at` so later rules win
+/// on the agent side (deny still overrides regardless). Session rules are
+/// included — they're active for the whole app run.
+pub fn list_effective_rules(
+    workspace_id: &str,
+) -> Result<Vec<ApprovalRuleRecord>, crate::AppError> {
+    let conn = connect()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, workspace_id, scope, match_kind, match_value, decision, enabled, created_at, expires_at
+         FROM approval_rules
+         WHERE enabled = 1 AND (workspace_id = ?1 OR workspace_id IS NULL)
+         ORDER BY created_at",
+    )?;
+    let rows = stmt.query_map(params![workspace_id], |row| {
+        Ok(ApprovalRuleRecord {
+            id: row.get(0)?,
+            workspace_id: row.get(1)?,
+            scope: row.get(2)?,
+            match_kind: row.get(3)?,
+            match_value: row.get(4)?,
+            decision: row.get(5)?,
+            enabled: row.get(6)?,
+            created_at: row.get(7)?,
+            expires_at: row.get(8)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(crate::AppError::from)
+}
+
+/// Drop session-scoped rules left over from a previous app run (any rule with a
+/// non-null `expires_at`). Called once at startup.
+pub fn prune_session_rules() -> Result<usize, crate::AppError> {
+    let conn = connect()?;
+    let removed = conn.execute(
+        "DELETE FROM approval_rules WHERE expires_at IS NOT NULL",
+        [],
+    )?;
+    Ok(removed)
+}
