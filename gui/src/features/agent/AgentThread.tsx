@@ -62,6 +62,7 @@ export function AgentThread({
 }: AgentThreadProps) {
   const { t } = useTranslation("agent");
   const {
+    handleAbort,
     handleScroll,
     handleSend,
     loadingThread,
@@ -206,6 +207,8 @@ export function AgentThread({
               onThinkingLevelChange={onThinkingLevelChange}
               autoApprove={autoApprove}
               onToggleAutoApprove={onToggleAutoApprove}
+              sending={isSending}
+              onAbort={() => void handleAbort()}
               onSend={handleSend}
               workspaceId={thread?.workspaceId}
             />

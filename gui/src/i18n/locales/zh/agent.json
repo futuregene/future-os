@@ -75,6 +75,7 @@
     "startAgentForModels": "启动 Future Agent 以加载模型。",
     "thinkingLevel": "思考强度",
     "send": "发送",
+    "stop": "停止",
     "noReferences": "未找到引用。",
     "approval": "审批模式",
     "approvalAuto": "自动审批",
@@ -129,6 +130,7 @@
     "retry": "重试",
     "continue": "继续",
     "generating": "生成中",
+    "stopped": "已停止",
     "tokens": "{{formattedCount}} tokens"
   }
 }
