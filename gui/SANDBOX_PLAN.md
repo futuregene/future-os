@@ -166,10 +166,10 @@ bash(command) 到达
 
 **未做的原因**：硬屏蔽会误伤合法任务（"帮我看下 `.env` 配置"是正常请求），且跨层——要同时改 Seatbelt 拒读 + read/write/edit 工具拒绝，不是一行 deny 能覆盖。
 
-**建议方案（Phase 2/3，opt-in）**：可配置的"项目内 secret 文件 glob"：
+**决策（2026-07-04）：记为 Phase 2/3，opt-in**——可配置的"项目内 secret 文件 glob"：
 - 默认 pattern `.env` / `.env.*` / `*.pem` / `*.key` / `*.p12` / `id_rsa*` / `credentials.json`（可编辑），与 Shadow Review 敏感文件规则共用。
 - 命中文件：Seatbelt 拒读 + read/write/edit 工具直接拒绝（即使在 workspace 内），走 escalation 放行一次。
-- ⏳ 待用户决策：现在做 / 记为 Phase 2/3 / 认为项目内文件应让 agent 自由读（不做）。
+- 放 Phase 2/3 与规则引擎 / Settings UI 一起做：它需要配置 UI 才好用，硬编码默认拒读项目文件会反直觉（"帮我看下 `.env`" 是正常任务）。Phase 1 不做。
 
 ### 2.4 审批策略
 
@@ -322,11 +322,32 @@ bwrap --ro-bind / / \
 - `bwrap` 不存在或用户命名空间受限（AppArmor）：启动时探测一次，探测失败 → 降级模式 + GUI 显示警告（对应 Codex 的 startup warning），不阻塞使用。
 - 不做捆绑 helper（Codex 的 fallback helper 不在本期范围）。
 
-### 3.3 Windows / 降级模式
+### 3.3 Windows / Linux 降级模式（现状实现）
 
-- Windows 原生沙盒（AppContainer / Job Object）**不在本计划内**，Windows 恒为降级模式。
-- 降级模式 = 现有行为：白名单自动放行 + 其余审批；`sandbox_boundary.inside_sandbox` 如实为 `false`，GUI 显示"沙盒不可用"徽标（Header 或审批卡片上）。
-- 降级是**运行时逐 workspace 判定**并写进每次审批 payload，不是编译期开关。
+Phase 1 只实现了 macOS Seatbelt。**Linux（bwrap 未做，Phase 4）和 Windows（永不做原生沙盒）当前都走降级模式**。
+
+判定链（`sandbox/mod.rs`）：
+- `platform_sandbox_available()`：macOS 查 `/usr/bin/sandbox-exec` 是否存在；**非 macOS 恒 `false`**。
+- `ResolvedSandbox.available` = 上式结果；`wraps_bash()` = `available && mode != full-access` → **Linux/Windows 恒 `false`**。
+- `build_bash_command()`：`wraps_bash()` 为 false → 一律 `Command::new("bash").args(["-c", cmd])`，**不包裹**（与沙盒出现前的执行方式逐字相同）。
+
+降级模式下的实际行为（Linux/Windows，GUI 已下发 `workspace-write × on-request`）：
+
+| 维度 | 行为 |
+|---|---|
+| bash 执行 | **无 OS 隔离**，裸 `bash -c` 直接跑 |
+| bash 审批 | `approval_shape` 走 `sandboxed=false` 分支 = **旧白名单**：只读白名单命令（`ls`/`cat`/`grep`…）自动放行，其余（含链式/重定向/替换）→ 审批卡片，`violation = shell_command_not_in_allowlist` |
+| write/edit 边界 | `writable_roots`（workspace + 临时目录 + 追加根），越界 → 审批。注意：策略激活时临时目录仍是可写根，所以 write 工具写 `/tmp` 不弹审批——但这只是"不审批"，**没有 OS 强制**（宿主可写任意处，只是被应用层审批拦着） |
+| 网络 | 无沙盒网络隔离；`network_access` 开关对降级模式无效（沙盒才读它） |
+| escalation | 不触发（`wraps_bash()` 为 false，前置/后置 escalation 分支都跳过）——没有沙盒可"逃出"，bash 审批通过后直接跑 |
+| `never` 策略 | 非白名单 bash / 越界写 → 直接失败返回模型（`ApprovalGate` 检查 `approval_policy == Never`），与 macOS 一致 |
+
+**安全模型的本质差异**：macOS 下"沙盒内自动放行"是安全的，因为真有 OS 边界锁着；降级模式下**唯一的防线是应用层审批**——非白名单命令、越界写都会弹卡片让用户看。所以降级 ≠ 无防护，而是"回退到沙盒出现前那套白名单 + 审批"。风险差异：macOS 上恶意 bash 最多写 workspace+tmp（OS 强制）；降级模式下用户点了允许，命令就无边界地跑。
+
+已知未做（诚实标注）：
+- **GUI 未渲染"沙盒不可用"徽标**。`sandbox_boundary.sandbox_available: false` 已在每次审批 payload 里如实带出，但前端目前不消费这个字段（grep 无引用）。所以 Linux/Windows 用户不会看到"当前无 OS 沙盒"的显式提示，容易高估隔离强度。这个徽标属于 Phase 3 GUI 工作（§4.4 / §5 Phase 3）。
+- 降级是**运行时逐 session 判定**（`platform_sandbox_available()` 每次 resolve 都查），不是编译期开关。
+- Windows 的 `bash` 可用性沿用旧逻辑（`Command::new("bash")`，需 WSL/git-bash），本计划未改。
 
 ### 3.4 read/write/edit 工具的应用层边界（与沙盒同源）
 
