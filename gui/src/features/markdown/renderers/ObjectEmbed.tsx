@@ -7,6 +7,7 @@ import type {
 } from "../../../integrations/storage/types";
 import type { FutureReference } from "../futureMarkdownTypes";
 import { AlertTriangle, Beaker, FileDiff, Maximize2, Microscope } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Badge } from "../../../components/ui/Badge";
 import { Button } from "../../../components/ui/Button";
 import { emitFutureEvent } from "../../../lib/futureEvents";
@@ -45,6 +46,7 @@ export function ReviewEmbed({
   reference: FutureReference;
   review: StoredReviewChangeset;
 }) {
+  const { t } = useTranslation("markdown");
   function openReview() {
     emitFutureEvent("open-review", { reviewId: review.id });
   }
@@ -52,7 +54,7 @@ export function ReviewEmbed({
   return (
     <ObjectFrame
       icon={<FileDiff className="mt-0.5 size-4 shrink-0 text-accent" />}
-      meta={`${review.filesChanged} files, +${review.additions} -${review.deletions}`}
+      meta={t("objectEmbed.reviewMeta", { files: review.filesChanged, additions: review.additions, deletions: review.deletions })}
       status={review.status}
       title={review.title || reference.label || review.id}
     >
@@ -64,7 +66,7 @@ export function ReviewEmbed({
         size="xs"
         variant="toolbar"
       >
-        Open Review
+        {t("objectEmbed.openReview")}
       </Button>
     </ObjectFrame>
   );
@@ -77,6 +79,7 @@ export function ResearchEmbed({
   reference: FutureReference;
   resource: StoredResearchResource;
 }) {
+  const { t } = useTranslation("markdown");
   function openResearch() {
     emitFutureEvent("open-research-resource", { resourceId: resource.id });
   }
@@ -95,7 +98,7 @@ export function ResearchEmbed({
         size="xs"
         variant="toolbar"
       >
-        Open Research
+        {t("objectEmbed.openResearch")}
       </Button>
     </ObjectFrame>
   );
@@ -108,6 +111,7 @@ export function ToolEmbed({
   reference: FutureReference;
   tool: StoredToolCall;
 }) {
+  const { t } = useTranslation("markdown");
   function inspectRun() {
     emitFutureEvent("inspect-run", { runId: tool.runId });
   }
@@ -135,7 +139,7 @@ export function ToolEmbed({
         size="xs"
         variant="toolbar"
       >
-        Inspect run
+        {t("objectEmbed.inspectRun")}
       </Button>
     </ObjectFrame>
   );

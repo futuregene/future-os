@@ -1,0 +1,134 @@
+{
+  "author": {
+    "you": "你",
+    "researchCopilot": "未来助手",
+    "system": "FutureOS"
+  },
+  "activity": {
+    "thinking": "正在思考",
+    "prefix": {
+      "running": "正在",
+      "completed": "已"
+    },
+    "runCommands": "{{prefix}}运行 {{count}} 条命令",
+    "writeFiles": "{{prefix}}写入 {{count}} 个文件",
+    "editFiles": "{{prefix}}编辑 {{count}} 个文件",
+    "read": "{{prefix}}读取",
+    "run": "{{prefix}}运行",
+    "write": "{{prefix}}写入",
+    "edit": "{{prefix}}编辑",
+    "failed": {
+      "bash": "运行失败",
+      "edit": "编辑失败",
+      "read": "读取失败",
+      "write": "写入失败"
+    }
+  },
+  "thread": {
+    "loading": "正在加载 FutureOS 对话…",
+    "noActiveThread": "没有活动对话。",
+    "defaultTitle": "FutureOS",
+    "agentDoneNoText": "Future Agent 已完成，但没有返回文本。",
+    "messagesLoadFailed": "FutureOS 消息读取失败：{{message}}"
+  },
+  "failure": {
+    "connect": "Future Agent 连接失败：{{message}}\n\n请确认 Agent 已启动，并且 FUTURE_AGENT_GRPC_ADDR 指向 127.0.0.1:50051。",
+    "run": "运行失败：{{message}}"
+  },
+  "notice": {
+    "retry": "重试",
+    "agentUnavailable": {
+      "title": "Future Agent 未运行",
+      "detail": "请先启动 Future Agent，然后点击重试。"
+    },
+    "modelError": {
+      "title": "模型加载失败",
+      "detail": "Agent 可连接，但获取模型列表失败。"
+    },
+    "connectionError": {
+      "title": "连接异常",
+      "detail": "请检查 FUTURE_AGENT_GRPC_ADDR 后重试。"
+    },
+    "needsLogin": {
+      "title": "尚未登录",
+      "detail": "已连接 Future Agent，但还没有可用模型。请连接 FutureGene 登录，或添加自定义提供商。",
+      "action": "前往登录"
+    },
+    "noModels": {
+      "title": "没有可用模型",
+      "detail": "已配置提供商，但模型列表为空。请检查模型是否已启用，或确认账号配额 / 权限。",
+      "action": "模型设置"
+    }
+  },
+  "composer": {
+    "placeholder": "让 未来助手 帮你规划、研究、分析、编辑或准备一个工作流…",
+    "attachFiles": "添加附件",
+    "attachFilesHint": "添加附件（图片、PDF、文本）",
+    "attachLimitReached": "已达到附件上限（每轮 4 个）",
+    "attachDialogFilter": "支持的文件（图片、PDF、文本）",
+    "attachDialogTitle": "添加附件",
+    "removeAttachment": "移除 {{name}}",
+    "attachIgnored": "已忽略：{{items}}",
+    "attachRejectedLimit": "{{name}}（最多 {{count}} 个）",
+    "attachRejectedReason": "{{name}}（{{reason}}）",
+    "model": "模型",
+    "startAgentForModels": "启动 Future Agent 以加载模型。",
+    "thinkingLevel": "思考强度",
+    "send": "发送",
+    "noReferences": "未找到引用。",
+    "approval": "审批模式",
+    "approvalAuto": "自动审批",
+    "approvalManual": "手动审批"
+  },
+  "attachment": {
+    "readFailed": "无法读取",
+    "directoryUnsupported": "不支持文件夹",
+    "binaryUnsupported": "不支持二进制文件",
+    "typeUnsupported": "不支持的文件类型"
+  },
+  "newConversation": {
+    "headerTitle": "新对话",
+    "chatSubtitle": "普通对话",
+    "welcome": "欢迎使用",
+    "placeholder": "随心输入",
+    "workspace": "工作区",
+    "noWorkspaces": "还没有工作区。",
+    "openExisting": "打开工作区",
+    "chat": "普通对话",
+    "workspaceHint": "使用此项目文件夹及其工作区资源。",
+    "chatHint": "以 FutureOS 管理的临时工作区快速开始。",
+    "errorChooseDir": "请选择一个工作区目录。",
+    "openWorkspaceDialog": "打开工作区",
+    "modal": {
+      "openTitle": "打开现有工作区",
+      "openDescription": "使用一个现有的工作区目录。",
+      "chooseWorkspaceAria": "选择工作区",
+      "selectExisting": "选择现有工作区",
+      "displayNameOpen": "显示名称（可选，默认使用所选目录名）",
+      "pathPreview": "工作区路径：{{path}}",
+      "chooseExisting": "请选择一个现有的工作区目录。",
+      "cancel": "取消",
+      "open": "打开"
+    },
+    "workspaceExists": "「{{name}}」已存在，将直接打开现有工作区。"
+  },
+  "approval": {
+    "shellCommand": "Shell 命令",
+    "writeFile": "写入文件",
+    "writeFiles": "写入 {{count}} 个文件",
+    "deleteFile": "删除文件",
+    "deleteFiles": "删除 {{count}} 个文件",
+    "paths": "路径",
+    "sandbox": "沙箱",
+    "denying": "拒绝中",
+    "deny": "拒绝",
+    "allowing": "允许中",
+    "allowOnce": "允许一次"
+  },
+  "message": {
+    "retry": "重试",
+    "continue": "继续",
+    "generating": "生成中",
+    "tokens": "{{formattedCount}} tokens"
+  }
+}

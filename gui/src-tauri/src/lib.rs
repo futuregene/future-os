@@ -3,6 +3,7 @@ mod agent_proto;
 mod agent_providers;
 mod agent_supervisor;
 mod auth_store;
+mod build_info;
 mod commands;
 mod error;
 mod future_login;
@@ -94,6 +95,13 @@ pub fn run() {
             if let Err(error) = store::initialize_app_store() {
                 eprintln!("FutureOS store initialization failed: {error}");
             }
+            // Pin the FutureGene environment for this build channel before the
+            // agent starts: release builds are production-locked, dev builds
+            // default to the test environment on first launch. The agent reads
+            // base_url from auth.json once at startup, so this must run first.
+            if let Err(error) = apply_channel_environment_default() {
+                eprintln!("FutureOS environment policy failed: {error}");
+            }
             // Start the bundled agent off the launch path — it does a blocking
             // TCP probe and we don't want to delay the window. In dev (no
             // sidecar binary) this no-ops and the user runs the agent manually.
@@ -106,6 +114,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_version,
+            app_build_info,
             app_data_path,
             open_path,
             read_text_file_preview,
@@ -131,6 +140,8 @@ pub fn run() {
             list_threads,
             list_workspaces,
             create_workspace,
+            rename_workspace,
+            delete_workspace,
             ensure_workspace_git,
             save_pasted_image,
             get_or_create_chat_workspace,

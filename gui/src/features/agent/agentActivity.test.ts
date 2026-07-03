@@ -107,6 +107,61 @@ describe("buildAssistantRunProjection segments", () => {
   });
 });
 
+describe("buildAssistantRunProjection thinking", () => {
+  it("accumulates thinking_delta text between start/end", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["thinking_start", {}],
+        ["thinking_delta", { text: "Let me " }],
+        ["thinking_delta", { text: "reason." }],
+        ["thinking_end", {}],
+        ["text_chunk", { text: "Answer." }],
+      ]),
+    );
+
+    expect(projection.thinking).toBe("Let me reason.");
+    expect(projection.content).toBe("Answer.");
+  });
+
+  it("separates distinct thinking blocks with a blank line", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["thinking_start", {}],
+        ["thinking_delta", { text: "First." }],
+        ["thinking_end", {}],
+        ["thinking_start", {}],
+        ["thinking_delta", { text: "Second." }],
+        ["thinking_end", {}],
+      ]),
+    );
+
+    expect(projection.thinking).toBe("First.\n\nSecond.");
+  });
+
+  it("is empty when there is no thinking", () => {
+    const projection = buildAssistantRunProjection(events([["text_chunk", { text: "Hi." }]]));
+    expect(projection.thinking).toBe("");
+  });
+
+  it("places thinking inline in the timeline, not hoisted to the top", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["text_chunk", { text: "Let me check. " }],
+        ["thinking_start", {}],
+        ["thinking_delta", { text: "The file is under attachments." }],
+        ["thinking_end", {}],
+        ["tool_start", read("t1", "/a.pdf")[0]],
+        ["tool_end", read("t1", "/a.pdf")[0]],
+        ["text_chunk", { text: "Done." }],
+      ]),
+    );
+
+    expect(projection.segments.map(s => s.kind)).toEqual(["text", "thinking", "activity", "text"]);
+    const thinkingSegment = projection.segments[1]!;
+    expect(thinkingSegment).toMatchObject({ kind: "thinking", text: "The file is under attachments." });
+  });
+});
+
 describe("buildAssistantRunProjection output tokens", () => {
   // Real shape emitted by the agent's gRPC StreamEvent: usage nested under `usage`
   // with `completion_tokens` (mirrors how the TUI reads it).

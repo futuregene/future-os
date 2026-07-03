@@ -3,6 +3,7 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { useCallback, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { ApprovalPrompt } from "./ApprovalPrompt";
@@ -22,6 +23,9 @@ interface AgentThreadProps {
   onModelChange: (modelId: string) => void;
   thinkingLevel: string;
   onThinkingLevelChange: (thinkingLevel: string) => void;
+  autoApprove: boolean;
+  onToggleAutoApprove: (value: boolean) => void;
+  showThinking: boolean;
   pendingPrompt: { attachments?: MessageAttachment[]; id: string; content: string } | null;
   activeApproval?: StoredApprovalRequest | null;
   onApprovalDecision: (approval: StoredApprovalRequest, status: "approved" | "rejected") => Promise<void>;
@@ -43,6 +47,9 @@ export function AgentThread({
   onModelChange,
   thinkingLevel,
   onThinkingLevelChange,
+  autoApprove,
+  onToggleAutoApprove,
+  showThinking,
   pendingPrompt,
   activeApproval,
   onApprovalDecision,
@@ -53,6 +60,7 @@ export function AgentThread({
   onThreadActivity,
   onToggleLeftPanel,
 }: AgentThreadProps) {
+  const { t } = useTranslation("agent");
   const {
     handleScroll,
     handleSend,
@@ -139,15 +147,16 @@ export function AgentThread({
           <div className="mx-auto w-full max-w-4xl">
             {loadingThread
               ? (
-                  <div className="py-8 text-sm text-ink-soft">Loading FutureOS thread...</div>
+                  <div className="py-8 text-sm text-ink-soft">{t("thread.loading")}</div>
                 )
               : !thread && !loadingStore
                   ? (
-                      <div className="py-8 text-sm text-ink-soft">No active thread.</div>
+                      <div className="py-8 text-sm text-ink-soft">{t("thread.noActiveThread")}</div>
                     )
                   : (
                       <MessageList
                         messages={messages}
+                        showThinking={showThinking}
                         workspaceId={thread?.workspaceId}
                         onContinue={handleContinueMessage}
                         onRetry={handleRetryMessage}
@@ -195,6 +204,8 @@ export function AgentThread({
               onModelChange={onModelChange}
               thinkingLevel={thinkingLevel}
               onThinkingLevelChange={onThinkingLevelChange}
+              autoApprove={autoApprove}
+              onToggleAutoApprove={onToggleAutoApprove}
               onSend={handleSend}
               workspaceId={thread?.workspaceId}
             />
@@ -228,7 +239,8 @@ function AgentConnectionNotice({
   onOpenProviders: () => void;
   onOpenModels: () => void;
 }) {
-  const notice = agentNotice(connection, { onOpenModels, onOpenProviders, onRetry });
+  const { t } = useTranslation("agent");
+  const notice = agentNotice(connection, { onOpenModels, onOpenProviders, onRetry }, t);
   return (
     <div className="pointer-events-auto mx-auto w-full max-w-3xl rounded-md border border-warning-line bg-warning-soft px-3 py-2 text-xs leading-5 text-warning shadow-xs">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -249,28 +261,29 @@ function AgentConnectionNotice({
 function agentNotice(
   connection: AgentConnectionState,
   actions: { onRetry: () => void; onOpenProviders: () => void; onOpenModels: () => void },
+  t: (key: string) => string,
 ): AgentNotice {
-  const retry = { label: "重试", onClick: actions.onRetry };
+  const retry = { label: t("notice.retry"), onClick: actions.onRetry };
 
   // Can't reach the agent at all.
   if (connection.status === "disconnected") {
     if (connection.kind === "agent_unavailable") {
       return {
-        title: "Future Agent 未运行",
-        detail: "请先启动 Future Agent，然后点击重试。",
+        title: t("notice.agentUnavailable.title"),
+        detail: t("notice.agentUnavailable.detail"),
         action: retry,
       };
     }
     if (connection.kind === "model_error") {
       return {
-        title: "模型加载失败",
-        detail: connection.error ?? "Agent 可连接，但获取模型列表失败。",
+        title: t("notice.modelError.title"),
+        detail: connection.error ?? t("notice.modelError.detail"),
         action: retry,
       };
     }
     return {
-      title: "连接异常",
-      detail: connection.error ?? "请检查 FUTURE_AGENT_GRPC_ADDR 后重试。",
+      title: t("notice.connectionError.title"),
+      detail: connection.error ?? t("notice.connectionError.detail"),
       action: retry,
     };
   }
@@ -278,14 +291,14 @@ function agentNotice(
   // Connected, but no usable models: distinguish "not configured" from "empty".
   if (connection.readiness === "needs_login") {
     return {
-      title: "尚未登录",
-      detail: "已连接 Future Agent，但还没有可用模型。请连接 FutureGene 登录，或添加自定义提供商。",
-      action: { label: "前往登录", onClick: actions.onOpenProviders },
+      title: t("notice.needsLogin.title"),
+      detail: t("notice.needsLogin.detail"),
+      action: { label: t("notice.needsLogin.action"), onClick: actions.onOpenProviders },
     };
   }
   return {
-    title: "没有可用模型",
-    detail: "已配置提供商，但模型列表为空。请检查模型是否已启用，或确认账号配额 / 权限。",
-    action: { label: "模型设置", onClick: actions.onOpenModels },
+    title: t("notice.noModels.title"),
+    detail: t("notice.noModels.detail"),
+    action: { label: t("notice.noModels.action"), onClick: actions.onOpenModels },
   };
 }

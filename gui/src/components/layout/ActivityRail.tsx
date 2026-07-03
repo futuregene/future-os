@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
-import type { StoredRun, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
+import type { StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
+import type { ThreadRunInfo } from "./hooks/useThreadStore";
 import {
   Archive,
   Blocks,
@@ -20,9 +21,11 @@ import {
   SquarePen,
   Trash2,
 } from "lucide-react";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
 import { isMacOS } from "../../lib/platform";
+import { useBuildInfo } from "../../lib/useBuildInfo";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { IconButton } from "../ui/IconButton";
@@ -35,7 +38,8 @@ interface ActivityRailProps {
   floating?: boolean;
   activeThreadId: string | null;
   threads: StoredThread[];
-  threadRunStatuses: Record<string, StoredRun["status"] | undefined>;
+  threadRunStatuses: Record<string, ThreadRunInfo | undefined>;
+  unreadThreadIds: Set<string>;
   workspaces: StoredWorkspace[];
   onChange: (section: ActivitySection) => void;
   onDeleteThread: (thread: StoredThread) => void;
@@ -43,6 +47,8 @@ interface ActivityRailProps {
   onOpenModels: () => void;
   onNewWorkspace: () => void;
   onRenameThread: (thread: StoredThread) => void;
+  onRenameWorkspace: (workspace: StoredWorkspace) => void;
+  onDeleteWorkspace: (workspace: StoredWorkspace) => void;
   onRestoreThread: (thread: StoredThread) => void;
   onSelectWorkspace: (workspace: StoredWorkspace, threads: StoredThread[]) => void;
   onSelectThread: (thread: StoredThread) => void;
@@ -68,6 +74,7 @@ export function ActivityRail({
   floating,
   threads,
   threadRunStatuses,
+  unreadThreadIds,
   workspaces,
   onChange,
   onDeleteThread,
@@ -75,12 +82,20 @@ export function ActivityRail({
   onOpenModels,
   onNewWorkspace,
   onRenameThread,
+  onRenameWorkspace,
+  onDeleteWorkspace,
   onRestoreThread,
   onSelectWorkspace,
   onSelectThread,
   onTogglePinThread,
   onToggleExpanded,
 }: ActivityRailProps) {
+  const { t } = useTranslation("layout");
+  // The Remote (phone) feature is still under development — show its nav entry
+  // only in dev builds. Hidden while build info is loading so it never flashes
+  // into a release build.
+  const build = useBuildInfo();
+  const showRemote = build.data ? !build.data.isRelease : false;
   const [openThreadMenuId, setOpenThreadMenuId] = useState<string | null>(null);
   const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Set<string>>(() => new Set());
 
@@ -97,15 +112,22 @@ export function ActivityRail({
   const visibleThreads = sortThreads(
     threads.filter(thread => thread.status === "active"),
   );
-  const chatThreads = visibleThreads.filter(thread => thread.mode === "chat");
-  const workspaceThreads = visibleThreads.filter(thread => thread.mode === "workspace");
+  // Pinned threads are hoisted into a single global section (regardless of
+  // workspace/chat); the per-group lists show only the unpinned rest.
+  const pinnedThreads = visibleThreads.filter(thread => thread.pinned);
+  const chatThreads = visibleThreads.filter(thread => thread.mode === "chat" && !thread.pinned);
+  const workspaceThreads = visibleThreads.filter(thread => thread.mode === "workspace" && !thread.pinned);
   const workspaceGroups = workspaces
     .filter(workspace => workspace.kind === "user" || workspaceThreads.some(thread => thread.workspaceId === workspace.id))
     .map(workspace => ({
       workspace,
       threads: workspaceThreads.filter(thread => thread.workspaceId === workspace.id),
     }));
-  const toggleLabel = floating ? "Pin sidebar" : expanded ? "Collapse sidebar" : "Expand sidebar";
+  const toggleLabel = floating
+    ? t("activityRail.pinSidebar")
+    : expanded
+      ? t("activityRail.collapseSidebar")
+      : t("activityRail.expandSidebar");
 
   return (
     <nav
@@ -156,7 +178,7 @@ export function ActivityRail({
                     type="button"
                   >
                     <SquarePen className="size-4 shrink-0 text-ink-soft" />
-                    <span className="truncate">New Chat</span>
+                    <span className="truncate">{t("activityRail.newChat")}</span>
                   </button>
                   <button
                     className="flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
@@ -164,7 +186,7 @@ export function ActivityRail({
                     type="button"
                   >
                     <Sparkles className="size-4 shrink-0" />
-                    <span className="truncate">Models</span>
+                    <span className="truncate">{t("activityRail.models")}</span>
                   </button>
                   <button
                     className={cn(
@@ -175,19 +197,23 @@ export function ActivityRail({
                     type="button"
                   >
                     <Blocks className="size-4 shrink-0" />
-                    <span className="truncate">Skills</span>
+                    <span className="truncate">{t("activityRail.skills")}</span>
                   </button>
-                  <button
-                    className={cn(
-                      "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
-                      active === "remote" && "bg-surface-subtle text-ink",
-                    )}
-                    onClick={() => onChange("remote")}
-                    type="button"
-                  >
-                    <Smartphone className="size-4 shrink-0" />
-                    <span className="truncate">Remote</span>
-                  </button>
+                  {showRemote
+                    ? (
+                        <button
+                          className={cn(
+                            "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
+                            active === "remote" && "bg-surface-subtle text-ink",
+                          )}
+                          onClick={() => onChange("remote")}
+                          type="button"
+                        >
+                          <Smartphone className="size-4 shrink-0" />
+                          <span className="truncate">{t("activityRail.remote")}</span>
+                        </button>
+                      )
+                    : null}
                 </div>
                 {featureItems.length > 0
                   ? (
@@ -213,14 +239,40 @@ export function ActivityRail({
                     )
                   : null}
                 <div className="scrollbar-hover -mx-2 flex min-h-0 flex-1 flex-col px-2">
+                  {pinnedThreads.length > 0
+                    ? (
+                        <div className="mb-3 space-y-0.5">
+                          <div className="sticky top-0 z-10 flex h-6 items-center bg-surface px-2 text-xs font-medium text-ink-muted">
+                            <span>{t("activityRail.pinnedHeader")}</span>
+                          </div>
+                          {pinnedThreads.map(thread => (
+                            <ThreadListItem
+                              active={thread.id === activeThreadId}
+                              archived={thread.status === "archived"}
+                              key={thread.id}
+                              menuOpen={openThreadMenuId === thread.id}
+                              runStatus={threadRunStatuses[thread.id]}
+                              thread={thread}
+                              unread={unreadThreadIds.has(thread.id)}
+                              onDeleteThread={onDeleteThread}
+                              onMenuOpenChange={open => setOpenThreadMenuId(open ? thread.id : null)}
+                              onRenameThread={onRenameThread}
+                              onRestoreThread={onRestoreThread}
+                              onSelectThread={onSelectThread}
+                              onTogglePinThread={onTogglePinThread}
+                            />
+                          ))}
+                        </div>
+                      )
+                    : null}
                   <div className="space-y-0.5">
                     <div className="sticky top-0 z-10 flex h-6 items-center justify-between bg-surface px-2 text-xs font-medium text-ink-muted">
-                      <span>Workspace</span>
+                      <span>{t("activityRail.workspace")}</span>
                       <button
-                        aria-label="New workspace"
+                        aria-label={t("activityRail.newWorkspace")}
                         className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
                         onClick={onNewWorkspace}
-                        title="New workspace"
+                        title={t("activityRail.newWorkspace")}
                         type="button"
                       >
                         <Plus className="size-3.5" />
@@ -228,7 +280,7 @@ export function ActivityRail({
                     </div>
                     {workspaceGroups.length === 0
                       ? (
-                          <div className="px-2 py-1 text-xs text-ink-muted">No workspace threads</div>
+                          <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noWorkspaceThreads")}</div>
                         )
                       : null}
                     {workspaceGroups.map(({ workspace, threads: groupThreads }) => {
@@ -238,7 +290,7 @@ export function ActivityRail({
                           {/* Group header: hover only, no selected state (req 4). */}
                           <div className="group flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle">
                             <button
-                              aria-label={collapsed ? "Expand workspace" : "Collapse workspace"}
+                              aria-label={collapsed ? t("activityRail.expandWorkspace") : t("activityRail.collapseWorkspace")}
                               className="inline-flex size-4 shrink-0 items-center justify-center text-ink-muted transition-colors hover:text-ink-soft"
                               onClick={() => toggleWorkspaceCollapsed(workspace.id)}
                               type="button"
@@ -255,11 +307,16 @@ export function ActivityRail({
                                 {workspace.name}
                               </span>
                             </button>
+                            <WorkspaceHeaderMenu
+                              workspace={workspace}
+                              onDelete={onDeleteWorkspace}
+                              onRename={onRenameWorkspace}
+                            />
                             <button
-                              aria-label={`New chat in ${workspace.name}`}
+                              aria-label={t("activityRail.newChatInWorkspace", { name: workspace.name })}
                               className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-surface hover:text-ink-soft group-hover:opacity-100"
                               onClick={() => onNewChat(workspace.id)}
-                              title={`New chat in ${workspace.name}`}
+                              title={t("activityRail.newChatInWorkspace", { name: workspace.name })}
                               type="button"
                             >
                               <Plus className="size-3.5" />
@@ -276,6 +333,7 @@ export function ActivityRail({
                                       menuOpen={openThreadMenuId === thread.id}
                                       runStatus={threadRunStatuses[thread.id]}
                                       thread={thread}
+                                      unread={unreadThreadIds.has(thread.id)}
                                       compact
                                       onDeleteThread={onDeleteThread}
                                       onMenuOpenChange={open => setOpenThreadMenuId(open ? thread.id : null)}
@@ -294,18 +352,18 @@ export function ActivityRail({
                   </div>
                   <div className="mt-3 space-y-0.5">
                     <div className="sticky top-0 z-10 flex h-6 items-center justify-between bg-surface px-2 text-xs font-medium text-ink-muted">
-                      <span>Chat</span>
+                      <span>{t("activityRail.chatHeader")}</span>
                       <button
-                        aria-label="New chat"
+                        aria-label={t("activityRail.newChatShort")}
                         className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
                         onClick={() => onNewChat()}
-                        title="New chat"
+                        title={t("activityRail.newChatShort")}
                         type="button"
                       >
                         <Plus className="size-3.5" />
                       </button>
                     </div>
-                    {chatThreads.length === 0 ? <div className="px-2 py-1 text-xs text-ink-muted">No chats</div> : null}
+                    {chatThreads.length === 0 ? <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noChats")}</div> : null}
                     {chatThreads.map(thread => (
                       <ThreadListItem
                         active={thread.id === activeThreadId && active === "chat"}
@@ -314,6 +372,7 @@ export function ActivityRail({
                         menuOpen={openThreadMenuId === thread.id}
                         runStatus={threadRunStatuses[thread.id]}
                         thread={thread}
+                        unread={unreadThreadIds.has(thread.id)}
                         onDeleteThread={onDeleteThread}
                         onMenuOpenChange={open => setOpenThreadMenuId(open ? thread.id : null)}
                         onRenameThread={onRenameThread}
@@ -330,22 +389,26 @@ export function ActivityRail({
               <>
                 <IconButton
                   icon={<SquarePen className="size-4" />}
-                  label="New chat"
+                  label={t("activityRail.newChatShort")}
                   active={false}
                   onClick={() => onNewChat()}
                 />
                 <IconButton
                   icon={<Sparkles className="size-4" />}
-                  label="Models"
+                  label={t("activityRail.models")}
                   active={false}
                   onClick={onOpenModels}
                 />
-                <IconButton
-                  icon={<Smartphone className="size-4" />}
-                  label="Remote"
-                  active={active === "remote"}
-                  onClick={() => onChange("remote")}
-                />
+                {showRemote
+                  ? (
+                      <IconButton
+                        icon={<Smartphone className="size-4" />}
+                        label={t("activityRail.remote")}
+                        active={active === "remote"}
+                        onClick={() => onChange("remote")}
+                      />
+                    )
+                  : null}
                 {featureItems.map((item) => {
                   const Icon = item.icon;
                   return (
@@ -360,13 +423,13 @@ export function ActivityRail({
                 })}
                 <IconButton
                   icon={<Folder className="size-4" />}
-                  label="Workspace"
+                  label={t("activityRail.workspace")}
                   active={active === "workspace"}
                   onClick={() => onChange("workspace")}
                 />
                 <IconButton
                   icon={<MessageSquare className="size-4" />}
-                  label="Chat"
+                  label={t("activityRail.chat")}
                   active={active === "chat"}
                   onClick={() => onChange("chat")}
                 />
@@ -385,13 +448,13 @@ export function ActivityRail({
                 type="button"
               >
                 <Settings className="size-4 shrink-0" />
-                <span className="truncate">{settingsItem.label}</span>
+                <span className="truncate">{t("activityRail.settings")}</span>
               </button>
             )
           : (
               <IconButton
                 icon={<Settings className="size-4" />}
-                label={settingsItem.label}
+                label={t("activityRail.settings")}
                 active={active === settingsItem.id}
                 onClick={() => onChange(settingsItem.id)}
               />
@@ -408,6 +471,7 @@ function ThreadListItem({
   menuOpen,
   runStatus,
   thread,
+  unread,
   onDeleteThread,
   onMenuOpenChange,
   onRenameThread,
@@ -419,8 +483,9 @@ function ThreadListItem({
   archived?: boolean;
   compact?: boolean;
   menuOpen: boolean;
-  runStatus?: StoredRun["status"];
+  runStatus?: ThreadRunInfo;
   thread: StoredThread;
+  unread?: boolean;
   onDeleteThread: (thread: StoredThread) => void;
   onMenuOpenChange: (open: boolean) => void;
   onRenameThread: (thread: StoredThread) => void;
@@ -428,6 +493,7 @@ function ThreadListItem({
   onSelectThread: (thread: StoredThread) => void;
   onTogglePinThread: (thread: StoredThread) => void;
 }) {
+  const { t } = useTranslation("layout");
   const menuRef = useDismissableLayer<HTMLDivElement>({
     enabled: menuOpen,
     onDismiss: () => onMenuOpenChange(false),
@@ -444,30 +510,42 @@ function ThreadListItem({
         active && "bg-surface-subtle text-ink",
       )}
     >
-      {!compact ? <MessageSquare className="size-4 shrink-0 text-ink-soft" /> : null}
+      {/* Full-row click target so the whole (highlighted) row selects the
+          thread. Content below sits on top but is pointer-events-none so clicks
+          fall through to this button; the actions trigger and menu keep a higher
+          stacking (z-10 / z-40) so they stay clickable and never mis-fire. */}
       <button
-        className={cn(
-          "min-w-0 flex-1 truncate text-left text-sm font-medium",
-          archived ? "text-ink-muted" : "text-ink-soft",
-        )}
+        aria-label={thread.title}
+        className="absolute inset-0 rounded-md"
         onClick={() => onSelectThread(thread)}
         type="button"
+      />
+      {/* Spacer keeps the non-compact title indent after dropping the (uniform,
+          meaningless) chat-bubble icon. */}
+      {!compact ? <span className="pointer-events-none size-4 shrink-0" /> : null}
+      <span
+        className={cn(
+          "pointer-events-none min-w-0 flex-1 truncate text-sm font-medium",
+          archived ? "text-ink-muted" : "text-ink-soft",
+        )}
       >
         {thread.title}
-      </button>
-      {archived ? <span className="shrink-0 text-[11px] text-ink-muted group-hover/thread:hidden">Archived</span> : null}
-      <ThreadRunIndicator status={runStatus} />
+      </span>
+      {archived ? <span className="pointer-events-none shrink-0 text-[11px] text-ink-muted group-hover/thread:hidden">{t("activityRail.archived")}</span> : null}
+      <span className="pointer-events-none flex shrink-0">
+        <ThreadRunIndicator status={runStatus?.status} unread={unread} />
+      </span>
       <button
-        aria-label={`Thread actions for ${thread.title}`}
+        aria-label={t("activityRail.threadActions", { title: thread.title })}
         className={cn(
-          "hidden size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft group-hover/thread:inline-flex",
+          "relative z-10 hidden size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft group-hover/thread:inline-flex",
           menuOpen && "inline-flex",
         )}
         onClick={(event) => {
           event.stopPropagation();
           onMenuOpenChange(!menuOpen);
         }}
-        title={`Thread actions for ${thread.title}`}
+        title={t("activityRail.threadActions", { title: thread.title })}
         type="button"
       >
         <MoreHorizontal className="size-3.5" />
@@ -489,6 +567,21 @@ function ThreadListItem({
   );
 }
 
+/**
+ * Bottom edge (viewport px) of the nearest scroll/clip ancestor, or the
+ * viewport height when none clips — used to decide if a menu must flip up.
+ */
+function clippingBottom(element: HTMLElement): number {
+  let node = element.parentElement;
+  while (node) {
+    const overflowY = getComputedStyle(node).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll" || overflowY === "hidden")
+      return node.getBoundingClientRect().bottom;
+    node = node.parentElement;
+  }
+  return window.innerHeight;
+}
+
 function sortThreads(items: StoredThread[]) {
   return [...items].sort((a, b) => {
     if (a.status !== b.status)
@@ -503,36 +596,42 @@ function threadSortTime(thread: StoredThread) {
   return thread.lastMessageAt ?? thread.lastOpenedAt ?? thread.updatedAt ?? thread.createdAt;
 }
 
-function ThreadRunIndicator({ status }: { status?: StoredRun["status"] }) {
-  if (!status)
-    return <span className="size-5 shrink-0 group-hover/thread:hidden" />;
+function ThreadRunIndicator({ status, unread }: { status?: ThreadRunInfo["status"]; unread?: boolean }) {
+  const { t } = useTranslation("layout");
+  // Reserved-width placeholder so idle rows (and the hover state) stay aligned.
+  const placeholder = <span className="size-5 shrink-0 group-hover/thread:hidden" />;
 
   if (status === "queued" || status === "running" || status === "waiting_approval") {
     return (
       <span
-        aria-label="Running"
+        aria-label={t("activityRail.running")}
         className="inline-flex size-5 shrink-0 items-center justify-center group-hover/thread:hidden"
-        title="Running"
+        title={t("activityRail.running")}
       >
         <span className="size-3 animate-spin rounded-full border-2 border-accent-soft border-t-accent" />
       </span>
     );
   }
 
-  if (status === "completed" || status === "failed" || status === "cancelled") {
-    const label = status === "completed" ? "Completed" : status === "failed" ? "Failed" : "Cancelled";
+  // A finished run is "unread" until the thread is opened: green when it
+  // completed, red when it failed. Once read no dot shows. `cancelled` is a
+  // deliberate user action (they aborted the run), so it never needs surfacing
+  // as unread — it falls through to the empty placeholder below.
+  if (unread && (status === "completed" || status === "failed")) {
+    const failed = status === "failed";
+    const label = failed ? t("activityRail.failed") : t("activityRail.completed");
     return (
       <span
         aria-label={label}
         className="inline-flex size-5 shrink-0 items-center justify-center group-hover/thread:hidden"
         title={label}
       >
-        <span className="size-2 rounded-full bg-ink-muted/70" />
+        <span className={cn("size-2 rounded-full", failed ? "bg-danger" : "bg-success")} />
       </span>
     );
   }
 
-  return <span className="size-5 shrink-0 group-hover/thread:hidden" />;
+  return placeholder;
 }
 
 function ThreadItemMenu({
@@ -552,27 +651,112 @@ function ThreadItemMenu({
   onRestore: () => void;
   onTogglePin: () => void;
 }) {
+  const { t } = useTranslation("layout");
+  const menuRef = useRef<HTMLDivElement>(null);
+  // Open downward by default, but flip above the trigger when the menu would
+  // spill past its scrolling container (e.g. the last thread near the sidebar
+  // bottom) so the full menu — including Delete — stays visible.
+  const [dropUp, setDropUp] = useState(false);
+  useLayoutEffect(() => {
+    const element = menuRef.current;
+    if (!element)
+      return;
+    const rect = element.getBoundingClientRect();
+    const boundary = Math.min(clippingBottom(element), window.innerHeight) - 8;
+    setDropUp(rect.bottom > boundary);
+  }, []);
+
   return (
-    <div className="absolute right-1 top-7 z-40 w-36 rounded-lg border border-line-soft bg-surface p-1 shadow-panel">
+    <div
+      ref={menuRef}
+      className={cn(
+        "absolute right-1 z-40 w-36 rounded-lg border border-line-soft bg-surface p-1 shadow-panel",
+        dropUp ? "bottom-7" : "top-7",
+      )}
+    >
       {archived
         ? (
             <ThreadMenuItem icon={<Archive className="size-3.5" />} onClick={onRestore} onClose={onClose}>
-              Restore
+              {t("activityRail.restore")}
             </ThreadMenuItem>
           )
         : (
             <>
               <ThreadMenuItem icon={<Pencil className="size-3.5" />} onClick={onRename} onClose={onClose}>
-                Rename
+                {t("activityRail.rename")}
               </ThreadMenuItem>
               <ThreadMenuItem icon={<Pin className="size-3.5" />} onClick={onTogglePin} onClose={onClose}>
-                {pinned ? "Unpin" : "Pin"}
+                {pinned ? t("activityRail.unpin") : t("activityRail.pin")}
               </ThreadMenuItem>
             </>
           )}
       <ThreadMenuItem danger icon={<Trash2 className="size-3.5" />} onClick={onDelete} onClose={onClose}>
-        Delete
+        {t("activityRail.delete")}
       </ThreadMenuItem>
+    </div>
+  );
+}
+
+function WorkspaceHeaderMenu({
+  workspace,
+  onDelete,
+  onRename,
+}: {
+  workspace: StoredWorkspace;
+  onDelete: (workspace: StoredWorkspace) => void;
+  onRename: (workspace: StoredWorkspace) => void;
+}) {
+  const { t } = useTranslation("layout");
+  const [open, setOpen] = useState(false);
+  const layerRef = useDismissableLayer<HTMLDivElement>({ enabled: open, onDismiss: () => setOpen(false) });
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [dropUp, setDropUp] = useState(false);
+  useLayoutEffect(() => {
+    if (!open)
+      return;
+    const element = menuRef.current;
+    if (!element)
+      return;
+    const rect = element.getBoundingClientRect();
+    const boundary = Math.min(clippingBottom(element), window.innerHeight) - 8;
+    setDropUp(rect.bottom > boundary);
+  }, [open]);
+
+  return (
+    <div className="relative" ref={layerRef}>
+      <button
+        aria-label={t("activityRail.workspaceActions", { name: workspace.name })}
+        className={cn(
+          "inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-surface hover:text-ink-soft group-hover:opacity-100",
+          open && "opacity-100",
+        )}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen(value => !value);
+        }}
+        title={t("activityRail.workspaceActions", { name: workspace.name })}
+        type="button"
+      >
+        <MoreHorizontal className="size-3.5" />
+      </button>
+      {open
+        ? (
+            <div
+              ref={menuRef}
+              className={cn(
+                "absolute right-0 z-40 w-36 rounded-lg border border-line-soft bg-surface p-1 shadow-panel",
+                dropUp ? "bottom-7" : "top-7",
+              )}
+            >
+              <ThreadMenuItem icon={<Pencil className="size-3.5" />} onClick={() => onRename(workspace)} onClose={() => setOpen(false)}>
+                {t("activityRail.rename")}
+              </ThreadMenuItem>
+              <ThreadMenuItem danger icon={<Trash2 className="size-3.5" />} onClick={() => onDelete(workspace)} onClose={() => setOpen(false)}>
+                {t("activityRail.delete")}
+              </ThreadMenuItem>
+            </div>
+          )
+        : null}
     </div>
   );
 }

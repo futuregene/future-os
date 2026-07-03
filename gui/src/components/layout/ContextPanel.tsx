@@ -3,6 +3,7 @@ import type { GitReview, StoredArtifact, StoredRun, StoredThread, StoredToolCall
 import type { WorkspaceReviewCapabilities } from "../../integrations/storage/types";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ArtifactDetailPanel } from "../../features/artifacts/ArtifactDetailPanel";
 import { ArtifactsPanel } from "../../features/artifacts/ArtifactsPanel";
 import { upsertFutureReferenceEntries } from "../../features/markdown/futureReferenceStore";
@@ -30,18 +31,18 @@ export type ContextTab = "runs" | "review" | "artifacts";
 export type { ReviewBase };
 
 const gitTabs = [
-  { value: "runs", label: "Runs" },
-  { value: "review", label: "Review" },
-] satisfies Array<{ value: ContextTab; label: string }>;
+  { value: "runs", labelKey: "contextPanel.runs" },
+  { value: "review", labelKey: "contextPanel.review" },
+] satisfies Array<{ value: ContextTab; labelKey: string }>;
 
 const fileTabs = [
-  { value: "runs", label: "Runs" },
-  { value: "artifacts", label: "Artifacts" },
-] satisfies Array<{ value: ContextTab; label: string }>;
+  { value: "runs", labelKey: "contextPanel.runs" },
+  { value: "artifacts", labelKey: "contextPanel.artifacts" },
+] satisfies Array<{ value: ContextTab; labelKey: string }>;
 
 const pendingTabs = [
-  { value: "runs", label: "Runs" },
-] satisfies Array<{ value: ContextTab; label: string }>;
+  { value: "runs", labelKey: "contextPanel.runs" },
+] satisfies Array<{ value: ContextTab; labelKey: string }>;
 
 interface ContextPanelProps {
   activeThread: StoredThread | null;
@@ -60,6 +61,7 @@ export function ContextPanel({
   onTabChange,
   onToggleExpanded,
 }: ContextPanelProps) {
+  const { t } = useTranslation("layout");
   const [runs, setRuns] = useState<StoredRun[]>([]);
   const [toolsByRun, setToolsByRun] = useState<Record<string, StoredToolCall[]>>({});
   const [artifacts, setArtifacts] = useState<StoredArtifact[]>([]);
@@ -261,8 +263,8 @@ export function ContextPanel({
   if (!expanded) {
     return (
       <button
-        aria-label="Expand context panel"
-        title="Expand context panel"
+        aria-label={t("contextPanel.expand")}
+        title={t("contextPanel.expand")}
         className="absolute right-3 top-2 z-30 inline-flex size-8 items-center justify-center rounded-md border border-transparent bg-transparent text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
         onClick={onToggleExpanded}
         type="button"
@@ -279,7 +281,7 @@ export function ContextPanel({
         onMouseDown={startWindowDrag}
       >
         <div className="inline-block max-w-full">
-          <label className="sr-only" htmlFor="context-panel-view">Context panel view</label>
+          <label className="sr-only" htmlFor="context-panel-view">{t("contextPanel.panelView")}</label>
           <Select
             className="w-fit min-w-24 max-w-full py-0 font-normal hover:border-line"
             id="context-panel-view"
@@ -289,19 +291,19 @@ export function ContextPanel({
             wrapperClassName="max-w-full"
           >
             {tabs.map(tab => (
-              <option key={tab.value} value={tab.value}>{tab.label}</option>
+              <option key={tab.value} value={tab.value}>{t(tab.labelKey)}</option>
             ))}
           </Select>
         </div>
         <IconButton
           icon={<PanelRightClose className="size-3.5" />}
-          label="Collapse context panel"
+          label={t("contextPanel.collapse")}
           onClick={onToggleExpanded}
         />
       </header>
       <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 pt-2">
-        {showInitialLoading ? <div className="py-4 text-sm text-ink-muted">Loading context...</div> : null}
-        {!showInitialLoading && !activeThread ? <EmptyState title="No thread selected" /> : null}
+        {showInitialLoading ? <div className="py-4 text-sm text-ink-muted">{t("contextPanel.loading")}</div> : null}
+        {!showInitialLoading && !activeThread ? <EmptyState title={t("contextPanel.noThreadSelected")} /> : null}
         {!showInitialLoading && activeThread && activeTab === "runs"
           ? selectedRun
             ? (
@@ -346,6 +348,7 @@ export function ContextPanel({
             : (
                 <ArtifactsPanel
                   artifacts={artifacts}
+                  threadId={activeThread.id}
                   onChanged={refreshContext}
                   onSelectArtifact={handleSelectArtifact}
                 />

@@ -1,0 +1,48 @@
+{
+  "panel": {
+    "emptyTitle": "No artifacts yet",
+    "emptyDetail": "Generated reports, summaries, tables, and files will appear here.",
+    "noMatch": "No matching artifacts.",
+    "filterPlaceholder": "Filter artifacts…",
+    "upload": "Upload",
+    "uploading": "Uploading…",
+    "uploadDialogTitle": "Upload file",
+    "uploadNotFile": "Folders are not supported.",
+    "uploadTooLarge": "File is too large. Maximum {{max}}.",
+    "uploadFailed": "Upload failed: {{message}}"
+  },
+  "card": {
+    "viewArtifact": "View artifact {{title}}",
+    "viewDetails": "View details",
+    "deleteArtifact": "Delete artifact {{title}}",
+    "delete": "Delete artifact"
+  },
+  "detail": {
+    "back": "Artifacts",
+    "copyPath": "Copy path",
+    "copyContent": "Copy content",
+    "copyPreview": "Copy preview",
+    "exportTitle": "Export artifact",
+    "imagePreviewUnavailableTitle": "Image preview unavailable",
+    "imagePreviewUnavailableDetail": "The image could not be loaded. You can still open or export the original file.",
+    "previewUnavailableTitle": "Preview unavailable",
+    "previewUnavailableDetail": "This file type does not have an inline preview yet. Use Open or Export to inspect the original file.",
+    "sizeBytes": "{{size}} bytes",
+    "sizeBytesTruncated": "{{size}} bytes · preview truncated",
+    "open": "Open",
+    "opening": "Opening",
+    "export": "Export",
+    "exporting": "Exporting",
+    "deleteAction": "Delete",
+    "deleting": "Deleting"
+  },
+  "pdfPreview": {
+    "loading": "Loading PDF...",
+    "errorTitle": "PDF Preview Error",
+    "failedToLoad": "Failed to load PDF",
+    "failedToRender": "Failed to render page",
+    "prev": "← Prev",
+    "next": "Next →",
+    "pageIndicator": "Page {{current}} / {{total}}"
+  }
+}

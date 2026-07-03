@@ -1,19 +1,20 @@
 import type { StoredRun } from "../../integrations/storage/threadStore";
+import i18n from "../../i18n";
 
 export function formatRunStatus(status: StoredRun["status"]) {
   switch (status) {
     case "completed":
-      return "completed";
+      return i18n.t("runs:status.completed");
     case "failed":
-      return "failed";
+      return i18n.t("runs:status.failed");
     case "running":
-      return "running";
+      return i18n.t("runs:status.running");
     case "waiting_approval":
-      return "approval";
+      return i18n.t("runs:status.approval");
     case "cancelled":
-      return "cancelled";
+      return i18n.t("runs:status.cancelled");
     default:
-      return "queued";
+      return i18n.t("runs:status.queued");
   }
 }
 
@@ -21,17 +22,17 @@ export function formatRunStatus(status: StoredRun["status"]) {
 export function runStatusLabel(status: StoredRun["status"]) {
   switch (status) {
     case "completed":
-      return "Success";
+      return i18n.t("runs:statusLabel.success");
     case "failed":
-      return "Failed";
+      return i18n.t("runs:statusLabel.failed");
     case "cancelled":
-      return "Cancelled";
+      return i18n.t("runs:statusLabel.cancelled");
     case "waiting_approval":
-      return "Waiting";
+      return i18n.t("runs:statusLabel.waiting");
     case "queued":
-      return "Queued";
+      return i18n.t("runs:statusLabel.queued");
     default:
-      return "Running";
+      return i18n.t("runs:statusLabel.running");
   }
 }
 
@@ -51,16 +52,6 @@ export function shortId(id: string) {
   return id.split("_").slice(0, 2).join("_");
 }
 
-export function summarizePayload(payload: string) {
-  try {
-    const value = JSON.parse(payload) as unknown;
-    return JSON.stringify(value, null, 2).slice(0, 1200);
-  }
-  catch {
-    return payload.slice(0, 1200);
-  }
-}
-
 export type RunErrorType = NonNullable<StoredRun["errorType"]>;
 
 export function formatErrorType(errorType?: RunErrorType | null): { label: string; icon: string; color: string } | null {
@@ -68,12 +59,12 @@ export function formatErrorType(errorType?: RunErrorType | null): { label: strin
     return null;
 
   const errorTypes = {
-    stream_disconnected: { label: "Stream disconnected", icon: "🔌", color: "text-orange-600" },
-    command_failed: { label: "Command failed", icon: "⚠️", color: "text-red-600" },
-    model_failed: { label: "Model failed", icon: "🤖", color: "text-purple-600" },
-    abort_requested: { label: "Aborted by user", icon: "⏹️", color: "text-gray-600" },
-    timeout: { label: "Timeout", icon: "⏰", color: "text-yellow-600" },
-    unknown: { label: "Unknown error", icon: "❓", color: "text-gray-600" },
+    stream_disconnected: { label: i18n.t("runs:errorType.streamDisconnected"), icon: "🔌", color: "text-orange-600" },
+    command_failed: { label: i18n.t("runs:errorType.commandFailed"), icon: "⚠️", color: "text-red-600" },
+    model_failed: { label: i18n.t("runs:errorType.modelFailed"), icon: "🤖", color: "text-purple-600" },
+    abort_requested: { label: i18n.t("runs:errorType.abortRequested"), icon: "⏹️", color: "text-gray-600" },
+    timeout: { label: i18n.t("runs:errorType.timeout"), icon: "⏰", color: "text-yellow-600" },
+    unknown: { label: i18n.t("runs:errorType.unknown"), icon: "❓", color: "text-gray-600" },
   };
 
   return errorTypes[errorType as keyof typeof errorTypes] || null;

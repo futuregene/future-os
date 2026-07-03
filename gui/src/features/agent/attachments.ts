@@ -1,5 +1,6 @@
 import type { MessageAttachment } from "./agentThreadTypes";
 import * as pdfjs from "pdfjs-dist";
+import i18n from "../../i18n";
 import { inspectAttachment, readFileBase64, readTextFilePreview, writeThumbnail } from "../../integrations/storage/files";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -75,7 +76,8 @@ export const PICKER_EXTENSIONS = [...IMAGE_EXTENSIONS, "pdf", ...TEXT_EXTENSIONS
 const INLINE_MAX_BYTES_PER_FILE = 30 * 1024;
 const INLINE_MAX_LINES_PER_FILE = 2000;
 const INLINE_MAX_TOTAL_BYTES = 60 * 1024;
-const READ_SOURCE_MAX_BYTES = 25 * 1024 * 1024;
+/** Per-file byte cap shared by attachments and artifact uploads. */
+export const READ_SOURCE_MAX_BYTES = 25 * 1024 * 1024;
 
 type AttachmentKind = "image" | "pdf" | "text";
 
@@ -138,10 +140,10 @@ export async function classifyAttachment(
     info = await inspectAttachment(path);
   }
   catch {
-    return { kind: null, reason: "无法读取" };
+    return { kind: null, reason: i18n.t("agent:attachment.readFailed") };
   }
   if (info.isDir)
-    return { kind: null, reason: "不支持文件夹" };
+    return { kind: null, reason: i18n.t("agent:attachment.directoryUnsupported") };
 
   if (IMAGE_EXTENSIONS.includes(ext as (typeof IMAGE_EXTENSIONS)[number]))
     return { kind: "image" };
@@ -149,7 +151,7 @@ export async function classifyAttachment(
     return { kind: "pdf" };
   if ((TEXT_EXTENSIONS.has(ext) || TEXT_BASENAMES.has(base)) && !info.isBinary)
     return { kind: "text" };
-  return { kind: null, reason: info.isBinary ? "不支持二进制文件" : "不支持的文件类型" };
+  return { kind: null, reason: info.isBinary ? i18n.t("agent:attachment.binaryUnsupported") : i18n.t("agent:attachment.typeUnsupported") };
 }
 
 function byteLength(text: string) {
@@ -221,8 +223,13 @@ export async function buildInlineAttachmentContext(attachments: MessageAttachmen
   let total = 0;
   const blocks: string[] = [];
   for (const attachment of targets) {
+    // The on-disk path (inside the thread's working directory) so the model can
+    // read the actual file when it needs more than the inlined text — e.g. a
+    // scanned PDF with no extractable text, or content past the truncation cap.
+    const header = (suffix: string) =>
+      `===== ${attachment.name}${suffix} =====\n文件路径：${attachment.path}`;
     if (total >= INLINE_MAX_TOTAL_BYTES) {
-      blocks.push(`===== ${attachment.name} =====\n[已省略：超出附件内联总量上限]`);
+      blocks.push(`${header("")}\n[已省略：超出附件内联总量上限，如需完整内容请读取上述文件路径]`);
       continue;
     }
     try {
@@ -230,7 +237,7 @@ export async function buildInlineAttachmentContext(attachments: MessageAttachmen
         ? await extractPdfText(attachment.path)
         : await extractTextFile(attachment.path);
       if (attachment.kind === "pdf" && !raw.trim()) {
-        blocks.push(`===== ${attachment.name} (PDF) =====\n[该 PDF 无可提取文本，可能是扫描件]`);
+        blocks.push(`${header(" (PDF)")}\n[该 PDF 无可提取文本，可能是扫描件，如需处理请读取上述文件路径]`);
         continue;
       }
       let { text, truncated } = capText(raw);
@@ -241,16 +248,16 @@ export async function buildInlineAttachmentContext(attachments: MessageAttachmen
       }
       total += byteLength(text);
       const tag = attachment.kind === "pdf" ? "PDF" : "文本";
-      blocks.push(`===== ${attachment.name} (${tag}${truncated ? "，已截断" : ""}) =====\n${text}`);
+      blocks.push(`${header(` (${tag}${truncated ? "，已截断" : ""})`)}\n${text}`);
     }
     catch {
-      blocks.push(`===== ${attachment.name} =====\n[读取失败，已跳过]`);
+      blocks.push(`${header("")}\n[读取失败，可尝试直接读取上述文件路径]`);
     }
   }
 
   if (blocks.length === 0)
     return "";
-  return `\n\n附带文件内容（已为你读取，仅作上下文）：\n\n${blocks.join("\n\n")}`;
+  return `\n\n附带文件内容（已为你读取，仅作上下文；文件已保存在下列路径，位于当前工作目录内，需要时可直接读取）：\n\n${blocks.join("\n\n")}`;
 }
 
 function loadImage(src: string) {

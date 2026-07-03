@@ -1,0 +1,83 @@
+{
+  "activityRail": {
+    "settings": "Settings",
+    "newChat": "New Chat",
+    "models": "Models",
+    "skills": "Skills",
+    "remote": "Remote",
+    "workspace": "Workspace",
+    "chat": "Chat",
+    "pinSidebar": "Pin sidebar",
+    "collapseSidebar": "Collapse sidebar",
+    "expandSidebar": "Expand sidebar",
+    "newWorkspace": "New workspace",
+    "noWorkspaceThreads": "No workspace threads",
+    "expandWorkspace": "Expand workspace",
+    "collapseWorkspace": "Collapse workspace",
+    "newChatInWorkspace": "New chat in {{name}}",
+    "chatHeader": "Chat",
+    "newChatShort": "New chat",
+    "noChats": "No chats",
+    "archived": "Archived",
+    "running": "Running",
+    "completed": "Completed",
+    "failed": "Failed",
+    "cancelled": "Cancelled",
+    "threadActions": "Thread actions for {{title}}",
+    "restore": "Restore",
+    "rename": "Rename",
+    "pin": "Pin",
+    "unpin": "Unpin",
+    "delete": "Delete",
+    "workspaceActions": "Workspace actions for {{name}}",
+    "pinnedHeader": "Pinned"
+  },
+  "appShell": {
+    "storeInitFailed": "FutureOS local storage failed to initialize: ",
+    "noWorkspaceSelected": "No workspace selected",
+    "data": "Data",
+    "skill": "Skill",
+    "dataPlaceholder": "Data sources and credentials are planned as the next resource module.",
+    "skillPlaceholder": "Skills will manage built-in and workspace-level agent capabilities.",
+    "newChat": "New Chat"
+  },
+  "appShellDialogs": {
+    "renameTitle": "Rename Chat",
+    "renameDescription": "Give this conversation a short name that will be easy to find in the sidebar.",
+    "nameLabel": "Name",
+    "saving": "Saving...",
+    "deleteTitle": "Delete Chat",
+    "deleting": "Deleting...",
+    "artifacts": "Artifacts",
+    "deleteWorkspaceDescription": "This removes only the chat. Workspace files will not be changed.",
+    "deleteChatDescription": "This chat will be removed from the sidebar."
+  },
+  "contextPanel": {
+    "runs": "Runs",
+    "review": "Review",
+    "artifacts": "Artifacts",
+    "panelView": "Context panel view",
+    "collapse": "Collapse context panel",
+    "expand": "Expand context panel",
+    "loading": "Loading context...",
+    "noThreadSelected": "No thread selected"
+  },
+  "leftPanelTitlebarToggle": {
+    "showSidebar": "Show sidebar"
+  },
+  "approvals": {
+    "autoApproved": "Auto-approved by settings.",
+    "approvedInGui": "Approved in GUI.",
+    "rejectedInGui": "Rejected in GUI."
+  },
+  "threadDialogs": {
+    "titleEmpty": "Title cannot be empty."
+  },
+  "workspaceDialogs": {
+    "renameTitle": "Rename workspace",
+    "renameDescription": "Give this workspace a name that's easy to recognize.",
+    "deleteTitle": "Delete workspace",
+    "deleteDescription": "This workspace and its chats are removed from the sidebar; files on disk are not deleted.",
+    "nameEmpty": "Name cannot be empty."
+  }
+}

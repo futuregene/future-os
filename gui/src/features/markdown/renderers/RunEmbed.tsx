@@ -1,6 +1,7 @@
 import type { StoredRun } from "../../../integrations/storage/types";
 import type { FutureReference } from "../futureMarkdownTypes";
 import { Maximize2, PlayCircle } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Badge } from "../../../components/ui/Badge";
 import { Button } from "../../../components/ui/Button";
 import { storedTimeToIso } from "../../../integrations/storage/threadStore";
@@ -15,6 +16,7 @@ export function RunEmbed({
   reference: FutureReference;
   run: StoredRun;
 }) {
+  const { t } = useTranslation("markdown");
   function inspectRun() {
     emitFutureEvent("inspect-run", { runId: run.id });
   }
@@ -33,11 +35,11 @@ export function RunEmbed({
           </div>
           <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-ink-soft">
             <div>
-              <span className="text-ink-muted">Model</span>
+              <span className="text-ink-muted">{t("runEmbed.model")}</span>
               <div className="truncate">{run.modelId ?? "-"}</div>
             </div>
             <div>
-              <span className="text-ink-muted">Run</span>
+              <span className="text-ink-muted">{t("runEmbed.run")}</span>
               <div className="truncate">{shortId(run.id)}</div>
             </div>
           </div>
@@ -51,7 +53,7 @@ export function RunEmbed({
             size="xs"
             variant="toolbar"
           >
-            Inspect
+            {t("runEmbed.inspect")}
           </Button>
         </div>
       </div>

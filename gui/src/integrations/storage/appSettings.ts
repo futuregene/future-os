@@ -9,6 +9,8 @@ export interface AppSettings {
   remotePairId: string;
   /** Remote control: NATS client-port URL the GUI backend connects to. */
   remoteNatsUrl: string;
+  /** Show the model's thinking/reasoning content in the chat. Off by default. */
+  showThinking: boolean;
 }
 
 /** Fallback used before the persisted settings load. */
@@ -18,6 +20,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   remoteEnabled: false,
   remotePairId: "DEVPAIR",
   remoteNatsUrl: "nats://localhost:4222",
+  showThinking: false,
 };
 
 export async function getAppSettings() {
@@ -30,6 +33,7 @@ export async function updateAppSettings(input: {
   remoteEnabled?: boolean;
   remotePairId?: string;
   remoteNatsUrl?: string;
+  showThinking?: boolean;
 }) {
   return invokeCommand<AppSettings>("update_app_settings", { input });
 }

@@ -1,3 +1,4 @@
+import i18n from "../../i18n";
 import { invokeCommand } from "../tauri/invoke";
 
 export const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
@@ -75,7 +76,7 @@ export function defaultModelId(models: AgentModelOption[]) {
 }
 
 export function modelLabel(modelId: string, models: AgentModelOption[]) {
-  return modelOption(modelId, models)?.label ?? (modelId || "Model");
+  return modelOption(modelId, models)?.label ?? (modelId || i18n.t("common:modelFallback"));
 }
 
 export function modelThinkingLevel(modelId: string, models: AgentModelOption[]) {

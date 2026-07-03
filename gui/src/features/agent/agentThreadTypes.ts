@@ -20,6 +20,7 @@ export interface AgentActivityItem {
  */
 export type MessageSegment
   = | { kind: "text"; id: string; text: string }
+    | { kind: "thinking"; id: string; text: string }
     | { kind: "activity"; id: string; item: AgentActivityItem };
 
 export interface MessageAttachment {
@@ -36,7 +37,14 @@ export interface AgentMessage {
   id: string;
   runId?: string | null;
   role: MessageRole;
+  /** Author display text, resolved in the message's language at construction. */
   author: string;
+  /**
+   * i18n key (in the `agent` namespace) for the author, e.g. `author.you`. When
+   * present it is re-resolved at render time so the author label follows the
+   * active language even for messages already in state; `author` is the fallback.
+   */
+  authorKey?: string;
   content: string;
   status?: "complete" | "streaming" | "failed";
   createdAt: string;

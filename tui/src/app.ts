@@ -4,6 +4,7 @@
  */
 
 import { GrpcClient } from "./rpc/index.js";
+import { VERSION } from "./version.generated.js";
 import type { SessionSummary } from "./rpc/types.js";
 import { ChatArea, type ChatMessage } from "./components/chat-area.js";
 import { Footer, type FooterData } from "./components/footer.js";
@@ -1335,8 +1336,9 @@ export class App extends Container {
       this.chat.addMessage({ id: crypto.randomUUID(), role: "system", welcome: true, content: color(content) });
     };
 
-    // Banner: "future-tui vX.X.X"
-    const version = this.state.version || "0.3.0";
+    // Banner: "future-tui vX.X.X". Prefer the agent's reported version (gRPC
+    // handshake); fall back to this binary's injected version.
+    const version = this.state.version || VERSION;
     addColored(`${fg(151, bold("future-tui"))}${fg(245, " v" + version)}`, (t) => t);
 
     // Shortcuts line (truncate to fit terminal width)

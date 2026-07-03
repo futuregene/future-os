@@ -36,6 +36,38 @@ pub struct FutureEnvironment {
     pub platform_url: String,
 }
 
+/// Apply the environment policy for this build channel at startup (called once
+/// before the agent is spawned, so the agent reads the right `base_url`).
+///
+/// Release builds are production-locked: if the resolved platform is anything
+/// other than production (e.g. a stale test `base_url` from a prior dev build
+/// sharing `~/.future`), pin it back to production. Fresh installs already
+/// resolve to production by default, so this is a no-op for them.
+///
+/// Dev builds default to the test environment on first launch (no `future`
+/// base_url chosen yet), but leave an explicit choice alone so a manual switch
+/// sticks across restarts.
+pub fn apply_channel_environment_default() -> Result<(), AppError> {
+    let auth = Value::Object(auth_store::read()?);
+
+    if crate::build_info::is_release() {
+        let platform = agent_providers::resolve_future_platform_url(&auth);
+        if platform != PRODUCTION_PLATFORM_URL {
+            auth_store::set_future_base_url(&format!("{PRODUCTION_PLATFORM_URL}/api"))?;
+        }
+        return Ok(());
+    }
+
+    let has_explicit_env = auth
+        .get(auth_store::FUTURE_PROVIDER_ID)
+        .map(|future| future.get("base_url").is_some() || future.get("platform_base_url").is_some())
+        .unwrap_or(false);
+    if !has_explicit_env {
+        auth_store::set_future_base_url(&format!("{TEST_PLATFORM_URL}/api"))?;
+    }
+    Ok(())
+}
+
 /// Report which FutureGene environment the agent + GUI currently resolve to,
 /// derived from `auth.json` exactly as the rest of the app does.
 #[tauri::command]
@@ -80,6 +112,13 @@ pub fn get_future_environment() -> Result<FutureEnvironment, AppError> {
 /// forces the relaunched GUI to spawn a new agent that reads the new `base_url`.
 #[tauri::command]
 pub fn set_future_environment(app: tauri::AppHandle, environment: String) -> Result<(), AppError> {
+    // Release builds are production-locked (the UI hides the switcher; this is
+    // the backend guard behind it). Only dev builds may switch environments.
+    if crate::build_info::is_release() && environment != ENV_PRODUCTION {
+        return Err(AppError::Message(
+            "正式版仅支持正式环境，无法切换。".to_string(),
+        ));
+    }
     let platform_url = match environment.as_str() {
         ENV_PRODUCTION => PRODUCTION_PLATFORM_URL,
         ENV_TEST => TEST_PLATFORM_URL,

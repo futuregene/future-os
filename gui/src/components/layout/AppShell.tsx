@@ -6,12 +6,14 @@ import type { ActivitySection } from "./ActivityRail";
 import type { ContextTab } from "./ContextPanel";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { RemoteView } from "../../features/remote/RemoteView";
 import { ResearchView } from "../../features/research/ResearchView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
+import i18n from "../../i18n";
 import { modelThinkingLevel, normalizeThinkingLevel } from "../../integrations/agent/agentClient";
 import {
   createThread,
@@ -29,6 +31,9 @@ import { useAppSettings } from "./hooks/useAppSettings";
 import { useModelSelection } from "./hooks/useModelSelection";
 import { useThreadDialogs } from "./hooks/useThreadDialogs";
 import { useThreadStore } from "./hooks/useThreadStore";
+import { useUnreadThreads } from "./hooks/useUnreadThreads";
+import { useWorkspaceDialogs } from "./hooks/useWorkspaceDialogs";
+import { WorkspaceDialogs } from "./WorkspaceDialogs";
 
 export type { AgentConnectionState } from "./hooks/useAgentConnection";
 
@@ -45,6 +50,7 @@ interface WorkspaceCreateRequest {
 }
 
 export function AppShell() {
+  const { t } = useTranslation("layout");
   const [section, setSection] = useState<ActivitySection>("chat");
   const [centerMode, setCenterMode] = useState<"thread" | "new-chat">("thread");
   const [leftExpanded, setLeftExpanded] = useState(true);
@@ -53,7 +59,7 @@ export function AppShell() {
   const [contextTab, setContextTab] = useState<ContextTab>("runs");
   const [newChatWorkspaceId, setNewChatWorkspaceId] = useState<string | null>(null);
   const [newConversationMode, setNewConversationMode] = useState<"workspace" | "chat">("chat");
-  const [newWorkspaceCreate, setNewWorkspaceCreate] = useState(false);
+  const [newWorkspaceForm, setNewWorkspaceForm] = useState<"open" | null>(null);
   const [selectedResearchResourceId, setSelectedResearchResourceId] = useState<string | null>(null);
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -108,6 +114,17 @@ export function AppShell() {
     openDelete,
     confirmDelete,
   } = useThreadDialogs({ activeThreadId, refreshStore });
+  const {
+    renameDialog: workspaceRenameDialog,
+    deleteDialog: workspaceDeleteDialog,
+    setRenameDialog: setWorkspaceRenameDialog,
+    setDeleteDialog: setWorkspaceDeleteDialog,
+    openRename: openWorkspaceRename,
+    confirmRename: confirmWorkspaceRename,
+    openDelete: openWorkspaceDelete,
+    confirmDelete: confirmWorkspaceDelete,
+  } = useWorkspaceDialogs({ refreshStore });
+  const unreadThreadIds = useUnreadThreads(threadRunStatuses, activeThreadId);
   const activeThreadModelId = activeThread?.modelId ?? selectedModelId;
   const activeThinkingLevel = activeThread
     ? normalizeThinkingLevel(activeThread.thinkingLevel ?? modelThinkingLevel(activeThreadModelId, visibleModelOptions))
@@ -190,16 +207,16 @@ export function AppShell() {
     setSection(workspaceId ? "workspace" : "chat");
     setNewChatWorkspaceId(workspaceId ?? null);
     setNewConversationMode(workspaceId ? "workspace" : "chat");
-    setNewWorkspaceCreate(false);
+    setNewWorkspaceForm(null);
     setCenterMode("new-chat");
   }
 
-  // Workspace header "+" → start the new-conversation flow on the create-workspace step.
+  // Workspace header "+" → start the new-conversation flow on the open-workspace step.
   function handleOpenNewWorkspace() {
     setSection("workspace");
     setNewChatWorkspaceId(null);
     setNewConversationMode("workspace");
-    setNewWorkspaceCreate(true);
+    setNewWorkspaceForm("open");
     setCenterMode("new-chat");
   }
 
@@ -270,6 +287,7 @@ export function AppShell() {
     activeThreadId,
     threads,
     threadRunStatuses,
+    unreadThreadIds,
     workspaces,
     onChange: handleSectionChange,
     onOpenModels: handleOpenModels,
@@ -277,6 +295,8 @@ export function AppShell() {
     onNewWorkspace: handleOpenNewWorkspace,
     onDeleteThread: openDelete,
     onRenameThread: openRename,
+    onDeleteWorkspace: openWorkspaceDelete,
+    onRenameWorkspace: openWorkspaceRename,
     onRestoreThread: handleRestoreThread,
     onSelectWorkspace: handleSelectWorkspace,
     onSelectThread: handleSelectThread,
@@ -311,8 +331,8 @@ export function AppShell() {
         {centerMode === "new-chat"
           ? (
               <NewConversation
-                key={`${newConversationMode}:${newWorkspaceCreate ? "new" : ""}:${newChatWorkspaceId ?? ""}`}
-                initialCreateWorkspace={newWorkspaceCreate}
+                key={`${newConversationMode}:${newWorkspaceForm ?? ""}:${newChatWorkspaceId ?? ""}`}
+                initialWorkspaceForm={newWorkspaceForm}
                 initialMode={newConversationMode}
                 initialWorkspaceId={newChatWorkspaceId}
                 leftPanelExpanded={leftExpanded}
@@ -322,6 +342,8 @@ export function AppShell() {
                 onModelChange={changeDraftModel}
                 thinkingLevel={selectedThinkingLevel}
                 onThinkingLevelChange={changeThinkingLevel}
+                autoApprove={appSettings.autoApprove}
+                onToggleAutoApprove={value => void changeSettings({ autoApprove: value })}
                 onStart={handleStartNewConversation}
                 onToggleLeftPanel={handleToggleLeftPanel}
                 workspaces={workspaces.filter(workspace => workspace.kind === "user")}
@@ -332,7 +354,7 @@ export function AppShell() {
                 <ResearchView
                   selectedResourceId={selectedResearchResourceId}
                   workspaceId={activeWorkspace?.id ?? null}
-                  workspaceName={activeWorkspace?.name ?? "No workspace selected"}
+                  workspaceName={activeWorkspace?.name ?? t("appShell.noWorkspaceSelected")}
                 />
               )
             : section === "skill"
@@ -350,7 +372,7 @@ export function AppShell() {
                   : storeError
                     ? (
                         <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
-                          FutureOS 本地存储初始化失败：
+                          {t("appShell.storeInitFailed")}
                           {storeError}
                         </div>
                       )
@@ -358,10 +380,13 @@ export function AppShell() {
                         <AgentThread
                           activeApproval={activeApproval}
                           agentConnection={agentConnection}
+                          autoApprove={appSettings.autoApprove}
+                          showThinking={appSettings.showThinking}
                           loadingStore={loadingStore}
                           modelId={activeThread?.modelId ?? selectedModelId}
                           modelOptions={visibleModelOptions}
                           onModelChange={changeModel}
+                          onToggleAutoApprove={value => void changeSettings({ autoApprove: value })}
                           thinkingLevel={activeThinkingLevel}
                           onThinkingLevelChange={changeThinkingLevel}
                           pendingPrompt={pendingPrompt}
@@ -403,6 +428,14 @@ export function AppShell() {
         onConfirmDeleteThread={() => void confirmDelete()}
         onConfirmRenameThread={() => void confirmRename()}
       />
+      <WorkspaceDialogs
+        deleteDialog={workspaceDeleteDialog}
+        renameDialog={workspaceRenameDialog}
+        setDeleteDialog={setWorkspaceDeleteDialog}
+        setRenameDialog={setWorkspaceRenameDialog}
+        onConfirmDeleteWorkspace={() => void confirmWorkspaceDelete()}
+        onConfirmRenameWorkspace={() => void confirmWorkspaceRename()}
+      />
       <SettingsDialog
         appSettings={appSettings}
         initialTab={settingsTab}
@@ -416,10 +449,11 @@ export function AppShell() {
 }
 
 function ModulePlaceholder({ section }: { section: "data" | "skill" }) {
-  const title = section === "data" ? "Data" : "Skill";
+  const { t } = useTranslation("layout");
+  const title = section === "data" ? t("appShell.data") : t("appShell.skill");
   const detail = section === "data"
-    ? "Data sources and credentials are planned as the next resource module."
-    : "Skills will manage built-in and workspace-level agent capabilities.";
+    ? t("appShell.dataPlaceholder")
+    : t("appShell.skillPlaceholder");
 
   return (
     <section className="flex h-full min-h-0 items-center justify-center bg-surface p-8">
@@ -434,7 +468,7 @@ function ModulePlaceholder({ section }: { section: "data" | "skill" }) {
 function deriveThreadTitle(content: string) {
   const compact = content.replace(/\s+/g, " ").trim();
   if (!compact)
-    return "New Chat";
+    return i18n.t("layout:appShell.newChat");
   return compact.length > 28 ? `${compact.slice(0, 28)}...` : compact;
 }
 

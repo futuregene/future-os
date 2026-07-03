@@ -1,6 +1,7 @@
 import type { StoredResearchResource } from "../../integrations/storage/threadStore";
 import { BookOpen, FileText, LocateFixed } from "lucide-react";
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { listResearchResources, storedTimeToIso } from "../../integrations/storage/threadStore";
@@ -15,6 +16,7 @@ interface ResearchViewProps {
 }
 
 export function ResearchView({ selectedResourceId, workspaceId, workspaceName }: ResearchViewProps) {
+  const { t } = useTranslation("research");
   const { data: resources, error, loading } = useAsyncResource<StoredResearchResource[]>(
     async () => (workspaceId ? listResearchResources(workspaceId) : []),
     [workspaceId],
@@ -32,7 +34,7 @@ export function ResearchView({ selectedResourceId, workspaceId, workspaceName }:
         onMouseDown={startWindowDrag}
       >
         <div className="min-w-0" data-tauri-drag-region>
-          <h1 className="truncate text-base font-semibold text-ink">Research</h1>
+          <h1 className="truncate text-base font-semibold text-ink">{t("title")}</h1>
           <p className="truncate text-xs text-ink-muted">{workspaceName}</p>
         </div>
       </header>
@@ -40,28 +42,26 @@ export function ResearchView({ selectedResourceId, workspaceId, workspaceName }:
         <div className="mx-auto max-w-4xl">
           <div className="mb-5 flex items-center justify-between gap-4">
             <div>
-              <h2 className="text-lg font-semibold text-ink">Resources</h2>
+              <h2 className="text-lg font-semibold text-ink">{t("resources")}</h2>
               <p className="mt-1 text-sm text-ink-muted">
-                Artifacts promoted from chats and workspace runs become reusable research material here.
+                {t("description")}
               </p>
             </div>
             <div className="rounded-md border border-line-soft bg-surface-subtle px-3 py-2 text-sm text-ink-soft">
-              {resources.length}
-              {" "}
-              resources
+              {t("resourceCount", { count: resources.length })}
             </div>
           </div>
 
-          {loading ? <div className="py-4 text-sm text-ink-muted">Loading research resources...</div> : null}
+          {loading ? <div className="py-4 text-sm text-ink-muted">{t("loading")}</div> : null}
           {error ? <div className="rounded-md border border-danger-line bg-danger-soft p-3 text-sm text-danger">{error}</div> : null}
           {!loading && !error && !workspaceId
             ? (
-                <EmptyState title="No workspace selected" detail="Open a workspace or chat before collecting research resources." />
+                <EmptyState title={t("noWorkspaceTitle")} detail={t("noWorkspaceDetail")} />
               )
             : null}
           {!loading && !error && workspaceId && resources.length === 0
             ? (
-                <EmptyState title="No resources yet" detail="Use the Artifacts panel to add generated work into Research." />
+                <EmptyState title={t("noResourcesTitle")} detail={t("noResourcesDetail")} />
               )
             : null}
           {resources.length > 0
@@ -72,7 +72,7 @@ export function ResearchView({ selectedResourceId, workspaceId, workspaceName }:
                         <section className="rounded-md border border-info-line bg-accent-soft p-3">
                           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-accent">
                             <LocateFixed className="size-3.5" />
-                            Selected from chat
+                            {t("selectedFromChat")}
                           </div>
                           <ResearchResourceCard highlighted resource={selectedResource} />
                         </section>
@@ -100,6 +100,7 @@ function ResearchResourceCard({
   highlighted?: boolean;
   resource: StoredResearchResource;
 }) {
+  const { t } = useTranslation("research");
   return (
     <article className={highlighted ? "rounded-lg border border-info-line bg-surface p-4 shadow-xs" : "rounded-lg border border-line-soft bg-surface p-4"}>
       <div className="flex items-start gap-3">
@@ -112,7 +113,7 @@ function ResearchResourceCard({
               <h3 className="truncate text-sm font-semibold text-ink">{resource.title}</h3>
               <div className="mt-1 flex items-center gap-2">
                 <Badge>{resource.resourceType}</Badge>
-                {resource.sourceArtifactId ? <Badge tone="accent">Artifact</Badge> : null}
+                {resource.sourceArtifactId ? <Badge tone="accent">{t("artifact")}</Badge> : null}
                 <span className="text-xs text-ink-muted">{formatTime(storedTimeToIso(resource.createdAt))}</span>
               </div>
             </div>

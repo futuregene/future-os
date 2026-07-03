@@ -1,0 +1,135 @@
+{
+  "language": {
+    "title": "Language",
+    "description": "Choose the display language of the app"
+  },
+  "autoApprove": {
+    "title": "Auto-approve",
+    "description": "Permission requests will be approved automatically"
+  },
+  "showThinking": {
+    "title": "Show thinking process",
+    "description": "Display the model's reasoning in the conversation"
+  },
+  "dialog": {
+    "ariaLabel": "Settings",
+    "appName": "FutureOS Desktop",
+    "version": "v{{version}}",
+    "testBuild": "Test build",
+    "nav": {
+      "desktop": "Desktop",
+      "server": "Server",
+      "debug": "Debug"
+    },
+    "tabs": {
+      "general": "General",
+      "providers": "Providers",
+      "models": "Models",
+      "reset": "Reset"
+    }
+  },
+  "models": {
+    "searchPlaceholder": "Search models…",
+    "noModels": "No models loaded from the Agent. Make sure the Agent is running and signed in.",
+    "noMatch": "No matching models.",
+    "defaultModel": "Default model"
+  },
+  "providers": {
+    "loading": "Loading providers…",
+    "builtinTitle": "Built-in",
+    "customTitle": "Custom",
+    "addCustom": "+ Add custom provider",
+    "noCustom": "No custom providers yet.",
+    "hasApiKey": "Key configured",
+    "noApiKey": "No key configured",
+    "reLogin": "Sign in again",
+    "connect": "Connect",
+    "logout": "Sign out",
+    "confirmLogout": "Sign out?",
+    "logoutConfirm": "Sign out",
+    "cancel": "Cancel",
+    "edit": "Edit",
+    "remove": "Remove",
+    "confirmRemove": "Remove?",
+    "modelsCount_one": "{{baseUrl}} · {{count}} model",
+    "modelsCount_other": "{{baseUrl}} · {{count}} models",
+    "connected": "Connected to FutureGene. It takes effect for new sessions; if it doesn't, run future-cli agent restart."
+  },
+  "customProvider": {
+    "editTitle": "Edit custom provider",
+    "addTitle": "Add custom provider",
+    "description": "The provider is written to ~/.future/agent/models.json; the Agent may need a restart to load the new models.",
+    "cancel": "Cancel",
+    "save": "Save",
+    "saving": "Saving…",
+    "nameLabel": "Name",
+    "namePlaceholder": "e.g. DashScope",
+    "idLabel": "Provider ID",
+    "idPlaceholder": "e.g. dashscope-coding",
+    "apiTypeLabel": "API type",
+    "baseUrlLabel": "Base URL",
+    "baseUrlPlaceholder": "https://api.example.com/v1",
+    "apiKeyLabel": "API Key",
+    "apiKeyLabelEditing": "API Key (leave blank to keep unchanged)",
+    "apiKeyPlaceholder": "sk-…",
+    "modelsHeading": "Models",
+    "addModel": "+ Add model",
+    "noModels": "No models added yet.",
+    "modelIdPlaceholder": "Model ID",
+    "modelNamePlaceholder": "Display name",
+    "removeModel": "Remove model",
+    "errors": {
+      "idRequired": "Please enter a provider ID.",
+      "idLength": "Provider ID must be between {{min}} and {{max}} characters.",
+      "idPattern": "Provider ID may only contain lowercase letters, digits, '-' and '_'.",
+      "idExists": "That provider ID already exists, please choose another.",
+      "baseUrlRequired": "Please enter a Base URL.",
+      "baseUrlInvalid": "Base URL must be a valid http/https address.",
+      "nameLength": "Provider name cannot exceed {{max}} characters.",
+      "namePattern": "Provider name may only contain letters, digits, spaces and _.()-; Chinese / emoji / full-width characters are not supported.",
+      "nameExists": "That provider name already exists, please choose another.",
+      "modelIdLength": "Model ID \"{{id}}\" is too long.",
+      "modelIdPattern": "Model ID \"{{id}}\" contains invalid characters.",
+      "modelIdDuplicate": "Model ID \"{{id}}\" is duplicated.",
+      "modelNameLength": "Model name \"{{name}}\" is too long.",
+      "modelsMax": "The number of models cannot exceed {{max}}."
+    }
+  },
+  "futureLogin": {
+    "title": "Connect FutureGene",
+    "description": "The authorization page has been opened in your browser; if it didn't open automatically, copy the link below to visit it manually.",
+    "cancel": "Cancel",
+    "retry": "Retry",
+    "gettingDeviceCode": "Getting device code…",
+    "verifyCode": "Verification code",
+    "copyCode": "Copy code",
+    "authLink": "Authorization link",
+    "copied": "Copied",
+    "copyLink": "Copy link",
+    "waiting": "After confirming the code and authorizing in your browser, the connection will complete automatically here…",
+    "expired": "The authorization code has expired, please try again.",
+    "denied": "Authorization was denied.",
+    "failed": "Authorization failed.",
+    "connectFailed": "Connection failed."
+  },
+  "reset": {
+    "environmentTitle": "Environment",
+    "environmentProduction": "Production",
+    "environmentTest": "Test",
+    "switchEnvironment": "Switch environment",
+    "switchEnvironmentDescription": "Switch the sign-in and API endpoints between production and test. Switching clears the current sign-in and restarts the app automatically; you'll need to sign in again in the new environment.",
+    "loading": "Loading…",
+    "customEnvironment": "Custom environment",
+    "switch": "Switch and restart",
+    "switching": "Switching…",
+    "current": "Current: ",
+    "unknown": "Unknown",
+    "resetTitle": "Reset",
+    "clearData": "Clear data",
+    "clearDataDescription": "Clear the GUI local database and temporary workspace (chats, background programs, review records, etc.); the app restarts automatically when done. Sign-in and provider settings are unaffected. This action cannot be undone.",
+    "confirmClear": "Clear all local data and restart?",
+    "clearing": "Clearing…",
+    "confirmClearButton": "Confirm clear",
+    "cancel": "Cancel"
+  }
+}
