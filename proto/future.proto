@@ -134,31 +134,11 @@ message RpcCommand {
 // policy to decide when to raise approval requests. See gui/SANDBOX_PLAN.md.
 
 message SandboxPolicy {
-  // "read-only" | "workspace-write" | "danger-full-access".
-  string sandbox_mode = 1;
-
-  // Extra writable roots beyond the workspace. The workspace and the system
-  // temp dirs are always writable and are added by the agent — do not list
-  // them here (they would go stale if the workspace moves).
-  repeated string writable_roots = 2;
-
-  // Whether sandboxed commands may use the network.
-  bool network_access = 3;
-
-  // "untrusted" | "on-request" | "never".
-  string approval_policy = 4;
-
-  // Flattened effective approval rules (session-level included).
-  repeated SandboxRule rules = 5;
-}
-
-message SandboxRule {
-  // "command_prefix" | "path_glob".
-  string match_kind = 1;
-  // Wildcard pattern (* and ?).
-  string match_value = 2;
-  // "approve" (skip approval, still sandboxed) | "reject".
-  string decision = 3;
+  // v2: the rule system + OS sandbox collapse to a single switch. Rules now
+  // live in on-disk files the agent reads directly (see gui/APPROVAL_PLAN.md);
+  // only whether approval protection is on travels over the wire.
+  reserved 1 to 5;  // v1: sandbox_mode / writable_roots / network_access / approval_policy / rules
+  bool enabled = 6;
 }
 
 // ── ImageContent ───────────────────────────────────────────────────────────

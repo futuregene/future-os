@@ -133,19 +133,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             sandbox_policy: cmd
                 .sandbox_policy
                 .map(|policy| crate::sandbox::SandboxPolicy {
-                    mode: crate::sandbox::SandboxMode::parse(&policy.sandbox_mode),
-                    writable_roots: policy.writable_roots,
-                    network_access: policy.network_access,
-                    approval_policy: crate::sandbox::ApprovalPolicy::parse(&policy.approval_policy),
-                    rules: policy
-                        .rules
-                        .into_iter()
-                        .map(|rule| crate::sandbox::SandboxRule {
-                            match_kind: rule.match_kind,
-                            match_value: rule.match_value,
-                            decision: rule.decision,
-                        })
-                        .collect(),
+                    enabled: policy.enabled,
                 }),
         };
 

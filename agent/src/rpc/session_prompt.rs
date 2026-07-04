@@ -725,9 +725,22 @@ mod tests {
         });
         let agent_loop = Loop::new(provider, "mock").with_tools(coding_tools());
 
-        crate::tools::with_workspace_scope(
-            workspace.to_string_lossy().to_string(),
-            "workspace".to_string(),
+        // v2: the boundary only applies when the sandbox is enabled (GUI). A
+        // disabled/non-GUI session runs fully open, so enable it here.
+        let mut sandbox = crate::sandbox::ResolvedSandbox::resolve(
+            &crate::sandbox::SandboxPolicy { enabled: true },
+            workspace.to_string_lossy().as_ref(),
+        );
+        sandbox.available = false;
+        crate::tools::with_tool_scope(
+            crate::tools::ScopeOptions {
+                workspace: workspace.to_string_lossy().to_string(),
+                permission_level: "workspace".to_string(),
+                interrupt_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                sandbox: Arc::new(sandbox),
+                escalation: None,
+                on_sandboxed: None,
+            },
             async {
                 let _ = agent_loop
                     .run_streaming_with_messages(

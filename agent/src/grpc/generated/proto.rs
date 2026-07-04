@@ -83,37 +83,10 @@ pub struct RpcCommand {
     #[prost(message, optional, tag = "150")]
     pub sandbox_policy: ::core::option::Option<SandboxPolicy>,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct SandboxPolicy {
-    /// "read-only" | "workspace-write" | "danger-full-access".
-    #[prost(string, tag = "1")]
-    pub sandbox_mode: ::prost::alloc::string::String,
-    /// Extra writable roots beyond the workspace. The workspace and the system
-    /// temp dirs are always writable and are added by the agent — do not list
-    /// them here (they would go stale if the workspace moves).
-    #[prost(string, repeated, tag = "2")]
-    pub writable_roots: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// Whether sandboxed commands may use the network.
-    #[prost(bool, tag = "3")]
-    pub network_access: bool,
-    /// "untrusted" | "on-request" | "never".
-    #[prost(string, tag = "4")]
-    pub approval_policy: ::prost::alloc::string::String,
-    /// Flattened effective approval rules (session-level included).
-    #[prost(message, repeated, tag = "5")]
-    pub rules: ::prost::alloc::vec::Vec<SandboxRule>,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SandboxRule {
-    /// "command_prefix" | "path_glob".
-    #[prost(string, tag = "1")]
-    pub match_kind: ::prost::alloc::string::String,
-    /// Wildcard pattern (* and ?).
-    #[prost(string, tag = "2")]
-    pub match_value: ::prost::alloc::string::String,
-    /// "approve" (skip approval, still sandboxed) | "reject".
-    #[prost(string, tag = "3")]
-    pub decision: ::prost::alloc::string::String,
+    #[prost(bool, tag = "6")]
+    pub enabled: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ImageContent {

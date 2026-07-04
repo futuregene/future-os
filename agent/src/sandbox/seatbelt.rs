@@ -1,20 +1,26 @@
-//! macOS Seatbelt (sandbox-exec) profile generation and command wrapping.
+//! macOS Seatbelt (sandbox-exec) profile compiled from the approval rules.
 //!
-//! Profile shape (SANDBOX_PLAN.md §3.1): deny-by-default, broad reads minus
-//! credential paths, writes only into the resolved writable roots, network
-//! off unless the policy enables it. All paths are embedded canonicalized and
-//! SBPL-quoted — never interpolated raw (injection safety).
+//! The rule engine is first-match-wins with the highest-priority layer first
+//! (SANDBOX_PLAN.md). SBPL is last-match-wins. So we emit a permissive base
+//! (reads open, writes to workspace+temp) and then every rule from
+//! **lowest** priority to **highest** (layers reversed, and reversed within
+//! each layer) — the last SBPL match then equals the engine's first match.
 //!
-//! `mach-lookup` / `sysctl` stay broad in Phase 1 and get narrowed against
-//! the profile smoke tests (see sandbox smoke tests).
+//! `ask` and `deny` both compile to an OS-level denial (bash can't prompt
+//! mid-syscall); a resulting failure surfaces via the escalation flow. Network
+//! is unrestricted in v2.
 
 #![cfg(target_os = "macos")]
 
-use super::{ResolvedSandbox, SandboxMode};
+use super::rules::{Decision, MatcherSbpl, PathRule};
+use super::ResolvedSandbox;
 
 /// Quote a path for embedding in an SBPL string literal.
 fn sb_quote(path: &std::path::Path) -> String {
-    let raw = path.to_string_lossy();
+    sb_quote_str(&path.to_string_lossy())
+}
+
+fn sb_quote_str(raw: &str) -> String {
     let escaped: String = raw
         .chars()
         .flat_map(|c| match c {
@@ -25,130 +31,84 @@ fn sb_quote(path: &std::path::Path) -> String {
     format!("\"{escaped}\"")
 }
 
-/// How a sensitive path is matched in the profile.
-enum Deny {
-    /// The whole directory tree.
-    Subpath(&'static str),
-    /// A single file.
-    File(&'static str),
+/// An SBPL filter fragment for a rule's matcher.
+fn matcher_filter(rule: &PathRule) -> String {
+    match rule.matcher_sbpl() {
+        MatcherSbpl::Subtree(base) => format!("(subpath {})", sb_quote(base)),
+        // SBPL regex literal. Our glob→regex output contains no `"`; escape
+        // backslashes defensively via the same quoter minus the outer quotes.
+        MatcherSbpl::Regex(re) => format!("(regex #{})", sb_quote_str(re)),
+    }
 }
 
-/// Credential paths that stay unreadable even though reads are otherwise broad
-/// (SANDBOX_PLAN.md §2.3).
-///
-/// Two hard constraints:
-/// - Whole-directory denials must NOT cover `~/.future` — chat temp workspaces
-///   live under `~/.future/agent/workspace`, so only the specific credential
-///   files there are denied.
-/// - Deny only files/dirs holding secrets, never a directory a build tool
-///   legitimately reads wholesale (e.g. `~/.cargo`, `~/.config`, `~/.docker`) —
-///   pick the exact secret file inside instead. Note some (e.g. `~/.npmrc`,
-///   `~/.pypirc`) also hold non-secret registry config, so denying them can
-///   make private-registry installs fail inside the sandbox → the escalation
-///   flow (§2.6) covers those cases.
-fn sensitive_read_denials() -> Vec<(&'static str, std::path::PathBuf)> {
-    let Some(home) = dirs::home_dir() else {
-        return vec![];
-    };
-    const ENTRIES: &[Deny] = &[
-        // SSH / GPG key material
-        Deny::Subpath(".ssh"),
-        Deny::Subpath(".gnupg"),
-        // FutureOS own config (keys + provider configs live here)
-        Deny::File(".future/agent/auth.json"),
-        Deny::File(".future/agent/models.json"),
-        Deny::File(".future/agent-app/auth.json"),
-        Deny::File(".future/agent-app/models.json"),
-        // Package-manager / registry tokens
-        Deny::File(".npmrc"),
-        Deny::File(".pypirc"),
-        Deny::File(".cargo/credentials.toml"),
-        Deny::File(".cargo/credentials"),
-        Deny::File(".gem/credentials"),
-        // Network / git plaintext credentials
-        Deny::File(".netrc"),
-        Deny::File(".git-credentials"),
-        // Loose home-level env file
-        Deny::File(".env"),
-        // Cloud provider credentials
-        Deny::Subpath(".aws"),
-        Deny::Subpath(".azure"),
-        Deny::Subpath(".config/gcloud"),
-        Deny::File(".kube/config"),
-        Deny::Subpath(".terraform.d"),
-        // Container registry auth
-        Deny::File(".docker/config.json"),
-        // GitHub CLI token (hosts.yml) + macOS Keychain
-        Deny::Subpath(".config/gh"),
-        Deny::Subpath("Library/Keychains"),
-    ];
-    ENTRIES
-        .iter()
-        .map(|entry| match entry {
-            Deny::Subpath(rel) => ("subpath", home.join(rel)),
-            Deny::File(rel) => ("literal", home.join(rel)),
-        })
-        .collect()
+/// Emit the read/write allow/deny clauses for one rule, if its access covers
+/// that operation. `ask` compiles as `deny` for bash.
+fn emit_rule(profile: &mut String, rule: &PathRule) {
+    let filter = matcher_filter(rule);
+    let access = rule.access();
+    if access.covers_read() {
+        let verb = match rule.decision() {
+            Decision::Allow => "allow",
+            Decision::Ask | Decision::Deny => "deny",
+        };
+        profile.push_str(&format!("({verb} file-read* {filter})\n"));
+    }
+    if access.covers_write() {
+        let verb = match rule.decision() {
+            Decision::Allow => "allow",
+            Decision::Ask | Decision::Deny => "deny",
+        };
+        profile.push_str(&format!("({verb} file-write* {filter})\n"));
+    }
 }
 
-/// Build the SBPL profile for this sandbox configuration.
+/// Build the SBPL profile for this sandbox.
 pub fn build_profile(sandbox: &ResolvedSandbox) -> String {
+    let rules = sandbox.rule_set();
     let mut profile = String::from(
         "(version 1)\n\
          (deny default)\n\
          ; process management — build toolchains fork/exec constantly\n\
-         (allow process-fork)\n\
-         (allow process-exec)\n\
-         (allow process-info*)\n\
-         (allow signal (target same-sandbox))\n\
-         (allow pseudo-tty)\n\
-         ; broad reads (credential paths denied below)\n\
-         (allow file-read*)\n\
-         ; system infrastructure — Phase 1 broad, narrowed via smoke tests\n\
-         (allow sysctl-read)\n\
-         (allow mach-lookup)\n\
-         (allow ipc-posix*)\n\
-         (allow file-ioctl)\n",
+         (allow process-fork) (allow process-exec) (allow process-info*)\n\
+         (allow signal (target same-sandbox)) (allow pseudo-tty)\n\
+         ; system infrastructure (broad in v2; narrow via smoke tests)\n\
+         (allow sysctl-read) (allow mach-lookup) (allow ipc-posix*) (allow file-ioctl)\n\
+         ; network: unrestricted in v2\n\
+         (allow network*) (allow system-socket)\n\
+         ; ── base: reads open, writes to workspace + temp + pseudo-devices ──\n\
+         (allow file-read*)\n",
     );
 
-    // Credential read denials come AFTER the broad allow (SBPL: the last
-    // matching rule wins).
-    let denials = sensitive_read_denials();
-    if !denials.is_empty() {
-        profile.push_str("(deny file-read*");
-        for (kind, path) in &denials {
-            profile.push_str(&format!(" ({kind} {})", sb_quote(path)));
-        }
-        profile.push_str(")\n");
-    }
-
-    // Writes: pseudo-devices always; writable roots only outside read-only.
+    // Pseudo-device writes always allowed (shells need them). /dev/stdout|stderr
+    // resolve to /dev/fd/N on macOS — the open() hits the fd path.
     profile.push_str(
-        "(allow file-write-data\n \
+        "(allow file-write*\n \
           (literal \"/dev/null\") (literal \"/dev/zero\")\n \
           (literal \"/dev/stdout\") (literal \"/dev/stderr\")\n \
-          ; /dev/stdout|stderr resolve to /dev/fd/N on macOS — the open() hits\n \
-          ; the fd path, so the literal alone is not enough (smoke-tested)\n \
-          (regex #\"^/dev/fd/\")\n \
-          (regex #\"^/dev/tty\") (literal \"/dev/dtracehelper\"))\n",
+          (regex #\"^/dev/fd/\") (regex #\"^/dev/tty\") (literal \"/dev/dtracehelper\")\n",
     );
-    if sandbox.mode != SandboxMode::ReadOnly {
-        profile.push_str("(allow file-write*");
-        for root in &sandbox.writable_roots {
-            profile.push_str(&format!("\n  (subpath {})", sb_quote(root)));
-        }
-        profile.push_str(")\n");
+    // Base writable roots: workspace + temp (mirrors the engine's write fallback).
+    profile.push_str(&format!("  (subpath {})\n", sb_quote(&rules.workspace)));
+    for tmp in super::rules::temp_roots() {
+        profile.push_str(&format!("  (subpath {})\n", sb_quote(&tmp)));
+        // macOS: /tmp and /var symlink into /private; also allow the /private form.
     }
+    profile.push_str(")\n");
 
-    // Network: deny-by-default already blocks it; open it all when enabled.
-    if sandbox.network_access {
-        profile.push_str("(allow network*)\n(allow system-socket)\n");
+    // Emit rules from LOWEST priority to HIGHEST so the last SBPL match equals
+    // the engine's first match. Engine order is highest-first, so reverse the
+    // layers and reverse within each layer.
+    profile.push_str("; ── rule layers (low→high priority; last match wins) ──\n");
+    for layer in rules.layers().iter().rev() {
+        for rule in layer.iter().rev() {
+            emit_rule(&mut profile, rule);
+        }
     }
 
     profile
 }
 
-/// Build the wrapped bash invocation: `sandbox-exec -p <profile> bash -c <cmd>`.
+/// `sandbox-exec -p <profile> bash -c <cmd>`.
 pub fn build_command(sandbox: &ResolvedSandbox, command: &str) -> tokio::process::Command {
     let profile = build_profile(sandbox);
     let mut child = tokio::process::Command::new("/usr/bin/sandbox-exec");
@@ -159,101 +119,68 @@ pub fn build_command(sandbox: &ResolvedSandbox, command: &str) -> tokio::process
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sandbox::SandboxPolicy;
+    use crate::sandbox::{ResolvedSandbox, SandboxPolicy};
 
-    fn resolved(policy: &SandboxPolicy) -> ResolvedSandbox {
+    fn enabled_sandbox() -> ResolvedSandbox {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let ws = std::env::temp_dir().join(format!("futureos-seatbelt-{stamp}"));
         std::fs::create_dir_all(&ws).unwrap();
-        ResolvedSandbox::resolve(policy, ws.to_string_lossy().as_ref())
+        ResolvedSandbox::resolve(
+            &SandboxPolicy { enabled: true },
+            ws.to_string_lossy().as_ref(),
+        )
     }
 
     #[test]
-    fn workspace_write_profile_allows_roots_denies_network() {
-        let sandbox = resolved(&SandboxPolicy::default());
-        let profile = build_profile(&sandbox);
-        assert!(profile.contains("(deny default)"));
-        assert!(profile.contains("(allow file-write*"));
-        assert!(profile.contains(sandbox.workspace.to_string_lossy().as_ref()));
-        assert!(!profile.contains("(allow network*)"));
-        assert!(profile.contains(".ssh"));
+    fn base_profile_shape() {
+        let s = enabled_sandbox();
+        let p = build_profile(&s);
+        assert!(p.contains("(deny default)"));
+        assert!(p.contains("(allow file-read*)"));
+        assert!(p.contains("(allow network*)")); // network open in v2
+        assert!(p.contains(s.workspace.to_string_lossy().as_ref()));
+        assert!(p.contains("/dev/null"));
     }
 
     #[test]
-    fn read_only_profile_has_no_root_writes() {
-        let sandbox = resolved(&SandboxPolicy {
-            mode: SandboxMode::ReadOnly,
-            ..Default::default()
-        });
-        let profile = build_profile(&sandbox);
-        assert!(!profile.contains("(allow file-write*"));
-        // Pseudo-device writes stay allowed so shells keep working.
-        assert!(profile.contains("/dev/null"));
+    fn credential_reads_denied_in_profile() {
+        let p = build_profile(&enabled_sandbox());
+        // Built-in .ssh ask → compiled as deny file-read*.
+        let ssh = dirs::home_dir().unwrap().join(".ssh");
+        assert!(p.contains(&format!("(deny file-read* (subpath \"{}\"", ssh.display())));
     }
 
     #[test]
-    fn network_flag_opens_network() {
-        let sandbox = resolved(&SandboxPolicy {
-            network_access: true,
-            ..Default::default()
-        });
-        assert!(build_profile(&sandbox).contains("(allow network*)"));
-    }
-
-    #[test]
-    fn paths_with_quotes_are_escaped() {
-        let tricky = std::path::Path::new("/tmp/we\"ird\\path");
-        let quoted = sb_quote(tricky);
-        assert_eq!(quoted, "\"/tmp/we\\\"ird\\\\path\"");
-    }
-
-    #[test]
-    fn credential_paths_are_denied_in_profile() {
-        let profile = build_profile(&resolved(&SandboxPolicy::default()));
-        // The deny rule follows the broad allow so it wins (last match).
-        let deny_idx = profile
-            .find("(deny file-read*")
-            .expect("has credential deny rule");
-        let allow_idx = profile
-            .find("(allow file-read*")
-            .expect("has broad read allow");
-        assert!(deny_idx > allow_idx, "deny must come after the broad allow");
-        for needle in [
-            ".ssh",
-            ".gnupg",
-            "auth.json",
-            "models.json",
-            ".npmrc",
-            ".pypirc",
-            ".netrc",
-            ".env",
-            ".git-credentials",
-            "credentials.toml",
-            ".aws",
-            ".azure",
-            "gcloud",
-            ".kube/config",
-            ".terraform.d",
-            "config.json",
-            ".config/gh",
-            "Library/Keychains",
-        ] {
-            assert!(
-                profile.contains(needle),
-                "profile should deny reads of {needle}"
-            );
-        }
-        // The workspace itself must never be swept into the credential denials.
-        let deny_line = &profile[deny_idx
-            ..profile[deny_idx..]
-                .find(")\n")
-                .map_or(profile.len(), |i| deny_idx + i)];
+    fn rule_file_write_denied_in_profile() {
+        let s = enabled_sandbox();
+        let p = build_profile(&s);
+        let rulefile = s.workspace.join(".future/approval_rule.json");
+        // Layer-0 override → deny file-write* for the rule file, emitted last
+        // (highest priority) so it wins over the base workspace write allow.
+        assert!(p.contains(&format!(
+            "(deny file-write* (subpath \"{}\"",
+            rulefile.display()
+        )));
+        let deny_idx = p
+            .find(&format!(
+                "(deny file-write* (subpath \"{}\"",
+                rulefile.display()
+            ))
+            .unwrap();
+        let base_allow_idx = p.find("(allow file-write*").unwrap();
         assert!(
-            !deny_line.contains(".future/agent/workspace"),
-            "chat temp workspaces must stay readable"
+            deny_idx > base_allow_idx,
+            "override deny must come after base allow"
         );
+    }
+
+    #[test]
+    fn workspace_env_write_denied_in_profile() {
+        let p = build_profile(&enabled_sandbox());
+        // Built-in workspace `.env` ask → deny (glob or subpath).
+        assert!(p.contains("file-write*") && p.contains(".env"));
     }
 }

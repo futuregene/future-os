@@ -162,7 +162,7 @@ v1（原 Phase 1 + Phase 2）已全部实现并通过验证（agent 67 测 + GUI
 ## 9. 明确不做
 
 - 命令级审批规则（allow/ask/deny by command prefix）——纯文件模型，试用后再评估（APPROVAL_PLAN §8）。
-- 网络审批 / 域名过滤——schema 留 `domain` 规则位；将来经"Seatbelt 锁出口到本地代理 + 代理读 CONNECT/SNI"实现，本版不做。
+- 网络审批 / 域名过滤——不做。将来若确需，经"Seatbelt 锁出口到本地代理 + 代理读 CONNECT/SNI"实现，届时再加规则类型（本版 schema 不预留）。
 - escalation 精确放宽（只开单项权限）。
 - Windows 原生沙盒；bwrap 捆绑 helper。
 - `auto_review`（审查 agent 作 reviewer）。

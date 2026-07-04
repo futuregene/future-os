@@ -868,26 +868,22 @@ fn ensure_workspace_access(_workspace: &Path, path: &Path) -> Result<()> {
     let sandbox = TOOL_SCOPE
         .try_with(|scope| scope.sandbox.clone())
         .unwrap_or_default();
-    match sandbox.mode {
-        crate::sandbox::SandboxMode::DangerFullAccess => Ok(()),
-        crate::sandbox::SandboxMode::ReadOnly => Err(anyhow!(
-            "Sandbox mode is read-only; writing {} requires approval.",
+    // Disabled (non-GUI) sessions run fully open; otherwise the write must
+    // resolve to Allow (the before_tool_call hook already prompted for Ask and
+    // recorded approved paths above).
+    if !sandbox.enabled {
+        return Ok(());
+    }
+    match sandbox.evaluate(&candidate, crate::sandbox::rules::Op::Write) {
+        crate::sandbox::rules::Decision::Allow => Ok(()),
+        crate::sandbox::rules::Decision::Deny => Err(anyhow!(
+            "Writing {} is denied by an approval rule.",
             candidate.display()
         )),
-        crate::sandbox::SandboxMode::WorkspaceWrite => {
-            if sandbox
-                .writable_roots
-                .iter()
-                .any(|root| crate::sandbox::paths::path_within(&candidate, root))
-            {
-                Ok(())
-            } else {
-                Err(anyhow!(
-                    "Path is outside the writable roots and requires approval: {}",
-                    candidate.display()
-                ))
-            }
-        }
+        crate::sandbox::rules::Decision::Ask => Err(anyhow!(
+            "Path is outside the writable area and requires approval: {}",
+            candidate.display()
+        )),
     }
 }
 
@@ -966,12 +962,11 @@ mod tests {
             .join("outside.txt")
     }
 
-    /// A tool scope with an active workspace-write sandbox policy (temp dirs
-    /// are writable roots), OS wrapping disabled so only the boundary check is
-    /// exercised. Mirrors what the GUI opts into.
+    /// A tool scope with the sandbox ENABLED (rules active), OS wrapping off so
+    /// only the application-layer boundary check is exercised. Mirrors GUI.
     fn active_policy_scope(workspace: &Path) -> ScopeOptions {
         let mut sandbox = crate::sandbox::ResolvedSandbox::resolve(
-            &crate::sandbox::SandboxPolicy::default(),
+            &crate::sandbox::SandboxPolicy { enabled: true },
             workspace.to_string_lossy().as_ref(),
         );
         sandbox.available = false;
@@ -986,14 +981,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scoped_workspace_rejects_unapproved_absolute_outside_write() {
+    async fn enabled_scope_rejects_unapproved_absolute_outside_write() {
         let workspace = test_path("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
         let outside = outside_root_path("reject");
-        let workspace_string = workspace.to_string_lossy().to_string();
         let outside_string = outside.to_string_lossy().to_string();
 
-        let result = with_workspace_scope(workspace_string, "workspace".to_string(), async {
+        let result = with_tool_scope(active_policy_scope(&workspace), async {
             run_write(&outside_string, "no").await
         })
         .await;
@@ -1003,26 +997,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_policy_scope_rejects_temp_dir_writes() {
-        // Dormant default (no policy): temp dirs are NOT writable roots — this
-        // is the legacy boundary that TUI/CLI/channels keep. `/tmp` writes
-        // still require approval, exactly as before the sandbox existed.
-        let workspace = test_path("ws-no-policy");
+    async fn disabled_scope_is_fully_open() {
+        // Non-GUI sessions (no policy) run fully open: even an outside write
+        // succeeds (v2 decision — the sandbox is dormant unless GUI enables it).
+        let workspace = test_path("ws-disabled");
         std::fs::create_dir_all(&workspace).unwrap();
-        let tmp_target = test_path("legacy-tmp-write.txt");
+        let tmp_target = test_path("open-write.txt");
 
         let result = with_workspace_scope(
             workspace.to_string_lossy().to_string(),
             "workspace".to_string(),
-            async { run_write(&tmp_target.to_string_lossy(), "no").await },
+            async { run_write(&tmp_target.to_string_lossy(), "ok").await },
         )
         .await;
 
         assert!(
-            result.is_err(),
-            "legacy path must not auto-allow temp writes"
+            result.is_ok(),
+            "disabled scope should allow any write: {result:?}"
         );
-        assert!(!tmp_target.exists());
+        assert_eq!(std::fs::read_to_string(&tmp_target).unwrap(), "ok");
     }
 
     #[tokio::test]
@@ -1061,11 +1054,9 @@ mod tests {
         std::fs::create_dir_all(&outside_dir).unwrap();
         let target = link.join("file.txt");
 
-        let result = with_workspace_scope(
-            workspace.to_string_lossy().to_string(),
-            "workspace".to_string(),
-            async { run_write(&target.to_string_lossy(), "no").await },
-        )
+        let result = with_tool_scope(active_policy_scope(&workspace), async {
+            run_write(&target.to_string_lossy(), "no").await
+        })
         .await;
 
         std::fs::remove_dir_all(&outside_dir).ok();
@@ -1081,7 +1072,7 @@ mod tests {
         calls: Arc<Mutex<Vec<EscalationRequest>>>,
     ) -> ScopeOptions {
         let mut sandbox = crate::sandbox::ResolvedSandbox::resolve(
-            &crate::sandbox::SandboxPolicy::default(),
+            &crate::sandbox::SandboxPolicy { enabled: true },
             workspace.to_string_lossy().as_ref(),
         );
         sandbox.available = available;
@@ -1180,35 +1171,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_only_mode_rejects_workspace_writes() {
-        let workspace = test_path("ws-readonly");
+    async fn enabled_scope_denies_unapproved_workspace_secret_write() {
+        // `.env` inside the workspace is a built-in ask; a direct write that
+        // never went through approval is rejected by ensure_workspace_access.
+        let workspace = test_path("ws-secret");
         std::fs::create_dir_all(&workspace).unwrap();
-        let inside = workspace.join("f.txt");
+        let env_file = workspace.join(".env");
 
-        let mut sandbox = crate::sandbox::ResolvedSandbox::resolve(
-            &crate::sandbox::SandboxPolicy {
-                mode: crate::sandbox::SandboxMode::ReadOnly,
-                ..Default::default()
-            },
-            workspace.to_string_lossy().as_ref(),
-        );
-        sandbox.available = false;
-
-        let result = with_tool_scope(
-            ScopeOptions {
-                workspace: workspace.to_string_lossy().to_string(),
-                permission_level: "workspace".to_string(),
-                interrupt_flag: Arc::new(AtomicBool::new(false)),
-                sandbox: Arc::new(sandbox),
-                escalation: None,
-                on_sandboxed: None,
-            },
-            async { run_write(&inside.to_string_lossy(), "no").await },
-        )
+        let result = with_tool_scope(active_policy_scope(&workspace), async {
+            run_write(&env_file.to_string_lossy(), "SECRET=1").await
+        })
         .await;
 
-        assert!(result.is_err(), "read-only mode should reject writes");
-        assert!(!inside.exists());
+        assert!(result.is_err(), "unapproved .env write should be rejected");
+        assert!(!env_file.exists());
     }
 
     #[tokio::test]
