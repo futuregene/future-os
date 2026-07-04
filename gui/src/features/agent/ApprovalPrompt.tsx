@@ -17,8 +17,6 @@ interface ApprovalPromptProps {
   onDecision: (approval: StoredApprovalRequest, status: "approved" | "rejected") => Promise<void>;
 }
 
-type Persistence = "session" | "always";
-
 export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
   const { t } = useTranslation("agent");
   const [error, setError] = useState<string | null>(null);
@@ -38,16 +36,15 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
     [action, approval.requestedAction],
   );
 
-  // Inline rule editor state: which persistence the user picked + the (editable)
-  // pattern to save. Null when the editor is closed.
-  const [ruleMode, setRuleMode] = useState<Persistence | null>(null);
+  // Inline "allow in this workspace" editor: the editable path glob to persist.
+  const [editorOpen, setEditorOpen] = useState(false);
   const [pattern, setPattern] = useState("");
 
-  const openRuleEditor = useCallback((mode: Persistence) => {
+  const openRuleEditor = useCallback(() => {
     if (!saveSuggestion)
       return;
-    setPattern(saveSuggestion.matchValue);
-    setRuleMode(mode);
+    setPattern(saveSuggestion.path);
+    setEditorOpen(true);
   }, [saveSuggestion]);
 
   const decide = useCallback(async (status: "approved" | "rejected") => {
@@ -67,9 +64,9 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
     }
   }, [approval, deciding, onDecision]);
 
-  // Save the (possibly edited) rule, then approve this call once.
+  // Save the (possibly edited) rule to the workspace file, then approve once.
   const confirmRule = useCallback(async () => {
-    if (deciding || !ruleMode || !saveSuggestion)
+    if (deciding || !editorOpen || !saveSuggestion)
       return;
     const trimmed = pattern.trim();
     if (!trimmed) {
@@ -81,9 +78,8 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
     try {
       await saveApprovalRule({
         threadId: approval.threadId,
-        matchKind: saveSuggestion.matchKind,
-        matchValue: trimmed,
-        persistence: ruleMode,
+        path: trimmed,
+        access: saveSuggestion.access,
       });
       await onDecision(approval, "approved");
     }
@@ -91,7 +87,7 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
       setError(reason instanceof Error ? reason.message : String(reason));
       setDeciding(null);
     }
-  }, [approval, deciding, onDecision, pattern, ruleMode, saveSuggestion, t]);
+  }, [approval, deciding, editorOpen, onDecision, pattern, saveSuggestion, t]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -109,8 +105,8 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
       if (event.key === "Escape") {
         event.preventDefault();
         // Esc closes the rule editor first, then rejects on a second press.
-        if (ruleMode !== null) {
-          setRuleMode(null);
+        if (editorOpen) {
+          setEditorOpen(false);
           return;
         }
         void decide("rejected");
@@ -119,7 +115,7 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [decide, deciding, ruleMode]);
+  }, [decide, deciding, editorOpen]);
 
   return (
     <section className="rounded-lg border border-line bg-surface/95 p-4 shadow-panel backdrop-blur">
@@ -161,11 +157,11 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
             </div>
           )
         : null}
-      {ruleMode !== null && saveSuggestion
+      {editorOpen && saveSuggestion
         ? (
             <div className="mt-3 rounded-md border border-line-soft bg-surface-subtle p-3">
               <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
-                {ruleMode === "always" ? t("approval.ruleSaveAlways") : t("approval.ruleSaveSession")}
+                {t("approval.ruleSaveWorkspace")}
               </div>
               <TextInput
                 autoFocus
@@ -180,7 +176,7 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
                 value={pattern}
               />
               <div className="mt-2 flex items-center justify-end gap-2">
-                <Button disabled={deciding !== null} onClick={() => setRuleMode(null)} variant="toolbar">
+                <Button disabled={deciding !== null} onClick={() => setEditorOpen(false)} variant="toolbar">
                   {t("approval.ruleCancel")}
                 </Button>
                 <Button
@@ -208,22 +204,13 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
         <div className="flex items-center gap-2">
           {saveSuggestion
             ? (
-                <>
-                  <Button
-                    disabled={deciding !== null}
-                    onClick={() => openRuleEditor("session")}
-                    variant="toolbar"
-                  >
-                    {t("approval.allowSession")}
-                  </Button>
-                  <Button
-                    disabled={deciding !== null}
-                    onClick={() => openRuleEditor("always")}
-                    variant="toolbar"
-                  >
-                    {t("approval.allowAlways")}
-                  </Button>
-                </>
+                <Button
+                  disabled={deciding !== null}
+                  onClick={() => openRuleEditor()}
+                  variant="toolbar"
+                >
+                  {t("approval.allowWorkspace")}
+                </Button>
               )
             : null}
           <Button
@@ -253,17 +240,12 @@ function parseSaveSuggestion(payload: string | null | undefined): ApprovalSaveSu
   }
   if (
     !isRecord(parsed)
-    || typeof parsed.match_kind !== "string"
-    || typeof parsed.match_value !== "string"
-    || typeof parsed.decision !== "string"
+    || typeof parsed.path !== "string"
+    || typeof parsed.access !== "string"
   ) {
     return null;
   }
-  return {
-    decision: parsed.decision,
-    matchKind: parsed.match_kind,
-    matchValue: parsed.match_value,
-  };
+  return { access: parsed.access, path: parsed.path };
 }
 
 interface ActionDetailsProps {

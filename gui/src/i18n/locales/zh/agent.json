@@ -128,13 +128,11 @@
     "deny": "拒绝",
     "allowing": "允许中",
     "allowOnce": "允许一次",
-    "allowSession": "本会话允许",
-    "allowAlways": "始终允许",
-    "ruleSaveSession": "本会话内自动允许匹配此模式的操作（可编辑）",
-    "ruleSaveAlways": "始终自动允许匹配此模式的操作（可编辑）",
+    "allowWorkspace": "本工作区允许",
+    "ruleSaveWorkspace": "在本工作区自动允许匹配此路径的操作（写入 .future/approval_rule.json，可编辑）",
     "ruleConfirm": "保存并允许",
     "ruleCancel": "取消",
-    "rulePatternRequired": "规则模式不能为空。"
+    "rulePatternRequired": "规则路径不能为空。"
   },
   "message": {
     "retry": "重试",

@@ -64,7 +64,9 @@ impl ApprovalGate {
             _ => return None,
         };
         let raw_path = argument_path(arguments)?;
-        let path = paths::resolve_against(Path::new(cwd), &raw_path);
+        // Canonicalize once so path_within / strip_prefix agree with the
+        // canonicalized sandbox.workspace (symlink + case correct, §3.5).
+        let path = paths::canonicalize_lenient(&paths::resolve_against(Path::new(cwd), &raw_path));
 
         match sandbox.evaluate(&path, op) {
             Decision::Allow => {
@@ -381,15 +383,21 @@ fn approval_shape(
         summary: summary.to_string(),
         action,
         sandbox_boundary: sandbox.boundary_json(Some(violation), false),
-        save_suggestion: path_save_suggestion(&path_str, op),
+        save_suggestion: path_save_suggestion(path, op, &sandbox.workspace),
     }
 }
 
 /// Suggested rule (v2 file format) for "allow in this workspace": everything in
-/// the target's parent directory, scoped to the same read/write op.
-fn path_save_suggestion(path: &str, op: Op) -> Option<serde_json::Value> {
-    let parent = std::path::Path::new(path).parent()?;
-    let glob = format!("{}/*", parent.to_string_lossy());
+/// the target's parent directory, scoped to the same read/write op. Paths
+/// inside the workspace are made **relative** (portable, git-friendly); outside
+/// paths stay absolute.
+fn path_save_suggestion(path: &Path, op: Op, workspace: &Path) -> Option<serde_json::Value> {
+    let parent = path.parent()?;
+    let glob = match parent.strip_prefix(workspace) {
+        Ok(rel) if rel.as_os_str().is_empty() => "*".to_string(),
+        Ok(rel) => format!("{}/*", rel.to_string_lossy()),
+        Err(_) => format!("{}/*", parent.to_string_lossy()),
+    };
     Some(serde_json::json!({
         "path": glob,
         "access": match op { Op::Read => "read", Op::Write => "write" },
@@ -589,7 +597,8 @@ mod tests {
     fn shape_for_write_is_structured() {
         let ws = temp_ws("shape");
         let sandbox = enabled(&ws);
-        let path = std::path::Path::new(&ws).join("sub/out.txt");
+        // Use the canonicalized workspace so the suggestion is workspace-relative.
+        let path = sandbox.workspace.join("sub/out.txt");
         let args = serde_json::json!({ "path": path.to_string_lossy(), "content": "hello" });
         let shape = approval_shape("write", &path, Op::Write, &args, &sandbox);
         assert_eq!(shape.action["tool"], "write");
@@ -598,7 +607,8 @@ mod tests {
         let sug = shape.save_suggestion.unwrap();
         assert_eq!(sug["access"], "write");
         assert_eq!(sug["action"], "allow");
-        assert!(sug["path"].as_str().unwrap().ends_with("/sub/*"));
+        // Inside the workspace → relative glob.
+        assert_eq!(sug["path"], "sub/*");
     }
 
     #[test]

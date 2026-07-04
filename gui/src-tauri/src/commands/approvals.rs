@@ -22,31 +22,27 @@ pub async fn decide_approval_request(
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveApprovalRuleInput {
-    /// Thread the rule was created from — resolves the target workspace.
+    /// Thread the rule was created from — resolves the target workspace dir.
     pub thread_id: String,
-    pub match_kind: String,
-    pub match_value: String,
-    /// "session" (this app run) or "always" (permanent).
-    pub persistence: String,
-    /// "workspace" (default) or "global".
-    #[serde(default)]
-    pub scope: Option<String>,
+    /// Path glob (workspace-relative, or `~`/absolute), possibly user-edited.
+    pub path: String,
+    /// "read" | "write".
+    pub access: String,
 }
 
-/// Persist a session/always-allow rule from an approval decision. The agent
-/// picks it up on the next prompt via `set_sandbox_policy` (§2.5).
+/// "Allow in this workspace": append an allow rule to the workspace's
+/// `.future/approval_rule.json` (APPROVAL_PLAN.md §6). The agent reads that
+/// file directly on its next prompt.
 #[tauri::command]
 pub fn save_approval_rule(input: SaveApprovalRuleInput) -> Result<(), crate::AppError> {
     let workspace_id = store::get_thread(&input.thread_id)?
         .map(|thread| thread.workspace_id)
         .ok_or_else(|| "Thread could not be loaded.".to_string())?;
-    let scope = input.scope.as_deref().unwrap_or("workspace");
-    store::save_approval_rule(
-        Some(&workspace_id),
-        scope,
-        &input.match_kind,
-        &input.match_value,
-        "approve",
-        &input.persistence,
+    let workspace = store::get_workspace(&workspace_id)?
+        .ok_or_else(|| "Workspace could not be loaded.".to_string())?;
+    crate::approval_rules::append_workspace_allow_rule(
+        &workspace.path,
+        &input.path,
+        &input.access,
     )
 }

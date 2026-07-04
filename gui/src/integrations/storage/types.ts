@@ -113,12 +113,11 @@ export interface StoredApprovalRequest {
   decisionSource: string;
 }
 
-// Phase 2: parsed save_suggestion — the rule pattern to persist on
-// session/always allow.
+// v2: parsed save_suggestion — the file rule to persist on "allow in this
+// workspace". `path` is a glob (workspace-relative, or ~/absolute).
 export interface ApprovalSaveSuggestion {
-  matchKind: string;
-  matchValue: string;
-  decision: string;
+  path: string;
+  access: string; // "read" | "write"
 }
 
 // P2: structured action payload (parsed from actionPayload JSON)

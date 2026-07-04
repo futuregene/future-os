@@ -1,6 +1,7 @@
 mod agent_bridge;
 mod agent_proto;
 mod agent_providers;
+mod approval_rules;
 mod agent_supervisor;
 mod auth_store;
 mod build_info;
@@ -128,11 +129,6 @@ pub fn run() {
             size_main_window_to_screen(app);
             if let Err(error) = store::initialize_app_store() {
                 eprintln!("FutureOS store initialization failed: {error}");
-            }
-            // Drop session-scoped approval rules from the previous app run
-            // (Phase 2 sandbox rules; "always" rules persist).
-            if let Err(error) = store::prune_session_rules() {
-                eprintln!("FutureOS approval-rule prune failed: {error}");
             }
             // Pin the FutureGene environment for this build channel before the
             // agent starts: release builds are production-locked, dev builds
