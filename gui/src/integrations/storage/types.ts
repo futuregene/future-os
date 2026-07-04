@@ -264,6 +264,14 @@ export interface StoredArtifact {
   deletedAt?: number | null;
 }
 
+/// A `futureos://file/<path>` reference resolved against a workspace file on
+/// disk (not the artifacts table). See `resolve.rs::ResolvedFile`.
+export interface StoredFile {
+  path: string;
+  name: string;
+  artifactType: string;
+}
+
 export interface StoredResearchResource {
   id: string;
   collectionId: string;

@@ -26,6 +26,7 @@ export function ApprovalPrompt({ approval, onDecision, threadMode }: ApprovalPro
   const [deciding, setDeciding] = useState<"approved" | "rejected" | null>(null);
 
   const action = useMemo(() => parseAction(approval.actionPayload), [approval.actionPayload]);
+  const isEscalation = approval.kind === "sandbox_escalation";
   const sandboxBoundary = useMemo(
     () => parseSandbox(approval.sandboxBoundary),
     [approval.sandboxBoundary],
@@ -125,11 +126,17 @@ export function ApprovalPrompt({ approval, onDecision, threadMode }: ApprovalPro
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <span className="size-2 shrink-0 rounded-full bg-warning" />
-          <h2 className="truncate text-base font-semibold text-ink">{approval.title}</h2>
+          <h2 className="truncate text-base font-semibold text-ink">
+            {isEscalation ? t("approval.escalationTitle") : approval.title}
+          </h2>
         </div>
       </div>
-      {approval.summary ? <p className="mt-2 text-sm leading-5 text-ink-soft">{approval.summary}</p> : null}
-      {sandboxBoundary?.violation
+      {/* Escalation's single explanation is the note in ActionDetails; the
+          agent summary would just repeat it, so only show it for other kinds. */}
+      {!isEscalation && approval.summary
+        ? <p className="mt-2 text-sm leading-5 text-ink-soft">{approval.summary}</p>
+        : null}
+      {!isEscalation && sandboxBoundary?.violation
         ? (
             <div className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-warning-line bg-warning-soft px-2 py-1 text-xs font-medium text-warning">
               <ShieldAlert className="size-3" />
