@@ -99,7 +99,7 @@ pub fn build_profile(sandbox: &ResolvedSandbox) -> String {
     // the engine's first match. Engine order is highest-first, so reverse the
     // layers and reverse within each layer.
     profile.push_str("; ── rule layers (low→high priority; last match wins) ──\n");
-    for layer in rules.layers().iter().rev() {
+    for layer in rules.profile_layers().iter().rev() {
         for rule in layer.iter().rev() {
             emit_rule(&mut profile, rule);
         }

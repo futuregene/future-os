@@ -376,6 +376,14 @@ fn approval_shape(
     } else {
         "outside_workspace_write"
     };
+    // Secret files are "allow once" only — never persistently allowed
+    // (Plan A). Suppress the save suggestion so the GUI hides the "allow in
+    // this workspace" button; only deny / allow-once remain.
+    let save_suggestion = if sandbox.is_secret_path(path) {
+        None
+    } else {
+        path_save_suggestion(path, op, &sandbox.workspace)
+    };
     ApprovalShape {
         kind,
         risk_level: "medium",
@@ -383,7 +391,7 @@ fn approval_shape(
         summary: summary.to_string(),
         action,
         sandbox_boundary: sandbox.boundary_json(Some(violation), false),
-        save_suggestion: path_save_suggestion(path, op, &sandbox.workspace),
+        save_suggestion,
     }
 }
 
@@ -612,14 +620,24 @@ mod tests {
     }
 
     #[test]
-    fn shape_for_read_has_read_suggestion() {
-        let ws = temp_ws("shape-read");
+    fn shape_for_secret_read_suppresses_suggestion() {
+        // A secret file (~/.ssh) has no "allow in this workspace" — allow-once only.
+        let ws = temp_ws("shape-secret");
         let sandbox = enabled(&ws);
-        let home = dirs::home_dir().unwrap();
-        let path = home.join(".ssh/id_rsa");
+        let path = dirs::home_dir().unwrap().join(".ssh/id_rsa");
         let args = serde_json::json!({ "path": path.to_string_lossy() });
         let shape = approval_shape("read", &path, Op::Read, &args, &sandbox);
         assert_eq!(shape.kind, "file_read");
+        assert!(shape.save_suggestion.is_none());
+    }
+
+    #[test]
+    fn shape_for_nonsecret_read_has_suggestion() {
+        let ws = temp_ws("shape-read");
+        let sandbox = enabled(&ws);
+        let path = sandbox.workspace.join("docs/readme.md");
+        let args = serde_json::json!({ "path": path.to_string_lossy() });
+        let shape = approval_shape("read", &path, Op::Read, &args, &sandbox);
         assert_eq!(shape.save_suggestion.unwrap()["access"], "read");
     }
 }

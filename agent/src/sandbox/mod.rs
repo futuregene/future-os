@@ -53,6 +53,29 @@ impl ResolvedSandbox {
         }
     }
 
+    /// Resolve sharing a session-rules handle so same-run "allow in this
+    /// workspace/chat" injections reach this live sandbox.
+    pub fn resolve_with_session(
+        policy: &SandboxPolicy,
+        workspace: &str,
+        session: rules::SessionRules,
+    ) -> Self {
+        let rules = RuleSet::resolve_with_session(Path::new(workspace), session);
+        Self {
+            enabled: policy.enabled,
+            available: platform_sandbox_available(),
+            workspace: rules.workspace.clone(),
+            rules,
+        }
+    }
+
+    /// Whether `path` (canonicalized internally) is a built-in secret — used to
+    /// suppress persistence of "allow in this workspace" for secret files.
+    pub fn is_secret_path(&self, path: &Path) -> bool {
+        self.rules
+            .is_secret_path(&paths::canonicalize_lenient(path))
+    }
+
     /// Fully-open sandbox: no rules, no OS wrapping, no approval. Used for
     /// non-GUI clients and bare unit tests.
     pub fn disabled(workspace: &str) -> Self {
@@ -81,7 +104,7 @@ impl ResolvedSandbox {
     }
 
     /// Add a runtime "allow in this workspace" rule for the rest of this run.
-    pub fn add_session_allow(&mut self, abs_pattern: &str, op: Op) {
+    pub fn add_session_allow(&self, abs_pattern: &str, op: Op) {
         let access = match op {
             Op::Read => rules::Access::Read,
             Op::Write => rules::Access::Write,

@@ -60,6 +60,9 @@ pub struct ServerSession {
     /// today that's just the GUI, which owns the approval UX. TUI / CLI /
     /// channels never send one, so they are unaffected.
     pub sandbox_policy: Option<crate::sandbox::SandboxPolicy>,
+    /// Runtime "allow in this workspace/chat" rules for the current run. Shared
+    /// into the live sandbox at prompt start; cleared each new run.
+    pub session_rules: crate::sandbox::rules::SessionRules,
 }
 
 /// Default workspace directory for new sessions.
@@ -136,6 +139,7 @@ impl ServerSession {
             approval_gate,
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
             sandbox_policy: None,
+            session_rules: std::sync::Arc::new(std::sync::Mutex::new(vec![])),
             compaction_model: Arc::new(std::sync::RwLock::new(String::new())),
         }
     }
@@ -189,6 +193,7 @@ impl ServerSession {
             approval_gate,
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
             sandbox_policy: None,
+            session_rules: std::sync::Arc::new(std::sync::Mutex::new(vec![])),
             compaction_model: Arc::new(std::sync::RwLock::new(String::new())),
         }
     }
@@ -617,6 +622,18 @@ impl ServerSession {
 
     pub fn set_sandbox_policy(&mut self, policy: crate::sandbox::SandboxPolicy) {
         self.sandbox_policy = Some(policy);
+    }
+
+    /// Inject a same-run "allow in this workspace/chat" rule (from the GUI, in
+    /// tandem with writing the rule file). Takes effect for the live run's
+    /// subsequent tool calls; the file carries it to future runs.
+    pub fn add_session_rule(&self, raw_pattern: &str, access: &str) {
+        crate::sandbox::rules::push_session_allow(
+            &self.session_rules,
+            std::path::Path::new(&self.cwd),
+            raw_pattern,
+            crate::sandbox::rules::Access::from_str(access),
+        );
     }
 
     pub fn get_permission_level(&self) -> &str {

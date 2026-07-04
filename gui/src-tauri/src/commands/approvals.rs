@@ -30,11 +30,11 @@ pub struct SaveApprovalRuleInput {
     pub access: String,
 }
 
-/// "Allow in this workspace": append an allow rule to the workspace's
-/// `.future/approval_rule.json` (APPROVAL_PLAN.md §6). The agent reads that
-/// file directly on its next prompt.
+/// "Allow in this workspace/chat": append an allow rule to the workspace's
+/// `.future/approval_rule.json` (persist, read next prompt) AND inject it into
+/// the live agent session (same-run effect — APPROVAL_PLAN.md §6).
 #[tauri::command]
-pub fn save_approval_rule(input: SaveApprovalRuleInput) -> Result<(), crate::AppError> {
+pub async fn save_approval_rule(input: SaveApprovalRuleInput) -> Result<(), crate::AppError> {
     let workspace_id = store::get_thread(&input.thread_id)?
         .map(|thread| thread.workspace_id)
         .ok_or_else(|| "Thread could not be loaded.".to_string())?;
@@ -44,5 +44,7 @@ pub fn save_approval_rule(input: SaveApprovalRuleInput) -> Result<(), crate::App
         &workspace.path,
         &input.path,
         &input.access,
-    )
+    )?;
+    // Same-run effect (best-effort — persistence above already succeeded).
+    agent_bridge::inject_session_rule(&input.thread_id, &input.path, &input.access).await
 }

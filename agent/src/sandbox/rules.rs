@@ -9,18 +9,26 @@
 //!
 //! - 0. built-in security overrides — rule-file writes → deny; app credential
 //!   files → read+write deny (unoverridable)
-//! - 1. session (runtime "allow in this workspace", current run)
-//! - 2. workspace rule file — `${WS}/.future/approval_rule.json`
-//! - 3. user rule file — `~/.future/approval_rule.json`
-//! - 4. built-in defaults — credential reads → ask
+//! - 1. guards — secret/credential paths (`.env`, `*.pem`, `~/.ssh` …) → ask,
+//!   unoverridable by the user layers below (a broad allow can't un-gate a
+//!   secret; secrets are "allow once" only)
+//! - 2. session — runtime "allow in this workspace/chat", current run
+//! - 3. workspace rule file — `${WS}/.future/approval_rule.json`
+//! - 4. user rule file — `~/.future/approval_rule.json`
 //! - fallback: read → allow; write → in workspace/temp ? allow : ask
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 
 use super::paths;
+
+/// Shared, mutable session rules — runtime "allow in this workspace/chat"
+/// injections that take effect for the rest of the current run without waiting
+/// for the rule file to be re-read next prompt.
+pub type SessionRules = Arc<Mutex<Vec<PathRule>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
@@ -281,10 +289,13 @@ pub fn builtin_overrides(workspace: &Path, home: Option<&Path>) -> Vec<PathRule>
     rules
 }
 
-/// Layer 4 (built-in defaults): credential/secret reads-and-writes → ask.
-/// Temp dirs are NOT here — they're part of the writable fallback, so they
-/// never shadow a secret rule. Overridable by the user layers above.
-pub fn builtin_defaults(workspace: &Path, home: Option<&Path>) -> Vec<PathRule> {
+/// Layer 1 (guards): credential/secret paths → ask. These sit ABOVE the user
+/// rule files, so a broad allow (`src/config/*`) can never silently un-gate a
+/// secret that lands in that directory. Secrets are therefore "allow once"
+/// only — never persistently allowed (a deliberate safety/simplicity choice,
+/// APPROVAL_PLAN.md §3). Temp dirs are NOT here — they're part of the writable
+/// fallback, so they never shadow a secret.
+pub fn builtin_guards(workspace: &Path, home: Option<&Path>) -> Vec<PathRule> {
     let mut rules = Vec::new();
 
     // Home-level credential / privacy paths → ask.
@@ -354,6 +365,9 @@ pub fn temp_roots() -> Vec<PathBuf> {
 // ─── Rule set + evaluation ──────────────────────────────────────────────────
 
 /// The fully-resolved, ordered rule layers for one session/workspace.
+/// Priority (highest first): overrides > guards > session > workspace > user >
+/// fallback. Guards (secrets) sit above the user layers so they can't be
+/// overridden by a broad allow.
 #[derive(Debug, Clone, Default)]
 pub struct RuleSet {
     pub workspace: PathBuf,
@@ -361,14 +375,20 @@ pub struct RuleSet {
     /// they can't shadow a secret ask).
     temp_roots: Vec<PathBuf>,
     overrides: Vec<PathRule>,
-    session: Vec<PathRule>,
+    guards: Vec<PathRule>,
+    session: SessionRules,
     workspace_rules: Vec<PathRule>,
     user_rules: Vec<PathRule>,
-    defaults: Vec<PathRule>,
 }
 
 impl RuleSet {
     pub fn resolve(workspace: &Path) -> Self {
+        Self::resolve_with_session(workspace, Arc::new(Mutex::new(vec![])))
+    }
+
+    /// Resolve, sharing `session` so runtime injections (same-run "allow in
+    /// this workspace") are visible to the live sandbox.
+    pub fn resolve_with_session(workspace: &Path, session: SessionRules) -> Self {
         let workspace = paths::canonicalize_lenient(workspace);
         let home = dirs::home_dir();
         let home_ref = home.as_deref();
@@ -391,30 +411,40 @@ impl RuleSet {
         Self {
             temp_roots: temp_roots(),
             overrides: builtin_overrides(&workspace, home_ref),
-            session: vec![],
+            guards: builtin_guards(&workspace, home_ref),
+            session,
             workspace_rules,
             user_rules,
-            defaults: builtin_defaults(&workspace, home_ref),
             workspace,
         }
     }
 
-    /// Add a runtime "allow in this workspace" rule that takes effect for the
-    /// rest of the current run (before the file re-read next prompt).
-    pub fn add_session_rule(&mut self, abs_pattern: &str, access: Access, decision: Decision) {
-        self.session
-            .push(PathRule::new(abs_pattern, access, decision));
+    /// Add a runtime allow rule (same-run "allow in this workspace/chat").
+    pub fn add_session_rule(&self, abs_pattern: &str, access: Access, decision: Decision) {
+        if let Ok(mut session) = self.session.lock() {
+            session.push(PathRule::new(abs_pattern, access, decision));
+        }
+    }
+
+    /// Whether `path` matches a built-in secret guard (either op). Used to
+    /// suppress the "allow in this workspace" persistence for secret files.
+    pub fn is_secret_path(&self, path: &Path) -> bool {
+        self.guards
+            .iter()
+            .any(|rule| rule.matches(path, Op::Read) || rule.matches(path, Op::Write))
     }
 
     /// Evaluate a file access. `path` should already be canonicalized by the
     /// caller (tools canonicalize before calling).
     pub fn evaluate(&self, path: &Path, op: Op) -> Decision {
+        let session = self.session.lock().ok();
+        let session_slice: &[PathRule] = session.as_deref().map_or(&[], |v| v.as_slice());
         for layer in [
-            &self.overrides,
-            &self.session,
-            &self.workspace_rules,
-            &self.user_rules,
-            &self.defaults,
+            self.overrides.as_slice(),
+            self.guards.as_slice(),
+            session_slice,
+            self.workspace_rules.as_slice(),
+            self.user_rules.as_slice(),
         ] {
             for rule in layer {
                 if rule.matches(path, op) {
@@ -437,15 +467,16 @@ impl RuleSet {
         }
     }
 
-    /// All rule layers in priority order (highest first), for the Seatbelt
-    /// profile builder to translate into SBPL allow/deny clauses.
-    pub fn layers(&self) -> [&[PathRule]; 5] {
-        [
-            &self.overrides,
-            &self.session,
-            &self.workspace_rules,
-            &self.user_rules,
-            &self.defaults,
+    /// All rule layers in priority order (highest first), snapshotted for the
+    /// Seatbelt profile builder (session is cloned under its lock).
+    pub fn profile_layers(&self) -> Vec<Vec<PathRule>> {
+        let session = self.session.lock().map(|s| s.clone()).unwrap_or_default();
+        vec![
+            self.overrides.clone(),
+            self.guards.clone(),
+            session,
+            self.workspace_rules.clone(),
+            self.user_rules.clone(),
         ]
     }
 }
@@ -472,6 +503,30 @@ impl PathRule {
 pub enum MatcherSbpl<'a> {
     Subtree(&'a Path),
     Regex(&'a str),
+}
+
+/// Push a runtime allow rule into a shared session-rules handle, resolving
+/// `raw_pattern` against `workspace` (same rules as file entries). Used by the
+/// RPC layer for same-run "allow in this workspace/chat".
+pub fn push_session_allow(
+    session: &SessionRules,
+    workspace: &Path,
+    raw_pattern: &str,
+    access: Access,
+) {
+    if let Ok(mut rules) = session.lock() {
+        rules.push(PathRule::new(
+            &absolutize(workspace, raw_pattern),
+            access,
+            Decision::Allow,
+        ));
+    }
+}
+
+impl Access {
+    pub fn from_str(value: &str) -> Access {
+        Access::parse(value)
+    }
 }
 
 impl Access {
@@ -555,7 +610,7 @@ mod tests {
     #[test]
     fn rule_file_write_is_denied_and_unoverridable() {
         let workspace = ws();
-        let mut set = RuleSet::resolve(&workspace);
+        let set = RuleSet::resolve(&workspace);
         let rulefile = workspace.join(".future/approval_rule.json");
         assert_eq!(set.evaluate(&rulefile, Op::Write), Decision::Deny);
         // Even a session allow can't override the layer-0 deny.
@@ -570,23 +625,67 @@ mod tests {
     }
 
     #[test]
-    fn workspace_file_rule_overrides_default() {
+    fn secret_guard_is_unoverridable_by_user_rule() {
+        // Plan A: a workspace allow for `.env` must NOT lift the secret guard.
         let workspace = ws();
         std::fs::create_dir_all(workspace.join(".future")).unwrap();
         std::fs::write(
             workspace.join(".future/approval_rule.json"),
-            r#"{"version":1,"rules":[{"path":".env","access":"read","action":"allow"}]}"#,
+            r#"{"rules":[{"path":".env","access":"read","action":"allow"}]}"#,
         )
         .unwrap();
         let set = RuleSet::resolve(&workspace);
-        // Workspace rule (layer 2) beats the built-in .env ask (layer 4).
         assert_eq!(
             set.evaluate(&workspace.join(".env"), Op::Read),
+            Decision::Ask
+        );
+    }
+
+    #[test]
+    fn broad_allow_does_not_ungate_secret_in_dir() {
+        // The exact Q1 case: `config/*` allow must not un-gate a `.pem` inside.
+        let workspace = ws();
+        std::fs::create_dir_all(workspace.join(".future")).unwrap();
+        std::fs::write(
+            workspace.join(".future/approval_rule.json"),
+            r#"{"rules":[{"path":"config/*","access":"write","action":"allow"}]}"#,
+        )
+        .unwrap();
+        let set = RuleSet::resolve(&workspace);
+        assert_eq!(
+            set.evaluate(&workspace.join("config/app.yaml"), Op::Write),
             Decision::Allow
         );
-        // Write still asks (rule was read-only).
         assert_eq!(
-            set.evaluate(&workspace.join(".env"), Op::Write),
+            set.evaluate(&workspace.join("config/tls.pem"), Op::Write),
+            Decision::Ask
+        );
+        assert!(set.is_secret_path(&workspace.join("config/tls.pem")));
+        assert!(!set.is_secret_path(&workspace.join("config/app.yaml")));
+    }
+
+    #[test]
+    fn session_allow_ungates_non_secret_only() {
+        let workspace = ws();
+        let set = RuleSet::resolve(&workspace);
+        let outside = dirs::home_dir().unwrap().join("futureos-session-dir");
+        set.add_session_rule(
+            &outside.join("*").to_string_lossy(),
+            Access::Write,
+            Decision::Allow,
+        );
+        assert_eq!(
+            set.evaluate(&outside.join("note.txt"), Op::Write),
+            Decision::Allow
+        );
+        // A session allow can't lift a secret guard.
+        set.add_session_rule(
+            &workspace.join("*").to_string_lossy(),
+            Access::Read,
+            Decision::Allow,
+        );
+        assert_eq!(
+            set.evaluate(&workspace.join(".env"), Op::Read),
             Decision::Ask
         );
     }
