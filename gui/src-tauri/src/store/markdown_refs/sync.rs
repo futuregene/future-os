@@ -83,6 +83,31 @@ fn resolve_reference_target_metadata(
             )
             .optional()
             .map_err(crate::AppError::from),
+        // `file` addresses the same artifact rows as `artifact`, but by path.
+        // Mirror `resolve::get_file_artifact_in_workspace` (slash-restored form,
+        // most recently updated wins) so denormalized metadata stays consistent.
+        "file" => conn
+            .query_row(
+                "SELECT title, artifact_type, path, summary
+                 FROM artifacts
+                 WHERE workspace_id = ?2
+                   AND deleted_at IS NULL
+                   AND path IS NOT NULL
+                   AND (path = ?1 OR path = '/' || ?1)
+                 ORDER BY updated_at DESC
+                 LIMIT 1",
+                params![reference.target_id, workspace_id],
+                |row| {
+                    Ok(artifact_metadata(
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(crate::AppError::from),
         "run" => conn
             .query_row(
                 "SELECT id, status, model_id, error_message

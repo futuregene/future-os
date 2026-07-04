@@ -129,9 +129,10 @@ export interface ApprovalAction {
   paths?: string[];
   writes?: Array<{ path: string; preview?: string }>;
   deletes?: Array<{ path: string }>;
-  // sandbox_escalation: model-provided reason and sandboxed-run failure tail
+  // sandbox_escalation: model-provided reason and the file paths the sandbox
+  // blocked (extracted from the failed run — no raw stderr dump).
   justification?: string;
-  failureSummary?: string;
+  blockedPaths?: string[];
   scope?: {
     cwd: string;
     insideWorkspace: boolean;

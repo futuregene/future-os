@@ -125,7 +125,7 @@
     "paths": "Paths",
     "sandbox": "sandbox",
     "justification": "Justification",
-    "failureSummary": "Failure output",
+    "blockedPaths": "Files blocked by the sandbox",
     "unsandboxedNote": "If allowed, this command runs once without sandbox restrictions.",
     "denying": "Denying",
     "deny": "Deny",

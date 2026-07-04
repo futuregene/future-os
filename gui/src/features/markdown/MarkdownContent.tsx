@@ -309,7 +309,12 @@ function FutureEmbed({
     return <MissingReference error={resolved?.error} reference={reference} />;
   }
 
-  if (reference.targetType === "artifact" && resolved.targetType === "artifact") {
+  // `file` addresses an artifact by path instead of id; it resolves to the same
+  // StoredArtifact payload and renders identically.
+  if (
+    (reference.targetType === "artifact" && resolved.targetType === "artifact")
+    || (reference.targetType === "file" && resolved.targetType === "file")
+  ) {
     if (isStoredArtifact(resolved.data)) {
       return <ArtifactEmbed artifact={resolved.data} reference={reference} />;
     }
