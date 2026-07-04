@@ -132,6 +132,7 @@
     "allowing": "Allowing",
     "allowOnce": "Allow once",
     "allowWorkspace": "Allow in this workspace",
+    "allowChat": "Allow in this chat",
     "ruleSaveWorkspace": "Auto-allow operations matching this path in this workspace (written to .future/approval_rule.json, editable)",
     "ruleConfirm": "Save & allow",
     "ruleCancel": "Cancel",

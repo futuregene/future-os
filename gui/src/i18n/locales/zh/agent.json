@@ -129,6 +129,7 @@
     "allowing": "允许中",
     "allowOnce": "允许一次",
     "allowWorkspace": "本工作区允许",
+    "allowChat": "本对话允许",
     "ruleSaveWorkspace": "在本工作区自动允许匹配此路径的操作（写入 .future/approval_rule.json，可编辑）",
     "ruleConfirm": "保存并允许",
     "ruleCancel": "取消",
