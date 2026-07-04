@@ -183,6 +183,7 @@ export function AgentThread({
                     <ApprovalPrompt
                       approval={activeApproval}
                       onDecision={onApprovalDecision}
+                      threadMode={thread?.mode}
                     />
                   </div>
                 )

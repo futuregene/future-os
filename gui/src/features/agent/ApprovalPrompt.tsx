@@ -15,9 +15,12 @@ import { isRecord } from "../../lib/objects";
 interface ApprovalPromptProps {
   approval: StoredApprovalRequest;
   onDecision: (approval: StoredApprovalRequest, status: "approved" | "rejected") => Promise<void>;
+  /// Conversation type — a plain Chat's workspace is a throwaway temp dir, so
+  /// "allow in this workspace" reads as "allow in this chat" to the user.
+  threadMode?: "chat" | "workspace";
 }
 
-export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
+export function ApprovalPrompt({ approval, onDecision, threadMode }: ApprovalPromptProps) {
   const { t } = useTranslation("agent");
   const [error, setError] = useState<string | null>(null);
   const [deciding, setDeciding] = useState<"approved" | "rejected" | null>(null);
@@ -209,7 +212,7 @@ export function ApprovalPrompt({ approval, onDecision }: ApprovalPromptProps) {
                   onClick={() => openRuleEditor()}
                   variant="toolbar"
                 >
-                  {t("approval.allowWorkspace")}
+                  {threadMode === "chat" ? t("approval.allowChat") : t("approval.allowWorkspace")}
                 </Button>
               )
             : null}
