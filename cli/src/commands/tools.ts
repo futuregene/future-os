@@ -73,8 +73,9 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     description: "Parse PDF and Word documents into markdown. Upload a base64-encoded document and get structured markdown with text, tables, and formulas preserved.",
     args: {
       doc_b64: "string (required, base64-encoded document content)",
+      file_type: 'string (optional, "pdf" or "docx", default: "pdf")',
     },
-    example: '{"doc_b64": "<base64>"}',
+    example: '{"doc_b64": "<base64>", "file_type": "pdf"}',
   },
   web_search: {
     description: "Search the web. Returns titles, links, and snippets.",
