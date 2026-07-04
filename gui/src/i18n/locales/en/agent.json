@@ -131,13 +131,11 @@
     "deny": "Deny",
     "allowing": "Allowing",
     "allowOnce": "Allow once",
-    "allowSession": "Allow this session",
-    "allowAlways": "Always allow",
-    "ruleSaveSession": "Auto-allow operations matching this pattern for this session (editable)",
-    "ruleSaveAlways": "Always auto-allow operations matching this pattern (editable)",
+    "allowWorkspace": "Allow in this workspace",
+    "ruleSaveWorkspace": "Auto-allow operations matching this path in this workspace (written to .future/approval_rule.json, editable)",
     "ruleConfirm": "Save & allow",
     "ruleCancel": "Cancel",
-    "rulePatternRequired": "Rule pattern cannot be empty."
+    "rulePatternRequired": "Rule path cannot be empty."
   },
   "message": {
     "retry": "Retry",

@@ -70,10 +70,8 @@ export async function decideApprovalRequest(input: {
 
 export async function saveApprovalRule(input: {
   threadId: string;
-  matchKind: string;
-  matchValue: string;
-  persistence: "session" | "always";
-  scope?: "workspace" | "global";
+  path: string;
+  access: string; // "read" | "write"
 }) {
   return invokeCommand<void>("save_approval_rule", { input });
 }

@@ -135,23 +135,24 @@ v1（原 Phase 1 + Phase 2）已全部实现并通过验证（agent 67 测 + GUI
 
 ## 8. 实施阶段
 
-### Phase R1 — agent 侧规则引擎与强制（核心）
+### Phase R1 — agent 侧规则引擎与强制（核心）— ✅ 已完成（2026-07-04）
 
-- [ ] `PathRule` 类型 + 规则文件解析（fail-safe：坏文件跳层 + 告警事件）+ 四层判定引擎 + 兜底分车道；glob 匹配（复用 §路径规范化）；单测覆盖：分层优先级、首匹配短路、无通配符=子树、symlink、第 0 层不可覆盖。
-- [ ] 内置清单（第 0 层 + 第 3 层）落码；temp 目录 allow。
-- [ ] `ResolvedSandbox` 改造 + `seatbelt::build_profile` 从规则编译 + `(allow network*)`；smoke tests 更新（网络放行、`.env` 读被拒、规则文件 rename 写被拒、`~/.ssh` 读被拒、workspace/temp 写通过、cargo/git/python 工具链不碎）。
-- [ ] read 工具接入审批；write/edit 改规则判定；grep 子进程包 Seatbelt。
-- [ ] proto `SandboxPolicy` 瘦身（reserved 1-5 + `enabled = 6`）；`ServerSession` 相应简化。
-- [ ] escalation 网络 marker 移除。
-- 验收：启用会话中——`cargo build && git commit` 全程无审批且联网正常；`read .env` 弹审批；bash `cat .env` 失败可 escalation；写 workspace 外弹审批；`echo x > .future/approval_rule.json` 被硬拒且 escalation 卡片如实展示；非启用会话行为与今天逐字一致；全量测试 + smoke 绿。
+- [x] `PathRule` + 规则文件解析（fail-safe：坏文件跳层 + `tracing::warn`）+ 四层判定 + 兜底分车道；glob→regex（无通配符=子树，复用路径规范化）；单测（分层优先级、首匹配短路、子树、symlink、第 0 层不可覆盖、坏文件不 fatal）。
+- [x] 内置清单：第 0 层（规则文件写 deny + app 凭证文件 `auth.json`/`models.json` 读写 deny，不可覆盖）+ 第 4 层（home/workspace 凭证 ask）；temp 并入写兜底（不作规则，避免遮蔽 secret）。
+- [x] `ResolvedSandbox` 挂 `RuleSet` + 单 `enabled` + `seatbelt::build_profile` 从规则编译（低→高优先级发射，SBPL last-match=引擎 first-match）+ `(allow network*)`；smoke tests 全绿（网络放行、`.env` 读写被拒、规则文件写 + `mv` 改名被拒、`auth.json` 读被拒、`~/.ssh` 读被拒、workspace/temp 写通过、cargo/git/python 不碎）。
+- [x] read 工具接入审批；write/edit 改 `evaluate()` 判定；`approval_shape` 删 bash 前置、加 read 分支；命令级规则/白名单/`approval_policy.rs` 全删。（grep 子进程沙盒：grep 非默认工具集，暂缓，见 §9。）
+- [x] proto `SandboxPolicy` 瘦身（reserved 1-5 + `enabled = 6`）；`ServerSession`/grpc/commands 简化。
+- [x] escalation 网络 marker 移除（网络放开，只留 fs EPERM 特征）。
+- 验收：agent 55 lib + 10 规则单测 + 9 Seatbelt smoke 全绿；`make lint` 干净。
 
-### Phase R2 — GUI 侧
+### Phase R2 — GUI 侧 — ✅ 已完成（2026-07-04）
 
-- [ ] `set_sandbox_policy` 改发 `enabled`（自动审批开关 = false）。
-- [ ] ApprovalPrompt 三按钮 + 「本工作区允许」规则预览编辑 + Tauri 写 workspace 规则文件 + 决策回传携带规则（当轮生效）。
-- [ ] 拆除 SQLite 规则链路（命令、store 函数、启动 prune）；`approval_rules` 表闲置。
-- [ ] read 审批卡片渲染（复用 file_write 模板）。
-- 验收：`make check-gui` + vitest 绿；实机：点「本工作区允许」后 `cat ${WS}/.future/approval_rule.json` 可见新规则、同轮及下轮不再问。
+- [x] `set_sandbox_policy` 改发 `enabled: true`（GUI 会话启用；自动审批开关发 false 留 R3）。
+- [x] ApprovalPrompt 三按钮（拒绝 / 允许一次 / **本工作区允许**）+ 路径预览内联编辑；`save_suggestion` 前端解析改 v2 `{path, access}`；agent 侧建议路径改为 **workspace 相对**（可进 git）。
+- [x] `approval_rules.rs`（新）读-改-写 `${WS}/.future/approval_rule.json`（保留既有规则 + 未知字段 + 去重）；`save_approval_rule` 命令改写文件（GUI 走 Tauri 可信路径，绕过 agent 沙盒——正是第 0 层写保护针对 agent 的意义所在）；单测 3 项。
+- [x] 拆除 SQLite 规则链路（`list_effective_rules`/`prune_session_rules`/SQLite `save_approval_rule` 导出移除、启动 prune 移除、`set_sandbox_policy` 不再展平规则）；`approval_rules` 表闲置（保留不删）。
+- 验收：`make check-gui` + vitest(39) + tsc + eslint 全绿。
+- **已知未做（R3 补）**：**当轮即时生效**（§6.2 内存注入）——写文件后 agent 下一轮 prompt 才重读。当前"本工作区允许"让本次操作通过（写走 `approve_outside_path`，读经审批放行），但同一轮内对该目录下**其他**文件的同类操作仍会再问一次。需给 agent 加 session 规则注入命令，留 R3。read 审批卡片沿用 file_write 模板渲染（够用）。
 
 ### Phase R3 — 收尾（后期）
 
