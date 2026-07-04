@@ -1,16 +1,28 @@
 import type {
   ApprovalAction,
   ApprovalSaveSuggestion,
-  SandboxBoundary,
   StoredApprovalRequest,
 } from "../../integrations/storage/types";
-import { AlertTriangle, Check, ShieldAlert, X } from "lucide-react";
+import { AlertTriangle, Check, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { TextInput } from "../../components/ui/TextInput";
 import { saveApprovalRule } from "../../integrations/storage/runs";
 import { isRecord } from "../../lib/objects";
+
+// Localized title/summary per approval kind (the agent sends English). An
+// unmapped kind falls back to the agent-provided strings.
+const KIND_I18N: Record<string, { title: string; summary?: string }> = {
+  file_read: { summary: "approval.readSummary", title: "approval.readTitle" },
+  file_write: { summary: "approval.writeSummary", title: "approval.writeTitle" },
+  outside_workspace_write: {
+    summary: "approval.outsideWriteSummary",
+    title: "approval.outsideWriteTitle",
+  },
+  sandbox_escalation: { title: "approval.escalationTitle" }, // note carries the rest
+  shell_command: { summary: "approval.shellSummary", title: "approval.shellTitle" },
+};
 
 interface ApprovalPromptProps {
   approval: StoredApprovalRequest;
@@ -26,11 +38,13 @@ export function ApprovalPrompt({ approval, onDecision, threadMode }: ApprovalPro
   const [deciding, setDeciding] = useState<"approved" | "rejected" | null>(null);
 
   const action = useMemo(() => parseAction(approval.actionPayload), [approval.actionPayload]);
-  const isEscalation = approval.kind === "sandbox_escalation";
-  const sandboxBoundary = useMemo(
-    () => parseSandbox(approval.sandboxBoundary),
-    [approval.sandboxBoundary],
-  );
+  // Title/summary come from the agent in English; localize by kind, falling
+  // back to the agent strings for any unmapped kind.
+  const kindI18n = KIND_I18N[approval.kind];
+  const titleText = kindI18n ? t(kindI18n.title) : approval.title;
+  const summaryText = kindI18n
+    ? (kindI18n.summary ? t(kindI18n.summary) : null)
+    : approval.summary;
   const saveSuggestion = useMemo(
     () => parseSaveSuggestion(approval.saveSuggestion),
     [approval.saveSuggestion],
@@ -126,31 +140,10 @@ export function ApprovalPrompt({ approval, onDecision, threadMode }: ApprovalPro
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <span className="size-2 shrink-0 rounded-full bg-warning" />
-          <h2 className="truncate text-base font-semibold text-ink">
-            {isEscalation ? t("approval.escalationTitle") : approval.title}
-          </h2>
+          <h2 className="truncate text-base font-semibold text-ink">{titleText}</h2>
         </div>
       </div>
-      {/* Escalation's single explanation is the note in ActionDetails; the
-          agent summary would just repeat it, so only show it for other kinds. */}
-      {!isEscalation && approval.summary
-        ? <p className="mt-2 text-sm leading-5 text-ink-soft">{approval.summary}</p>
-        : null}
-      {!isEscalation && sandboxBoundary?.violation
-        ? (
-            <div className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-warning-line bg-warning-soft px-2 py-1 text-xs font-medium text-warning">
-              <ShieldAlert className="size-3" />
-              <span>{formatViolation(sandboxBoundary.violation)}</span>
-              <span className="text-warning/70">·</span>
-              <span className="text-warning/70">
-                {t("approval.sandbox")}
-                :
-                {" "}
-                {sandboxBoundary.mode}
-              </span>
-            </div>
-          )
-        : null}
+      {summaryText ? <p className="mt-2 text-sm leading-5 text-ink-soft">{summaryText}</p> : null}
       {action ? <ActionDetails action={action} /> : null}
       {fallbackAction
         ? (
@@ -440,35 +433,6 @@ function parseAction(payload: string | null | undefined): ApprovalAction | null 
     tool: parsed.tool,
     writes: isPathEntryArray(parsed.writes) ? parsed.writes : undefined,
   };
-}
-
-function parseSandbox(payload: string | null | undefined): SandboxBoundary | null {
-  if (!payload)
-    return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(payload);
-  }
-  catch {
-    return null;
-  }
-  if (!isRecord(parsed) || typeof parsed.mode !== "string")
-    return null;
-  // Only `mode` and `violation` are surfaced in the UI today; cwd/insideSandbox
-  // are part of the P2 wire type but currently unread, so tolerate their absence.
-  return {
-    cwd: typeof parsed.cwd === "string" ? parsed.cwd : "",
-    insideSandbox: typeof parsed.insideSandbox === "boolean" ? parsed.insideSandbox : true,
-    mode: parsed.mode,
-    violation: typeof parsed.violation === "string" ? parsed.violation : null,
-    writableRoots: isStringArray(parsed.writableRoots) ? parsed.writableRoots : undefined,
-  };
-}
-
-function formatViolation(violation: string) {
-  return violation
-    .replace(/_/g, " ")
-    .replace(/^\w/, char => char.toUpperCase());
 }
 
 function formatRequestedAction(action: string | null | undefined) {
