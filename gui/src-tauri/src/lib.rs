@@ -1,8 +1,8 @@
 mod agent_bridge;
 mod agent_proto;
 mod agent_providers;
-mod approval_rules;
 mod agent_supervisor;
+mod approval_rules;
 mod auth_store;
 mod build_info;
 mod commands;

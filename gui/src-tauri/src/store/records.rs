@@ -93,7 +93,8 @@ pub struct CompleteToolCallInput {
 pub struct EnsureApprovalRequestInput {
     pub approval_request_id: Option<String>,
     pub run_id: String,
-    pub tool_call_id: String,
+    /// `None` for escalation approvals (no owning tool_call) → stored NULL.
+    pub tool_call_id: Option<String>,
     pub kind: String,
     pub title: String,
     pub summary: Option<String>,

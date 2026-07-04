@@ -54,9 +54,13 @@ fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
     else {
         return;
     };
-    let Some(tool_call_id) = value_string(value, &["tool_id", "toolID", "tool_call_id"]) else {
-        return;
-    };
+    // Escalation approvals carry no tool_call id (they belong to the run, not a
+    // specific persisted tool_call). Store NULL rather than an empty string —
+    // an empty string violates the tool_calls(id) foreign key, which would drop
+    // the approval on the floor and leave the run stuck "waiting_approval" with
+    // no card to act on.
+    let tool_call_id =
+        value_string(value, &["tool_id", "toolID", "tool_call_id"]).filter(|id| !id.is_empty());
     let tool_name =
         value_string(value, &["tool_name", "toolName"]).unwrap_or_else(|| "tool".to_string());
     let requested_action = value

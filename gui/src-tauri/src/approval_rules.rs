@@ -62,8 +62,7 @@ mod tests {
     }
 
     fn read(ws: &Path) -> Value {
-        let contents =
-            std::fs::read_to_string(ws.join(".future/approval_rule.json")).unwrap();
+        let contents = std::fs::read_to_string(ws.join(".future/approval_rule.json")).unwrap();
         serde_json::from_str(&contents).unwrap()
     }
 
