@@ -281,15 +281,17 @@ function ActionDetails({ action }: ActionDetailsProps) {
               </div>
             )
           : null}
-        {isEscalation && action.failureSummary
+        {isEscalation && action.blockedPaths && action.blockedPaths.length > 0
           ? (
               <div>
                 <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
-                  {t("approval.failureSummary")}
+                  {t("approval.blockedPaths")}
                 </div>
-                <pre className="max-h-32 overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-surface-subtle p-3 font-mono text-xs leading-5 text-ink-soft">
-                  <code className="block min-w-0">{action.failureSummary}</code>
-                </pre>
+                <ul className="rounded-md bg-surface-subtle p-3 font-mono text-xs leading-5 text-ink">
+                  {action.blockedPaths.map(path => (
+                    <li key={path} className="break-all">{path}</li>
+                  ))}
+                </ul>
               </div>
             )
           : null}
@@ -418,12 +420,10 @@ function parseAction(payload: string | null | undefined): ApprovalAction | null 
   if (!isRecord(parsed) || typeof parsed.tool !== "string" || typeof parsed.category !== "string")
     return null;
   return {
+    blockedPaths: isStringArray(parsed.blocked_paths) ? parsed.blocked_paths : undefined,
     category: parsed.category,
     command: typeof parsed.command === "string" ? parsed.command : undefined,
     deletes: isPathEntryArray(parsed.deletes) ? parsed.deletes : undefined,
-    failureSummary: typeof parsed.failure_summary === "string" && parsed.failure_summary.length > 0
-      ? parsed.failure_summary
-      : undefined,
     justification: typeof parsed.justification === "string" && parsed.justification.length > 0
       ? parsed.justification
       : undefined,

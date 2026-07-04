@@ -65,6 +65,7 @@ GUI 当前已具备：
   - 使用 `unified` / `remark-parse` / `remark-gfm` 管线。
   - 支持常用 Markdown、GFM table/task list、code fence 复制。
   - 支持 `futureos://artifact|run|tool|approval|review|research/<id>` inline reference。
+  - 支持 `futureos://file/<percent-encoded-path>` 按路径引用 artifact（模型拿不到 store 生成的 artifact id，用刚写入的文件路径即可引用；解析回退到补前导斜杠、取最新一条）。
   - 支持 `futureos-artifact|run|tool|approval|review|research` fenced block embed。
   - 引用解析限制在当前 workspace，过滤已删除 artifact。
   - 引用状态使用 React 原生数据驱动模型更新。

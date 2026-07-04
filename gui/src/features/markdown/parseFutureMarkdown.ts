@@ -264,7 +264,7 @@ function htmlToSafeParagraph(node: Html): MarkdownNode[] {
 }
 
 function parseFutureEmbed(node: Code): FutureReference | null {
-  const match = node.lang?.match(/^futureos-(approval|artifact|research|review|run|tool)$/);
+  const match = node.lang?.match(/^futureos-(approval|artifact|file|research|review|run|tool)$/);
   if (!match)
     return null;
 
@@ -348,6 +348,7 @@ function safeDecodeURIComponent(value: string) {
 function isFutureReferenceType(value: string): value is FutureReferenceType {
   return value === "approval"
     || value === "artifact"
+    || value === "file"
     || value === "research"
     || value === "review"
     || value === "run"

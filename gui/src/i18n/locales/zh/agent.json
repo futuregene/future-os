@@ -122,7 +122,7 @@
     "paths": "路径",
     "sandbox": "沙箱",
     "justification": "原因说明",
-    "failureSummary": "失败输出",
+    "blockedPaths": "被沙箱拦截的文件访问",
     "unsandboxedNote": "允许后，本条命令将在无沙箱限制下运行一次。",
     "denying": "拒绝中",
     "deny": "拒绝",

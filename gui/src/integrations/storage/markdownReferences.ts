@@ -8,7 +8,7 @@ import type {
 } from "./types";
 import { invokeCommand } from "../tauri/invoke";
 
-export type FutureReferenceType = "approval" | "artifact" | "research" | "review" | "run" | "tool";
+export type FutureReferenceType = "approval" | "artifact" | "file" | "research" | "review" | "run" | "tool";
 
 export interface MarkdownReferenceRequest {
   targetType: FutureReferenceType;

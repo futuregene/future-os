@@ -151,6 +151,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn resolves_file_references_by_path_including_slash_restored() {
+        let conn = test_conn();
+        seed_workspace_artifact(&conn);
+        // An absolute path; the frontend URL parser strips its leading slash, so
+        // resolution must still match "abs/dir/note.txt" back to "/abs/dir/note.txt".
+        conn.execute(
+            "INSERT INTO artifacts (
+                 id, workspace_id, thread_id, title, artifact_type, path,
+                 created_at, updated_at
+             ) VALUES (
+                 'artifact_abs', 'ws_test', 'thread_test', 'Note', 'document',
+                 '/abs/dir/note.txt', 1, 1
+             )",
+            [],
+        )
+        .expect("insert absolute-path artifact");
+
+        let cases = [
+            ("poem.md", "resolved"),
+            ("abs/dir/note.txt", "resolved"),
+            ("/abs/dir/note.txt", "resolved"),
+            ("missing.txt", "missing"),
+        ]
+        .into_iter()
+        .map(|(target_id, expected)| {
+            let resolved = resolve_markdown_reference(
+                &conn,
+                "ws_test",
+                MarkdownReferenceInput {
+                    target_id: target_id.to_string(),
+                    target_type: "file".to_string(),
+                },
+            );
+            (resolved.status, expected)
+        })
+        .collect::<Vec<_>>();
+
+        assert_eq!(
+            cases,
+            vec![
+                ("resolved".to_string(), "resolved"),
+                ("resolved".to_string(), "resolved"),
+                ("resolved".to_string(), "resolved"),
+                ("missing".to_string(), "missing"),
+            ]
+        );
+    }
+
     fn seed_workspace_artifact(conn: &Connection) {
         conn.execute(
             "INSERT INTO workspaces (

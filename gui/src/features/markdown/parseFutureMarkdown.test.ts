@@ -32,6 +32,22 @@ describe("parseFutureMarkdown", () => {
     ]);
   });
 
+  it("parses a percent-encoded futureos://file path back to its absolute path", () => {
+    const document = parseFutureMarkdown(
+      "Wrote [test.txt](futureos://file/%2FUsers%2Ftao%2Fapp%2Ftest.txt).",
+    );
+
+    expect(document.references).toEqual([
+      {
+        label: "test.txt",
+        source: "inline",
+        targetId: "/Users/tao/app/test.txt",
+        targetType: "file",
+        view: "chip",
+      },
+    ]);
+  });
+
   it("resolves reference-style links and images through markdown definitions", () => {
     const document = parseFutureMarkdown([
       "[**Docs**][docs] and [artifact][artifact-ref]",

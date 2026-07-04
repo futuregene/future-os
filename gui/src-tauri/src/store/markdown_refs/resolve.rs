@@ -55,6 +55,11 @@ pub(super) fn resolve_markdown_reference(
             Ok(None) => missing_reference(target_type, target_id, "artifact was not found"),
             Err(error) => failed_reference(target_type, target_id, error),
         },
+        "file" => match get_file_artifact_in_workspace(conn, workspace_id, &target_id) {
+            Ok(Some(artifact)) => resolved_reference(target_type, target_id, artifact),
+            Ok(None) => missing_reference(target_type, target_id, "file was not found"),
+            Err(error) => failed_reference(target_type, target_id, error),
+        },
         "run" => match get_run_in_workspace(conn, workspace_id, &target_id) {
             Ok(Some(run)) => resolved_reference(target_type, target_id, run),
             Ok(None) => missing_reference(target_type, target_id, "run was not found"),
@@ -144,6 +149,34 @@ fn get_artifact_in_workspace(
          WHERE id = ?1 AND workspace_id = ?2 AND deleted_at IS NULL"
         ),
         params![id, workspace_id],
+        artifact_from_row,
+    )
+    .optional()
+    .map_err(crate::AppError::from)
+}
+
+/// Resolve an artifact by its filesystem `path` (a `futureos://file/<path>`
+/// reference) rather than its id. The frontend `URL` parser strips the leading
+/// slash off an unencoded absolute path, so also try the slash-restored form.
+/// A path is not unique across runs, so prefer the most recently updated match.
+fn get_file_artifact_in_workspace(
+    conn: &Connection,
+    workspace_id: &str,
+    path: &str,
+) -> Result<Option<ArtifactRecord>, crate::AppError> {
+    let slash_restored = format!("/{path}");
+    conn.query_row(
+        &format!(
+            "SELECT {ARTIFACT_COLUMNS}
+         FROM artifacts
+         WHERE workspace_id = ?1
+           AND deleted_at IS NULL
+           AND path IS NOT NULL
+           AND (path = ?2 OR path = ?3)
+         ORDER BY updated_at DESC
+         LIMIT 1"
+        ),
+        params![workspace_id, path, slash_restored],
         artifact_from_row,
     )
     .optional()

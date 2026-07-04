@@ -132,13 +132,14 @@ impl ApprovalGate {
         request: &EscalationRequest,
         sandbox: &ResolvedSandbox,
     ) -> EscalationDecision {
+        let blocked_paths = extract_blocked_paths(&request.failure_summary);
         let action = serde_json::json!({
             "tool": "bash",
             "category": "sandbox_escalation",
             "summary": command_summary(&request.command),
             "command": request.command,
             "justification": request.justification,
-            "failure_summary": request.failure_summary,
+            "blocked_paths": blocked_paths,
             "scope": {
                 "cwd": sandbox.workspace.to_string_lossy(),
                 "inside_workspace": true,
@@ -424,6 +425,59 @@ fn command_summary(command: &str) -> String {
     }
 }
 
+/// Extract the file paths a sandbox denial mentions, so the approval card can
+/// say "this file access was blocked" instead of dumping raw tool stderr.
+/// Reads lines that mention "Operation not permitted" and pulls the path out
+/// of quotes (`'…'` / `"…"`) or the first absolute-path token. `$HOME` is
+/// shortened to `~`. Deduped, capped, order-preserving.
+fn extract_blocked_paths(stderr: &str) -> Vec<String> {
+    let home = dirs::home_dir().map(|h| h.to_string_lossy().into_owned());
+    let mut out: Vec<String> = Vec::new();
+    for line in stderr.lines() {
+        if !line.contains("Operation not permitted") {
+            continue;
+        }
+        let Some(raw) = quoted_path(line).or_else(|| absolute_path_token(line)) else {
+            continue;
+        };
+        let display = match &home {
+            Some(h) if raw.starts_with(h.as_str()) => raw.replacen(h.as_str(), "~", 1),
+            _ => raw,
+        };
+        if !out.contains(&display) {
+            out.push(display);
+        }
+        if out.len() >= 5 {
+            break;
+        }
+    }
+    out
+}
+
+/// First `'…'` or `"…"` span that looks like a path (contains `/`).
+fn quoted_path(line: &str) -> Option<String> {
+    for quote in ['\'', '"'] {
+        let mut parts = line.split(quote);
+        // parts alternate outside/inside the quote; index 1, 3, … are inside.
+        parts.next();
+        while let Some(inside) = parts.next() {
+            if inside.contains('/') {
+                return Some(inside.to_string());
+            }
+            parts.next(); // skip the following outside span
+        }
+    }
+    None
+}
+
+/// First whitespace token that is an absolute path, trimming trailing `:`/`,`.
+fn absolute_path_token(line: &str) -> Option<String> {
+    line.split_whitespace()
+        .map(|tok| tok.trim_end_matches([':', ',']))
+        .find(|tok| tok.starts_with('/') && tok.len() > 1)
+        .map(str::to_string)
+}
+
 fn argument_write_preview(arguments: &serde_json::Value) -> Option<String> {
     let normalized = match arguments {
         serde_json::Value::String(raw) => serde_json::from_str(raw)
@@ -507,6 +561,36 @@ fn argument_path(arguments: &serde_json::Value) -> Option<String> {
 mod tests {
     use super::*;
     use crate::sandbox::SandboxPolicy;
+
+    #[test]
+    fn extract_blocked_paths_from_gpg_denial() {
+        let stderr = "\
+[exit code: 128]
+error: gpg failed to sign the data:
+gpg: failed to create temporary file '/Users/x/.gnupg/.#lk0x001.host.9334': Operation not permitted
+gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
+[GNUPG:] ERROR add_keyblock_resource 33587307";
+        let paths = extract_blocked_paths(stderr);
+        assert_eq!(
+            paths,
+            vec![
+                "/Users/x/.gnupg/.#lk0x001.host.9334".to_string(),
+                "/Users/x/.gnupg/pubring.kbx".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_blocked_paths_unquoted_and_deduped() {
+        let stderr = "touch: /etc/hosts: Operation not permitted\n\
+                      touch: /etc/hosts: Operation not permitted";
+        assert_eq!(
+            extract_blocked_paths(stderr),
+            vec!["/etc/hosts".to_string()]
+        );
+        // Non-denial lines are ignored.
+        assert!(extract_blocked_paths("error[E0308]: mismatched types").is_empty());
+    }
 
     fn temp_ws(name: &str) -> String {
         let stamp = std::time::SystemTime::now()
