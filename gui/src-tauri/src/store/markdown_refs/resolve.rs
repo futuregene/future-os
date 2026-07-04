@@ -159,23 +159,27 @@ fn get_artifact_in_workspace(
     .map_err(crate::AppError::from)
 }
 
-/// A `futureos://file/<path>` reference, resolved against the workspace's files
-/// on disk rather than the `artifacts` table — a file the model wrote via bash,
-/// or into a git workspace, never becomes an artifact, but it is still a real
-/// file the reference should point at.
+/// A `futureos://file/<path>` reference, rendered by the frontend as a file
+/// link. Resolution is pure path arithmetic — no filesystem access — so it never
+/// probes whether the path exists (no existence oracle) and never fails: any
+/// non-empty path a message names becomes a link. `insideWorkspace` +
+/// `relativePath` let the UI show a workspace-relative path for in-workspace
+/// files and the full path for ones written elsewhere (e.g. `~/Desktop`).
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ResolvedFile {
+    /// Absolute path, used for open / copy-path actions.
     path: String,
+    /// File name (last path component), for the copy-filename action.
     name: String,
-    artifact_type: String,
+    /// Path relative to the workspace root, present only when inside it.
+    relative_path: Option<String>,
+    inside_workspace: bool,
 }
 
-/// Resolve a file reference by locating the path on disk inside the workspace.
-/// The referenced path may be absolute, workspace-relative, or an absolute path
-/// whose leading slash the frontend `URL` parser stripped, so try each form and
-/// require the resolved path to stay within the (canonical) workspace root — a
-/// message must never be able to probe files outside its own workspace.
+/// Turn a file reference into its display model. The path may be absolute (the
+/// model percent-encodes it, so the leading slash survives) or workspace-
+/// relative; anything not absolute is resolved against the workspace root.
 fn resolve_file_reference(
     conn: &Connection,
     workspace_id: &str,
@@ -193,39 +197,39 @@ fn resolve_file_reference(
             |row| row.get(0),
         )
         .optional()?;
-    let Some(workspace_path) = workspace_path else {
-        return Ok(None);
-    };
-    let workspace_root = crate::git_review::canonical_or_raw(&workspace_path);
 
-    let mut candidates = Vec::new();
     let raw_ref = std::path::Path::new(raw);
-    if raw_ref.is_absolute() {
-        candidates.push(std::path::PathBuf::from(raw));
+    let absolute = if raw_ref.is_absolute() {
+        std::path::PathBuf::from(raw)
+    } else if let Some(root) = workspace_path.as_deref() {
+        std::path::Path::new(root).join(raw)
     } else {
-        candidates.push(std::path::Path::new(&workspace_path).join(raw));
-        // Absolute path with a stripped leading slash (frontend `URL` parsing).
-        candidates.push(std::path::PathBuf::from(format!("/{raw}")));
-    }
+        // No workspace root to anchor a relative path; treat it as absolute.
+        std::path::PathBuf::from(format!("/{raw}"))
+    };
 
-    for candidate in candidates {
-        let canonical = crate::git_review::canonical_or_raw(&candidate);
-        if !canonical.starts_with(&workspace_root) || !canonical.is_file() {
-            continue;
-        }
-        let name = canonical
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default()
-            .to_string();
-        return Ok(Some(ResolvedFile {
-            artifact_type: crate::store::artifact_type_from_path(&canonical),
-            name,
-            path: canonical.to_string_lossy().into_owned(),
-        }));
-    }
+    let name = absolute
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_string();
 
-    Ok(None)
+    // Lexical containment only (no canonicalize / stat): a deleted file must
+    // still resolve, and resolution must not touch the filesystem.
+    let (inside_workspace, relative_path) = match workspace_path.as_deref() {
+        Some(root) => match absolute.strip_prefix(root) {
+            Ok(relative) => (true, Some(relative.to_string_lossy().into_owned())),
+            Err(_) => (false, None),
+        },
+        None => (false, None),
+    };
+
+    Ok(Some(ResolvedFile {
+        path: absolute.to_string_lossy().into_owned(),
+        name,
+        relative_path,
+        inside_workspace,
+    }))
 }
 
 fn get_run_in_workspace(

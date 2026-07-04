@@ -264,12 +264,16 @@ export interface StoredArtifact {
   deletedAt?: number | null;
 }
 
-/// A `futureos://file/<path>` reference resolved against a workspace file on
-/// disk (not the artifacts table). See `resolve.rs::ResolvedFile`.
+/// A `futureos://file/<path>` reference, resolved to a display model by pure
+/// path arithmetic (no filesystem access). See `resolve.rs::ResolvedFile`.
 export interface StoredFile {
+  /** Absolute path, used for open / copy-path actions. */
   path: string;
+  /** File name (last path component). */
   name: string;
-  artifactType: string;
+  /** Path relative to the workspace root; present only when inside it. */
+  relativePath?: string | null;
+  insideWorkspace: boolean;
 }
 
 export interface StoredResearchResource {

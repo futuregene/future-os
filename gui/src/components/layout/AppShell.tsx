@@ -22,6 +22,7 @@ import {
   restoreThread,
 } from "../../integrations/storage/threadStore";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
+import { ToastHost } from "../ui/ToastHost";
 import { ActivityRail } from "./ActivityRail";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
@@ -456,6 +457,7 @@ export function AppShell() {
         onClose={() => setSettingsOpen(false)}
         open={settingsOpen}
       />
+      <ToastHost />
     </div>
   );
 }

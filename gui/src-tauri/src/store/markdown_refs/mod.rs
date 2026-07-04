@@ -152,68 +152,52 @@ mod tests {
     }
 
     #[test]
-    fn resolves_file_references_against_workspace_files_on_disk() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let workspace_dir = std::env::temp_dir().join(format!("futureos_file_ref_{nanos}"));
-        std::fs::create_dir_all(workspace_dir.join("sub")).expect("create workspace dir");
-        std::fs::write(workspace_dir.join("hello.txt"), b"hi").expect("write hello.txt");
-        std::fs::write(workspace_dir.join("sub/note.md"), b"note").expect("write note.md");
-        let workspace_path = workspace_dir.to_string_lossy().to_string();
-        let hello_abs = workspace_dir
-            .join("hello.txt")
-            .to_string_lossy()
-            .to_string();
-        // Absolute path with the leading slash stripped (as the frontend URL
-        // parser delivers it) must still resolve.
-        let hello_abs_no_slash = hello_abs.trim_start_matches('/').to_string();
-
+    fn resolves_file_references_to_relative_or_absolute_display() {
         let conn = test_conn();
         conn.execute(
             "INSERT INTO workspaces (
                  id, name, kind, path, cleanup_status, created_at, updated_at
-             ) VALUES ('ws_fs', 'FS', 'temporary', ?1, 'active', 1, 1)",
-            rusqlite::params![workspace_path],
+             ) VALUES ('ws_fs', 'FS', 'temporary', '/work/space', 'active', 1, 1)",
+            [],
         )
         .expect("insert fs workspace");
 
-        let cases = vec![
-            ("hello.txt".to_string(), "resolved"),
-            ("sub/note.md".to_string(), "resolved"),
-            (hello_abs.clone(), "resolved"),
-            (hello_abs_no_slash, "resolved"),
-            ("missing.txt".to_string(), "missing"),
-            // Escaping the workspace root must never resolve, even if the file exists.
-            ("/etc/hosts".to_string(), "missing"),
-            ("../escape.txt".to_string(), "missing"),
-        ];
+        let resolve = |target_id: &str| {
+            resolve_markdown_reference(
+                &conn,
+                "ws_fs",
+                MarkdownReferenceInput {
+                    target_id: target_id.to_string(),
+                    target_type: "file".to_string(),
+                },
+            )
+        };
 
-        let got = cases
-            .iter()
-            .map(|(target_id, _)| {
-                resolve_markdown_reference(
-                    &conn,
-                    "ws_fs",
-                    MarkdownReferenceInput {
-                        target_id: target_id.clone(),
-                        target_type: "file".to_string(),
-                    },
-                )
-                .status
-            })
-            .collect::<Vec<_>>();
+        // Workspace-relative path → inside, shown relative.
+        let relative = resolve("sub/note.md");
+        assert_eq!(relative.status, "resolved");
+        let relative = relative.data.expect("data");
+        assert_eq!(relative["path"], "/work/space/sub/note.md");
+        assert_eq!(relative["relativePath"], "sub/note.md");
+        assert_eq!(relative["insideWorkspace"], true);
+        assert_eq!(relative["name"], "note.md");
 
-        std::fs::remove_dir_all(&workspace_dir).ok();
+        // Absolute path inside the workspace → still shown relative.
+        let inside_abs = resolve("/work/space/deep/a.txt");
+        let inside_abs = inside_abs.data.expect("data");
+        assert_eq!(inside_abs["relativePath"], "deep/a.txt");
+        assert_eq!(inside_abs["insideWorkspace"], true);
 
-        let expected = cases
-            .iter()
-            .map(|(_, status)| status.to_string())
-            .collect::<Vec<_>>();
-        assert_eq!(got, expected);
+        // Absolute path outside the workspace (e.g. ~/Desktop) → full path, no relative.
+        let outside = resolve("/Users/tao/Desktop/note.txt");
+        assert_eq!(outside.status, "resolved");
+        let outside = outside.data.expect("data");
+        assert_eq!(outside["path"], "/Users/tao/Desktop/note.txt");
+        assert_eq!(outside["insideWorkspace"], false);
+        assert!(outside["relativePath"].is_null());
+
+        // An empty id is the only non-resolving case.
+        assert_eq!(resolve("   ").status, "missing");
     }
 
     fn seed_workspace_artifact(conn: &Connection) {

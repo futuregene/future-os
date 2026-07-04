@@ -321,7 +321,11 @@ function parseFutureUrl(href: string) {
     if (!isFutureReferenceType(targetType))
       return null;
 
-    const targetId = safeDecodeURIComponent(url.pathname.replace(/^\/+/, ""));
+    // Strip exactly ONE leading slash (the URL path separator), not all of them:
+    // an absolute file path arrives as `futureos://file//Users/x` → pathname
+    // `//Users/x`, and it must keep its own leading slash so the file opens. For
+    // id-based types the id never starts with a slash, so this is a no-op there.
+    const targetId = safeDecodeURIComponent(url.pathname.replace(/^\//, ""));
     if (!targetId)
       return null;
 
