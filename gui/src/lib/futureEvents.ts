@@ -16,6 +16,7 @@ export interface FutureEventMap {
     runId: string;
     triggerMessageId?: string | null;
   };
+  "toast": { message: string; tone?: "error" | "info" };
 }
 
 type FutureEventName = keyof FutureEventMap;

@@ -25,6 +25,13 @@
     "copyPath": "复制路径",
     "open": "打开"
   },
+  "fileLink": {
+    "copyPath": "复制路径",
+    "copyRelativePath": "复制相对路径",
+    "copyFilename": "复制文件名",
+    "open": "打开",
+    "notFound": "文件找不到了：{{name}}"
+  },
   "runEmbed": {
     "model": "模型",
     "run": "Run",
