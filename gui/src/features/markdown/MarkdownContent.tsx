@@ -3,6 +3,7 @@ import type { ResolvedMarkdownReference } from "../../integrations/storage/markd
 import type {
   StoredApprovalRequest,
   StoredArtifact,
+  StoredFile,
   StoredResearchResource,
   StoredReviewChangeset,
   StoredRun,
@@ -16,6 +17,7 @@ import { useCopyState } from "../../components/ui/useCopyState";
 import { useFutureReference, useFutureReferences } from "./futureReferenceStore";
 import { parseFutureMarkdown } from "./parseFutureMarkdown";
 import { ArtifactEmbed } from "./renderers/ArtifactEmbed";
+import { FileEmbed } from "./renderers/FileEmbed";
 import { MissingReference } from "./renderers/MissingReference";
 import { ApprovalEmbed, ResearchEmbed, ReviewEmbed, ToolEmbed } from "./renderers/ObjectEmbed";
 import { ReferenceChip } from "./renderers/ReferenceChip";
@@ -309,14 +311,18 @@ function FutureEmbed({
     return <MissingReference error={resolved?.error} reference={reference} />;
   }
 
-  // `file` addresses an artifact by path instead of id; it resolves to the same
-  // StoredArtifact payload and renders identically.
-  if (
-    (reference.targetType === "artifact" && resolved.targetType === "artifact")
-    || (reference.targetType === "file" && resolved.targetType === "file")
-  ) {
+  if (reference.targetType === "artifact" && resolved.targetType === "artifact") {
     if (isStoredArtifact(resolved.data)) {
       return <ArtifactEmbed artifact={resolved.data} reference={reference} />;
+    }
+    return <MissingReference error={t("embed.artifactPayloadInvalid")} reference={reference} />;
+  }
+
+  // `file` addresses a workspace file by path (resolved against disk, not the
+  // artifacts table) — see resolve.rs::ResolvedFile.
+  if (reference.targetType === "file" && resolved.targetType === "file") {
+    if (isStoredFile(resolved.data)) {
+      return <FileEmbed file={resolved.data} reference={reference} />;
     }
     return <MissingReference error={t("embed.artifactPayloadInvalid")} reference={reference} />;
   }
@@ -440,6 +446,13 @@ function isStoredArtifact(value: unknown): value is StoredArtifact {
     && typeof value.artifactType === "string"
     && typeof value.createdAt === "number"
     && typeof value.updatedAt === "number";
+}
+
+function isStoredFile(value: unknown): value is StoredFile {
+  return isRecord(value)
+    && typeof value.path === "string"
+    && typeof value.name === "string"
+    && typeof value.artifactType === "string";
 }
 
 function isStoredRun(value: unknown): value is StoredRun {

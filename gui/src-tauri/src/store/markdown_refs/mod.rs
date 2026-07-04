@@ -152,52 +152,68 @@ mod tests {
     }
 
     #[test]
-    fn resolves_file_references_by_path_including_slash_restored() {
+    fn resolves_file_references_against_workspace_files_on_disk() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let workspace_dir = std::env::temp_dir().join(format!("futureos_file_ref_{nanos}"));
+        std::fs::create_dir_all(workspace_dir.join("sub")).expect("create workspace dir");
+        std::fs::write(workspace_dir.join("hello.txt"), b"hi").expect("write hello.txt");
+        std::fs::write(workspace_dir.join("sub/note.md"), b"note").expect("write note.md");
+        let workspace_path = workspace_dir.to_string_lossy().to_string();
+        let hello_abs = workspace_dir
+            .join("hello.txt")
+            .to_string_lossy()
+            .to_string();
+        // Absolute path with the leading slash stripped (as the frontend URL
+        // parser delivers it) must still resolve.
+        let hello_abs_no_slash = hello_abs.trim_start_matches('/').to_string();
+
         let conn = test_conn();
-        seed_workspace_artifact(&conn);
-        // An absolute path; the frontend URL parser strips its leading slash, so
-        // resolution must still match "abs/dir/note.txt" back to "/abs/dir/note.txt".
         conn.execute(
-            "INSERT INTO artifacts (
-                 id, workspace_id, thread_id, title, artifact_type, path,
-                 created_at, updated_at
-             ) VALUES (
-                 'artifact_abs', 'ws_test', 'thread_test', 'Note', 'document',
-                 '/abs/dir/note.txt', 1, 1
-             )",
-            [],
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws_fs', 'FS', 'temporary', ?1, 'active', 1, 1)",
+            rusqlite::params![workspace_path],
         )
-        .expect("insert absolute-path artifact");
+        .expect("insert fs workspace");
 
-        let cases = [
-            ("poem.md", "resolved"),
-            ("abs/dir/note.txt", "resolved"),
-            ("/abs/dir/note.txt", "resolved"),
-            ("missing.txt", "missing"),
-        ]
-        .into_iter()
-        .map(|(target_id, expected)| {
-            let resolved = resolve_markdown_reference(
-                &conn,
-                "ws_test",
-                MarkdownReferenceInput {
-                    target_id: target_id.to_string(),
-                    target_type: "file".to_string(),
-                },
-            );
-            (resolved.status, expected)
-        })
-        .collect::<Vec<_>>();
+        let cases = vec![
+            ("hello.txt".to_string(), "resolved"),
+            ("sub/note.md".to_string(), "resolved"),
+            (hello_abs.clone(), "resolved"),
+            (hello_abs_no_slash, "resolved"),
+            ("missing.txt".to_string(), "missing"),
+            // Escaping the workspace root must never resolve, even if the file exists.
+            ("/etc/hosts".to_string(), "missing"),
+            ("../escape.txt".to_string(), "missing"),
+        ];
 
-        assert_eq!(
-            cases,
-            vec![
-                ("resolved".to_string(), "resolved"),
-                ("resolved".to_string(), "resolved"),
-                ("resolved".to_string(), "resolved"),
-                ("missing".to_string(), "missing"),
-            ]
-        );
+        let got = cases
+            .iter()
+            .map(|(target_id, _)| {
+                resolve_markdown_reference(
+                    &conn,
+                    "ws_fs",
+                    MarkdownReferenceInput {
+                        target_id: target_id.clone(),
+                        target_type: "file".to_string(),
+                    },
+                )
+                .status
+            })
+            .collect::<Vec<_>>();
+
+        std::fs::remove_dir_all(&workspace_dir).ok();
+
+        let expected = cases
+            .iter()
+            .map(|(_, status)| status.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(got, expected);
     }
 
     fn seed_workspace_artifact(conn: &Connection) {

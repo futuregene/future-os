@@ -1,6 +1,7 @@
 import type {
   StoredApprovalRequest,
   StoredArtifact,
+  StoredFile,
   StoredResearchResource,
   StoredReviewChangeset,
   StoredRun,
@@ -19,7 +20,7 @@ export interface ResolvedMarkdownReference {
   targetType: FutureReferenceType | string;
   targetId: string;
   status: "resolved" | "missing" | "forbidden" | string;
-  data?: StoredApprovalRequest | StoredArtifact | StoredResearchResource | StoredReviewChangeset | StoredRun | StoredToolCall | null;
+  data?: StoredApprovalRequest | StoredArtifact | StoredFile | StoredResearchResource | StoredReviewChangeset | StoredRun | StoredToolCall | null;
   error?: string | null;
 }
 

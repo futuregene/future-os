@@ -55,9 +55,13 @@ pub(super) fn resolve_markdown_reference(
             Ok(None) => missing_reference(target_type, target_id, "artifact was not found"),
             Err(error) => failed_reference(target_type, target_id, error),
         },
-        "file" => match get_file_artifact_in_workspace(conn, workspace_id, &target_id) {
-            Ok(Some(artifact)) => resolved_reference(target_type, target_id, artifact),
-            Ok(None) => missing_reference(target_type, target_id, "file was not found"),
+        "file" => match resolve_file_reference(conn, workspace_id, &target_id) {
+            Ok(Some(file)) => resolved_reference(target_type, target_id, file),
+            Ok(None) => missing_reference(
+                target_type,
+                target_id,
+                "file was not found in the workspace",
+            ),
             Err(error) => failed_reference(target_type, target_id, error),
         },
         "run" => match get_run_in_workspace(conn, workspace_id, &target_id) {
@@ -155,32 +159,73 @@ fn get_artifact_in_workspace(
     .map_err(crate::AppError::from)
 }
 
-/// Resolve an artifact by its filesystem `path` (a `futureos://file/<path>`
-/// reference) rather than its id. The frontend `URL` parser strips the leading
-/// slash off an unencoded absolute path, so also try the slash-restored form.
-/// A path is not unique across runs, so prefer the most recently updated match.
-fn get_file_artifact_in_workspace(
+/// A `futureos://file/<path>` reference, resolved against the workspace's files
+/// on disk rather than the `artifacts` table — a file the model wrote via bash,
+/// or into a git workspace, never becomes an artifact, but it is still a real
+/// file the reference should point at.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResolvedFile {
+    path: String,
+    name: String,
+    artifact_type: String,
+}
+
+/// Resolve a file reference by locating the path on disk inside the workspace.
+/// The referenced path may be absolute, workspace-relative, or an absolute path
+/// whose leading slash the frontend `URL` parser stripped, so try each form and
+/// require the resolved path to stay within the (canonical) workspace root — a
+/// message must never be able to probe files outside its own workspace.
+fn resolve_file_reference(
     conn: &Connection,
     workspace_id: &str,
-    path: &str,
-) -> Result<Option<ArtifactRecord>, crate::AppError> {
-    let slash_restored = format!("/{path}");
-    conn.query_row(
-        &format!(
-            "SELECT {ARTIFACT_COLUMNS}
-         FROM artifacts
-         WHERE workspace_id = ?1
-           AND deleted_at IS NULL
-           AND path IS NOT NULL
-           AND (path = ?2 OR path = ?3)
-         ORDER BY updated_at DESC
-         LIMIT 1"
-        ),
-        params![workspace_id, path, slash_restored],
-        artifact_from_row,
-    )
-    .optional()
-    .map_err(crate::AppError::from)
+    raw_path: &str,
+) -> Result<Option<ResolvedFile>, crate::AppError> {
+    let raw = raw_path.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+
+    let workspace_path: Option<String> = conn
+        .query_row(
+            "SELECT path FROM workspaces WHERE id = ?1",
+            params![workspace_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(workspace_path) = workspace_path else {
+        return Ok(None);
+    };
+    let workspace_root = crate::git_review::canonical_or_raw(&workspace_path);
+
+    let mut candidates = Vec::new();
+    let raw_ref = std::path::Path::new(raw);
+    if raw_ref.is_absolute() {
+        candidates.push(std::path::PathBuf::from(raw));
+    } else {
+        candidates.push(std::path::Path::new(&workspace_path).join(raw));
+        // Absolute path with a stripped leading slash (frontend `URL` parsing).
+        candidates.push(std::path::PathBuf::from(format!("/{raw}")));
+    }
+
+    for candidate in candidates {
+        let canonical = crate::git_review::canonical_or_raw(&candidate);
+        if !canonical.starts_with(&workspace_root) || !canonical.is_file() {
+            continue;
+        }
+        let name = canonical
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_string();
+        return Ok(Some(ResolvedFile {
+            artifact_type: crate::store::artifact_type_from_path(&canonical),
+            name,
+            path: canonical.to_string_lossy().into_owned(),
+        }));
+    }
+
+    Ok(None)
 }
 
 fn get_run_in_workspace(
