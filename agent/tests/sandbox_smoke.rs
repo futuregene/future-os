@@ -9,7 +9,7 @@
 
 #![cfg(target_os = "macos")]
 
-use future_agent::sandbox::{ResolvedSandbox, SandboxMode, SandboxPolicy};
+use future_agent::sandbox::{ResolvedSandbox, SandboxPolicy};
 use std::path::PathBuf;
 use std::process::Output;
 
@@ -34,7 +34,10 @@ fn run_sandboxed(sandbox: &ResolvedSandbox, command: &str) -> Output {
 }
 
 fn default_sandbox(ws: &std::path::Path) -> ResolvedSandbox {
-    ResolvedSandbox::resolve(&SandboxPolicy::default(), ws.to_string_lossy().as_ref())
+    ResolvedSandbox::resolve(
+        &SandboxPolicy { enabled: true },
+        ws.to_string_lossy().as_ref(),
+    )
 }
 
 #[test]
@@ -128,26 +131,9 @@ fn credential_paths_are_unreadable() {
 
 #[test]
 #[ignore = "runs real sandbox-exec; invoke with --ignored on macOS"]
-fn network_is_blocked_by_default_and_open_when_enabled() {
+fn network_is_open_in_v2() {
+    // v2: network is unrestricted inside the sandbox.
     let ws = workspace("network");
-    let out = run_sandboxed(
-        &default_sandbox(&ws),
-        "curl -sS --max-time 5 https://example.com -o /dev/null",
-    );
-    assert!(!out.status.success(), "network should be blocked");
-
-    let open = ResolvedSandbox::resolve(
-        &SandboxPolicy {
-            network_access: true,
-            ..Default::default()
-        },
-        ws.to_string_lossy().as_ref(),
-    );
-    let out = run_sandboxed(
-        &open,
-        "curl -sS --max-time 10 https://example.com -o /dev/null",
-    );
-    // Tolerate offline machines: only assert when the unsandboxed network works.
     let baseline = std::process::Command::new("curl")
         .args([
             "-sS",
@@ -160,13 +146,19 @@ fn network_is_blocked_by_default_and_open_when_enabled() {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
-    if baseline {
-        assert!(
-            out.status.success(),
-            "network_access=true should allow curl: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+    if !baseline {
+        eprintln!("offline; skipping network smoke");
+        return;
     }
+    let out = run_sandboxed(
+        &default_sandbox(&ws),
+        "curl -sS --max-time 10 https://example.com -o /dev/null && echo net-ok",
+    );
+    assert!(
+        out.status.success() && String::from_utf8_lossy(&out.stdout).contains("net-ok"),
+        "network should be open in v2: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -211,21 +203,32 @@ fn interpreters_and_devices_work() {
 
 #[test]
 #[ignore = "runs real sandbox-exec; invoke with --ignored on macOS"]
-fn read_only_mode_blocks_workspace_writes() {
-    let ws = workspace("readonly");
-    let sandbox = ResolvedSandbox::resolve(
-        &SandboxPolicy {
-            mode: SandboxMode::ReadOnly,
-            ..Default::default()
-        },
-        ws.to_string_lossy().as_ref(),
+fn workspace_secret_and_rule_file_writes_are_denied() {
+    let ws = workspace("secrets");
+    std::fs::create_dir_all(ws.join(".future")).unwrap();
+
+    // A workspace `.env` is a built-in ask → compiled to deny in the profile.
+    let out = run_sandboxed(&default_sandbox(&ws), "echo SECRET=1 > .env");
+    assert!(!out.status.success(), ".env write must be denied");
+    assert!(!ws.join(".env").exists());
+    // But reading a `.env` is also denied (ask → deny for bash).
+    std::fs::write(ws.join(".env"), "x").unwrap();
+    let out = run_sandboxed(&default_sandbox(&ws), "cat .env");
+    assert!(!out.status.success(), ".env read must be denied");
+
+    // The rule file itself cannot be written — even via rename (mv), which SBPL
+    // file-write* also covers — so the agent can't escalate its own rules.
+    let out = run_sandboxed(
+        &default_sandbox(&ws),
+        "echo '{}' > .future/approval_rule.json",
     );
-    let out = run_sandboxed(&sandbox, "echo nope > blocked.txt");
-    assert!(!out.status.success(), "read-only mode must deny writes");
-    assert!(!ws.join("blocked.txt").exists());
-    // Reads still work.
-    let out = run_sandboxed(&sandbox, "ls / > /dev/null && echo read-ok");
-    assert!(String::from_utf8_lossy(&out.stdout).contains("read-ok"));
+    assert!(!out.status.success(), "rule-file write must be denied");
+    let out = run_sandboxed(
+        &default_sandbox(&ws),
+        "echo '{}' > /tmp/r.json && mv /tmp/r.json .future/approval_rule.json",
+    );
+    assert!(!out.status.success(), "rule-file rename-in must be denied");
+    assert!(!ws.join(".future/approval_rule.json").exists());
 }
 
 #[test]

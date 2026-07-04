@@ -77,35 +77,17 @@ pub(super) async fn set_agent_permission_level(
     Ok(())
 }
 
-/// Send the session sandbox + approval policy. Phase 1: fixed
-/// `workspace-write × on-request` mode (SANDBOX_PLAN.md §5 Phase 1) — per-
-/// workspace mode/network config arrives with the Settings UI in Phase 3.
-/// Phase 2: the workspace's effective approval rules are flattened in.
+/// Enable the v2 approval-rule system for this session. The agent reads the
+/// rule files (`${WS}/.future/approval_rule.json`, `~/.future/approval_rule.json`)
+/// directly — only whether protection is on travels over the wire
+/// (APPROVAL_PLAN.md). GUI sessions enable it; the "auto-approve" switch (R2)
+/// will send `enabled: false`.
 pub(super) async fn set_agent_sandbox_policy(
     client: &mut FutureAgentClient<Channel>,
     session_id: &str,
-    thread_id: &str,
+    _thread_id: &str,
 ) -> Result<(), crate::AppError> {
-    // Effective rules: workspace-scoped + global, enabled, session-or-always.
-    // A missing thread/workspace just means no rules (fresh session).
-    let rules = store::get_thread(thread_id)?
-        .map(|thread| store::list_effective_rules(&thread.workspace_id))
-        .transpose()?
-        .unwrap_or_default()
-        .into_iter()
-        .map(|rule| crate::agent_proto::SandboxRule {
-            match_kind: rule.match_kind,
-            match_value: rule.match_value,
-            decision: rule.decision,
-        })
-        .collect();
-    let policy = crate::agent_proto::SandboxPolicy {
-        sandbox_mode: "workspace-write".to_string(),
-        writable_roots: vec![],
-        network_access: false,
-        approval_policy: "on-request".to_string(),
-        rules,
-    };
+    let policy = crate::agent_proto::SandboxPolicy { enabled: true };
     client
         .execute_command(set_sandbox_policy_command(policy, session_id.to_string()))
         .await

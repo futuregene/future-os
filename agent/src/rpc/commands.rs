@@ -829,10 +829,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 );
             };
             let summary = serde_json::json!({
-                "sandboxMode": policy.mode.as_str(),
-                "approvalPolicy": policy.approval_policy.as_str(),
-                "networkAccess": policy.network_access,
-                "writableRoots": policy.writable_roots,
+                "enabled": policy.enabled,
                 "sandboxAvailable": crate::sandbox::platform_sandbox_available(),
             });
             session.write().unwrap().set_sandbox_policy(policy);
