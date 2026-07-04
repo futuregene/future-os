@@ -103,6 +103,19 @@ pub(super) fn set_sandbox_policy_command(
     }
 }
 
+/// Same-run "allow in this workspace/chat" — message = path glob, mode = access.
+pub(super) fn add_session_rule_command(
+    path: String,
+    access: String,
+    session_id: String,
+) -> RpcCommand {
+    RpcCommand {
+        message: path,
+        mode: access,
+        ..base_command("add_session_rule", session_id)
+    }
+}
+
 pub(super) fn prompt_command(
     message: String,
     session_id: String,

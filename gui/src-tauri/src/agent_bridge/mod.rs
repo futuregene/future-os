@@ -8,7 +8,7 @@ mod session;
 mod skills;
 mod stream;
 
-pub use self::approval::decide_approval;
+pub use self::approval::{decide_approval, inject_session_rule};
 pub(crate) use self::client::raw_agent_addr;
 pub use self::models::{list_agent_models, AgentModelOption};
 pub use self::run_control::abort_run;

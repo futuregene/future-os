@@ -164,10 +164,19 @@ impl ServerSession {
         // Resolve the sandbox boundary once per run: canonicalized writable
         // roots + platform availability. Shared by the approval closure (pre-
         // execution decisions), the bash wrapper, and write/edit boundary
-        // checks so all layers agree (SANDBOX_PLAN.md §2.1). No explicit policy
-        // (every non-GUI client) → dormant sandbox = legacy behavior.
+        // checks so all layers agree. No explicit policy (every non-GUI client)
+        // → dormant sandbox = legacy behavior. Session rules are cleared at run
+        // start and shared into the sandbox so same-run "allow in this
+        // workspace" injections take effect immediately (APPROVAL_PLAN §6.2).
+        if let Ok(mut session_rules) = self.session_rules.lock() {
+            session_rules.clear();
+        }
         let sandbox = Arc::new(match &self.sandbox_policy {
-            Some(policy) => crate::sandbox::ResolvedSandbox::resolve(policy, &self.cwd),
+            Some(policy) => crate::sandbox::ResolvedSandbox::resolve_with_session(
+                policy,
+                &self.cwd,
+                self.session_rules.clone(),
+            ),
             None => crate::sandbox::ResolvedSandbox::disabled(&self.cwd),
         });
 

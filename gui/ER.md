@@ -343,7 +343,10 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
 - GUI 或 Agent 重启后遗留的 `pending` 审批应标记为 `cancelled`，防止旧审批继续显示为可操作状态。
 - 如果审批通过后产生文件变更，再由 Review Changeset 展示实际修改对比。
 - P2 引入结构化 `action_payload` 和 `sandbox_boundary` 字段（设计细节见 git history，原 `P2_APPROVAL_MODEL.md`）。
-- P2 预留了 `sandbox_config`、`approval_policy_config`、`approval_rules` 三张配置表，当前未启用。
+- **v2（审批规则重构，2026-07-04）**：审批对象收敛为**文件路径访问**，规则改为**文件式**（`${WS}/.future/approval_rule.json`、`~/.future/approval_rule.json`，agent 直接读），语义与实现见 [`APPROVAL_PLAN.md`](APPROVAL_PLAN.md) / [`SANDBOX_PLAN.md`](SANDBOX_PLAN.md)。相应地：
+  - `approval_requests` 新增 `save_suggestion`（TEXT，JSON）——审批卡片“本工作区/对话允许”的建议规则 `{path, access, action}`；敏感文件为空（只能允许一次）。
+  - **三张预留配置表 `sandbox_config` / `approval_policy_config` / `approval_rules` 不再使用**（规则迁到文件；表保留不删，避免降级破坏）。Phase 2 曾短暂用 `approval_rules` 存规则并经 gRPC 下发，v2 已拆除该链路。
+  - `kind` 扩展 `sandbox_escalation`（bash 越界失败的升级审批）；`outside_workspace_read` 等旧枚举随命令级模型作废。
 
 ### 4.9 Review Changeset
 

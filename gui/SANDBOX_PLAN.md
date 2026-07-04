@@ -154,11 +154,14 @@ v1（原 Phase 1 + Phase 2）已全部实现并通过验证（agent 67 测 + GUI
 - 验收：`make check-gui` + vitest(39) + tsc + eslint 全绿。
 - **已知未做（R3 补）**：**当轮即时生效**（§6.2 内存注入）——写文件后 agent 下一轮 prompt 才重读。当前"本工作区允许"让本次操作通过（写走 `approve_outside_path`，读经审批放行），但同一轮内对该目录下**其他**文件的同类操作仍会再问一次。需给 agent 加 session 规则注入命令，留 R3。read 审批卡片沿用 file_write 模板渲染（够用）。
 
-### Phase R3 — 收尾（后期）
+### Phase R3 — 敏感守卫 + 当轮即时生效 + 文档（2026-07-04）
 
-- [ ] 设置菜单编辑 user 级规则文件；规则列表查看。
-- [ ] PRODUCT.md §4.6 / ER.md §4.8 / gui/CLAUDE.md 原则 8 同步 v2 语义。
-- [ ] Linux bwrap；降级提示徽标。
+- [x] **敏感文件守卫**（方案 A）：`builtin_guards` 层置于 overrides 之下、用户规则之上 → 敏感文件（`.env`/`*.pem`/`*.key`/`*.p12`/`id_rsa*` + home 凭证）**不可被规则覆盖**，只能“允许一次”；宽目录 allow（`config/*`）盖不住里面的密钥（Q1 修复）。`is_secret_path` + 单测（broad_allow_does_not_ungate_secret_in_dir 等）。
+- [x] 敏感文件抑制持久化建议：`approval_shape` 命中 secret → `save_suggestion = None`（GUI 自动隐藏“本工作区允许”，只剩拒绝/允许一次）。Seatbelt profile 按新层序发射（守卫 deny 在高位）。
+- [x] **当轮即时生效**：`RuleSet.session` 改 `Arc<Mutex<Vec<PathRule>>>`（`SessionRules`）；`ServerSession.session_rules` 每轮清空、`resolve_with_session` 共享进 live sandbox；`add_session_rule` gRPC 命令；GUI `save_approval_rule` 写文件后经 `inject_session_rule` 注入当前 agent 会话 → 本轮同目录后续操作立刻不再问。守卫压得住 session（密钥仍每次问）。
+- [x] 文档：PRODUCT.md §4.6、ER.md §4.8 同步 v2；本文件 + APPROVAL_PLAN 更新。
+- 验收：agent 58 lib + smoke 9 + GUI 72 + 前端 39 全绿；`make lint`/`check-gui` 干净。
+- **不做**（本期）：设置菜单编辑 user 级规则、规则列表查看；Linux bwrap；降级提示徽标。
 
 ## 9. 明确不做
 
