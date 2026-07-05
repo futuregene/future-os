@@ -23,7 +23,7 @@ thiserror = "2"
 tonic = "0.12"
 prost = "0.13"
 tokio = { version = "1", features = ["time"] }
-async-nats = "0.37"
+async-nats = "0.49"
 futures = "0.3"
 tauri-plugin-dialog = "2"
 base64 = "0.22"

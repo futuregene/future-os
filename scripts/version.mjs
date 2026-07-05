@@ -1,13 +1,22 @@
 #!/usr/bin/env node
 // Single source of truth for FutureOS build versioning.
 //
-// One input decides everything: whether the build is on a release tag.
+// Three cases, all keyed off "is this a release tag":
 //   - on a `vX.Y.Z` tag   → release, version = "X.Y.Z"
-//   - anywhere else        → dev,     version = "0.0.0-dev.<short-git-hash>"
+//   - other online build   → dev,    version = "0.0.0-<short-git-hash>"
+//   - local build          → dev,    version = "0.0.0-<short-git-hash>+local"
+//                                     (…+local.dirty when the tree is dirty)
+//
+// The short commit hash alone pinpoints the code (`git show <hash>`) — no branch
+// name is encoded, which also keeps the string a valid SemVer with no
+// sanitisation (branch names can contain `/`, `_`, …). Local builds add `+local`
+// build metadata so they're never mistaken for the matching online build, and
+// `.dirty` when the working tree has uncommitted changes — a dirty local build
+// does NOT correspond to that commit, so the hash must not be trusted verbatim.
 //
 // The release/dev channel is DERIVED from the version string, not injected
 // separately: a plain `X.Y.Z` (no `-` suffix) is a release; anything carrying a
-// prerelease suffix (`-dev.…`) is a dev build. This keeps the model to a single
+// prerelease suffix (`-<hash>…`) is a dev build. This keeps the model to a single
 // injected value (FUTURE_VERSION) at the cost of one assumption:
 //
 //   ⚠️ Release versions must NEVER carry a `-` suffix. We intentionally do not
@@ -35,17 +44,39 @@ export function resolveVersion() {
   if (tag) {
     return tag[1];
   }
-  // Dev build: 0.0.0-dev.<short-hash>
-  let hash = "local";
+  // Dev build: 0.0.0-<short-hash>. The hash locates the exact code; no branch.
+  const hash = gitShortHash();
+  // Online (CI) builds are reproducible from the pushed commit, so the hash
+  // stands alone. Local builds add `+local` (and `.dirty` for an uncommitted
+  // tree) so a tester's laptop build is never confused with the online one.
+  if (process.env.GITHUB_ACTIONS || process.env.CI) {
+    return `0.0.0-${hash}`;
+  }
+  return `0.0.0-${hash}+local${gitDirty() ? ".dirty" : ""}`;
+}
+
+/** Short git hash, or "unknown" outside a git checkout (tarball build). */
+function gitShortHash() {
   try {
-    hash = execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] })
+    return execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] })
       .toString()
-      .trim() || "local";
+      .trim() || "unknown";
   }
   catch {
-    // No git (tarball build) — keep the "local" marker.
+    return "unknown";
   }
-  return `0.0.0-dev.${hash}`;
+}
+
+/** Whether the working tree has uncommitted changes (untracked included). */
+function gitDirty() {
+  try {
+    return execSync("git status --porcelain", { stdio: ["ignore", "pipe", "ignore"] })
+      .toString()
+      .trim().length > 0;
+  }
+  catch {
+    return false;
+  }
 }
 
 /** A version is a release iff it carries no prerelease/build suffix. */
@@ -109,8 +140,10 @@ function main() {
     }
 
     case "--set-bundle": {
-      // Patch the Tauri installer version to the plain semver core. The display
-      // version (with -dev.<hash>) is injected separately via FUTURE_VERSION.
+      // Patch the Tauri installer version to the plain semver core (installers
+      // reject `-`/`+` suffixes, so every non-release build reads 0.0.0). The
+      // display version (with the -<hash>[+local] suffix) is injected separately
+      // via FUTURE_VERSION.
       const bundle = bundleVersion(version);
       // fileURLToPath (not .pathname) so this resolves correctly on Windows too.
       const root = fileURLToPath(new URL("../", import.meta.url));
