@@ -1,5 +1,4 @@
 mod app_settings;
-mod approval_config;
 mod approvals;
 mod artifacts;
 mod cleanup;

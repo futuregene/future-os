@@ -737,7 +737,9 @@ mod tests {
         // v2: the boundary only applies when the sandbox is enabled (GUI). A
         // disabled/non-GUI session runs fully open, so enable it here.
         let mut sandbox = crate::sandbox::ResolvedSandbox::resolve(
-            &crate::sandbox::SandboxPolicy { enabled: true },
+            &crate::sandbox::SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Manual,
+            },
             workspace.to_string_lossy().as_ref(),
         );
         sandbox.available = false;

@@ -146,8 +146,8 @@ export function SettingsDialog({
             {tab === "general"
               ? (
                   <GeneralPage
-                    autoApprove={appSettings.autoApprove}
-                    onToggleAutoApprove={value => onChangeSettings({ autoApprove: value })}
+                    approvalTier={appSettings.approvalTier}
+                    onChangeApprovalTier={value => onChangeSettings({ approvalTier: value })}
                     showThinking={appSettings.showThinking}
                     onToggleShowThinking={value => onChangeSettings({ showThinking: value })}
                   />
