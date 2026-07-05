@@ -3,9 +3,16 @@
     "title": "界面语言",
     "description": "选择应用的显示语言"
   },
-  "autoApprove": {
-    "title": "自动审批",
-    "description": "权限请求将被自动批准"
+  "approvalTier": {
+    "title": "审批模式",
+    "manual": "手动审批",
+    "sandbox": "沙箱保护",
+    "off": "完全放开",
+    "description": {
+      "manual": "读写文件前询问；只读命令直接放行，其余命令需批准。",
+      "sandbox": "命令在 macOS 沙箱中运行（越界时申请提权），文件操作仍需批准。",
+      "off": "全部放开，不再询问，也不启用沙箱。"
+    }
   },
   "showThinking": {
     "title": "显示思考过程",

@@ -35,7 +35,9 @@ fn run_sandboxed(sandbox: &ResolvedSandbox, command: &str) -> Output {
 
 fn default_sandbox(ws: &std::path::Path) -> ResolvedSandbox {
     ResolvedSandbox::resolve(
-        &SandboxPolicy { enabled: true },
+        &SandboxPolicy {
+            tier: future_agent::sandbox::SandboxTier::Sandbox,
+        },
         ws.to_string_lossy().as_ref(),
     )
 }

@@ -9,8 +9,9 @@ use super::util::*;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
-    /// Auto-approve every incoming permission request without prompting.
-    pub auto_approve: bool,
+    /// Approval tier: `"manual"` (ask, default), `"sandbox"` (macOS Seatbelt
+    /// wraps bash; tools ask), or `"off"` (fully open, no approval).
+    pub approval_tier: String,
     /// Model identifiers (`provider/id`) hidden from the model picker.
     pub hidden_models: Vec<String>,
     /// Remote control: whether it should be running.
@@ -28,7 +29,7 @@ pub struct AppSettings {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateAppSettingsInput {
-    pub auto_approve: Option<bool>,
+    pub approval_tier: Option<String>,
     pub hidden_models: Option<Vec<String>>,
     pub remote_enabled: Option<bool>,
     pub remote_pair_id: Option<String>,
@@ -36,7 +37,7 @@ pub struct UpdateAppSettingsInput {
     pub show_thinking: Option<bool>,
 }
 
-const KEY_AUTO_APPROVE: &str = "auto_approve";
+const KEY_APPROVAL_TIER: &str = "approval_tier";
 const KEY_HIDDEN_MODELS: &str = "hidden_models";
 const KEY_REMOTE_ENABLED: &str = "remote_enabled";
 const KEY_REMOTE_PAIR_ID: &str = "remote_pair_id";
@@ -54,11 +55,11 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
     let conn = connect()?;
     let now = now_millis();
 
-    if let Some(auto_approve) = input.auto_approve {
+    if let Some(approval_tier) = input.approval_tier {
         write_value(
             &conn,
-            KEY_AUTO_APPROVE,
-            if auto_approve { "true" } else { "false" },
+            KEY_APPROVAL_TIER,
+            &normalize_tier(&approval_tier),
             now,
         )?;
     }
@@ -93,9 +94,9 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
 }
 
 fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> {
-    let auto_approve = read_value(conn, KEY_AUTO_APPROVE)?
-        .map(|value| value == "true")
-        .unwrap_or(false);
+    let approval_tier = read_value(conn, KEY_APPROVAL_TIER)?
+        .map(|value| normalize_tier(&value))
+        .unwrap_or_else(|| "manual".to_string());
     let hidden_models = read_value(conn, KEY_HIDDEN_MODELS)?
         .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
         .unwrap_or_default();
@@ -112,13 +113,22 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
         .map(|value| value == "true")
         .unwrap_or(false);
     Ok(AppSettings {
-        auto_approve,
+        approval_tier,
         hidden_models,
         remote_enabled,
         remote_pair_id,
         remote_nats_url,
         show_thinking,
     })
+}
+
+/// Clamp a tier string to the known set; anything unknown falls back to the
+/// default `"manual"`.
+fn normalize_tier(value: &str) -> String {
+    match value {
+        "off" | "sandbox" | "manual" => value.to_string(),
+        _ => "manual".to_string(),
+    }
 }
 
 fn read_value(conn: &Connection, key: &str) -> Result<Option<String>, crate::AppError> {

@@ -1,7 +1,10 @@
 import { invokeCommand } from "../tauri/invoke";
 
+/** Approval tier: ask everything (default), sandbox-protect (macOS only), or fully open. */
+export type ApprovalTier = "manual" | "sandbox" | "off";
+
 export interface AppSettings {
-  autoApprove: boolean;
+  approvalTier: ApprovalTier;
   hiddenModels: string[];
   /** Remote control: whether it should be running. */
   remoteEnabled: boolean;
@@ -15,7 +18,7 @@ export interface AppSettings {
 
 /** Fallback used before the persisted settings load. */
 export const DEFAULT_APP_SETTINGS: AppSettings = {
-  autoApprove: false,
+  approvalTier: "manual",
   hiddenModels: [],
   remoteEnabled: false,
   remotePairId: "DEVPAIR",
@@ -28,7 +31,7 @@ export async function getAppSettings() {
 }
 
 export async function updateAppSettings(input: {
-  autoApprove?: boolean;
+  approvalTier?: ApprovalTier;
   hiddenModels?: string[];
   remoteEnabled?: boolean;
   remotePairId?: string;

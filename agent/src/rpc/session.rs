@@ -632,7 +632,7 @@ impl ServerSession {
             &self.session_rules,
             std::path::Path::new(&self.cwd),
             raw_pattern,
-            crate::sandbox::rules::Access::from_str(access),
+            crate::sandbox::rules::Access::parse(access),
         );
     }
 

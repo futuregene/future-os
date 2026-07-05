@@ -52,12 +52,55 @@ impl ApprovalGate {
         arguments: &serde_json::Value,
         sandbox: &ResolvedSandbox,
     ) -> Option<crate::types::ToolCallResult> {
-        // v2: everything is a file-path decision. Disabled sessions run fully
-        // open. bash is not gated here (it runs Seatbelt-wrapped; boundary
-        // hits surface via escalation) — only file-touching tools are.
-        if !sandbox.enabled {
+        // Off tier runs fully open — no approval at all.
+        if !sandbox.enabled() {
             return None;
         }
+        // bash. Sandbox tier wraps it in Seatbelt (no pre-approval; boundary
+        // hits surface via escalation). Manual tier gates it with a read-only
+        // whitelist (Option B): known-safe commands auto-run, everything else
+        // asks. bash approvals are allow-once only (no persisted command rule).
+        if tool_name == "bash" {
+            if sandbox.wraps_bash() {
+                return None;
+            }
+            let command = arguments
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if bash_auto_allow(command) {
+                return None;
+            }
+            let shape = shell_command_shape(command, sandbox);
+            let outcome = self.ask_user(
+                broadcaster,
+                session_id,
+                tool_id,
+                tool_name,
+                &shape,
+                normalize_requested_action(arguments),
+            );
+            return match outcome {
+                AskOutcome::Approved => None,
+                AskOutcome::Cancelled(_) => Some(crate::types::ToolCallResult {
+                    result: "Tool call `bash` was cancelled because the approval request ended."
+                        .to_string(),
+                    is_error: true,
+                }),
+                AskOutcome::Rejected(note) => Some(crate::types::ToolCallResult {
+                    result: format!(
+                        "Tool call `bash` was rejected by the user{}.",
+                        if note.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {note}")
+                        }
+                    ),
+                    is_error: true,
+                }),
+            };
+        }
+        // Remaining file-touching tools are pure file-path decisions.
         let op = match tool_name {
             "read" => Op::Read,
             "write" | "edit" => Op::Write,
@@ -132,7 +175,13 @@ impl ApprovalGate {
         request: &EscalationRequest,
         sandbox: &ResolvedSandbox,
     ) -> EscalationDecision {
-        let blocked_paths = extract_blocked_paths(&request.failure_summary);
+        let raw_blocked = extract_blocked_paths_raw(&request.failure_summary);
+        let blocked_paths: Vec<String> = raw_blocked.iter().map(|p| shorten_home(p)).collect();
+        // Offer "allow in this workspace" (a path rule) when the blocked paths
+        // are non-secret — a persisted rule then makes that dir writable in the
+        // sandbox, so future bash runs there don't re-escalate. Secrets stay
+        // one-time-only (None → GUI shows only "allow once").
+        let save_suggestion = escalation_save_suggestion(&raw_blocked, sandbox);
         let action = serde_json::json!({
             "tool": "bash",
             "category": "sandbox_escalation",
@@ -158,8 +207,7 @@ impl ApprovalGate {
             action,
             // The approved re-run happens OUTSIDE the sandbox.
             sandbox_boundary: sandbox.boundary_json(Some("sandbox_escalation"), false),
-            // Escalation is a one-time out-of-sandbox run — never persist it.
-            save_suggestion: None,
+            save_suggestion,
         };
         let requested_action = serde_json::json!({
             "command": request.command,
@@ -414,6 +462,103 @@ fn path_save_suggestion(path: &Path, op: Op, workspace: &Path) -> Option<serde_j
     }))
 }
 
+/// Programs that only read (no filesystem writes, no arbitrary exec).
+const READONLY_PROGRAMS: &[&str] = &[
+    "cat", "ls", "pwd", "echo", "printf", "find", "grep", "egrep", "fgrep", "rg", "ag", "head",
+    "tail", "wc", "sort", "uniq", "cut", "tr", "nl", "fold", "column", "file", "stat", "du", "df",
+    "date", "whoami", "hostname", "id", "uname", "env", "printenv", "which", "type", "dirname",
+    "basename", "realpath", "readlink", "tree", "diff", "cmp", "comm", "less", "more", "true",
+    "false", "test", "seq", "yes",
+];
+
+/// git subcommands that don't mutate the repo or working tree.
+const GIT_READONLY: &[&str] = &[
+    "status",
+    "log",
+    "diff",
+    "show",
+    "branch",
+    "tag",
+    "describe",
+    "blame",
+    "shortlog",
+    "ls-files",
+    "ls-tree",
+    "rev-parse",
+    "rev-list",
+    "remote",
+    "reflog",
+    "cat-file",
+    "grep",
+];
+
+/// Read-only bash whitelist for the Manual tier: known-safe commands auto-run,
+/// everything else asks. Conservative — anything with shell operators that could
+/// write, chain, background, or substitute falls through to "ask".
+fn bash_auto_allow(command: &str) -> bool {
+    let cmd = command.trim();
+    if cmd.is_empty() {
+        return false;
+    }
+    // Reject write / exec / chain / substitution operators outright. `&` also
+    // catches `&&` and backgrounding; `` ` `` and `$(` catch substitution.
+    // Pipes are validated per-segment below (each stage must be read-only).
+    const DANGEROUS: &[char] = &['>', '<', '`', ';', '&', '\n', '(', '{'];
+    if cmd.contains("$(") || cmd.chars().any(|c| DANGEROUS.contains(&c)) {
+        return false;
+    }
+    cmd.split('|').all(|seg| segment_is_read_only(seg.trim()))
+}
+
+/// Whether a single pipe segment invokes only a read-only program.
+fn segment_is_read_only(seg: &str) -> bool {
+    let mut words = seg.split_whitespace();
+    let Some(prog) = words.next() else {
+        return false;
+    };
+    // Reduce a leading path (e.g. /bin/ls) to its basename.
+    let prog = prog.rsplit('/').next().unwrap_or(prog);
+    match prog {
+        "git" => {
+            // First non-flag token is the subcommand; it must be read-only.
+            let sub = words.find(|w| !w.starts_with('-'));
+            matches!(sub, Some(s) if GIT_READONLY.contains(&s))
+        }
+        "find" => {
+            // find only reads unless it mutates or executes.
+            !seg.contains("-exec")
+                && !seg.contains("-delete")
+                && !seg.contains("-fprint")
+                && !seg.contains("-ok")
+        }
+        _ => READONLY_PROGRAMS.contains(&prog),
+    }
+}
+
+/// Approval card for a bash command that isn't auto-allowed (Manual tier).
+fn shell_command_shape(command: &str, sandbox: &ResolvedSandbox) -> ApprovalShape {
+    ApprovalShape {
+        kind: "shell_command",
+        risk_level: "medium",
+        title: "Approve shell command".to_string(),
+        summary: "Agent wants to run a shell command.".to_string(),
+        action: serde_json::json!({
+            "tool": "bash",
+            "category": "shell_command",
+            "summary": command_summary(command),
+            "command": command,
+            "scope": {
+                "cwd": sandbox.workspace.to_string_lossy(),
+                "inside_workspace": true,
+                "estimated_blast_radius": "medium"
+            }
+        }),
+        sandbox_boundary: sandbox.boundary_json(Some("shell_command"), false),
+        // bash approvals are one-time only — v2 rules are path-based, not command-based.
+        save_suggestion: None,
+    }
+}
+
 fn command_summary(command: &str) -> String {
     let trimmed = command.trim();
     if trimmed.len() <= 200 {
@@ -425,13 +570,10 @@ fn command_summary(command: &str) -> String {
     }
 }
 
-/// Extract the file paths a sandbox denial mentions, so the approval card can
-/// say "this file access was blocked" instead of dumping raw tool stderr.
-/// Reads lines that mention "Operation not permitted" and pulls the path out
-/// of quotes (`'…'` / `"…"`) or the first absolute-path token. `$HOME` is
-/// shortened to `~`. Deduped, capped, order-preserving.
-fn extract_blocked_paths(stderr: &str) -> Vec<String> {
-    let home = dirs::home_dir().map(|h| h.to_string_lossy().into_owned());
+/// Raw (absolute) file paths a sandbox denial mentions. Reads lines with
+/// "Operation not permitted" and pulls the path from quotes (`'…'` / `"…"`) or
+/// the first absolute-path token. Deduped, capped, order-preserving.
+fn extract_blocked_paths_raw(stderr: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in stderr.lines() {
         if !line.contains("Operation not permitted") {
@@ -440,18 +582,65 @@ fn extract_blocked_paths(stderr: &str) -> Vec<String> {
         let Some(raw) = quoted_path(line).or_else(|| absolute_path_token(line)) else {
             continue;
         };
-        let display = match &home {
-            Some(h) if raw.starts_with(h.as_str()) => raw.replacen(h.as_str(), "~", 1),
-            _ => raw,
-        };
-        if !out.contains(&display) {
-            out.push(display);
+        if !out.contains(&raw) {
+            out.push(raw);
         }
         if out.len() >= 5 {
             break;
         }
     }
     out
+}
+
+/// Shorten `$HOME` to `~` for display.
+fn shorten_home(path: &str) -> String {
+    match dirs::home_dir() {
+        Some(home) if path.starts_with(home.to_string_lossy().as_ref()) => {
+            path.replacen(home.to_string_lossy().as_ref(), "~", 1)
+        }
+        _ => path.to_string(),
+    }
+}
+
+/// Card-friendly blocked paths (`$HOME` → `~`), for display only.
+#[cfg(test)]
+fn extract_blocked_paths(stderr: &str) -> Vec<String> {
+    extract_blocked_paths_raw(stderr)
+        .iter()
+        .map(|p| shorten_home(p))
+        .collect()
+}
+
+/// "Allow in this workspace/chat" suggestion for an escalation: the parent
+/// directory of the (first) blocked path. Returns `None` when any blocked path
+/// is a secret (secrets stay one-time-only) or none is known — so the card
+/// shows only "allow once" for those. Access is `write`: reads of non-secrets
+/// are open, so a non-secret denial is a write.
+fn escalation_save_suggestion(
+    raw_paths: &[String],
+    sandbox: &ResolvedSandbox,
+) -> Option<serde_json::Value> {
+    if raw_paths.is_empty() {
+        return None;
+    }
+    if raw_paths
+        .iter()
+        .any(|p| sandbox.is_secret_path(Path::new(p)))
+    {
+        return None;
+    }
+    let parent = Path::new(&raw_paths[0]).parent()?;
+    let glob = match parent.strip_prefix(&sandbox.workspace) {
+        Ok(rel) if rel.as_os_str().is_empty() => "*".to_string(),
+        Ok(rel) => format!("{}/*", rel.to_string_lossy()),
+        // Outside the workspace: keep it portable with `~` when under home.
+        Err(_) => format!("{}/*", shorten_home(&parent.to_string_lossy())),
+    };
+    Some(serde_json::json!({
+        "path": glob,
+        "access": "write",
+        "action": "allow",
+    }))
 }
 
 /// First `'…'` or `"…"` span that looks like a path (contains `/`).
@@ -563,6 +752,30 @@ mod tests {
     use crate::sandbox::SandboxPolicy;
 
     #[test]
+    fn bash_whitelist_allows_read_only_commands() {
+        assert!(bash_auto_allow("ls -la"));
+        assert!(bash_auto_allow("cat README.md"));
+        assert!(bash_auto_allow("git status"));
+        assert!(bash_auto_allow("git log --oneline"));
+        assert!(bash_auto_allow("grep -rn foo src | head -20"));
+        assert!(bash_auto_allow("/bin/ls"));
+        assert!(bash_auto_allow("find . -name '*.rs'"));
+    }
+
+    #[test]
+    fn bash_whitelist_asks_for_writes_and_chains() {
+        assert!(!bash_auto_allow("rm -rf build"));
+        assert!(!bash_auto_allow("echo hi > file.txt")); // redirect
+        assert!(!bash_auto_allow("git commit -m x")); // mutating subcommand
+        assert!(!bash_auto_allow("ls && rm x")); // chain
+        assert!(!bash_auto_allow("cat $(whoami)")); // substitution
+        assert!(!bash_auto_allow("find . -delete")); // find mutation
+        assert!(!bash_auto_allow("grep foo x | rm y")); // pipe to non-read-only
+        assert!(!bash_auto_allow("npm install")); // unknown program
+        assert!(!bash_auto_allow(""));
+    }
+
+    #[test]
     fn extract_blocked_paths_from_gpg_denial() {
         let stderr = "\
 [exit code: 128]
@@ -578,6 +791,42 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
                 "/Users/x/.gnupg/pubring.kbx".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn escalation_suggests_parent_for_nonsecret_but_not_secret() {
+        let ws = temp_ws("escalation-sug");
+        let sandbox = ResolvedSandbox::resolve(
+            &SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Manual,
+            },
+            &ws,
+        );
+        let home = dirs::home_dir().unwrap();
+
+        // Non-secret outside-workspace write → suggest the parent dir (~ form).
+        let desktop = home.join("Desktop/note.txt");
+        let sug = escalation_save_suggestion(&[desktop.to_string_lossy().into_owned()], &sandbox)
+            .expect("non-secret blocked path should be persistable");
+        assert_eq!(sug["path"], "~/Desktop/*");
+        assert_eq!(sug["access"], "write");
+
+        // A secret blocked path (~/.gnupg) → no persistence (one-time only).
+        let gnupg = home.join(".gnupg/pubring.kbx");
+        assert!(
+            escalation_save_suggestion(&[gnupg.to_string_lossy().into_owned()], &sandbox).is_none()
+        );
+        // Mixed (one secret) → still none.
+        assert!(escalation_save_suggestion(
+            &[
+                desktop.to_string_lossy().into_owned(),
+                gnupg.to_string_lossy().into_owned()
+            ],
+            &sandbox
+        )
+        .is_none());
+        // No known paths → none.
+        assert!(escalation_save_suggestion(&[], &sandbox).is_none());
     }
 
     #[test]
@@ -603,7 +852,12 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
     }
 
     fn enabled(ws: &str) -> ResolvedSandbox {
-        ResolvedSandbox::resolve(&SandboxPolicy { enabled: true }, ws)
+        ResolvedSandbox::resolve(
+            &SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Manual,
+            },
+            ws,
+        )
     }
 
     /// A path outside the workspace and temp (never created).
@@ -632,10 +886,23 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
     }
 
     #[test]
-    fn bash_is_never_pre_approved() {
-        // bash runs sandboxed; no pre-execution approval in v2.
-        let ws = temp_ws("bash");
+    fn bash_read_only_auto_allowed_in_manual() {
+        // Manual tier: read-only whitelist commands run without a prompt.
+        let ws = temp_ws("bash-ro");
         let sandbox = enabled(&ws);
+        let gate = ApprovalGate::default();
+        let b = SseBroadcaster::new();
+        let args = serde_json::json!({ "command": "ls -la" });
+        assert!(gate
+            .request(&b, "s", &ws, "bash", "t", &args, &sandbox)
+            .is_none());
+    }
+
+    #[test]
+    fn bash_never_gated_when_disabled() {
+        // Off tier: no approval at all, even for a dangerous command.
+        let ws = temp_ws("bash-off");
+        let sandbox = ResolvedSandbox::disabled(&ws);
         let gate = ApprovalGate::default();
         let b = SseBroadcaster::new();
         let args = serde_json::json!({ "command": "rm -rf /" });

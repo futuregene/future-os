@@ -129,7 +129,9 @@ mod tests {
         let ws = std::env::temp_dir().join(format!("futureos-seatbelt-{stamp}"));
         std::fs::create_dir_all(&ws).unwrap();
         ResolvedSandbox::resolve(
-            &SandboxPolicy { enabled: true },
+            &SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Sandbox,
+            },
             ws.to_string_lossy().as_ref(),
         )
     }

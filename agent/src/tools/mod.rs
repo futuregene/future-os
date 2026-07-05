@@ -871,7 +871,7 @@ fn ensure_workspace_access(_workspace: &Path, path: &Path) -> Result<()> {
     // Disabled (non-GUI) sessions run fully open; otherwise the write must
     // resolve to Allow (the before_tool_call hook already prompted for Ask and
     // recorded approved paths above).
-    if !sandbox.enabled {
+    if !sandbox.enabled() {
         return Ok(());
     }
     match sandbox.evaluate(&candidate, crate::sandbox::rules::Op::Write) {
@@ -966,7 +966,9 @@ mod tests {
     /// only the application-layer boundary check is exercised. Mirrors GUI.
     fn active_policy_scope(workspace: &Path) -> ScopeOptions {
         let mut sandbox = crate::sandbox::ResolvedSandbox::resolve(
-            &crate::sandbox::SandboxPolicy { enabled: true },
+            &crate::sandbox::SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Sandbox,
+            },
             workspace.to_string_lossy().as_ref(),
         );
         sandbox.available = false;
@@ -1072,7 +1074,9 @@ mod tests {
         calls: Arc<Mutex<Vec<EscalationRequest>>>,
     ) -> ScopeOptions {
         let mut sandbox = crate::sandbox::ResolvedSandbox::resolve(
-            &crate::sandbox::SandboxPolicy { enabled: true },
+            &crate::sandbox::SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Sandbox,
+            },
             workspace.to_string_lossy().as_ref(),
         );
         sandbox.available = available;

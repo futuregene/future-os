@@ -1,5 +1,5 @@
 import type { StoredApprovalRequest } from "../../../integrations/storage/threadStore";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useMemo } from "react";
 import i18n from "../../../i18n";
 import { decideApprovalRequest, listApprovalRequests } from "../../../integrations/storage/threadStore";
 import { useAsyncResource } from "../../../lib/useAsyncResource";
@@ -19,12 +19,13 @@ export interface ApprovalsState {
 }
 
 /**
- * Owns the pending-approval queue for the active thread: a 1.5s poll, the
- * derived "active" (oldest pending) approval, and the auto-approve engine that
- * resolves each new request once when the setting is on. A load is dropped (and
- * the list cleared) on error, matching the previous inline behavior.
+ * Owns the pending-approval queue for the active thread: a 1.5s poll and the
+ * derived "active" (oldest pending) approval. A load is dropped (and the list
+ * cleared) on error, matching the previous inline behavior. There is no
+ * frontend auto-approve engine — the "off" tier suppresses approval requests at
+ * the agent, so nothing reaches this queue when the user opts out.
  */
-export function useApprovals(activeThreadId: string | null, autoApprove: boolean): ApprovalsState {
+export function useApprovals(activeThreadId: string | null): ApprovalsState {
   const { data: pendingApprovals, reload } = useAsyncResource(
     async () => {
       if (!activeThreadId) {
@@ -49,29 +50,6 @@ export function useApprovals(activeThreadId: string | null, autoApprove: boolean
     () => [...pendingApprovals].sort((left, right) => left.createdAt - right.createdAt)[0] ?? null,
     [pendingApprovals],
   );
-
-  const autoApprovingRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    if (!autoApprove) {
-      return;
-    }
-    for (const approval of pendingApprovals) {
-      if (autoApprovingRef.current.has(approval.id)) {
-        continue;
-      }
-      autoApprovingRef.current.add(approval.id);
-      void decideApprovalRequest({
-        approvalRequestId: approval.id,
-        decisionNote: i18n.t("layout:approvals.autoApproved"),
-        status: "approved",
-      })
-        .catch(() => undefined)
-        .finally(() => {
-          autoApprovingRef.current.delete(approval.id);
-          reload();
-        });
-    }
-  }, [autoApprove, pendingApprovals, reload]);
 
   const decideApproval = useCallback(
     async (approval: StoredApprovalRequest, status: "approved" | "rejected") => {

@@ -83,10 +83,11 @@ pub struct RpcCommand {
     #[prost(message, optional, tag = "150")]
     pub sandbox_policy: ::core::option::Option<SandboxPolicy>,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SandboxPolicy {
-    #[prost(bool, tag = "6")]
-    pub enabled: bool,
+    /// "off" (完全放开) | "manual" (手动审批) | "sandbox" (沙箱保护, macOS only).
+    #[prost(string, tag = "7")]
+    pub tier: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ImageContent {

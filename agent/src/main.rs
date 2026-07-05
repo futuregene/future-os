@@ -26,7 +26,7 @@ fn main() -> Result<()> {
     // Initialise tracing with timestamps before anything else.
     tracing_subscriber::fmt()
         .with_target(false)
-        .with_timer(tracing_subscriber::fmt::time::SystemTime::default())
+        .with_timer(tracing_subscriber::fmt::time::SystemTime)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),

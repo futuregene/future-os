@@ -20,20 +20,49 @@ use std::sync::Arc;
 
 use rules::{Decision, Op, RuleSet};
 
-/// Session sandbox policy from the frontend. v2 collapses the old
-/// modes/policies/rules into a single switch: is approval protection on?
-#[derive(Debug, Clone, Default)]
-pub struct SandboxPolicy {
-    pub enabled: bool,
+/// The user-selected approval tier (composer / settings).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SandboxTier {
+    /// 完全放开 — no approval, no sandbox, everything runs.
+    Off,
+    /// 手动审批 — approval rules on; bash asks (read-only allowlist免问); no OS
+    /// sandbox. The default, all platforms.
+    #[default]
+    Manual,
+    /// 沙箱保护 — approval rules on; bash runs inside the OS sandbox (macOS
+    /// only; the GUI hides this option elsewhere).
+    Sandbox,
 }
 
-/// A resolved sandbox for one session/workspace: the layered rule set plus
-/// whether the system is enabled and whether the OS sandbox is usable here.
+impl SandboxTier {
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "off" => Self::Off,
+            "sandbox" => Self::Sandbox,
+            _ => Self::Manual,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Manual => "manual",
+            Self::Sandbox => "sandbox",
+        }
+    }
+}
+
+/// Session sandbox policy from the frontend.
+#[derive(Debug, Clone, Default)]
+pub struct SandboxPolicy {
+    pub tier: SandboxTier,
+}
+
+/// A resolved sandbox for one session/workspace: the layered rule set plus the
+/// selected tier and whether the OS sandbox is usable here.
 #[derive(Debug, Clone)]
 pub struct ResolvedSandbox {
-    /// Whether approval rules + OS sandbox apply. `false` = fully open
-    /// (non-GUI clients, or the GUI "auto-approve" switch).
-    pub enabled: bool,
+    pub tier: SandboxTier,
     /// Whether the platform sandbox (sandbox-exec) is usable here.
     pub available: bool,
     /// Canonicalized workspace directory.
@@ -42,11 +71,11 @@ pub struct ResolvedSandbox {
 }
 
 impl ResolvedSandbox {
-    /// Resolve rules for `workspace`. `enabled` comes from the session policy.
+    /// Resolve rules for `workspace`. The tier comes from the session policy.
     pub fn resolve(policy: &SandboxPolicy, workspace: &str) -> Self {
         let rules = RuleSet::resolve(Path::new(workspace));
         Self {
-            enabled: policy.enabled,
+            tier: policy.tier,
             available: platform_sandbox_available(),
             workspace: rules.workspace.clone(),
             rules,
@@ -62,11 +91,23 @@ impl ResolvedSandbox {
     ) -> Self {
         let rules = RuleSet::resolve_with_session(Path::new(workspace), session);
         Self {
-            enabled: policy.enabled,
+            tier: policy.tier,
             available: platform_sandbox_available(),
             workspace: rules.workspace.clone(),
             rules,
         }
+    }
+
+    /// Whether approval rules apply at all (tools + evaluate). Off = fully open.
+    pub fn enabled(&self) -> bool {
+        self.tier != SandboxTier::Off
+    }
+
+    /// Whether bash runs pre-approval-gated (manual tier, or a sandbox tier on a
+    /// platform without the OS sandbox). When true, bash asks (allowlist免问);
+    /// when false and enabled, bash is OS-sandboxed instead.
+    pub fn bash_needs_approval(&self) -> bool {
+        self.enabled() && !self.wraps_bash()
     }
 
     /// Whether `path` (canonicalized internally) is a built-in secret — used to
@@ -76,12 +117,12 @@ impl ResolvedSandbox {
             .is_secret_path(&paths::canonicalize_lenient(path))
     }
 
-    /// Fully-open sandbox: no rules, no OS wrapping, no approval. Used for
-    /// non-GUI clients and bare unit tests.
+    /// Fully-open sandbox (Off tier): no rules, no OS wrapping, no approval.
+    /// Used for non-GUI clients and bare unit tests.
     pub fn disabled(workspace: &str) -> Self {
         let rules = RuleSet::resolve(Path::new(workspace));
         Self {
-            enabled: false,
+            tier: SandboxTier::Off,
             available: false,
             workspace: rules.workspace.clone(),
             rules,
@@ -90,7 +131,7 @@ impl ResolvedSandbox {
 
     /// Evaluate a file access. `path` is canonicalized internally.
     pub fn evaluate(&self, path: &Path, op: Op) -> Decision {
-        if !self.enabled {
+        if !self.enabled() {
             return Decision::Allow;
         }
         self.rules.evaluate(&paths::canonicalize_lenient(path), op)
@@ -113,9 +154,10 @@ impl ResolvedSandbox {
             .add_session_rule(abs_pattern, access, Decision::Allow);
     }
 
-    /// Whether bash commands run wrapped in the OS sandbox.
+    /// Whether bash commands run wrapped in the OS sandbox (Sandbox tier on a
+    /// platform where sandbox-exec is available).
     pub fn wraps_bash(&self) -> bool {
-        self.enabled && self.available
+        self.tier == SandboxTier::Sandbox && self.available
     }
 
     /// Read access to the resolved rule set (Seatbelt profile builder).
@@ -147,7 +189,7 @@ impl ResolvedSandbox {
         serde_json::json!({
             "inside_sandbox": inside_sandbox,
             "sandbox_available": self.available,
-            "enabled": self.enabled,
+            "tier": self.tier.as_str(),
             "violation": violation,
             "cwd": self.workspace.to_string_lossy(),
         })
@@ -231,7 +273,40 @@ mod tests {
     }
 
     fn enabled(workspace: &str) -> ResolvedSandbox {
-        ResolvedSandbox::resolve(&SandboxPolicy { enabled: true }, workspace)
+        ResolvedSandbox::resolve(
+            &SandboxPolicy {
+                tier: SandboxTier::Manual,
+            },
+            workspace,
+        )
+    }
+
+    #[test]
+    fn tier_maps_bash_handling() {
+        let ws = temp_workspace("tiers");
+        let mut manual = enabled(&ws);
+        manual.available = true;
+        // Manual: bash needs approval, never OS-wrapped, even where available.
+        assert!(!manual.wraps_bash());
+        assert!(manual.bash_needs_approval());
+
+        let mut sandbox = ResolvedSandbox::resolve(
+            &SandboxPolicy {
+                tier: SandboxTier::Sandbox,
+            },
+            &ws,
+        );
+        sandbox.available = true;
+        assert!(sandbox.wraps_bash());
+        assert!(!sandbox.bash_needs_approval());
+        // Sandbox tier without the OS sandbox falls back to bash approval.
+        sandbox.available = false;
+        assert!(!sandbox.wraps_bash());
+        assert!(sandbox.bash_needs_approval());
+
+        let off = ResolvedSandbox::disabled(&ws);
+        assert!(!off.enabled());
+        assert!(!off.bash_needs_approval());
     }
 
     #[test]
@@ -262,7 +337,7 @@ mod tests {
     #[test]
     fn session_allow_takes_effect() {
         let ws = temp_workspace("session");
-        let mut s = enabled(&ws);
+        let s = enabled(&ws);
         let outside = dirs::home_dir().unwrap().join("futureos-notes");
         assert_eq!(s.evaluate(&outside, Op::Write), Decision::Ask);
         s.add_session_allow(&outside.to_string_lossy(), Op::Write);

@@ -3,9 +3,16 @@
     "title": "Language",
     "description": "Choose the display language of the app"
   },
-  "autoApprove": {
-    "title": "Auto-approve",
-    "description": "Permission requests will be approved automatically"
+  "approvalTier": {
+    "title": "Approval mode",
+    "manual": "Manual",
+    "sandbox": "Sandboxed",
+    "off": "Unrestricted",
+    "description": {
+      "manual": "Prompts before file reads and writes; read-only commands run automatically.",
+      "sandbox": "Commands run in the macOS sandbox; file operations still prompt.",
+      "off": "No prompts, no sandbox — everything runs."
+    }
   },
   "showThinking": {
     "title": "Show thinking process",

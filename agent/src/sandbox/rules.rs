@@ -7,14 +7,14 @@
 //!
 //! Layers (highest priority first):
 //!
-//! - 0. built-in security overrides — rule-file writes → deny; app credential
-//!   files → read+write deny (unoverridable)
-//! - 1. guards — secret/credential paths (`.env`, `*.pem`, `~/.ssh` …) → ask,
-//!   unoverridable by the user layers below (a broad allow can't un-gate a
-//!   secret; secrets are "allow once" only)
-//! - 2. session — runtime "allow in this workspace/chat", current run
-//! - 3. workspace rule file — `${WS}/.future/approval_rule.json`
-//! - 4. user rule file — `~/.future/approval_rule.json`
+//! 0. built-in security overrides — rule-file writes → deny; app credential
+//!    files → read+write deny (unoverridable)
+//! 1. guards — secret/credential paths (`.env`, `*.pem`, `~/.ssh` …) → ask,
+//!    unoverridable by the user layers below (a broad allow can't un-gate a
+//!    secret; secrets are "allow once" only)
+//! 2. session — runtime "allow in this workspace/chat", current run
+//! 3. workspace rule file — `${WS}/.future/approval_rule.json`
+//! 4. user rule file — `~/.future/approval_rule.json`
 //! - fallback: read → allow; write → in workspace/temp ? allow : ask
 
 use std::path::{Path, PathBuf};
@@ -44,7 +44,7 @@ pub enum Access {
 }
 
 impl Access {
-    fn parse(value: &str) -> Self {
+    pub fn parse(value: &str) -> Self {
         match value {
             "read" => Self::Read,
             "write" => Self::Write,
@@ -520,12 +520,6 @@ pub fn push_session_allow(
             access,
             Decision::Allow,
         ));
-    }
-}
-
-impl Access {
-    pub fn from_str(value: &str) -> Access {
-        Access::parse(value)
     }
 }
 
