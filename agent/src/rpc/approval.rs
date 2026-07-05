@@ -132,7 +132,13 @@ impl ApprovalGate {
         request: &EscalationRequest,
         sandbox: &ResolvedSandbox,
     ) -> EscalationDecision {
-        let blocked_paths = extract_blocked_paths(&request.failure_summary);
+        let raw_blocked = extract_blocked_paths_raw(&request.failure_summary);
+        let blocked_paths: Vec<String> = raw_blocked.iter().map(|p| shorten_home(p)).collect();
+        // Offer "allow in this workspace" (a path rule) when the blocked paths
+        // are non-secret — a persisted rule then makes that dir writable in the
+        // sandbox, so future bash runs there don't re-escalate. Secrets stay
+        // one-time-only (None → GUI shows only "allow once").
+        let save_suggestion = escalation_save_suggestion(&raw_blocked, sandbox);
         let action = serde_json::json!({
             "tool": "bash",
             "category": "sandbox_escalation",
@@ -158,8 +164,7 @@ impl ApprovalGate {
             action,
             // The approved re-run happens OUTSIDE the sandbox.
             sandbox_boundary: sandbox.boundary_json(Some("sandbox_escalation"), false),
-            // Escalation is a one-time out-of-sandbox run — never persist it.
-            save_suggestion: None,
+            save_suggestion,
         };
         let requested_action = serde_json::json!({
             "command": request.command,
@@ -425,13 +430,10 @@ fn command_summary(command: &str) -> String {
     }
 }
 
-/// Extract the file paths a sandbox denial mentions, so the approval card can
-/// say "this file access was blocked" instead of dumping raw tool stderr.
-/// Reads lines that mention "Operation not permitted" and pulls the path out
-/// of quotes (`'…'` / `"…"`) or the first absolute-path token. `$HOME` is
-/// shortened to `~`. Deduped, capped, order-preserving.
-fn extract_blocked_paths(stderr: &str) -> Vec<String> {
-    let home = dirs::home_dir().map(|h| h.to_string_lossy().into_owned());
+/// Raw (absolute) file paths a sandbox denial mentions. Reads lines with
+/// "Operation not permitted" and pulls the path from quotes (`'…'` / `"…"`) or
+/// the first absolute-path token. Deduped, capped, order-preserving.
+fn extract_blocked_paths_raw(stderr: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in stderr.lines() {
         if !line.contains("Operation not permitted") {
@@ -440,18 +442,64 @@ fn extract_blocked_paths(stderr: &str) -> Vec<String> {
         let Some(raw) = quoted_path(line).or_else(|| absolute_path_token(line)) else {
             continue;
         };
-        let display = match &home {
-            Some(h) if raw.starts_with(h.as_str()) => raw.replacen(h.as_str(), "~", 1),
-            _ => raw,
-        };
-        if !out.contains(&display) {
-            out.push(display);
+        if !out.contains(&raw) {
+            out.push(raw);
         }
         if out.len() >= 5 {
             break;
         }
     }
     out
+}
+
+/// Shorten `$HOME` to `~` for display.
+fn shorten_home(path: &str) -> String {
+    match dirs::home_dir() {
+        Some(home) if path.starts_with(home.to_string_lossy().as_ref()) => {
+            path.replacen(home.to_string_lossy().as_ref(), "~", 1)
+        }
+        _ => path.to_string(),
+    }
+}
+
+/// Card-friendly blocked paths (`$HOME` → `~`), for display only.
+fn extract_blocked_paths(stderr: &str) -> Vec<String> {
+    extract_blocked_paths_raw(stderr)
+        .iter()
+        .map(|p| shorten_home(p))
+        .collect()
+}
+
+/// "Allow in this workspace/chat" suggestion for an escalation: the parent
+/// directory of the (first) blocked path. Returns `None` when any blocked path
+/// is a secret (secrets stay one-time-only) or none is known — so the card
+/// shows only "allow once" for those. Access is `write`: reads of non-secrets
+/// are open, so a non-secret denial is a write.
+fn escalation_save_suggestion(
+    raw_paths: &[String],
+    sandbox: &ResolvedSandbox,
+) -> Option<serde_json::Value> {
+    if raw_paths.is_empty() {
+        return None;
+    }
+    if raw_paths
+        .iter()
+        .any(|p| sandbox.is_secret_path(Path::new(p)))
+    {
+        return None;
+    }
+    let parent = Path::new(&raw_paths[0]).parent()?;
+    let glob = match parent.strip_prefix(&sandbox.workspace) {
+        Ok(rel) if rel.as_os_str().is_empty() => "*".to_string(),
+        Ok(rel) => format!("{}/*", rel.to_string_lossy()),
+        // Outside the workspace: keep it portable with `~` when under home.
+        Err(_) => format!("{}/*", shorten_home(&parent.to_string_lossy())),
+    };
+    Some(serde_json::json!({
+        "path": glob,
+        "access": "write",
+        "action": "allow",
+    }))
 }
 
 /// First `'…'` or `"…"` span that looks like a path (contains `/`).
@@ -578,6 +626,37 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
                 "/Users/x/.gnupg/pubring.kbx".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn escalation_suggests_parent_for_nonsecret_but_not_secret() {
+        let ws = temp_ws("escalation-sug");
+        let sandbox = ResolvedSandbox::resolve(&SandboxPolicy { enabled: true }, &ws);
+        let home = dirs::home_dir().unwrap();
+
+        // Non-secret outside-workspace write → suggest the parent dir (~ form).
+        let desktop = home.join("Desktop/note.txt");
+        let sug = escalation_save_suggestion(&[desktop.to_string_lossy().into_owned()], &sandbox)
+            .expect("non-secret blocked path should be persistable");
+        assert_eq!(sug["path"], "~/Desktop/*");
+        assert_eq!(sug["access"], "write");
+
+        // A secret blocked path (~/.gnupg) → no persistence (one-time only).
+        let gnupg = home.join(".gnupg/pubring.kbx");
+        assert!(
+            escalation_save_suggestion(&[gnupg.to_string_lossy().into_owned()], &sandbox).is_none()
+        );
+        // Mixed (one secret) → still none.
+        assert!(escalation_save_suggestion(
+            &[
+                desktop.to_string_lossy().into_owned(),
+                gnupg.to_string_lossy().into_owned()
+            ],
+            &sandbox
+        )
+        .is_none());
+        // No known paths → none.
+        assert!(escalation_save_suggestion(&[], &sandbox).is_none());
     }
 
     #[test]
