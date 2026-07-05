@@ -1,5 +1,6 @@
 import type { AgentConnectionState } from "../../components/layout/AppShell";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
+import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { useCallback, useEffect } from "react";
@@ -23,8 +24,8 @@ interface AgentThreadProps {
   onModelChange: (modelId: string) => void;
   thinkingLevel: string;
   onThinkingLevelChange: (thinkingLevel: string) => void;
-  autoApprove: boolean;
-  onToggleAutoApprove: (value: boolean) => void;
+  approvalTier: ApprovalTier;
+  onChangeApprovalTier: (value: ApprovalTier) => void;
   showThinking: boolean;
   pendingPrompt: { attachments?: MessageAttachment[]; id: string; content: string } | null;
   activeApproval?: StoredApprovalRequest | null;
@@ -47,8 +48,8 @@ export function AgentThread({
   onModelChange,
   thinkingLevel,
   onThinkingLevelChange,
-  autoApprove,
-  onToggleAutoApprove,
+  approvalTier,
+  onChangeApprovalTier,
   showThinking,
   pendingPrompt,
   activeApproval,
@@ -206,8 +207,8 @@ export function AgentThread({
               onModelChange={onModelChange}
               thinkingLevel={thinkingLevel}
               onThinkingLevelChange={onThinkingLevelChange}
-              autoApprove={autoApprove}
-              onToggleAutoApprove={onToggleAutoApprove}
+              approvalTier={approvalTier}
+              onChangeApprovalTier={onChangeApprovalTier}
               sending={isSending}
               onAbort={() => void handleAbort()}
               onSend={handleSend}

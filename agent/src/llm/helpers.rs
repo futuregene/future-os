@@ -128,7 +128,7 @@ impl Client {
                     // When assistant has tool_calls but no text, content should be
                     // null/omitted to avoid "text content is empty" errors from
                     // strict providers like kimi-k2.7-code.
-                    let has_content = msg.content.as_ref().map_or(false, |c| match c {
+                    let has_content = msg.content.as_ref().is_some_and(|c| match c {
                         Value::Array(arr) => !arr.is_empty(),
                         Value::String(s) => !s.is_empty(),
                         Value::Null => false,

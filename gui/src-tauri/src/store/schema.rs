@@ -119,37 +119,6 @@ CREATE TABLE IF NOT EXISTS approval_requests (
     updated_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS sandbox_config (
-    id TEXT PRIMARY KEY,
-    workspace_id TEXT REFERENCES workspaces(id),
-    mode TEXT NOT NULL DEFAULT 'workspace-write',
-    writable_roots TEXT,
-    network_access INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS approval_policy_config (
-    id TEXT PRIMARY KEY,
-    workspace_id TEXT REFERENCES workspaces(id),
-    policy TEXT NOT NULL DEFAULT 'on-request',
-    reviewer TEXT NOT NULL DEFAULT 'user',
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS approval_rules (
-    id TEXT PRIMARY KEY,
-    workspace_id TEXT REFERENCES workspaces(id),
-    scope TEXT NOT NULL,
-    match_kind TEXT NOT NULL,
-    match_value TEXT NOT NULL,
-    decision TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    created_at INTEGER NOT NULL,
-    expires_at INTEGER
-);
-
 -- Snapshots taken before/after a Run for the shadow review pipeline.
 CREATE TABLE IF NOT EXISTS review_snapshots (
     id TEXT PRIMARY KEY,

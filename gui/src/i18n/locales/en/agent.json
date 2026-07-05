@@ -81,8 +81,11 @@
     "stop": "Stop",
     "noReferences": "No references found.",
     "approval": "Approval mode",
-    "approvalAuto": "Auto-approve",
-    "approvalManual": "Manual approval"
+    "approvalTier": {
+      "manual": "Manual",
+      "sandbox": "Sandboxed",
+      "off": "Unrestricted"
+    }
   },
   "attachment": {
     "readFailed": "Unable to read",

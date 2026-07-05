@@ -133,7 +133,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             sandbox_policy: cmd
                 .sandbox_policy
                 .map(|policy| crate::sandbox::SandboxPolicy {
-                    enabled: policy.enabled,
+                    tier: crate::sandbox::SandboxTier::parse(&policy.tier),
                 }),
         };
 

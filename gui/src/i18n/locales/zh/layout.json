@@ -66,7 +66,6 @@
     "showSidebar": "显示侧边栏"
   },
   "approvals": {
-    "autoApproved": "已按设置自动批准。",
     "approvedInGui": "已在 GUI 中批准。",
     "rejectedInGui": "已在 GUI 中拒绝。"
   },
