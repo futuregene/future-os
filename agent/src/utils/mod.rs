@@ -69,7 +69,7 @@ pub fn detect_image_mime_type(path: &Path) -> Option<String> {
 
 /// Version string — injected at build time via build.rs from FUTURE_VERSION
 /// (see scripts/version.mjs). Release builds are a plain `X.Y.Z`; dev builds
-/// carry a `-dev.<hash>` suffix.
+/// carry a `-<hash>` suffix (`+local[.dirty]` for local builds).
 pub const VERSION: &str = env!("FUTURE_VERSION");
 
 /// Default base session directory (contains per-cwd subdirectories)
