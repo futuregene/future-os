@@ -1,5 +1,6 @@
 import type { FormEvent } from "react";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
+import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { MessageAttachment } from "./agentThreadTypes";
 import type { ComposerSendPayload } from "./Composer";
@@ -52,8 +53,8 @@ interface NewConversationProps {
   onModelChange: (modelId: string) => void;
   thinkingLevel: string;
   onThinkingLevelChange: (thinkingLevel: string) => void;
-  autoApprove: boolean;
-  onToggleAutoApprove: (value: boolean) => void;
+  approvalTier: ApprovalTier;
+  onChangeApprovalTier: (value: ApprovalTier) => void;
   onStart: (input: NewConversationStart) => void;
   onAddWorkspace: (input: WorkspaceCreateRequest) => Promise<StoredWorkspace | null>;
   onToggleLeftPanel: () => void;
@@ -71,8 +72,8 @@ export function NewConversation({
   onModelChange,
   thinkingLevel,
   onThinkingLevelChange,
-  autoApprove,
-  onToggleAutoApprove,
+  approvalTier,
+  onChangeApprovalTier,
   onStart,
   onToggleLeftPanel,
   workspaces,
@@ -240,8 +241,8 @@ export function NewConversation({
               onModelChange={onModelChange}
               thinkingLevel={thinkingLevel}
               onThinkingLevelChange={onThinkingLevelChange}
-              autoApprove={autoApprove}
-              onToggleAutoApprove={onToggleAutoApprove}
+              approvalTier={approvalTier}
+              onChangeApprovalTier={onChangeApprovalTier}
               onSend={handleSend}
               placeholder={t("newConversation.placeholder")}
               textareaClassName="h-16 text-base leading-6"

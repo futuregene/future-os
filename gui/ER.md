@@ -345,7 +345,7 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
 - P2 引入结构化 `action_payload` 和 `sandbox_boundary` 字段（设计细节见 git history，原 `P2_APPROVAL_MODEL.md`）。
 - **v2（审批规则重构，2026-07-04）**：审批对象收敛为**文件路径访问**，规则改为**文件式**（`${WS}/.future/approval_rule.json`、`~/.future/approval_rule.json`，agent 直接读），语义与实现见 [`APPROVAL_PLAN.md`](APPROVAL_PLAN.md) / [`SANDBOX_PLAN.md`](SANDBOX_PLAN.md)。相应地：
   - `approval_requests` 新增 `save_suggestion`（TEXT，JSON）——审批卡片“本工作区/对话允许”的建议规则 `{path, access, action}`；敏感文件为空（只能允许一次）。
-  - **三张预留配置表 `sandbox_config` / `approval_policy_config` / `approval_rules` 不再使用**（规则迁到文件；表保留不删，避免降级破坏）。Phase 2 曾短暂用 `approval_rules` 存规则并经 gRPC 下发，v2 已拆除该链路。
+  - **三张预留配置表 `sandbox_config` / `approval_policy_config` / `approval_rules` 已删除**（2026-07-05）——规则迁到文件后它们成为死结构；对应 `store/approval_config.rs` 模块与三个 record 类型一并移除。旧库里遗留的空表无害（无代码引用），新库不再创建。Phase 2 曾短暂用 `approval_rules` 存规则并经 gRPC 下发，v2 已拆除该链路。
   - `kind` 扩展 `sandbox_escalation`（bash 越界失败的升级审批）；`outside_workspace_read` 等旧枚举随命令级模型作废。
 
 ### 4.9 Review Changeset
@@ -736,9 +736,9 @@ Object Reference 表示某个对象引用了另一个对象。
 - `workspace_files`
 - `reference_targets`
 - `object_references`
-- `app_settings`（应用级设置：`auto_approve` / `hidden_models`，见 `store/app_settings.rs`）
+- `app_settings`（应用级设置：`approval_tier`（`manual`/`sandbox`/`off`）/ `hidden_models`，见 `store/app_settings.rs`）
 
-> 另有 P2 审批脚手架的预留表（schema 已建、未接线，详见 §4.8）：`sandbox_config`、`approval_policy_config`、`approval_rules`。
+> P2 审批脚手架的三张预留表（`sandbox_config`、`approval_policy_config`、`approval_rules`）已于 2026-07-05 删除——规则迁到文件后成为死结构，详见 §4.8。
 
 ## 6. 关键设计决策
 

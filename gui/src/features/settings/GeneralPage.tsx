@@ -1,17 +1,19 @@
 import type { Language } from "../../i18n";
+import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import { useTranslation } from "react-i18next";
 import { Select } from "../../components/ui/Select";
 import { getLanguage, LANGUAGE_LABELS, setLanguage, SUPPORTED_LANGUAGES } from "../../i18n";
+import { isMacOS } from "../../lib/platform";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
 
 export function GeneralPage({
-  autoApprove,
-  onToggleAutoApprove,
+  approvalTier,
+  onChangeApprovalTier,
   showThinking,
   onToggleShowThinking,
 }: {
-  autoApprove: boolean;
-  onToggleAutoApprove: (value: boolean) => void;
+  approvalTier: ApprovalTier;
+  onChangeApprovalTier: (value: ApprovalTier) => void;
   showThinking: boolean;
   onToggleShowThinking: (value: boolean) => void;
 }) {
@@ -38,10 +40,19 @@ export function GeneralPage({
           </Select>
         </SettingsRow>
         <SettingsRow
-          title={t("autoApprove.title")}
-          description={t("autoApprove.description")}
+          title={t("approvalTier.title")}
+          description={t(`approvalTier.description.${approvalTier}`)}
         >
-          <Switch checked={autoApprove} label={t("autoApprove.title")} onChange={onToggleAutoApprove} />
+          <Select
+            size="sm"
+            value={approvalTier}
+            wrapperClassName="w-40"
+            onChange={e => onChangeApprovalTier(e.target.value as ApprovalTier)}
+          >
+            <option value="manual">{t("approvalTier.manual")}</option>
+            {isMacOS ? <option value="sandbox">{t("approvalTier.sandbox")}</option> : null}
+            <option value="off">{t("approvalTier.off")}</option>
+          </Select>
         </SettingsRow>
         <SettingsRow
           title={t("showThinking.title")}

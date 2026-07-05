@@ -134,11 +134,12 @@ message RpcCommand {
 // policy to decide when to raise approval requests. See gui/SANDBOX_PLAN.md.
 
 message SandboxPolicy {
-  // v2: the rule system + OS sandbox collapse to a single switch. Rules now
-  // live in on-disk files the agent reads directly (see gui/APPROVAL_PLAN.md);
-  // only whether approval protection is on travels over the wire.
+  // Rules live in on-disk files the agent reads directly (gui/APPROVAL_PLAN.md);
+  // only the approval tier travels over the wire.
   reserved 1 to 5;  // v1: sandbox_mode / writable_roots / network_access / approval_policy / rules
-  bool enabled = 6;
+  reserved 6;        // v2a: bool enabled (superseded by tier)
+  // "off" (完全放开) | "manual" (手动审批) | "sandbox" (沙箱保护, macOS only).
+  string tier = 7;
 }
 
 // ── ImageContent ───────────────────────────────────────────────────────────
