@@ -229,7 +229,7 @@ jobs:
           mkdir -p "$mnt"
           hdiutil attach "$work" -mountpoint "$mnt" -nobrowse -noverify
           app=$(ls -d "$mnt"/*.app | head -n1)
-          cp "docs/dist/macos-first-launch.txt" "$mnt/请先阅读-如何打开.txt"
+          cp "docs/dist/readme-macos.txt" "$mnt/Readme.txt"
           codesign --force --sign - "$app"
           hdiutil detach "$mnt"
           hdiutil convert "$work" -format UDZO -o "$out"
@@ -259,7 +259,7 @@ jobs:
           Copy-Item "gui/src-tauri/target/release/futureos.exe" "$dir/FutureOS.exe"
           Copy-Item "gui/src-tauri/binaries/future-agent-$triple.exe" "$dir/future-agent.exe"
           Copy-Item "cli/dist/future-cli.exe" "$dir/future-cli.exe"
-          Copy-Item "docs/dist/windows-portable-README.txt" "$dir/使用说明.txt"
+          Copy-Item "docs/dist/readme-windows.txt" "$dir/Readme.txt"
           Compress-Archive -Path "$dir/*" -DestinationPath "FutureOS-portable-windows.zip" -Force
 
       - name: Upload Windows portable
@@ -283,6 +283,7 @@ jobs:
           cp "agent/target/release/future-agent" "$dir/future-agent"
           cp "cli/dist/future-cli" "$dir/future-cli"
           chmod +x "$dir"/*
+          cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"
           tar -czf FutureOS-portable-linux.tar.gz -C "$dir" .
 
       - name: Upload Linux portable
