@@ -597,7 +597,17 @@ async fn spawn_bash(
     let mut child = sandbox.build_bash_command(command, escalated);
     child
         .current_dir(&cwd)
-        .env("PWD", &cwd)
+        .env("PWD", &cwd);
+    // Prepend the agent binary's directory to PATH so bundled tools in the same
+    // directory are discoverable by shell commands.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let existing = std::env::var("PATH").unwrap_or_default();
+            let sep = if cfg!(windows) { ";" } else { ":" };
+            child.env("PATH", format!("{}{}{}", dir.display(), sep, existing));
+        }
+    }
+    child
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     child.kill_on_drop(true);

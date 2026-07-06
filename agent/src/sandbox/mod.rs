@@ -169,8 +169,9 @@ impl ResolvedSandbox {
     }
 
     /// Build the bash invocation: Seatbelt-wrapped when enabled+available and
-    /// not escalated; a plain `bash -c` otherwise. `escalated` forces an
-    /// unsandboxed run for one approved command.
+    /// not escalated; otherwise the platform-appropriate shell (`bash -c` on
+    /// Unix, `cmd /c` on Windows). `escalated` forces an unsandboxed run for
+    /// one approved command.
     pub fn build_bash_command(&self, command: &str, escalated: bool) -> tokio::process::Command {
         if !escalated && self.wraps_bash() {
             #[cfg(target_os = "macos")]
@@ -178,9 +179,18 @@ impl ResolvedSandbox {
                 return seatbelt::build_command(self, command);
             }
         }
-        let mut child = tokio::process::Command::new("bash");
-        child.args(["-c", command]);
-        child
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut child = tokio::process::Command::new("bash");
+            child.args(["-c", command]);
+            child
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let mut child = tokio::process::Command::new("cmd");
+            child.args(["/c", command]);
+            child
+        }
     }
 
     /// Structured `sandbox_boundary` payload for approval events.
