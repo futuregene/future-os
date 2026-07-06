@@ -304,7 +304,7 @@ function AllTab({
             name={skill.name || skill.id}
             description={skill.description}
             version={skill.latestVersion}
-            meta={skill.category || skill.price || skill.formats || undefined}
+            meta={skill.category || undefined}
             action={
               isInstalled
                 ? <UninstallButton busy={busy[skill.id]} onClick={() => onUninstall(skill.id)} />
@@ -407,7 +407,13 @@ function SkillRow({
         {description
           ? <p className="mt-1 line-clamp-2 text-xs leading-5 text-ink-muted">{description}</p>
           : null}
-        {meta ? <p className="mt-1 truncate text-xs text-ink-muted">{meta}</p> : null}
+        {meta
+          ? (
+              <div className="mt-2">
+                <Badge tone="info">{meta}</Badge>
+              </div>
+            )
+          : null}
       </div>
       <div className="shrink-0">{action}</div>
     </div>
@@ -469,9 +475,6 @@ function matchesAvailableSkill(skill: AvailableSkill, filters: SkillFilters) {
     skill.name,
     skill.description,
     skill.category,
-    skill.formats,
-    skill.limit,
-    skill.price,
     skill.latestVersion,
   ]);
 }

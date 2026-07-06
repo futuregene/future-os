@@ -93,7 +93,8 @@ pub struct CompleteToolCallInput {
 pub struct EnsureApprovalRequestInput {
     pub approval_request_id: Option<String>,
     pub run_id: String,
-    pub tool_call_id: String,
+    /// `None` for escalation approvals (no owning tool_call) → stored NULL.
+    pub tool_call_id: Option<String>,
     pub kind: String,
     pub title: String,
     pub summary: Option<String>,
@@ -103,6 +104,8 @@ pub struct EnsureApprovalRequestInput {
     pub action_category: Option<String>,
     pub action_payload: Option<String>,
     pub sandbox_boundary: Option<String>,
+    // Phase 2: suggested rule (JSON) for session/always-allow persistence.
+    pub save_suggestion: Option<String>,
     pub reviewer: Option<String>,
 }
 
@@ -299,44 +302,4 @@ pub struct PinThreadInput {
 pub struct RenameWorkspaceInput {
     pub workspace_id: String,
     pub name: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
-pub struct SandboxConfigRecord {
-    pub id: String,
-    pub workspace_id: Option<String>,
-    pub mode: String,
-    pub writable_roots: Option<String>,
-    pub network_access: bool,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
-pub struct ApprovalPolicyConfigRecord {
-    pub id: String,
-    pub workspace_id: Option<String>,
-    pub policy: String,
-    pub reviewer: String,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
-pub struct ApprovalRuleRecord {
-    pub id: String,
-    pub workspace_id: Option<String>,
-    pub scope: String,
-    pub match_kind: String,
-    pub match_value: String,
-    pub decision: String,
-    pub enabled: bool,
-    pub created_at: i64,
-    pub expires_at: Option<i64>,
 }

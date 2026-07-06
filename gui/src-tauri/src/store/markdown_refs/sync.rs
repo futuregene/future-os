@@ -83,6 +83,25 @@ fn resolve_reference_target_metadata(
             )
             .optional()
             .map_err(crate::AppError::from),
+        // `file` references a workspace file by path (resolved against disk at
+        // render time, not the `artifacts` table). Denormalize purely from the
+        // path string — no DB row is required for the reference to be valid.
+        "file" => {
+            let path = reference.target_id.as_str();
+            let name = path
+                .rsplit(['/', '\\'])
+                .next()
+                .filter(|value| !value.is_empty())
+                .unwrap_or(path)
+                .to_string();
+            let artifact_type = crate::store::artifact_type_from_path(std::path::Path::new(path));
+            Ok(Some(artifact_metadata(
+                name,
+                artifact_type,
+                Some(path.to_string()),
+                None,
+            )))
+        }
         "run" => conn
             .query_row(
                 "SELECT id, status, model_id, error_message

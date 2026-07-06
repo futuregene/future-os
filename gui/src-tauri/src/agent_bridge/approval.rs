@@ -2,8 +2,37 @@
 //! resume the owning run. Stale requests the agent already dropped are
 //! reconciled by cancelling locally.
 
-use super::client::{approval_decision_command, connect_agent, RpcResponseExt};
+use super::client::{
+    add_session_rule_command, approval_decision_command, connect_agent, RpcResponseExt,
+};
 use crate::store;
+
+/// Inject a same-run "allow in this workspace/chat" rule into the thread's live
+/// agent session (in tandem with writing the rule file). Best-effort: a missing
+/// session or offline agent just means the rule only applies from the next
+/// prompt (when the file is re-read).
+pub async fn inject_session_rule(
+    thread_id: &str,
+    path: &str,
+    access: &str,
+) -> Result<(), crate::AppError> {
+    let Some(thread) = store::get_thread(thread_id)? else {
+        return Ok(());
+    };
+    let session_id = thread.agent_session_id.unwrap_or(thread.id);
+    let mut client = connect_agent().await?;
+    client
+        .execute_command(add_session_rule_command(
+            path.to_string(),
+            access.to_string(),
+            session_id,
+        ))
+        .await
+        .map_err(|error| format!("Unable to inject session rule: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the session rule.")?;
+    Ok(())
+}
 
 async fn notify_agent_approval_decision(
     approval: &store::ApprovalRequestRecord,

@@ -22,6 +22,7 @@ import {
   restoreThread,
 } from "../../integrations/storage/threadStore";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
+import { ToastHost } from "../ui/ToastHost";
 import { ActivityRail } from "./ActivityRail";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
@@ -79,10 +80,7 @@ export function AppShell() {
     storeError,
     refreshStore,
   } = useThreadStore();
-  const { activeApproval, decideApproval } = useApprovals(
-    activeThread?.id ?? null,
-    appSettings.autoApprove,
-  );
+  const { activeApproval, decideApproval } = useApprovals(activeThread?.id ?? null);
   const {
     agentConnection,
     modelOptions,
@@ -354,8 +352,8 @@ export function AppShell() {
                 onModelChange={changeDraftModel}
                 thinkingLevel={selectedThinkingLevel}
                 onThinkingLevelChange={changeThinkingLevel}
-                autoApprove={appSettings.autoApprove}
-                onToggleAutoApprove={value => void changeSettings({ autoApprove: value })}
+                approvalTier={appSettings.approvalTier}
+                onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
                 onStart={handleStartNewConversation}
                 onToggleLeftPanel={handleToggleLeftPanel}
                 workspaces={workspaces.filter(workspace => workspace.kind === "user")}
@@ -392,13 +390,13 @@ export function AppShell() {
                         <AgentThread
                           activeApproval={activeApproval}
                           agentConnection={agentConnection}
-                          autoApprove={appSettings.autoApprove}
+                          approvalTier={appSettings.approvalTier}
                           showThinking={appSettings.showThinking}
                           loadingStore={loadingStore}
                           modelId={activeThread?.modelId ?? selectedModelId}
                           modelOptions={visibleModelOptions}
                           onModelChange={changeModel}
-                          onToggleAutoApprove={value => void changeSettings({ autoApprove: value })}
+                          onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
                           thinkingLevel={activeThinkingLevel}
                           onThinkingLevelChange={changeThinkingLevel}
                           pendingPrompt={pendingPrompt}
@@ -456,6 +454,7 @@ export function AppShell() {
         onClose={() => setSettingsOpen(false)}
         open={settingsOpen}
       />
+      <ToastHost />
     </div>
   );
 }

@@ -367,7 +367,7 @@ impl Loop {
                                 // Emit toolcall_delta so the TUI can stream arg display
                                 if let Some(ref bus) = self.event_bus {
                                     bus.emit(toolcall_delta(
-                                        &event
+                                        event
                                             .tool_call
                                             .as_ref()
                                             .and_then(|tc| {

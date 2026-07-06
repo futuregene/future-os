@@ -14,9 +14,6 @@ export interface AvailableSkill {
   name: string;
   description: string;
   category: string;
-  price: string;
-  formats: string;
-  limit: string;
   latestVersion: string | null;
 }
 

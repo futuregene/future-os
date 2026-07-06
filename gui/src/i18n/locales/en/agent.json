@@ -81,8 +81,11 @@
     "stop": "Stop",
     "noReferences": "No references found.",
     "approval": "Approval mode",
-    "approvalAuto": "Auto-approve",
-    "approvalManual": "Manual approval"
+    "approvalTier": {
+      "manual": "Manual",
+      "sandbox": "Sandboxed",
+      "off": "Unrestricted"
+    }
   },
   "attachment": {
     "readFailed": "Unable to read",
@@ -124,10 +127,28 @@
     "deleteFiles": "Delete {{count}} files",
     "paths": "Paths",
     "sandbox": "sandbox",
+    "justification": "Justification",
+    "readTitle": "Approve file read",
+    "readSummary": "Agent wants to read a protected file.",
+    "writeTitle": "Approve file write",
+    "writeSummary": "Agent wants to modify a protected file.",
+    "outsideWriteTitle": "Approve outside-workspace write",
+    "outsideWriteSummary": "Agent wants to modify a file outside the workspace.",
+    "shellTitle": "Approve shell command",
+    "shellSummary": "Agent wants to run a shell command.",
+    "escalationTitle": "Run this command outside the sandbox",
+    "blockedPaths": "Files blocked by the sandbox",
+    "unsandboxedNote": "If allowed, this command runs once without sandbox restrictions.",
     "denying": "Denying",
     "deny": "Deny",
     "allowing": "Allowing",
-    "allowOnce": "Allow once"
+    "allowOnce": "Allow once",
+    "allowWorkspace": "Allow in this workspace",
+    "allowChat": "Allow in this chat",
+    "ruleSaveWorkspace": "Auto-allow operations matching this path in this workspace (written to .future/approval_rule.json, editable)",
+    "ruleConfirm": "Save & allow",
+    "ruleCancel": "Cancel",
+    "rulePatternRequired": "Rule path cannot be empty."
   },
   "message": {
     "retry": "Retry",

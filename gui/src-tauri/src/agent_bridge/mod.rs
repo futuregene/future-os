@@ -8,7 +8,7 @@ mod session;
 mod skills;
 mod stream;
 
-pub use self::approval::decide_approval;
+pub use self::approval::{decide_approval, inject_session_rule};
 pub(crate) use self::client::raw_agent_addr;
 pub use self::models::{list_agent_models, AgentModelOption};
 pub use self::run_control::abort_run;
@@ -28,7 +28,7 @@ use self::client::{
 use self::run_control::{mark_run_failed_if_active, wait_for_agent_idle};
 use self::session::{
     ensure_agent_session, prior_user_message_count, set_agent_permission_level,
-    workspace_path_for_thread,
+    set_agent_sandbox_policy, workspace_path_for_thread,
 };
 use self::stream::collect_agent_response;
 use crate::agent_proto::StreamRequest;
@@ -170,6 +170,7 @@ async fn agent_prompt_inner(
     let mut command_client = connect_agent().await?;
     ensure_agent_session(&mut command_client, &session_id, &cwd, force_reset_session).await?;
     set_agent_permission_level(&mut command_client, &session_id, "workspace").await?;
+    set_agent_sandbox_policy(&mut command_client, &session_id, &thread_id).await?;
 
     let mut event_client = connect_agent().await?;
     let mut event_stream = event_client

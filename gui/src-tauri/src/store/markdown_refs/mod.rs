@@ -151,6 +151,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn resolves_file_references_to_relative_or_absolute_display() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws_fs', 'FS', 'temporary', '/work/space', 'active', 1, 1)",
+            [],
+        )
+        .expect("insert fs workspace");
+
+        let resolve = |target_id: &str| {
+            resolve_markdown_reference(
+                &conn,
+                "ws_fs",
+                MarkdownReferenceInput {
+                    target_id: target_id.to_string(),
+                    target_type: "file".to_string(),
+                },
+            )
+        };
+
+        // Workspace-relative path → inside, shown relative.
+        let relative = resolve("sub/note.md");
+        assert_eq!(relative.status, "resolved");
+        let relative = relative.data.expect("data");
+        assert_eq!(relative["path"], "/work/space/sub/note.md");
+        assert_eq!(relative["relativePath"], "sub/note.md");
+        assert_eq!(relative["insideWorkspace"], true);
+        assert_eq!(relative["name"], "note.md");
+
+        // Absolute path inside the workspace → still shown relative.
+        let inside_abs = resolve("/work/space/deep/a.txt");
+        let inside_abs = inside_abs.data.expect("data");
+        assert_eq!(inside_abs["relativePath"], "deep/a.txt");
+        assert_eq!(inside_abs["insideWorkspace"], true);
+
+        // Absolute path outside the workspace (e.g. ~/Desktop) → full path, no relative.
+        let outside = resolve("/Users/tao/Desktop/note.txt");
+        assert_eq!(outside.status, "resolved");
+        let outside = outside.data.expect("data");
+        assert_eq!(outside["path"], "/Users/tao/Desktop/note.txt");
+        assert_eq!(outside["insideWorkspace"], false);
+        assert!(outside["relativePath"].is_null());
+
+        // An empty id is the only non-resolving case.
+        assert_eq!(resolve("   ").status, "missing");
+    }
+
     fn seed_workspace_artifact(conn: &Connection) {
         conn.execute(
             "INSERT INTO workspaces (

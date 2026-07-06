@@ -59,14 +59,10 @@ jobs:
           - name: Linux
             os: ubuntu-22.04
             artifact_name: futureos-linux
-            # Only the installers — NOT bundle/** (which also globs the exploded
-            # AppImage tree: hundreds of .so files, data.tar.gz, and a duplicate
-            # future-agent binary that collides with the portable tarball's copy
-            # and breaks the GitHub Release asset upload).
-            bundle_path: |
-              gui/src-tauri/target/release/bundle/appimage/*.AppImage
-              gui/src-tauri/target/release/bundle/deb/*.deb
-              gui/src-tauri/target/release/bundle/rpm/*.rpm
+            # .deb only. AppImage self-bundles the whole WebKitGTK stack (~130MB
+            # per build) and rpm isn't targeted — both are dropped in
+            # tauri.conf.json ("targets"), so nothing else lands under bundle/.
+            bundle_path: gui/src-tauri/target/release/bundle/deb/*.deb
 
     steps:
       - name: Checkout
@@ -187,6 +183,11 @@ jobs:
         run: |
           npm run build
           bun build --compile dist/index.js --outfile dist/future-cli --external chromium-bidi
+          # Stage it as a Tauri sidecar too (bundle.externalBin) so the CLI ships
+          # inside the installers, not just the portable packages.
+          triple=$(rustc -Vv | sed -n 's/^host: //p')
+          mkdir -p ../gui/src-tauri/binaries
+          cp dist/future-cli "../gui/src-tauri/binaries/future-cli-$triple"
 
       - name: Build CLI binary (Windows)
         if: runner.os == 'Windows'
@@ -195,6 +196,11 @@ jobs:
         run: |
           npm run build
           bun build --compile dist/index.js --outfile dist/future-cli.exe --external chromium-bidi
+          # Stage it as a Tauri sidecar too (bundle.externalBin) so the CLI ships
+          # inside the msi/nsis installers, not just the portable zip.
+          $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
+          New-Item -ItemType Directory -Force -Path ../gui/src-tauri/binaries | Out-Null
+          Copy-Item "dist/future-cli.exe" "../gui/src-tauri/binaries/future-cli-$triple.exe"
 
       # Pin the Tauri installer version to the plain semver core (MSI/NSIS reject
       # SemVer suffixes). The display version keeps the full FUTURE_VERSION.
@@ -205,11 +211,12 @@ jobs:
         working-directory: gui
         run: npm run tauri:build
 
-      # macOS: co-locate the agent (already a sidecar) and CLI inside the
-      # .app's Contents/MacOS, and ship first-launch (Gatekeeper) instructions in
-      # the dmg — the .app is unsigned/un-notarized. Tauri's dmg is read-only, so
-      # round-trip it through a read-write image to inject everything.
-      - name: Bundle agent & CLI into macOS .app (inside dmg)
+      # macOS: agent + CLI are now Tauri sidecars (bundle.externalBin), so both
+      # already sit in the .app's Contents/MacOS, signed by Tauri. We only need
+      # to drop the first-launch (Gatekeeper) note into the dmg — the .app is
+      # unsigned/un-notarized. Tauri's dmg is read-only, so round-trip it through
+      # a read-write image, add the note, and re-seal the .app ad-hoc.
+      - name: Inject first-launch note into macOS dmg
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
@@ -222,12 +229,7 @@ jobs:
           mkdir -p "$mnt"
           hdiutil attach "$work" -mountpoint "$mnt" -nobrowse -noverify
           app=$(ls -d "$mnt"/*.app | head -n1)
-          macos_dir="$app/Contents/MacOS"
-          cp "cli/dist/future-cli" "$macos_dir/future-cli"
-          chmod +x "$macos_dir/future-cli"
-          cp "docs/dist/macos-first-launch.txt" "$mnt/请先阅读-如何打开.txt"
-          # Ad-hoc sign the injected binary first, then re-seal the bundle.
-          codesign --force --sign - "$macos_dir/future-cli"
+          cp "docs/dist/readme-macos.txt" "$mnt/Readme.txt"
           codesign --force --sign - "$app"
           hdiutil detach "$mnt"
           hdiutil convert "$work" -format UDZO -o "$out"
@@ -239,6 +241,9 @@ jobs:
           name: ${{ matrix.artifact_name }}
           if-no-files-found: error
           path: ${{ matrix.bundle_path }}
+          # Dev/test bundles — expire fast so the shared Actions storage quota
+          # doesn't fill up. Release assets live on the GitHub Release, not here.
+          retention-days: 3
 
       # Portable (install-free) Windows build: the GUI exe plus the agent and
       # CLI binaries, all in one directory. The agent sidecar is renamed
@@ -254,7 +259,7 @@ jobs:
           Copy-Item "gui/src-tauri/target/release/futureos.exe" "$dir/FutureOS.exe"
           Copy-Item "gui/src-tauri/binaries/future-agent-$triple.exe" "$dir/future-agent.exe"
           Copy-Item "cli/dist/future-cli.exe" "$dir/future-cli.exe"
-          Copy-Item "docs/dist/windows-portable-README.txt" "$dir/使用说明.txt"
+          Copy-Item "docs/dist/readme-windows.txt" "$dir/Readme.txt"
           Compress-Archive -Path "$dir/*" -DestinationPath "FutureOS-portable-windows.zip" -Force
 
       - name: Upload Windows portable
@@ -264,6 +269,7 @@ jobs:
           name: futureos-windows-portable
           if-no-files-found: error
           path: FutureOS-portable-windows.zip
+          retention-days: 3
 
       # Portable (install-free) Linux build: the GUI binary plus the agent and
       # CLI binaries, all in one directory.
@@ -277,6 +283,7 @@ jobs:
           cp "agent/target/release/future-agent" "$dir/future-agent"
           cp "cli/dist/future-cli" "$dir/future-cli"
           chmod +x "$dir"/*
+          cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"
           tar -czf FutureOS-portable-linux.tar.gz -C "$dir" .
 
       - name: Upload Linux portable
@@ -286,6 +293,7 @@ jobs:
           name: futureos-linux-portable
           if-no-files-found: error
           path: FutureOS-portable-linux.tar.gz
+          retention-days: 3
 
   # Publish a GitHub Release with all platform bundles attached. Runs only for
   # release builds (a `vX.Y.Z` tag); manual/dispatch runs are dev and stop at
@@ -334,9 +342,9 @@ jobs:
           cat latest.json
 
       # Curate what actually ships to users. The portable builds (Windows zip,
-      # Linux tarball) and the AppImage/rpm are TESTER-ONLY: they remain as
-      # Actions artifacts (downloadable from the run) but are NOT published to
-      # the GitHub Release or OSS. Only the end-user installers ship:
+      # Linux tarball) are TESTER-ONLY: they remain as Actions artifacts
+      # (downloadable from the run) but are NOT published to the GitHub Release
+      # or OSS. Only the end-user installers ship:
       #   macOS .dmg · Windows .exe + .msi · Linux .deb
       # Files are flattened into publish/ (no per-artifact subfolders) so the
       # Release and the OSS releases/<version>/ layout stay clean.

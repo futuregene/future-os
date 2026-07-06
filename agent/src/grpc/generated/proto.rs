@@ -77,6 +77,17 @@ pub struct RpcCommand {
     pub since_idx: i64,
     #[prost(string, tag = "141")]
     pub run_id: ::prost::alloc::string::String,
+    /// ── set_sandbox_policy ─────────────────────────────────────────────────
+    /// Session sandbox + approval policy (typed sub-message, not JSON-in-string).
+    /// Read when type == "set_sandbox_policy".
+    #[prost(message, optional, tag = "150")]
+    pub sandbox_policy: ::core::option::Option<SandboxPolicy>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SandboxPolicy {
+    /// "off" (完全放开) | "manual" (手动审批) | "sandbox" (沙箱保护, macOS only).
+    #[prost(string, tag = "7")]
+    pub tier: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ImageContent {

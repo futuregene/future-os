@@ -58,12 +58,6 @@ pub struct SkillInfo {
     pub description: String,
     #[serde(default)]
     pub category: String,
-    #[serde(default)]
-    pub price: String,
-    #[serde(default)]
-    pub formats: String,
-    #[serde(default)]
-    pub limit: String,
     #[serde(default, alias = "latest_version")]
     pub latest_version: Option<String>,
 }
