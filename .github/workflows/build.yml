@@ -239,6 +239,9 @@ jobs:
           name: ${{ matrix.artifact_name }}
           if-no-files-found: error
           path: ${{ matrix.bundle_path }}
+          # Dev/test bundles — expire fast so the shared Actions storage quota
+          # doesn't fill up. Release assets live on the GitHub Release, not here.
+          retention-days: 3
 
       # Portable (install-free) Windows build: the GUI exe plus the agent and
       # CLI binaries, all in one directory. The agent sidecar is renamed
@@ -264,6 +267,7 @@ jobs:
           name: futureos-windows-portable
           if-no-files-found: error
           path: FutureOS-portable-windows.zip
+          retention-days: 3
 
       # Portable (install-free) Linux build: the GUI binary plus the agent and
       # CLI binaries, all in one directory.
@@ -286,6 +290,7 @@ jobs:
           name: futureos-linux-portable
           if-no-files-found: error
           path: FutureOS-portable-linux.tar.gz
+          retention-days: 3
 
   # Publish a GitHub Release with all platform bundles attached. Runs only for
   # release builds (a `vX.Y.Z` tag); manual/dispatch runs are dev and stop at
