@@ -70,6 +70,11 @@ pub struct CustomProviderModel {
     pub id: String,
     #[serde(default)]
     pub name: String,
+    /// Whether the model accepts image input. Text is always supported and is
+    /// implied — only image is tracked. Persisted in models.json as the
+    /// `modalities` array (`["text"]` or `["text","image"]`) that the agent reads.
+    #[serde(default)]
+    pub supports_images: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,7 +183,18 @@ pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
                                 .and_then(Value::as_str)
                                 .unwrap_or(&id)
                                 .to_string();
-                            Some(CustomProviderModel { id, name })
+                            let supports_images = model
+                                .get("modalities")
+                                .and_then(Value::as_array)
+                                .map(|items| {
+                                    items.iter().any(|item| item.as_str() == Some("image"))
+                                })
+                                .unwrap_or(false);
+                            Some(CustomProviderModel {
+                                id,
+                                name,
+                                supports_images,
+                            })
                         })
                         .collect()
                 })
@@ -346,7 +362,17 @@ pub fn upsert_custom_provider(
             }
             model_name
         };
-        model_values.push(json!({ "id": model_id, "name": model_name }));
+        // Text is always supported; image is opt-in. Persist as `modalities` so
+        // the agent's models.json loader maps it to the model's input modalities.
+        let mut modalities = vec![Value::String("text".to_string())];
+        if model.supports_images {
+            modalities.push(Value::String("image".to_string()));
+        }
+        model_values.push(json!({
+            "id": model_id,
+            "name": model_name,
+            "modalities": modalities,
+        }));
     }
     if model_values.len() > MAX_MODELS {
         return Err(format!("模型数量不能超过 {MAX_MODELS} 个。").into());
@@ -879,6 +905,7 @@ mod tests {
         ok.models = vec![CustomProviderModel {
             id: "anthropic/claude-3.5-sonnet".to_string(),
             name: String::new(),
+            supports_images: false,
         }];
         assert!(upsert_custom_provider(ok).is_ok());
 
@@ -887,6 +914,7 @@ mod tests {
         bad.models = vec![CustomProviderModel {
             id: "bad id".to_string(),
             name: String::new(),
+            supports_images: false,
         }];
         assert!(upsert_custom_provider(bad).is_err());
 
@@ -896,13 +924,62 @@ mod tests {
             CustomProviderModel {
                 id: "m".to_string(),
                 name: String::new(),
+                supports_images: false,
             },
             CustomProviderModel {
                 id: "m".to_string(),
                 name: String::new(),
+                supports_images: false,
             },
         ];
         assert!(upsert_custom_provider(dup).is_err());
+    }
+
+    #[test]
+    fn model_modalities_round_trip() {
+        let _home = HomeGuard::new("modalities");
+        let mut in_ = input("p1", "P1", true);
+        in_.models = vec![
+            CustomProviderModel {
+                id: "text-only".to_string(),
+                name: String::new(),
+                supports_images: false,
+            },
+            CustomProviderModel {
+                id: "vision".to_string(),
+                name: String::new(),
+                supports_images: true,
+            },
+        ];
+        upsert_custom_provider(in_).unwrap();
+
+        // Persisted as a `modalities` array the agent reads.
+        let doc = read_json(&models_json_path().unwrap());
+        let models = doc["providers"]["p1"]["models"].as_array().unwrap();
+        let vision = models.iter().find(|m| m["id"] == "vision").unwrap();
+        assert_eq!(vision["modalities"], json!(["text", "image"]));
+        let text_only = models.iter().find(|m| m["id"] == "text-only").unwrap();
+        assert_eq!(text_only["modalities"], json!(["text"]));
+
+        // And surfaces back through the view as supports_images.
+        let view = list_agent_providers().unwrap();
+        let provider = view.custom.iter().find(|p| p.id == "p1").unwrap();
+        assert!(
+            provider
+                .models
+                .iter()
+                .find(|m| m.id == "vision")
+                .unwrap()
+                .supports_images
+        );
+        assert!(
+            !provider
+                .models
+                .iter()
+                .find(|m| m.id == "text-only")
+                .unwrap()
+                .supports_images
+        );
     }
 
     #[test]

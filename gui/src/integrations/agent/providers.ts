@@ -11,6 +11,8 @@ export interface BuiltinProvider {
 export interface CustomProviderModel {
   id: string;
   name: string;
+  /** Whether the model accepts image input. Text input is always implied. */
+  supportsImages: boolean;
 }
 
 export interface CustomProvider {

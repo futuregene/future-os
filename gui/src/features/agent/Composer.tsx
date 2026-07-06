@@ -14,7 +14,7 @@ import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { savePastedImage, searchReferenceTargets } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { isMacOS } from "../../lib/platform";
-import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, MAX_ATTACHMENTS_PER_TURN, PICKER_EXTENSIONS } from "./attachments";
+import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, MAX_ATTACHMENTS_PER_TURN, pickerExtensions } from "./attachments";
 
 /** Approval-tier order for the composer dropdown (sandbox is macOS-only). */
 const APPROVAL_TIERS: ApprovalTier[] = ["manual", "sandbox", "off"];
@@ -77,6 +77,9 @@ export function Composer({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const activeModelId = modelId || (modelOptions[0] ? modelKey(modelOptions[0]) : "");
   const activeModel = modelOption(activeModelId, modelOptions);
+  // Only offer/accept images when the active model advertises image input.
+  // Unknown model (not in the catalog yet) → allow, to avoid over-restricting.
+  const allowImages = activeModel ? activeModel.supportsImages !== false : true;
   const activeThinkingLevel = normalizeThinkingLevel(thinkingLevel);
   const activeMention = useMemo(() => findActiveMention(value, caretPosition), [caretPosition, value]);
 
@@ -217,18 +220,22 @@ export function Composer({
         rejected.push(t("composer.attachRejectedReason", { name: fileNameFromPath(path), reason: result.reason }));
         continue;
       }
+      if (result.kind === "image" && !allowImages) {
+        rejected.push(t("composer.attachRejectedNoImage", { name: fileNameFromPath(path) }));
+        continue;
+      }
       next.push({ kind: result.kind, name: fileNameFromPath(path), path });
     }
     setAttachments(next);
     setAttachError(rejected.length > 0 ? t("composer.attachIgnored", { items: rejected.join("，") }) : null);
-  }, [attachments, t]);
+  }, [allowImages, attachments, t]);
 
   async function handleAttachFiles() {
     if (disabled)
       return;
 
     const selected = await open({
-      filters: [{ extensions: PICKER_EXTENSIONS, name: t("composer.attachDialogFilter") }],
+      filters: [{ extensions: pickerExtensions(allowImages), name: t("composer.attachDialogFilter") }],
       multiple: true,
       title: t("composer.attachDialogTitle"),
     });
