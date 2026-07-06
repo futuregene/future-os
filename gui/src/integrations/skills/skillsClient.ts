@@ -1,6 +1,6 @@
 import { invokeCommand } from "../tauri/invoke";
 
-/** A skill the agent currently loads (source of the "已安装" tab). */
+/** A skill the agent currently loads (source of the "Installed" tab). */
 export interface InstalledSkill {
   id: string;
   name: string;
@@ -8,7 +8,7 @@ export interface InstalledSkill {
   version: string | null;
 }
 
-/** A skill from the platform catalogue (source of the "全部" tab). */
+/** A skill from the platform catalogue (source of the "All" tab). */
 export interface AvailableSkill {
   id: string;
   name: string;

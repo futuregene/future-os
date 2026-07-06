@@ -31,7 +31,7 @@ export function buildAgentFailureContent(message: string) {
   // Only a genuine gRPC connection failure (prefixed by the Tauri bridge)
   // warrants the "check the agent is running" guidance. Other errors — e.g. the
   // model API rejecting the request (quota / tenant permission) — are run
-  // failures, not connectivity problems, and mislabeling them as 连接失败 sends
+  // failures, not connectivity problems, and mislabeling them as "connection failure" sends
   // users to debug the wrong thing.
   if (message.includes("Unable to connect to Future Agent")) {
     return i18n.t("agent:failure.connect", { message });

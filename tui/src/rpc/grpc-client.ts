@@ -168,7 +168,7 @@ message SandboxPolicy {
   // only the approval tier travels over the wire.
   reserved 1 to 5;  // v1: sandbox_mode / writable_roots / network_access / approval_policy / rules
   reserved 6;        // v2a: bool enabled (superseded by tier)
-  // "off" (完全放开) | "manual" (手动审批) | "sandbox" (沙箱保护, macOS only).
+  // "off" (no approval) | "manual" (approval rules) | "sandbox" (OS sandbox, macOS only).
   string tier = 7;
 }
 
