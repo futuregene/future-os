@@ -14,6 +14,7 @@
 pub mod paths;
 pub mod rules;
 mod seatbelt;
+mod windows_plan;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
