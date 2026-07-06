@@ -6,11 +6,18 @@ export interface BuiltinProvider {
   baseUrl: string;
   hasApiKey: boolean;
   modelCount: number;
+  /**
+   * The catalog base URL is a placeholder (e.g. Azure's YOUR_RESOURCE); the user
+   * must supply their own, so the Providers page shows a Base URL field.
+   */
+  requiresBaseUrl: boolean;
 }
 
 export interface CustomProviderModel {
   id: string;
   name: string;
+  /** Whether the model accepts image input. Text input is always implied. */
+  supportsImages: boolean;
 }
 
 export interface CustomProvider {
@@ -49,6 +56,14 @@ export async function updateBuiltinProviderKey(input: {
   apiKey?: string | null;
 }) {
   return invokeCommand<ProvidersView>("update_builtin_provider_key", { input });
+}
+
+export async function setBuiltinProviderBaseUrl(input: {
+  id: string;
+  /** Empty string clears the override, reverting to the catalog placeholder. */
+  baseUrl: string;
+}) {
+  return invokeCommand<ProvidersView>("set_builtin_provider_base_url", { input });
 }
 
 export async function deleteCustomProvider(id: string) {

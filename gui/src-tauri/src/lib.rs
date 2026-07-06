@@ -170,6 +170,7 @@ pub fn run() {
             list_agent_providers,
             upsert_custom_provider,
             update_builtin_provider_key,
+            set_builtin_provider_base_url,
             delete_custom_provider,
             start_future_login,
             poll_future_login,

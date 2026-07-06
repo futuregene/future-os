@@ -25,6 +25,12 @@ mod generated_model_catalog;
 const DEFAULT_FUTURE_PLATFORM_URL: &str = "https://future-os.cn";
 const FUTURE_PROVIDER_NAME: &str = "FutureGene";
 
+/// Magic token in a built-in provider's catalog base URL marking it as a
+/// placeholder the user must fill in (e.g. Azure's
+/// `https://YOUR_RESOURCE.openai.azure.com/...`). Such providers get an editable
+/// Base URL in the Providers page, stored as a `models.json` `baseUrl` override.
+const BASE_URL_PLACEHOLDER: &str = "YOUR_RESOURCE";
+
 // Field-validation limits for custom providers (see PLAN.md custom provider field validation).
 const PROVIDER_ID_MIN_LEN: usize = 2;
 const PROVIDER_ID_MAX_LEN: usize = 40;
@@ -51,6 +57,10 @@ pub struct BuiltinProvider {
     pub base_url: String,
     pub has_api_key: bool,
     pub model_count: usize,
+    /// True when the catalog base URL is a placeholder (contains
+    /// [`BASE_URL_PLACEHOLDER`]) so the user must supply their own — the
+    /// Providers page then offers a Base URL field alongside the API key.
+    pub requires_base_url: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -70,6 +80,11 @@ pub struct CustomProviderModel {
     pub id: String,
     #[serde(default)]
     pub name: String,
+    /// Whether the model accepts image input. Text is always supported and is
+    /// implied — only image is tracked. Persisted in models.json as the
+    /// `modalities` array (`["text"]` or `["text","image"]`) that the agent reads.
+    #[serde(default)]
+    pub supports_images: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,6 +118,16 @@ pub struct UpdateBuiltinProviderKeyInput {
     pub api_key: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetBuiltinProviderBaseUrlInput {
+    pub id: String,
+    /// The user-supplied Base URL. Empty clears the override (reverting to the
+    /// catalog placeholder); otherwise it's validated and stored in models.json.
+    #[serde(default)]
+    pub base_url: String,
+}
+
 #[derive(Debug, Clone)]
 struct CatalogProviderSummary {
     name: String,
@@ -116,10 +141,20 @@ pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
     // fall back to empty (key badges show "Not Configured"); write paths stay strict.
     let auth = Value::Object(crate::auth_store::read().unwrap_or_default());
 
+    // Entries that fully define a provider (name/api/models) shadow a same-id
+    // built-in and show as custom. "Override-only" entries (just a `baseUrl`,
+    // e.g. an Azure resource URL) don't shadow — they stay built-in and only
+    // supply the override, so the catalog's models remain available.
     let custom_provider_ids = models
         .get("providers")
         .and_then(Value::as_object)
-        .map(|providers| providers.keys().cloned().collect::<HashSet<_>>())
+        .map(|providers| {
+            providers
+                .iter()
+                .filter(|(_, config)| !is_override_only(config))
+                .map(|(id, _)| id.clone())
+                .collect::<HashSet<_>>()
+        })
         .unwrap_or_default();
 
     let mut builtin = vec![BuiltinProvider {
@@ -128,17 +163,23 @@ pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
         base_url: resolve_future_base_url(&auth),
         has_api_key: auth_has_key(&auth, FUTURE_PROVIDER_ID),
         model_count: future_model_count(),
+        requires_base_url: false,
     }];
     for (id, summary) in builtin_catalog_providers() {
         if custom_provider_ids.contains(&id) {
             continue;
         }
+        // The catalog base URL is the source of truth for whether this provider
+        // needs a user-supplied Base URL; a stored override then fills it in.
+        let requires_base_url = summary.base_url.contains(BASE_URL_PLACEHOLDER);
+        let base_url = provider_base_url_override(&models, &id).unwrap_or(summary.base_url);
         builtin.push(BuiltinProvider {
             has_api_key: auth_has_key(&auth, &id),
             id,
             name: summary.name,
-            base_url: summary.base_url,
+            base_url,
             model_count: summary.model_count,
+            requires_base_url,
         });
     }
 
@@ -148,6 +189,11 @@ pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
             // FutureGene is shown above as built-in; never echo a stray `future`
             // entry (e.g. a hand-edited models.json) as a custom provider.
             if id == FUTURE_PROVIDER_ID {
+                continue;
+            }
+            // Override-only entries (base-URL fills for a built-in provider) are
+            // surfaced through the built-in list, not as standalone customs.
+            if is_override_only(config) {
                 continue;
             }
             let api = config
@@ -178,7 +224,18 @@ pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
                                 .and_then(Value::as_str)
                                 .unwrap_or(&id)
                                 .to_string();
-                            Some(CustomProviderModel { id, name })
+                            let supports_images = model
+                                .get("modalities")
+                                .and_then(Value::as_array)
+                                .map(|items| {
+                                    items.iter().any(|item| item.as_str() == Some("image"))
+                                })
+                                .unwrap_or(false);
+                            Some(CustomProviderModel {
+                                id,
+                                name,
+                                supports_images,
+                            })
                         })
                         .collect()
                 })
@@ -228,6 +285,77 @@ pub fn update_builtin_provider_key(
     } else {
         crate::auth_store::remove_provider_key(id)?;
     }
+
+    list_agent_providers()
+}
+
+/// Set (or clear) a built-in provider's Base URL override in models.json. Used
+/// for catalog providers whose base URL is a placeholder (see
+/// [`BASE_URL_PLACEHOLDER`]); the agent applies it to that provider's models.
+pub fn set_builtin_provider_base_url(
+    input: SetBuiltinProviderBaseUrlInput,
+) -> Result<ProvidersView, crate::AppError> {
+    let id = input.id.trim();
+    if id.is_empty() {
+        return Err("Provider id is required.".to_string().into());
+    }
+    if id == FUTURE_PROVIDER_ID {
+        return Err("FutureGene 的地址由登录流程管理。".into());
+    }
+    if !builtin_catalog_providers().contains_key(id) {
+        return Err(format!("未知的内置提供商：`{id}`。").into());
+    }
+
+    let base_url = input.base_url.trim();
+    let models_path = models_json_path()?;
+    let mut models_doc = read_json(&models_path);
+    if !models_doc.is_object() {
+        models_doc = json!({});
+    }
+    let root = models_doc
+        .as_object_mut()
+        .ok_or_else(|| "models.json is not a JSON object.".to_string())?;
+
+    if base_url.is_empty() {
+        // Clear the override; drop the entry entirely if nothing else remains.
+        if let Some(providers) = root.get_mut("providers").and_then(Value::as_object_mut) {
+            if let Some(entry) = providers.get_mut(id).and_then(Value::as_object_mut) {
+                entry.remove("baseUrl");
+                if entry.is_empty() {
+                    providers.remove(id);
+                }
+            }
+        }
+        write_json(&models_path, &models_doc)?;
+        return list_agent_providers();
+    }
+
+    if base_url.len() > BASE_URL_MAX_LEN {
+        return Err("Base URL 过长。".into());
+    }
+    match reqwest::Url::parse(base_url) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") => {}
+        _ => return Err("Base URL 必须是合法的 http/https 地址。".into()),
+    }
+    if base_url.contains(BASE_URL_PLACEHOLDER) {
+        return Err(format!("请把地址中的 `{BASE_URL_PLACEHOLDER}` 替换为真实值。").into());
+    }
+
+    let providers = root
+        .entry("providers")
+        .or_insert_with(|| Value::Object(Map::new()));
+    let providers = providers
+        .as_object_mut()
+        .ok_or_else(|| "models.json `providers` is not an object.".to_string())?;
+    // Preserve any fields the GUI does not manage on this entry.
+    let mut provider = providers
+        .get(id)
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    provider.insert("baseUrl".to_string(), Value::String(base_url.to_string()));
+    providers.insert(id.to_string(), Value::Object(provider));
+    write_json(&models_path, &models_doc)?;
 
     list_agent_providers()
 }
@@ -346,7 +474,17 @@ pub fn upsert_custom_provider(
             }
             model_name
         };
-        model_values.push(json!({ "id": model_id, "name": model_name }));
+        // Text is always supported; image is opt-in. Persist as `modalities` so
+        // the agent's models.json loader maps it to the model's input modalities.
+        let mut modalities = vec![Value::String("text".to_string())];
+        if model.supports_images {
+            modalities.push(Value::String("image".to_string()));
+        }
+        model_values.push(json!({
+            "id": model_id,
+            "name": model_name,
+            "modalities": modalities,
+        }));
     }
     if model_values.len() > MAX_MODELS {
         return Err(format!("模型数量不能超过 {MAX_MODELS} 个。").into());
@@ -472,6 +610,38 @@ pub(crate) fn resolve_future_platform_url(auth: &Value) -> String {
 /// what the Providers page shows and what model calls use.
 pub(crate) fn resolve_future_base_url(auth: &Value) -> String {
     format!("{}/api/v1", resolve_future_platform_url(auth))
+}
+
+/// True when a models.json provider entry only carries overrides (Base URL) for
+/// a built-in provider, i.e. it defines no `name`, `api`, or explicit `models`.
+/// Such entries are surfaced through the built-in list rather than as customs.
+fn is_override_only(config: &Value) -> bool {
+    let has_str = |key: &str| {
+        config
+            .get(key)
+            .and_then(Value::as_str)
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+    };
+    let has_models = config
+        .get("models")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false);
+    !has_str("name") && !has_str("api") && !has_models
+}
+
+/// The stored Base URL override for a provider, if any (non-empty).
+fn provider_base_url_override(models: &Value, id: &str) -> Option<String> {
+    models
+        .get("providers")
+        .and_then(Value::as_object)
+        .and_then(|providers| providers.get(id))
+        .and_then(|config| config.get("baseUrl"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn auth_has_key(auth: &Value, id: &str) -> bool {
@@ -879,6 +1049,7 @@ mod tests {
         ok.models = vec![CustomProviderModel {
             id: "anthropic/claude-3.5-sonnet".to_string(),
             name: String::new(),
+            supports_images: false,
         }];
         assert!(upsert_custom_provider(ok).is_ok());
 
@@ -887,6 +1058,7 @@ mod tests {
         bad.models = vec![CustomProviderModel {
             id: "bad id".to_string(),
             name: String::new(),
+            supports_images: false,
         }];
         assert!(upsert_custom_provider(bad).is_err());
 
@@ -896,13 +1068,129 @@ mod tests {
             CustomProviderModel {
                 id: "m".to_string(),
                 name: String::new(),
+                supports_images: false,
             },
             CustomProviderModel {
                 id: "m".to_string(),
                 name: String::new(),
+                supports_images: false,
             },
         ];
         assert!(upsert_custom_provider(dup).is_err());
+    }
+
+    #[test]
+    fn model_modalities_round_trip() {
+        let _home = HomeGuard::new("modalities");
+        let mut in_ = input("p1", "P1", true);
+        in_.models = vec![
+            CustomProviderModel {
+                id: "text-only".to_string(),
+                name: String::new(),
+                supports_images: false,
+            },
+            CustomProviderModel {
+                id: "vision".to_string(),
+                name: String::new(),
+                supports_images: true,
+            },
+        ];
+        upsert_custom_provider(in_).unwrap();
+
+        // Persisted as a `modalities` array the agent reads.
+        let doc = read_json(&models_json_path().unwrap());
+        let models = doc["providers"]["p1"]["models"].as_array().unwrap();
+        let vision = models.iter().find(|m| m["id"] == "vision").unwrap();
+        assert_eq!(vision["modalities"], json!(["text", "image"]));
+        let text_only = models.iter().find(|m| m["id"] == "text-only").unwrap();
+        assert_eq!(text_only["modalities"], json!(["text"]));
+
+        // And surfaces back through the view as supports_images.
+        let view = list_agent_providers().unwrap();
+        let provider = view.custom.iter().find(|p| p.id == "p1").unwrap();
+        assert!(
+            provider
+                .models
+                .iter()
+                .find(|m| m.id == "vision")
+                .unwrap()
+                .supports_images
+        );
+        assert!(
+            !provider
+                .models
+                .iter()
+                .find(|m| m.id == "text-only")
+                .unwrap()
+                .supports_images
+        );
+    }
+
+    #[test]
+    fn azure_provider_requires_base_url_flag() {
+        let _home = HomeGuard::new("azure-requires");
+        let view = list_agent_providers().unwrap();
+        let azure = view
+            .builtin
+            .iter()
+            .find(|p| p.id == "azure-openai-responses")
+            .expect("azure provider present in catalog");
+        assert!(azure.requires_base_url);
+        assert!(azure.base_url.contains("YOUR_RESOURCE"));
+    }
+
+    #[test]
+    fn set_builtin_base_url_override_keeps_provider_builtin() {
+        let _home = HomeGuard::new("azure-override");
+        let view = set_builtin_provider_base_url(SetBuiltinProviderBaseUrlInput {
+            id: "azure-openai-responses".to_string(),
+            base_url: "https://my-res.openai.azure.com/openai/v1".to_string(),
+        })
+        .unwrap();
+
+        // Still built-in (not moved to custom), with the override applied and the
+        // requires-base-url flag intact so it stays editable.
+        assert!(view.custom.iter().all(|p| p.id != "azure-openai-responses"));
+        let azure = view
+            .builtin
+            .iter()
+            .find(|p| p.id == "azure-openai-responses")
+            .unwrap();
+        assert_eq!(azure.base_url, "https://my-res.openai.azure.com/openai/v1");
+        assert!(azure.requires_base_url);
+        assert!(azure.model_count > 0);
+
+        // Persisted as a plain baseUrl override the agent reads.
+        let doc = read_json(&models_json_path().unwrap());
+        assert_eq!(
+            doc["providers"]["azure-openai-responses"]["baseUrl"],
+            json!("https://my-res.openai.azure.com/openai/v1")
+        );
+
+        // Clearing removes the override entirely.
+        set_builtin_provider_base_url(SetBuiltinProviderBaseUrlInput {
+            id: "azure-openai-responses".to_string(),
+            base_url: String::new(),
+        })
+        .unwrap();
+        let doc = read_json(&models_json_path().unwrap());
+        assert!(doc["providers"].get("azure-openai-responses").is_none());
+    }
+
+    #[test]
+    fn set_builtin_base_url_rejects_placeholder_and_bad_url() {
+        let _home = HomeGuard::new("azure-reject");
+        let placeholder = set_builtin_provider_base_url(SetBuiltinProviderBaseUrlInput {
+            id: "azure-openai-responses".to_string(),
+            base_url: "https://YOUR_RESOURCE.openai.azure.com/openai/v1".to_string(),
+        });
+        assert!(placeholder.is_err());
+
+        let bad = set_builtin_provider_base_url(SetBuiltinProviderBaseUrlInput {
+            id: "azure-openai-responses".to_string(),
+            base_url: "ftp://example.com".to_string(),
+        });
+        assert!(bad.is_err());
     }
 
     #[test]

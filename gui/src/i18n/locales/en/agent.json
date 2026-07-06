@@ -85,7 +85,10 @@
       "manual": "Manual",
       "sandbox": "Sandboxed",
       "off": "Unrestricted"
-    }
+    },
+    "attachRejectedNoImage": "{{name}} (current model doesn't support images)",
+    "attachFilesHintNoImage": "Attach files (PDF, text)",
+    "attachDialogFilterNoImage": "Supported (PDF, text)"
   },
   "attachment": {
     "readFailed": "Unable to read",
