@@ -30,7 +30,15 @@ const DEFAULT_BUILTIN_PROVIDER_IDS = [
   "google",
 ];
 
-export function ProvidersPage() {
+export function ProvidersPage({
+  onProvidersChanged,
+}: {
+  /**
+   * Called after any mutation that changes the available model set, so the
+   * Models tab (fed by the agent's `list_models`) refreshes immediately.
+   */
+  onProvidersChanged?: () => void;
+} = {}) {
   const { t } = useTranslation("settings");
   const { data: loadedProviders, loading, error, reload } = useAsyncResource<ProvidersView | null>(
     listAgentProviders,
@@ -58,6 +66,7 @@ export function ProvidersPage() {
     const view = await deleteCustomProvider(id);
     setProviders(view);
     setConfirmingDelete(null);
+    onProvidersChanged?.();
   }
 
   async function handleLogout() {
@@ -65,6 +74,7 @@ export function ProvidersPage() {
     setProviders(view);
     setConfirmingLogout(false);
     setHint(null);
+    onProvidersChanged?.();
   }
 
   async function handleBuiltinKey(provider: BuiltinProvider, apiKey: string | null) {
@@ -72,12 +82,14 @@ export function ProvidersPage() {
     setProviders(view);
     setEditingBuiltinKey(null);
     setHint(apiKey ? t("providers.keySaved", { provider: provider.name }) : t("providers.keyCleared", { provider: provider.name }));
+    onProvidersChanged?.();
   }
 
   function handleAuthorized() {
     setLoginOpen(false);
     reload();
     setHint(t("providers.connected"));
+    onProvidersChanged?.();
   }
 
   if (loading) {
@@ -259,6 +271,7 @@ export function ProvidersPage() {
         onSubmit={async (input) => {
           const view = await upsertCustomProvider(input);
           setProviders(view);
+          onProvidersChanged?.();
         }}
         open={dialogOpen}
       />

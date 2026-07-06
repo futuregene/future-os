@@ -58,7 +58,11 @@
     "searchPlaceholder": "Search models…",
     "noModels": "No models loaded from the Agent. Make sure the Agent is running and signed in.",
     "noMatch": "No matching models.",
-    "defaultModel": "Default model"
+    "defaultModel": "Default model",
+    "modality": {
+      "text": "Text",
+      "image": "Image"
+    }
   },
   "providers": {
     "loading": "Loading providers…",
@@ -118,6 +122,9 @@
     "modelIdPlaceholder": "Model ID",
     "modelNamePlaceholder": "Display name",
     "removeModel": "Remove model",
+    "modalityLabel": "Modality",
+    "modalityText": "Text",
+    "modalityImage": "Image",
     "errors": {
       "idRequired": "Please enter a provider ID.",
       "idLength": "Provider ID must be between {{min}} and {{max}} characters.",

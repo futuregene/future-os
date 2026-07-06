@@ -58,7 +58,11 @@
     "searchPlaceholder": "搜索模型…",
     "noModels": "未从 Agent 读取到模型。请确认 Agent 已启动并完成登录。",
     "noMatch": "没有匹配的模型。",
-    "defaultModel": "默认模型"
+    "defaultModel": "默认模型",
+    "modality": {
+      "text": "文本",
+      "image": "图片"
+    }
   },
   "providers": {
     "loading": "加载提供商…",
@@ -116,6 +120,9 @@
     "modelIdPlaceholder": "模型 ID",
     "modelNamePlaceholder": "显示名称",
     "removeModel": "移除模型",
+    "modalityLabel": "模态",
+    "modalityText": "文本",
+    "modalityImage": "图片",
     "errors": {
       "idRequired": "请填写提供商 ID。",
       "idLength": "提供商 ID 长度需在 {{min}}–{{max}} 个字符之间。",

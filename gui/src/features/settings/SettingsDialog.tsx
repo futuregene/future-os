@@ -56,6 +56,7 @@ export function SettingsDialog({
   modelOptions,
   onChangeSettings,
   onClose,
+  onProvidersChanged,
   open,
 }: {
   appSettings: AppSettings;
@@ -64,6 +65,8 @@ export function SettingsDialog({
   modelOptions: AgentModelOption[];
   onChangeSettings: (patch: Partial<AppSettings>) => void;
   onClose: () => void;
+  /** Refresh the available model list after a provider mutation. */
+  onProvidersChanged?: () => void;
   open: boolean;
 }) {
   const { t } = useTranslation("settings");
@@ -154,7 +157,7 @@ export function SettingsDialog({
                 )
               : null}
             {tab === "update" ? <UpdatePage /> : null}
-            {tab === "providers" ? <ProvidersPage /> : null}
+            {tab === "providers" ? <ProvidersPage onProvidersChanged={onProvidersChanged} /> : null}
             {tab === "models"
               ? (
                   <ModelsPage
