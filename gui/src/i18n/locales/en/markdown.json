@@ -25,6 +25,13 @@
     "copyPath": "Copy path",
     "open": "Open"
   },
+  "fileLink": {
+    "copyPath": "Copy path",
+    "copyRelativePath": "Copy relative path",
+    "copyFilename": "Copy filename",
+    "open": "Open",
+    "notFound": "File not found: {{name}}"
+  },
   "runEmbed": {
     "model": "Model",
     "run": "Run",

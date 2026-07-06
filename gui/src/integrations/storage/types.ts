@@ -106,9 +106,18 @@ export interface StoredApprovalRequest {
   actionCategory?: string | null;
   actionPayload?: string | null;
   sandboxBoundary?: string | null;
+  // Phase 2: suggested rule (JSON) for session/always-allow persistence.
+  saveSuggestion?: string | null;
   reviewer: string;
   decisionScope: string;
   decisionSource: string;
+}
+
+// v2: parsed save_suggestion — the file rule to persist on "allow in this
+// workspace". `path` is a glob (workspace-relative, or ~/absolute).
+export interface ApprovalSaveSuggestion {
+  path: string;
+  access: string; // "read" | "write"
 }
 
 // P2: structured action payload (parsed from actionPayload JSON)
@@ -120,6 +129,10 @@ export interface ApprovalAction {
   paths?: string[];
   writes?: Array<{ path: string; preview?: string }>;
   deletes?: Array<{ path: string }>;
+  // sandbox_escalation: model-provided reason and the file paths the sandbox
+  // blocked (extracted from the failed run — no raw stderr dump).
+  justification?: string;
+  blockedPaths?: string[];
   scope?: {
     cwd: string;
     insideWorkspace: boolean;
@@ -249,6 +262,18 @@ export interface StoredArtifact {
   createdAt: number;
   updatedAt: number;
   deletedAt?: number | null;
+}
+
+/// A `futureos://file/<path>` reference, resolved to a display model by pure
+/// path arithmetic (no filesystem access). See `resolve.rs::ResolvedFile`.
+export interface StoredFile {
+  /** Absolute path, used for open / copy-path actions. */
+  path: string;
+  /** File name (last path component). */
+  name: string;
+  /** Path relative to the workspace root; present only when inside it. */
+  relativePath?: string | null;
+  insideWorkspace: boolean;
 }
 
 export interface StoredResearchResource {

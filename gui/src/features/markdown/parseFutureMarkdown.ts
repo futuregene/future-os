@@ -264,7 +264,7 @@ function htmlToSafeParagraph(node: Html): MarkdownNode[] {
 }
 
 function parseFutureEmbed(node: Code): FutureReference | null {
-  const match = node.lang?.match(/^futureos-(approval|artifact|research|review|run|tool)$/);
+  const match = node.lang?.match(/^futureos-(approval|artifact|file|research|review|run|tool)$/);
   if (!match)
     return null;
 
@@ -321,7 +321,11 @@ function parseFutureUrl(href: string) {
     if (!isFutureReferenceType(targetType))
       return null;
 
-    const targetId = safeDecodeURIComponent(url.pathname.replace(/^\/+/, ""));
+    // Strip exactly ONE leading slash (the URL path separator), not all of them:
+    // an absolute file path arrives as `futureos://file//Users/x` → pathname
+    // `//Users/x`, and it must keep its own leading slash so the file opens. For
+    // id-based types the id never starts with a slash, so this is a no-op there.
+    const targetId = safeDecodeURIComponent(url.pathname.replace(/^\//, ""));
     if (!targetId)
       return null;
 
@@ -348,6 +352,7 @@ function safeDecodeURIComponent(value: string) {
 function isFutureReferenceType(value: string): value is FutureReferenceType {
   return value === "approval"
     || value === "artifact"
+    || value === "file"
     || value === "research"
     || value === "review"
     || value === "run"

@@ -121,6 +121,25 @@ message RpcCommand {
   // (a mismatch means the run rolled over and the caller must realign).
   int64 since_idx = 140;
   string run_id = 141;
+
+  // ── set_sandbox_policy ─────────────────────────────────────────────────
+  // Session sandbox + approval policy (typed sub-message, not JSON-in-string).
+  // Read when type == "set_sandbox_policy".
+  SandboxPolicy sandbox_policy = 150;
+}
+
+// ── SandboxPolicy ────────────────────────────────────────────────────────────
+// OS-sandbox boundary + approval policy for a session. The agent enforces the
+// sandbox on spawned bash commands (Seatbelt on macOS) and uses the approval
+// policy to decide when to raise approval requests. See gui/SANDBOX_PLAN.md.
+
+message SandboxPolicy {
+  // Rules live in on-disk files the agent reads directly (gui/APPROVAL_PLAN.md);
+  // only the approval tier travels over the wire.
+  reserved 1 to 5;  // v1: sandbox_mode / writable_roots / network_access / approval_policy / rules
+  reserved 6;        // v2a: bool enabled (superseded by tier)
+  // "off" (完全放开) | "manual" (手动审批) | "sandbox" (沙箱保护, macOS only).
+  string tier = 7;
 }
 
 // ── ImageContent ───────────────────────────────────────────────────────────

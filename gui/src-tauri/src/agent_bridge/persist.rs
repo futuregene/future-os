@@ -54,9 +54,13 @@ fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
     else {
         return;
     };
-    let Some(tool_call_id) = value_string(value, &["tool_id", "toolID", "tool_call_id"]) else {
-        return;
-    };
+    // Escalation approvals carry no tool_call id (they belong to the run, not a
+    // specific persisted tool_call). Store NULL rather than an empty string —
+    // an empty string violates the tool_calls(id) foreign key, which would drop
+    // the approval on the floor and leave the run stuck "waiting_approval" with
+    // no card to act on.
+    let tool_call_id =
+        value_string(value, &["tool_id", "toolID", "tool_call_id"]).filter(|id| !id.is_empty());
     let tool_name =
         value_string(value, &["tool_name", "toolName"]).unwrap_or_else(|| "tool".to_string());
     let requested_action = value
@@ -76,6 +80,12 @@ fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
         .get("sandbox_boundary")
         .or_else(|| value.get("sandboxBoundary"))
         .map(compact_json);
+    // Only persist a real suggestion object (agent sends JSON null when none).
+    let save_suggestion = value
+        .get("save_suggestion")
+        .or_else(|| value.get("saveSuggestion"))
+        .filter(|v| v.is_object())
+        .map(compact_json);
     let reviewer = value_string(value, &["reviewer"]);
 
     if let Err(error) = store::ensure_approval_request(store::EnsureApprovalRequestInput {
@@ -90,6 +100,7 @@ fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
         action_category,
         action_payload,
         sandbox_boundary,
+        save_suggestion,
         reviewer,
     }) {
         eprintln!("FutureOS approval persistence failed: {error}");

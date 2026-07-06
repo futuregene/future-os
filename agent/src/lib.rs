@@ -11,6 +11,7 @@ pub mod llm;
 pub mod models;
 pub mod prompt;
 pub mod rpc;
+pub mod sandbox;
 pub mod session;
 pub mod skills;
 pub mod tools;

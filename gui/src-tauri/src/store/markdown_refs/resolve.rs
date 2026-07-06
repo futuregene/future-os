@@ -55,6 +55,15 @@ pub(super) fn resolve_markdown_reference(
             Ok(None) => missing_reference(target_type, target_id, "artifact was not found"),
             Err(error) => failed_reference(target_type, target_id, error),
         },
+        "file" => match resolve_file_reference(conn, workspace_id, &target_id) {
+            Ok(Some(file)) => resolved_reference(target_type, target_id, file),
+            Ok(None) => missing_reference(
+                target_type,
+                target_id,
+                "file was not found in the workspace",
+            ),
+            Err(error) => failed_reference(target_type, target_id, error),
+        },
         "run" => match get_run_in_workspace(conn, workspace_id, &target_id) {
             Ok(Some(run)) => resolved_reference(target_type, target_id, run),
             Ok(None) => missing_reference(target_type, target_id, "run was not found"),
@@ -148,6 +157,79 @@ fn get_artifact_in_workspace(
     )
     .optional()
     .map_err(crate::AppError::from)
+}
+
+/// A `futureos://file/<path>` reference, rendered by the frontend as a file
+/// link. Resolution is pure path arithmetic — no filesystem access — so it never
+/// probes whether the path exists (no existence oracle) and never fails: any
+/// non-empty path a message names becomes a link. `insideWorkspace` +
+/// `relativePath` let the UI show a workspace-relative path for in-workspace
+/// files and the full path for ones written elsewhere (e.g. `~/Desktop`).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResolvedFile {
+    /// Absolute path, used for open / copy-path actions.
+    path: String,
+    /// File name (last path component), for the copy-filename action.
+    name: String,
+    /// Path relative to the workspace root, present only when inside it.
+    relative_path: Option<String>,
+    inside_workspace: bool,
+}
+
+/// Turn a file reference into its display model. The path may be absolute (the
+/// model percent-encodes it, so the leading slash survives) or workspace-
+/// relative; anything not absolute is resolved against the workspace root.
+fn resolve_file_reference(
+    conn: &Connection,
+    workspace_id: &str,
+    raw_path: &str,
+) -> Result<Option<ResolvedFile>, crate::AppError> {
+    let raw = raw_path.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+
+    let workspace_path: Option<String> = conn
+        .query_row(
+            "SELECT path FROM workspaces WHERE id = ?1",
+            params![workspace_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    let raw_ref = std::path::Path::new(raw);
+    let absolute = if raw_ref.is_absolute() {
+        std::path::PathBuf::from(raw)
+    } else if let Some(root) = workspace_path.as_deref() {
+        std::path::Path::new(root).join(raw)
+    } else {
+        // No workspace root to anchor a relative path; treat it as absolute.
+        std::path::PathBuf::from(format!("/{raw}"))
+    };
+
+    let name = absolute
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_string();
+
+    // Lexical containment only (no canonicalize / stat): a deleted file must
+    // still resolve, and resolution must not touch the filesystem.
+    let (inside_workspace, relative_path) = match workspace_path.as_deref() {
+        Some(root) => match absolute.strip_prefix(root) {
+            Ok(relative) => (true, Some(relative.to_string_lossy().into_owned())),
+            Err(_) => (false, None),
+        },
+        None => (false, None),
+    };
+
+    Ok(Some(ResolvedFile {
+        path: absolute.to_string_lossy().into_owned(),
+        name,
+        relative_path,
+        inside_workspace,
+    }))
 }
 
 fn get_run_in_workspace(

@@ -147,12 +147,8 @@ fn extract_frontmatter_field(content: &str, key: &str) -> Option<String> {
     }
 
     let rest = &trimmed[3..];
-    let end_idx = rest.find("\n---").or_else(|| rest.find("---"));
-    if end_idx.is_none() {
-        return None;
-    }
-
-    let frontmatter = &rest[..end_idx.unwrap()];
+    let end_idx = rest.find("\n---").or_else(|| rest.find("---"))?;
+    let frontmatter = &rest[..end_idx];
 
     for line in frontmatter.lines() {
         let trimmed_line = line.trim();

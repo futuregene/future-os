@@ -75,6 +75,11 @@ pub struct RpcCommand {
     pub run_id: String,
     #[serde(default)]
     pub since_idx: i64,
+
+    // set_sandbox_policy — populated from the typed proto sub-message by the
+    // gRPC layer (not part of the JSON command surface).
+    #[serde(skip)]
+    pub sandbox_policy: Option<crate::sandbox::SandboxPolicy>,
 }
 
 // ─── RPC Response (stdout) ───────────────────────────────────────────────

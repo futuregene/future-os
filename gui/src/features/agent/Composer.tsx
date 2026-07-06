@@ -1,5 +1,6 @@
 import type { ChangeEvent, ClipboardEvent, FormEvent, KeyboardEvent } from "react";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
+import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { ReferenceTargetSearchResult } from "../../integrations/storage/threadStore";
 import type { MessageAttachment } from "./agentThreadTypes";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -12,7 +13,11 @@ import { modelKey, modelLabel, modelOption, normalizeThinkingLevel, thinkingLeve
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { savePastedImage, searchReferenceTargets } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
+import { isMacOS } from "../../lib/platform";
 import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, MAX_ATTACHMENTS_PER_TURN, PICKER_EXTENSIONS } from "./attachments";
+
+/** Approval-tier order for the composer dropdown (sandbox is macOS-only). */
+const APPROVAL_TIERS: ApprovalTier[] = ["manual", "sandbox", "off"];
 
 export interface ComposerSendPayload {
   attachments: MessageAttachment[];
@@ -28,8 +33,8 @@ interface ComposerProps {
   onModelChange?: (modelId: string) => void;
   thinkingLevel?: string;
   onThinkingLevelChange?: (thinkingLevel: string) => void;
-  autoApprove?: boolean;
-  onToggleAutoApprove?: (value: boolean) => void;
+  approvalTier?: ApprovalTier;
+  onChangeApprovalTier?: (value: ApprovalTier) => void;
   /** A reply is streaming: the send button becomes an interrupt button. */
   sending?: boolean;
   /** Interrupt the in-flight reply (only meaningful while `sending`). */
@@ -48,8 +53,8 @@ export function Composer({
   onModelChange,
   thinkingLevel,
   onThinkingLevelChange,
-  autoApprove,
-  onToggleAutoApprove,
+  approvalTier,
+  onChangeApprovalTier,
   sending,
   onAbort,
   placeholder,
@@ -374,7 +379,7 @@ export function Composer({
           >
             <Paperclip className="size-3.5" />
           </button>
-          {onToggleAutoApprove
+          {onChangeApprovalTier
             ? (
                 <SelectMenu
                   open={approvalMenuOpen}
@@ -392,29 +397,23 @@ export function Composer({
                       title={t("composer.approval")}
                     >
                       <ShieldCheck className="size-3 shrink-0" />
-                      <span className="truncate">{autoApprove ? t("composer.approvalAuto") : t("composer.approvalManual")}</span>
+                      <span className="truncate">{t(`composer.approvalTier.${approvalTier ?? "manual"}`)}</span>
                       <ChevronDown className="size-3 shrink-0" />
                     </button>
                   )}
                 >
-                  <SelectMenuItem
-                    selected={!autoApprove}
-                    onSelect={() => {
-                      onToggleAutoApprove(false);
-                      setApprovalMenuOpen(false);
-                    }}
-                  >
-                    <span className="min-w-0 flex-1 truncate font-medium text-ink">{t("composer.approvalManual")}</span>
-                  </SelectMenuItem>
-                  <SelectMenuItem
-                    selected={Boolean(autoApprove)}
-                    onSelect={() => {
-                      onToggleAutoApprove(true);
-                      setApprovalMenuOpen(false);
-                    }}
-                  >
-                    <span className="min-w-0 flex-1 truncate font-medium text-ink">{t("composer.approvalAuto")}</span>
-                  </SelectMenuItem>
+                  {APPROVAL_TIERS.filter(tier => tier !== "sandbox" || isMacOS).map(tier => (
+                    <SelectMenuItem
+                      key={tier}
+                      selected={(approvalTier ?? "manual") === tier}
+                      onSelect={() => {
+                        onChangeApprovalTier(tier);
+                        setApprovalMenuOpen(false);
+                      }}
+                    >
+                      <span className="min-w-0 flex-1 truncate font-medium text-ink">{t(`composer.approvalTier.${tier}`)}</span>
+                    </SelectMenuItem>
+                  ))}
                 </SelectMenu>
               )
             : null}

@@ -6,7 +6,9 @@ use std::{collections::HashMap, sync::Arc};
 
 use super::{ApprovalGate, SseBroadcaster};
 
-const DEFAULT_PERMISSION_LEVEL: &str = "all";
+// Reverted to "workspace": commit 49eab817 flipped this to "all" (no boundary
+// enforcement at all) in an unrelated change and broke the test below.
+const DEFAULT_PERMISSION_LEVEL: &str = "workspace";
 
 // ─── ServerSession ────────────────────────────────────────────────────────
 
@@ -52,6 +54,15 @@ pub struct ServerSession {
     pub approval_gate: ApprovalGate,
     /// Permission level for tool execution: "all" | "workspace" | "none"
     pub permission_level: String,
+    /// Sandbox + approval policy. `None` = the sandbox stays dormant and the
+    /// session behaves exactly like the pre-sandbox agent (legacy boundary, no
+    /// OS wrapping). Only a client that sends `set_sandbox_policy` opts in —
+    /// today that's just the GUI, which owns the approval UX. TUI / CLI /
+    /// channels never send one, so they are unaffected.
+    pub sandbox_policy: Option<crate::sandbox::SandboxPolicy>,
+    /// Runtime "allow in this workspace/chat" rules for the current run. Shared
+    /// into the live sandbox at prompt start; cleared each new run.
+    pub session_rules: crate::sandbox::rules::SessionRules,
 }
 
 /// Default workspace directory for new sessions.
@@ -127,6 +138,8 @@ impl ServerSession {
             interrupt_flag: None,
             approval_gate,
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
+            sandbox_policy: None,
+            session_rules: std::sync::Arc::new(std::sync::Mutex::new(vec![])),
             compaction_model: Arc::new(std::sync::RwLock::new(String::new())),
         }
     }
@@ -179,6 +192,8 @@ impl ServerSession {
             interrupt_flag: None,
             approval_gate,
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
+            sandbox_policy: None,
+            session_rules: std::sync::Arc::new(std::sync::Mutex::new(vec![])),
             compaction_model: Arc::new(std::sync::RwLock::new(String::new())),
         }
     }
@@ -603,6 +618,22 @@ impl ServerSession {
 
     pub fn set_permission_level(&mut self, level: &str) {
         self.permission_level = level.to_string();
+    }
+
+    pub fn set_sandbox_policy(&mut self, policy: crate::sandbox::SandboxPolicy) {
+        self.sandbox_policy = Some(policy);
+    }
+
+    /// Inject a same-run "allow in this workspace/chat" rule (from the GUI, in
+    /// tandem with writing the rule file). Takes effect for the live run's
+    /// subsequent tool calls; the file carries it to future runs.
+    pub fn add_session_rule(&self, raw_pattern: &str, access: &str) {
+        crate::sandbox::rules::push_session_allow(
+            &self.session_rules,
+            std::path::Path::new(&self.cwd),
+            raw_pattern,
+            crate::sandbox::rules::Access::parse(access),
+        );
     }
 
     pub fn get_permission_level(&self) -> &str {

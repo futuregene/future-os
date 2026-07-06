@@ -820,6 +820,31 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             sess.set_cwd(&cmd.cwd);
             RpcResponse::ok(id, "set_cwd", serde_json::json!({"cwd": cmd.cwd}))
         }
+        "add_session_rule" => {
+            // Same-run "allow in this workspace/chat": message = path glob,
+            // mode = access ("read"|"write"). The GUI calls this alongside
+            // writing the rule file so the rule takes effect this run too.
+            session
+                .read()
+                .unwrap()
+                .add_session_rule(&cmd.message, &cmd.mode);
+            RpcResponse::ok(id, "add_session_rule", serde_json::json!({}))
+        }
+        "set_sandbox_policy" => {
+            let Some(policy) = cmd.sandbox_policy else {
+                return RpcResponse::build_fail(
+                    id,
+                    "set_sandbox_policy",
+                    "missing sandbox_policy payload",
+                );
+            };
+            let summary = serde_json::json!({
+                "tier": policy.tier.as_str(),
+                "sandboxAvailable": crate::sandbox::platform_sandbox_available(),
+            });
+            session.write().unwrap().set_sandbox_policy(policy);
+            RpcResponse::ok(id, "set_sandbox_policy", summary)
+        }
         "set_permission_level" => {
             let valid = ["all", "workspace", "none"];
             if !valid.contains(&cmd.level.as_str()) {

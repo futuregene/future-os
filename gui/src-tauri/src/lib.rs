@@ -2,6 +2,7 @@ mod agent_bridge;
 mod agent_proto;
 mod agent_providers;
 mod agent_supervisor;
+mod approval_rules;
 mod auth_store;
 mod build_info;
 mod commands;
@@ -204,6 +205,7 @@ pub fn run() {
             list_tool_outputs,
             list_approval_requests,
             decide_approval_request,
+            save_approval_rule,
             get_git_review,
             get_workspace_review_capabilities,
             get_last_run_review,

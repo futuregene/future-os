@@ -5,7 +5,8 @@
 use tonic::transport::Channel;
 
 use super::client::{
-    get_state_command, new_session_command, set_permission_level_command, RpcResponseExt,
+    get_state_command, new_session_command, set_permission_level_command,
+    set_sandbox_policy_command, RpcResponseExt,
 };
 use crate::{agent_proto::FutureAgentClient, store};
 
@@ -73,6 +74,29 @@ pub(super) async fn set_agent_permission_level(
         .map_err(|error| format!("Unable to set Future Agent permission level: {error}"))?
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the permission level selection.")?;
+    Ok(())
+}
+
+/// Push the session's approval tier to the agent. The agent reads the rule
+/// files (`${WS}/.future/approval_rule.json`, `~/.future/approval_rule.json`)
+/// directly — only the tier travels over the wire (APPROVAL_PLAN.md):
+/// `"manual"` (ask), `"sandbox"` (macOS Seatbelt wraps bash), or `"off"`
+/// (fully open). The tier is a global app preference, defaulting to `"manual"`.
+pub(super) async fn set_agent_sandbox_policy(
+    client: &mut FutureAgentClient<Channel>,
+    session_id: &str,
+    _thread_id: &str,
+) -> Result<(), crate::AppError> {
+    let tier = store::get_app_settings()
+        .map(|settings| settings.approval_tier)
+        .unwrap_or_else(|_| "manual".to_string());
+    let policy = crate::agent_proto::SandboxPolicy { tier };
+    client
+        .execute_command(set_sandbox_policy_command(policy, session_id.to_string()))
+        .await
+        .map_err(|error| format!("Unable to set Future Agent sandbox policy: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the sandbox policy.")?;
     Ok(())
 }
 

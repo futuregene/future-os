@@ -3,6 +3,7 @@ import type { ResolvedMarkdownReference } from "../../integrations/storage/markd
 import type {
   StoredApprovalRequest,
   StoredArtifact,
+  StoredFile,
   StoredResearchResource,
   StoredReviewChangeset,
   StoredRun,
@@ -16,6 +17,7 @@ import { useCopyState } from "../../components/ui/useCopyState";
 import { useFutureReference, useFutureReferences } from "./futureReferenceStore";
 import { parseFutureMarkdown } from "./parseFutureMarkdown";
 import { ArtifactEmbed } from "./renderers/ArtifactEmbed";
+import { FileLink } from "./renderers/FileLink";
 import { MissingReference } from "./renderers/MissingReference";
 import { ApprovalEmbed, ResearchEmbed, ReviewEmbed, ToolEmbed } from "./renderers/ObjectEmbed";
 import { ReferenceChip } from "./renderers/ReferenceChip";
@@ -283,6 +285,9 @@ function FutureReferenceChip({
   workspaceId: string | null | undefined;
 }) {
   const resolved = useFutureReference(workspaceId, reference);
+  const fileLink = renderFileReference(reference, resolved);
+  if (fileLink)
+    return fileLink;
   return <ReferenceChip reference={reference} resolved={resolved} />;
 }
 
@@ -305,6 +310,13 @@ function FutureEmbed({
   resolved?: ResolvedMarkdownReference;
 }) {
   const { t } = useTranslation("markdown");
+
+  // `file` renders as a link (never a "missing" badge) — resolution is pure path
+  // arithmetic, so a file reference always resolves. See resolve.rs::ResolvedFile.
+  const fileLink = renderFileReference(reference, resolved);
+  if (fileLink)
+    return fileLink;
+
   if (!resolved || resolved.status !== "resolved") {
     return <MissingReference error={resolved?.error} reference={reference} />;
   }
@@ -435,6 +447,27 @@ function isStoredArtifact(value: unknown): value is StoredArtifact {
     && typeof value.artifactType === "string"
     && typeof value.createdAt === "number"
     && typeof value.updatedAt === "number";
+}
+
+function isStoredFile(value: unknown): value is StoredFile {
+  return isRecord(value)
+    && typeof value.path === "string"
+    && typeof value.name === "string"
+    && typeof value.insideWorkspace === "boolean";
+}
+
+/**
+ * File references render as a link for both inline and block forms, and never as
+ * a red "missing" badge: resolution is pure path arithmetic so it always
+ * succeeds. Returns null for non-file references (let the caller handle those);
+ * while a file reference is still resolving, shows a neutral text placeholder.
+ */
+function renderFileReference(reference: FutureReference, resolved?: ResolvedMarkdownReference) {
+  if (reference.targetType !== "file")
+    return null;
+  if (resolved?.status === "resolved" && resolved.targetType === "file" && isStoredFile(resolved.data))
+    return <FileLink file={resolved.data} />;
+  return <span className="text-ink-soft">{reference.label ?? reference.targetId}</span>;
 }
 
 function isStoredRun(value: unknown): value is StoredRun {

@@ -1,6 +1,6 @@
 import type { ResolvedMarkdownReference } from "../../integrations/storage/markdownReferences";
 
-export type FutureReferenceType = "approval" | "artifact" | "research" | "review" | "run" | "tool";
+export type FutureReferenceType = "approval" | "artifact" | "file" | "research" | "review" | "run" | "tool";
 export type FutureReferenceView = "card" | "chip" | "diff-summary" | "output-summary" | "summary" | "timeline";
 
 export interface FutureReference {

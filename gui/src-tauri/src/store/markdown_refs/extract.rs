@@ -106,7 +106,12 @@ fn extract_futureos_fences(content: &str) -> Vec<MarkdownObjectReference> {
 fn normalize_target_type(value: &str) -> Option<String> {
     let normalized = value.trim().to_ascii_lowercase();
     match normalized.as_str() {
-        "approval" | "artifact" | "research" | "review" | "run" | "tool" => Some(normalized),
+        // `file` addresses an artifact by its filesystem path instead of its id,
+        // so the model can reference a file it just wrote without knowing the
+        // store-minted artifact id. See `resolve::get_file_artifact_in_workspace`.
+        "approval" | "artifact" | "file" | "research" | "review" | "run" | "tool" => {
+            Some(normalized)
+        }
         _ => None,
     }
 }
@@ -197,5 +202,20 @@ view: timeline
     fn percent_decodes_utf8_reference_ids() {
         assert_eq!(percent_decode("%E8%AF%97"), "诗");
         assert_eq!(percent_decode("%E0%A4%A"), "%E0%A4%A");
+    }
+
+    #[test]
+    fn extracts_file_references_by_percent_encoded_path() {
+        let references = extract_markdown_references(
+            "Wrote [test.txt](futureos://file/%2FUsers%2Ftao%2Fapp%2Ftest.txt).",
+        );
+
+        assert_eq!(
+            references,
+            vec![MarkdownObjectReference {
+                target_id: "/Users/tao/app/test.txt".to_string(),
+                target_type: "file".to_string(),
+            }]
+        );
     }
 }

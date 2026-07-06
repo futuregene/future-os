@@ -32,6 +32,38 @@ describe("parseFutureMarkdown", () => {
     ]);
   });
 
+  it("parses a percent-encoded futureos://file path back to its absolute path", () => {
+    const document = parseFutureMarkdown(
+      "Wrote [test.txt](futureos://file/%2FUsers%2Ftao%2Fapp%2Ftest.txt).",
+    );
+
+    expect(document.references).toEqual([
+      {
+        label: "test.txt",
+        source: "inline",
+        targetId: "/Users/tao/app/test.txt",
+        targetType: "file",
+        view: "chip",
+      },
+    ]);
+  });
+
+  it("keeps the leading slash of an unencoded absolute futureos://file path", () => {
+    const document = parseFutureMarkdown(
+      "Made [note.txt](futureos://file//Users/tao/Desktop/note.txt).",
+    );
+
+    expect(document.references).toEqual([
+      {
+        label: "note.txt",
+        source: "inline",
+        targetId: "/Users/tao/Desktop/note.txt",
+        targetType: "file",
+        view: "chip",
+      },
+    ]);
+  });
+
   it("resolves reference-style links and images through markdown definitions", () => {
     const document = parseFutureMarkdown([
       "[**Docs**][docs] and [artifact][artifact-ref]",

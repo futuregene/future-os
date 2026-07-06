@@ -130,6 +130,11 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             enabled_models: Some(cmd.enabled_models),
             run_id: cmd.run_id,
             since_idx: cmd.since_idx,
+            sandbox_policy: cmd
+                .sandbox_policy
+                .map(|policy| crate::sandbox::SandboxPolicy {
+                    tier: crate::sandbox::SandboxTier::parse(&policy.tier),
+                }),
         };
 
         // Handle the command
