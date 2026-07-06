@@ -452,6 +452,7 @@ export function AppShell() {
         modelOptions={modelOptions}
         onChangeSettings={patch => void changeSettings(patch)}
         onClose={() => setSettingsOpen(false)}
+        onProvidersChanged={() => void refreshAgentModels()}
         open={settingsOpen}
       />
       <ToastHost />

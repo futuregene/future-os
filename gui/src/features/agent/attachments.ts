@@ -73,6 +73,14 @@ const TEXT_BASENAMES = new Set(["Dockerfile", "Makefile"]);
 /** Extensions offered in the file picker (images + pdf + text/source). */
 export const PICKER_EXTENSIONS = [...IMAGE_EXTENSIONS, "pdf", ...TEXT_EXTENSIONS] as string[];
 
+/**
+ * File-picker extensions for a given model: images are dropped when the active
+ * model can't accept image input, so the picker won't even offer them.
+ */
+export function pickerExtensions(allowImages: boolean): string[] {
+  return allowImages ? PICKER_EXTENSIONS : ["pdf", ...TEXT_EXTENSIONS];
+}
+
 const INLINE_MAX_BYTES_PER_FILE = 30 * 1024;
 const INLINE_MAX_LINES_PER_FILE = 2000;
 const INLINE_MAX_TOTAL_BYTES = 60 * 1024;

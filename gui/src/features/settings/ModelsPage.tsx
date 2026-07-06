@@ -45,6 +45,16 @@ export function ModelsPage({
     return [...byProvider.entries()].sort(([a], [b]) => label(a).localeCompare(label(b)));
   }, [modelOptions, query, providerNames]);
 
+  // Subtitle = optional model id + input modality ("文本" / "文本 图片").
+  function modelSubtitle(model: AgentModelOption) {
+    const modality = [
+      t("models.modality.text"),
+      model.supportsImages ? t("models.modality.image") : null,
+    ].filter(Boolean).join(" ");
+    const id = model.label === model.id ? null : model.id;
+    return id ? `${id} · ${modality}` : modality;
+  }
+
   function setVisibility(model: AgentModelOption, visible: boolean) {
     const key = modelKey(model);
     if (visible) {
@@ -74,9 +84,10 @@ export function ModelsPage({
               <SettingsRow
                 key={modelKey(model)}
                 title={model.label}
-                // Subtitle is the raw model id — omitted when the label already
-                // is the id, so it isn't shown twice.
-                description={model.label === model.id ? undefined : model.id}
+                // Subtitle: raw model id (dropped when it equals the label so it
+                // isn't shown twice) followed by the input modality, e.g.
+                // "文本" or "文本 图片".
+                description={modelSubtitle(model)}
               >
                 <Switch
                   checked={!hidden.has(modelKey(model))}

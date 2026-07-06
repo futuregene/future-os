@@ -153,7 +153,7 @@ export function CustomProviderDialog({
 
     // Models.
     const cleanedModels = models
-      .map(model => ({ id: model.id.trim(), name: model.name.trim() }))
+      .map(model => ({ id: model.id.trim(), name: model.name.trim(), supportsImages: model.supportsImages }))
       .filter(model => model.id.length > 0);
     const seenModelIds = new Set<string>();
     for (const model of cleanedModels) {
@@ -252,7 +252,7 @@ export function CustomProviderDialog({
             <span className="text-sm font-medium text-ink">{t("customProvider.modelsHeading")}</span>
             <button
               className="text-xs font-medium text-accent transition-colors hover:underline"
-              onClick={() => setModels(current => [...current, { id: "", key: crypto.randomUUID(), name: "" }])}
+              onClick={() => setModels(current => [...current, { id: "", key: crypto.randomUUID(), name: "", supportsImages: false }])}
               type="button"
             >
               {t("customProvider.addModel")}
@@ -263,23 +263,41 @@ export function CustomProviderDialog({
             : (
                 <div className="space-y-2">
                   {models.map((model, index) => (
-                    <div className="flex items-center gap-2" key={model.key}>
-                      <TextInput
-                        onChange={event => updateModel(index, { id: event.target.value })}
-                        placeholder={t("customProvider.modelIdPlaceholder")}
-                        value={model.id}
-                      />
-                      <TextInput
-                        onChange={event => updateModel(index, { name: event.target.value })}
-                        placeholder={t("customProvider.modelNamePlaceholder")}
-                        value={model.name}
-                      />
-                      <IconButton
-                        className="shrink-0 hover:text-danger"
-                        icon={<Trash2 className="size-4" />}
-                        label={t("customProvider.removeModel")}
-                        onClick={() => setModels(current => current.filter((_, modelIndex) => modelIndex !== index))}
-                      />
+                    <div className="space-y-2 rounded-md border border-line-soft p-2" key={model.key}>
+                      <div className="flex items-center gap-2">
+                        <TextInput
+                          onChange={event => updateModel(index, { id: event.target.value })}
+                          placeholder={t("customProvider.modelIdPlaceholder")}
+                          value={model.id}
+                        />
+                        <TextInput
+                          onChange={event => updateModel(index, { name: event.target.value })}
+                          placeholder={t("customProvider.modelNamePlaceholder")}
+                          value={model.name}
+                        />
+                        <IconButton
+                          className="shrink-0 hover:text-danger"
+                          icon={<Trash2 className="size-4" />}
+                          label={t("customProvider.removeModel")}
+                          onClick={() => setModels(current => current.filter((_, modelIndex) => modelIndex !== index))}
+                        />
+                      </div>
+                      <div className="flex items-center gap-4 pl-0.5">
+                        <span className="text-xs text-ink-muted">{t("customProvider.modalityLabel")}</span>
+                        <label className="flex cursor-not-allowed items-center gap-1.5 text-xs text-ink-soft">
+                          <input checked className="size-3.5 accent-accent" disabled type="checkbox" />
+                          {t("customProvider.modalityText")}
+                        </label>
+                        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-ink">
+                          <input
+                            checked={model.supportsImages}
+                            className="size-3.5 accent-accent"
+                            onChange={event => updateModel(index, { supportsImages: event.target.checked })}
+                            type="checkbox"
+                          />
+                          {t("customProvider.modalityImage")}
+                        </label>
+                      </div>
                     </div>
                   ))}
                 </div>

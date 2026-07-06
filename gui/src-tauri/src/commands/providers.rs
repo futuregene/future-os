@@ -22,6 +22,13 @@ pub fn update_builtin_provider_key(
 }
 
 #[tauri::command]
+pub fn set_builtin_provider_base_url(
+    input: agent_providers::SetBuiltinProviderBaseUrlInput,
+) -> Result<agent_providers::ProvidersView, crate::AppError> {
+    agent_providers::set_builtin_provider_base_url(input)
+}
+
+#[tauri::command]
 pub fn delete_custom_provider(
     id: String,
 ) -> Result<agent_providers::ProvidersView, crate::AppError> {
