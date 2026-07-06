@@ -10,7 +10,7 @@ Go to the **[Releases page](https://github.com/futuregene/future-os/releases)** 
 |---|---|
 | **macOS** | the `.dmg` disk image |
 | **Windows** | the installer (`.exe` / `.msi`), or the portable `.zip` |
-| **Linux** | the `.AppImage` or `.deb` package |
+| **Linux** | the `.deb` package (Debian/Ubuntu), or the portable `.tar.gz` |
 
 Always grab the newest release — that's how you get updates.
 
@@ -41,12 +41,8 @@ The current builds are not yet signed/notarized, so your system may warn you the
 
 ### Linux
 
-- **AppImage:** make it executable and run it:
-  ```
-  chmod +x FutureOS*.AppImage
-  ./FutureOS*.AppImage
-  ```
 - **.deb:** install it with your package manager (e.g. `sudo apt install ./FutureOS*.deb`) and launch FutureOS from your applications menu.
+- **Portable `.tar.gz`:** extract anywhere and run the `futureos` binary — no install needed. Keep `futureos`, `future-agent`, and `future-cli` together in the same folder.
 
 ## 3. Sign in
 
@@ -67,7 +63,7 @@ To update, download the latest release and install it over the old version (on W
 
 - **macOS:** delete `FutureOS.app` from Applications.
 - **Windows:** uninstall from Settings (installer), or just delete the folder (portable).
-- **Linux:** remove the AppImage, or uninstall the `.deb` package.
+- **Linux:** uninstall the `.deb` package (e.g. `sudo apt remove futureos`), or delete the portable folder.
 
 To erase your data too, also delete the `.future` folder above.
 

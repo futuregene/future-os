@@ -45,7 +45,7 @@ Download the latest version from the **[Releases page](https://github.com/future
 
 ## How do I uninstall / remove my data?
 
-Remove the app (delete `FutureOS.app`, uninstall from Windows Settings, or remove the AppImage/`.deb`). To also erase your data, delete the `.future` folder above. See [[Installation]].
+Remove the app (delete `FutureOS.app`, uninstall from Windows Settings, or remove the `.deb`). To also erase your data, delete the `.future` folder above. See [[Installation]].
 
 ## What platforms are supported?
 
