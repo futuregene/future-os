@@ -407,7 +407,13 @@ function SkillRow({
         {description
           ? <p className="mt-1 line-clamp-2 text-xs leading-5 text-ink-muted">{description}</p>
           : null}
-        {meta ? <p className="mt-1 truncate text-xs text-ink-muted">{meta}</p> : null}
+        {meta
+          ? (
+              <div className="mt-2">
+                <Badge tone="info">{meta}</Badge>
+              </div>
+            )
+          : null}
       </div>
       <div className="shrink-0">{action}</div>
     </div>
