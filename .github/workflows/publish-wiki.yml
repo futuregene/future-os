@@ -1,15 +1,15 @@
 name: Publish Docs
 
-# Publish docs/wiki/ to Aliyun OSS (docs/ prefix). Manual trigger only — run it
-# from the Actions tab ("Run workflow") or with `gh workflow run publish-wiki.yml`.
+# Publish the Chinese wiki (docs/wiki/zh/) to Aliyun OSS (docs/ prefix). Manual
+# trigger only — run it from the Actions tab ("Run workflow") or with
+# `gh workflow run publish-wiki.yml`.
 #
-# The GitHub wiki path is disabled for now (Wikis feature not enabled on the
-# repo). The wiki-sync step is kept below, commented out, so it can be restored
-# once an admin turns Wikis on (Settings → Features → Wikis). See
-# docs/WIKI-MAINTENANCE.md.
+# Only the Chinese pages are published; the English pages under docs/wiki/en/
+# are not pushed to OSS.
 #
-# OSS publish is a full replace: the docs/ prefix is deleted first, then the
-# current docs/wiki/*.md is uploaded — so removed pages don't linger.
+# OSS publish is a full replace: `sync --delete` uploads the current zh/*.md and
+# removes any object under docs/ that no longer exists locally — so removed
+# pages don't linger.
 
 on:
   workflow_dispatch:
@@ -35,29 +35,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ─── GitHub wiki sync (disabled until Wikis is enabled) ────────────────
-      # - name: Sync docs/wiki to the GitHub wiki
-      #   env:
-      #     # GITHUB_TOKEN can push to the repo's own wiki. If your org restricts
-      #     # that, create a PAT with repo scope and store it as the WIKI_TOKEN
-      #     # secret — it is used automatically when present.
-      #     WIKI_REMOTE: https://x-access-token:${{ secrets.WIKI_TOKEN || secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git
-      #     GIT_AUTHOR_NAME: 'github-actions[bot]'
-      #     GIT_AUTHOR_EMAIL: '41898282+github-actions[bot]@users.noreply.github.com'
-      #   run: bash scripts/publish-wiki.sh
-
-      # ─── Publish docs to Aliyun OSS ────────────────────────────────────────
+      # ─── Publish the Chinese wiki to Aliyun OSS ────────────────────────────
       # ossutil v2 is fetched directly from Aliyun's public CDN (no third-party
       # action). Auth is entirely via the OSS_* env vars set at the job level.
       - name: Setup ossutil
         run: bash scripts/setup-ossutil.sh
 
-      # Full replace via `sync --delete`: uploads/updates the current pages and
-      # removes any object under docs/ that no longer exists locally — in one
-      # pass, with no window where docs/ is empty.
-      - name: Publish docs/wiki to OSS
+      # Full replace via `sync --delete`: uploads/updates the current Chinese
+      # pages and removes any object under docs/ that no longer exists locally —
+      # in one pass, with no window where docs/ is empty.
+      - name: Publish docs/wiki/zh to OSS
         run: |
           set -euo pipefail
-          echo "==> Syncing docs/wiki/ → docs/ (with --delete)"
-          ossutil sync docs/wiki/ "oss://$OSS_BUCKET/docs/" --delete -f
+          echo "==> Syncing docs/wiki/zh/ → docs/ (with --delete)"
+          ossutil sync docs/wiki/zh/ "oss://$OSS_BUCKET/docs/" --delete -f
           echo "==> Done."
