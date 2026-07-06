@@ -200,6 +200,22 @@ else
   echo "Agent log: $AGENT_LOG"
 fi
 
+# Tauri validates bundle.externalBin sidecars (future-agent, future-cli) at
+# COMPILE time — even for `tauri dev`. This script runs the agent as a standalone
+# process and the GUI connects to it, so the bundled sidecars are never launched
+# here; they only need to exist. Create empty placeholders for any that are
+# missing (CI and the packaging scripts stage the real binaries).
+TRIPLE="$(rustc -Vv | sed -n 's/^host: //p')"
+BIN_DIR="$GUI_DIR/src-tauri/binaries"
+mkdir -p "$BIN_DIR"
+for name in future-agent future-cli; do
+  sidecar="$BIN_DIR/$name-$TRIPLE"
+  if [[ ! -f "$sidecar" ]]; then
+    : >"$sidecar"
+    chmod +x "$sidecar"
+  fi
+done
+
 echo "Starting GUI..."
 echo "Press Ctrl-C here to stop the GUI and the agent started by this script."
 
