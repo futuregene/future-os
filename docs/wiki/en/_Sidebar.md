@@ -1,5 +1,4 @@
 ### FutureOS
-
 - [[Home]]
 
 **Getting started**
@@ -12,8 +11,7 @@
 - [[Skills]]
 
 **Command line (advanced)**
-- [[CLI (future)|CLI]]
-- [[Terminal UI (future-tui)|TUI]]
+- [[CLI (future-cli)|CLI]]
 
 **Help**
 - [[FAQ]]
