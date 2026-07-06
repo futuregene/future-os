@@ -81,10 +81,9 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     description: "Search the web. Returns titles, links, and snippets.",
     args: {
       query: "string (required)",
-      count: "integer (default: 10, max: 20)",
-      offset: "integer (default: 0)",
+      count: "integer (default: 10, max: 50)",
     },
-    example: '{"query": "BRCA1 variant classification guidelines 2025", "count": 5, "offset": 0}',
+    example: '{"query": "BRCA1 variant classification guidelines 2025", "count": 5}',
   },
   fetch_url: {
     description: "Fetch and extract content from a web page URL. Returns page title and compact content.",
