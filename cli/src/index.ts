@@ -85,7 +85,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (group === "docker") {
+  if (group === "doctor") {
     const restArgs = args.slice(1);
     const fix = restArgs.includes("--fix");
     await docker(fix);
