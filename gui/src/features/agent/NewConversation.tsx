@@ -453,7 +453,9 @@ function WorkspaceModal({
 }
 
 function lastPathSegment(path: string) {
-  const parts = path.split("/").filter(Boolean);
+  // Split on both separators so Windows paths (C:\Users\project) work too,
+  // mirroring fileNameFromPath in attachments.ts.
+  const parts = path.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? "Workspace";
 }
 
