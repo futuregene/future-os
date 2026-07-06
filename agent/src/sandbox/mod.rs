@@ -14,6 +14,8 @@
 pub mod paths;
 pub mod rules;
 mod seatbelt;
+#[cfg(windows)]
+pub mod windows;
 mod windows_plan;
 
 use std::path::{Path, PathBuf};
