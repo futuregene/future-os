@@ -235,7 +235,7 @@ export function Composer({
       return;
 
     const selected = await open({
-      filters: [{ extensions: pickerExtensions(allowImages), name: t("composer.attachDialogFilter") }],
+      filters: [{ extensions: pickerExtensions(allowImages), name: allowImages ? t("composer.attachDialogFilter") : t("composer.attachDialogFilterNoImage") }],
       multiple: true,
       title: t("composer.attachDialogTitle"),
     });
@@ -382,7 +382,7 @@ export function Composer({
             onClick={() => void handleAttachFiles()}
             type="button"
             aria-label={t("composer.attachFiles")}
-            title={attachments.length >= MAX_ATTACHMENTS_PER_TURN ? t("composer.attachLimitReached") : t("composer.attachFilesHint")}
+            title={attachments.length >= MAX_ATTACHMENTS_PER_TURN ? t("composer.attachLimitReached") : allowImages ? t("composer.attachFilesHint") : t("composer.attachFilesHintNoImage")}
           >
             <Paperclip className="size-3.5" />
           </button>

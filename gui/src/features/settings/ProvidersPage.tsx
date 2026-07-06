@@ -10,6 +10,7 @@ import {
   deleteCustomProvider,
   listAgentProviders,
   logoutFutureProvider,
+  setBuiltinProviderBaseUrl,
   updateBuiltinProviderKey,
   upsertCustomProvider,
 } from "../../integrations/agent/providers";
@@ -17,6 +18,9 @@ import { useAsyncResource } from "../../lib/useAsyncResource";
 import { CustomProviderDialog } from "./CustomProviderDialog";
 import { FutureLoginDialog } from "./FutureLoginDialog";
 import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
+
+/** Marker left in a catalog base URL that the user must replace (Azure et al.). */
+const BASE_URL_PLACEHOLDER = "YOUR_RESOURCE";
 
 const DEFAULT_BUILTIN_PROVIDER_IDS = [
   "future",
@@ -77,11 +81,28 @@ export function ProvidersPage({
     onProvidersChanged?.();
   }
 
-  async function handleBuiltinKey(provider: BuiltinProvider, apiKey: string | null) {
-    const view = await updateBuiltinProviderKey({ apiKey, id: provider.id });
-    setProviders(view);
+  async function handleBuiltinSubmit(
+    provider: BuiltinProvider,
+    payload: { apiKey?: string | null; baseUrl?: string },
+  ) {
+    // Base URL first, then key; each returns the fresh view, so keep the last.
+    let view = null;
+    if (payload.baseUrl !== undefined) {
+      view = await setBuiltinProviderBaseUrl({ baseUrl: payload.baseUrl, id: provider.id });
+    }
+    if (payload.apiKey !== undefined) {
+      view = await updateBuiltinProviderKey({ apiKey: payload.apiKey, id: provider.id });
+    }
+    if (view) {
+      setProviders(view);
+    }
     setEditingBuiltinKey(null);
-    setHint(apiKey ? t("providers.keySaved", { provider: provider.name }) : t("providers.keyCleared", { provider: provider.name }));
+    const cleared = payload.apiKey === null;
+    setHint(
+      cleared
+        ? t("providers.keyCleared", { provider: provider.name })
+        : t("providers.keySaved", { provider: provider.name }),
+    );
     onProvidersChanged?.();
   }
 
@@ -174,7 +195,7 @@ export function ProvidersPage({
                         size="sm"
                         variant="secondary"
                       >
-                        {provider.hasApiKey ? t("providers.updateKey") : t("providers.setKey")}
+                        {t("providers.set")}
                       </Button>
                     </div>
                   )}
@@ -284,7 +305,7 @@ export function ProvidersPage({
 
       <BuiltinProviderKeyDialog
         onClose={() => setEditingBuiltinKey(null)}
-        onSubmit={apiKey => editingBuiltinKey ? handleBuiltinKey(editingBuiltinKey, apiKey) : Promise.resolve()}
+        onSubmit={payload => editingBuiltinKey ? handleBuiltinSubmit(editingBuiltinKey, payload) : Promise.resolve()}
         open={Boolean(editingBuiltinKey)}
         provider={editingBuiltinKey}
       />
@@ -299,12 +320,14 @@ function BuiltinProviderKeyDialog({
   provider,
 }: {
   onClose: () => void;
-  onSubmit: (apiKey: string | null) => Promise<void>;
+  onSubmit: (payload: { apiKey?: string | null; baseUrl?: string }) => Promise<void>;
   open: boolean;
   provider: BuiltinProvider | null;
 }) {
   const { t } = useTranslation("settings");
+  const requiresBaseUrl = Boolean(provider?.requiresBaseUrl);
   const [apiKey, setApiKey] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -313,25 +336,49 @@ function BuiltinProviderKeyDialog({
       return;
     }
     setApiKey("");
+    // Prefill the current override, but not the unfilled placeholder.
+    const current = provider?.baseUrl ?? "";
+    setBaseUrl(current.includes(BASE_URL_PLACEHOLDER) ? "" : current);
     setError(null);
     setSaving(false);
-  }, [open, provider?.id]);
+  }, [open, provider?.id, provider?.baseUrl]);
 
-  async function submit(nextKey: string | null) {
-    const trimmed = nextKey?.trim() ?? null;
-    if (nextKey !== null && !trimmed) {
-      setError(t("providers.keyRequired"));
-      return;
-    }
+  async function run(payload: { apiKey?: string | null; baseUrl?: string }) {
     setSaving(true);
     setError(null);
     try {
-      await onSubmit(trimmed);
+      await onSubmit(payload);
     }
     catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : String(submitError));
       setSaving(false);
     }
+  }
+
+  function save() {
+    const trimmedKey = apiKey.trim();
+    const trimmedBaseUrl = baseUrl.trim();
+    const payload: { apiKey?: string | null; baseUrl?: string } = {};
+
+    if (requiresBaseUrl) {
+      if (!trimmedBaseUrl) {
+        setError(t("providers.baseUrlRequired"));
+        return;
+      }
+      payload.baseUrl = trimmedBaseUrl;
+      // Key is optional here — only touch it when the user typed one.
+      if (trimmedKey) {
+        payload.apiKey = trimmedKey;
+      }
+    }
+    else {
+      if (!trimmedKey) {
+        setError(t("providers.keyRequired"));
+        return;
+      }
+      payload.apiKey = trimmedKey;
+    }
+    void run(payload);
   }
 
   return (
@@ -340,29 +387,41 @@ function BuiltinProviderKeyDialog({
       onClose={onClose}
       open={open}
       title={t("providers.keyDialogTitle", { provider: provider?.name ?? "" })}
-      description={t("providers.keyDialogDescription")}
+      description={requiresBaseUrl ? t("providers.baseUrlDialogDescription") : t("providers.keyDialogDescription")}
       footer={(
         <>
           {provider?.hasApiKey
             ? (
-                <Button disabled={saving} onClick={() => void submit(null)} variant="secondary">
+                <Button disabled={saving} onClick={() => void run({ apiKey: null })} variant="secondary">
                   {t("providers.clearKey")}
                 </Button>
               )
             : null}
           <Button onClick={onClose} variant="secondary">{t("providers.cancel")}</Button>
-          <Button disabled={saving} onClick={() => void submit(apiKey)} variant="primary">
+          <Button disabled={saving} onClick={save} variant="primary">
             {saving ? t("providers.savingKey") : t("providers.saveKey")}
           </Button>
         </>
       )}
     >
       <div className="space-y-3">
-        <Field label={t("customProvider.apiKeyLabel")}>
+        {requiresBaseUrl
+          ? (
+              <Field label={t("providers.baseUrlLabel")}>
+                <TextInput
+                  autoFocus
+                  onChange={event => setBaseUrl(event.target.value)}
+                  placeholder={provider?.baseUrl}
+                  value={baseUrl}
+                />
+              </Field>
+            )
+          : null}
+        <Field label={requiresBaseUrl ? t("providers.apiKeyOptionalLabel") : t("customProvider.apiKeyLabel")}>
           <TextInput
-            autoFocus
+            autoFocus={!requiresBaseUrl}
             onChange={event => setApiKey(event.target.value)}
-            placeholder={t("customProvider.apiKeyPlaceholder")}
+            placeholder={requiresBaseUrl && provider?.hasApiKey ? t("providers.apiKeyKeepPlaceholder") : t("customProvider.apiKeyPlaceholder")}
             type="password"
             value={apiKey}
           />

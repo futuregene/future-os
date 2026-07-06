@@ -87,8 +87,6 @@
     "hideMoreBuiltin": "Hide providers",
     "modelsCount_one": "{{baseUrl}} · {{count}} model",
     "modelsCount_other": "{{baseUrl}} · {{count}} models",
-    "setKey": "Set key",
-    "updateKey": "Update key",
     "keyDialogTitle": "Set {{provider}} key",
     "keyDialogDescription": "The key is saved to the Agent's shared auth.json.",
     "keyRequired": "Please enter an API Key.",
@@ -97,7 +95,13 @@
     "clearKey": "Clear key",
     "keySaved": "Saved {{provider}} key. It takes effect for new sessions.",
     "keyCleared": "Cleared {{provider}} key.",
-    "connected": "Connected to FutureGene. It takes effect for new sessions; if it doesn't, run future-cli agent restart."
+    "connected": "Connected to FutureGene. It takes effect for new sessions; if it doesn't, run future-cli agent restart.",
+    "baseUrlLabel": "Base URL",
+    "baseUrlRequired": "Please enter a Base URL.",
+    "baseUrlDialogDescription": "This provider's Base URL is a placeholder — replace it with your own (e.g. your Azure resource name).",
+    "apiKeyOptionalLabel": "API Key (optional)",
+    "apiKeyKeepPlaceholder": "Leave blank to keep unchanged",
+    "set": "Set"
   },
   "customProvider": {
     "editTitle": "Edit custom provider",
