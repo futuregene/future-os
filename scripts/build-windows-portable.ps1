@@ -8,7 +8,7 @@
       1. build the agent (release) and stage it as the Tauri sidecar,
       2. compile the CLI into a standalone .exe (bun --compile),
       3. build the GUI with Tauri (--no-bundle: just the .exe, no installer),
-      4. assemble FutureOS.exe + future-agent.exe + future-cli.exe + 使用说明.txt
+      4. assemble FutureOS.exe + future-agent.exe + future-cli.exe + Readme.txt
          into FutureOS-portable-windows.zip.
 
     The resulting app needs the Microsoft Edge WebView2 runtime (ships with
@@ -121,7 +121,7 @@ New-Item -ItemType Directory -Force -Path $stage | Out-Null
 Copy-Item "gui/src-tauri/target/release/futureos.exe"       (Join-Path $stage "FutureOS.exe")     -Force
 Copy-Item "gui/src-tauri/binaries/future-agent-$triple.exe" (Join-Path $stage "future-agent.exe") -Force
 Copy-Item "cli/dist/future-cli.exe"                         (Join-Path $stage "future-cli.exe")   -Force
-Copy-Item "docs/dist/windows-portable-README.txt"           (Join-Path $stage "使用说明.txt")     -Force
+Copy-Item "docs/dist/readme-windows.txt"                    (Join-Path $stage "Readme.txt")       -Force
 
 if (-not $OutDir) { $OutDir = $Root }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
@@ -132,5 +132,5 @@ Remove-Item -Recurse -Force $stage
 
 Write-Host ""
 Write-Host "Done: $zip" -ForegroundColor Green
-Write-Host "  Contents: FutureOS.exe, future-agent.exe, future-cli.exe, 使用说明.txt"
+Write-Host "  Contents: FutureOS.exe, future-agent.exe, future-cli.exe, Readme.txt"
 Write-Host "  Requires the Microsoft Edge WebView2 runtime (bundled with Windows 10/11)."
