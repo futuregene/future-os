@@ -184,7 +184,9 @@ v2 决策（V1–V9）见 APPROVAL_PLAN §9。v1 期间沿用有效的：escalat
 
 ## 11. Windows 原生沙盒（unelevated：restricted token + ACL）
 
-状态：**方案已定（2026-07-05）**，待实现。目标是把 Windows 的 bash 从 §7 的"降级裸跑"升到与 macOS Seatbelt 同级的"**读松写紧 + 密钥拒读**"OS 强制。规则引擎（`rules::RuleSet`）、escalation 架构、审批 UI 全部复用——本节只描述 Windows 的**强制后端**，对标 §2（Seatbelt）。
+状态：**W1a 已实现（2026-07-06）**，W1b（Win32 执行器）待 Windows CI。目标是给 **`Sandbox` 档**（`SandboxTier::Sandbox`）提供 Windows 的 OS 强制后端，把 bash 从"**读松写紧 + 密钥拒读**"落到 OS 层。规则引擎（`rules::RuleSet`）、escalation 架构、审批 UI 全部复用——本节只描述 Windows 的**强制后端**，对标 §2（Seatbelt）。
+
+> **与三档模型的关系**（`SandboxTier`：`Off` / `Manual` / `Sandbox`）：Windows 默认仍是 `Manual`（bash 前置审批 + read-only allowlist 免问，见 §6/approval.rs）；本方案实现的是 `Sandbox` 档在 Windows 上的强制,让 `platform_sandbox_available()` 在 Windows 返回 true、`wraps_bash()` 成立 → bash 改走 OS 包裹 + escalation（不再前置审批）。GUI 需在 Windows 暴露 `Sandbox` 档选项（现被隐藏）作为配套。
 
 ### 11.1 选型：为什么是 unelevated
 
@@ -228,6 +230,7 @@ v2 决策（V1–V9）见 APPROVAL_PLAN §9。v1 期间沿用有效的：escalat
 2. **精简 #2 预置读授权**：用户目录配置多按**所有者本人**授权、`Users` 盖不到（`~/.gitconfig`/`.config`、`~/.npmrc`、`~/.cargo`、`~/.rustup`、常用 `%APPDATA%` 工具目录）→ 只给这一小撮预置沙盒 SID 读 ACE，首跑不炸；系统/Program Files 靠 #1 免预置。
 3. **#3 密钥 deny ACE**：读放开的同时对密钥集显式 deny（§11.2）——**这是 unelevated 比 Low-IL 强的点：读默认开 + 精确拦密钥**，正好复刻引擎语义，直接补上 §7 里"bash 能读 `~/.ssh`"那个缺口。
    - 白赚项：owner-ACL 的用户密钥本就不授 `Users`，即使不加 deny 也读不到；deny ACE 是对"落进 workspace / 被 #2 放宽目录里的密钥"的兜底。
+   - **⚠️ NTFS 表达力限制（W1a 已量化）：ACE 只能挂在子树/字面路径上，无法表达 glob。** 内置密钥里 `~/.ssh`/`~/.aws`/`~/.npmrc`/keychains 等 home 项、凭证文件、规则文件、以及**字面量 `.env`** 都是子树/字面 → **可 ACE 强制**；但 workspace 内的 `**/*.pem`/`**/*.key`/`**/*.p12`/`**/id_rsa*`/`.env.*` 是 glob → **bash 层拦不住**（`windows_plan` 里计入 `skipped_globs`，工具层仍拦 read/write/edit）。即：**跨用户凭证外泄向量全覆盖，唯一缺口是"workspace 内证书/密钥 glob 经 bash 读取"**——知情接受,工具层兜非 bash 访问。
 4. **#4 漏读兜底**：真·长尾漏读 → 弹一次审批"本工作区允许读该目录"（对标 Codex `/sandbox-add-read-dir`），批准落成规则。read 兜底不如 write escalation 可靠（发生在命令中途、`Access is denied` 太泛、归因难、要整命令重跑），故只当长尾，不作主力——主力是 #1+#2。
 
 ### 11.4 escalation / 工具层（复用）
@@ -246,6 +249,8 @@ v2 决策（V1–V9）见 APPROVAL_PLAN §9。v1 期间沿用有效的：escalat
 
 ### 11.6 已知取舍 / 缺口（知情接受）
 
+- **glob 密钥缺口**（§11.3 ⚠️）：workspace 内 `*.pem`/`*.key` 等 glob 密钥 bash 读不拦，工具层兜底。
+- **NTFS 恒 deny-wins**：`windows_plan` 把 deny 路径与可写子树分开收集，deny ACE 永远赢——无法表达"高优先级 allow 盖低优先级 deny"（SBPL 靠 last-match 可以）。极少数该场景会**偏严**（多一次 escalation），不造成安全洞，errs safe。
 - **有状态**：写授权与密钥 deny 靠在真实路径上增删 ACE，非 macOS 的纯 per-exec 无状态。需 **RAII guard** 在命令结束/崩溃时回滚；每会话独立 temp 目录；并发命令对同一 workspace 的 ACE 变更要串行或幂等。
 - **世界可写目录洞**：#1 放 `Users` 的代价，靠启动扫描 + 警告暴露，不自动改用户目录权限。
 - **网络不拦**：同 v2，外传不在本方案射程内（防泄露靠"密钥读不到"这一端）。
@@ -254,7 +259,9 @@ v2 决策（V1–V9）见 APPROVAL_PLAN §9。v1 期间沿用有效的：escalat
 
 ### 11.7 实施阶段
 
-**Phase W1 — 核心强制**：`windows.rs`（受限令牌 = {Users, RESTRICTED} + 沙盒 SID 写 ACE 贴 workspace/temp/放行路径 + 密钥 deny ACE + Job kill + RAII ACE 回滚 + 每会话 temp）；`platform_sandbox_available`/`build_bash_command`/`looks_like_sandbox_denial` 三处 cfg 分支；精简 #2 预置读根;单测 + smoke（写 workspace 通过、写外部被拒、`.env`/`~/.ssh` 读被拒、规则文件写被拒、git/python 不碎、escalation 触发）。
+**Phase W1a — 平台无关核心 — ✅ 已完成（2026-07-06）**：`sandbox/windows_plan.rs`——从 `RuleSet` 纯推导 `WindowsSandboxPlan`（可写子树 = workspace + temp + allow-write 子树规则；deny_read/deny_write = ask/deny 的子树/字面规则；glob 计入 `skipped_globs`）。**mac 可测**（4 单测：workspace/temp 可写、规则文件 deny-write 非 deny-read、`~/.ssh` 子树 deny、字面 `.env` 强制而 glob 密钥 skip）。`cargo test/fmt/clippy` 全绿。**因 mac 无法编译 windows-sys，FFI 执行器不盲写。**
+
+**Phase W1b — Win32 执行器（需 Windows CI）**：`sandbox/windows.rs`（`#[cfg(windows)]`）消费 `WindowsSandboxPlan`：受限令牌 = {Users, RESTRICTED} + 沙盒 SID 写 ACE 贴 plan.writable + deny ACE 贴 plan.deny_read/deny_write + Job kill + RAII ACE 回滚 + 每会话 temp；`Cargo.toml` 加 `[target.'cfg(windows)'.dependencies] windows-sys`；`platform_sandbox_available`（Windows→true）/`build_bash_command`（`#[cfg(windows)]` 分支）/`looks_like_sandbox_denial`（+`Access is denied`/error 5）三处 cfg 分支;精简 #2 预置读根;GUI 暴露 Windows `Sandbox` 档;Windows smoke（写 workspace 通过、写外部被拒、`.env`/`~/.ssh` 读被拒、规则文件写被拒、git/python 不碎、escalation 触发）。
 
 **Phase W2 — 打磨（可选）**：#4 漏读兜底的审批 UX（`add-read-dir` 等价）；世界可写目录扫描警告；GUI 降级/启用提示按平台区分。
 
