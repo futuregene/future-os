@@ -351,6 +351,9 @@ pub fn builtin_guards(workspace: &Path, home: Option<&Path>) -> Vec<PathRule> {
 
 /// Canonicalized temp roots ($TMPDIR + /tmp).
 pub fn temp_roots() -> Vec<PathBuf> {
+    // `mut` is only exercised by the `#[cfg(unix)]` push below; on Windows that
+    // block is compiled out, so silence the otherwise-unused `mut` there.
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut roots = vec![paths::canonicalize_lenient(&std::env::temp_dir())];
     #[cfg(unix)]
     {
