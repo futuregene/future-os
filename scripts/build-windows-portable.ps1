@@ -100,6 +100,10 @@ try {
     Invoke-Native { bun build --compile dist/index.js --outfile dist/future-cli.exe --external chromium-bidi }
 }
 finally { Pop-Location }
+# Stage the CLI as a Tauri sidecar (bundle.externalBin), same as the agent, so a
+# full `tauri build` would bundle it into the installer. (This portable build
+# copies from cli/dist directly below, but keep the staging consistent with CI.)
+Copy-Item "cli/dist/future-cli.exe" "gui/src-tauri/binaries/future-cli-$triple.exe" -Force
 
 Write-Host "==> Building GUI (Tauri, no installer)" -ForegroundColor Cyan
 # --no-bundle: compile the frontend + release .exe but skip NSIS/MSI packaging.
