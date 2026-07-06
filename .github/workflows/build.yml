@@ -183,6 +183,11 @@ jobs:
         run: |
           npm run build
           bun build --compile dist/index.js --outfile dist/future-cli --external chromium-bidi
+          # Stage it as a Tauri sidecar too (bundle.externalBin) so the CLI ships
+          # inside the installers, not just the portable packages.
+          triple=$(rustc -Vv | sed -n 's/^host: //p')
+          mkdir -p ../gui/src-tauri/binaries
+          cp dist/future-cli "../gui/src-tauri/binaries/future-cli-$triple"
 
       - name: Build CLI binary (Windows)
         if: runner.os == 'Windows'
@@ -191,6 +196,11 @@ jobs:
         run: |
           npm run build
           bun build --compile dist/index.js --outfile dist/future-cli.exe --external chromium-bidi
+          # Stage it as a Tauri sidecar too (bundle.externalBin) so the CLI ships
+          # inside the msi/nsis installers, not just the portable zip.
+          $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
+          New-Item -ItemType Directory -Force -Path ../gui/src-tauri/binaries | Out-Null
+          Copy-Item "dist/future-cli.exe" "../gui/src-tauri/binaries/future-cli-$triple.exe"
 
       # Pin the Tauri installer version to the plain semver core (MSI/NSIS reject
       # SemVer suffixes). The display version keeps the full FUTURE_VERSION.
@@ -201,11 +211,12 @@ jobs:
         working-directory: gui
         run: npm run tauri:build
 
-      # macOS: co-locate the agent (already a sidecar) and CLI inside the
-      # .app's Contents/MacOS, and ship first-launch (Gatekeeper) instructions in
-      # the dmg — the .app is unsigned/un-notarized. Tauri's dmg is read-only, so
-      # round-trip it through a read-write image to inject everything.
-      - name: Bundle agent & CLI into macOS .app (inside dmg)
+      # macOS: agent + CLI are now Tauri sidecars (bundle.externalBin), so both
+      # already sit in the .app's Contents/MacOS, signed by Tauri. We only need
+      # to drop the first-launch (Gatekeeper) note into the dmg — the .app is
+      # unsigned/un-notarized. Tauri's dmg is read-only, so round-trip it through
+      # a read-write image, add the note, and re-seal the .app ad-hoc.
+      - name: Inject first-launch note into macOS dmg
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
@@ -218,12 +229,7 @@ jobs:
           mkdir -p "$mnt"
           hdiutil attach "$work" -mountpoint "$mnt" -nobrowse -noverify
           app=$(ls -d "$mnt"/*.app | head -n1)
-          macos_dir="$app/Contents/MacOS"
-          cp "cli/dist/future-cli" "$macos_dir/future-cli"
-          chmod +x "$macos_dir/future-cli"
           cp "docs/dist/macos-first-launch.txt" "$mnt/请先阅读-如何打开.txt"
-          # Ad-hoc sign the injected binary first, then re-seal the bundle.
-          codesign --force --sign - "$macos_dir/future-cli"
           codesign --force --sign - "$app"
           hdiutil detach "$mnt"
           hdiutil convert "$work" -format UDZO -o "$out"
