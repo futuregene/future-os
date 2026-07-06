@@ -31,7 +31,7 @@ export async function docker(fix: boolean): Promise<void> {
   }
 
   if (!fix) {
-    console.log(`\n${issues.length} issue(s) found. Run \`future docker --fix\` to repair.`);
+    console.log(`\n${issues.length} issue(s) found. Run \`future doctor --fix\` to repair.`);
     return;
   }
 
