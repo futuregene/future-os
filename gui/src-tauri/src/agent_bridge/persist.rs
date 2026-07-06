@@ -177,7 +177,7 @@ fn persist_tool_start(run_id: &str, value: &serde_json::Value, sequence: i64) {
     }
 
     // Review changesets are no longer guessed from write/edit tool-start events
-    // (a `bash` call could bypass them). "上一轮变更" now comes from real
+    // (a `bash` call could bypass them). "Previous turn changes" now come from real
     // before/after shadow snapshots — see agent_bridge/review.rs (§14.3).
 }
 

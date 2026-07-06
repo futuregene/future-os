@@ -25,7 +25,7 @@ mod generated_model_catalog;
 const DEFAULT_FUTURE_PLATFORM_URL: &str = "https://future-os.cn";
 const FUTURE_PROVIDER_NAME: &str = "FutureGene";
 
-// Field-validation limits for custom providers (see PLAN.md「自定义 Provider 字段校验」).
+// Field-validation limits for custom providers (see PLAN.md custom provider field validation).
 const PROVIDER_ID_MIN_LEN: usize = 2;
 const PROVIDER_ID_MAX_LEN: usize = 40;
 const PROVIDER_NAME_MAX_LEN: usize = 40;
@@ -113,7 +113,7 @@ struct CatalogProviderSummary {
 pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
     let models = read_json(&models_json_path()?);
     // Display path: a corrupt auth.json shouldn't blank the providers list, so
-    // fall back to empty (key badges show "未配置"); write paths stay strict.
+    // fall back to empty (key badges show "Not Configured"); write paths stay strict.
     let auth = Value::Object(crate::auth_store::read().unwrap_or_default());
 
     let custom_provider_ids = models

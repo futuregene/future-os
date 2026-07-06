@@ -1,6 +1,6 @@
 //! Workspace Tauri commands. FutureOS no longer auto-`git init`s Workspace
 //! directories (§14.3) — `git_review` only *detects* real git repos, and the
-//! shadow review pipeline supplies "上一轮变更" for non-git Workspaces.
+//! shadow review pipeline supplies "previous turn changes" for non-git Workspaces.
 
 use crate::{git_review, store};
 

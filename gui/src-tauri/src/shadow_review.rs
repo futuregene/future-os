@@ -1,6 +1,6 @@
 //! Shadow review subsystem (see gui/ER.md §4.10 / §6.8).
 //!
-//! Produces the "上一轮变更" (last-run delta) for a Workspace by snapshotting
+//! Produces the "previous turn changes" (last-run delta) for a Workspace by snapshotting
 //! the work tree before/after each Run into an isolated bare git repository,
 //! never touching the user's real `.git`.
 

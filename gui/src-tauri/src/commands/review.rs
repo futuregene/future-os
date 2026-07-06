@@ -18,7 +18,7 @@ pub struct WorkspaceReviewCapabilities {
     change_preview: String,
 }
 
-/// The "上一轮变更" payload for a Thread (§10.3).
+/// The "previous turn changes" payload for a Thread (§10.3).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LastRunReviewData {

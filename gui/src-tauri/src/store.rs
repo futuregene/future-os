@@ -86,7 +86,7 @@ pub fn initialize_app_store() -> Result<(), crate::AppError> {
 /// deleting the db file while a connection is open. Also removes the temp chat
 /// workspaces and shadow-review repos. Agent config (`~/.future/agent`:
 /// auth.json / models.json) is untouched, so login and providers survive. Used
-/// by Settings ▸ 调试 ▸ 重置.
+/// by Settings ▸ Debug ▸ Reset.
 pub fn clear_all_data() -> Result<(), crate::AppError> {
     let conn = connect()?;
     conn.execute_batch("PRAGMA foreign_keys = OFF;")?;

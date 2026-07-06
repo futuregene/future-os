@@ -69,7 +69,7 @@ fn size_main_window_to_screen(app: &tauri::App) {
     ));
 }
 
-/// Notify the frontend that a Thread's "上一轮变更" changeset has updated. The
+/// Notify the frontend that a Thread's "previous turn changes" changeset has updated. The
 /// frontend bridges this to its typed event bus (§6.1, C1).
 pub(crate) fn emit_review_updated(thread_id: &str) {
     if let Some(handle) = APP_HANDLE.get() {
