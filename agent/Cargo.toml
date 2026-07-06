@@ -50,6 +50,15 @@ tower-http = { version = "0.6", features = ["cors"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Windows: Job Object for process-tree kill; restricted token + ACLs for the
+# bash sandbox (SANDBOX_PLAN §11). Feature set grows with W1b.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 # Proto codegen (for building .proto files)
 [build-dependencies]
 prost-build = "0.13"
