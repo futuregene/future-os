@@ -23,13 +23,13 @@ use rules::{Decision, Op, RuleSet};
 /// The user-selected approval tier (composer / settings).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SandboxTier {
-    /// 完全放开 — no approval, no sandbox, everything runs.
+    /// Off — no approval, no sandbox, everything runs.
     Off,
-    /// 手动审批 — approval rules on; bash asks (read-only allowlist免问); no OS
+    /// Manual — approval rules on; bash asks (read-only allowlist bypass); no OS
     /// sandbox. The default, all platforms.
     #[default]
     Manual,
-    /// 沙箱保护 — approval rules on; bash runs inside the OS sandbox (macOS
+    /// Sandbox — approval rules on; bash runs inside the OS sandbox (macOS
     /// only; the GUI hides this option elsewhere).
     Sandbox,
 }
@@ -104,7 +104,7 @@ impl ResolvedSandbox {
     }
 
     /// Whether bash runs pre-approval-gated (manual tier, or a sandbox tier on a
-    /// platform without the OS sandbox). When true, bash asks (allowlist免问);
+    /// platform without the OS sandbox). When true, bash asks (allowlist bypass);
     /// when false and enabled, bash is OS-sandboxed instead.
     pub fn bash_needs_approval(&self) -> bool {
         self.enabled() && !self.wraps_bash()

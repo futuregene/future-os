@@ -3,7 +3,7 @@ import * as pdfjs from "pdfjs-dist";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-// 设置 worker
+// Configure PDF.js worker
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
   import.meta.url,

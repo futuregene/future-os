@@ -57,9 +57,10 @@ interface ActivityRailProps {
   onToggleExpanded: () => void;
 }
 
-// Research / Data / Skill 入口暂时从导航隐藏：这些模块优先级下调（见 PLAN.md
-// 「Next Priorities」）。section 处理逻辑保留（markdown research embed 仍可跳转），
-// 仅移除左侧导航项；恢复时把对应条目加回即可。
+// Research / Data / Skill entries are temporarily hidden from the navigation:
+// these modules have been deprioritised (see PLAN.md "Next Priorities").
+// Section handling logic is preserved (markdown research embeds still navigate);
+// only the left-nav items are removed — add them back to restore.
 const featureItems: Array<{ id: ActivitySection; label: string; icon: LucideIcon }> = [];
 
 const settingsItem = { id: "settings", label: "Settings", icon: Settings } satisfies {
