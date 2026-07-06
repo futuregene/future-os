@@ -620,6 +620,17 @@ async fn spawn_bash(
         .map_err(|e| anyhow!("Failed to run bash command: {}", e))?;
     #[cfg(unix)]
     let pgid = spawned.id().map(|id| id as i32);
+    // Windows has no process groups; a Job Object with KILL_ON_JOB_CLOSE is the
+    // equivalent tree-teardown. Assign the fresh PID so abort/timeout kills bash
+    // and its grandchildren (e.g. a background `sleep`), not just bash itself.
+    #[cfg(windows)]
+    let job = {
+        let job = crate::sandbox::windows::Job::create().ok();
+        if let (Some(job), Some(pid)) = (&job, spawned.id()) {
+            let _ = job.assign(pid);
+        }
+        job
+    };
 
     // Use tokio::select! to race between:
     // 1. Command completion
@@ -636,6 +647,10 @@ async fn spawn_bash(
                 Err(_) => {
                     #[cfg(unix)]
                     kill_process_group(pgid);
+                    #[cfg(windows)]
+                    if let Some(job) = &job {
+                        job.terminate();
+                    }
                     return Err(anyhow!(
                         "Bash command timed out after {} seconds",
                         timeout_secs.max(1)
@@ -648,6 +663,10 @@ async fn spawn_bash(
             // kill_on_drop, but only killpg reaches grandchildren.
             #[cfg(unix)]
             kill_process_group(pgid);
+            #[cfg(windows)]
+            if let Some(job) = &job {
+                job.terminate();
+            }
             return Err(anyhow!("Bash command interrupted by abort"));
         }
     };
