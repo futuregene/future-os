@@ -1,4 +1,4 @@
-//! 远程控制 Tauri 命令（内嵌 Bridge 的启停/状态）。委托给 `crate::remote`。
+//! Remote control Tauri commands (embedded Bridge start/stop/status). Delegates to `crate::remote`.
 
 use crate::remote;
 
