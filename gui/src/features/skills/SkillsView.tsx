@@ -304,7 +304,7 @@ function AllTab({
             name={skill.name || skill.id}
             description={skill.description}
             version={skill.latestVersion}
-            meta={skill.category || skill.price || skill.formats || undefined}
+            meta={skill.category || undefined}
             action={
               isInstalled
                 ? <UninstallButton busy={busy[skill.id]} onClick={() => onUninstall(skill.id)} />
@@ -475,9 +475,6 @@ function matchesAvailableSkill(skill: AvailableSkill, filters: SkillFilters) {
     skill.name,
     skill.description,
     skill.category,
-    skill.formats,
-    skill.limit,
-    skill.price,
     skill.latestVersion,
   ]);
 }
