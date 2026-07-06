@@ -85,8 +85,6 @@
     "showMoreBuiltin": "更多供应商（{{count}}）",
     "hideMoreBuiltin": "收起供应商",
     "modelsCount": "{{baseUrl}} · {{count}} 个模型",
-    "setKey": "设置密钥",
-    "updateKey": "更新密钥",
     "keyDialogTitle": "设置 {{provider}} 密钥",
     "keyDialogDescription": "密钥会保存到 Agent 共用的 auth.json。",
     "keyRequired": "请填写 API Key。",
@@ -95,7 +93,13 @@
     "clearKey": "清除密钥",
     "keySaved": "已保存 {{provider}} 密钥。新会话即可生效。",
     "keyCleared": "已清除 {{provider}} 密钥。",
-    "connected": "已连接 FutureGene。新会话即可生效；如未生效可运行 future-cli agent restart。"
+    "connected": "已连接 FutureGene。新会话即可生效；如未生效可运行 future-cli agent restart。",
+    "baseUrlLabel": "Base URL",
+    "baseUrlRequired": "请填写 Base URL。",
+    "baseUrlDialogDescription": "该提供商的 Base URL 是占位符，需替换为你的实际地址（如 Azure 的资源名）。",
+    "apiKeyOptionalLabel": "API Key（可选）",
+    "apiKeyKeepPlaceholder": "留空保持不变",
+    "set": "设置"
   },
   "customProvider": {
     "editTitle": "编辑自定义提供商",
