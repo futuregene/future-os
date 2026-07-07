@@ -13,6 +13,7 @@ mod schema;
 mod status;
 mod threads;
 mod util;
+mod workspace_files;
 mod workspaces;
 
 use db::*;
@@ -32,7 +33,7 @@ pub use cleanup::{
     cancel_stale_approval_requests, clear_finished_runs, get_thread_cleanup_summary,
 };
 pub use db::{get_approval_request, get_run};
-pub use markdown_refs::{resolve_markdown_references, search_reference_targets};
+pub use markdown_refs::resolve_markdown_references;
 pub use messages::{append_message, list_messages, MessageRecord};
 pub use records::*;
 pub use research::{list_research_resources, promote_artifact_to_research, ResearchResourceRecord};
@@ -52,6 +53,7 @@ pub use threads::{
     get_thread, list_threads, pin_thread, rename_thread, restore_thread, update_thread_model,
     update_thread_thinking_level, ThreadRecord,
 };
+pub use workspace_files::{search_workspace_files, WorkspaceFileResult, WorkspaceFileSearchInput};
 pub use workspaces::{
     create_workspace, delete_workspace, get_or_create_chat_workspace, get_workspace,
     list_workspaces, rename_workspace, WorkspaceRecord,

@@ -1,4 +1,4 @@
-//! Markdown reference resolution and `@`-mention search Tauri commands.
+//! Markdown reference resolution and the `@`-mention file-search Tauri command.
 
 use crate::store;
 
@@ -10,8 +10,8 @@ pub fn resolve_markdown_references(
 }
 
 #[tauri::command]
-pub fn search_reference_targets(
-    input: store::SearchReferenceTargetsInput,
-) -> Result<Vec<store::ReferenceTargetSearchResult>, crate::AppError> {
-    store::search_reference_targets(input)
+pub fn search_workspace_files(
+    input: store::WorkspaceFileSearchInput,
+) -> Result<Vec<store::WorkspaceFileResult>, crate::AppError> {
+    store::search_workspace_files(input)
 }
