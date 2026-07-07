@@ -90,14 +90,16 @@ future agent start                           # start agent as a service (macOS l
           │                         │                         │
    TypeScript TUI           Channel Bridge             TypeScript CLI
    (terminal, bun)          Feishu · DingTalk          auth · MCP · skills · run
-          │
+                             
    Tauri / React GUI
    (desktop, WebView)
 ```
 
+All clients connect to the agent independently over gRPC — no client depends on another.
+
 - **Agent** (`agent/`) — Rust, tokio, tonic. LLM client (OpenAI-compatible HTTP+SSE), tool execution, session JSONL persistence, gRPC server.
 - **TUI** (`tui/`) — TypeScript, bun. Differential rendering, markdown (via marked), Kitty image protocol, 14 UI components.
-- **GUI** (`gui/`) — Tauri 2 + React + TypeScript. Three-panel layout (nav / chat / context), approval prompts, skill browser, settings.
+- **GUI** (`gui/`) — Tauri 2 + React + TypeScript. Standalone gRPC client. Three-panel layout (nav / chat / context), approval prompts, skill browser, settings.
 - **CLI** (`cli/`) — TypeScript. Auth (device-flow OAuth), service management, MCP tool calls, TUI launcher.
 - **Channel Bridge** (`channels/`) — Rust. Feishu (pbbp2 WebSocket + CardKit streaming) and DingTalk (Stream Mode).
 

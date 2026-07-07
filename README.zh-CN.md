@@ -90,14 +90,16 @@ future agent start                         # 将 Agent 安装为系统服务（m
           │                         │                         │
    TypeScript TUI           Channel Bridge             TypeScript CLI
    (终端, bun)              飞书 · 钉钉               认证 · MCP · 技能 · run
-          │
+                             
    Tauri / React GUI
    (桌面, WebView)
 ```
 
+所有客户端独立通过 gRPC 连接 Agent，互不依赖。
+
 - **Agent** (`agent/`) — Rust，tokio，tonic。LLM 客户端（OpenAI 兼容 HTTP+SSE），工具执行，JSONL 会话持久化，gRPC 服务。
 - **TUI** (`tui/`) — TypeScript，bun。差分渲染，Markdown（marked），Kitty 图片协议，14 个 UI 组件。
-- **GUI** (`gui/`) — Tauri 2 + React + TypeScript。三栏布局（导航 / 对话 / 上下文），审批提示，技能浏览，设置。
+- **GUI** (`gui/`) — Tauri 2 + React + TypeScript。独立的 gRPC 客户端。三栏布局（导航 / 对话 / 上下文），审批提示，技能浏览，设置。
 - **CLI** (`cli/`) — TypeScript。设备码 OAuth 登录，服务管理，MCP 工具调用，TUI 启动器。
 - **Channel Bridge** (`channels/`) — Rust。飞书（pbbp2 WebSocket + CardKit 流式）和钉钉（Stream Mode）。
 
