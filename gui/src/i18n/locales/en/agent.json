@@ -62,6 +62,11 @@
       "title": "No models available",
       "detail": "A provider is configured, but the model list is empty. Check that models are enabled, or verify your account quota / permissions.",
       "action": "Model settings"
+    },
+    "allModelsDisabled": {
+      "title": "All models disabled",
+      "detail": "Models are loaded, but you've disabled all of them in Settings. Enable at least one.",
+      "action": "Model settings"
     }
   },
   "composer": {
@@ -77,6 +82,7 @@
     "attachRejectedReason": "{{name}} ({{reason}})",
     "model": "Model",
     "startAgentForModels": "Start Future Agent to load models.",
+    "allModelsDisabled": "Models are loaded but all disabled. Enable one in Settings.",
     "thinkingLevel": "Thinking level",
     "send": "Send",
     "stop": "Stop",
