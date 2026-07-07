@@ -309,7 +309,7 @@ export function ActivityRail({
                               type="button"
                             >
                               <Folder className="size-4 shrink-0 text-ink-soft" />
-                              <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-soft">
+                              <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-soft" title={workspace.name}>
                                 {workspace.name}
                               </span>
                             </button>
