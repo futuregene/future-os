@@ -6,6 +6,7 @@ import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { ArrowDown } from "lucide-react";
 import { useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
+import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { cn } from "../../lib/cn";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { ApprovalPrompt } from "./ApprovalPrompt";
@@ -66,8 +67,8 @@ export function AgentThread({
   const {
     handleAbort,
     handleScroll,
-    handleScrollbarPointerDown,
     handleSend,
+    handleThumbPointerDown,
     loadingThread,
     messages,
     scrollRef,
@@ -170,18 +171,7 @@ export function AgentThread({
                     )}
           </div>
         </div>
-        <div
-          className={cn(
-            "absolute right-0.5 top-0 z-20 w-2 cursor-grab touch-none rounded-full bg-line transition-opacity duration-300 hover:bg-ink-muted active:cursor-grabbing group-hover:opacity-80",
-            scrollbar.visible ? "opacity-80" : "opacity-0",
-            scrollbar.height > 0 ? "pointer-events-auto" : "pointer-events-none",
-          )}
-          style={{
-            height: `${scrollbar.height}px`,
-            transform: `translateY(${scrollbar.top}px)`,
-          }}
-          onPointerDown={handleScrollbarPointerDown}
-        />
+        <FloatingScrollbar scrollbar={scrollbar} onPointerDown={handleThumbPointerDown} />
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-linear-to-t from-surface from-80% to-transparent px-8 pb-5 pt-10">
           <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
             {activeApproval
