@@ -3,8 +3,10 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
+import { ArrowDown } from "lucide-react";
 import { useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
+import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { cn } from "../../lib/cn";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { ApprovalPrompt } from "./ApprovalPrompt";
@@ -66,10 +68,13 @@ export function AgentThread({
     handleAbort,
     handleScroll,
     handleSend,
+    handleThumbPointerDown,
     loadingThread,
     messages,
     scrollRef,
     scrollbar,
+    scrollToLatest,
+    showJumpToLatest,
   } = useAgentThreadState({
     thread,
     loadingStore,
@@ -136,7 +141,7 @@ export function AgentThread({
         thread={thread}
         onToggleLeftPanel={onToggleLeftPanel}
       />
-      <div className="relative min-h-0 flex-1 overflow-hidden">
+      <div className="group relative min-h-0 flex-1 overflow-hidden">
         <div
           ref={scrollRef}
           className={cn(
@@ -166,16 +171,7 @@ export function AgentThread({
                     )}
           </div>
         </div>
-        <div
-          className={cn(
-            "pointer-events-none absolute right-1 top-0 z-20 w-1.5 rounded-full bg-line transition-opacity duration-300",
-            scrollbar.visible ? "opacity-80" : "opacity-0",
-          )}
-          style={{
-            height: `${scrollbar.height}px`,
-            transform: `translateY(${scrollbar.top}px)`,
-          }}
-        />
+        <FloatingScrollbar scrollbar={scrollbar} onPointerDown={handleThumbPointerDown} />
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-linear-to-t from-surface from-80% to-transparent px-8 pb-5 pt-10">
           <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
             {activeApproval
@@ -197,6 +193,20 @@ export function AgentThread({
                     onOpenProviders={onOpenProviders}
                     onRetry={onRetryAgentConnection}
                   />
+                )
+              : null}
+            {showJumpToLatest
+              ? (
+                  <button
+                    type="button"
+                    onClick={scrollToLatest}
+                    aria-label={t("thread.jumpToLatest")}
+                    title={t("thread.jumpToLatest")}
+                    className="pointer-events-auto mx-auto flex items-center gap-1 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
+                  >
+                    <ArrowDown className="size-3.5" />
+                    {t("thread.jumpToLatest")}
+                  </button>
                 )
               : null}
             <Composer

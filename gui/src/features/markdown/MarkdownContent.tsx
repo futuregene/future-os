@@ -74,7 +74,7 @@ function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined,
       return <FutureEmbedView key={key} reference={node.reference} workspaceId={workspaceId} />;
     case "blockquote":
       return (
-        <blockquote className="border-l-2 border-line-strong pl-3 text-ink-soft" key={key}>
+        <blockquote className="border-l-2 border-line pl-3 text-ink-soft" key={key}>
           <div className="space-y-2">
             {node.children.map((child, ordinal) => renderBlock(child, workspaceId, `${key}:q${ordinal}`))}
           </div>
