@@ -78,7 +78,7 @@ docs/wiki/
 | `Using-FutureOS.md` | 使用 FutureOS | 应用导览:三栏布局、Chat 与 Workspace、如何跟进和引导 agent、批准机制、右侧面板 |
 | `Settings.md` | 设置 | 设置各页(重点 General / Providers / Models);内置 FutureGene 登录、自定义 provider、模型可见性 |
 | `Skills.md` | 技能 | 内置技能包一览及使用方式 |
-| `CLI.md` | 命令行工具(`future-cli`) | 可选的高级命令行工具:位置、运行、命令组 |
+| `CLI.md` | 命令行工具(`future`) | 可选的高级命令行工具:位置、运行、命令组 |
 | `FAQ.md` | 常见问题与排错 | 常见问题速查 |
 | `_Sidebar.md` | — | 左侧导航 |
 | `_Footer.md` | — | 页脚(下载、反馈问题链接) |
@@ -101,7 +101,7 @@ docs/wiki/
 - 技能 / Skills → Skills
 
 **命令行(进阶)/ Command line (advanced)**
-- CLI (future-cli) → CLI
+- CLI (future) → CLI
 
 **帮助 / Help**
 - FAQ
@@ -124,7 +124,7 @@ docs/wiki/
 - **下载**:去 Releases 页下载对应系统最新版。
   - macOS:`.dmg` 磁盘镜像
   - Windows:安装包(`.exe` / `.msi`),或便携版 `.zip`
-- 说明命令行工具 `future-cli` **随每个下载包附带**(安装包与便携包都有,装在应用旁边),详见 CLI 页。
+- 说明命令行工具 `future` **随每个下载包附带**(安装包与便携包都有,装在应用旁边),详见 CLI 页。
 - **首次启动**(当前构建未签名/公证,系统会告警,属正常):
   - **macOS**:把 FutureOS 拖进"应用程序";首次右键 →"打开"→ 再点"打开";若提示"已损坏",在终端运行 `xattr -dr com.apple.quarantine /Applications/FutureOS.app` 再打开。
   - **Windows**:安装版跑 `.exe`/`.msi`;便携版解压整个文件夹后双击 `FutureOS.exe`(便携版需把 `FutureOS.exe` 和 `future-agent.exe` 放在同一文件夹)。首次 SmartScreen 提示时点"更多信息 → 仍要运行"。需要 **Microsoft Edge WebView2 Runtime**(Win10 近期版与 Win11 一般已内置,缺失则从微软官网装 Evergreen 版)。
@@ -167,14 +167,14 @@ docs/wiki/
 
 ### CLI
 **代码入口(先读再写):** `cli/src/index.ts`(子命令分发,以此确认真实存在的命令组)、`cli/src/commands/run.ts`、`cli/src/commands/auth.ts` + `agent.ts`、`cli/src/commands/tools.ts` + `skills.ts`、`cli/src/help.ts`。**命令、子命令、选项一律以代码为准**。
-- 定位:可选的命令行工具 `future-cli`,随下载包附带;桌面应用已能满足大多数需求,想脚本化/自动化/纯终端操作时再用。开头提示不熟悉终端可跳过本页。
-  - > ⚠️ 发布产物的二进制名是 **`future-cli`**(见 `tauri.conf.json` 的 sidecar、`docs/dist/readme-*.txt`、应用内文案)。仓库/开发期通过 npm link 装的 `future` 只是**开发别名**,面向用户的 wiki 一律用 `future-cli`,不要写成 `future`。
+- 定位:可选的命令行工具 `future`,随下载包附带;桌面应用已能满足大多数需求,想脚本化/自动化/纯终端操作时再用。开头提示不熟悉终端可跳过本页。
+  - > ⚠️ 命令名统一为 **`future`**:发布产物的二进制名(见 `tauri.conf.json` 的 sidecar、`docs/dist/readme-*.txt`、应用内文案)与开发期 npm link 装的命令一致,都是 `future`。全文一律用 `future`,不要写成 `future-cli`。
 - **位置**:
-  - macOS(`.dmg`):应用内 `/Applications/FutureOS.app/Contents/MacOS/future-cli`
-  - Windows(**便携** `.zip`):解压文件夹里的 `future-cli.exe`
+  - macOS(`.dmg`):应用内 `/Applications/FutureOS.app/Contents/MacOS/future`
+  - Windows(**便携** `.zip`):解压文件夹里的 `future.exe`
   - 注明:Windows 上命令行工具在**便携包**里,普通安装版只含应用和 agent。
 - **运行**:在含二进制的文件夹开终端;`--help` 查看;可加入 PATH 或做别名(给 macOS 别名示例)。
-- **agent 必须在运行**:每条命令都要连 FutureOS agent;开着桌面应用则已在运行,否则 `future-cli agent start`。
+- **agent 必须在运行**:每条命令都要连 FutureOS agent;开着桌面应用则已在运行,否则 `future agent start`。
 - **命令组**(以 `cli/src/index.ts` 实际分发为准;去掉 tui 组):
   - `auth`:登录/登出/状态(`login` / `status` / `logout`)
   - `agent`:启停后台 agent(`start` / `stop` / `restart` / `status`)
@@ -182,7 +182,7 @@ docs/wiki/
   - `tools`:列出与调用工具(`tools list`、`tools call <name> --args '<json>'`、`--output`、`--stdin`;文件路径参数自动转换)
   - `skills`:管理技能包(`list` / `install` / `uninstall`;**没有 `update`**,子命令以代码为准)
   - `channel`:聊天渠道桥接(进阶,一句带过)
-- **小贴士**:macOS 首次被拦 → 先右键打开应用清除拦截;"Connection refused" → agent 没运行,`future-cli agent start` 或打开桌面应用。
+- **小贴士**:macOS 首次被拦 → 先右键打开应用清除拦截;"Connection refused" → agent 没运行,`future agent start` 或打开桌面应用。
 
 ### FAQ
 **代码入口(先读再写):** `gui/src-tauri/tauri.conf.json`(安装/签名相关)、`gui/src/features/settings/FutureLoginDialog.tsx` + `ProvidersPage.tsx`(登录问题)、`gui/src/features/agent/ApprovalPrompt.tsx`(批准)、`cli/src/commands/agent.ts`("连接被拒"/agent 未运行)、`CLAUDE.md`(数据位置)。
@@ -216,7 +216,7 @@ docs/wiki/
 1. **链接完整性**:每个 `[[显示文字|Slug]]` 的 Slug 都能对应到**同一语言目录内真实存在**的 `.md` 文件;没有跨语言目录的链接、没有语言切换链接。
 2. **泄漏扫描**:全量搜索,确认**没有**出现——Linux / `.deb` / `.tar.gz` / apt、TUI / 终端界面页面或其链接、gRPC / 端口号(如 50051)、Research 入口 / Data 数据源入口 / Remote 手机远程。(注意:技能名 **Deep research**、以及首页用例里的 "research/数据分析" 等描述性词属正常内容,不算泄漏。)
 3. **中英对齐**:`en/` 与 `zh/` 文件名一一对应、数量相同;同名页面的章节结构与覆盖点一致(只是语言不同)。
-4. **CLI 名称**:全文用 `future-cli`,没有裸的 `future`(命令、路径、示例都要检查)。
+4. **CLI 名称**:全文用 `future`(命令、路径、示例都要检查),不要写成 `future-cli`。
 
 **B. 偏差回报**:生成结束后,单独输出一份「代码 vs 本提示词参考内容」的差异清单——凡是你按代码写、而与本文件第 7 节参考内容不一致的地方(如技能清单、设置页数量与名称、CLI 命令/子命令、按钮名等),逐条列出。目的是让人把这些修正**反哺回本提示词**,形成闭环。
 

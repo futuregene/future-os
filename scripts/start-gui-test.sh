@@ -200,7 +200,7 @@ else
   echo "Agent log: $AGENT_LOG"
 fi
 
-# Tauri validates bundle.externalBin sidecars (future-agent, future-cli) at
+# Tauri validates bundle.externalBin sidecars (future-agent, future) at
 # COMPILE time — even for `tauri dev`. This script runs the agent as a standalone
 # process and the GUI connects to it, so the bundled sidecars are never launched
 # here; they only need to exist. Create empty placeholders for any that are
@@ -208,7 +208,7 @@ fi
 TRIPLE="$(rustc -Vv | sed -n 's/^host: //p')"
 BIN_DIR="$GUI_DIR/src-tauri/binaries"
 mkdir -p "$BIN_DIR"
-for name in future-agent future-cli; do
+for name in future-agent future; do
   sidecar="$BIN_DIR/$name-$TRIPLE"
   if [[ ! -f "$sidecar" ]]; then
     : >"$sidecar"
