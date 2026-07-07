@@ -1,17 +1,17 @@
 import type { ChangeEvent, ClipboardEvent, FormEvent, KeyboardEvent } from "react";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
-import type { ReferenceTargetSearchResult } from "../../integrations/storage/threadStore";
+import type { WorkspaceFileResult } from "../../integrations/storage/threadStore";
 import type { MessageAttachment } from "./agentThreadTypes";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { AlertTriangle, ArrowUp, Beaker, Box, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, ShieldCheck, Square, X } from "lucide-react";
+import { ArrowUp, ChevronDown, FileText, Paperclip, ShieldCheck, Square, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
 import { modelKey, modelLabel, modelOption, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
-import { savePastedImage, searchReferenceTargets } from "../../integrations/storage/threadStore";
+import { savePastedImage, searchWorkspaceFiles } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { isMacOS } from "../../lib/platform";
 import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, MAX_ATTACHMENTS_PER_TURN, pickerExtensions } from "./attachments";
@@ -71,7 +71,7 @@ export function Composer({
   const [approvalMenuOpen, setApprovalMenuOpen] = useState(false);
   const providerNames = useProviderNames();
   const [caretPosition, setCaretPosition] = useState(0);
-  const [referenceResults, setReferenceResults] = useState<ReferenceTargetSearchResult[]>([]);
+  const [referenceResults, setReferenceResults] = useState<WorkspaceFileResult[]>([]);
   const [referenceSearchOpen, setReferenceSearchOpen] = useState(false);
   const [selectedReferenceIndex, setSelectedReferenceIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -93,19 +93,15 @@ export function Composer({
     // onto the primitive's single-resource shape. See gui/CLAUDE.md §4.
     let cancelled = false;
 
-    async function loadReferenceResults() {
-      if (!workspaceId || !activeMention || disabled) {
-        setReferenceResults([]);
-        setReferenceSearchOpen(false);
-        return;
-      }
+    if (!workspaceId || !activeMention || disabled) {
+      setReferenceResults([]);
+      setReferenceSearchOpen(false);
+      return;
+    }
 
+    async function loadFileResults(query: string, wsId: string) {
       try {
-        const results = await searchReferenceTargets({
-          limit: 8,
-          query: activeMention.query,
-          workspaceId,
-        });
+        const results = await searchWorkspaceFiles({ limit: 20, query, workspaceId: wsId });
         if (!cancelled) {
           setReferenceResults(results);
           setReferenceSearchOpen(true);
@@ -120,10 +116,12 @@ export function Composer({
       }
     }
 
-    void loadReferenceResults();
+    // Debounce so a fast typist doesn't walk the workspace on every keystroke.
+    const timer = setTimeout(() => void loadFileResults(activeMention.query ?? "", workspaceId), 120);
 
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [activeMention, disabled, workspaceId]);
 
@@ -194,13 +192,17 @@ export function Composer({
     setCaretPosition(textareaRef.current?.selectionStart ?? value.length);
   }
 
-  function insertReference(reference: ReferenceTargetSearchResult) {
+  function insertReference(file: WorkspaceFileResult) {
     if (!activeMention)
       return;
 
-    const label = escapeMarkdownLinkLabel(`${reference.targetType}:${reference.title}`);
-    const targetId = encodeFutureReferenceId(reference.targetId);
-    const markdown = `[${label}](futureos://${reference.targetType}/${targetId})`;
+    // Plain relative-path markdown link (not futureos://): the agent runs with
+    // the workspace as cwd, so `./path` is a real path it can read directly.
+    // Angle-bracket the target only when the path has spaces, which would
+    // otherwise break the markdown link.
+    const label = escapeMarkdownLinkLabel(file.path);
+    const target = `./${file.path}`;
+    const markdown = `[${label}](${/\s/.test(target) ? `<${target}>` : target})`;
     const nextValue = `${value.slice(0, activeMention.start)}${markdown}${value.slice(activeMention.end)}`;
     const nextCaret = activeMention.start + markdown.length;
     setValue(nextValue);
@@ -572,59 +574,42 @@ function ReferenceSearchMenu({
   results,
   selectedIndex,
 }: {
-  onSelect: (reference: ReferenceTargetSearchResult) => void;
-  results: ReferenceTargetSearchResult[];
+  onSelect: (file: WorkspaceFileResult) => void;
+  results: WorkspaceFileResult[];
   selectedIndex: number;
 }) {
   const { t } = useTranslation("agent");
   return (
     <div className="absolute bottom-full left-2 z-30 mb-2 w-[min(30rem,calc(100%-1rem))] rounded-lg border border-line-soft bg-surface p-1 shadow-panel">
       {results.length === 0
-        ? <div className="px-2 py-2 text-sm text-ink-muted">{t("composer.noReferences")}</div>
+        ? <div className="px-2 py-2 text-sm text-ink-muted">{t("composer.noFiles")}</div>
         : null}
-      {results.map((result, index) => (
-        <button
-          className={cn(
-            "flex h-11 w-full items-center gap-2 rounded-md px-2 text-left transition-colors",
-            index === selectedIndex ? "bg-surface-subtle" : "hover:bg-surface-subtle",
-          )}
-          key={`${result.targetType}:${result.targetId}`}
-          onMouseDown={(event) => {
-            event.preventDefault();
-            onSelect(result);
-          }}
-          type="button"
-        >
-          {referenceIcon(result.targetType)}
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-medium text-ink">{result.title}</span>
-            <span className="block truncate text-xs text-ink-muted">
-              {result.targetType}
-              {result.subtitle ? ` · ${result.subtitle}` : ""}
+      {results.map((file, index) => {
+        // Split the path so the directory reads muted and the filename strong.
+        const dir = file.path.slice(0, file.path.length - file.name.length);
+        return (
+          <button
+            className={cn(
+              "flex h-9 w-full items-center gap-2 rounded-md px-2 text-left transition-colors",
+              index === selectedIndex ? "bg-surface-subtle" : "hover:bg-surface-subtle",
+            )}
+            key={file.path}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              onSelect(file);
+            }}
+            type="button"
+          >
+            <FileText className="size-4 shrink-0 text-ink-soft" />
+            <span className="min-w-0 flex-1 truncate text-sm">
+              {dir ? <span className="text-ink-muted">{dir}</span> : null}
+              <span className="font-medium text-ink">{file.name}</span>
             </span>
-          </span>
-        </button>
-      ))}
+          </button>
+        );
+      })}
     </div>
   );
-}
-
-function referenceIcon(targetType: string) {
-  const className = "size-4 shrink-0 text-ink-soft";
-  switch (targetType) {
-    case "approval":
-      return <AlertTriangle className={className} />;
-    case "research":
-      return <Microscope className={className} />;
-    case "review":
-      return <FileDiff className={className} />;
-    case "run":
-      return <PlayCircle className={className} />;
-    case "tool":
-      return <Beaker className={className} />;
-    default:
-      return <Box className={className} />;
-  }
 }
 
 function findActiveMention(value: string, caretPosition: number) {
@@ -650,8 +635,4 @@ function escapeMarkdownLinkLabel(value: string) {
     .replace(/\\/g, "/")
     .replace(/\[/g, "(")
     .replace(/\]/g, ")");
-}
-
-function encodeFutureReferenceId(value: string) {
-  return encodeURIComponent(value).replace(/[!'()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
 }

@@ -50,25 +50,6 @@ pub struct ResolvedMarkdownReference {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SearchReferenceTargetsInput {
-    pub workspace_id: String,
-    pub query: Option<String>,
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReferenceTargetSearchResult {
-    pub target_type: String,
-    pub target_id: String,
-    pub title: String,
-    pub subtitle: Option<String>,
-    pub search_text: Option<String>,
-    pub updated_at: i64,
-}
-
 #[derive(Debug)]
 pub struct UpsertToolCallInput {
     pub run_id: String,

@@ -79,7 +79,7 @@
     "thinkingLevel": "Thinking level",
     "send": "Send",
     "stop": "Stop",
-    "noReferences": "No references found.",
+    "noFiles": "No matching files.",
     "approval": "Approval mode",
     "approvalTier": {
       "manual": "Manual",
