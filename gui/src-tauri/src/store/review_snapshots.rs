@@ -362,11 +362,7 @@ pub fn get_last_run_changeset(
 ) -> Result<Option<ReviewChangesetRecord>, crate::AppError> {
     // Columns qualified with `c.` because the JOIN onto `runs` makes several
     // names (id, thread_id, status, created_at, updated_at) ambiguous.
-    let cols = REVIEW_CHANGESET_COLUMNS
-        .split(", ")
-        .map(|c| format!("c.{}", c.trim()))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let cols = qualify_columns("c", REVIEW_CHANGESET_COLUMNS);
     let conn = connect()?;
     conn.query_row(
         &format!(

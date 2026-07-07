@@ -1,6 +1,5 @@
-import type { Dispatch, SetStateAction } from "react";
-import type { StoredRun, StoredRunEvent, StoredThread } from "../../integrations/storage/threadStore";
-import type { AgentMessage, MessageAttachment, MessageSegment } from "./agentThreadTypes";
+import type { StoredRun, StoredThread } from "../../integrations/storage/threadStore";
+import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import type { ComposerSendPayload } from "./Composer";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -11,35 +10,42 @@ import {
   appendMessage,
   createRun,
   deleteTempAttachment,
-  importAttachmentArtifact,
   listMessages,
-  listRunEvents,
   listRuns,
   storedTimeToIso,
 } from "../../integrations/storage/threadStore";
+import { errorMessage } from "../../lib/errors";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
-import { buildAssistantRunProjection } from "./agentActivity";
 import {
   buildAgentFailureContent,
   matchesSettledRun,
   toAgentMessage,
   updateRunStatusSafe,
 } from "./agentMessageFormatters";
-import { buildInlineAttachmentContext, generateImageThumbnail, imageAttachmentPaths, stringifyMessageContent } from "./attachments";
+import { buildInlineAttachmentContext, imageAttachmentPaths, stringifyMessageContent } from "./attachments";
 import { buildReferencePrompt } from "./buildReferencePrompt";
-
-/** Within this many px of the bottom, auto-follow streaming output. */
-const STICK_THRESHOLD_PX = 48;
-/** Past this distance from the bottom, reveal the "jump to latest" button. */
-const JUMP_BUTTON_THRESHOLD_PX = 240;
+import { importChatAttachments, withImageThumbnails } from "./threadAttachments";
+import {
+  clientId,
+  deriveRenderFields,
+  loadCurrentRun,
+  patchMessage,
+  restoreMessageActivities,
+  runDurationMs,
+  safeListRunEvents,
+  updatePendingMessageFromRunEvents,
+  upsertStreamingPreview,
+} from "./threadRunProjection";
+import { useStickyAutoScroll } from "./useStickyAutoScroll";
 
 interface UseAgentThreadStateInput {
   thread: StoredThread | null;
   loadingStore: boolean;
   modelId: string;
   thinkingLevel: string;
-  pendingPrompt: { attachments?: MessageAttachment[]; id: string; content: string } | null;
+  pendingPrompt: { attachments?: MessageAttachment[]; id: string; content: string; targetThreadId: string } | null;
   onPromptConsumed: (id: string) => void;
   onThreadActivity: () => void;
 }
@@ -63,18 +69,22 @@ export function useAgentThreadState({
     handleScroll: handleScrollbarVisibility,
     handleThumbPointerDown,
   } = useFloatingScrollbar();
-  // Sticky auto-scroll: follow streaming output only while pinned near the
-  // bottom. When the user scrolls up past the threshold we stop following (so
-  // they can read history) and offer a "jump to latest" button once they're far.
-  const stickToBottomRef = useRef(true);
-  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const consumedPromptRef = useRef<string | null>(null);
   const sendGenerationRef = useRef(0);
   // True while a prompt is in flight for this thread. The agent rejects a second
   // concurrent prompt for the same session, so guard every send path with it.
   const sendingRef = useRef(false);
-  const streamTimerRef = useRef<number | null>(null);
   const threadId = thread?.id ?? null;
+
+  // Sticky auto-scroll: follow streaming output only while pinned near the
+  // bottom; re-pins on thread switch and follows the growing message list.
+  const { handleScroll, scrollToLatest, showJumpToLatest } = useStickyAutoScroll({
+    scrollRef,
+    resetKey: threadId,
+    contentKey: messages,
+    onScroll: handleScrollbarVisibility,
+    onContentSettled: () => updateFloatingScrollbar(false),
+  });
 
   // The run this thread is currently executing, if any. Runs stream server-side
   // and persist their events regardless of which thread is in the foreground, so
@@ -93,37 +103,6 @@ export function useAgentThreadState({
   // the resume effect the way the `recentRun` object identity would.
   const activeRunStartedAt = activeRunId ? (recentRun?.startedAt ?? recentRun?.createdAt ?? null) : null;
   const prevActiveRunIdRef = useRef<string | null>(null);
-
-  // Compose the shared scrollbar's visibility handling with sticky detection:
-  // re-derive stickiness from the caret's distance to the bottom. A programmatic
-  // scroll-to-bottom lands here too, leaving distance ≈ 0 → stays stuck; a user
-  // scroll-up grows the distance → unsticks. Two thresholds: a tight one to keep
-  // following, a looser one to reveal the jump button.
-  const handleScroll = useCallback(() => {
-    handleScrollbarVisibility();
-    const scrollContainer = scrollRef.current;
-    if (scrollContainer) {
-      const distance = scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
-      stickToBottomRef.current = distance <= STICK_THRESHOLD_PX;
-      setShowJumpToLatest(distance > JUMP_BUTTON_THRESHOLD_PX);
-    }
-  }, [handleScrollbarVisibility, scrollRef]);
-
-  // Jump straight to the latest message and re-enable auto-follow.
-  const scrollToLatest = useCallback(() => {
-    const scrollContainer = scrollRef.current;
-    if (!scrollContainer)
-      return;
-    stickToBottomRef.current = true;
-    setShowJumpToLatest(false);
-    scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: "smooth" });
-  }, [scrollRef]);
-
-  // Opening/switching a thread starts pinned to the latest message.
-  useEffect(() => {
-    stickToBottomRef.current = true;
-    setShowJumpToLatest(false);
-  }, [threadId]);
 
   // Guard against overlapping refreshes (poll tick, send, thread switch) where a
   // slow response lands after a newer one and writes stale run state — e.g. a
@@ -169,20 +148,30 @@ export function useAgentThreadState({
   const handleSend = useCallback(async ({ attachments, content }: ComposerSendPayload) => {
     if (!thread)
       return;
-    // One prompt at a time per session: a second send (composer, retry, or
-    // continue) while one is running would be rejected by the agent
-    // ("already running"), so drop it before anything is optimistically added.
-    if (sendingRef.current)
+    // One prompt at a time per session (FE-03). `sendingRef` guards a send this
+    // view started; `activeRunId` guards a run already in flight that this view
+    // is only re-attached to (backgrounded, reloaded, or remote-driven). Every
+    // send path — composer, `recover-run`, pendingPrompt — funnels through here,
+    // so a second prompt while one runs would be rejected by the agent
+    // ("already running") and leave a stray failed run. Reject it up front, with
+    // visible feedback instead of a silent drop.
+    if (sendingRef.current || activeRunId) {
+      emitFutureEvent("toast", { message: i18n.t("agent:thread.alreadyRunning"), tone: "info" });
       return;
+    }
     sendingRef.current = true;
 
     const sendGeneration = sendGenerationRef.current + 1;
     sendGenerationRef.current = sendGeneration;
     const isCurrentSend = () => sendGenerationRef.current === sendGeneration;
+    // Timer handle is local to this send closure, not a shared ref: a prior fix
+    // regression let one thread's send clear another thread's stream timer,
+    // freezing the live bubble (FE-01). Ownership stays with the closure.
+    let streamTimer: number | null = null;
     const clearStreamTimer = () => {
-      if (streamTimerRef.current !== null) {
-        window.clearInterval(streamTimerRef.current);
-        streamTimerRef.current = null;
+      if (streamTimer !== null) {
+        window.clearInterval(streamTimer);
+        streamTimer = null;
       }
     };
     const optimisticUserId = clientId("pending_user");
@@ -268,7 +257,7 @@ export function useAgentThreadState({
 
       clearStreamTimer();
       if (isCurrentSend()) {
-        streamTimerRef.current = window.setInterval(() => {
+        streamTimer = window.setInterval(() => {
           if (run && isCurrentSend()) {
             void updatePendingMessageFromRunEvents(run.id, pendingId, setMessages, isCurrentSend);
           }
@@ -308,7 +297,7 @@ export function useAgentThreadState({
         // bubble in place. Other settled statuses were finalized by whoever set
         // them — just release the lock (via `finally`).
         if (currentRun.status === "cancelled" && isCurrentSend()) {
-          const partial = reply.trim();
+          const partial = reply.content.trim();
           if (partial) {
             const storedAssistantMessage = await appendMessage({
               threadId: thread.id,
@@ -350,6 +339,42 @@ export function useAgentThreadState({
         }
         return;
       }
+      // The stream closed before the agent signalled a clean end: the text is a
+      // truncated prefix, not a finished answer. Persist it (so the partial isn't
+      // lost) but finalize the run and bubble as failed rather than silently
+      // presenting a cut-off reply as complete (RUN-05).
+      if (!reply.complete) {
+        const interruptedMessage = i18n.t("agent:thread.responseInterrupted");
+        await updateRunStatusSafe(run.id, "failed", interruptedMessage);
+        if (isCurrentSend()) {
+          await refreshRecentRun(thread.id, thread.workspaceId);
+        }
+        const storedAssistantMessage = await appendMessage({
+          threadId: thread.id,
+          runId: run.id,
+          role: "assistant",
+          contentType: "markdown",
+          content: reply.content.trim() || buildAgentFailureContent(interruptedMessage),
+          status: "failed",
+        });
+        const partialRender = deriveRenderFields(
+          await safeListRunEvents(run.id),
+          storedAssistantMessage.content,
+        );
+        if (isCurrentSend()) {
+          patchMessage(setMessages, pendingId, {
+            id: storedAssistantMessage.id,
+            runId: storedAssistantMessage.runId,
+            content: partialRender.content,
+            segments: partialRender.segments,
+            status: storedAssistantMessage.status,
+            createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
+            outputTokens: partialRender.outputTokens,
+          });
+          onThreadActivity();
+        }
+        return;
+      }
       await updateRunStatusSafe(run.id, "completed");
       if (isCurrentSend()) {
         await refreshRecentRun(thread.id, thread.workspaceId);
@@ -359,7 +384,7 @@ export function useAgentThreadState({
         runId: run.id,
         role: "assistant",
         contentType: "markdown",
-        content: reply.trim() || i18n.t("agent:thread.agentDoneNoText"),
+        content: reply.content.trim() || i18n.t("agent:thread.agentDoneNoText"),
         status: "complete",
       });
 
@@ -390,7 +415,7 @@ export function useAgentThreadState({
     catch (error) {
       clearStreamTimer();
 
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       if (run) {
         const currentRun = await loadCurrentRun(thread.id, run.id);
         if (!currentRun || !matchesSettledRun(currentRun.status)) {
@@ -429,7 +454,7 @@ export function useAgentThreadState({
       if (isCurrentSend())
         sendingRef.current = false;
     }
-  }, [modelId, onThreadActivity, refreshRecentRun, thinkingLevel, thread]);
+  }, [activeRunId, modelId, onThreadActivity, refreshRecentRun, thinkingLevel, thread]);
 
   // Interrupt the in-flight run for this thread. Best-effort: the backend stops
   // the agent and marks the run `cancelled`; the in-flight `handleSend` then
@@ -456,39 +481,17 @@ export function useAgentThreadState({
   }, [messages, onThreadActivity, recentRun, refreshRecentRun, thread?.workspaceId, threadId]);
 
   useEffect(() => {
-    const scrollContainer = scrollRef.current;
-    if (!scrollContainer)
-      return;
-
-    // Only follow new/streamed content while pinned to the bottom; if the user
-    // scrolled up, leave their position but surface the jump button once the
-    // still-growing content pushes them far enough from the bottom.
-    if (stickToBottomRef.current) {
-      scrollContainer.scrollTo({
-        top: scrollContainer.scrollHeight,
-        behavior: "auto",
-      });
-    }
-    else {
-      const distance = scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
-      setShowJumpToLatest(distance > JUMP_BUTTON_THRESHOLD_PX);
-    }
-    updateFloatingScrollbar(false);
-  }, [messages, scrollRef, updateFloatingScrollbar]);
-
-  useEffect(() => {
     return () => {
       sendGenerationRef.current += 1;
       // A switch away abandons any in-flight send for this thread; let the new
-      // thread send freely (its run is a different session).
+      // thread send freely (its run is a different session). The abandoned send's
+      // stream timer is a closure-local handle now (FE-01), and its interval
+      // callback no-ops once `isCurrentSend()` turns false, so there's nothing to
+      // clear here — it stops on its own when that send's await returns.
       sendingRef.current = false;
       // Drop the run tracked for the outgoing thread so the incoming thread's
       // settle detection doesn't fire against a stale run id.
       prevActiveRunIdRef.current = null;
-      if (streamTimerRef.current !== null) {
-        window.clearInterval(streamTimerRef.current);
-        streamTimerRef.current = null;
-      }
     };
   }, [threadId]);
 
@@ -580,7 +583,7 @@ export function useAgentThreadState({
         }
       }
       catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         if (!cancelled) {
           setMessages([
             {
@@ -624,6 +627,13 @@ export function useAgentThreadState({
       return;
     if (consumedPromptRef.current === pendingPrompt.id)
       return;
+    // Only deliver the prompt to the thread it was composed for. A fast thread
+    // switch during the (async) message load can make `thread` the newly-opened
+    // conversation while this prompt still targets the one just created — sending
+    // here would drop the first message (and its attachments) into the wrong
+    // chat and persist it there (FE-02). Wait for the target thread to be active.
+    if (pendingPrompt.targetThreadId !== thread.id)
+      return;
 
     consumedPromptRef.current = pendingPrompt.id;
     onPromptConsumed(pendingPrompt.id);
@@ -643,268 +653,4 @@ export function useAgentThreadState({
     scrollToLatest,
     showJumpToLatest,
   };
-}
-
-/** Apply a patch to the single message with `id`, leaving the rest untouched. */
-function patchMessage(
-  setMessages: Dispatch<SetStateAction<AgentMessage[]>>,
-  id: string,
-  patch: Partial<AgentMessage> | ((message: AgentMessage) => Partial<AgentMessage>),
-) {
-  setMessages(current =>
-    current.map(message =>
-      message.id === id
-        ? { ...message, ...(typeof patch === "function" ? patch(message) : patch) }
-        : message,
-    ),
-  );
-}
-
-/**
- * Render an in-flight run's live events as a streaming assistant bubble, keyed by
- * a stable `stream_<runId>` id. Unlike {@link updatePendingMessageFromRunEvents}
- * (which patches an existing optimistic bubble), this UPSERTS: it inserts the
- * bubble when missing and updates it in place otherwise, so it re-attaches to a
- * conversation the current view didn't start and survives store reloads that
- * replace the message array. Once a persisted assistant message for the run
- * exists (the run settled and was reloaded), it steps aside and adds nothing.
- */
-async function upsertStreamingPreview(
-  runId: string,
-  runStartedAt: number | null,
-  setMessages: Dispatch<SetStateAction<AgentMessage[]>>,
-  shouldApply: () => boolean = () => true,
-) {
-  try {
-    const events = await listRunEvents(runId);
-    if (!shouldApply())
-      return;
-
-    const projection = buildAssistantRunProjection(events);
-    const bubbleId = `stream_${runId}`;
-
-    setMessages((current) => {
-      // A persisted assistant message already carries this run — the run
-      // settled and the thread was reloaded; don't resurrect a synthetic bubble.
-      if (current.some(message => message.runId === runId && message.id !== bubbleId))
-        return current;
-
-      const content = projection.content.trim();
-      const existingIndex = current.findIndex(message => message.id === bubbleId);
-
-      if (existingIndex === -1) {
-        const bubble: AgentMessage = {
-          id: bubbleId,
-          role: "assistant",
-          author: i18n.t("agent:author.researchCopilot"),
-          authorKey: "author.researchCopilot",
-          content,
-          status: "streaming",
-          createdAt: new Date().toISOString(),
-          activityItems: projection.activityItems,
-          segments: projection.segments,
-          thinkingActive: projection.thinkingActive,
-          outputTokens: projection.outputTokens,
-          // Feed MessageMeta's live elapsed timer so a re-attached run keeps
-          // ticking instead of dropping its duration stat on switch-back.
-          runStartedAt: runStartedAt ?? undefined,
-          runId,
-        };
-        return [...current, bubble];
-      }
-
-      return current.map((message, index) =>
-        index === existingIndex
-          ? {
-              ...message,
-              activityItems: projection.activityItems,
-              segments: projection.segments,
-              content: content || message.content,
-              thinkingActive: projection.thinkingActive,
-              outputTokens: projection.outputTokens,
-            }
-          : message,
-      );
-    });
-  }
-  catch {
-    // Live preview is best-effort; the final assistant message still lands when
-    // the run settles and the thread reloads.
-  }
-}
-
-async function updatePendingMessageFromRunEvents(
-  runId: string,
-  pendingId: string,
-  setMessages: Dispatch<SetStateAction<AgentMessage[]>>,
-  shouldApply: () => boolean = () => true,
-) {
-  try {
-    const events = await listRunEvents(runId);
-    if (!shouldApply())
-      return;
-
-    const projection = buildAssistantRunProjection(events);
-
-    // Nothing renderable yet: no answer text, no tool activity, and no inline
-    // segments. Reasoning-only turns DO carry a thinking segment, so this must
-    // check segments too — otherwise the live thinking view (show-thinking on)
-    // is swallowed until the first text/tool lands.
-    if (!projection.content.trim() && projection.activityItems.length === 0 && projection.segments.length === 0)
-      return;
-
-    setMessages(current =>
-      current.map(message =>
-        message.id === pendingId
-          ? {
-              ...message,
-              activityItems: projection.activityItems,
-              // Live content is derived from the same events as segments, so the
-              // two stay consistent — safe to render segments inline immediately.
-              segments: projection.segments,
-              content: projection.content.trim() ? projection.content : message.content,
-              thinkingActive: projection.thinkingActive,
-              // Tokens accumulate as each LLM call reports usage (lands at the
-              // end of each call); shown as the real count, no estimate.
-              outputTokens: projection.outputTokens,
-            }
-          : message,
-      ),
-    );
-  }
-  catch {
-    // Streaming preview is best-effort. The final assistant message still
-    // lands when the command returns.
-  }
-}
-
-/**
- * Derive the renderable content + ordered segments from a run's events. Segments
- * are only trusted when the events actually carried the assistant text — the
- * stored reply (from the gRPC return) is otherwise authoritative, so legacy data
- * and text-only-via-gRPC turns fall back to flat content + activity list.
- */
-function deriveRenderFields(
-  events: StoredRunEvent[],
-  fallbackContent: string,
-): { content: string; segments?: MessageSegment[]; outputTokens: number } {
-  const projection = buildAssistantRunProjection(events);
-  if (projection.content.trim()) {
-    return {
-      content: projection.content,
-      segments: projection.segments,
-      outputTokens: projection.outputTokens,
-    };
-  }
-  return { content: fallbackContent, outputTokens: projection.outputTokens };
-}
-
-async function safeListRunEvents(runId: string): Promise<StoredRunEvent[]> {
-  try {
-    return await listRunEvents(runId);
-  }
-  catch {
-    return [];
-  }
-}
-
-/**
- * Exact model run time from the persisted run; falls back to wall-clock since
- * the send anchor while the run is still settling. Null when neither is known.
- */
-function runDurationMs(run: StoredRun | null | undefined, fallbackStartMs?: number): number | null {
-  if (run?.startedAt && run?.endedAt && run.endedAt >= run.startedAt) {
-    return run.endedAt - run.startedAt;
-  }
-  if (typeof fallbackStartMs === "number") {
-    return Math.max(0, Date.now() - fallbackStartMs);
-  }
-  return null;
-}
-
-let clientIdCounter = 0;
-
-function clientId(prefix: string) {
-  clientIdCounter += 1;
-  return `${prefix}_${Date.now()}_${clientIdCounter}`;
-}
-
-async function loadCurrentRun(threadId: string, runId: string) {
-  try {
-    const runs = await listRuns(threadId);
-    return runs.find(run => run.id === runId) ?? null;
-  }
-  catch {
-    return null;
-  }
-}
-
-async function restoreMessageActivities(messages: AgentMessage[], threadId: string) {
-  const runs = await listRuns(threadId).catch(() => [] as StoredRun[]);
-  const runById = new Map(runs.map(run => [run.id, run] as const));
-  const projectionEntries = await Promise.all(
-    messages.map(async (message) => {
-      if (message.role !== "assistant" || !message.runId)
-        return [message.id, null] as const;
-
-      try {
-        return [message.id, buildAssistantRunProjection(await listRunEvents(message.runId))] as const;
-      }
-      catch {
-        return [message.id, null] as const;
-      }
-    }),
-  );
-  const projectionByMessageId = new Map(projectionEntries);
-
-  return messages.map((message) => {
-    const projection = projectionByMessageId.get(message.id);
-    const run = message.runId ? runById.get(message.runId) ?? null : null;
-    const meta: Partial<AgentMessage> = run
-      ? { modelId: run.modelId ?? message.modelId, durationMs: runDurationMs(run), stopped: run.status === "cancelled" }
-      : {};
-    if (!projection)
-      return { ...message, ...meta };
-    // Trust event-derived inline ordering only when the events carried the
-    // assistant text; otherwise keep the flat activity list (legacy fallback).
-    const withSegments = projection.content.trim()
-      ? { ...message, ...meta, activityItems: projection.activityItems, segments: projection.segments }
-      : { ...message, ...meta, activityItems: projection.activityItems };
-    return { ...withSegments, outputTokens: projection.outputTokens };
-  });
-}
-
-async function importChatAttachments(thread: StoredThread, attachments: MessageAttachment[]) {
-  if (thread.mode !== "chat") {
-    return attachments;
-  }
-
-  return Promise.all(
-    attachments.map(async (attachment) => {
-      const artifact = await importAttachmentArtifact({
-        path: attachment.path,
-        threadId: thread.id,
-      });
-
-      return {
-        ...attachment,
-        artifactId: artifact.id,
-        path: artifact.path ?? attachment.path,
-      };
-    }),
-  );
-}
-
-// Generate a cached thumbnail for image attachments so the thread can show a
-// small preview without loading the full-size original.
-async function withImageThumbnails(attachments: MessageAttachment[]) {
-  return Promise.all(
-    attachments.map(async (attachment) => {
-      if (attachment.kind !== "image") {
-        return attachment;
-      }
-      const thumbnail = await generateImageThumbnail(attachment.path);
-      return thumbnail ? { ...attachment, thumbnail } : attachment;
-    }),
-  );
 }

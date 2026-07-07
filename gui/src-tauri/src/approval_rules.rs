@@ -8,47 +8,59 @@
 
 use std::path::Path;
 
-use serde_json::{json, Value};
+use serde_json::json;
+
+use crate::config_io;
 
 /// Append an `allow` rule for `rule_path` (workspace-relative, or `~`/absolute)
 /// scoped to `access` ("read" | "write"). Creates the file if absent, skips
 /// exact duplicates, and preserves existing content.
+///
+/// The file is a user-editable one the agent reads directly, so the read is
+/// *strict*: a corrupt/hand-broken file is an error, never silently rebuilt from
+/// scratch — otherwise a single GUI "Allow" would drop the user's existing (incl.
+/// `deny`) rules on the floor (CFG-03). The whole read-modify-write is serialized
+/// and the write is atomic.
 pub fn append_workspace_allow_rule(
     workspace_dir: &str,
     rule_path: &str,
     access: &str,
 ) -> Result<(), crate::AppError> {
+    // Guard the access scope before it lands in a persisted rule.
+    if access != "read" && access != "write" {
+        return Err(
+            format!("approval access must be \"read\" or \"write\", got {access:?}").into(),
+        );
+    }
+
     let dir = Path::new(workspace_dir).join(".future");
     let file = dir.join("approval_rule.json");
 
-    let mut root: Value = std::fs::read_to_string(&file)
-        .ok()
-        .and_then(|contents| serde_json::from_str(&contents).ok())
-        .filter(Value::is_object)
-        .unwrap_or_else(|| json!({ "version": 1, "rules": [] }));
+    config_io::with_config_lock(&file, || {
+        let mut root = config_io::read_json_object(&file)?;
+        let obj = root
+            .as_object_mut()
+            .expect("read_json_object always returns an object");
+        obj.entry("version").or_insert(json!(1));
+        let rules = obj.entry("rules").or_insert_with(|| json!([]));
+        if !rules.is_array() {
+            *rules = json!([]);
+        }
+        let arr = rules.as_array_mut().expect("array ensured above");
 
-    let obj = root.as_object_mut().expect("filtered to object above");
-    obj.entry("version").or_insert(json!(1));
-    let rules = obj.entry("rules").or_insert_with(|| json!([]));
-    if !rules.is_array() {
-        *rules = json!([]);
-    }
-    let arr = rules.as_array_mut().expect("array ensured above");
+        let new_rule = json!({ "path": rule_path, "access": access, "action": "allow" });
+        if !arr.iter().any(|existing| existing == &new_rule) {
+            arr.push(new_rule);
+        }
 
-    let new_rule = json!({ "path": rule_path, "access": access, "action": "allow" });
-    if !arr.iter().any(|existing| existing == &new_rule) {
-        arr.push(new_rule);
-    }
-
-    std::fs::create_dir_all(&dir)?;
-    let pretty = serde_json::to_string_pretty(&root)
-        .map_err(|error| format!("could not serialize approval rules: {error}"))?;
-    std::fs::write(&file, pretty)?;
-    Ok(())
+        config_io::write_json_atomic(&file, &root, false)
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
 
     fn temp_ws(name: &str) -> std::path::PathBuf {

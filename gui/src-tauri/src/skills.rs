@@ -30,6 +30,42 @@ enum SkillScope {
 
 const SCOPES: [SkillScope; 2] = [SkillScope::App, SkillScope::Global];
 
+/// Validate a skill id before it is ever joined onto a filesystem path. The id
+/// comes from the (unauthenticated) platform catalogue, so an id like `../x` or
+/// an absolute path would let install/uninstall escape the skills directory and
+/// `remove_dir_all` an arbitrary target. Allow only a conservative slug charset.
+fn is_skill_id_ok(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id != "."
+        && id != ".."
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        // `.` is allowed for versioned names but never as a path-traversal `..`.
+        && !id.contains("..")
+}
+
+fn ensure_skill_id_ok(id: &str) -> Result<(), AppError> {
+    if is_skill_id_ok(id) {
+        Ok(())
+    } else {
+        Err(AppError::Message(format!("Invalid skill id: {id:?}")))
+    }
+}
+
+/// Join a validated skill id onto a scope directory and assert the result stays
+/// inside that scope — defence in depth on top of [`ensure_skill_id_ok`].
+fn skill_dir_in_scope(scope: SkillScope, id: &str) -> Result<PathBuf, AppError> {
+    ensure_skill_id_ok(id)?;
+    let base = scope.dir()?;
+    let dest = base.join(id);
+    if dest.parent() != Some(base.as_path()) {
+        return Err(AppError::Message(format!("Invalid skill id: {id:?}")));
+    }
+    Ok(dest)
+}
+
 impl SkillScope {
     fn dir(self) -> Result<PathBuf, AppError> {
         match self {
@@ -64,7 +100,7 @@ pub struct SkillInfo {
 
 fn platform_url() -> String {
     let auth = Value::Object(crate::auth_store::read().unwrap_or_default());
-    crate::agent_providers::resolve_future_platform_url(&auth)
+    crate::future_platform::resolve_future_platform_url(&auth)
 }
 
 fn http_client() -> Result<reqwest::Client, AppError> {
@@ -128,6 +164,7 @@ pub fn installed_versions() -> BTreeMap<String, Option<String>> {
 
 /// Download and unpack skill `id`@`version` into the app scope.
 pub async fn install_skill(id: String, version: String) -> Result<(), AppError> {
+    let dest = skill_dir_in_scope(SkillScope::App, &id)?;
     let url = format!(
         "{}/client/v1/skills/{}/versions/{}/download",
         platform_url(),
@@ -155,7 +192,6 @@ pub async fn install_skill(id: String, version: String) -> Result<(), AppError> 
         .await
         .map_err(|error| AppError::Message(format!("Failed to read skill data: {error}")))?;
 
-    let dest = SkillScope::App.dir()?.join(&id);
     // Unzip + filesystem work is blocking; keep it off the async runtime.
     tokio::task::spawn_blocking(move || extract_skill_zip(&bytes, &dest))
         .await
@@ -165,9 +201,10 @@ pub async fn install_skill(id: String, version: String) -> Result<(), AppError> 
 /// Remove skill `id` from every scope it's installed in. Returns whether any
 /// directory was removed.
 pub fn uninstall_skill(id: &str) -> Result<bool, AppError> {
+    ensure_skill_id_ok(id)?;
     let mut removed = false;
     for scope in SCOPES {
-        let dest = scope.dir()?.join(id);
+        let dest = skill_dir_in_scope(scope, id)?;
         if dest.is_dir() {
             std::fs::remove_dir_all(&dest)?;
             removed = true;
@@ -210,6 +247,46 @@ fn flatten_single_subdir(dir: &Path) -> Result<(), AppError> {
     }
     std::fs::remove_dir_all(&single)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_path_traversal_and_absolute_ids() {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../x",
+            "../../Documents",
+            "a/b",
+            "a\\b",
+            "/etc/passwd",
+            "foo/../bar",
+            "with space",
+            "emoji😀",
+        ] {
+            assert!(!is_skill_id_ok(bad), "should reject {bad:?}");
+            assert!(ensure_skill_id_ok(bad).is_err(), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn accepts_slug_ids() {
+        for ok in ["core", "rare-disease", "gene_variant", "skill.v2", "a1b2"] {
+            assert!(is_skill_id_ok(ok), "should accept {ok:?}");
+        }
+    }
+
+    #[test]
+    fn skill_dir_in_scope_stays_inside_base() {
+        let base = SkillScope::App.dir().unwrap();
+        let dest = skill_dir_in_scope(SkillScope::App, "core").unwrap();
+        assert_eq!(dest, base.join("core"));
+        assert!(skill_dir_in_scope(SkillScope::App, "../escape").is_err());
+    }
 }
 
 /// Extract the `version:` field from a SKILL.md YAML frontmatter block, if any.

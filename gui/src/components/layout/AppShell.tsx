@@ -42,6 +42,12 @@ interface PendingPrompt {
   attachments?: MessageAttachment[];
   id: string;
   content: string;
+  /**
+   * The thread this prompt was composed for. The consumer must only send it
+   *  when this matches the active thread, so a mid-load thread switch can't
+   *  deliver the first message into the wrong conversation (FE-02).
+   */
+  targetThreadId: string;
 }
 
 interface WorkspaceCreateRequest {
@@ -270,6 +276,7 @@ export function AppShell() {
       attachments: input.attachments,
       id: newPendingPromptId(thread.id),
       content: input.content,
+      targetThreadId: thread.id,
     });
   }
 

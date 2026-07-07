@@ -34,12 +34,18 @@ pub async fn abort_run(
         }
         eprintln!("FutureOS agent abort skipped because agent is unavailable: {error}");
     }
-    store::update_run_status(store::UpdateRunStatusInput {
-        run_id,
+    // Compare-and-set: only cancel a run that isn't already terminal. If the run
+    // finished (completed/failed) in the window before the user's stop landed,
+    // leave that terminal state intact — cancelling it would rewrite a successful
+    // reply as "stopped" and cascade-cancel its approvals/tool_calls (RUN-01).
+    // Either way, return the run's real current state.
+    store::update_run_status_if_active(store::UpdateRunStatusInput {
+        run_id: run_id.clone(),
         status: "cancelled".to_string(),
         error_message: Some("Terminated by user.".to_string()),
         error_type: Some("abort_requested".to_string()),
-    })
+    })?;
+    store::get_run(&run_id)?.ok_or_else(|| "Run could not be loaded.".to_string().into())
 }
 
 pub(super) fn mark_run_failed_if_active(run_id: Option<&str>, error: &str) {

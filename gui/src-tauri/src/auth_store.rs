@@ -9,11 +9,12 @@
 //! a hand-edited file). Write semantics: serialize to a sibling temp file with
 //! `0600`, then atomically `rename` over the target.
 
-use std::io::{ErrorKind, Write};
+use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use serde_json::{json, Map, Value};
 
+use crate::config_io;
 use crate::AppError;
 
 /// The built-in FutureGene provider id. Shared so `agent_providers` doesn't keep
@@ -59,73 +60,38 @@ pub(crate) fn read() -> Result<Map<String, Value>, AppError> {
     }
 }
 
-/// Atomically write `auth.json` with `0600` permissions (unix).
+/// Atomically write `auth.json` with `0600` permissions (unix). Delegates the
+/// temp-file + rename + permission dance to the shared [`config_io`] helper so
+/// all config writers stay consistent (owner-only here; see DUP-06).
 pub(crate) fn write(map: &Map<String, Value>) -> Result<(), AppError> {
     let path = auth_json_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let serialized = format!(
-        "{}\n",
-        serde_json::to_string_pretty(&Value::Object(map.clone()))?
-    );
-
-    // Unique temp name in the same directory so the final `rename` is atomic on
-    // the same filesystem; the pid keeps concurrent writers from colliding.
-    let tmp = path.with_file_name(format!("auth.json.tmp.{}", std::process::id()));
-
-    let result = (|| -> Result<(), AppError> {
-        let mut file = std::fs::File::create(&tmp)?;
-        set_owner_only(&tmp)?;
-        file.write_all(serialized.as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(&tmp, &path)?;
-        // rename preserves the temp file's mode; re-assert in case the target
-        // pre-existed with looser perms on some platforms.
-        set_owner_only(&path)?;
-        Ok(())
-    })();
-
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
-}
-
-#[cfg(unix)]
-fn set_owner_only(path: &PathBuf) -> Result<(), AppError> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_owner_only(_path: &PathBuf) -> Result<(), AppError> {
-    // Windows has no 0600 equivalent; rely on the per-user profile directory.
-    Ok(())
+    config_io::write_json_atomic(&path, &Value::Object(map.clone()), true)
 }
 
 /// Read `auth.json`, upsert the provider's entry (creating it / normalizing a
 /// non-object to `{}`, defaulting `type` to `api_key`), let `mutate` set fields,
-/// then write atomically. Single read+write — shared by all key writers.
+/// then write atomically. The whole read+write is serialized per-path so two
+/// concurrent commands can't lose each other's update (CFG-02).
 fn upsert_provider_entry(
     id: &str,
     mutate: impl FnOnce(&mut Map<String, Value>),
 ) -> Result<(), AppError> {
-    let mut auth = read()?;
-    let entry = auth.entry(id.to_string()).or_insert_with(|| json!({}));
-    if !entry.is_object() {
-        *entry = json!({});
-    }
-    let object = entry
-        .as_object_mut()
-        .expect("entry was just normalized to an object");
-    object
-        .entry("type".to_string())
-        .or_insert_with(|| Value::String("api_key".to_string()));
-    mutate(object);
-    write(&auth)
+    let path = auth_json_path()?;
+    config_io::with_config_lock(&path, || {
+        let mut auth = read()?;
+        let entry = auth.entry(id.to_string()).or_insert_with(|| json!({}));
+        if !entry.is_object() {
+            *entry = json!({});
+        }
+        let object = entry
+            .as_object_mut()
+            .expect("entry was just normalized to an object");
+        object
+            .entry("type".to_string())
+            .or_insert_with(|| Value::String("api_key".to_string()));
+        mutate(object);
+        write(&auth)
+    })
 }
 
 /// Set a provider's API key, preserving any other fields on the entry (e.g. the
@@ -139,27 +105,33 @@ pub(crate) fn set_provider_key(id: &str, key: &str) -> Result<(), AppError> {
 /// Remove a provider's API key but keep the rest of the entry (e.g. FutureGene
 /// logout retains `base_url`). Returns whether a key was present.
 pub(crate) fn remove_provider_key(id: &str) -> Result<bool, AppError> {
-    let mut auth = read()?;
-    let removed = auth
-        .get_mut(id)
-        .and_then(Value::as_object_mut)
-        .map(|entry| entry.remove("key").is_some())
-        .unwrap_or(false);
-    if removed {
-        write(&auth)?;
-    }
-    Ok(removed)
+    let path = auth_json_path()?;
+    config_io::with_config_lock(&path, || {
+        let mut auth = read()?;
+        let removed = auth
+            .get_mut(id)
+            .and_then(Value::as_object_mut)
+            .map(|entry| entry.remove("key").is_some())
+            .unwrap_or(false);
+        if removed {
+            write(&auth)?;
+        }
+        Ok(removed)
+    })
 }
 
 /// Remove a provider's whole auth entry (used when a custom provider is deleted).
 /// Returns whether an entry was present.
 pub(crate) fn remove_provider_entry(id: &str) -> Result<bool, AppError> {
-    let mut auth = read()?;
-    let removed = auth.remove(id).is_some();
-    if removed {
-        write(&auth)?;
-    }
-    Ok(removed)
+    let path = auth_json_path()?;
+    config_io::with_config_lock(&path, || {
+        let mut auth = read()?;
+        let removed = auth.remove(id).is_some();
+        if removed {
+            write(&auth)?;
+        }
+        Ok(removed)
+    })
 }
 
 /// FutureGene login: store the device-flow API key and pin `base_url` under the

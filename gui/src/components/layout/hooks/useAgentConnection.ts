@@ -1,8 +1,9 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { AgentModelOption } from "../../../integrations/agent/agentClient";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { defaultAgentModelId, loadAgentModelOptions, modelOption, resolveInitialModelId } from "../../../integrations/agent/agentClient";
 import { listAgentProviders } from "../../../integrations/agent/providers";
+import { errorMessage } from "../../../lib/errors";
 import { usePolling } from "../../../lib/usePolling";
 
 export interface AgentConnectionState {
@@ -56,14 +57,23 @@ export function useAgentConnection(hiddenModels: string[]): UseAgentConnectionRe
   const [agentConnection, setAgentConnection] = useState<AgentConnectionState>({ status: "checking" });
   const [modelOptions, setModelOptions] = useState<AgentModelOption[]>([]);
   const [selectedModelId, setSelectedModelId] = useState(defaultAgentModelId);
+  // Generation guard: the 10s poll doesn't cancel an in-flight call (see
+  // usePolling), and a connect with no timeout can hang across a tick. Without
+  // this, a slow tick that fails *after* a newer tick already succeeded would
+  // clobber the fresh model list with `[]` and flip the UI to disconnected,
+  // resetting the user's model selection (FE-04). Only the newest call may write.
+  const refreshGenRef = useRef(0);
 
   const refreshAgentModels = useCallback(async () => {
     // Don't flip to "checking" on every poll/retry — that flips the status to
     // disconnected→checking→disconnected each tick and makes the offline notice
     // flash. The initial "checking" comes from the initial state; subsequent
     // refreshes silently keep the last status until a new result lands.
+    const generation = ++refreshGenRef.current;
     try {
       const nextModels = await loadAgentModelOptions();
+      if (generation !== refreshGenRef.current)
+        return;
       setModelOptions(nextModels);
       // Selection reconciliation lives in the visible-set effect below (so it
       // also reacts to models being enabled/disabled, not just catalog changes).
@@ -84,6 +94,8 @@ export function useAgentConnection(hiddenModels: string[]): UseAgentConnectionRe
           // Can't tell — leave as a generic "no models" rather than guessing.
         }
       }
+      if (generation !== refreshGenRef.current)
+        return;
       setAgentConnection({
         checkedAt: Date.now(),
         error: null,
@@ -93,7 +105,11 @@ export function useAgentConnection(hiddenModels: string[]): UseAgentConnectionRe
       });
     }
     catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      // A stale failure must not blank the freshly-loaded catalog nor flip the
+      // status — a newer tick has already reported the truth.
+      if (generation !== refreshGenRef.current)
+        return;
+      const message = errorMessage(error);
       setModelOptions([]);
       setAgentConnection({
         checkedAt: Date.now(),

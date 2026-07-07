@@ -159,10 +159,9 @@ pub async fn download_app_update(
         return Err(AppError::Message("Illegal filename.".to_string()));
     }
 
-    let dir = app
-        .path()
-        .download_dir()
-        .map_err(|error| AppError::Message(format!("Failed to locate download directory: {error}")))?;
+    let dir = app.path().download_dir().map_err(|error| {
+        AppError::Message(format!("Failed to locate download directory: {error}"))
+    })?;
     let dest = dir.join(&file_name);
 
     // No timeout: installers are large and a slow link shouldn't abort mid-file.

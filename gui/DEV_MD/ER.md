@@ -123,6 +123,8 @@ Thread 表示用户可恢复、可继续、可管理的一段对话。
 | `readonly` | 是否只读 |
 | `model_provider` | 最近或默认模型 provider |
 | `model_id` | 最近或默认模型 |
+| `thinking_level` | 该 Thread 的思考档位（`store/schema.rs`；随模型切换持久化） |
+| `agent_session_id` | GUI Thread ↔ Agent 会话映射；解析 Agent 侧 sessions JSONL、远程控制查会话时用（`store/schema.rs`） |
 | `last_message_at` | 最近消息时间 |
 | `last_opened_at` | 最近打开时间 |
 | `created_at` | 创建时间 |
@@ -193,6 +195,7 @@ Run 表示一次 Agent 执行，通常由用户消息触发。
 | `started_at` | 开始时间 |
 | `ended_at` | 结束时间 |
 | `error_message` | 错误信息 |
+| `error_type` | 结构化错误分类（`stream_interrupted`、`command_failed`、`model_failed`、`abort_requested`、`timeout`、`interrupted`、`unknown` 等；配套 `run_error.rs`，未失败时为 NULL） |
 | `created_at` | 创建时间 |
 | `updated_at` | 更新时间 |
 
@@ -544,96 +547,13 @@ Research Resource 表示 Research 中沉淀的研究材料。
 - 按产品决策，转入 Research 后不保留原始对话引用。
 - 大内容同样走文件路径。
 
-### 4.14 Data Source
+### 4.14–4.17 Data Source / Data Credential / Skill / Skill Enablement（已废弃）
 
-Data Source 表示 Data 模块中可访问的数据入口。
-
-字段草案：
-
-| 字段 | 说明 |
-| --- | --- |
-| `id` | Data Source 唯一标识 |
-| `name` | 展示名称 |
-| `kind` | `csv`、`tsv`、`mysql` |
-| `scope` | `global` 或 `workspace` |
-| `workspace_id` | 绑定 Workspace，可为空 |
-| `config` | 非敏感配置 |
-| `readonly` | 是否只读 |
-| `created_at` | 创建时间 |
-| `updated_at` | 更新时间 |
-| `deleted_at` | 删除时间 |
-
-关系：
-
-- 一个 Data Source 可以绑定 Workspace，也可以全局可用。
-- 一个 Data Source 可以关联 Data Credential。
-- 一个 Data Source 可以成为引用对象。
-
-说明：
-
-- 第一版支持 CSV / TSV 文件。
-- 第一版支持一个 MySQL 数据库数据源，且只做只读查询。
-- 模型 provider key 不存放在 Data Source 中。
-
-### 4.15 Data Credential
-
-Data Credential 表示 Data Source 需要的访问凭证。
-
-字段草案：
-
-| 字段 | 说明 |
-| --- | --- |
-| `id` | Data Credential 唯一标识 |
-| `data_source_id` | 所属 Data Source |
-| `credential_ref` | 凭证引用 |
-| `created_at` | 创建时间 |
-| `updated_at` | 更新时间 |
-
-说明：
-
-- ER 设计只记录凭证引用，不建议直接保存明文 secret。
-- Data Credential 与模型 provider key 彻底分开。
-
-### 4.16 Skill
-
-Skill 表示 Agent 可使用的能力。
-
-字段草案：
-
-| 字段 | 说明 |
-| --- | --- |
-| `id` | Skill 唯一标识 |
-| `name` | 名称 |
-| `description` | 描述 |
-| `kind` | `builtin`、`user`、`marketplace` |
-| `version` | 版本 |
-| `created_at` | 创建时间 |
-| `updated_at` | 更新时间 |
-
-说明：
-
-- 第一版只做本地内置 Skill。
-- 用户自定义 Skill 和 marketplace 放入长期任务。
-
-### 4.17 Skill Enablement
-
-Skill Enablement 表示 Skill 在某个范围内是否启用。
-
-字段草案：
-
-| 字段 | 说明 |
-| --- | --- |
-| `id` | Skill Enablement 唯一标识 |
-| `skill_id` | Skill |
-| `scope` | `global` 或 `workspace` |
-| `workspace_id` | Workspace，可为空 |
-| `enabled` | 是否启用 |
-| `created_at` | 创建时间 |
-| `updated_at` | 更新时间 |
-
-说明：
-
-- 支持全局启用和 workspace 级启用。
+> **已废弃并从 schema 删除（2026-07-07，见 ISSUE.md DOC-01）。** 这四张表（`data_sources`、`data_credentials`、`skills`、`skill_enablements`）曾由早期 schema 建立，但从未接入任何 CRUD 代码：
+> - **Data 模块**（CSV/TSV/MySQL 数据源）整体延后，未进入第一版实现。
+> - **Skill** 改走**官方平台目录 + 文件系统**路线（`GET {platform}/client/v1/skills` → 下载安装到 `~/.future/agent/skills`），不入库；语义见 PRODUCT.md §4.11，实现见 `src-tauri/src/skills.rs`。
+>
+> `apply_schema` 通过 `DROPPED_TABLES`（`store/schema.rs`）在旧库上 `DROP TABLE IF EXISTS` 清除它们。若日后重启 Data 功能，需重新设计并回写本节。
 
 ### 4.18 Workspace File
 
@@ -671,7 +591,7 @@ Reference Target 是统一引用对象的索引层。
 | 字段 | 说明 |
 | --- | --- |
 | `id` | Reference Target 唯一标识 |
-| `target_type` | `artifact`、`run`、`tool_call`、`approval_request`、`review_changeset`、`research_resource`、`workspace_file`、`data_source`、`skill` |
+| `target_type` | 实现中解析器使用**短名**（见 `store/markdown_refs/resolve.rs`）：`artifact`、`file`、`run`、`tool`、`approval`、`review`、`research`。`data_source`、`skill` 的 Data/Skill 引用未实现（落 "not supported yet" 分支）；其余类型是设计草案 |
 | `target_id` | 目标对象 id |
 | `scope` | `global` 或 `workspace` |
 | `workspace_id` | 所属 Workspace，可为空 |
@@ -729,15 +649,13 @@ Object Reference 表示某个对象引用了另一个对象。
 - `artifacts`
 - `research_collections`
 - `research_resources`
-- `data_sources`
-- `data_credentials`
-- `skills`
-- `skill_enablements`
 - `workspace_files`
 - `reference_targets`
 - `object_references`
-- `app_settings`（应用级设置：`approval_tier`（`manual`/`sandbox`/`off`）/ `hidden_models`，见 `store/app_settings.rs`）
+- `app_settings`（应用级设置，键值表：`approval_tier`（`manual`/`sandbox`/`off`）、`hidden_models`、`remote_enabled`、`remote_pair_id`、`remote_nats_url`、`show_thinking`，见 `store/app_settings.rs`）
 
+> `data_sources`、`data_credentials`、`skills`、`skill_enablements` 曾在此清单，已于 2026-07-07 从 schema 删除（从未接线，详见 §4.14–4.17）。
+>
 > P2 审批脚手架的三张预留表（`sandbox_config`、`approval_policy_config`、`approval_rules`）已于 2026-07-05 删除——规则迁到文件后成为死结构，详见 §4.8。
 
 ## 6. 关键设计决策

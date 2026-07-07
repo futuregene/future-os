@@ -81,7 +81,7 @@ fn client() -> Result<reqwest::Client, AppError> {
 /// not the model API base — mirror the CLI (`cli/src/commands/auth.ts`).
 fn platform_url() -> String {
     let auth = Value::Object(crate::auth_store::read().unwrap_or_default());
-    crate::agent_providers::resolve_future_platform_url(&auth)
+    crate::future_platform::resolve_future_platform_url(&auth)
 }
 
 /// Begin device authorization: fetch a device/user code and open the

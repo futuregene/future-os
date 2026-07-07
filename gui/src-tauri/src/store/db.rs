@@ -13,7 +13,7 @@ use super::messages::{message_from_row, MessageRecord, MESSAGE_COLUMNS};
 use super::runs::{
     run_event_from_row, run_from_row, RunEventRecord, RunRecord, RUN_COLUMNS, RUN_EVENT_COLUMNS,
 };
-use super::schema::{ADDED_COLUMNS, ADDED_INDEXES, RENAMED_COLUMNS, SCHEMA};
+use super::schema::{ADDED_COLUMNS, ADDED_INDEXES, DROPPED_TABLES, RENAMED_COLUMNS, SCHEMA};
 use super::threads::ThreadRecord;
 use super::util::{create_id, loaded, now_millis};
 use super::workspaces::{get_workspace_in, workspace_from_row, WorkspaceRecord, WORKSPACE_COLUMNS};
@@ -75,6 +75,10 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
     // Indexes over added columns run last, once those columns are guaranteed.
     for statement in ADDED_INDEXES {
         conn.execute(statement, [])?;
+    }
+    // Drop tables removed from the schema (never used; see DROPPED_TABLES).
+    for table in DROPPED_TABLES {
+        conn.execute(&format!("DROP TABLE IF EXISTS {table}"), [])?;
     }
     Ok(())
 }
@@ -229,6 +233,36 @@ mod tests {
     fn apply_schema_on_fresh_db_succeeds() {
         let conn = Connection::open_in_memory().unwrap();
         apply_schema(&conn).unwrap();
+    }
+
+    #[test]
+    fn apply_schema_drops_removed_tables() {
+        // A database created by the old schema still has the four unused tables.
+        // The migration must drop them (and stay idempotent when run again).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE data_sources (id TEXT PRIMARY KEY);
+             CREATE TABLE data_credentials (id TEXT PRIMARY KEY);
+             CREATE TABLE skills (id TEXT PRIMARY KEY);
+             CREATE TABLE skill_enablements (id TEXT PRIMARY KEY);",
+        )
+        .unwrap();
+
+        apply_schema(&conn).unwrap();
+        apply_schema(&conn).unwrap();
+
+        for table in DROPPED_TABLES {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    params![table],
+                    |_| Ok(true),
+                )
+                .optional()
+                .unwrap()
+                .unwrap_or(false);
+            assert!(!exists, "{table} should have been dropped");
+        }
     }
 
     #[test]
