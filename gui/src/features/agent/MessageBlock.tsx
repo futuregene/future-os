@@ -180,7 +180,20 @@ export function MessageBlock({
             ? <span className="select-none text-xs text-ink-muted">{t("message.thinking")}</span>
             : null}
           {!isUser && message.stopped
-            ? <span className="select-none text-xs text-ink-muted">{t("message.stopped")}</span>
+            ? (
+                <span
+                  // Reveal on hover like the copy button / MessageMeta — a settled
+                  // row stays clean until hovered. `will-change-[opacity]` keeps the
+                  // fade on the compositor (WKWebView drops in-flow repaints; see
+                  // CopyButton above for the full story).
+                  className={cn(
+                    "select-none text-xs text-ink-muted will-change-[opacity] transition-opacity duration-200",
+                    hovered ? "opacity-100" : "opacity-0",
+                  )}
+                >
+                  {t("message.stopped")}
+                </span>
+              )
             : null}
         </div>
       </div>
