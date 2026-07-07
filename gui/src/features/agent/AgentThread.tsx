@@ -3,6 +3,7 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
+import { ArrowDown } from "lucide-react";
 import { useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
@@ -70,6 +71,8 @@ export function AgentThread({
     messages,
     scrollRef,
     scrollbar,
+    scrollToLatest,
+    showJumpToLatest,
   } = useAgentThreadState({
     thread,
     loadingStore,
@@ -197,6 +200,20 @@ export function AgentThread({
                     onOpenProviders={onOpenProviders}
                     onRetry={onRetryAgentConnection}
                   />
+                )
+              : null}
+            {showJumpToLatest
+              ? (
+                  <button
+                    type="button"
+                    onClick={scrollToLatest}
+                    aria-label={t("thread.jumpToLatest")}
+                    title={t("thread.jumpToLatest")}
+                    className="pointer-events-auto mx-auto flex items-center gap-1 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
+                  >
+                    <ArrowDown className="size-3.5" />
+                    {t("thread.jumpToLatest")}
+                  </button>
                 )
               : null}
             <Composer
