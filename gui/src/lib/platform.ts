@@ -6,3 +6,10 @@
  */
 export const isMacOS
   = typeof navigator !== "undefined" && /Macintosh|Mac OS X/i.test(navigator.userAgent);
+
+/**
+ * Platform detection for user-facing labels that follow OS conventions — e.g.
+ * "Reveal in Finder" (macOS) vs "Show in File Explorer" (Windows).
+ */
+export const isWindows
+  = typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);

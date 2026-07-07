@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ChevronRight,
   Folder,
+  FolderOpen,
   MessageSquare,
   MoreHorizontal,
   PanelLeftClose,
@@ -23,8 +24,9 @@ import {
 } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { openPath } from "../../integrations/storage/files";
 import { cn } from "../../lib/cn";
-import { isMacOS } from "../../lib/platform";
+import { isMacOS, isWindows } from "../../lib/platform";
 import { useBuildInfo } from "../../lib/useBuildInfo";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
@@ -728,6 +730,13 @@ function WorkspaceHeaderMenu({
   onRename: (workspace: StoredWorkspace) => void;
 }) {
   const { t } = useTranslation("layout");
+  // Label follows OS convention: Finder (macOS) / File Explorer (Windows) /
+  // File Manager (Linux and other).
+  const revealLabel = isMacOS
+    ? t("activityRail.revealInFinder")
+    : isWindows
+      ? t("activityRail.revealInExplorer")
+      : t("activityRail.revealInFileManager");
   const [open, setOpen] = useState(false);
   const layerRef = useDismissableLayer<HTMLDivElement>({ enabled: open, onDismiss: () => setOpen(false) });
   const menuRef = useRef<HTMLDivElement>(null);
@@ -765,12 +774,15 @@ function WorkspaceHeaderMenu({
             <div
               ref={menuRef}
               className={cn(
-                "absolute right-0 z-40 w-36 rounded-lg border border-line-soft bg-surface p-1 shadow-panel",
+                "absolute right-0 z-40 w-max min-w-36 rounded-lg border border-line-soft bg-surface p-1 shadow-panel",
                 dropUp ? "bottom-7" : "top-7",
               )}
             >
               <ThreadMenuItem icon={<Pencil className="size-3.5" />} onClick={() => onRename(workspace)} onClose={() => setOpen(false)}>
                 {t("activityRail.rename")}
+              </ThreadMenuItem>
+              <ThreadMenuItem icon={<FolderOpen className="size-3.5" />} onClick={() => void openPath(workspace.path).catch(() => {})} onClose={() => setOpen(false)}>
+                {revealLabel}
               </ThreadMenuItem>
               <ThreadMenuItem danger icon={<Trash2 className="size-3.5" />} onClick={() => onDelete(workspace)} onClose={() => setOpen(false)}>
                 {t("activityRail.delete")}
@@ -808,7 +820,7 @@ function ThreadMenuItem({
       type="button"
     >
       {icon}
-      <span>{children}</span>
+      <span className="whitespace-nowrap">{children}</span>
     </button>
   );
 }
