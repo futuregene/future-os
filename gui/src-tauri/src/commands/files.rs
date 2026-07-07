@@ -76,34 +76,91 @@ pub fn read_file_base64(path: String, max_bytes: Option<u64>) -> Result<String, 
     Ok(STANDARD.encode(std::fs::read(trimmed)?))
 }
 
-/// Persist a base64-encoded JPEG thumbnail under `<appCache>/thumbnails/<key>.jpg`
-/// and return its absolute path (rendered in the webview via `convertFileSrc`).
-#[tauri::command]
-pub fn write_thumbnail(
-    app: tauri::AppHandle,
-    base64_jpeg: String,
-    key: String,
-) -> Result<String, crate::AppError> {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
-    use tauri::Manager;
-    let safe_key: String = key
+/// A filesystem-safe, process-unique stamp (`<nanos>-<seq>`). The atomic seq
+/// disambiguates the several attachments of one message, which are imported
+/// concurrently and could otherwise collide on the same nanosecond.
+fn unique_stamp() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{nanos}-{seq}")
+}
+
+/// Reduce an arbitrary string to a safe single path component (used for the
+/// thread id, which becomes a directory name — guards against traversal).
+fn safe_component(value: &str) -> String {
+    value
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect()
+}
+
+/// Sanitize a display filename to safe chars while preserving the extension.
+fn safe_file_name(name: &str) -> String {
+    let base = std::path::Path::new(name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("image");
+    let cleaned: String = base
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
         .collect();
-    if safe_key.is_empty() {
-        return Err("invalid thumbnail key.".to_string().into());
+    if cleaned.is_empty() {
+        "image".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Persist a base64-encoded JPEG thumbnail under
+/// `~/.future/app/images/<thread_id>/thumb/<stamp>.jpg` and return its absolute
+/// path (rendered in the webview via `convertFileSrc`). This lives in a
+/// persistent tree — unlike the app cache dir, which macOS purges as reclaimable
+/// space, orphaning the thumbnail paths stored in messages.
+#[tauri::command]
+pub fn write_thumbnail(thread_id: String, base64_jpeg: String) -> Result<String, crate::AppError> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let thread_id = safe_component(&thread_id);
+    if thread_id.is_empty() {
+        return Err("invalid thread id.".to_string().into());
     }
     let bytes = STANDARD
         .decode(base64_jpeg.as_bytes())
         .map_err(|error| format!("invalid thumbnail data: {error}"))?;
-    let dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|error| format!("cache dir unavailable: {error}"))?
-        .join("thumbnails");
+    let dir = crate::store::thread_images_dir(&thread_id)?.join("thumb");
     std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{safe_key}.jpg"));
+    let path = dir.join(format!("{}.jpg", unique_stamp()));
     std::fs::write(&path, &bytes)?;
+    Ok(path.display().to_string())
+}
+
+/// Copy a workspace-mode image original into
+/// `~/.future/app/images/<thread_id>/origin/<stamp>_<name>` and return the new
+/// path. Workspace conversations don't save attachments into the user's project
+/// dir, so the durable copy lives here (persistent, in the asset-protocol scope)
+/// instead of the temp dir, which the OS may purge.
+#[tauri::command]
+pub fn import_workspace_image(
+    thread_id: String,
+    source_path: String,
+    name: String,
+) -> Result<String, crate::AppError> {
+    let thread_id = safe_component(&thread_id);
+    if thread_id.is_empty() {
+        return Err("invalid thread id.".to_string().into());
+    }
+    let source = source_path.trim();
+    if source.is_empty() {
+        return Err("sourcePath cannot be empty.".to_string().into());
+    }
+    let dir = crate::store::thread_images_dir(&thread_id)?.join("origin");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{}_{}", unique_stamp(), safe_file_name(&name)));
+    std::fs::copy(source, &path)?;
     Ok(path.display().to_string())
 }
 

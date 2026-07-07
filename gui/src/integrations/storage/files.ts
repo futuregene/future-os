@@ -51,10 +51,22 @@ export async function readFileBase64(input: { path: string; maxBytes?: number | 
   });
 }
 
-export async function writeThumbnail(input: { base64Jpeg: string; key: string }) {
+export async function writeThumbnail(input: { threadId: string; base64Jpeg: string }) {
   return invokeCommand<string>("write_thumbnail", {
     base64Jpeg: input.base64Jpeg,
-    key: input.key,
+    threadId: input.threadId,
+  });
+}
+
+/**
+ * Copy a workspace-mode image original into the thread's persistent image dir
+ * (`~/.future/app/images/<threadId>/origin`) and return the durable path.
+ */
+export async function importWorkspaceImage(input: { threadId: string; path: string; name: string }) {
+  return invokeCommand<string>("import_workspace_image", {
+    name: input.name,
+    sourcePath: input.path,
+    threadId: input.threadId,
   });
 }
 

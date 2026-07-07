@@ -98,6 +98,55 @@ fn orphan_thread_ids(
     Ok(orphans)
 }
 
+/// Reclaim per-thread image directories (`~/.future/app/images/<tid>`) whose
+/// thread no longer lives in the DB. This is the primary reclamation path for
+/// attachment thumbnails and workspace-mode originals: there is no per-delete
+/// physical executor, and threads can be removed out-of-band by the TUI/CLI
+/// (`delete_session`) without the GUI observing it. A thread counts as "gone"
+/// once it is absent or soft-deleted (`status = 'deleted'`) — there is no
+/// soft-delete undo, so a deleted thread's images are safe to drop. Runs once at
+/// startup, best-effort. Returns the number of directories removed.
+pub fn reconcile_orphan_images() -> Result<usize, crate::AppError> {
+    let root = crate::store::app_images_root()?;
+    if !root.exists() {
+        return Ok(0);
+    }
+    let orphans = {
+        let conn = connect()?;
+        orphan_image_dirs(&conn, &root)?
+    };
+    for dir in &orphans {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    Ok(orphans.len())
+}
+
+/// Decide which `images/<tid>` directories have no live thread. Split out from
+/// the deletion so the rule can be unit-tested against an in-memory DB and a
+/// temp images dir.
+fn orphan_image_dirs(conn: &Connection, root: &Path) -> Result<Vec<PathBuf>, crate::AppError> {
+    let live: HashSet<String> = {
+        let mut stmt = conn.prepare("SELECT id FROM threads WHERE status != 'deleted'")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+
+    let mut orphans = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let Some(thread_id) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !live.contains(&thread_id) {
+            orphans.push(entry.path());
+        }
+    }
+    Ok(orphans)
+}
+
 pub fn get_thread_cleanup_summary(
     thread_id: &str,
 ) -> Result<ThreadCleanupSummary, crate::AppError> {
@@ -385,5 +434,38 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
         assert_eq!(orphans, vec!["B".to_string(), "E".to_string()]);
+    }
+
+    #[test]
+    fn orphan_image_dirs_keeps_only_live_threads() {
+        let conn = test_conn();
+        // Active thread -> its image dir is kept.
+        insert_thread(&conn, "live", None);
+        // Soft-deleted thread -> swept (there is no soft-delete undo).
+        insert_thread(&conn, "dead", None);
+        conn.execute("UPDATE threads SET status = 'deleted' WHERE id = 'dead'", [])
+            .expect("soft-delete thread");
+        // "ghost" has no thread row at all -> swept.
+
+        let root = temp_sessions_dir(); // a unique, freshly-created temp dir
+        for tid in ["live", "dead", "ghost"] {
+            std::fs::create_dir_all(root.join(tid).join("thumb")).expect("create image dir");
+        }
+        // A stray file at the root must be ignored (only directories are dirs).
+        std::fs::write(root.join("stray.txt"), b"x").expect("write stray file");
+
+        let mut names: Vec<String> = orphan_image_dirs(&conn, &root)
+            .expect("sweep")
+            .into_iter()
+            .filter_map(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        names.sort();
+
+        std::fs::remove_dir_all(&root).ok();
+        assert_eq!(names, vec!["dead".to_string(), "ghost".to_string()]);
     }
 }
