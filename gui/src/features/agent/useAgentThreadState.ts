@@ -295,12 +295,12 @@ export function useAgentThreadState({
       );
       clearStreamTimer();
 
-      // Chat attachments were copied into the artifact store, so the pasted temp
-      // originals are now redundant. (Guarded to our temp dir; user-picked files
-      // are rejected and left untouched. Workspace threads keep temps for resend.)
-      if (thread.mode === "chat") {
-        void Promise.all(attachments.map(item => deleteTempAttachment(item.path).catch(() => {})));
-      }
+      // Both modes now hold a durable copy of pasted images — chat in the
+      // artifact store, workspace in images/<tid>/origin — so the pasted temp
+      // originals are redundant and can go. delete_temp_attachment is guarded to
+      // our futureos-attachments dir, so user-picked files (real paths) are
+      // rejected and left untouched.
+      void Promise.all(attachments.map(item => deleteTempAttachment(item.path).catch(() => {})));
 
       const currentRun = await loadCurrentRun(thread.id, run.id);
       if (currentRun && matchesSettledRun(currentRun.status)) {
