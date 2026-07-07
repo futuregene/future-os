@@ -148,7 +148,7 @@ function CodeBlock({
           onCopy={() => void copy(code)}
           variant="floating"
         />
-        <pre className="overflow-auto rounded-lg bg-surface-subtle p-3 pr-11 text-xs leading-5 text-ink">
+        <pre className="overflow-auto rounded-lg border border-line-soft bg-surface-subtle p-3 pr-11 text-xs leading-5 text-ink">
           {language ? <div className="mb-2 text-[11px] text-ink-muted">{language}</div> : null}
           <code>{code}</code>
         </pre>
@@ -166,7 +166,7 @@ function CodeBlock({
         variant="floating"
       />
       <pre
-        className="overflow-auto rounded-lg p-3 pr-11 text-xs leading-5"
+        className="overflow-auto rounded-lg border border-line-soft p-3 pr-11 text-xs leading-5"
         style={{ backgroundColor: highlighted.bgColor, color: highlighted.fgColor }}
       >
         {language ? <div className="mb-2 text-[11px] opacity-60">{language}</div> : null}
