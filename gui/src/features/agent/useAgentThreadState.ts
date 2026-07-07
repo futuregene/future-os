@@ -296,9 +296,15 @@ export function useAgentThreadState({
         // survives a reload instead of vanishing, and finalize the streaming
         // bubble in place. Other settled statuses were finalized by whoever set
         // them — just release the lock (via `finally`).
-        if (currentRun.status === "cancelled" && isCurrentSend()) {
+        if (currentRun.status === "cancelled") {
           const partial = reply.content.trim();
           if (partial) {
+            // Persist the partial reply regardless of whether this view still owns
+            // the send: aborting and then immediately switching threads flips
+            // `isCurrentSend()` false, and gating persistence on it dropped the
+            // already-generated text permanently (FE-08). This local send is the
+            // only writer for the run, so there's no double-insert; on return to
+            // the thread the reload restores it (stopped, per run.status).
             const storedAssistantMessage = await appendMessage({
               threadId: thread.id,
               runId: run.id,
@@ -307,22 +313,25 @@ export function useAgentThreadState({
               content: partial,
               status: "complete",
             });
-            const abortedRender = deriveRenderFields(
-              await safeListRunEvents(run.id),
-              storedAssistantMessage.content,
-            );
-            patchMessage(setMessages, pendingId, {
-              id: storedAssistantMessage.id,
-              runId: storedAssistantMessage.runId,
-              content: abortedRender.content,
-              segments: abortedRender.segments,
-              status: storedAssistantMessage.status,
-              createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
-              outputTokens: abortedRender.outputTokens,
-              stopped: true,
-            });
+            if (isCurrentSend()) {
+              const abortedRender = deriveRenderFields(
+                await safeListRunEvents(run.id),
+                storedAssistantMessage.content,
+              );
+              patchMessage(setMessages, pendingId, {
+                id: storedAssistantMessage.id,
+                runId: storedAssistantMessage.runId,
+                content: abortedRender.content,
+                segments: abortedRender.segments,
+                status: storedAssistantMessage.status,
+                createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
+                outputTokens: abortedRender.outputTokens,
+                stopped: true,
+              });
+              onThreadActivity();
+            }
           }
-          else {
+          else if (isCurrentSend()) {
             // Aborted before any text landed (e.g. still in the thinking phase).
             // There's nothing to persist, but the pending bubble must leave
             // "streaming" — otherwise `isSending` stays true, so the composer is
@@ -334,8 +343,8 @@ export function useAgentThreadState({
               thinkingActive: false,
               stopped: true,
             });
+            onThreadActivity();
           }
-          onThreadActivity();
         }
         return;
       }

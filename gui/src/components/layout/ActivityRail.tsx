@@ -1,40 +1,32 @@
 import type { LucideIcon } from "lucide-react";
-import type { ReactNode } from "react";
 import type { StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
 import {
-  Archive,
   Blocks,
   ChevronDown,
   ChevronRight,
   Folder,
-  FolderOpen,
   MessageSquare,
-  MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
-  Pencil,
-  Pin,
   Plus,
   Settings,
   Smartphone,
   Sparkles,
   SquarePen,
-  Trash2,
 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { openPath } from "../../integrations/storage/files";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { cn } from "../../lib/cn";
-import { isMacOS, isWindows } from "../../lib/platform";
-import { useDismissableLayer } from "../../lib/useDismissableLayer";
+import { isMacOS } from "../../lib/platform";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { useIsFullscreen } from "../../lib/useIsFullscreen";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { FloatingScrollbar } from "../ui/FloatingScrollbar";
 import { IconButton } from "../ui/IconButton";
-import { useDropUpMenu } from "./hooks/useDropUpMenu";
+import { WorkspaceHeaderMenu } from "./ActivityRailMenus";
+import { ThreadListItem } from "./ThreadListItem";
 
 export type ActivitySection = "chat" | "workspace" | "research" | "data" | "skill" | "remote" | "settings";
 
@@ -443,114 +435,20 @@ export function ActivityRail({
   );
 }
 
-function ThreadListItem({
-  active,
-  archived,
-  compact,
-  menuOpen,
-  runStatus,
-  thread,
-  unread,
-  onDeleteThread,
-  onMenuOpenChange,
-  onRenameThread,
-  onRestoreThread,
-  onSelectThread,
-  onTogglePinThread,
-}: {
-  active: boolean;
-  archived?: boolean;
-  compact?: boolean;
-  menuOpen: boolean;
-  runStatus?: ThreadRunInfo;
-  thread: StoredThread;
-  unread?: boolean;
-  onDeleteThread: (thread: StoredThread) => void;
-  onMenuOpenChange: (open: boolean) => void;
-  onRenameThread: (thread: StoredThread) => void;
-  onRestoreThread: (thread: StoredThread) => void;
-  onSelectThread: (thread: StoredThread) => void;
-  onTogglePinThread: (thread: StoredThread) => void;
-}) {
-  const { t } = useTranslation("layout");
-  const menuRef = useDismissableLayer<HTMLDivElement>({
-    enabled: menuOpen,
-    onDismiss: () => onMenuOpenChange(false),
+function sortThreads(items: StoredThread[]) {
+  return [...items].sort((a, b) => {
+    if (a.status !== b.status)
+      return a.status === "active" ? -1 : 1;
+    if (a.pinned !== b.pinned)
+      return a.pinned ? -1 : 1;
+    return threadSortTime(b) - threadSortTime(a);
   });
-
-  return (
-    <div
-      ref={menuRef}
-      className={cn(
-        // Full-width row; workspace threads (compact) indent their content via
-        // padding so the highlight still spans the full width (req 2).
-        "group/thread relative flex w-full items-center gap-1 rounded-md pr-2 text-left transition-colors hover:bg-surface-subtle",
-        compact ? "h-7 pl-7" : "h-8 gap-2 pl-2",
-        active && "bg-surface-subtle text-ink",
-      )}
-    >
-      {/* Full-row click target so the whole (highlighted) row selects the
-          thread. Content below sits on top but is pointer-events-none so clicks
-          fall through to this button; the actions trigger and menu keep a higher
-          stacking (z-10 / z-40) so they stay clickable and never mis-fire. */}
-      <button
-        aria-label={thread.title}
-        className="absolute inset-0 rounded-md"
-        onClick={() => onSelectThread(thread)}
-        title={thread.title}
-        type="button"
-      />
-      {/* Spacer keeps the non-compact title indent after dropping the (uniform,
-          meaningless) chat-bubble icon. */}
-      {!compact ? <span className="pointer-events-none size-4 shrink-0" /> : null}
-      <span
-        className={cn(
-          "pointer-events-none min-w-0 flex-1 truncate text-sm font-medium",
-          archived ? "text-ink-muted" : "text-ink-soft",
-        )}
-      >
-        {thread.title}
-      </span>
-      {archived ? <span className="pointer-events-none shrink-0 text-[11px] text-ink-muted group-hover/thread:hidden">{t("activityRail.archived")}</span> : null}
-      <span className="pointer-events-none flex shrink-0">
-        <ThreadRunIndicator status={runStatus?.status} unread={unread} />
-      </span>
-      <button
-        aria-label={t("activityRail.threadActions", { title: thread.title })}
-        className={cn(
-          "relative z-10 hidden size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft group-hover/thread:inline-flex",
-          menuOpen && "inline-flex",
-        )}
-        onClick={(event) => {
-          event.stopPropagation();
-          onMenuOpenChange(!menuOpen);
-        }}
-        title={t("activityRail.threadActions", { title: thread.title })}
-        type="button"
-      >
-        <MoreHorizontal className="size-3.5" />
-      </button>
-      {menuOpen
-        ? (
-            <ThreadItemMenu
-              archived={archived}
-              pinned={thread.pinned}
-              onClose={() => onMenuOpenChange(false)}
-              onDelete={() => onDeleteThread(thread)}
-              onRename={() => onRenameThread(thread)}
-              onRestore={() => onRestoreThread(thread)}
-              onTogglePin={() => onTogglePinThread(thread)}
-            />
-          )
-        : null}
-    </div>
-  );
 }
 
-/**
- * Bottom edge (viewport px) of the nearest scroll/clip ancestor, or the
- * viewport height when none clips — used to decide if a menu must flip up.
- */
+function threadSortTime(thread: StoredThread) {
+  return thread.lastMessageAt ?? thread.lastOpenedAt ?? thread.updatedAt ?? thread.createdAt;
+}
+
 /**
  * A full-width expanded-rail nav button (New Chat, Models, feature entries). The
  * Settings entry keeps its own accent active style and isn't built on this.
@@ -581,203 +479,6 @@ function NavButton({
     >
       <Icon className={cn("size-4 shrink-0", primary && "text-ink-soft")} />
       <span className="truncate">{label}</span>
-    </button>
-  );
-}
-
-function sortThreads(items: StoredThread[]) {
-  return [...items].sort((a, b) => {
-    if (a.status !== b.status)
-      return a.status === "active" ? -1 : 1;
-    if (a.pinned !== b.pinned)
-      return a.pinned ? -1 : 1;
-    return threadSortTime(b) - threadSortTime(a);
-  });
-}
-
-function threadSortTime(thread: StoredThread) {
-  return thread.lastMessageAt ?? thread.lastOpenedAt ?? thread.updatedAt ?? thread.createdAt;
-}
-
-function ThreadRunIndicator({ status, unread }: { status?: ThreadRunInfo["status"]; unread?: boolean }) {
-  const { t } = useTranslation("layout");
-  // Reserved-width placeholder so idle rows (and the hover state) stay aligned.
-  const placeholder = <span className="size-5 shrink-0 group-hover/thread:hidden" />;
-
-  if (status === "queued" || status === "running" || status === "waiting_approval") {
-    return (
-      <span
-        aria-label={t("activityRail.running")}
-        className="inline-flex size-5 shrink-0 items-center justify-center group-hover/thread:hidden"
-        title={t("activityRail.running")}
-      >
-        <span className="size-3 animate-spin rounded-full border-2 border-accent-soft border-t-accent" />
-      </span>
-    );
-  }
-
-  // A finished run is "unread" until the thread is opened: green when it
-  // completed, red when it failed. Once read no dot shows. `cancelled` is a
-  // deliberate user action (they aborted the run), so it never needs surfacing
-  // as unread — it falls through to the empty placeholder below.
-  if (unread && (status === "completed" || status === "failed")) {
-    const failed = status === "failed";
-    const label = failed ? t("activityRail.failed") : t("activityRail.completed");
-    return (
-      <span
-        aria-label={label}
-        className="inline-flex size-5 shrink-0 items-center justify-center group-hover/thread:hidden"
-        title={label}
-      >
-        <span className={cn("size-2 rounded-full", failed ? "bg-danger" : "bg-success")} />
-      </span>
-    );
-  }
-
-  return placeholder;
-}
-
-function ThreadItemMenu({
-  archived,
-  pinned,
-  onClose,
-  onDelete,
-  onRename,
-  onRestore,
-  onTogglePin,
-}: {
-  archived?: boolean;
-  pinned: boolean;
-  onClose: () => void;
-  onDelete: () => void;
-  onRename: () => void;
-  onRestore: () => void;
-  onTogglePin: () => void;
-}) {
-  const { t } = useTranslation("layout");
-  const { menuRef, dropUp } = useDropUpMenu();
-
-  return (
-    <div
-      ref={menuRef}
-      className={cn(
-        "absolute right-1 z-40 w-36 rounded-lg border border-line-soft bg-surface p-1 shadow-panel",
-        dropUp ? "bottom-7" : "top-7",
-      )}
-    >
-      {archived
-        ? (
-            <ThreadMenuItem icon={<Archive className="size-3.5" />} onClick={onRestore} onClose={onClose}>
-              {t("activityRail.restore")}
-            </ThreadMenuItem>
-          )
-        : (
-            <>
-              <ThreadMenuItem icon={<Pencil className="size-3.5" />} onClick={onRename} onClose={onClose}>
-                {t("activityRail.rename")}
-              </ThreadMenuItem>
-              <ThreadMenuItem icon={<Pin className="size-3.5" />} onClick={onTogglePin} onClose={onClose}>
-                {pinned ? t("activityRail.unpin") : t("activityRail.pin")}
-              </ThreadMenuItem>
-            </>
-          )}
-      <ThreadMenuItem danger icon={<Trash2 className="size-3.5" />} onClick={onDelete} onClose={onClose}>
-        {t("activityRail.delete")}
-      </ThreadMenuItem>
-    </div>
-  );
-}
-
-function WorkspaceHeaderMenu({
-  workspace,
-  onDelete,
-  onRename,
-}: {
-  workspace: StoredWorkspace;
-  onDelete: (workspace: StoredWorkspace) => void;
-  onRename: (workspace: StoredWorkspace) => void;
-}) {
-  const { t } = useTranslation("layout");
-  // Label follows OS convention: Finder (macOS) / File Explorer (Windows) /
-  // File Manager (Linux and other).
-  const revealLabel = isMacOS
-    ? t("activityRail.revealInFinder")
-    : isWindows
-      ? t("activityRail.revealInExplorer")
-      : t("activityRail.revealInFileManager");
-  const [open, setOpen] = useState(false);
-  const layerRef = useDismissableLayer<HTMLDivElement>({ enabled: open, onDismiss: () => setOpen(false) });
-  const { menuRef, dropUp } = useDropUpMenu(open);
-
-  return (
-    <div className="relative" ref={layerRef}>
-      <button
-        aria-label={t("activityRail.workspaceActions", { name: workspace.name })}
-        className={cn(
-          "inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-surface hover:text-ink-soft group-hover:opacity-100",
-          open && "opacity-100",
-        )}
-        onClick={(event) => {
-          event.stopPropagation();
-          setOpen(value => !value);
-        }}
-        title={t("activityRail.workspaceActions", { name: workspace.name })}
-        type="button"
-      >
-        <MoreHorizontal className="size-3.5" />
-      </button>
-      {open
-        ? (
-            <div
-              ref={menuRef}
-              className={cn(
-                "absolute right-0 z-40 w-max min-w-36 rounded-lg border border-line-soft bg-surface p-1 shadow-panel",
-                dropUp ? "bottom-7" : "top-7",
-              )}
-            >
-              <ThreadMenuItem icon={<Pencil className="size-3.5" />} onClick={() => onRename(workspace)} onClose={() => setOpen(false)}>
-                {t("activityRail.rename")}
-              </ThreadMenuItem>
-              <ThreadMenuItem icon={<FolderOpen className="size-3.5" />} onClick={() => void openPath(workspace.path).catch(() => {})} onClose={() => setOpen(false)}>
-                {revealLabel}
-              </ThreadMenuItem>
-              <ThreadMenuItem danger icon={<Trash2 className="size-3.5" />} onClick={() => onDelete(workspace)} onClose={() => setOpen(false)}>
-                {t("activityRail.delete")}
-              </ThreadMenuItem>
-            </div>
-          )
-        : null}
-    </div>
-  );
-}
-
-function ThreadMenuItem({
-  children,
-  danger,
-  icon,
-  onClick,
-  onClose,
-}: {
-  children: string;
-  danger?: boolean;
-  icon: ReactNode;
-  onClick: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <button
-      className={cn(
-        "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm font-medium transition-colors",
-        danger ? "text-danger hover:bg-danger-soft" : "text-ink-soft hover:bg-surface-subtle hover:text-ink",
-      )}
-      onClick={() => {
-        onClose();
-        onClick();
-      }}
-      type="button"
-    >
-      {icon}
-      <span className="whitespace-nowrap">{children}</span>
     </button>
   );
 }
