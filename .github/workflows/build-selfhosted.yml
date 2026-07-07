@@ -97,7 +97,7 @@ jobs:
       - name: Detect toolchains (Windows)
         id: detect_win
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: |
           function Have($c) { if (Get-Command $c -ErrorAction SilentlyContinue) { "true" } else { "false" } }
           @(
@@ -105,7 +105,7 @@ jobs:
             "bun=$(Have bun)"
             "cargo=$(Have cargo)"
             "protoc=$(Have protoc)"
-          ) | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          ) | Add-Content -Path $env:GITHUB_OUTPUT
 
       - name: Setup Node.js
         if: steps.detect.outputs.node == 'false' || steps.detect_win.outputs.node == 'false'
@@ -131,11 +131,11 @@ jobs:
 
       - name: Install Rust (Windows)
         if: steps.detect_win.outputs.cargo == 'false' && runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: |
           Invoke-WebRequest https://win.rustup.rs -OutFile "$env:RUNNER_TEMP\rustup-init.exe"
           & "$env:RUNNER_TEMP\rustup-init.exe" -y --default-toolchain stable
-          "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          "$env:USERPROFILE\.cargo\bin" | Add-Content -Path $env:GITHUB_PATH
 
       # Linux GUI/build system libs. `pkg-config` probe skips the (sudo) apt-get
       # when the WebKitGTK stack and patchelf are already present.
@@ -199,17 +199,17 @@ jobs:
 
       - name: Setup ossutil (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: |
           if (-not (Get-Command ossutil -ErrorAction SilentlyContinue)) {
             $ver = "2.2.0"
             $pkg = "ossutil-$ver-windows-amd64"
             Invoke-WebRequest "https://gosspublic.alicdn.com/ossutil/v2/$ver/$pkg.zip" -OutFile "$env:RUNNER_TEMP\ossutil.zip"
             Expand-Archive -Path "$env:RUNNER_TEMP\ossutil.zip" -DestinationPath "$env:RUNNER_TEMP\oss" -Force
-            "$env:RUNNER_TEMP\oss\$pkg" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            "$env:RUNNER_TEMP\oss\$pkg" | Add-Content -Path $env:GITHUB_PATH
           }
           $region = $env:OSS_ENDPOINT -replace '^https?://','' -replace '^oss-','' -replace '-internal','' -replace '\.aliyuncs\.com$',''
-          "OSS_REGION=$region" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "OSS_REGION=$region" | Add-Content -Path $env:GITHUB_ENV
 
       - name: Install npm dependencies (GUI)
         working-directory: gui
@@ -232,7 +232,7 @@ jobs:
 
       - name: Build bundled agent (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: |
           cargo build --release --manifest-path agent/Cargo.toml
           $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
@@ -257,7 +257,7 @@ jobs:
       - name: Build CLI binary (Windows)
         if: runner.os == 'Windows'
         working-directory: cli
-        shell: pwsh
+        shell: powershell
         run: |
           npm run build
           bun build --compile dist/index.js --outfile dist/future-cli.exe --external chromium-bidi
@@ -306,7 +306,7 @@ jobs:
       # to the exe. Requires the WebView2 Evergreen runtime (ships with Win 10/11).
       - name: Assemble Windows portable
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: |
           $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
           $dir = "futureos-portable"
@@ -372,7 +372,7 @@ jobs:
 
       - name: Upload to OSS (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: |
           $version = "${{ needs.version.outputs.version }}"
           if ("${{ needs.version.outputs.is_release }}" -eq "true") { $prefix = "releases" } else { $prefix = "test" }
