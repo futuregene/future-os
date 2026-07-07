@@ -11,7 +11,8 @@
 - **方案三 ✅** — 新增 `config_io.rs`（严格读 + 原子写 + 每路径 RMW 锁，4 单测）；`agent_providers`/`auth_store`/`approval_rules` 迁移（CFG-01/02/03）；CFG-04 内建 provider 删除守卫；`future_platform.rs` 归位错置解析器；`qualify_columns`（DUP-07）
 - **方案四 ✅** — 删除 4 张死表（`DROPPED_TABLES` 迁移 + 测试）；PRODUCT/ER/CLAUDE/APPROVAL_PLAN 回写（DOC-01~06；口径：不做第三方付费市场，仅官方平台目录）
 - **方案五 ✅（部分）** — `useDropUpMenu`（DUP-01）、`NavButton`（消 5 处重复）、`lib/errors.ts errorMessage`（DUP-03，已迁移本次改动涉及文件）。**未做**：ActivityRail 多文件拆分（纯行数、暂缓）、`formatBytes` 合并（两处语义不同、非真重复）、BackButton/IconButton 变体、errorMessage 全量 23 处迁移
-- **暂缓** — SEC-02（远程零鉴权，功能未开发完）、SEC-04/05、FE-08~11、STR-04、DUP-08 等
+- **追加批次 ✅** — FE-10（附件截断改 UTF-8 字符边界安全 `truncateToBytes`，PDF 加 `MAX_PDF_PAGES=100`）、FE-08（abort 部分文本落库不再受 `isCurrentSend` 门控，切线程不丢失）、FE-11（缩略图 key 改 SHA-256 前缀，抗碰撞）、STR-03（ActivityRail 826→484 行，拆出 `ThreadListItem.tsx` / `ActivityRailMenus.tsx`）
+- **仍暂缓** — SEC-02（远程零鉴权，功能未开发完）、SEC-04/05（端口冒充 / 更新包哈希，后者需流水线先发布 hash）、FE-09（仅 legacy 数据）、STR-04/07、DUP-08（列序漂移宏，较重）、DOC-07、HYG-02
 
 验证：`cargo test`（90 通过）+ clippy + fmt 全绿；`tsc` + `eslint` + `vitest`（50 通过）全绿。
 
