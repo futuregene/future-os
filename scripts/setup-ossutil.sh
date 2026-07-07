@@ -21,12 +21,20 @@ OSSUTIL_VERSION="${OSSUTIL_VERSION:-2.2.0}"
 pkg="ossutil-${OSSUTIL_VERSION}-linux-amd64"
 url="https://gosspublic.alicdn.com/ossutil/v2/${OSSUTIL_VERSION}/${pkg}.zip"
 
-echo "==> Downloading ossutil ${OSSUTIL_VERSION}"
-curl -fsSL -o /tmp/ossutil.zip "$url"
-unzip -q -o /tmp/ossutil.zip -d /tmp
-sudo mv "/tmp/${pkg}/ossutil" /usr/local/bin/ossutil
-sudo chmod +x /usr/local/bin/ossutil
-ossutil version
+# Self-hosted runners keep /usr/local/bin between jobs, so ossutil is usually
+# already installed — reuse it instead of re-downloading every run. Only fetch
+# when it's missing (fresh runner or GitHub-hosted).
+if command -v ossutil >/dev/null 2>&1; then
+  echo "==> ossutil already installed, skipping download"
+  ossutil version
+else
+  echo "==> Downloading ossutil ${OSSUTIL_VERSION}"
+  curl -fsSL -o /tmp/ossutil.zip "$url"
+  unzip -q -o /tmp/ossutil.zip -d /tmp
+  sudo mv "/tmp/${pkg}/ossutil" /usr/local/bin/ossutil
+  sudo chmod +x /usr/local/bin/ossutil
+  ossutil version
+fi
 
 # ossutil v2 signs requests with SigV4, which needs a region. Standard OSS
 # endpoints are oss-<region>.aliyuncs.com — strip the prefix/suffix (and any
