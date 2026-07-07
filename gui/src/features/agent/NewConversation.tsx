@@ -170,6 +170,25 @@ export function NewConversation({
     setWorkspacePath("");
   }
 
+  // Cancelling the create-workspace dialog: fall back to the most-recently-used
+  // workspace when one exists (list is ordered last-opened first), otherwise
+  // there's nothing to land on, so switch to plain chat.
+  function cancelWorkspaceForm() {
+    setWorkspaceFormMode(null);
+    setWorkspaceError(null);
+    setWorkspaceNotice(null);
+    setWorkspaceDisplayName("");
+    setWorkspacePath("");
+    const mostRecent = workspaceOptions[0];
+    if (mostRecent) {
+      setSelectedWorkspace(mostRecent.id);
+      setMode("workspace");
+    }
+    else {
+      setMode("chat");
+    }
+  }
+
   async function pickFolder() {
     const selected = await open({
       directory: true,
@@ -353,7 +372,7 @@ export function NewConversation({
               notice={workspaceNotice}
               displayName={workspaceDisplayName}
               path={workspacePath}
-              onCancel={() => setWorkspaceFormMode(null)}
+              onCancel={cancelWorkspaceForm}
               onDisplayNameChange={setWorkspaceDisplayName}
               onPickFolder={pickFolder}
               onSubmit={handleWorkspaceSubmit}

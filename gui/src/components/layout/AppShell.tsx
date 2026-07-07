@@ -61,6 +61,9 @@ export function AppShell() {
   const [newChatWorkspaceId, setNewChatWorkspaceId] = useState<string | null>(null);
   const [newConversationMode, setNewConversationMode] = useState<"workspace" | "chat">("chat");
   const [newWorkspaceForm, setNewWorkspaceForm] = useState<"open" | null>(null);
+  // Bumped on every workspace-header "+" click so the new-conversation view
+  // remounts and re-opens the create dialog even when we're already on it.
+  const [newWorkspaceNonce, setNewWorkspaceNonce] = useState(0);
   const [selectedResearchResourceId, setSelectedResearchResourceId] = useState<string | null>(null);
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -221,12 +224,15 @@ export function AppShell() {
     setCenterMode("new-chat");
   }
 
-  // Workspace header "+" → start the new-conversation flow on the open-workspace step.
+  // Workspace header "+" → always (re)open the create-workspace dialog, even if
+  // we're already on the new-conversation view. The nonce forces a remount so a
+  // previously-cancelled dialog reopens.
   function handleOpenNewWorkspace() {
     setSection("workspace");
     setNewChatWorkspaceId(null);
     setNewConversationMode("workspace");
     setNewWorkspaceForm("open");
+    setNewWorkspaceNonce(nonce => nonce + 1);
     setCenterMode("new-chat");
   }
 
@@ -341,7 +347,7 @@ export function AppShell() {
         {centerMode === "new-chat"
           ? (
               <NewConversation
-                key={`${newConversationMode}:${newWorkspaceForm ?? ""}:${newChatWorkspaceId ?? ""}`}
+                key={`${newConversationMode}:${newWorkspaceForm ?? ""}:${newChatWorkspaceId ?? ""}:${newWorkspaceNonce}`}
                 initialWorkspaceForm={newWorkspaceForm}
                 initialMode={newConversationMode}
                 initialWorkspaceId={newChatWorkspaceId}
