@@ -277,15 +277,12 @@ function loadImage(src: string) {
   });
 }
 
-function thumbnailKey(path: string) {
-  let hash = 5381;
-  for (let i = 0; i < path.length; i++)
-    hash = ((hash << 5) + hash + path.charCodeAt(i)) >>> 0;
-  return `thumb-${hash.toString(36)}`;
-}
-
-/** Downscale an image to ~96px and persist a JPEG thumbnail in the app cache. */
-export async function generateImageThumbnail(path: string): Promise<string | null> {
+/**
+ * Downscale an image to ~96px and persist a JPEG thumbnail under the thread's
+ * persistent image dir (`~/.future/app/images/<threadId>/thumb`). The backend
+ * assigns a unique filename, so no client-side key is needed.
+ */
+export async function generateImageThumbnail(path: string, threadId: string): Promise<string | null> {
   try {
     const ext = extOf(path);
     const base64 = await readFileBase64({ maxBytes: READ_SOURCE_MAX_BYTES, path });
@@ -305,7 +302,7 @@ export async function generateImageThumbnail(path: string): Promise<string | nul
     const jpeg = canvas.toDataURL("image/jpeg", 0.6).split(",")[1] ?? "";
     if (!jpeg)
       return null;
-    return await writeThumbnail({ base64Jpeg: jpeg, key: thumbnailKey(path) });
+    return await writeThumbnail({ base64Jpeg: jpeg, threadId });
   }
   catch {
     return null;

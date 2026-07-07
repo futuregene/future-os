@@ -12,6 +12,7 @@ import {
   createRun,
   deleteTempAttachment,
   importAttachmentArtifact,
+  importWorkspaceImage,
   listMessages,
   listRunEvents,
   listRuns,
@@ -219,7 +220,8 @@ export function useAgentThreadState({
 
     try {
       const importedAttachments = await withImageThumbnails(
-        await importChatAttachments(thread, attachments),
+        await importWorkspaceImages(thread, await importChatAttachments(thread, attachments)),
+        thread.id,
       );
 
       // Extract PDF/text into the model-facing prompt only; keep the visible
@@ -895,15 +897,45 @@ async function importChatAttachments(thread: StoredThread, attachments: MessageA
   );
 }
 
-// Generate a cached thumbnail for image attachments so the thread can show a
-// small preview without loading the full-size original.
-async function withImageThumbnails(attachments: MessageAttachment[]) {
+// Copy workspace-mode image originals into the thread's persistent image dir so
+// they survive: workspace conversations don't save attachments into the user's
+// project dir, so the original otherwise lives only in the temp dir (purged by
+// the OS, and deleted after send). Chat-mode attachments are already copied into
+// the temp chat workspace by `importChatAttachments`, so they're skipped here.
+async function importWorkspaceImages(thread: StoredThread, attachments: MessageAttachment[]) {
+  if (thread.mode === "chat") {
+    return attachments;
+  }
   return Promise.all(
     attachments.map(async (attachment) => {
       if (attachment.kind !== "image") {
         return attachment;
       }
-      const thumbnail = await generateImageThumbnail(attachment.path);
+      try {
+        const path = await importWorkspaceImage({
+          name: attachment.name,
+          path: attachment.path,
+          threadId: thread.id,
+        });
+        return { ...attachment, path };
+      }
+      catch {
+        // Best-effort: keep the original (temp) path if the copy fails.
+        return attachment;
+      }
+    }),
+  );
+}
+
+// Generate a persistent thumbnail for image attachments so the thread can show a
+// small preview without loading the full-size original.
+async function withImageThumbnails(attachments: MessageAttachment[], threadId: string) {
+  return Promise.all(
+    attachments.map(async (attachment) => {
+      if (attachment.kind !== "image") {
+        return attachment;
+      }
+      const thumbnail = await generateImageThumbnail(attachment.path, threadId);
       return thumbnail ? { ...attachment, thumbnail } : attachment;
     }),
   );

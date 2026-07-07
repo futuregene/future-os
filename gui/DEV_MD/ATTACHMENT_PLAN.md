@@ -2,11 +2,15 @@
 
 > 状态：计划稿（待评审，先看方案再开工）。核心实现**在 GUI 端**（TypeScript/React + 少量 Tauri 命令复用）；**agent / proto 不改**。
 >
-> **已锁定决策**：①图片缩略图 = **A′（写入 app 缓存目录 `appCacheDir`/thumbnails，`MessageAttachment.thumbnail` 存缓存路径，`convertFileSrc` 渲染；不再塞 base64 进 JSONL）**；②PDF = **pdfjs 抽文本内联**（非原生 file part）；③内联上限 = **单文件 30KB/2000 行；可内联（文本+PDF）附件最多 4 个、合计 ≤60KB**（图片走独立通道、不计入 60KB）；④本计划落 `gui/ATTACHMENT_PLAN.md`。
+> **已锁定决策**：①图片缩略图 = **持久化到 `~/.future/app/images/<threadId>/thumb/<stamp>.jpg`**（后端 `write_thumbnail(threadId, base64Jpeg)` 落盘并分配唯一文件名，`MessageAttachment.thumbnail` 存该路径，`convertFileSrc` 渲染；不再塞 base64 进 JSONL）。**原方案 A′（写 `appCacheDir/thumbnails`）已废弃**：`appCacheDir` 在 macOS = `~/Library/Caches/<id>`，属 APFS 可回收空间，系统会静默清理，导致消息里的缩略图路径失效、图片渲染成空白框。②PDF = **pdfjs 抽文本内联**（非原生 file part）；③内联上限 = **单文件 30KB/2000 行；可内联（文本+PDF）附件最多 4 个、合计 ≤60KB**（图片走独立通道、不计入 60KB）；④本计划落 `gui/ATTACHMENT_PLAN.md`。
+>
+> **图片原图落盘**：**chat** 附件照旧存进临时 workspace（`~/.future/app/workspaces/chat/<tid>/attachments`，登记 Artifact）；**workspace** 图片原图经 `import_workspace_image(threadId, sourcePath, name)` 拷进 `~/.future/app/images/<threadId>/origin/<stamp>_<name>`（持久、在 asset scope 内，供重发/查看），不写用户项目目录、不建 Artifact。
 >
 > **临时文件清理 = 方案 A（已定）**：发送后显式删除，**仅限我们自己的 `futureos-attachments` 临时子目录**，绝不碰用户选择/拖拽的原文件。`TEXT_EXTENSIONS` 白名单先按初版。
 >
-> ⚠️ **前置任务**：当前 `tauri.conf.json` 未启用 `assetProtocol`，而图片/PDF 预览与缩略图都依赖 `convertFileSrc`/`asset://`。需先 **启用 `app.security.assetProtocol.enable=true` 并把 artifact 目录 + `appCacheDir` 加入 scope**（也建议实机确认现有 image/pdf 预览当前是否真能渲染）。
+> **图片目录回收**：`images/<tid>` 没有逐删执行器,统一靠**启动时孤儿清扫** `reconcile_orphan_images`——`threads` 表里 `status='deleted'` 或无行的 tid,其 `images/<tid>` 目录被 `remove_dir_all`(方案 A,无软删撤销)。覆盖 GUI 删、CLI/TUI 外部删 session、整库 reset(`clear_all_data` 额外清 `images/` 整棵)三种来源。渲染侧 `AttachmentChip` 的 `<img>` 加了 `onError` 兜底:文件缺失时退成文件名 chip 而非空白框。
+>
+> ⚠️ **前置任务（已完成）**：`tauri.conf.json` 的 `app.security.assetProtocol` 已启用，scope 含 `$HOME/.future/**`——`~/.future/app/images/**` 天然在内,`convertFileSrc` 直接可用,无需额外配置。
 
 ---
 
@@ -50,8 +54,9 @@
   └─ 入口分类(§4)：image | pdf | text | ❌unsupported(toast 拒绝)
       └─ 发送时：
          ├─ 图片：
-         │   ├─ 生成小缩略图(canvas, ~96px, base64) → 存入 MessageAttachment.thumbnail
-         │   ├─ chat: import_attachment_artifact（落盘+预览）
+         │   ├─ 生成小缩略图(canvas, ~96px) → write_thumbnail(threadId) 落盘 images/<tid>/thumb → MessageAttachment.thumbnail
+         │   ├─ chat: import_attachment_artifact（原图落临时 workspace/attachments，登记 Artifact）
+         │   ├─ workspace: import_workspace_image（原图拷进 images/<tid>/origin，rewrite path）
          │   └─ base64 全图 → RpcCommand.images（受 modelSupportsImages 门控）
          ├─ PDF：pdfjs 抽文本 →(30KB/2000行截断)→ 内联进消息
          │   └─ chat: import_attachment_artifact（落盘+PdfPreview）

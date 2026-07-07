@@ -159,6 +159,7 @@ pub fn run() {
             inspect_attachment,
             read_file_base64,
             write_thumbnail,
+            import_workspace_image,
             delete_temp_attachment,
             export_artifact_file,
             initialize_app_store,
