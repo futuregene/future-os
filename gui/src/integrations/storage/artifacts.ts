@@ -1,4 +1,4 @@
-import type { ReferenceTargetSearchResult, StoredArtifact, StoredResearchResource } from "./types";
+import type { StoredArtifact, StoredResearchResource, WorkspaceFileResult } from "./types";
 import { invokeCommand } from "../tauri/invoke";
 
 // ─── Artifacts ───────────────────────────────────────────────────────────
@@ -39,12 +39,12 @@ export async function listResearchResources(workspaceId: string) {
   return invokeCommand<StoredResearchResource[]>("list_research_resources", { workspaceId });
 }
 
-// ─── References ──────────────────────────────────────────────────────────
+// ─── Workspace file `@`-mention search ─────────────────────────────────────
 
-export async function searchReferenceTargets(input: {
+export async function searchWorkspaceFiles(input: {
   workspaceId: string;
   query?: string | null;
   limit?: number | null;
 }) {
-  return invokeCommand<ReferenceTargetSearchResult[]>("search_reference_targets", { input });
+  return invokeCommand<WorkspaceFileResult[]>("search_workspace_files", { input });
 }

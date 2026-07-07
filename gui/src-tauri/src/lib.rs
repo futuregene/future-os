@@ -219,7 +219,7 @@ pub fn run() {
             promote_artifact_to_research,
             list_research_resources,
             resolve_markdown_references,
-            search_reference_targets,
+            search_workspace_files,
             list_agent_models,
             agent_prompt,
             list_installed_skills,

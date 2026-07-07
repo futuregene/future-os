@@ -10,7 +10,6 @@ export * from "./runs";
 export * from "./threads";
 export type {
   GitReview,
-  ReferenceTargetSearchResult,
   StoredApprovalRequest,
   StoredArtifact,
   StoredMessage,
@@ -24,4 +23,5 @@ export type {
   StoredToolOutput,
   StoredWorkspace,
   ThreadCleanupSummary,
+  WorkspaceFileResult,
 } from "./types";
