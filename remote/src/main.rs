@@ -1,10 +1,10 @@
-//! future-remote —— 桌面 Bridge（最小骨架 / L0）。
+//! future-remote — Desktop Bridge (minimal skeleton / L0).
 //!
-//! 职责：把本机 agent（gRPC :50051）桥接到 NATS。
-//!  - 订阅命令 `p.{pairId}.cmd.>`（queue group `bridge.{pairId}`）→ 透传给 agent → reply。
-//!  - 对每个 session 长期订阅 agent 事件流 → 发布到 `p.{pairId}.evt.{session}`。
+//! Purpose: bridge the local agent (gRPC :50051) to NATS.
+//!  - Subscribe to commands `p.{pairId}.cmd.>` (queue group `bridge.{pairId}`) → forward to agent → reply.
+//!  - For each session, maintain a long-lived subscription to the agent event stream → publish to `p.{pairId}.evt.{session}`.
 //!
-//! 本版是骨架：先不做 run_id/idx、单飞、JetStream ack、鉴权（见 docs/remote-control-*.md 的 P1/P5）。
+//! This version is a skeleton: no run_id/idx, solo-flight, JetStream ack, or auth yet (see docs/remote-control-*.md P1/P5).
 
 pub mod proto {
     tonic::include_proto!("proto");
@@ -20,7 +20,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// 客户端经 NATS 发来的命令（camelCase JSON，取 Bridge 需要的字段）。
+/// Command sent by the client via NATS (camelCase JSON, only the fields the bridge needs).
 #[derive(serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 struct IncomingCmd {
@@ -70,7 +70,7 @@ async fn main() -> Result<()> {
         let mut agent = agent.clone();
         let pumped = pumped.clone();
         let pair = cfg.pair_id.clone();
-        // 每命令 spawn：防一个慢命令 HOL 阻塞其它 session
+        // Spawn per command: prevent a slow command from HOL-blocking other sessions
         tokio::spawn(async move {
             if let Err(e) = handle_cmd(&nats, &mut agent, &pumped, &pair, msg).await {
                 tracing::warn!("命令处理失败: {}", e);
@@ -90,7 +90,7 @@ async fn handle_cmd(
     let c: IncomingCmd = serde_json::from_slice(&msg.payload)
         .map_err(|e| anyhow::anyhow!("命令 JSON 解析失败: {}", e))?;
 
-    // 流式命令：先确保事件泵就绪（订阅先于命令），避免漏掉早期 agent_start/text_chunk。
+    // Streaming commands: ensure the event pump is ready first (subscribe before command) to avoid missing early agent_start/text_chunk events.
     if matches!(c.cmd_type.as_str(), "prompt" | "steer" | "follow_up") && !c.session_id.is_empty() {
         ensure_pump(nats, agent, pumped, pair, &c.session_id).await?;
     }
@@ -136,7 +136,7 @@ async fn handle_cmd(
     Ok(())
 }
 
-/// 为某 session 启动一次长期事件泵：订阅 agent StreamEvents → 发布到 NATS。
+/// Start a long-lived event pump for a session: subscribe to agent StreamEvents → publish to NATS.
 async fn ensure_pump(
     nats: &async_nats::Client,
     agent: &AgentClient,
@@ -165,7 +165,7 @@ async fn ensure_pump(
         loop {
             match stream.message().await {
                 Ok(Some(ev)) => {
-                    // 骨架：转发 {type, data}（data 仍是 JSON 字符串）。P1 会补 run_id/idx。
+                    // Skeleton: forward {type, data} (data is still a JSON string). P1 will add run_id/idx.
                     let body = serde_json::json!({ "type": ev.r#type, "data": ev.data, "runId": ev.run_id, "idx": ev.idx });
                     if let Ok(bytes) = serde_json::to_vec(&body) {
                         if let Err(e) = nats.publish(subj.clone(), bytes.into()).await {
@@ -183,7 +183,7 @@ async fn ensure_pump(
                 }
             }
         }
-        // 允许下次命令重新启动 pump
+        // Allow the next command to restart the pump
         pumped.lock().await.remove(&session_owned);
     });
 

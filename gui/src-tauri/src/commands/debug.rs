@@ -1,4 +1,4 @@
-//! Debug / reset Tauri commands (Settings ▸ 调试).
+//! Debug / reset Tauri commands (Settings ▸ Debug).
 
 use serde::Serialize;
 use serde_json::Value;

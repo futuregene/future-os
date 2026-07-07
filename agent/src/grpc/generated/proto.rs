@@ -85,7 +85,7 @@ pub struct RpcCommand {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SandboxPolicy {
-    /// "off" (完全放开) | "manual" (手动审批) | "sandbox" (沙箱保护, macOS only).
+    /// "off" (unrestricted) | "manual" (approval required) | "sandbox" (macOS Seatbelt, macOS only).
     #[prost(string, tag = "7")]
     pub tier: ::prost::alloc::string::String,
 }
