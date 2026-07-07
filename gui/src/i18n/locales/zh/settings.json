@@ -107,7 +107,7 @@
     "clearKey": "清除密钥",
     "keySaved": "已保存 {{provider}} 密钥。新会话即可生效。",
     "keyCleared": "已清除 {{provider}} 密钥。",
-    "connected": "已连接 FutureGene。新会话即可生效；如仍未生效，可运行 future agent restart。",
+    "connected": "已连接 FutureGene。新会话即可生效；如仍未生效，可运行 future-cli agent restart。",
     "baseUrlLabel": "Base URL",
     "baseUrlRequired": "请填写 Base URL。",
     "baseUrlDialogDescription": "该提供商的 Base URL 是占位符，需替换为你的实际地址（如 Azure 的资源名）。",
