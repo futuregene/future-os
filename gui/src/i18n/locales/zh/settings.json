@@ -57,7 +57,6 @@
   },
   "account": {
     "loading": "加载账号信息…",
-    "title": "账号",
     "futureGene": "FutureGene 账号",
     "loggedIn": "已登录",
     "loggedOut": "未登录",
