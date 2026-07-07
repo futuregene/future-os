@@ -66,6 +66,7 @@ export function AgentThread({
   const {
     handleAbort,
     handleScroll,
+    handleScrollbarPointerDown,
     handleSend,
     loadingThread,
     messages,
@@ -139,7 +140,7 @@ export function AgentThread({
         thread={thread}
         onToggleLeftPanel={onToggleLeftPanel}
       />
-      <div className="relative min-h-0 flex-1 overflow-hidden">
+      <div className="group relative min-h-0 flex-1 overflow-hidden">
         <div
           ref={scrollRef}
           className={cn(
@@ -171,13 +172,15 @@ export function AgentThread({
         </div>
         <div
           className={cn(
-            "pointer-events-none absolute right-1 top-0 z-20 w-1.5 rounded-full bg-line transition-opacity duration-300",
+            "absolute right-0.5 top-0 z-20 w-2 cursor-grab touch-none rounded-full bg-line transition-opacity duration-300 hover:bg-ink-muted active:cursor-grabbing group-hover:opacity-80",
             scrollbar.visible ? "opacity-80" : "opacity-0",
+            scrollbar.height > 0 ? "pointer-events-auto" : "pointer-events-none",
           )}
           style={{
             height: `${scrollbar.height}px`,
             transform: `translateY(${scrollbar.top}px)`,
           }}
+          onPointerDown={handleScrollbarPointerDown}
         />
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-linear-to-t from-surface from-80% to-transparent px-8 pb-5 pt-10">
           <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
