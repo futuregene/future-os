@@ -59,7 +59,7 @@ export function AccountPage() {
 
   return (
     <div className="space-y-6">
-      <SettingsSection title={t("account.title")}>
+      <SettingsSection>
         <SettingsList>
           <SettingsRow
             title={t("account.futureGene")}
