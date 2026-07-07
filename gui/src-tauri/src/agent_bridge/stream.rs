@@ -30,7 +30,7 @@ async fn persist_run_event_off_thread(
 /// `agent_end`. `complete == false` means the stream ended (server closed it,
 /// agent restarted mid-reply) before signalling completion — the text is a
 /// prefix, not the whole answer, and the caller must mark the run `failed`
-/// rather than persist a silently truncated reply as `completed` (RUN-05).
+/// rather than persist a silently truncated reply as `completed`.
 pub(super) struct AgentResponse {
     pub content: String,
     pub complete: bool,

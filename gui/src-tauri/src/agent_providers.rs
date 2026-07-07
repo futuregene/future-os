@@ -585,7 +585,7 @@ pub fn delete_custom_provider(id: String) -> Result<ProvidersView, crate::AppErr
     if id.is_empty() {
         return Err("Provider id is required.".to_string().into());
     }
-    // CFG-04: this deletes the provider's models.json entry *and* its auth.json
+    // this deletes the provider's models.json entry *and* its auth.json
     // credentials. Only custom providers may be removed — guard the built-in
     // FutureGene (whose key is the user's sign-in) and every catalog provider, so
     // a stray id can't wipe login/override state the UI never offers to delete.

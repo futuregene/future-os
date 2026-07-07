@@ -17,7 +17,7 @@ use crate::agent_proto::{image_content, FutureAgentClient, ImageContent, RpcComm
 
 /// Cap on how long a single connection attempt may take. Without it a hung agent
 /// can stall a caller indefinitely — e.g. the GUI's 10s model poll would pile up
-/// overlapping calls, and a late failure could clobber fresh state (FE-04).
+/// overlapping calls, and a late failure could clobber fresh state.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Bare `host:port` the GUI talks to (env override or the default). The single

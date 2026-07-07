@@ -45,7 +45,7 @@ interface PendingPrompt {
   /**
    * The thread this prompt was composed for. The consumer must only send it
    *  when this matches the active thread, so a mid-load thread switch can't
-   *  deliver the first message into the wrong conversation (FE-02).
+   *  deliver the first message into the wrong conversation.
    */
   targetThreadId: string;
 }

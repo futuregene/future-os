@@ -148,7 +148,7 @@ export function useAgentThreadState({
   const handleSend = useCallback(async ({ attachments, content }: ComposerSendPayload) => {
     if (!thread)
       return;
-    // One prompt at a time per session (FE-03). `sendingRef` guards a send this
+    // One prompt at a time per session. `sendingRef` guards a send this
     // view started; `activeRunId` guards a run already in flight that this view
     // is only re-attached to (backgrounded, reloaded, or remote-driven). Every
     // send path — composer, `recover-run`, pendingPrompt — funnels through here,
@@ -166,7 +166,7 @@ export function useAgentThreadState({
     const isCurrentSend = () => sendGenerationRef.current === sendGeneration;
     // Timer handle is local to this send closure, not a shared ref: a prior fix
     // regression let one thread's send clear another thread's stream timer,
-    // freezing the live bubble (FE-01). Ownership stays with the closure.
+    // freezing the live bubble. Ownership stays with the closure.
     let streamTimer: number | null = null;
     const clearStreamTimer = () => {
       if (streamTimer !== null) {
@@ -302,7 +302,7 @@ export function useAgentThreadState({
             // Persist the partial reply regardless of whether this view still owns
             // the send: aborting and then immediately switching threads flips
             // `isCurrentSend()` false, and gating persistence on it dropped the
-            // already-generated text permanently (FE-08). This local send is the
+            // already-generated text permanently. This local send is the
             // only writer for the run, so there's no double-insert; on return to
             // the thread the reload restores it (stopped, per run.status).
             const storedAssistantMessage = await appendMessage({
@@ -351,7 +351,7 @@ export function useAgentThreadState({
       // The stream closed before the agent signalled a clean end: the text is a
       // truncated prefix, not a finished answer. Persist it (so the partial isn't
       // lost) but finalize the run and bubble as failed rather than silently
-      // presenting a cut-off reply as complete (RUN-05).
+      // presenting a cut-off reply as complete.
       if (!reply.complete) {
         const interruptedMessage = i18n.t("agent:thread.responseInterrupted");
         await updateRunStatusSafe(run.id, "failed", interruptedMessage);
@@ -494,7 +494,7 @@ export function useAgentThreadState({
       sendGenerationRef.current += 1;
       // A switch away abandons any in-flight send for this thread; let the new
       // thread send freely (its run is a different session). The abandoned send's
-      // stream timer is a closure-local handle now (FE-01), and its interval
+      // stream timer is a closure-local handle now, and its interval
       // callback no-ops once `isCurrentSend()` turns false, so there's nothing to
       // clear here — it stops on its own when that send's await returns.
       sendingRef.current = false;
@@ -640,7 +640,7 @@ export function useAgentThreadState({
     // switch during the (async) message load can make `thread` the newly-opened
     // conversation while this prompt still targets the one just created — sending
     // here would drop the first message (and its attachments) into the wrong
-    // chat and persist it there (FE-02). Wait for the target thread to be active.
+    // chat and persist it there. Wait for the target thread to be active.
     if (pendingPrompt.targetThreadId !== thread.id)
       return;
 

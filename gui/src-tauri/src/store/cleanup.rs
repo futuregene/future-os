@@ -133,7 +133,7 @@ pub fn get_thread_cleanup_summary(
 /// Startup convergence for interrupted runs. A freshly started process has no
 /// live event collector for any run, so *every* non-terminal run is an orphan —
 /// its `collect_agent_response` task died when the previous process exited and
-/// no event will ever settle it (RUN-04). Left alone, such a run strands the UI
+/// no event will ever settle it. Left alone, such a run strands the UI
 /// in a permanent "generating" state (composer disabled, polling spinning).
 ///
 /// This cancels all of them in one transaction and cascades the cancellation to

@@ -19,7 +19,7 @@ use crate::config_io;
 /// The file is a user-editable one the agent reads directly, so the read is
 /// *strict*: a corrupt/hand-broken file is an error, never silently rebuilt from
 /// scratch — otherwise a single GUI "Allow" would drop the user's existing (incl.
-/// `deny`) rules on the floor (CFG-03). The whole read-modify-write is serialized
+/// `deny`) rules on the floor. The whole read-modify-write is serialized
 /// and the write is atomic.
 pub fn append_workspace_allow_rule(
     workspace_dir: &str,

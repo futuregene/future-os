@@ -230,11 +230,10 @@ CREATE TABLE IF NOT EXISTS research_resources (
 );
 
 -- NOTE: `data_sources`, `data_credentials`, `skills`, and `skill_enablements`
--- were removed on 2026-07-07 (see DEV_MD/ISSUE.md DOC-01). They were created by
--- an early schema but never had any CRUD code: the Data feature was deferred and
--- Skills went to a platform-catalogue + filesystem model (see `crate::skills`),
--- not the DB. `apply_schema` drops them from pre-existing databases via
--- `DROPPED_TABLES`.
+-- were removed on 2026-07-07. They were created by an early schema but never had
+-- any CRUD code: the Data feature was deferred and Skills went to a
+-- platform-catalogue + filesystem model (see `crate::skills`), not the DB.
+-- `apply_schema` drops them from pre-existing databases via `DROPPED_TABLES`.
 
 CREATE TABLE IF NOT EXISTS workspace_files (
     id TEXT PRIMARY KEY,
@@ -356,9 +355,9 @@ pub(super) const ADDED_INDEXES: &[&str] =
      ON review_changesets(thread_id, source_kind, created_at)"];
 
 /// Tables removed from the schema that must be dropped from pre-existing
-/// databases (see DEV_MD/ISSUE.md DOC-01). All four were created but never used
-/// (zero CRUD), so dropping them can't lose data. Ordered so a table is dropped
-/// before the one it references, keeping the drop FK-safe.
+/// databases. All four were created but never used (zero CRUD), so dropping them
+/// can't lose data. Ordered so a table is dropped before the one it references,
+/// keeping the drop FK-safe.
 pub(super) const DROPPED_TABLES: &[&str] = &[
     "data_credentials",
     "data_sources",

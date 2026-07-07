@@ -81,7 +81,7 @@ export function useThreadStore(): ThreadStore {
     const generation = ++runStatusGenRef.current;
     // Per-thread catch (not a bare Promise.all): one thread's failed listRuns
     // must not reject the whole batch — that would blank every thread's run
-    // indicator and surface an unhandled rejection (FE-05). A failed thread keeps
+    // indicator and surface an unhandled rejection. A failed thread keeps
     // its previous status and self-heals on the next 1.5s tick.
     const entries = await Promise.all(
       nextThreads.map(async (thread) => {
@@ -111,7 +111,7 @@ export function useThreadStore(): ThreadStore {
   // Guard against overlapping refreshes (rapid deletes/creates, each calling
   // refreshStore): a slow listThreads landing after a newer one would revive a
   // stale list — briefly resurrecting a just-deleted thread and possibly
-  // re-selecting it (FE-06). Newest call wins.
+  // re-selecting it. Newest call wins.
   const refreshStoreGenRef = useRef(0);
   const refreshStore = useCallback(async (nextActiveThreadId?: string) => {
     const generation = ++refreshStoreGenRef.current;

@@ -113,7 +113,7 @@ fn recover_one(run_id: &str, thread_id: &str, workspace_id: &str) -> Result<(), 
         None => {
             // CAS instead of read-then-write: only settle a run that is still
             // non-terminal, atomically, so a run that finished in the startup
-            // window isn't rewritten to cancelled (RUN-07).
+            // window isn't rewritten to cancelled.
             let _ = store::update_run_status_if_active(store::UpdateRunStatusInput {
                 run_id: run_id.to_string(),
                 status: "cancelled".to_string(),

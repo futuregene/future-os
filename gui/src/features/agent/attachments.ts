@@ -87,7 +87,7 @@ const INLINE_MAX_TOTAL_BYTES = 60 * 1024;
 /**
  * Upper bound on PDF pages scanned for text. A large scanned PDF yields empty
  * text per page, so the byte cap never trips — without this it would walk every
- * page (thousands) before giving up (FE-10).
+ * page (thousands) before giving up.
  */
 const MAX_PDF_PAGES = 100;
 /** Per-file byte cap shared by attachments and artifact uploads. */
@@ -175,7 +175,7 @@ function byteLength(text: string) {
 /**
  * Truncate `text` to at most `maxBytes` UTF-8 bytes **on a character boundary**,
  * so a multibyte sequence (CJK, emoji) is never sliced mid-way — which would
- * decode to a `U+FFFD` replacement char injected into the model prompt (FE-10).
+ * decode to a `U+FFFD` replacement char injected into the model prompt.
  * Backs up from the byte limit past any UTF-8 continuation bytes (`0b10xxxxxx`).
  */
 function truncateToBytes(text: string, maxBytes: number): { text: string; truncated: boolean } {
@@ -297,7 +297,7 @@ function loadImage(src: string) {
 
 /**
  * Cache-key for a path's thumbnail. Uses a SHA-256 prefix (128 bits) so distinct
- * image paths don't collide and show each other's thumbnail (FE-11) — the prior
+ * image paths don't collide and show each other's thumbnail — the prior
  * 32-bit djb2 was collision-prone. Falls back to djb2 only if SubtleCrypto is
  * unavailable (non-secure context).
  */
