@@ -1,50 +1,50 @@
-# 本地 L0 dev NATS（远程控制联调用）
+# Local L0 dev NATS (remote-control relay testing)
 
-> L0 = 无鉴权，**仅限本地/受控网络，勿公网裸跑**。详见 `docs/remote-control-*.md`。
+> L0 = no auth, **local/trusted-network only — do not expose to the public internet**. See `docs/remote-control-*.md`.
 
-## 前置
-- Docker（Docker Desktop 或 colima）：`docker version` 能输出即可。
-- `nats` CLI（建流/验证用）：
+## Prerequisites
+- Docker (Docker Desktop or colima): `docker version` should work.
+- `nats` CLI (for stream creation and validation):
   ```bash
   brew install nats-io/nats-tools/nats
-  # 验证：nats --version
+  # Verify: nats --version
   ```
 
-## 起 NATS
+## Start NATS
 ```bash
 cd deploy/nats
 docker compose up -d
-docker compose logs -f nats   # 看到 "Server is ready" + JetStream 启用即可，Ctrl-C 退出日志
+docker compose logs -f nats   # Wait for "Server is ready" + JetStream enabled, then Ctrl-C
 ```
 
-## 验证连通 + JetStream
+## Verify connectivity + JetStream
 ```bash
-nats server check jetstream        # 默认连 nats://localhost:4222
-# 或浏览器打开 http://localhost:8222 （监控页）
+nats server check jetstream        # defaults to nats://localhost:4222
+# Or open http://localhost:8222 in a browser (monitoring page)
 ```
 
-## 建 dev 事件流（对应一个 pairId=DEVPAIR）
+## Create dev event stream (pairId=DEVPAIR)
 ```bash
 nats stream add EVT_DEVPAIR \
   --subjects 'p.DEVPAIR.evt.>' \
   --storage file --retention limits --discard old \
   --max-age 30m --max-bytes 64MB --max-msg-size 1MB --dupe-window 10m \
   --defaults
-nats stream ls                     # 应看到 EVT_DEVPAIR
+nats stream ls                     # should show EVT_DEVPAIR
 nats stream info EVT_DEVPAIR
 ```
 
-## 快速手测 pub/sub（可选，确认链路）
+## Quick manual pub/sub test (optional, verify the pipeline)
 ```bash
-# 终端 A：
+# Terminal A:
 nats sub 'p.DEVPAIR.evt.>'
-# 终端 B：
+# Terminal B:
 nats pub p.DEVPAIR.evt.s1 'hello'
-# 终端 A 应收到 hello
+# Terminal A should receive 'hello'
 ```
 
-## 停止 / 清理
+## Stop / Cleanup
 ```bash
-docker compose down          # 停容器（保留 JetStream 数据卷）
-docker compose down -v       # 停容器 + 删数据卷（彻底清空）
+docker compose down          # stop containers (keep JetStream data volume)
+docker compose down -v       # stop containers + delete data volume (full reset)
 ```
