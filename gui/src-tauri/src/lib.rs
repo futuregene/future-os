@@ -154,6 +154,7 @@ pub fn run() {
             download_app_update,
             app_data_path,
             open_path,
+            open_external_url,
             read_text_file_preview,
             inspect_attachment,
             read_file_base64,

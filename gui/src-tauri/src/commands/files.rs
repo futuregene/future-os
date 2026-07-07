@@ -136,6 +136,19 @@ pub fn open_path(path: String) -> Result<(), crate::AppError> {
     open_path_with_system(trimmed)
 }
 
+/// Open an http(s) URL in the user's default browser. The scheme is restricted
+/// to http/https so this can't be used to launch arbitrary local handlers
+/// (`file:`, custom app schemes, …) via a crafted url.
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), crate::AppError> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err("Only http(s) URLs can be opened.".to_string().into());
+    }
+
+    open_path_with_system(trimmed)
+}
+
 #[tauri::command]
 pub fn read_text_file_preview(
     path: String,
