@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from "react";
+import type { Dispatch, PointerEvent as ReactPointerEvent, SetStateAction } from "react";
 import type { StoredRun, StoredRunEvent, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment, MessageSegment } from "./agentThreadTypes";
 import type { ComposerSendPayload } from "./Composer";
@@ -145,6 +145,41 @@ export function useAgentThreadState({
     stickToBottomRef.current = true;
     setShowJumpToLatest(false);
   }, [threadId]);
+
+  // Drag the floating thumb to scroll (the native bar is hidden by
+  // `.floating-scrollbar`). Maps thumb travel back to scrollTop using the same
+  // geometry as updateFloatingScrollbar; the resulting scroll fires handleScroll
+  // to keep the thumb visible and re-derive stickiness.
+  const handleScrollbarPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const scrollContainer = scrollRef.current;
+    if (!scrollContainer)
+      return;
+    event.preventDefault();
+
+    const scrollbarInset = 4;
+    const minThumbHeight = 36;
+    const { clientHeight, scrollHeight } = scrollContainer;
+    const scrollable = scrollHeight - clientHeight;
+    const thumbHeight = Math.max(minThumbHeight, (clientHeight / scrollHeight) * (clientHeight - scrollbarInset * 2));
+    const maxTop = clientHeight - scrollbarInset * 2 - thumbHeight;
+    if (scrollable <= 0 || maxTop <= 0)
+      return;
+
+    const startY = event.clientY;
+    const startScrollTop = scrollContainer.scrollTop;
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const delta = moveEvent.clientY - startY;
+      scrollContainer.scrollTop = startScrollTop + (delta / maxTop) * scrollable;
+      updateFloatingScrollbar(true);
+    };
+    const onUp = () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+  }, [updateFloatingScrollbar]);
 
   // Guard against overlapping refreshes (poll tick, send, thread switch) where a
   // slow response lands after a newer one and writes stale run state — e.g. a
@@ -664,6 +699,7 @@ export function useAgentThreadState({
   return {
     handleAbort,
     handleScroll,
+    handleScrollbarPointerDown,
     handleSend,
     loadingThread,
     messages,
