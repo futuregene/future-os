@@ -27,6 +27,7 @@
   "thread": {
     "loading": "正在加载 FutureOS 对话…",
     "noActiveThread": "没有活动对话。",
+    "jumpToLatest": "回到最新",
     "defaultTitle": "FutureOS",
     "agentDoneNoText": "Future Agent 已完成，但没有返回文本。",
     "messagesLoadFailed": "FutureOS 消息读取失败：{{message}}"

@@ -30,6 +30,7 @@
   "thread": {
     "loading": "Loading FutureOS thread...",
     "noActiveThread": "No active thread.",
+    "jumpToLatest": "Jump to latest",
     "defaultTitle": "FutureOS",
     "agentDoneNoText": "Future Agent finished but returned no text.",
     "messagesLoadFailed": "Failed to load FutureOS messages: {{message}}"

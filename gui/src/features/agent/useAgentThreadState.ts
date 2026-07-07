@@ -28,6 +28,11 @@ import {
 import { buildInlineAttachmentContext, generateImageThumbnail, imageAttachmentPaths, stringifyMessageContent } from "./attachments";
 import { buildReferencePrompt } from "./buildReferencePrompt";
 
+/** Within this many px of the bottom, auto-follow streaming output. */
+const STICK_THRESHOLD_PX = 48;
+/** Past this distance from the bottom, reveal the "jump to latest" button. */
+const JUMP_BUTTON_THRESHOLD_PX = 240;
+
 interface UseAgentThreadStateInput {
   thread: StoredThread | null;
   loadingStore: boolean;
@@ -53,6 +58,11 @@ export function useAgentThreadState({
   const [scrollbar, setScrollbar] = useState({ height: 0, top: 0, visible: false });
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Sticky auto-scroll: follow streaming output only while pinned near the
+  // bottom. When the user scrolls up past the threshold we stop following (so
+  // they can read history) and offer a "jump to latest" button once they're far.
+  const stickToBottomRef = useRef(true);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const consumedPromptRef = useRef<string | null>(null);
   const sendGenerationRef = useRef(0);
   // True while a prompt is in flight for this thread. The agent rejects a second
@@ -100,6 +110,17 @@ export function useAgentThreadState({
   const handleScroll = useCallback(() => {
     updateFloatingScrollbar(true);
 
+    // Re-derive stickiness from the caret's distance to the bottom. A
+    // programmatic scroll-to-bottom lands here too, leaving distance ≈ 0 → stays
+    // stuck; a user scroll-up grows the distance → unsticks. Two thresholds: a
+    // tight one to keep following, a looser one to reveal the jump button.
+    const scrollContainer = scrollRef.current;
+    if (scrollContainer) {
+      const distance = scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
+      stickToBottomRef.current = distance <= STICK_THRESHOLD_PX;
+      setShowJumpToLatest(distance > JUMP_BUTTON_THRESHOLD_PX);
+    }
+
     if (scrollTimerRef.current) {
       clearTimeout(scrollTimerRef.current);
     }
@@ -108,6 +129,22 @@ export function useAgentThreadState({
       updateFloatingScrollbar(false);
     }, 1200);
   }, [updateFloatingScrollbar]);
+
+  // Jump straight to the latest message and re-enable auto-follow.
+  const scrollToLatest = useCallback(() => {
+    const scrollContainer = scrollRef.current;
+    if (!scrollContainer)
+      return;
+    stickToBottomRef.current = true;
+    setShowJumpToLatest(false);
+    scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: "smooth" });
+  }, []);
+
+  // Opening/switching a thread starts pinned to the latest message.
+  useEffect(() => {
+    stickToBottomRef.current = true;
+    setShowJumpToLatest(false);
+  }, [threadId]);
 
   // Guard against overlapping refreshes (poll tick, send, thread switch) where a
   // slow response lands after a newer one and writes stale run state — e.g. a
@@ -444,10 +481,19 @@ export function useAgentThreadState({
     if (!scrollContainer)
       return;
 
-    scrollContainer.scrollTo({
-      top: scrollContainer.scrollHeight,
-      behavior: "auto",
-    });
+    // Only follow new/streamed content while pinned to the bottom; if the user
+    // scrolled up, leave their position but surface the jump button once the
+    // still-growing content pushes them far enough from the bottom.
+    if (stickToBottomRef.current) {
+      scrollContainer.scrollTo({
+        top: scrollContainer.scrollHeight,
+        behavior: "auto",
+      });
+    }
+    else {
+      const distance = scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
+      setShowJumpToLatest(distance > JUMP_BUTTON_THRESHOLD_PX);
+    }
     updateFloatingScrollbar(false);
   }, [messages, updateFloatingScrollbar]);
 
@@ -624,6 +670,8 @@ export function useAgentThreadState({
     recentRun,
     scrollRef,
     scrollbar,
+    scrollToLatest,
+    showJumpToLatest,
   };
 }
 
