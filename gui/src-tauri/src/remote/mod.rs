@@ -189,6 +189,13 @@ async fn command_loop(client: async_nats::Client, pair_id: String) {
     }
 }
 
+// SECURITY (remote feature is still dev-gated — non-release builds only): these
+// commands have NO authentication. The only isolation is the NATS subject prefix
+// `p.{pairId}.cmd.>`, the default pair id is a constant, and the connection
+// requires no TLS/credentials. `prompt` drives the local agent (read/write files,
+// run bash) — i.e. equivalent to RCE for anyone who can publish on that subject.
+// Before this feature is un-gated for release, this MUST gain: a random pair id,
+// connection credentials or per-message signing, and subject ACLs.
 async fn handle_command(client: &async_nats::Client, _pair_id: &str, msg: async_nats::Message) {
     let cmd: IncomingCmd = match serde_json::from_slice(&msg.payload) {
         Ok(cmd) => cmd,

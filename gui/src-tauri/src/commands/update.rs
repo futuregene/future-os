@@ -141,6 +141,12 @@ pub async fn check_app_update() -> Result<UpdateStatus, AppError> {
 
 /// Stream the installer to the user's Downloads directory, emitting
 /// `app-update-progress` events, and return the saved path.
+///
+/// SECURITY (deferred): the installer is protected only by HTTPS + the release
+/// host prefix — the manifest (`latest.json`, `{version}` only) and the package
+/// carry no signature/checksum, so a compromised OSS bucket could serve a poisoned
+/// installer (→ RCE on install). Fix needs the release pipeline to publish a
+/// per-installer SHA-256; verify it here before returning the path.
 #[tauri::command]
 pub async fn download_app_update(
     app: tauri::AppHandle,
