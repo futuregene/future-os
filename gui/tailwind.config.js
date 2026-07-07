@@ -36,6 +36,9 @@ export default {
         // ─── Activity ─────────────────────────────────────────
         // Live "generating" indicator (streaming reply) — amber ping dot.
         generating: "#f59e0b",
+        // ─── Scrollbar (classic webkit thumb, see styles/globals.css) ──
+        scrollbar: "#c8ced9",
+        "scrollbar-hover": "#aeb7c6",
         // ─── Diff ─────────────────────────────────────────────
         "diff-add": "#e6ffec",
         "diff-add-line": "#aadfb8",

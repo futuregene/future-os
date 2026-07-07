@@ -48,6 +48,12 @@ GUI 的颜色全部走 [`tailwind.config.js`](tailwind.config.js) 里定义的**
 |---|---|---|
 | `generating` | `#f59e0b` | 流式生成中指示灯（琥珀色 `animate-ping` 圆点；实心点与半透明光晕同用此 token） |
 
+### 滚动条（经典 webkit 拇指）
+| token | hex | 用途 |
+|---|---|---|
+| `scrollbar` | `#c8ced9` | 滚动条拇指常态（`styles/globals.css` 经 `theme(colors.scrollbar)` 引用） |
+| `scrollbar-hover` | `#aeb7c6` | 滚动条拇指 hover |
+
 ### Diff(GitHub 风格)
 | token | hex | 用途 |
 |---|---|---|

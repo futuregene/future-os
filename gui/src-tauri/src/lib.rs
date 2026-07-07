@@ -6,8 +6,10 @@ mod approval_rules;
 mod auth_store;
 mod build_info;
 mod commands;
+mod config_io;
 mod error;
 mod future_login;
+mod future_platform;
 mod git_diff_parse;
 mod git_review;
 #[cfg(target_os = "macos")]

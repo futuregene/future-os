@@ -9,6 +9,17 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+/// Prefix each column in a `", "`-separated `*_COLUMNS` constant with a table
+/// alias, e.g. `qualify_columns("r", "id, status")` → `"r.id, r.status"`. Used
+/// when a JOIN makes bare column names ambiguous in a SELECT.
+pub(super) fn qualify_columns(alias: &str, columns: &str) -> String {
+    columns
+        .split(", ")
+        .map(|column| format!("{alias}.{}", column.trim()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub(super) fn normalize_mode(mode: &str) -> Result<String, crate::AppError> {
     match mode {
         "chat" | "workspace" => Ok(mode.to_string()),

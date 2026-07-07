@@ -130,41 +130,69 @@ pub fn get_thread_cleanup_summary(
     })
 }
 
+/// Startup convergence for interrupted runs. A freshly started process has no
+/// live event collector for any run, so *every* non-terminal run is an orphan —
+/// its `collect_agent_response` task died when the previous process exited and
+/// no event will ever settle it (RUN-04). Left alone, such a run strands the UI
+/// in a permanent "generating" state (composer disabled, polling spinning).
+///
+/// This cancels all of them in one transaction and cascades the cancellation to
+/// their still-open approvals and running tool calls, so a run and its children
+/// never end up in mismatched states. The previous, narrower version cancelled
+/// only runs that owned a pending approval; that logic is subsumed here. Returns
+/// the number of runs cancelled. (Name kept for IPC stability.)
 pub fn cancel_stale_approval_requests() -> Result<usize, crate::AppError> {
     let now = now_millis();
     let mut conn = connect()?;
     let tx = conn.transaction()?;
-    // Cancel every non-terminal run that owns a pending approval — the same set
-    // the second UPDATE cancels — so a run and its approval never end up in
-    // mismatched states (e.g. a still-`running` run whose approval was cancelled).
-    tx.execute(
+    let cancelled_runs = converge_orphan_runs_tx(&tx, now)?;
+    tx.commit()?;
+    Ok(cancelled_runs)
+}
+
+/// Cancel every non-terminal run and cascade to its still-open approvals and
+/// running tool calls. Returns the number of runs cancelled. Factored out of
+/// [`cancel_stale_approval_requests`] so it can be exercised against an
+/// in-memory connection.
+fn converge_orphan_runs_tx(tx: &rusqlite::Transaction<'_>, now: i64) -> rusqlite::Result<usize> {
+    let cancelled_runs = tx.execute(
         &format!(
             "UPDATE runs
          SET status = 'cancelled',
-             error_message = 'Pending approval was cancelled because FutureOS restarted.',
+             error_message = COALESCE(error_message, 'Interrupted because FutureOS restarted.'),
+             error_type = COALESCE(error_type, 'interrupted'),
              ended_at = COALESCE(ended_at, ?1),
              updated_at = ?1
-         WHERE status NOT IN ({TERMINAL_RUN_STATUSES_SQL})
-           AND id IN (
-             SELECT run_id
-             FROM approval_requests
-             WHERE status = 'pending'
-               AND run_id IS NOT NULL
-           )"
+         WHERE status NOT IN ({TERMINAL_RUN_STATUSES_SQL})"
         ),
         params![now],
     )?;
-    let changed = tx.execute(
-        "UPDATE approval_requests
+    // Cascade: any pending approval or running tool call now belongs to a
+    // terminal run and must be settled too.
+    tx.execute(
+        &format!(
+            "UPDATE approval_requests
              SET status = 'cancelled',
-                 decision_note = 'Cancelled because FutureOS restarted.',
-                 decided_at = ?1,
+                 decision_note = COALESCE(decision_note, 'Cancelled because FutureOS restarted.'),
+                 decided_at = COALESCE(decided_at, ?1),
                  updated_at = ?1
-             WHERE status = 'pending'",
+             WHERE status = 'pending'
+               AND (run_id IS NULL
+                    OR run_id IN (SELECT id FROM runs WHERE status IN ({TERMINAL_RUN_STATUSES_SQL})))"
+        ),
         params![now],
     )?;
-    tx.commit()?;
-    Ok(changed)
+    tx.execute(
+        &format!(
+            "UPDATE tool_calls
+             SET status = 'cancelled',
+                 ended_at = COALESCE(ended_at, ?1)
+             WHERE status = 'running'
+               AND run_id IN (SELECT id FROM runs WHERE status IN ({TERMINAL_RUN_STATUSES_SQL}))"
+        ),
+        params![now],
+    )?;
+    Ok(cancelled_runs)
 }
 
 pub fn clear_finished_runs(thread_id: &str) -> Result<usize, crate::AppError> {
@@ -385,5 +413,63 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
         assert_eq!(orphans, vec!["B".to_string(), "E".to_string()]);
+    }
+
+    fn run_status(conn: &Connection, id: &str) -> String {
+        conn.query_row("SELECT status FROM runs WHERE id = ?1", params![id], |r| {
+            r.get(0)
+        })
+        .expect("read run status")
+    }
+
+    #[test]
+    fn converge_orphan_runs_cancels_non_terminal_and_cascades() {
+        let mut conn = test_conn();
+        insert_thread(&conn, "T", None);
+        // Non-terminal orphans: a plain running run, plus one waiting on approval.
+        insert_run(&conn, "run_running", "T", "running");
+        insert_run(&conn, "run_waiting", "T", "waiting_approval");
+        // Terminal runs must be left untouched.
+        insert_run(&conn, "run_done", "T", "completed");
+        insert_run(&conn, "run_cancelled", "T", "cancelled");
+
+        conn.execute(
+            "INSERT INTO approval_requests (id, thread_id, run_id, kind, status, title, created_at, updated_at)
+             VALUES ('ap', 'T', 'run_waiting', 'bash', 'pending', 't', 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tool_calls (id, run_id, name, kind, status, created_at)
+             VALUES ('tc', 'run_running', 'bash', 'agent_tool', 'running', 1)",
+            [],
+        )
+        .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let cancelled = converge_orphan_runs_tx(&tx, 42).unwrap();
+        tx.commit().unwrap();
+
+        assert_eq!(cancelled, 2, "only the two non-terminal runs are cancelled");
+        assert_eq!(run_status(&conn, "run_running"), "cancelled");
+        assert_eq!(run_status(&conn, "run_waiting"), "cancelled");
+        // Terminal runs preserved.
+        assert_eq!(run_status(&conn, "run_done"), "completed");
+        assert_eq!(run_status(&conn, "run_cancelled"), "cancelled");
+        // Cascades fired.
+        let ap_status: String = conn
+            .query_row(
+                "SELECT status FROM approval_requests WHERE id = 'ap'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ap_status, "cancelled");
+        let tc_status: String = conn
+            .query_row("SELECT status FROM tool_calls WHERE id = 'tc'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(tc_status, "cancelled");
     }
 }

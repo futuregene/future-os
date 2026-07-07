@@ -3,7 +3,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{agent_providers, agent_supervisor, auth_store, store, AppError};
+use crate::{agent_supervisor, auth_store, store, AppError};
 
 /// Clear all GUI-local data (SQLite + temp workspaces + shadow review) and
 /// relaunch the app. Login / provider config is preserved. `restart()` does not
@@ -51,7 +51,7 @@ pub fn apply_channel_environment_default() -> Result<(), AppError> {
     let auth = Value::Object(auth_store::read()?);
 
     if crate::build_info::is_release() {
-        let platform = agent_providers::resolve_future_platform_url(&auth);
+        let platform = crate::future_platform::resolve_future_platform_url(&auth);
         if platform != PRODUCTION_PLATFORM_URL {
             auth_store::set_future_base_url(&format!("{PRODUCTION_PLATFORM_URL}/api"))?;
         }
@@ -73,7 +73,7 @@ pub fn apply_channel_environment_default() -> Result<(), AppError> {
 #[tauri::command]
 pub fn get_future_environment() -> Result<FutureEnvironment, AppError> {
     let auth = Value::Object(auth_store::read()?);
-    let platform_url = agent_providers::resolve_future_platform_url(&auth);
+    let platform_url = crate::future_platform::resolve_future_platform_url(&auth);
     let environment = match platform_url.as_str() {
         PRODUCTION_PLATFORM_URL => ENV_PRODUCTION,
         TEST_PLATFORM_URL => ENV_TEST,

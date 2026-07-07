@@ -22,18 +22,19 @@ import {
   SquarePen,
   Trash2,
 } from "lucide-react";
-import { useLayoutEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { openPath } from "../../integrations/storage/files";
+import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { cn } from "../../lib/cn";
 import { isMacOS, isWindows } from "../../lib/platform";
-import { useBuildInfo } from "../../lib/useBuildInfo";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { useIsFullscreen } from "../../lib/useIsFullscreen";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { FloatingScrollbar } from "../ui/FloatingScrollbar";
 import { IconButton } from "../ui/IconButton";
+import { useDropUpMenu } from "./hooks/useDropUpMenu";
 
 export type ActivitySection = "chat" | "workspace" | "research" | "data" | "skill" | "remote" | "settings";
 
@@ -184,69 +185,25 @@ export function ActivityRail({
           ? (
               <>
                 <div className="mb-3 shrink-0 space-y-0.5">
-                  <button
-                    className="flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink transition-colors hover:bg-surface-subtle"
-                    onClick={() => onNewChat()}
-                    type="button"
-                  >
-                    <SquarePen className="size-4 shrink-0 text-ink-soft" />
-                    <span className="truncate">{t("activityRail.newChat")}</span>
-                  </button>
-                  <button
-                    className="flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
-                    onClick={onOpenModels}
-                    type="button"
-                  >
-                    <Sparkles className="size-4 shrink-0" />
-                    <span className="truncate">{t("activityRail.models")}</span>
-                  </button>
-                  <button
-                    className={cn(
-                      "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
-                      active === "skill" && "bg-surface-subtle text-ink",
-                    )}
-                    onClick={() => onChange("skill")}
-                    type="button"
-                  >
-                    <Blocks className="size-4 shrink-0" />
-                    <span className="truncate">{t("activityRail.skills")}</span>
-                  </button>
+                  <NavButton icon={SquarePen} label={t("activityRail.newChat")} onClick={() => onNewChat()} primary />
+                  <NavButton icon={Sparkles} label={t("activityRail.models")} onClick={onOpenModels} />
+                  <NavButton icon={Blocks} label={t("activityRail.skills")} active={active === "skill"} onClick={() => onChange("skill")} />
                   {showRemote
-                    ? (
-                        <button
-                          className={cn(
-                            "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
-                            active === "remote" && "bg-surface-subtle text-ink",
-                          )}
-                          onClick={() => onChange("remote")}
-                          type="button"
-                        >
-                          <Smartphone className="size-4 shrink-0" />
-                          <span className="truncate">{t("activityRail.remote")}</span>
-                        </button>
-                      )
+                    ? <NavButton icon={Smartphone} label={t("activityRail.remote")} active={active === "remote"} onClick={() => onChange("remote")} />
                     : null}
                 </div>
                 {featureItems.length > 0
                   ? (
                       <div className="mb-3 shrink-0 space-y-0.5">
-                        {featureItems.map((item) => {
-                          const Icon = item.icon;
-                          return (
-                            <button
-                              key={item.id}
-                              className={cn(
-                                "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink",
-                                active === item.id && "bg-surface-subtle text-ink",
-                              )}
-                              onClick={() => onChange(item.id)}
-                              type="button"
-                            >
-                              <Icon className="size-4 shrink-0" />
-                              <span className="truncate">{item.label}</span>
-                            </button>
-                          );
-                        })}
+                        {featureItems.map(item => (
+                          <NavButton
+                            key={item.id}
+                            icon={item.icon}
+                            label={item.label}
+                            active={active === item.id}
+                            onClick={() => onChange(item.id)}
+                          />
+                        ))}
                       </div>
                     )
                   : null}
@@ -594,15 +551,38 @@ function ThreadListItem({
  * Bottom edge (viewport px) of the nearest scroll/clip ancestor, or the
  * viewport height when none clips — used to decide if a menu must flip up.
  */
-function clippingBottom(element: HTMLElement): number {
-  let node = element.parentElement;
-  while (node) {
-    const overflowY = getComputedStyle(node).overflowY;
-    if (overflowY === "auto" || overflowY === "scroll" || overflowY === "hidden")
-      return node.getBoundingClientRect().bottom;
-    node = node.parentElement;
-  }
-  return window.innerHeight;
+/**
+ * A full-width expanded-rail nav button (New Chat, Models, feature entries). The
+ * Settings entry keeps its own accent active style and isn't built on this.
+ */
+function NavButton({
+  icon: Icon,
+  label,
+  onClick,
+  active = false,
+  primary = false,
+}: {
+  icon: LucideIcon;
+  label: string;
+  onClick: () => void;
+  active?: boolean;
+  /** New Chat: solid ink label with no hover recolor, muted icon. */
+  primary?: boolean;
+}) {
+  return (
+    <button
+      className={cn(
+        "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium transition-colors hover:bg-surface-subtle",
+        primary ? "text-ink" : "text-ink-soft hover:text-ink",
+        active && "bg-surface-subtle text-ink",
+      )}
+      onClick={onClick}
+      type="button"
+    >
+      <Icon className={cn("size-4 shrink-0", primary && "text-ink-soft")} />
+      <span className="truncate">{label}</span>
+    </button>
+  );
 }
 
 function sortThreads(items: StoredThread[]) {
@@ -675,19 +655,7 @@ function ThreadItemMenu({
   onTogglePin: () => void;
 }) {
   const { t } = useTranslation("layout");
-  const menuRef = useRef<HTMLDivElement>(null);
-  // Open downward by default, but flip above the trigger when the menu would
-  // spill past its scrolling container (e.g. the last thread near the sidebar
-  // bottom) so the full menu — including Delete — stays visible.
-  const [dropUp, setDropUp] = useState(false);
-  useLayoutEffect(() => {
-    const element = menuRef.current;
-    if (!element)
-      return;
-    const rect = element.getBoundingClientRect();
-    const boundary = Math.min(clippingBottom(element), window.innerHeight) - 8;
-    setDropUp(rect.bottom > boundary);
-  }, []);
+  const { menuRef, dropUp } = useDropUpMenu();
 
   return (
     <div
@@ -739,18 +707,7 @@ function WorkspaceHeaderMenu({
       : t("activityRail.revealInFileManager");
   const [open, setOpen] = useState(false);
   const layerRef = useDismissableLayer<HTMLDivElement>({ enabled: open, onDismiss: () => setOpen(false) });
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [dropUp, setDropUp] = useState(false);
-  useLayoutEffect(() => {
-    if (!open)
-      return;
-    const element = menuRef.current;
-    if (!element)
-      return;
-    const rect = element.getBoundingClientRect();
-    const boundary = Math.min(clippingBottom(element), window.innerHeight) - 8;
-    setDropUp(rect.bottom > boundary);
-  }, [open]);
+  const { menuRef, dropUp } = useDropUpMenu(open);
 
   return (
     <div className="relative" ref={layerRef}>

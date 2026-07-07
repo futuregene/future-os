@@ -1,6 +1,6 @@
 # FutureOS 审批规则方案（APPROVAL_PLAN）
 
-状态：**方案 v2 定稿，待实现**（2026-07-04；取代 SANDBOX_PLAN v1 的"规则引擎 + 审批策略"部分）
+状态：**方案 v2 已实现**（定稿 2026-07-04，落地见 SANDBOX_PLAN R1/R2/R3 ✅、`src-tauri/src/approval_rules.rs`、`commands/approvals.rs`；取代 SANDBOX_PLAN v1 的"规则引擎 + 审批策略"部分）
 
 > 本文是审批系统的**语义主文档**：规则模型、规则文件、判定流程、审批 UI。OS 层如何强制执行（Seatbelt 编译、escalation、降级模式、返工计划）见 [SANDBOX_PLAN.md](SANDBOX_PLAN.md)。产品语义基线 PRODUCT.md §4.6 需在实现后同步。
 

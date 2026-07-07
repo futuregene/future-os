@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { invokeCommand } from "../../integrations/tauri/invoke";
-import { useBuildInfo } from "../../lib/useBuildInfo";
+import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { SettingsSection } from "./SettingsPrimitives";
 
 /** Mirrors the backend `UpdateStatus` (serde camelCase). */

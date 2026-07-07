@@ -16,13 +16,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::auth_store::{agent_dir, FUTURE_PROVIDER_ID};
+use crate::config_io;
 
 #[path = "../../../agent/src/models/generated/mod.rs"]
 mod generated_model_catalog;
 
-/// Future platform root (no `/api`); auth/account endpoints hang off this and
-/// the model API base is derived as `{platform}/api/v1`.
-const DEFAULT_FUTURE_PLATFORM_URL: &str = "https://future-os.cn";
 const FUTURE_PROVIDER_NAME: &str = "FutureGene";
 
 /// Magic token in a built-in provider's catalog base URL marking it as a
@@ -136,7 +134,10 @@ struct CatalogProviderSummary {
 }
 
 pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
-    let models = read_json(&models_json_path()?);
+    // Display path stays lenient: a corrupt models.json shouldn't fail the whole
+    // Providers page — show built-ins and let the user fix the file. Write paths
+    // read strictly (see the upsert/delete functions) so they never clobber it.
+    let models = config_io::read_json_lenient(&models_json_path()?);
     // Display path: a corrupt auth.json shouldn't blank the providers list, so
     // fall back to empty (key badges show "Not Configured"); write paths stay strict.
     let auth = Value::Object(crate::auth_store::read().unwrap_or_default());
@@ -160,7 +161,7 @@ pub fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
     let mut builtin = vec![BuiltinProvider {
         id: FUTURE_PROVIDER_ID.to_string(),
         name: FUTURE_PROVIDER_NAME.to_string(),
-        base_url: resolve_future_base_url(&auth),
+        base_url: crate::future_platform::resolve_future_base_url(&auth),
         has_api_key: auth_has_key(&auth, FUTURE_PROVIDER_ID),
         model_count: future_model_count(),
         requires_base_url: false,
@@ -307,55 +308,59 @@ pub fn set_builtin_provider_base_url(
     }
 
     let base_url = input.base_url.trim();
-    let models_path = models_json_path()?;
-    let mut models_doc = read_json(&models_path);
-    if !models_doc.is_object() {
-        models_doc = json!({});
+    // Validate the address before touching the file (it doesn't depend on the
+    // current contents), so the locked read-modify-write below stays minimal.
+    if !base_url.is_empty() {
+        if base_url.len() > BASE_URL_MAX_LEN {
+            return Err("Base URL is too long.".into());
+        }
+        match reqwest::Url::parse(base_url) {
+            Ok(url) if matches!(url.scheme(), "http" | "https") => {}
+            _ => return Err("Base URL must be a valid http/https address.".into()),
+        }
+        if base_url.contains(BASE_URL_PLACEHOLDER) {
+            return Err(format!(
+                "Please replace `{BASE_URL_PLACEHOLDER}` in the address with the real value."
+            )
+            .into());
+        }
     }
-    let root = models_doc
-        .as_object_mut()
-        .ok_or_else(|| "models.json is not a JSON object.".to_string())?;
 
-    if base_url.is_empty() {
-        // Clear the override; drop the entry entirely if nothing else remains.
-        if let Some(providers) = root.get_mut("providers").and_then(Value::as_object_mut) {
-            if let Some(entry) = providers.get_mut(id).and_then(Value::as_object_mut) {
-                entry.remove("baseUrl");
-                if entry.is_empty() {
-                    providers.remove(id);
+    let models_path = models_json_path()?;
+    config_io::with_config_lock(&models_path, || {
+        let mut models_doc = config_io::read_json_object(&models_path)?;
+        let root = models_doc
+            .as_object_mut()
+            .expect("read_json_object always returns an object");
+
+        if base_url.is_empty() {
+            // Clear the override; drop the entry entirely if nothing else remains.
+            if let Some(providers) = root.get_mut("providers").and_then(Value::as_object_mut) {
+                if let Some(entry) = providers.get_mut(id).and_then(Value::as_object_mut) {
+                    entry.remove("baseUrl");
+                    if entry.is_empty() {
+                        providers.remove(id);
+                    }
                 }
             }
+        } else {
+            let providers = root
+                .entry("providers")
+                .or_insert_with(|| Value::Object(Map::new()));
+            let providers = providers
+                .as_object_mut()
+                .ok_or_else(|| "models.json `providers` is not an object.".to_string())?;
+            // Preserve any fields the GUI does not manage on this entry.
+            let mut provider = providers
+                .get(id)
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            provider.insert("baseUrl".to_string(), Value::String(base_url.to_string()));
+            providers.insert(id.to_string(), Value::Object(provider));
         }
-        write_json(&models_path, &models_doc)?;
-        return list_agent_providers();
-    }
-
-    if base_url.len() > BASE_URL_MAX_LEN {
-        return Err("Base URL is too long.".into());
-    }
-    match reqwest::Url::parse(base_url) {
-        Ok(url) if matches!(url.scheme(), "http" | "https") => {}
-        _ => return Err("Base URL must be a valid http/https address.".into()),
-    }
-    if base_url.contains(BASE_URL_PLACEHOLDER) {
-        return Err(format!("Please replace `{BASE_URL_PLACEHOLDER}` in the address with the real value.").into());
-    }
-
-    let providers = root
-        .entry("providers")
-        .or_insert_with(|| Value::Object(Map::new()));
-    let providers = providers
-        .as_object_mut()
-        .ok_or_else(|| "models.json `providers` is not an object.".to_string())?;
-    // Preserve any fields the GUI does not manage on this entry.
-    let mut provider = providers
-        .get(id)
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    provider.insert("baseUrl".to_string(), Value::String(base_url.to_string()));
-    providers.insert(id.to_string(), Value::Object(provider));
-    write_json(&models_path, &models_doc)?;
+        config_io::write_json_atomic(&models_path, &models_doc, false)
+    })?;
 
     list_agent_providers()
 }
@@ -369,7 +374,9 @@ pub fn upsert_custom_provider(
         return Err("Provider ID is required.".into());
     }
     if id == FUTURE_PROVIDER_ID {
-        return Err("`future` is reserved for built-in FutureGene; please choose another ID.".into());
+        return Err(
+            "`future` is reserved for built-in FutureGene; please choose another ID.".into(),
+        );
     }
     if id.len() < PROVIDER_ID_MIN_LEN || id.len() > PROVIDER_ID_MAX_LEN {
         return Err(format!(
@@ -417,7 +424,10 @@ pub fn upsert_custom_provider(
             id.clone()
         } else {
             if trimmed.chars().count() > PROVIDER_NAME_MAX_LEN {
-                return Err(format!("Provider name cannot exceed {PROVIDER_NAME_MAX_LEN} characters.").into());
+                return Err(format!(
+                    "Provider name cannot exceed {PROVIDER_NAME_MAX_LEN} characters."
+                )
+                .into());
             }
             if !is_provider_name_ok(trimmed) {
                 return Err(
@@ -454,7 +464,9 @@ pub fn upsert_custom_provider(
             continue;
         }
         if model_id.len() > MODEL_ID_MAX_LEN {
-            return Err(format!("Model ID `{model_id}` is too long (max {MODEL_ID_MAX_LEN}).").into());
+            return Err(
+                format!("Model ID `{model_id}` is too long (max {MODEL_ID_MAX_LEN}).").into(),
+            );
         }
         if !is_model_id_ok(model_id) {
             return Err(format!("Model ID `{model_id}` contains illegal characters.").into());
@@ -467,10 +479,14 @@ pub fn upsert_custom_provider(
             model_id
         } else {
             if model_name.chars().count() > MODEL_NAME_MAX_LEN {
-                return Err(format!("Model name cannot exceed {MODEL_NAME_MAX_LEN} characters.").into());
+                return Err(
+                    format!("Model name cannot exceed {MODEL_NAME_MAX_LEN} characters.").into(),
+                );
             }
             if !is_ascii_no_control(model_name) {
-                return Err(format!("Model name `{model_name}` contains illegal characters.").into());
+                return Err(
+                    format!("Model name `{model_name}` contains illegal characters.").into(),
+                );
             }
             model_name
         };
@@ -491,72 +507,75 @@ pub fn upsert_custom_provider(
     }
 
     let models_path = models_json_path()?;
-    let mut models_doc = read_json(&models_path);
-    if !models_doc.is_object() {
-        models_doc = json!({});
-    }
-    let root = models_doc
-        .as_object_mut()
-        .ok_or_else(|| "models.json is not a JSON object.".to_string())?;
-    let providers = root
-        .entry("providers")
-        .or_insert_with(|| Value::Object(Map::new()));
-    let providers = providers
-        .as_object_mut()
-        .ok_or_else(|| "models.json `providers` is not an object.".to_string())?;
+    config_io::with_config_lock(&models_path, || {
+        let mut models_doc = config_io::read_json_object(&models_path)?;
+        let root = models_doc
+            .as_object_mut()
+            .expect("read_json_object always returns an object");
+        let providers = root
+            .entry("providers")
+            .or_insert_with(|| Value::Object(Map::new()));
+        let providers = providers
+            .as_object_mut()
+            .ok_or_else(|| "models.json `providers` is not an object.".to_string())?;
 
-    // Reject creating a provider whose id already exists (silent overwrite).
-    if input.create && providers.contains_key(&id) {
-        return Err(format!("Provider ID `{id}` already exists.").into());
-    }
-    let builtin_catalog = builtin_catalog_providers();
-    if input.create && builtin_catalog.contains_key(&id) {
-        return Err(format!("Provider ID `{id}` is reserved for a built-in provider.").into());
-    }
-    // Names must be unique (case-insensitive) across the built-in and other
-    // custom providers, so the list and model grouping stay unambiguous.
-    let normalized_name = name.to_lowercase();
-    if normalized_name == FUTURE_PROVIDER_NAME.to_lowercase() {
-        return Err(format!("Provider name `{name}` conflicts with a built-in provider.").into());
-    }
-    let builtin_name_taken = builtin_catalog.iter().any(|(builtin_id, provider)| {
-        builtin_id != &id && provider.name.trim().to_lowercase() == normalized_name
-    });
-    if builtin_name_taken {
-        return Err(format!("Provider name `{name}` conflicts with a built-in provider.").into());
-    }
-    let name_taken = providers.iter().any(|(other_id, config)| {
-        other_id != &id
-            && config
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or(other_id)
-                .trim()
-                .to_lowercase()
-                == normalized_name
-    });
-    if name_taken {
-        return Err(format!("Provider name `{name}` already exists.").into());
-    }
+        // Reject creating a provider whose id already exists (silent overwrite).
+        if input.create && providers.contains_key(&id) {
+            return Err(format!("Provider ID `{id}` already exists.").into());
+        }
+        let builtin_catalog = builtin_catalog_providers();
+        if input.create && builtin_catalog.contains_key(&id) {
+            return Err(format!("Provider ID `{id}` is reserved for a built-in provider.").into());
+        }
+        // Names must be unique (case-insensitive) across the built-in and other
+        // custom providers, so the list and model grouping stay unambiguous.
+        let normalized_name = name.to_lowercase();
+        if normalized_name == FUTURE_PROVIDER_NAME.to_lowercase() {
+            return Err(
+                format!("Provider name `{name}` conflicts with a built-in provider.").into(),
+            );
+        }
+        let builtin_name_taken = builtin_catalog.iter().any(|(builtin_id, provider)| {
+            builtin_id != &id && provider.name.trim().to_lowercase() == normalized_name
+        });
+        if builtin_name_taken {
+            return Err(
+                format!("Provider name `{name}` conflicts with a built-in provider.").into(),
+            );
+        }
+        let name_taken = providers.iter().any(|(other_id, config)| {
+            other_id != &id
+                && config
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(other_id)
+                    .trim()
+                    .to_lowercase()
+                    == normalized_name
+        });
+        if name_taken {
+            return Err(format!("Provider name `{name}` already exists.").into());
+        }
 
-    // Preserve any fields the GUI does not manage (e.g. `compat`).
-    let mut provider = providers
-        .get(&id)
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    provider.insert("name".to_string(), Value::String(name));
-    provider.insert("api".to_string(), Value::String(api));
-    provider.insert("baseUrl".to_string(), Value::String(base_url));
-    provider.insert("models".to_string(), Value::Array(model_values));
-    // Write the API key first: if it fails we abort before persisting the
-    // provider, avoiding a saved provider with a missing key while returning Err.
-    if let Some(key) = api_key {
-        crate::auth_store::set_provider_key(&id, key)?;
-    }
+        // Preserve any fields the GUI does not manage (e.g. `compat`).
+        let mut provider = providers
+            .get(&id)
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        provider.insert("name".to_string(), Value::String(name.clone()));
+        provider.insert("api".to_string(), Value::String(api.clone()));
+        provider.insert("baseUrl".to_string(), Value::String(base_url.clone()));
+        provider.insert("models".to_string(), Value::Array(model_values.clone()));
+        // Write the API key first: if it fails we abort before persisting the
+        // provider, avoiding a saved provider with a missing key while returning Err.
+        if let Some(key) = api_key {
+            crate::auth_store::set_provider_key(&id, key)?;
+        }
 
-    providers.insert(id.clone(), Value::Object(provider));
-    write_json(&models_path, &models_doc)?;
+        providers.insert(id.clone(), Value::Object(provider));
+        config_io::write_json_atomic(&models_path, &models_doc, false)
+    })?;
 
     list_agent_providers()
 }
@@ -566,50 +585,34 @@ pub fn delete_custom_provider(id: String) -> Result<ProvidersView, crate::AppErr
     if id.is_empty() {
         return Err("Provider id is required.".to_string().into());
     }
+    // CFG-04: this deletes the provider's models.json entry *and* its auth.json
+    // credentials. Only custom providers may be removed — guard the built-in
+    // FutureGene (whose key is the user's sign-in) and every catalog provider, so
+    // a stray id can't wipe login/override state the UI never offers to delete.
+    if id == FUTURE_PROVIDER_ID {
+        return Err("FutureGene is a built-in provider and cannot be deleted.".into());
+    }
+    if builtin_catalog_providers().contains_key(&id) {
+        return Err(format!("`{id}` is a built-in provider and cannot be deleted.").into());
+    }
 
     let models_path = models_json_path()?;
-    let mut models_doc = read_json(&models_path);
-    if let Some(providers) = models_doc
-        .get_mut("providers")
-        .and_then(Value::as_object_mut)
-    {
-        providers.remove(&id);
-        write_json(&models_path, &models_doc)?;
-    }
+    config_io::with_config_lock(&models_path, || {
+        let mut models_doc = config_io::read_json_object(&models_path)?;
+        if let Some(providers) = models_doc
+            .get_mut("providers")
+            .and_then(Value::as_object_mut)
+        {
+            if providers.remove(&id).is_some() {
+                config_io::write_json_atomic(&models_path, &models_doc, false)?;
+            }
+        }
+        Ok(())
+    })?;
 
     crate::auth_store::remove_provider_entry(&id)?;
 
     list_agent_providers()
-}
-
-/// Resolve the Future **platform** root (no `/api`), mirroring the CLI's
-/// `getPlatformUrl()` precedence (see `cli/src/utils/platform.ts`):
-///   1. `future.platform_base_url`
-///   2. `future.base_url` with a trailing `/api` stripped (the CLI writes
-///      `base_url = {platform}/api`)
-///   3. [`DEFAULT_FUTURE_PLATFORM_URL`]
-///
-/// Auth/account endpoints live here (`{platform}/client/v1/...`); the model API
-/// base is [`resolve_future_base_url`].
-pub(crate) fn resolve_future_platform_url(auth: &Value) -> String {
-    let Some(future) = auth.get(FUTURE_PROVIDER_ID) else {
-        return DEFAULT_FUTURE_PLATFORM_URL.to_string();
-    };
-    if let Some(platform_url) = future.get("platform_base_url").and_then(Value::as_str) {
-        return platform_url.trim_end_matches('/').to_string();
-    }
-    if let Some(base_url) = future.get("base_url").and_then(Value::as_str) {
-        let trimmed = base_url.trim_end_matches('/');
-        let platform = trimmed.strip_suffix("/api").unwrap_or(trimmed);
-        return platform.trim_end_matches('/').to_string();
-    }
-    DEFAULT_FUTURE_PLATFORM_URL.to_string()
-}
-
-/// Resolve the FutureGene **model API** base URL: `{platform}/api/v1`. This is
-/// what the Providers page shows and what model calls use.
-pub(crate) fn resolve_future_base_url(auth: &Value) -> String {
-    format!("{}/api/v1", resolve_future_platform_url(auth))
 }
 
 /// True when a models.json provider entry only carries overrides (Base URL) for
@@ -733,31 +736,12 @@ fn future_model_count() -> usize {
     future_models_cache_path()
         .ok()
         .and_then(|path| {
-            read_json(&path)
+            config_io::read_json_lenient(&path)
                 .get("models")
                 .and_then(Value::as_array)
                 .map(Vec::len)
         })
         .unwrap_or(0)
-}
-
-fn read_json(path: &PathBuf) -> Value {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
-        .unwrap_or_else(|| json!({}))
-}
-
-fn write_json(path: &PathBuf, value: &Value) -> Result<(), crate::AppError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let serialized = serde_json::to_string_pretty(value)?;
-    // Atomic write (temp + rename) so a crash mid-write can't truncate/corrupt
-    // models.json.
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-    std::fs::write(&tmp, serialized.as_bytes())?;
-    std::fs::rename(&tmp, path).map_err(crate::AppError::from)
 }
 
 /// Provider display name: ASCII letters/digits, space, and `_.()-` only —
@@ -1098,7 +1082,7 @@ mod tests {
         upsert_custom_provider(in_).unwrap();
 
         // Persisted as a `modalities` array the agent reads.
-        let doc = read_json(&models_json_path().unwrap());
+        let doc = config_io::read_json_lenient(&models_json_path().unwrap());
         let models = doc["providers"]["p1"]["models"].as_array().unwrap();
         let vision = models.iter().find(|m| m["id"] == "vision").unwrap();
         assert_eq!(vision["modalities"], json!(["text", "image"]));
@@ -1161,7 +1145,7 @@ mod tests {
         assert!(azure.model_count > 0);
 
         // Persisted as a plain baseUrl override the agent reads.
-        let doc = read_json(&models_json_path().unwrap());
+        let doc = config_io::read_json_lenient(&models_json_path().unwrap());
         assert_eq!(
             doc["providers"]["azure-openai-responses"]["baseUrl"],
             json!("https://my-res.openai.azure.com/openai/v1")
@@ -1173,7 +1157,7 @@ mod tests {
             base_url: String::new(),
         })
         .unwrap();
-        let doc = read_json(&models_json_path().unwrap());
+        let doc = config_io::read_json_lenient(&models_json_path().unwrap());
         assert!(doc["providers"].get("azure-openai-responses").is_none());
     }
 
@@ -1191,61 +1175,5 @@ mod tests {
             base_url: "ftp://example.com".to_string(),
         });
         assert!(bad.is_err());
-    }
-
-    #[test]
-    fn platform_url_defaults_when_absent() {
-        assert_eq!(
-            resolve_future_platform_url(&json!({})),
-            DEFAULT_FUTURE_PLATFORM_URL
-        );
-        assert_eq!(
-            resolve_future_base_url(&json!({})),
-            format!("{DEFAULT_FUTURE_PLATFORM_URL}/api/v1")
-        );
-    }
-
-    #[test]
-    fn platform_url_strips_trailing_api_from_base_url() {
-        // The CLI writes `base_url = {platform}/api`; the platform is that minus /api.
-        let auth = json!({ "future": { "base_url": "https://future-os.cn/api" } });
-        assert_eq!(resolve_future_platform_url(&auth), "https://future-os.cn");
-        assert_eq!(
-            resolve_future_base_url(&auth),
-            "https://future-os.cn/api/v1"
-        );
-
-        let trailing = json!({ "future": { "base_url": "https://future-os.cn/api/" } });
-        assert_eq!(
-            resolve_future_platform_url(&trailing),
-            "https://future-os.cn"
-        );
-    }
-
-    #[test]
-    fn platform_url_prefers_platform_base_url() {
-        let auth = json!({ "future": { "platform_base_url": "https://staging.example.com/" } });
-        assert_eq!(
-            resolve_future_platform_url(&auth),
-            "https://staging.example.com"
-        );
-        assert_eq!(
-            resolve_future_base_url(&auth),
-            "https://staging.example.com/api/v1"
-        );
-    }
-
-    #[test]
-    fn base_url_without_api_suffix_is_used_as_platform() {
-        // A bare host (no /api) is treated as the platform root verbatim.
-        let auth = json!({ "future": { "base_url": "https://custom.example.com" } });
-        assert_eq!(
-            resolve_future_platform_url(&auth),
-            "https://custom.example.com"
-        );
-        assert_eq!(
-            resolve_future_base_url(&auth),
-            "https://custom.example.com/api/v1"
-        );
     }
 }

@@ -1,7 +1,59 @@
 //! Local filesystem Tauri commands: opening paths in the OS, previewing text
 //! files, exporting artifacts, and persisting pasted images.
 
-use std::{fs::File, io::Read, process::Command};
+use std::{
+    ffi::OsString,
+    fs::File,
+    io::Read,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+/// Resolve `path` to an absolute, symlink/`..`-collapsed form even when the
+/// target doesn't exist yet (e.g. an export destination): canonicalize the
+/// nearest existing ancestor, then re-append the missing tail.
+fn best_effort_canonical(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+    let mut existing = path;
+    let mut tail: Vec<OsString> = Vec::new();
+    while !existing.exists() {
+        match (existing.file_name(), existing.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name.to_os_string());
+                existing = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+    let mut base = existing
+        .canonicalize()
+        .unwrap_or_else(|_| existing.to_path_buf());
+    for name in tail.into_iter().rev() {
+        base.push(name);
+    }
+    base
+}
+
+/// Reject file access to FutureOS's own config/credential root (`~/.future`).
+/// These commands are reachable from the webview, which renders agent-produced
+/// markdown/artifacts — without this guard an XSS could read `auth.json` or
+/// overwrite `approval_rule.json`, escalating to the very secrets the
+/// approval/sandbox system protects. User-chosen files elsewhere stay allowed.
+fn ensure_path_allowed(path: &Path) -> Result<(), crate::AppError> {
+    let resolved = best_effort_canonical(path);
+    if let Some(home) = crate::home_dir() {
+        if let Ok(future_dir) = PathBuf::from(home).join(".future").canonicalize() {
+            if resolved.starts_with(&future_dir) {
+                return Err("Refusing to access a protected FutureOS directory."
+                    .to_string()
+                    .into());
+            }
+        }
+    }
+    Ok(())
+}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,6 +120,7 @@ pub fn read_file_base64(path: String, max_bytes: Option<u64>) -> Result<String, 
     if trimmed.is_empty() {
         return Err("path cannot be empty.".to_string().into());
     }
+    ensure_path_allowed(Path::new(trimmed))?;
     let meta = std::fs::metadata(trimmed)?;
     let limit = max_bytes.unwrap_or(25 * 1024 * 1024);
     if meta.len() > limit {
@@ -133,6 +186,7 @@ pub fn open_path(path: String) -> Result<(), crate::AppError> {
         return Err("path cannot be empty.".to_string().into());
     }
 
+    ensure_path_allowed(Path::new(trimmed))?;
     open_path_with_system(trimmed)
 }
 
@@ -159,6 +213,7 @@ pub fn read_text_file_preview(
         return Err("path cannot be empty.".to_string().into());
     }
 
+    ensure_path_allowed(Path::new(trimmed))?;
     let limit = max_bytes.unwrap_or(200 * 1024).clamp(1, 1024 * 1024);
     let mut file = File::open(trimmed)?;
     let size = file.metadata()?.len();
@@ -184,6 +239,7 @@ pub fn export_artifact_file(
     if destination.is_empty() {
         return Err("destinationPath cannot be empty.".to_string().into());
     }
+    ensure_path_allowed(Path::new(destination))?;
 
     if let Some(content) = content {
         std::fs::write(destination, content)?;

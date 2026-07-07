@@ -89,7 +89,7 @@ fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
     let reviewer = value_string(value, &["reviewer"]);
 
     if let Err(error) = store::ensure_approval_request(store::EnsureApprovalRequestInput {
-        approval_request_id: Some(approval_request_id),
+        approval_request_id: Some(approval_request_id.clone()),
         run_id: run_id.to_string(),
         tool_call_id,
         kind: value_string(value, &["kind"]).unwrap_or_else(|| "tool".to_string()),
@@ -105,13 +105,29 @@ fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
     }) {
         eprintln!("FutureOS approval persistence failed: {error}");
     }
-    if let Err(error) = store::update_run_status(store::UpdateRunStatusInput {
+    // CAS the run to waiting_approval only if it isn't already terminal. Without
+    // the guard a late-arriving approval_request event (the user aborted while
+    // this event was in flight) would resurrect a `cancelled` run — and since
+    // the agent has already aborted, no decision event ever comes back, stranding
+    // the run in `waiting_approval` forever (RUN-02). When the run is terminal we
+    // cancel the approval we just recorded so no dangling pending card remains.
+    match store::update_run_status_if_active(store::UpdateRunStatusInput {
         run_id: run_id.to_string(),
         status: "waiting_approval".to_string(),
         error_message: None,
         error_type: None,
     }) {
-        eprintln!("FutureOS run approval status update failed: {error}");
+        Ok(false) => {
+            if let Err(error) = store::decide_approval_request(store::DecideApprovalRequestInput {
+                approval_request_id,
+                status: "cancelled".to_string(),
+                decision_note: Some("Cancelled because the run had already ended.".to_string()),
+            }) {
+                eprintln!("FutureOS stale approval cancellation failed: {error}");
+            }
+        }
+        Ok(true) => {}
+        Err(error) => eprintln!("FutureOS run approval status update failed: {error}"),
     }
 }
 

@@ -13,11 +13,17 @@ pub fn list_runs(thread_id: String) -> Result<Vec<store::RunRecord>, crate::AppE
     store::list_runs(&thread_id)
 }
 
+/// Update a run's status from the frontend's completion/failure paths. Guarded:
+/// a run that is already terminal (e.g. a concurrent `abort_run` set `cancelled`)
+/// is not clobbered (RUN-03). Returns the run's real current state so the caller
+/// reconciles its bubble from the truth rather than the status it tried to write.
 #[tauri::command]
 pub fn update_run_status(
     input: store::UpdateRunStatusInput,
 ) -> Result<store::RunRecord, crate::AppError> {
-    store::update_run_status(input)
+    let run_id = input.run_id.clone();
+    store::update_run_status_if_active(input)?;
+    store::get_run(&run_id)?.ok_or_else(|| "Run could not be loaded.".to_string().into())
 }
 
 #[tauri::command]

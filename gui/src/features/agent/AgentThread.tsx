@@ -29,7 +29,7 @@ interface AgentThreadProps {
   approvalTier: ApprovalTier;
   onChangeApprovalTier: (value: ApprovalTier) => void;
   showThinking: boolean;
-  pendingPrompt: { attachments?: MessageAttachment[]; id: string; content: string } | null;
+  pendingPrompt: { attachments?: MessageAttachment[]; id: string; content: string; targetThreadId: string } | null;
   activeApproval?: StoredApprovalRequest | null;
   onApprovalDecision: (approval: StoredApprovalRequest, status: "approved" | "rejected") => Promise<void>;
   onPromptConsumed: (id: string) => void;

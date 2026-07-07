@@ -4,8 +4,8 @@ import { Boxes, FlaskConical, RefreshCw, RotateCcw, Settings2, Sparkles, UserRou
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Overlay } from "../../components/ui/Overlay";
+import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { cn } from "../../lib/cn";
-import { useBuildInfo } from "../../lib/useBuildInfo";
 import { AccountPage } from "./AccountPage";
 import { EnvironmentPage } from "./EnvironmentPage";
 import { GeneralPage } from "./GeneralPage";

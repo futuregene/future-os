@@ -33,7 +33,9 @@
     "jumpToLatest": "Jump to latest",
     "defaultTitle": "FutureOS",
     "agentDoneNoText": "Future Agent finished but returned no text.",
-    "messagesLoadFailed": "Failed to load FutureOS messages: {{message}}"
+    "messagesLoadFailed": "Failed to load FutureOS messages: {{message}}",
+    "alreadyRunning": "A response is already in progress for this conversation.",
+    "responseInterrupted": "The response was interrupted before it finished."
   },
   "failure": {
     "connect": "Future Agent connection failed: {{message}}\n\nMake sure the agent is running and FUTURE_AGENT_GRPC_ADDR points to 127.0.0.1:50051.",

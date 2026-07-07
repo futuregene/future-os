@@ -39,6 +39,10 @@ static ACTIVE_AGENT_PROMPTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 #[serde(rename_all = "camelCase")]
 pub struct AgentPromptResponse {
     pub content: String,
+    /// Whether the agent stream reached a clean `agent_end`. When false, the
+    /// content is a truncated prefix (stream closed mid-reply) and the caller
+    /// should finalize the run as failed rather than completed (RUN-05).
+    pub complete: bool,
 }
 
 /// Fetch the agent's buffered events for a session's current run (P1c backfill).
@@ -221,7 +225,10 @@ async fn agent_prompt_inner(
         .ok_or_rpc_error("Future Agent rejected the prompt.")?;
 
     match collect_agent_response(&mut event_stream, run_id.as_deref(), &session_id).await {
-        Ok(content) => Ok(AgentPromptResponse { content }),
+        Ok(response) => Ok(AgentPromptResponse {
+            content: response.content,
+            complete: response.complete,
+        }),
         Err(error) => {
             // The prompt was already accepted, so the Agent keeps running
             // server-side with no consumer once we drop the stream — and there is

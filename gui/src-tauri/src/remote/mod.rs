@@ -189,7 +189,7 @@ async fn command_loop(client: async_nats::Client, pair_id: String) {
     }
 }
 
-async fn handle_command(client: &async_nats::Client, pair_id: &str, msg: async_nats::Message) {
+async fn handle_command(client: &async_nats::Client, _pair_id: &str, msg: async_nats::Message) {
     let cmd: IncomingCmd = match serde_json::from_slice(&msg.payload) {
         Ok(cmd) => cmd,
         Err(e) => {
@@ -260,7 +260,6 @@ async fn handle_command(client: &async_nats::Client, pair_id: &str, msg: async_n
             // Accept-ack immediately; actual execution runs in the background (completion visible via event stream agent_end).
             let session_id = cmd.session_id.clone();
             let message = cmd.message.clone();
-            let _pair = pair_id.to_string();
             tokio::spawn(async move {
                 if let Err(e) = handle_remote_prompt(session_id, message).await {
                     eprintln!("remote: prompt processing failed: {e}");
@@ -341,8 +340,27 @@ async fn handle_remote_prompt(session_id: String, message: String) -> Result<(),
 
     // (e) Finalize run + append assistant message (content = full response text), matching the frontend.
     match result {
+        // Stream closed before `agent_end`: the text is a truncated prefix, not a
+        // finished answer. Persist it (so the partial isn't lost) but mark the run
+        // failed rather than completed (RUN-05).
+        Ok(response) if !response.complete => {
+            let _ = crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+                run_id: run.id.clone(),
+                status: "failed".to_string(),
+                error_message: Some("Response interrupted before completion.".to_string()),
+                error_type: Some("stream_interrupted".to_string()),
+            });
+            let _ = crate::store::append_message(crate::store::AppendMessageInput {
+                thread_id: thread.id.clone(),
+                run_id: Some(run.id.clone()),
+                role: "assistant".to_string(),
+                content_type: Some("markdown".to_string()),
+                content: response.content,
+                status: Some("failed".to_string()),
+            });
+        }
         Ok(response) => {
-            let _ = crate::store::update_run_status(crate::store::UpdateRunStatusInput {
+            let _ = crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
                 run_id: run.id.clone(),
                 status: "completed".to_string(),
                 error_message: None,
@@ -363,7 +381,7 @@ async fn handle_remote_prompt(session_id: String, message: String) -> Result<(),
             });
         }
         Err(e) => {
-            let _ = crate::store::update_run_status(crate::store::UpdateRunStatusInput {
+            let _ = crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
                 run_id: run.id.clone(),
                 status: "failed".to_string(),
                 error_message: Some(e.to_string()),

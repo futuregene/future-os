@@ -30,7 +30,9 @@
     "jumpToLatest": "回到最新",
     "defaultTitle": "FutureOS",
     "agentDoneNoText": "Future Agent 已完成，但没有返回文本。",
-    "messagesLoadFailed": "FutureOS 消息读取失败：{{message}}"
+    "messagesLoadFailed": "FutureOS 消息读取失败：{{message}}",
+    "alreadyRunning": "该对话已有一个回复正在进行中。",
+    "responseInterrupted": "回复在完成前被中断。"
   },
   "failure": {
     "connect": "Future Agent 连接失败：{{message}}\n\n请确认 Agent 已启动，并且 FUTURE_AGENT_GRPC_ADDR 指向 127.0.0.1:50051。",

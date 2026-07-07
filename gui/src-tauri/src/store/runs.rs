@@ -163,41 +163,8 @@ pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::AppError> {
         .map_err(crate::AppError::from)
 }
 
-pub fn update_run_status(input: UpdateRunStatusInput) -> Result<RunRecord, crate::AppError> {
-    let now = now_millis();
-    let ended_at = if TERMINAL_RUN_STATUSES.contains(&input.status.as_str()) {
-        Some(now)
-    } else {
-        None
-    };
-    let mut conn = connect()?;
-    let tx = conn.transaction()?;
-    tx.execute(
-        "UPDATE runs
-         SET status = ?1,
-             error_message = ?2,
-             error_type = COALESCE(?3, error_type),
-             ended_at = COALESCE(?4, ended_at),
-             updated_at = ?5
-         WHERE id = ?6",
-        params![
-            input.status,
-            input.error_message,
-            input.error_type,
-            ended_at,
-            now,
-            input.run_id
-        ],
-    )?;
-    if input.status == "cancelled" {
-        cancel_run_side_effects(&tx, &input.run_id, now)?;
-    }
-    tx.commit()?;
-    loaded(get_run(&input.run_id)?, "Updated run")
-}
-
 /// Cancel a run's still-open approvals and running tool calls. Shared by the
-/// `cancelled` paths of `update_run_status` and `update_run_status_if_active`.
+/// `cancelled` path of `update_run_status_if_active`.
 fn cancel_run_side_effects(
     tx: &rusqlite::Transaction<'_>,
     run_id: &str,
@@ -479,6 +446,25 @@ mod tests {
         tx.commit().unwrap();
         assert!(!changed);
         assert_eq!(run_status(&conn, "run_cancelled"), "cancelled");
+    }
+
+    /// RUN-01/RUN-03: a completed run is not rewritten to cancelled by a late
+    /// abort (nor to any other status by a late completion projection).
+    #[test]
+    fn if_active_skips_completed_run() {
+        let mut conn = test_conn();
+        insert_run(&conn, "run_done", "completed");
+        let cancel = UpdateRunStatusInput {
+            run_id: "run_done".to_string(),
+            status: "cancelled".to_string(),
+            error_message: Some("Terminated by user.".to_string()),
+            error_type: Some("abort_requested".to_string()),
+        };
+        let tx = conn.transaction().unwrap();
+        let changed = update_run_status_if_active_tx(&tx, &cancel, 99).unwrap();
+        tx.commit().unwrap();
+        assert!(!changed);
+        assert_eq!(run_status(&conn, "run_done"), "completed");
     }
 
     /// A non-terminal run does transition, and the cancelled cascade fires.

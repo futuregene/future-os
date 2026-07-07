@@ -24,11 +24,12 @@ FutureOS desktop app: Tauri + React + TypeScript, frontend `src/`, Tauri backend
 
 ## Code Structure (`src/`)
 
-- `components/layout/` — `AppShell` (layout orchestration) + `ContextPanel`; `hooks/` contains AppShell domain hooks: `useThreadStore` / `useAgentConnection` / `useApprovals`
-- `components/ui/` — Generic presentational components (`Badge` / `DiffView` / `CopyablePre` / `TextInput` / `Select` / `Button` / `Overlay` …), no business logic
-- `features/{agent,review,runs,artifacts,research,settings,markdown}/` — Domain-specific business components
-- `integrations/` — Boundary with the Tauri backend: `tauri/invoke.ts` (sole typed invoke entry point), `agent/`, `storage/` (`threadStore.ts` is the barrel, domain modules in sibling directories)
-- `lib/` — Dependency-free utilities: `usePolling` / `useAsyncResource` / `futureEvents` (typed event bus) / `cn` / `clipboard` / `date` / `platform` / `useDismissableLayer` / `windowDrag`
+- `components/layout/` — `AppShell` (layout orchestration) + `ContextPanel` + `ActivityRail` (left nav) + dialog shells (`AppShellDialogs` / `WorkspaceDialogs` / `LeftPanelTitlebarToggle`); `hooks/` contains AppShell domain hooks: `useThreadStore` / `useAgentConnection` / `useApprovals` / `useAppSettings` / `useModelSelection` / `useThreadDialogs` / `useUnreadThreads` / `useWorkspaceDialogs`
+- `components/ui/` — Generic presentational components (`Badge` / `DiffView` / `CopyablePre` / `TextInput` / `Select` / `Button` / `Overlay` / `ToastHost` …), no business logic
+- `features/{agent,review,runs,artifacts,research,skills,remote,settings,markdown}/` — Domain-specific business components (`skills` + `remote` nav entries are currently hidden/gated — see PRODUCT.md §5.2)
+- `integrations/` — Boundary with the Tauri backend: `tauri/invoke.ts` (sole typed invoke entry point) + `tauri/useBuildInfo.ts`, `agent/`, `skills/` (`skillsClient.ts`), `storage/` (`threadStore.ts` is the barrel, domain modules in sibling files)
+- `i18n/` — `en`/`zh` locale bundles + init (language switch, PRODUCT.md §5.6)
+- `lib/` — Dependency-free utilities: `usePolling` / `useAsyncResource` / `futureEvents` (typed event bus) / `cn` / `clipboard` / `date` / `platform` / `objects` / `useDismissableLayer` / `useFloatingScrollbar` / `useIsFullscreen` / `windowDrag`
 
 ## GUI Development Principles (Long-term Memory)
 
