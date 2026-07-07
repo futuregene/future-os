@@ -23,7 +23,7 @@ impl AgentClient {
         let channel = endpoint
             .connect()
             .await
-            .map_err(|e| anyhow!("连接 agent {} 失败: {}", addr, e))?;
+            .map_err(|e| anyhow!("Failed to connect to agent {}: {}", addr, e))?;
         Ok(Self {
             inner: FutureAgentClient::new(channel),
         })
@@ -35,7 +35,7 @@ impl AgentClient {
             .inner
             .execute_command(tonic::Request::new(cmd))
             .await
-            .map_err(|e| anyhow!("execute_command 失败: {}", e))?
+            .map_err(|e| anyhow!("execute_command failed: {}", e))?
             .into_inner())
     }
 
@@ -52,7 +52,7 @@ impl AgentClient {
             .inner
             .stream_events(req)
             .await
-            .map_err(|e| anyhow!("stream_events 失败: {}", e))?
+            .map_err(|e| anyhow!("stream_events failed: {}", e))?
             .into_inner())
     }
 }
