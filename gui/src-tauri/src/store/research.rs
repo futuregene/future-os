@@ -34,22 +34,9 @@ pub struct ResearchResourceRecord {
     pub updated_at: i64,
 }
 
-/// Column list for `research_collection_from_row`, in struct order.
-pub(super) const RESEARCH_COLLECTION_COLUMNS: &str =
-    "id, workspace_id, name, description, created_at, updated_at";
-
-pub(super) fn research_collection_from_row(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<ResearchCollectionRecord> {
-    Ok(ResearchCollectionRecord {
-        id: row.get(0)?,
-        workspace_id: row.get(1)?,
-        name: row.get(2)?,
-        description: row.get(3)?,
-        created_at: row.get(4)?,
-        updated_at: row.get(5)?,
-    })
-}
+sql_record!(pub(super) RESEARCH_COLLECTION_COLUMNS, research_collection_from_row -> ResearchCollectionRecord {
+    id, workspace_id, name, description, created_at, updated_at,
+});
 
 /// Column list for `research_resource_from_row`, in struct order. Aliases are
 /// baked in because every `SELECT` joins `research_resources r` onto
