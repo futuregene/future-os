@@ -1,20 +1,20 @@
 //! Markdown object-reference handling, split by concern:
 //! - [`extract`] — pure parsing of `futureos://` links/fences out of markdown.
 //! - [`resolve`] — turn explicit references into live store records (read side).
-//! - [`search`] — `@`-mention pick-list search across workspace objects.
 //! - [`sync`] — keep the denormalized reference tables in step with messages.
+//!
+//! The composer's `@`-mention picker searches workspace files, not objects —
+//! see [`super::workspace_files`].
 
 mod extract;
 mod metadata;
 mod resolve;
-mod search;
 mod sync;
 
 pub use self::resolve::resolve_markdown_references;
-pub use self::search::search_reference_targets;
 pub use self::sync::sync_message_markdown_references;
 
-/// First eight characters of an id, used to label runs in search/sync output.
+/// First eight characters of an id, used to label runs in sync output.
 fn short_id(id: &str) -> String {
     id.chars().take(8).collect()
 }
@@ -22,7 +22,6 @@ fn short_id(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::resolve::resolve_markdown_reference;
-    use super::search::search_artifact_targets;
     use super::sync_message_markdown_references;
     use crate::store::records::MarkdownReferenceInput;
     use crate::store::schema::SCHEMA;
@@ -64,21 +63,6 @@ mod tests {
         assert_eq!(target_count, 1);
         assert_eq!(object_count, 1);
         assert_eq!(title, "Poem");
-    }
-
-    #[test]
-    fn searches_workspace_reference_targets_from_objects() {
-        let conn = test_conn();
-        seed_workspace_artifact(&conn);
-
-        let mut results = vec![];
-        search_artifact_targets(&conn, "ws_test", "poem", &mut results)
-            .expect("search artifact targets");
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].target_type, "artifact");
-        assert_eq!(results[0].target_id, "artifact_test");
-        assert_eq!(results[0].title, "Poem");
     }
 
     #[test]
