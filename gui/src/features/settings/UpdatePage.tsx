@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
+import { errorMessage } from "../../lib/errors";
 import { SettingsSection } from "./SettingsPrimitives";
 
 /** Mirrors the backend `UpdateStatus` (serde camelCase). */
@@ -47,7 +48,7 @@ export function UpdatePage() {
     }
     catch (error) {
       setStatus(null);
-      setCheckError(error instanceof Error ? error.message : String(error));
+      setCheckError(errorMessage(error));
     }
     finally {
       setChecking(false);
@@ -75,7 +76,7 @@ export function UpdatePage() {
       setSavedPath(path);
     }
     catch (error) {
-      setDownloadError(error instanceof Error ? error.message : String(error));
+      setDownloadError(errorMessage(error));
     }
     finally {
       unlisten();
@@ -88,7 +89,13 @@ export function UpdatePage() {
       return;
     // Open the containing folder (strip the trailing path segment, either sep).
     const dir = savedPath.replace(/[/\\][^/\\]*$/, "");
-    await invokeCommand("open_path", { path: dir });
+    setDownloadError(null);
+    try {
+      await invokeCommand("open_path", { path: dir });
+    }
+    catch (error) {
+      setDownloadError(errorMessage(error));
+    }
   }
 
   return (

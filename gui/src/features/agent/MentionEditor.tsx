@@ -398,7 +398,10 @@ function serialize(editor: HTMLDivElement | null): string {
     if (element.getAttribute(PILL_ATTR)) {
       const label = (element.textContent ?? "").replace(/\[/g, "(").replace(/\]/g, ")");
       const path = element.getAttribute("data-path") ?? "";
-      out += `[${label}](${/\s/.test(path) ? `<${path}>` : path})`;
+      // Angle-wrap whenever the path holds whitespace OR parens: a bare `)` in
+      // the path closes the markdown link early, truncating downstream parsing
+      // (MessageBlock's MENTION_LINK matches the `<...>` form for these).
+      out += `[${label}](${/[\s()]/.test(path) ? `<${path}>` : path})`;
       return;
     }
     if (element.tagName === "BR") {

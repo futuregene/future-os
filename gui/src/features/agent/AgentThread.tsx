@@ -9,12 +9,14 @@ import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { cn } from "../../lib/cn";
 import { onFutureEvent } from "../../lib/futureEvents";
+import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { ApprovalPrompt } from "./ApprovalPrompt";
 import { buildContinuePrompt, loadRunResumeSummary, previousUserForRun } from "./buildContinuePrompt";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { ThreadHeader } from "./ThreadHeader";
 import { useAgentThreadState } from "./useAgentThreadState";
+import { useStickyAutoScroll } from "./useStickyAutoScroll";
 
 interface AgentThreadProps {
   thread: StoredThread | null;
@@ -66,15 +68,9 @@ export function AgentThread({
   const { t } = useTranslation("agent");
   const {
     handleAbort,
-    handleScroll,
     handleSend,
-    handleThumbPointerDown,
     loadingThread,
     messages,
-    scrollRef,
-    scrollbar,
-    scrollToLatest,
-    showJumpToLatest,
   } = useAgentThreadState({
     thread,
     loadingStore,
@@ -83,6 +79,24 @@ export function AgentThread({
     pendingPrompt,
     onPromptConsumed,
     onThreadActivity,
+  });
+
+  const {
+    scrollRef,
+    scrollbar,
+    updateFloatingScrollbar,
+    handleScroll: handleScrollbarVisibility,
+    handleThumbPointerDown,
+  } = useFloatingScrollbar();
+
+  // Sticky auto-scroll: follow streaming output only while pinned near the
+  // bottom; re-pins on thread switch and follows the growing message list.
+  const { handleScroll, scrollToLatest, showJumpToLatest } = useStickyAutoScroll({
+    scrollRef,
+    resetKey: thread?.id ?? null,
+    contentKey: messages,
+    onScroll: handleScrollbarVisibility,
+    onContentSettled: () => updateFloatingScrollbar(false),
   });
 
   // A run is in flight while its assistant bubble is still streaming; the agent
@@ -222,7 +236,7 @@ export function AgentThread({
               onChangeApprovalTier={onChangeApprovalTier}
               sending={isSending}
               onAbort={() => void handleAbort()}
-              onSend={handleSend}
+              onSend={payload => void handleSend(payload)}
               workspaceId={thread?.workspaceId}
             />
           </div>

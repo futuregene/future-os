@@ -100,7 +100,7 @@ function ResearchResourceCard({
   highlighted?: boolean;
   resource: StoredResearchResource;
 }) {
-  const { t } = useTranslation("research");
+  const { i18n, t } = useTranslation("research");
   return (
     <article className={highlighted ? "rounded-lg border border-info-line bg-surface p-4 shadow-xs" : "rounded-lg border border-line-soft bg-surface p-4"}>
       <div className="flex items-start gap-3">
@@ -114,7 +114,7 @@ function ResearchResourceCard({
               <div className="mt-1 flex items-center gap-2">
                 <Badge>{resource.resourceType}</Badge>
                 {resource.sourceArtifactId ? <Badge tone="accent">{t("artifact")}</Badge> : null}
-                <span className="text-xs text-ink-muted">{formatTime(storedTimeToIso(resource.createdAt))}</span>
+                <span className="text-xs text-ink-muted">{formatTime(storedTimeToIso(resource.createdAt), i18n.language)}</span>
               </div>
             </div>
           </div>

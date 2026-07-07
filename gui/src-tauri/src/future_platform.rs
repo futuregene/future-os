@@ -14,6 +14,12 @@ use crate::auth_store::FUTURE_PROVIDER_ID;
 /// the model API base is derived as `{platform}/api/v1`.
 pub(crate) const DEFAULT_FUTURE_PLATFORM_URL: &str = "https://future-os.cn";
 
+/// Selectable FutureGene environments. Mirrors the CLI's `auth login --url`
+/// targets — production is the default platform, test is the staging host. Used
+/// by the environment-switch debug commands and the startup channel policy.
+pub(crate) const PRODUCTION_PLATFORM_URL: &str = DEFAULT_FUTURE_PLATFORM_URL;
+pub(crate) const TEST_PLATFORM_URL: &str = "https://test.future-os.cn";
+
 /// Resolve the Future **platform** root (no `/api`), mirroring the CLI's
 /// `getPlatformUrl()` precedence (see `cli/src/utils/platform.ts`):
 ///   1. `future.platform_base_url`
@@ -42,6 +48,47 @@ pub(crate) fn resolve_future_platform_url(auth: &Value) -> String {
 /// what the Providers page shows and what model calls use.
 pub(crate) fn resolve_future_base_url(auth: &Value) -> String {
     format!("{}/api/v1", resolve_future_platform_url(auth))
+}
+
+/// The platform root currently in effect, read fresh from `auth.json`. A
+/// convenience for callers (device-flow login, skill catalogue fetches) that
+/// only need the live platform URL and don't already hold a parsed `auth` value.
+/// A read failure resolves to [`DEFAULT_FUTURE_PLATFORM_URL`] like an empty auth.
+pub(crate) fn current_platform_url() -> String {
+    let auth = Value::Object(crate::auth_store::read().unwrap_or_default());
+    resolve_future_platform_url(&auth)
+}
+
+/// Apply the environment policy for this build channel at startup (called once
+/// before the agent is spawned, so the agent reads the right `base_url`).
+///
+/// Release builds are production-locked: if the resolved platform is anything
+/// other than production (e.g. a stale test `base_url` from a prior dev build
+/// sharing `~/.future`), pin it back to production. Fresh installs already
+/// resolve to production by default, so this is a no-op for them.
+///
+/// Dev builds default to the test environment on first launch (no `future`
+/// base_url chosen yet), but leave an explicit choice alone so a manual switch
+/// sticks across restarts.
+pub(crate) fn apply_channel_environment_default() -> Result<(), crate::AppError> {
+    let auth = Value::Object(crate::auth_store::read()?);
+
+    if crate::build_info::is_release() {
+        let platform = resolve_future_platform_url(&auth);
+        if platform != PRODUCTION_PLATFORM_URL {
+            crate::auth_store::set_future_base_url(&format!("{PRODUCTION_PLATFORM_URL}/api"))?;
+        }
+        return Ok(());
+    }
+
+    let has_explicit_env = auth
+        .get(FUTURE_PROVIDER_ID)
+        .map(|future| future.get("base_url").is_some() || future.get("platform_base_url").is_some())
+        .unwrap_or(false);
+    if !has_explicit_env {
+        crate::auth_store::set_future_base_url(&format!("{TEST_PLATFORM_URL}/api"))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

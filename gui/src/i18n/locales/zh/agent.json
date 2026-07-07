@@ -83,6 +83,14 @@
     "startAgentForModels": "启动 Future Agent 以加载模型。",
     "allModelsDisabled": "已加载到模型，但已全部禁用。请在设置中启用。",
     "thinkingLevel": "思考强度",
+    "thinkingLevelLabels": {
+      "off": "关闭",
+      "minimal": "最简",
+      "low": "低",
+      "medium": "中",
+      "high": "高",
+      "xhigh": "极高"
+    },
     "send": "发送",
     "stop": "停止",
     "noFiles": "未找到文件。",

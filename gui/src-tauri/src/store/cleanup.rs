@@ -5,6 +5,8 @@ use rusqlite::{params, Connection};
 
 use super::db::connect;
 use super::records::ThreadCleanupSummary;
+use super::review_snapshots::delete_run_review_in;
+use super::runs::{cancel_children_of_runs, CancelScope};
 use super::status::TERMINAL_RUN_STATUSES_SQL;
 use super::util::{count_workspace_files, loaded, now_millis};
 use super::{delete_thread, get_thread, get_workspace};
@@ -140,7 +142,12 @@ pub fn get_thread_cleanup_summary(
 /// their still-open approvals and running tool calls, so a run and its children
 /// never end up in mismatched states. The previous, narrower version cancelled
 /// only runs that owned a pending approval; that logic is subsumed here. Returns
-/// the number of runs cancelled. (Name kept for IPC stability.)
+/// the number of runs cancelled.
+///
+/// Called only from the backend's setup (`lib.rs`), once per process — it is
+/// deliberately NOT a Tauri command: a webview reload re-runs the frontend
+/// bootstrap while this process may still own live event collectors, and a
+/// reload-triggered call would cancel those live runs.
 pub fn cancel_stale_approval_requests() -> Result<usize, crate::AppError> {
     let now = now_millis();
     let mut conn = connect()?;
@@ -168,29 +175,12 @@ fn converge_orphan_runs_tx(tx: &rusqlite::Transaction<'_>, now: i64) -> rusqlite
         params![now],
     )?;
     // Cascade: any pending approval or running tool call now belongs to a
-    // terminal run and must be settled too.
-    tx.execute(
-        &format!(
-            "UPDATE approval_requests
-             SET status = 'cancelled',
-                 decision_note = COALESCE(decision_note, 'Cancelled because FutureOS restarted.'),
-                 decided_at = COALESCE(decided_at, ?1),
-                 updated_at = ?1
-             WHERE status = 'pending'
-               AND (run_id IS NULL
-                    OR run_id IN (SELECT id FROM runs WHERE status IN ({TERMINAL_RUN_STATUSES_SQL})))"
-        ),
-        params![now],
-    )?;
-    tx.execute(
-        &format!(
-            "UPDATE tool_calls
-             SET status = 'cancelled',
-                 ended_at = COALESCE(ended_at, ?1)
-             WHERE status = 'running'
-               AND run_id IN (SELECT id FROM runs WHERE status IN ({TERMINAL_RUN_STATUSES_SQL}))"
-        ),
-        params![now],
+    // terminal run and must be settled too (shared with the single-run path).
+    cancel_children_of_runs(
+        tx,
+        CancelScope::TerminalRuns,
+        "Cancelled because FutureOS restarted.",
+        now,
     )?;
     Ok(cancelled_runs)
 }
@@ -198,6 +188,18 @@ fn converge_orphan_runs_tx(tx: &rusqlite::Transaction<'_>, now: i64) -> rusqlite
 pub fn clear_finished_runs(thread_id: &str) -> Result<usize, crate::AppError> {
     let mut conn = connect()?;
     let tx = conn.transaction()?;
+    // Terminal runs of this Thread, read once up front so the per-run review
+    // cascade below can reuse `delete_run_review_in` (the FK-safe delete order is
+    // owned by review_snapshots, not restated here). Scoped so the statement is
+    // dropped before the transaction's own `execute` calls borrow it.
+    let terminal_run_ids: Vec<String> = {
+        let mut stmt = tx.prepare(&format!(
+            "SELECT id FROM runs
+             WHERE thread_id = ?1 AND status IN ({TERMINAL_RUN_STATUSES_SQL})"
+        ))?;
+        let rows = stmt.query_map(params![thread_id], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
     tx.execute(
         &format!(
             "UPDATE messages
@@ -260,44 +262,11 @@ pub fn clear_finished_runs(thread_id: &str) -> Result<usize, crate::AppError> {
         ),
         params![thread_id],
     )?;
-    tx.execute(
-        &format!(
-            "DELETE FROM review_file_changes
-         WHERE changeset_id IN (
-           SELECT c.id
-           FROM review_changesets c
-           JOIN runs r ON r.id = c.run_id
-           WHERE r.thread_id = ?1
-             AND r.status IN ({TERMINAL_RUN_STATUSES_SQL})
-         )"
-        ),
-        params![thread_id],
-    )?;
-    tx.execute(
-        &format!(
-            "DELETE FROM review_changesets
-         WHERE thread_id = ?1
-           AND run_id IN (
-             SELECT id FROM runs
-             WHERE thread_id = ?1
-               AND status IN ({TERMINAL_RUN_STATUSES_SQL})
-           )"
-        ),
-        params![thread_id],
-    )?;
-    // review_snapshots is referenced by review_changesets, so it is deleted
-    // after the changesets above to avoid orphan snapshot rows.
-    tx.execute(
-        &format!(
-            "DELETE FROM review_snapshots
-         WHERE run_id IN (
-           SELECT id FROM runs
-           WHERE thread_id = ?1
-             AND status IN ({TERMINAL_RUN_STATUSES_SQL})
-         )"
-        ),
-        params![thread_id],
-    )?;
+    // Review data (file changes → changeset → snapshots) for each terminal run,
+    // deleted in the FK-safe order encoded once by `delete_run_review_in`.
+    for run_id in &terminal_run_ids {
+        delete_run_review_in(&tx, run_id)?;
+    }
     tx.execute(
         &format!(
             "DELETE FROM tool_calls

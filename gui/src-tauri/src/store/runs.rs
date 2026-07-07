@@ -1,4 +1,4 @@
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 
 use super::db::*;
@@ -113,31 +113,65 @@ pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::AppError> {
         .map_err(crate::AppError::from)
 }
 
-/// Cancel a run's still-open approvals and running tool calls. Shared by the
-/// `cancelled` path of `update_run_status_if_active`.
-fn cancel_run_side_effects(
+/// Which runs' still-open children (pending approvals, running tool calls) a
+/// cancel-cascade settles. The two scopes differ only in how a child's owning
+/// run is matched — everything else about the cascade is identical, which is why
+/// [`cancel_children_of_runs`] is shared between the single-run and startup paths.
+pub(super) enum CancelScope<'a> {
+    /// One run: match children whose `run_id` equals this id.
+    Run(&'a str),
+    /// Startup convergence: match children whose run is already terminal — plus
+    /// run-less orphan approvals (`run_id IS NULL`), which can never settle
+    /// themselves once their collector is gone.
+    TerminalRuns,
+}
+
+/// Cancel the still-open approvals and running tool calls belonging to `scope`,
+/// stamping the cancelled approvals with `note`. Shared by the `cancelled` path
+/// of [`update_run_status_if_active`] (single run) and cleanup's startup
+/// convergence (every terminal run). The run-membership predicate is either a
+/// bound parameter (single run) or a splice of the constant terminal-status list
+/// — no caller value is ever string-interpolated.
+pub(super) fn cancel_children_of_runs(
     tx: &rusqlite::Transaction<'_>,
-    run_id: &str,
+    scope: CancelScope<'_>,
+    note: &str,
     now: i64,
 ) -> rusqlite::Result<()> {
-    tx.execute(
+    let terminal_membership =
+        format!("run_id IN (SELECT id FROM runs WHERE status IN ({TERMINAL_RUN_STATUSES_SQL}))");
+    // `?1` = now, `?2` (approvals only) = note, `?3`/`?2` (single run only) = run id.
+    let (approval_where, tool_where) = match scope {
+        CancelScope::Run(_) => ("run_id = ?3".to_string(), "run_id = ?2".to_string()),
+        CancelScope::TerminalRuns => (
+            format!("(run_id IS NULL OR {terminal_membership})"),
+            terminal_membership.clone(),
+        ),
+    };
+    let approval_sql = format!(
         "UPDATE approval_requests
              SET status = 'cancelled',
-                 decision_note = COALESCE(decision_note, 'Cancelled because the run was terminated.'),
+                 decision_note = COALESCE(decision_note, ?2),
                  decided_at = COALESCE(decided_at, ?1),
                  updated_at = ?1
-             WHERE run_id = ?2
-               AND status = 'pending'",
-        params![now, run_id],
-    )?;
-    tx.execute(
+             WHERE status = 'pending' AND {approval_where}"
+    );
+    let tool_sql = format!(
         "UPDATE tool_calls
              SET status = 'cancelled',
                  ended_at = COALESCE(ended_at, ?1)
-             WHERE run_id = ?2
-               AND status = 'running'",
-        params![now, run_id],
-    )?;
+             WHERE status = 'running' AND {tool_where}"
+    );
+    match scope {
+        CancelScope::Run(run_id) => {
+            tx.execute(&approval_sql, params![now, note, run_id])?;
+            tx.execute(&tool_sql, params![now, run_id])?;
+        }
+        CancelScope::TerminalRuns => {
+            tx.execute(&approval_sql, params![now, note])?;
+            tx.execute(&tool_sql, params![now])?;
+        }
+    }
     Ok(())
 }
 
@@ -186,7 +220,12 @@ fn update_run_status_if_active_tx(
         ],
     )?;
     if affected > 0 && input.status == "cancelled" {
-        cancel_run_side_effects(tx, &input.run_id, now)?;
+        cancel_children_of_runs(
+            tx,
+            CancelScope::Run(&input.run_id),
+            "Cancelled because the run was terminated.",
+            now,
+        )?;
     }
     Ok(affected > 0)
 }
@@ -262,6 +301,24 @@ pub fn list_tool_calls(run_id: &str) -> Result<Vec<ToolCallRecord>, crate::AppEr
     let rows = stmt.query_map(params![run_id], tool_call_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(crate::AppError::from)
+}
+
+/// The structured `input` persisted at tool_start (the agent's `tool_args`
+/// JSON). Used by the write-artifact projection, which prefers the structured
+/// path over parsing the tool's human-readable output.
+pub fn get_tool_call_input(
+    run_id: &str,
+    tool_call_id: &str,
+) -> Result<Option<String>, crate::AppError> {
+    let conn = connect()?;
+    conn.query_row(
+        "SELECT input FROM tool_calls WHERE run_id = ?1 AND id = ?2",
+        params![run_id, tool_call_id],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .map(Option::flatten)
+    .map_err(crate::AppError::from)
 }
 
 pub fn list_tool_outputs(tool_call_id: &str) -> Result<Vec<ToolOutputRecord>, crate::AppError> {

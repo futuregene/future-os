@@ -1,5 +1,6 @@
 mod approval;
 mod client;
+mod headless;
 mod models;
 mod persist;
 mod review;
@@ -10,6 +11,7 @@ mod stream;
 
 pub use self::approval::{decide_approval, inject_session_rule};
 pub(crate) use self::client::raw_agent_addr;
+pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, PreparedPrompt};
 pub use self::models::{list_agent_models, AgentModelOption};
 pub use self::run_control::abort_run;
 pub use self::skills::{list_installed_skills, InstalledSkill};

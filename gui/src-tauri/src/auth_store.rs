@@ -9,7 +9,6 @@
 //! a hand-edited file). Write semantics: serialize to a sibling temp file with
 //! `0600`, then atomically `rename` over the target.
 
-use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use serde_json::{json, Map, Value};
@@ -37,26 +36,12 @@ pub(crate) fn auth_json_path() -> Result<PathBuf, AppError> {
 /// Missing file → empty map. Corrupt JSON or a non-object root → error, so
 /// callers never overwrite an unreadable file with partial state.
 pub(crate) fn read() -> Result<Map<String, Value>, AppError> {
-    let path = auth_json_path()?;
-    let contents = match std::fs::read_to_string(&path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Map::new()),
-        Err(error) => return Err(error.into()),
-    };
-
-    let value: Value = serde_json::from_str(&contents).map_err(|error| {
-        AppError::Message(format!(
-            "Failed to parse {}: {error}. Please fix the file and retry.",
-            path.display()
-        ))
-    })?;
-
-    match value {
+    // Strictness (missing → empty, corrupt/non-object → error) is owned by the
+    // shared config reader so auth.json and the other GUI configs stay identical;
+    // `read_json_object` guarantees an object root, so the else arm is unreachable.
+    match config_io::read_json_object(&auth_json_path()?)? {
         Value::Object(map) => Ok(map),
-        _ => Err(AppError::Message(format!(
-            "The root of {} must be a JSON object.",
-            path.display()
-        ))),
+        _ => unreachable!("read_json_object returns an object root or an error"),
     }
 }
 
@@ -163,27 +148,29 @@ pub(crate) fn set_future_base_url(base_url: &str) -> Result<(), AppError> {
     })
 }
 
+/// Shared test fixture: points `HOME` at a fresh temp dir so config reads/writes
+/// are isolated and never touch the developer's real `~/.future/`. Lives here (the
+/// single owner of the auth file) so `auth_store` and `agent_providers` tests use
+/// one copy. Serialized on [`crate::TEST_HOME_LOCK`] since `HOME` is process-global.
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_support {
+    use std::path::PathBuf;
     use std::sync::MutexGuard;
 
-    // Each test points HOME at a fresh temp dir so reads/writes are isolated and
-    // never touch the developer's real ~/.future/agent/auth.json.
-    struct HomeGuard {
+    pub(crate) struct HomeGuard {
         previous: Option<String>,
-        dir: std::path::PathBuf,
+        dir: PathBuf,
         _lock: MutexGuard<'static, ()>,
     }
 
     impl HomeGuard {
-        fn new(label: &str) -> Self {
+        pub(crate) fn new(label: &str) -> Self {
             let lock = crate::TEST_HOME_LOCK
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
             let previous = std::env::var("HOME").ok();
             let dir = std::env::temp_dir().join(format!(
-                "futureos-auth-test-{}-{}",
+                "futureos-test-{}-{}",
                 std::process::id(),
                 label
             ));
@@ -207,6 +194,12 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::HomeGuard;
+    use super::*;
 
     #[test]
     fn read_missing_file_is_empty() {

@@ -15,7 +15,7 @@ export function ArtifactEmbed({
   artifact: StoredArtifact;
   reference: FutureReference;
 }) {
-  const { t } = useTranslation("markdown");
+  const { i18n, t } = useTranslation("markdown");
   const { copiedKey, copy } = useCopyState();
 
   function inspectArtifact() {
@@ -33,7 +33,7 @@ export function ArtifactEmbed({
               {artifact.artifactType}
             </span>
           </div>
-          <div className="mt-1 text-xs text-ink-muted">{formatTime(storedTimeToIso(artifact.createdAt))}</div>
+          <div className="mt-1 text-xs text-ink-muted">{formatTime(storedTimeToIso(artifact.createdAt), i18n.language)}</div>
           {artifact.summary ? <p className="mt-2 text-sm leading-5 text-ink-soft">{artifact.summary}</p> : null}
           {artifact.path
             ? (

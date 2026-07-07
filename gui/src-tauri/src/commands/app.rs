@@ -36,8 +36,3 @@ pub fn app_data_path() -> Result<store::AppDataPath, crate::AppError> {
 pub fn initialize_app_store() -> Result<(), crate::AppError> {
     store::initialize_app_store()
 }
-
-#[tauri::command]
-pub fn cancel_stale_approval_requests() -> Result<usize, crate::AppError> {
-    store::cancel_stale_approval_requests()
-}

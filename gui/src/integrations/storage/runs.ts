@@ -52,10 +52,6 @@ export async function listToolOutputs(toolCallId: string) {
 
 // ─── Approvals ───────────────────────────────────────────────────────────
 
-export async function cancelStaleApprovalRequests() {
-  return invokeCommand<number>("cancel_stale_approval_requests");
-}
-
 export async function listApprovalRequests(threadId: string) {
   return invokeCommand<StoredApprovalRequest[]>("list_approval_requests", { threadId });
 }

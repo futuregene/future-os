@@ -1,4 +1,3 @@
-import i18n from "../../i18n";
 import { invokeCommand } from "../tauri/invoke";
 
 export const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
@@ -118,8 +117,13 @@ export function resolveInitialModelId(models: AgentModelOption[]): string {
   return models[0] ? modelKey(models[0]) : defaultAgentModelId;
 }
 
-export function modelLabel(modelId: string, models: AgentModelOption[]) {
-  return modelOption(modelId, models)?.label ?? (modelId || i18n.t("common:modelFallback"));
+/**
+ * Display label for a model id, or `undefined` when there's no match and no id
+ * to fall back on. The integration layer stays i18n-free: call sites supply a
+ * localized fallback (e.g. `modelLabel(...) ?? t("common:modelFallback")`).
+ */
+export function modelLabel(modelId: string, models: AgentModelOption[]): string | undefined {
+  return modelOption(modelId, models)?.label ?? (modelId || undefined);
 }
 
 export function modelThinkingLevel(modelId: string, models: AgentModelOption[]) {

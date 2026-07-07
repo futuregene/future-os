@@ -1,6 +1,5 @@
 import type {
   ApprovalAction,
-  ApprovalSaveSuggestion,
   StoredApprovalRequest,
 } from "../../integrations/storage/types";
 import { AlertTriangle, Check, X } from "lucide-react";
@@ -9,7 +8,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { TextInput } from "../../components/ui/TextInput";
 import { saveApprovalRule } from "../../integrations/storage/runs";
-import { isRecord } from "../../lib/objects";
+import { formatRequestedAction, parseAction, parseSaveSuggestion } from "./approvalPayload";
 
 // Localized title/summary per approval kind (the agent sends English). An
 // unmapped kind falls back to the agent-provided strings.
@@ -231,26 +230,6 @@ export function ApprovalPrompt({ approval, onDecision, threadMode }: ApprovalPro
   );
 }
 
-function parseSaveSuggestion(payload: string | null | undefined): ApprovalSaveSuggestion | null {
-  if (!payload)
-    return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(payload);
-  }
-  catch {
-    return null;
-  }
-  if (
-    !isRecord(parsed)
-    || typeof parsed.path !== "string"
-    || typeof parsed.access !== "string"
-  ) {
-    return null;
-  }
-  return { access: parsed.access, path: parsed.path };
-}
-
 interface ActionDetailsProps {
   action: ApprovalAction;
 }
@@ -381,82 +360,4 @@ function isEditableTarget(target: EventTarget | null) {
     || tagName === "input"
     || tagName === "textarea"
     || tagName === "select";
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every(item => typeof item === "string");
-}
-
-function isPathEntryArray(value: unknown): value is Array<{ path: string; preview?: string }> {
-  return Array.isArray(value) && value.every(item =>
-    isRecord(item)
-    && typeof item.path === "string"
-    && (item.preview === undefined || typeof item.preview === "string"));
-}
-
-function isScope(value: unknown): value is NonNullable<ApprovalAction["scope"]> {
-  return isRecord(value)
-    && typeof value.cwd === "string"
-    && typeof value.insideWorkspace === "boolean"
-    && (value.estimatedBlastRadius === "low"
-      || value.estimatedBlastRadius === "medium"
-      || value.estimatedBlastRadius === "high");
-}
-
-// Parse the P2 structured payloads field-by-field rather than asserting the
-// whole shape: required scalars are validated, and each optional field the UI
-// iterates is dropped unless it has the expected shape, so malformed backend
-// data can never reach the render as an unchecked value.
-function parseAction(payload: string | null | undefined): ApprovalAction | null {
-  if (!payload)
-    return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(payload);
-  }
-  catch {
-    return null;
-  }
-  if (!isRecord(parsed) || typeof parsed.tool !== "string" || typeof parsed.category !== "string")
-    return null;
-  return {
-    blockedPaths: isStringArray(parsed.blocked_paths) ? parsed.blocked_paths : undefined,
-    category: parsed.category,
-    command: typeof parsed.command === "string" ? parsed.command : undefined,
-    deletes: isPathEntryArray(parsed.deletes) ? parsed.deletes : undefined,
-    justification: typeof parsed.justification === "string" && parsed.justification.length > 0
-      ? parsed.justification
-      : undefined,
-    paths: isStringArray(parsed.paths) ? parsed.paths : undefined,
-    scope: isScope(parsed.scope) ? parsed.scope : undefined,
-    summary: typeof parsed.summary === "string" ? parsed.summary : undefined,
-    tool: parsed.tool,
-    writes: isPathEntryArray(parsed.writes) ? parsed.writes : undefined,
-  };
-}
-
-function formatRequestedAction(action: string | null | undefined) {
-  if (!action)
-    return "";
-
-  try {
-    const parsed = parseNestedJson(action);
-    if (isRecord(parsed) && typeof parsed.command === "string") {
-      return parsed.command;
-    }
-    return JSON.stringify(parsed, null, 2);
-  }
-  catch {
-    return action;
-  }
-}
-
-function parseNestedJson(value: string) {
-  let current: unknown = value;
-  for (let index = 0; index < 3; index += 1) {
-    if (typeof current !== "string")
-      return current;
-    current = JSON.parse(current) as unknown;
-  }
-  return current;
 }

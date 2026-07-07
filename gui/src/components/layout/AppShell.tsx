@@ -1,11 +1,9 @@
-import type { MessageAttachment } from "../../features/agent/agentThreadTypes";
-import type { NewConversationStart } from "../../features/agent/NewConversation";
 import type { SettingsTab } from "../../features/settings/SettingsDialog";
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { ContextTab } from "./ContextPanel";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { NewConversation } from "../../features/agent/NewConversation";
@@ -13,10 +11,7 @@ import { RemoteView } from "../../features/remote/RemoteView";
 import { ResearchView } from "../../features/research/ResearchView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
-import i18n from "../../i18n";
-import { modelOption, modelThinkingLevel, normalizeThinkingLevel, resolveInitialModelId } from "../../integrations/agent/agentClient";
 import {
-  createThread,
   createWorkspace,
   pinThread,
   restoreThread,
@@ -30,6 +25,7 @@ import { useAgentConnection } from "./hooks/useAgentConnection";
 import { useApprovals } from "./hooks/useApprovals";
 import { useAppSettings } from "./hooks/useAppSettings";
 import { useModelSelection } from "./hooks/useModelSelection";
+import { useNewConversation } from "./hooks/useNewConversation";
 import { useThreadDialogs } from "./hooks/useThreadDialogs";
 import { useThreadStore } from "./hooks/useThreadStore";
 import { useUnreadThreads } from "./hooks/useUnreadThreads";
@@ -37,18 +33,6 @@ import { useWorkspaceDialogs } from "./hooks/useWorkspaceDialogs";
 import { WorkspaceDialogs } from "./WorkspaceDialogs";
 
 export type { AgentConnectionState } from "./hooks/useAgentConnection";
-
-interface PendingPrompt {
-  attachments?: MessageAttachment[];
-  id: string;
-  content: string;
-  /**
-   * The thread this prompt was composed for. The consumer must only send it
-   *  when this matches the active thread, so a mid-load thread switch can't
-   *  deliver the first message into the wrong conversation.
-   */
-  targetThreadId: string;
-}
 
 interface WorkspaceCreateRequest {
   name?: string | null;
@@ -71,7 +55,6 @@ export function AppShell() {
   // remounts and re-opens the create dialog even when we're already on it.
   const [newWorkspaceNonce, setNewWorkspaceNonce] = useState(0);
   const [selectedResearchResourceId, setSelectedResearchResourceId] = useState<string | null>(null);
-  const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
 
@@ -100,6 +83,9 @@ export function AppShell() {
   } = useAgentConnection(appSettings.hiddenModels);
   const {
     selectedThinkingLevel,
+    modelsEmptyReason,
+    activeThreadModelId,
+    activeThinkingLevel,
     changeModel,
     changeDraftModel,
     changeThinkingLevel,
@@ -108,8 +94,19 @@ export function AppShell() {
     activeThread,
     selectedModelId,
     setSelectedModelId,
+    modelOptions,
     visibleModelOptions,
     refreshStore,
+  });
+  const {
+    pendingPrompt,
+    startNewConversation,
+    consumePendingPrompt,
+  } = useNewConversation({
+    refreshStore,
+    syncSelection,
+    setSection,
+    setCenterMode,
   });
   const {
     renameDialog,
@@ -132,25 +129,13 @@ export function AppShell() {
     confirmDelete: confirmWorkspaceDelete,
   } = useWorkspaceDialogs({ refreshStore });
   const unreadThreadIds = useUnreadThreads(threadRunStatuses, activeThreadId);
-  // Why the composer's model picker is empty: nothing loaded vs. everything the
-  // user disabled. Only meaningful when the visible set is empty.
-  const modelsEmptyReason: "no_models" | "all_disabled" | undefined
-    = visibleModelOptions.length > 0
-      ? undefined
-      : modelOptions.length > 0
-        ? "all_disabled"
-        : "no_models";
-  // The active thread's persisted model may have since been deleted from the
-  // catalog or disabled in Settings. Fall back to the default pick (same rule as
-  // the draft selection) so the composer never shows / sends an unavailable model
-  // — resolves to "" when everything is disabled, which surfaces the empty state.
-  const rawThreadModelId = activeThread?.modelId ?? selectedModelId;
-  const activeThreadModelId = modelOption(rawThreadModelId, visibleModelOptions)
-    ? rawThreadModelId
-    : resolveInitialModelId(visibleModelOptions);
-  const activeThinkingLevel = activeThread
-    ? normalizeThinkingLevel(activeThread.thinkingLevel ?? modelThinkingLevel(activeThreadModelId, visibleModelOptions))
-    : selectedThinkingLevel;
+  // Stable identity: an inline `.filter()` would hand NewConversation a fresh
+  // array every render (and this component re-renders on every poll tick),
+  // re-firing its workspace-adoption effect.
+  const userWorkspaces = useMemo(
+    () => workspaces.filter(workspace => workspace.kind === "user"),
+    [workspaces],
+  );
 
   useEffect(() => onFutureEvent("open-research-resource", (detail) => {
     setSelectedResearchResourceId(detail.resourceId);
@@ -257,29 +242,6 @@ export function AppShell() {
     setCenterMode("new-chat");
   }
 
-  async function handleStartNewConversation(input: NewConversationStart) {
-    const title = deriveThreadTitle(input.content);
-    const thread = await createThread({
-      mode: input.mode,
-      title,
-      workspaceId: input.workspace?.id,
-      workspaceName: input.workspace?.label,
-      workspacePath: input.workspace?.path,
-      modelId: input.modelId,
-      thinkingLevel: input.thinkingLevel,
-    });
-    syncSelection(input.modelId, input.thinkingLevel);
-    await refreshStore(thread.id);
-    setSection(thread.mode === "workspace" ? "workspace" : "chat");
-    setCenterMode("thread");
-    setPendingPrompt({
-      attachments: input.attachments,
-      id: newPendingPromptId(thread.id),
-      content: input.content,
-      targetThreadId: thread.id,
-    });
-  }
-
   async function handleAddWorkspace(input: WorkspaceCreateRequest) {
     const workspace = await createWorkspace(input);
     await refreshStore(activeThread?.id ?? undefined);
@@ -383,9 +345,9 @@ export function AppShell() {
                 onThinkingLevelChange={changeThinkingLevel}
                 approvalTier={appSettings.approvalTier}
                 onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
-                onStart={handleStartNewConversation}
+                onStart={startNewConversation}
                 onToggleLeftPanel={handleToggleLeftPanel}
-                workspaces={workspaces.filter(workspace => workspace.kind === "user")}
+                workspaces={userWorkspaces}
               />
             )
           : section === "research"
@@ -436,9 +398,7 @@ export function AppShell() {
                           onOpenProviders={handleOpenProviders}
                           onOpenModels={handleOpenModels}
                           onToggleLeftPanel={handleToggleLeftPanel}
-                          onPromptConsumed={(id) => {
-                            setPendingPrompt(current => (current?.id === id ? null : current));
-                          }}
+                          onPromptConsumed={consumePendingPrompt}
                           onThreadActivity={() => {
                             void refreshStore(activeThread?.id ?? undefined);
                           }}
@@ -504,18 +464,4 @@ function ModulePlaceholder({ section }: { section: "data" | "skill" }) {
       </div>
     </section>
   );
-}
-
-function deriveThreadTitle(content: string) {
-  const compact = content.replace(/\s+/g, " ").trim();
-  if (!compact)
-    return i18n.t("layout:appShell.newChat");
-  return compact.length > 28 ? `${compact.slice(0, 28)}...` : compact;
-}
-
-let pendingPromptCounter = 0;
-
-function newPendingPromptId(threadId: string) {
-  pendingPromptCounter += 1;
-  return `${threadId}:${Date.now()}:${pendingPromptCounter}`;
 }

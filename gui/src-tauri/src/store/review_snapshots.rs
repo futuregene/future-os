@@ -379,9 +379,15 @@ fn set_overlapped(conn: &rusqlite::Connection, run_id: &str, now: i64) -> rusqli
 // ── retention / recovery / consistency (Phase 2) ────────────────────────────
 
 /// Delete all review rows for a single Run (file changes, the `run_snapshot`
-/// changeset, and snapshots), in FK-safe order.
-pub fn delete_run_review(run_id: &str) -> Result<(), crate::AppError> {
-    let conn = connect()?;
+/// changeset, and snapshots), in FK-safe order. Transaction-injecting: the
+/// three DELETEs must land atomically — a partial delete either leaves a
+/// changeset with no file rows (renders as an empty review) or orphaned
+/// snapshots that `list_unmaterialized_runs` would misread as crash-recovery
+/// candidates and re-materialize against pruned shadow refs.
+pub(super) fn delete_run_review_in(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+) -> rusqlite::Result<()> {
     conn.execute(
         "DELETE FROM review_file_changes WHERE changeset_id IN (
              SELECT id FROM review_changesets WHERE run_id = ?1 AND source_kind = 'run_snapshot'
@@ -406,9 +412,13 @@ pub fn prune_thread_changesets(
     thread_id: &str,
     keep: usize,
 ) -> Result<Vec<(String, String)>, crate::AppError> {
+    // One transaction end-to-end: the ordering read and every per-run cascade
+    // see a single consistent snapshot, and an interrupted prune can't leave a
+    // half-deleted run behind.
+    let mut conn = connect()?;
+    let tx = conn.transaction()?;
     let ordered: Vec<(String, Option<String>)> = {
-        let conn = connect()?;
-        let mut stmt = conn.prepare(
+        let mut stmt = tx.prepare(
             "SELECT c.run_id, c.workspace_id
              FROM review_changesets c
              JOIN runs r ON r.id = c.run_id
@@ -423,11 +433,12 @@ pub fn prune_thread_changesets(
 
     let mut pruned = Vec::new();
     for (run_id, workspace_id) in ordered.into_iter().skip(keep) {
-        delete_run_review(&run_id)?;
+        delete_run_review_in(&tx, &run_id)?;
         if let Some(workspace_id) = workspace_id {
             pruned.push((workspace_id, run_id));
         }
     }
+    tx.commit()?;
     Ok(pruned)
 }
 

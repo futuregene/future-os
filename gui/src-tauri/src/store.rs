@@ -47,9 +47,9 @@ pub use review_snapshots::{
     ReviewFileChangeRecord, ReviewSnapshotRecord,
 };
 pub use runs::{
-    append_run_event, complete_tool_call, create_run, fail_run_if_active, list_run_events,
-    list_runs, list_tool_calls, list_tool_outputs, update_run_status_if_active, upsert_tool_call,
-    RunEventRecord, RunRecord, ToolCallRecord, ToolOutputRecord,
+    append_run_event, complete_tool_call, create_run, fail_run_if_active, get_tool_call_input,
+    list_run_events, list_runs, list_tool_calls, list_tool_outputs, update_run_status_if_active,
+    upsert_tool_call, RunEventRecord, RunRecord, ToolCallRecord, ToolOutputRecord,
 };
 pub use threads::{
     archive_thread, create_thread, delete_thread, find_thread_by_agent_session, get_recent_thread,
