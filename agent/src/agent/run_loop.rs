@@ -348,17 +348,35 @@ impl Loop {
                         // id+name in every argument chunk instead of just the first.
                         // When the tool ID matches the current tool call, treat it
                         // as a delta (append args) rather than starting a new call.
+                        //
+                        // Always prefer the longer string — it's more complete.
+                        // Some gateways (e.g. Aliyun MaaS) may send chunks out of
+                        // prefix order, or send a trailing fragment that is shorter
+                        // than the accumulated args. Overwriting longer data with
+                        // shorter data is the primary cause of argument loss.
                         if let Some(ref mut existing) = current_tc {
                             if existing.id == event.tool_id {
-                                // Same tool call — append args from this chunk
                                 if let Some(ref tc) = event.tool_call {
                                     if let serde_json::Value::String(ref new_args) =
                                         tc.function.arguments
                                     {
+                                        let mut updated = false;
                                         if let serde_json::Value::String(ref mut s) = existing.args
                                         {
-                                            s.push_str(new_args);
-                                        } else {
+                                            if new_args.len() > s.len() {
+                                                if new_args.starts_with(s.as_str()) {
+                                                    // Incremental: new is a superset of old
+                                                    s.push_str(&new_args[s.len()..]);
+                                                } else {
+                                                    // Replacement: new is longer (more complete)
+                                                    *s = new_args.clone();
+                                                }
+                                            }
+                                            // If new_args is shorter or equal length:
+                                            // keep existing — don't overwrite better data
+                                            updated = true;
+                                        }
+                                        if !updated {
                                             existing.args =
                                                 serde_json::Value::String(new_args.clone());
                                         }
@@ -794,5 +812,47 @@ mod tests {
         ));
         assert!(!is_retryable_size_error("Connection timed out"));
         assert!(!is_retryable_size_error(""));
+    }
+
+    #[test]
+    fn duplicate_id_fallback_prefers_longer_args() {
+        /// Simulates the duplicate-id fallback: merge `new_args` into `existing`.
+        fn merge_args(existing: &str, new_args: &str) -> String {
+            if new_args.len() > existing.len() {
+                if new_args.starts_with(existing) {
+                    format!("{}{}", existing, &new_args[existing.len()..])
+                } else {
+                    new_args.to_string()
+                }
+            } else {
+                existing.to_string()
+            }
+        }
+
+        // Scenario 1: Normal incremental (each chunk extends previous)
+        assert_eq!(merge_args("", "{\""), "{\"");
+        assert_eq!(merge_args("{\"", "{\"path"), "{\"path");
+        assert_eq!(
+            merge_args("{\"path", "{\"path\":\"/etc/hosts\"}"),
+            "{\"path\":\"/etc/hosts\"}"
+        );
+
+        // Scenario 2: Shorter/equal — keep existing (prevents data loss)
+        let good = "{\"path\":\"/Users/ace/.future/agent/skills/future-web/SKILL.md\"}";
+        assert_eq!(merge_args(good, "\"}"), good);
+        assert_eq!(merge_args(good, good), good);
+        assert_eq!(merge_args(good, ""), good);
+
+        // Scenario 3: Longer non-prefix replacement
+        assert_eq!(
+            merge_args("{\"key2\":\"val2\"}", "{\"key\":\"val\",\"key2\":\"val2\"}"),
+            "{\"key\":\"val\",\"key2\":\"val2\"}"
+        );
+
+        // Scenario 4: Partial → complete replacement
+        assert_eq!(
+            merge_args("{\"pa", "{\"path\":\"/etc/hosts\"}"),
+            "{\"path\":\"/etc/hosts\"}"
+        );
     }
 }

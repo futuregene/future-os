@@ -82,8 +82,7 @@ impl Client {
                 "reasoning-split" => {
                     // MiniMax M3: reasoning_split only, no depth control.
                     // Any non-off level → reasoning_split: true
-                    body["reasoning_split"] =
-                        serde_json::json!(reasoning_enabled);
+                    body["reasoning_split"] = serde_json::json!(reasoning_enabled);
                 }
                 _ => {}
             }
@@ -291,25 +290,34 @@ impl Client {
                     .and_then(|f| f.get("arguments"))
                     .and_then(|v| v.as_str());
 
+                // GLM models through third-party gateways (Aliyun MaaS) send
+                // empty-string id/name on incremental argument chunks
+                // (``"id":"", "name":""``).  Only treat as toolcall_start
+                // when BOTH id and name are non-empty; otherwise fall
+                // through to the argument-delta path below.
                 if let (Some(id), Some(name)) = (has_id, has_name) {
-                    event.event_type = "toolcall_start".to_string();
-                    event.tool_id = id.to_string();
-                    event.tool_name = name.to_string();
-                    event.tool_call = Some(ToolCall {
-                        id: id.to_string(),
-                        call_type: "function".to_string(),
-                        function: crate::types::ToolCallFn {
-                            name: name.to_string(),
-                            arguments: tc
-                                .get("function")
-                                .and_then(|f| f.get("arguments"))
-                                .cloned()
-                                .unwrap_or(serde_json::Value::String(String::new())),
-                        },
-                    });
-                    return Ok(event);
-                } else if let Some(args_text) = has_args {
-                    // Argument-only delta (subsequent chunks after toolcall_start)
+                    if !id.is_empty() && !name.is_empty() {
+                        event.event_type = "toolcall_start".to_string();
+                        event.tool_id = id.to_string();
+                        event.tool_name = name.to_string();
+                        event.tool_call = Some(ToolCall {
+                            id: id.to_string(),
+                            call_type: "function".to_string(),
+                            function: crate::types::ToolCallFn {
+                                name: name.to_string(),
+                                arguments: tc
+                                    .get("function")
+                                    .and_then(|f| f.get("arguments"))
+                                    .cloned()
+                                    .unwrap_or(serde_json::Value::String(String::new())),
+                            },
+                        });
+                        return Ok(event);
+                    }
+                }
+                // Argument-only delta (subsequent chunks after toolcall_start,
+                // and empty-id/name chunks from GLM gateway).
+                if let Some(args_text) = has_args {
                     event.event_type = "toolcall_delta".to_string();
                     event.text = args_text.to_string();
                     return Ok(event);
@@ -358,5 +366,33 @@ mod usage_parse_tests {
             event.event_type
         );
         assert_eq!(event.usage.expect("usage present").completion_tokens, 10);
+    }
+
+    #[test]
+    fn empty_id_name_is_toolcall_delta_not_start() {
+        // GLM-5.2 through Aliyun MaaS sends empty-string id/name on
+        // incremental argument chunks: {"id":"","name":"","arguments":"\"path\": "}
+        // These must emit toolcall_delta, not toolcall_start.
+        let data = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"","function":{"name":"","arguments":"\"path\": "}}]}}]}"#;
+        let event = Client::parse_sse_chunk(data).expect("parse");
+        assert_eq!(
+            event.event_type, "toolcall_delta",
+            "empty id/name should produce toolcall_delta, got {}",
+            event.event_type
+        );
+        assert_eq!(event.text, "\"path\": ");
+    }
+
+    #[test]
+    fn non_empty_id_name_is_toolcall_start() {
+        let data = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_001","function":{"name":"read","arguments":"{}"}}]}}]}"#;
+        let event = Client::parse_sse_chunk(data).expect("parse");
+        assert_eq!(
+            event.event_type, "toolcall_start",
+            "non-empty id/name should produce toolcall_start, got {}",
+            event.event_type
+        );
+        assert_eq!(event.tool_id, "call_001");
+        assert_eq!(event.tool_name, "read");
     }
 }
