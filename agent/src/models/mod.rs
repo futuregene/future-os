@@ -302,10 +302,11 @@ fn fetch_future_models(api_key: &str, base_url: &str) -> Option<Vec<Model>> {
 }
 
 /// Derive compat and thinking_level_map for a Future platform model from its
-/// supported_parameters list. This mirrors the manual compat_json / tlm_json
-/// entries in generated/mod.rs for the direct-provider case.
+/// supported_parameters list and tokenizer. This mirrors the manual compat_json /
+/// tlm_json entries in generated/mod.rs for the direct-provider case.
 fn derive_thinking_compat(
     supported_params: &[String],
+    tokenizer: Option<&str>,
 ) -> (
     HashMap<String, serde_json::Value>,
     HashMap<String, serde_json::Value>,
@@ -316,8 +317,16 @@ fn derive_thinking_compat(
     let mut tlm: HashMap<String, serde_json::Value> = HashMap::new();
 
     let has = |s: &str| supported_params.iter().any(|p| p == s);
+    let is_glm = tokenizer
+        .map(|t| t.eq_ignore_ascii_case("GLM"))
+        .unwrap_or(false);
 
-    if has("enable_thinking") {
+    if is_glm {
+        // GLM / Z.AI models: enable_thinking toggle.
+        compat.insert("thinkingFormat".into(), serde_json::json!("zai"));
+        // GLM supports reasoning_effort alongside enable_thinking
+        compat.insert("supportsReasoningEffort".into(), serde_json::json!(true));
+    } else if has("enable_thinking") {
         // Qwen family: enable_thinking + thinking_budget
         compat.insert("thinkingFormat".into(), serde_json::json!("qwen"));
         // Qwen supports reasoning_effort alongside enable_thinking
@@ -329,7 +338,7 @@ fn derive_thinking_compat(
             serde_json::json!("reasoning-split"),
         );
     } else if has("thinking") || has("reasoning_effort") || has("reasoning") {
-        // DeepSeek / Doubao / GLM / Kimi K2.6:
+        // DeepSeek / Doubao / Kimi K2.6:
         // thinking toggle + reasoning_effort for depth
         compat.insert("thinkingFormat".into(), serde_json::json!("deepseek"));
         tlm.insert("high".into(), serde_json::json!("high"));
@@ -358,7 +367,11 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
     });
 
     // Derive compat and thinking_level_map from supported_parameters.
-    let (compat, thinking_level_map) = derive_thinking_compat(&supported_params);
+    let tokenizer = entry
+        .architecture
+        .as_ref()
+        .and_then(|a| a.tokenizer.as_deref());
+    let (compat, thinking_level_map) = derive_thinking_compat(&supported_params, tokenizer);
 
     let (input, output) = entry
         .architecture
