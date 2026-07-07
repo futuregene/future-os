@@ -116,22 +116,22 @@ export function ContextPanel({
       setLoading(true);
     }
 
-    // When a workspace thread is opened, make sure its directory is under git
-    // before the review query runs, so the Review tab and branch changes show
-    // up on first load instead of after the next poll. Best-effort: a missing
-    // git binary or a temporary chat workspace is a no-op on the backend.
-    if (options?.ensureGit && activeWorkspaceId && activeThreadMode === "workspace") {
-      try {
-        await ensureWorkspaceGit(activeWorkspaceId);
-      }
-      catch {
-        // git is optional; fall through to the review query regardless.
-      }
-      if (!isCurrentRefresh())
-        return;
-    }
-
     try {
+      // When a workspace thread is opened, make sure its directory is under git
+      // before the review query runs, so the Review tab and branch changes show
+      // up on first load instead of after the next poll. Best-effort: a missing
+      // git binary or a temporary chat workspace is a no-op on the backend.
+      if (options?.ensureGit && activeWorkspaceId && activeThreadMode === "workspace") {
+        try {
+          await ensureWorkspaceGit(activeWorkspaceId);
+        }
+        catch {
+          // git is optional; fall through to the review query regardless.
+        }
+        if (!isCurrentRefresh())
+          return;
+      }
+
       const [nextRuns, nextGitReview, nextCapabilities] = await Promise.all([
         listRuns(activeThreadId),
         // C3: only run the whole-tree git diff while the Review tab is showing it.
@@ -174,7 +174,10 @@ export function ContextPanel({
       }
     }
     finally {
-      if (showLoading && isCurrentRefresh()) {
+      // Always clear the flag this refresh set, even if a concurrent poll
+      // superseded it (bumping refreshGenerationRef) — otherwise `loading`
+      // stays stuck true and surfaces as the loading text once the list empties.
+      if (showLoading) {
         setLoading(false);
       }
     }
