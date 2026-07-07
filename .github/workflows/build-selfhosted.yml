@@ -78,11 +78,12 @@ jobs:
         uses: actions/checkout@v5
 
       # One presence check for every toolchain; install steps below are gated on
-      # these outputs so an already-provisioned runner skips the download. Uses
-      # bash on all three OSes (Windows self-hosted has Git-for-Windows bash,
-      # which actions/checkout requires anyway).
-      - name: Detect toolchains
+      # these outputs so an already-provisioned runner skips the download. Split
+      # by OS: the self-hosted Windows runner's bash mangles the Windows script
+      # path handed to it by the runner, so Windows detection runs in pwsh.
+      - name: Detect toolchains (Unix)
         id: detect
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           have() { command -v "$1" >/dev/null 2>&1 && echo true || echo false; }
@@ -93,14 +94,27 @@ jobs:
             echo "protoc=$(have protoc)"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Detect toolchains (Windows)
+        id: detect_win
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          function Have($c) { if (Get-Command $c -ErrorAction SilentlyContinue) { "true" } else { "false" } }
+          @(
+            "node=$(Have node)"
+            "bun=$(Have bun)"
+            "cargo=$(Have cargo)"
+            "protoc=$(Have protoc)"
+          ) | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
       - name: Setup Node.js
-        if: steps.detect.outputs.node == 'false'
+        if: steps.detect.outputs.node == 'false' || steps.detect_win.outputs.node == 'false'
         uses: actions/setup-node@v6
         with:
           node-version: "24"
 
       - name: Setup Bun
-        if: steps.detect.outputs.bun == 'false'
+        if: steps.detect.outputs.bun == 'false' || steps.detect_win.outputs.bun == 'false'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -116,7 +130,7 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Install Rust (Windows)
-        if: steps.detect.outputs.cargo == 'false' && runner.os == 'Windows'
+        if: steps.detect_win.outputs.cargo == 'false' && runner.os == 'Windows'
         shell: pwsh
         run: |
           Invoke-WebRequest https://win.rustup.rs -OutFile "$env:RUNNER_TEMP\rustup-init.exe"
@@ -154,7 +168,7 @@ jobs:
         run: brew install protobuf
 
       - name: Install Windows protoc
-        if: runner.os == 'Windows' && steps.detect.outputs.protoc == 'false'
+        if: runner.os == 'Windows' && steps.detect_win.outputs.protoc == 'false'
         uses: taiki-e/install-action@v2
         with:
           tool: protoc
