@@ -349,6 +349,9 @@ jobs:
           echo "==> Uploading to oss://$OSS_BUCKET/$PREFIX/$VERSION/"
           ls -1 "$stage"
           ossutil cp -r -f "$stage/" "oss://$OSS_BUCKET/$PREFIX/$VERSION/"
+          host="${OSS_ENDPOINT#https://}"; host="${host#http://}"; host="${host/-internal/}"
+          echo "==> Download URLs:"
+          for f in "$stage"/*; do echo "  https://$OSS_BUCKET.$host/$PREFIX/$VERSION/$(basename "$f")"; done
 
       - name: Upload to OSS (Linux)
         if: runner.os == 'Linux'
@@ -363,6 +366,9 @@ jobs:
           echo "==> Uploading to oss://$OSS_BUCKET/$PREFIX/$VERSION/"
           ls -1 "$stage"
           ossutil cp -r -f "$stage/" "oss://$OSS_BUCKET/$PREFIX/$VERSION/"
+          host="${OSS_ENDPOINT#https://}"; host="${host#http://}"; host="${host/-internal/}"
+          echo "==> Download URLs:"
+          for f in "$stage"/*; do echo "  https://$OSS_BUCKET.$host/$PREFIX/$VERSION/$(basename "$f")"; done
 
       - name: Upload to OSS (Windows)
         if: runner.os == 'Windows'
@@ -379,6 +385,9 @@ jobs:
           Write-Host "==> Uploading to oss://$env:OSS_BUCKET/$prefix/$version/"
           Get-ChildItem $stage | Select-Object -ExpandProperty Name
           ossutil cp -r -f "$stage\" "oss://$env:OSS_BUCKET/$prefix/$version/"
+          $ossHost = $env:OSS_ENDPOINT -replace '^https?://','' -replace '-internal',''
+          Write-Host "==> Download URLs:"
+          Get-ChildItem $stage | ForEach-Object { Write-Host "  https://$env:OSS_BUCKET.$ossHost/$prefix/$version/$($_.Name)" }
 
   # Write the auto-upgrade manifest for releases only. Dev/test builds live under
   # test/<version>/ with no fixed pointer. Runs after all platform uploads.
@@ -427,3 +436,6 @@ jobs:
           EOF
           echo "==> latest.json:"; cat latest.json
           ossutil cp -f latest.json "oss://$OSS_BUCKET/releases/latest.json"
+          host="${OSS_ENDPOINT#https://}"; host="${host#http://}"; host="${host/-internal/}"
+          echo "==> Download URL:"
+          echo "  https://$OSS_BUCKET.$host/releases/latest.json"
