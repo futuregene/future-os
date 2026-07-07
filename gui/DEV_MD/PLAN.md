@@ -219,7 +219,7 @@ Research / Data 暂不投入，左侧导航图标仍隐藏（`ActivityRail` 的 
 平台侧已提供账户接口，CLI 已接入 `account profile / balance / recharge`（`{platform}/client/v1/account/*`，见 `cli/src/commands/account.ts`）。GUI 目前无账户面板。
 
 - **暂缓**：本期不在 GUI 暴露账户/余额/充值入口。
-- **若做**：在 Settings 加「账户」页，复用已对齐的平台 URL 解析（`agent_providers::resolve_future_platform_url`）+ `future` API key，调 `/client/v1/account/profile`、`/balance`；充值下单 `/recharge/orders` 走外部浏览器，**GUI 不直接处理支付凭证**（遵守凭证边界）。
+- **若做**：在 Settings 加「账户」页，复用已对齐的平台 URL 解析（`future_platform::resolve_future_platform_url`）+ `future` API key，调 `/client/v1/account/profile`、`/balance`；充值下单 `/recharge/orders` 走外部浏览器，**GUI 不直接处理支付凭证**（遵守凭证边界）。
 - **前置**：FutureGene 登录已可用（见下方平台 URL 对齐说明）。
 
 ## Provider 配置现状（P10 基线）

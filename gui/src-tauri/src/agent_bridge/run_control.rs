@@ -37,7 +37,7 @@ pub async fn abort_run(
     // Compare-and-set: only cancel a run that isn't already terminal. If the run
     // finished (completed/failed) in the window before the user's stop landed,
     // leave that terminal state intact — cancelling it would rewrite a successful
-    // reply as "stopped" and cascade-cancel its approvals/tool_calls (RUN-01).
+    // reply as "stopped" and cascade-cancel its approvals/tool_calls.
     // Either way, return the run's real current state.
     store::update_run_status_if_active(store::UpdateRunStatusInput {
         run_id: run_id.clone(),

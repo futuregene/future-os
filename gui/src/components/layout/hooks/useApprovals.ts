@@ -23,7 +23,7 @@ export interface ApprovalsState {
  * derived "active" (oldest pending) approval. On a transient load error the
  * previous list is preserved (the loader lets the error propagate, and
  * useAsyncResource keeps the last good data) so the approval card doesn't flicker
- * out and back next tick (FE-07) — a real risk since it sits right above the
+ * out and back next tick — a real risk since it sits right above the
  * composer. There is no frontend auto-approve engine — the "off" tier suppresses
  * approval requests at the agent, so nothing reaches this queue when off.
  */
@@ -42,7 +42,7 @@ export function useApprovals(activeThreadId: string | null): ApprovalsState {
 
   // No `activeThreadId` in the poll deps: useAsyncResource already reloads when
   // the thread changes, so restarting the poll on switch too would fire a
-  // duplicate fetch every switch (FE-07). The interval calls the stable `reload`.
+  // duplicate fetch every switch. The interval calls the stable `reload`.
   usePolling(reload, 1500, { enabled: activeThreadId !== null });
 
   const activeApproval = useMemo(

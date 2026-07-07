@@ -4,7 +4,7 @@
 //! Previously every record kept a hand-written `*_COLUMNS` string constant and a
 //! parallel `*_from_row` with positional `row.get(0)…row.get(N)`. Adding a column
 //! to one but not the other — or in a different order — silently mis-mapped every
-//! field after the gap (DUP-08). Here both are generated from one list:
+//! field after the gap. Here both are generated from one list:
 //!
 //! ```ignore
 //! sql_record!(pub(super) RUN_COLUMNS, run_from_row -> RunRecord {

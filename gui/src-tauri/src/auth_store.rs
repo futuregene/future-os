@@ -62,7 +62,7 @@ pub(crate) fn read() -> Result<Map<String, Value>, AppError> {
 
 /// Atomically write `auth.json` with `0600` permissions (unix). Delegates the
 /// temp-file + rename + permission dance to the shared [`config_io`] helper so
-/// all config writers stay consistent (owner-only here; see DUP-06).
+/// all config writers stay consistent (owner-only here).
 pub(crate) fn write(map: &Map<String, Value>) -> Result<(), AppError> {
     let path = auth_json_path()?;
     config_io::write_json_atomic(&path, &Value::Object(map.clone()), true)
@@ -71,7 +71,7 @@ pub(crate) fn write(map: &Map<String, Value>) -> Result<(), AppError> {
 /// Read `auth.json`, upsert the provider's entry (creating it / normalizing a
 /// non-object to `{}`, defaulting `type` to `api_key`), let `mutate` set fields,
 /// then write atomically. The whole read+write is serialized per-path so two
-/// concurrent commands can't lose each other's update (CFG-02).
+/// concurrent commands can't lose each other's update.
 fn upsert_provider_entry(
     id: &str,
     mutate: impl FnOnce(&mut Map<String, Value>),

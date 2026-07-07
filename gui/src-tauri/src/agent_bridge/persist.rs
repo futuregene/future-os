@@ -109,7 +109,7 @@ fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
     // the guard a late-arriving approval_request event (the user aborted while
     // this event was in flight) would resurrect a `cancelled` run — and since
     // the agent has already aborted, no decision event ever comes back, stranding
-    // the run in `waiting_approval` forever (RUN-02). When the run is terminal we
+    // the run in `waiting_approval` forever. When the run is terminal we
     // cancel the approval we just recorded so no dangling pending card remains.
     match store::update_run_status_if_active(store::UpdateRunStatusInput {
         run_id: run_id.to_string(),

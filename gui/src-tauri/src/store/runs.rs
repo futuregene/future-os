@@ -398,7 +398,7 @@ mod tests {
         assert_eq!(run_status(&conn, "run_cancelled"), "cancelled");
     }
 
-    /// RUN-01/RUN-03: a completed run is not rewritten to cancelled by a late
+    /// a completed run is not rewritten to cancelled by a late
     /// abort (nor to any other status by a late completion projection).
     #[test]
     fn if_active_skips_completed_run() {

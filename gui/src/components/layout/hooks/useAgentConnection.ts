@@ -61,7 +61,7 @@ export function useAgentConnection(hiddenModels: string[]): UseAgentConnectionRe
   // usePolling), and a connect with no timeout can hang across a tick. Without
   // this, a slow tick that fails *after* a newer tick already succeeded would
   // clobber the fresh model list with `[]` and flip the UI to disconnected,
-  // resetting the user's model selection (FE-04). Only the newest call may write.
+  // resetting the user's model selection. Only the newest call may write.
   const refreshGenRef = useRef(0);
 
   const refreshAgentModels = useCallback(async () => {

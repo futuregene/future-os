@@ -342,7 +342,7 @@ async fn handle_remote_prompt(session_id: String, message: String) -> Result<(),
     match result {
         // Stream closed before `agent_end`: the text is a truncated prefix, not a
         // finished answer. Persist it (so the partial isn't lost) but mark the run
-        // failed rather than completed (RUN-05).
+        // failed rather than completed.
         Ok(response) if !response.complete => {
             let _ = crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
                 run_id: run.id.clone(),

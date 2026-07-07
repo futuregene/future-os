@@ -2,7 +2,8 @@
 //! owns under `~/.future/` (`models.json`, `auth.json`, `approval_rule.json`).
 //!
 //! Two invariants these enforce, previously duplicated (and, for `models.json`
-//! and `approval_rule.json`, gotten wrong — see CFG-01/02/03):
+//! and `approval_rule.json`, gotten wrong — a corrupt file was silently reset,
+//! dropping user-authored config):
 //!
 //! - **Strict read**: a corrupt or non-object file is an *error*, never silently
 //!   reset to `{}`. A read-modify-write that starts from a silently-emptied doc
@@ -37,7 +38,7 @@ fn path_lock(path: &Path) -> &'static Mutex<()> {
 
 /// Serialize a read-modify-write of `path` within this process. Holds a per-path
 /// lock for the duration of `f`, so two concurrent commands mutating the same
-/// config file can't interleave their read and write and lose an update (CFG-02).
+/// config file can't interleave their read and write and lose an update.
 pub fn with_config_lock<T>(
     path: &Path,
     f: impl FnOnce() -> Result<T, AppError>,

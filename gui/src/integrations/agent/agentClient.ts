@@ -19,7 +19,7 @@ interface AgentPromptResponse {
   /**
    * False when the agent stream ended before a clean `agent_end` — the content
    *  is a truncated prefix and the caller should finalize the run as failed
-   *  rather than completed (RUN-05). Older backends omit it; treat missing as
+   *  rather than completed. Older backends omit it; treat missing as
    *  complete so nothing regresses.
    */
   complete?: boolean;

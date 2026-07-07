@@ -41,7 +41,7 @@ pub struct AgentPromptResponse {
     pub content: String,
     /// Whether the agent stream reached a clean `agent_end`. When false, the
     /// content is a truncated prefix (stream closed mid-reply) and the caller
-    /// should finalize the run as failed rather than completed (RUN-05).
+    /// should finalize the run as failed rather than completed.
     pub complete: bool,
 }
 

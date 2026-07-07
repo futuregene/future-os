@@ -130,7 +130,7 @@ pub fn decide_approval_request(
     let conn = connect()?;
     // Compare-and-set on `pending`: a decision is only recorded once, so a
     // concurrent/late decision (or a duplicate event) can't rewrite an already
-    // decided request — the audit record stays immutable (RUN-06).
+    // decided request — the audit record stays immutable.
     conn.execute(
         "UPDATE approval_requests
          SET status = ?1, decision_note = ?2, decided_at = ?3, updated_at = ?3
