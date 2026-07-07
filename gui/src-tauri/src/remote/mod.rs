@@ -61,7 +61,7 @@ pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppEr
 
     let client = async_nats::connect(&input.nats_url)
         .await
-        .map_err(|e| crate::AppError::Message(format!("连接 NATS 失败: {e}")))?;
+        .map_err(|e| crate::AppError::Message(format!("Failed to connect to NATS: {e}")))?;
     let js = async_nats::jetstream::new(client.clone());
 
     // Start the command subscription task (Step C).
@@ -174,11 +174,11 @@ async fn command_loop(client: async_nats::Client, pair_id: String) {
     let mut sub = match client.queue_subscribe(subject.clone(), queue).await {
         Ok(sub) => sub,
         Err(e) => {
-            eprintln!("remote: 订阅命令失败 {subject}: {e}");
+            eprintln!("remote: failed to subscribe to commands {subject}: {e}");
             return;
         }
     };
-    eprintln!("remote: 已订阅命令 {subject}");
+    eprintln!("remote: subscribed to commands {subject}");
     while let Some(msg) = sub.next().await {
         let client = client.clone();
         let pair_id = pair_id.clone();
@@ -198,7 +198,7 @@ async fn handle_command(client: &async_nats::Client, pair_id: &str, msg: async_n
                 &msg,
                 false,
                 Value::Null,
-                Some(&format!("命令 JSON 解析失败: {e}")),
+                Some(&format!("Failed to parse command JSON: {e}")),
             )
             .await;
             return;
@@ -263,7 +263,7 @@ async fn handle_command(client: &async_nats::Client, pair_id: &str, msg: async_n
             let _pair = pair_id.to_string();
             tokio::spawn(async move {
                 if let Err(e) = handle_remote_prompt(session_id, message).await {
-                    eprintln!("remote: prompt 处理失败: {e}");
+                    eprintln!("remote: prompt processing failed: {e}");
                 }
             });
             reply(client, &msg, true, json!({}), None).await;
@@ -349,7 +349,7 @@ async fn handle_remote_prompt(session_id: String, message: String) -> Result<(),
                 error_type: None,
             });
             let content = if response.content.trim().is_empty() {
-                "Future Agent 已完成，但没有返回文本。".to_string()
+                "Future Agent completed but returned no text.".to_string()
             } else {
                 response.content
             };
@@ -374,7 +374,7 @@ async fn handle_remote_prompt(session_id: String, message: String) -> Result<(),
                 run_id: Some(run.id.clone()),
                 role: "assistant".to_string(),
                 content_type: Some("markdown".to_string()),
-                content: format!("Future Agent 出错：{e}"),
+                content: format!("Future Agent error: {e}"),
                 status: Some("failed".to_string()),
             });
         }

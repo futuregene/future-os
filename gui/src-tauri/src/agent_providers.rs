@@ -266,7 +266,7 @@ pub fn update_builtin_provider_key(
         return Err("FutureGene uses the sign-in flow.".to_string().into());
     }
     if !builtin_catalog_providers().contains_key(id) {
-        return Err(format!("未知的内置提供商：`{id}`。").into());
+        return Err(format!("Unknown built-in provider: `{id}`.").into());
     }
 
     let api_key = input
@@ -276,10 +276,10 @@ pub fn update_builtin_provider_key(
         .filter(|value| !value.is_empty());
     if let Some(key) = api_key {
         if key.len() > API_KEY_MAX_LEN {
-            return Err("API Key 过长。".into());
+            return Err("API Key exceeds the maximum length.".into());
         }
         if !is_ascii_no_control(key) {
-            return Err("API Key 含非法字符。".into());
+            return Err("API Key contains illegal characters.".into());
         }
         crate::auth_store::set_provider_key(id, key)?;
     } else {
@@ -300,10 +300,10 @@ pub fn set_builtin_provider_base_url(
         return Err("Provider id is required.".to_string().into());
     }
     if id == FUTURE_PROVIDER_ID {
-        return Err("FutureGene 的地址由登录流程管理。".into());
+        return Err("FutureGene's address is managed by the sign-in flow.".into());
     }
     if !builtin_catalog_providers().contains_key(id) {
-        return Err(format!("未知的内置提供商：`{id}`。").into());
+        return Err(format!("Unknown built-in provider: `{id}`.").into());
     }
 
     let base_url = input.base_url.trim();
@@ -331,14 +331,14 @@ pub fn set_builtin_provider_base_url(
     }
 
     if base_url.len() > BASE_URL_MAX_LEN {
-        return Err("Base URL 过长。".into());
+        return Err("Base URL is too long.".into());
     }
     match reqwest::Url::parse(base_url) {
         Ok(url) if matches!(url.scheme(), "http" | "https") => {}
-        _ => return Err("Base URL 必须是合法的 http/https 地址。".into()),
+        _ => return Err("Base URL must be a valid http/https address.".into()),
     }
     if base_url.contains(BASE_URL_PLACEHOLDER) {
-        return Err(format!("请把地址中的 `{BASE_URL_PLACEHOLDER}` 替换为真实值。").into());
+        return Err(format!("Please replace `{BASE_URL_PLACEHOLDER}` in the address with the real value.").into());
     }
 
     let providers = root
@@ -366,14 +366,14 @@ pub fn upsert_custom_provider(
     // Provider id: lowercased, [a-z0-9_-], length-bounded, `future` reserved.
     let id = input.id.trim().to_lowercase();
     if id.is_empty() {
-        return Err("请填写提供商 ID。".into());
+        return Err("Provider ID is required.".into());
     }
     if id == FUTURE_PROVIDER_ID {
-        return Err("`future` 为内置 FutureGene 保留，请换一个 ID。".into());
+        return Err("`future` is reserved for built-in FutureGene; please choose another ID.".into());
     }
     if id.len() < PROVIDER_ID_MIN_LEN || id.len() > PROVIDER_ID_MAX_LEN {
         return Err(format!(
-            "提供商 ID 长度需在 {PROVIDER_ID_MIN_LEN}–{PROVIDER_ID_MAX_LEN} 个字符之间。"
+            "Provider ID length must be between {PROVIDER_ID_MIN_LEN}–{PROVIDER_ID_MAX_LEN} characters."
         )
         .into());
     }
@@ -381,20 +381,20 @@ pub fn upsert_custom_provider(
         .chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
     {
-        return Err("提供商 ID 只能包含小写字母、数字、'-' 和 '_'。".into());
+        return Err("Provider ID may only contain lowercase letters, digits, '-', and '_'.".into());
     }
 
     // Base URL: parseable http/https, length-bounded.
     let base_url = input.base_url.trim().to_string();
     if base_url.is_empty() {
-        return Err("请填写 Base URL。".into());
+        return Err("Base URL is required.".into());
     }
     if base_url.len() > BASE_URL_MAX_LEN {
-        return Err("Base URL 过长。".into());
+        return Err("Base URL is too long.".into());
     }
     match reqwest::Url::parse(&base_url) {
         Ok(url) if matches!(url.scheme(), "http" | "https") => {}
-        _ => return Err("Base URL 必须是合法的 http/https 地址。".into()),
+        _ => return Err("Base URL must be a valid http/https address.".into()),
     }
 
     // API type: must be a supported value.
@@ -405,7 +405,7 @@ pub fn upsert_custom_provider(
         } else if ALLOWED_APIS.contains(&trimmed) {
             trimmed.to_string()
         } else {
-            return Err(format!("不支持的 API 类型：`{trimmed}`。").into());
+            return Err(format!("Unsupported API type: `{trimmed}`.").into());
         }
     };
 
@@ -417,11 +417,11 @@ pub fn upsert_custom_provider(
             id.clone()
         } else {
             if trimmed.chars().count() > PROVIDER_NAME_MAX_LEN {
-                return Err(format!("提供商名称不能超过 {PROVIDER_NAME_MAX_LEN} 个字符。").into());
+                return Err(format!("Provider name cannot exceed {PROVIDER_NAME_MAX_LEN} characters.").into());
             }
             if !is_provider_name_ok(trimmed) {
                 return Err(
-                    "提供商名称只能包含字母、数字、空格和 _.()-，不支持中文 / emoji / 全角字符。"
+                    "Provider name may only contain letters, digits, spaces, and _.()-; Chinese / emoji / fullwidth characters are not supported."
                         .into(),
                 );
             }
@@ -438,10 +438,10 @@ pub fn upsert_custom_provider(
         .filter(|v| !v.is_empty());
     if let Some(key) = api_key {
         if key.len() > API_KEY_MAX_LEN {
-            return Err("API Key 过长。".into());
+            return Err("API Key exceeds the maximum length.".into());
         }
         if !is_ascii_no_control(key) {
-            return Err("API Key 含非法字符。".into());
+            return Err("API Key contains illegal characters.".into());
         }
     }
 
@@ -454,23 +454,23 @@ pub fn upsert_custom_provider(
             continue;
         }
         if model_id.len() > MODEL_ID_MAX_LEN {
-            return Err(format!("模型 ID `{model_id}` 过长（上限 {MODEL_ID_MAX_LEN}）。").into());
+            return Err(format!("Model ID `{model_id}` is too long (max {MODEL_ID_MAX_LEN}).").into());
         }
         if !is_model_id_ok(model_id) {
-            return Err(format!("模型 ID `{model_id}` 含非法字符。").into());
+            return Err(format!("Model ID `{model_id}` contains illegal characters.").into());
         }
         if !seen_model_ids.insert(model_id.to_string()) {
-            return Err(format!("模型 ID `{model_id}` 重复。").into());
+            return Err(format!("Model ID `{model_id}` is duplicated.").into());
         }
         let model_name = model.name.trim();
         let model_name = if model_name.is_empty() {
             model_id
         } else {
             if model_name.chars().count() > MODEL_NAME_MAX_LEN {
-                return Err(format!("模型名称不能超过 {MODEL_NAME_MAX_LEN} 个字符。").into());
+                return Err(format!("Model name cannot exceed {MODEL_NAME_MAX_LEN} characters.").into());
             }
             if !is_ascii_no_control(model_name) {
-                return Err(format!("模型名称 `{model_name}` 含非法字符。").into());
+                return Err(format!("Model name `{model_name}` contains illegal characters.").into());
             }
             model_name
         };
@@ -487,7 +487,7 @@ pub fn upsert_custom_provider(
         }));
     }
     if model_values.len() > MAX_MODELS {
-        return Err(format!("模型数量不能超过 {MAX_MODELS} 个。").into());
+        return Err(format!("Number of models cannot exceed {MAX_MODELS}.").into());
     }
 
     let models_path = models_json_path()?;
@@ -507,23 +507,23 @@ pub fn upsert_custom_provider(
 
     // Reject creating a provider whose id already exists (silent overwrite).
     if input.create && providers.contains_key(&id) {
-        return Err(format!("提供商 ID `{id}` 已存在。").into());
+        return Err(format!("Provider ID `{id}` already exists.").into());
     }
     let builtin_catalog = builtin_catalog_providers();
     if input.create && builtin_catalog.contains_key(&id) {
-        return Err(format!("提供商 ID `{id}` 为内置提供商保留。").into());
+        return Err(format!("Provider ID `{id}` is reserved for a built-in provider.").into());
     }
     // Names must be unique (case-insensitive) across the built-in and other
     // custom providers, so the list and model grouping stay unambiguous.
     let normalized_name = name.to_lowercase();
     if normalized_name == FUTURE_PROVIDER_NAME.to_lowercase() {
-        return Err(format!("提供商名称 `{name}` 与内置提供商重复。").into());
+        return Err(format!("Provider name `{name}` conflicts with a built-in provider.").into());
     }
     let builtin_name_taken = builtin_catalog.iter().any(|(builtin_id, provider)| {
         builtin_id != &id && provider.name.trim().to_lowercase() == normalized_name
     });
     if builtin_name_taken {
-        return Err(format!("提供商名称 `{name}` 与内置提供商重复。").into());
+        return Err(format!("Provider name `{name}` conflicts with a built-in provider.").into());
     }
     let name_taken = providers.iter().any(|(other_id, config)| {
         other_id != &id
@@ -536,7 +536,7 @@ pub fn upsert_custom_provider(
                 == normalized_name
     });
     if name_taken {
-        return Err(format!("提供商名称 `{name}` 已存在。").into());
+        return Err(format!("Provider name `{name}` already exists.").into());
     }
 
     // Preserve any fields the GUI does not manage (e.g. `compat`).
@@ -847,7 +847,7 @@ mod tests {
         upsert_custom_provider(input("dashscope", "DashScope", true)).unwrap();
         // Re-creating the same id must fail rather than silently overwrite.
         let err = upsert_custom_provider(input("dashscope", "Other", true)).unwrap_err();
-        assert!(err.to_string().contains("已存在"));
+        assert!(err.to_string().contains("already exists"));
     }
 
     #[test]
@@ -866,14 +866,14 @@ mod tests {
         let _home = HomeGuard::new("dup-name");
         upsert_custom_provider(input("p1", "DashScope", true)).unwrap();
         let err = upsert_custom_provider(input("p2", "dashscope", true)).unwrap_err();
-        assert!(err.to_string().contains("已存在"));
+        assert!(err.to_string().contains("already exists"));
     }
 
     #[test]
     fn rejects_builtin_name() {
         let _home = HomeGuard::new("builtin-name");
         let err = upsert_custom_provider(input("mine", "futuregene", true)).unwrap_err();
-        assert!(err.to_string().contains("内置"));
+        assert!(err.to_string().contains("built-in"));
     }
 
     #[test]
@@ -996,10 +996,10 @@ mod tests {
     fn create_rejects_builtin_catalog_id_and_name() {
         let _home = HomeGuard::new("builtin-collision");
         let id_err = upsert_custom_provider(input("openai", "OpenAI Proxy", true)).unwrap_err();
-        assert!(id_err.to_string().contains("内置"));
+        assert!(id_err.to_string().contains("built-in"));
 
         let name_err = upsert_custom_provider(input("p1", "OpenAI", true)).unwrap_err();
-        assert!(name_err.to_string().contains("内置"));
+        assert!(name_err.to_string().contains("built-in"));
     }
 
     #[test]
