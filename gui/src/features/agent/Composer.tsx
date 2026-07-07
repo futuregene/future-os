@@ -1,20 +1,21 @@
-import type { ChangeEvent, ClipboardEvent, FormEvent, KeyboardEvent } from "react";
+import type { FormEvent } from "react";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
-import type { WorkspaceFileResult } from "../../integrations/storage/threadStore";
 import type { MessageAttachment } from "./agentThreadTypes";
+import type { MentionEditorHandle } from "./MentionEditor";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ArrowUp, ChevronDown, FileText, Paperclip, ShieldCheck, Square, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUp, ChevronDown, Paperclip, ShieldCheck, Square, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
 import { modelKey, modelLabel, modelOption, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
-import { savePastedImage, searchWorkspaceFiles } from "../../integrations/storage/threadStore";
+import { savePastedImage } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { isMacOS } from "../../lib/platform";
 import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, MAX_ATTACHMENTS_PER_TURN, pickerExtensions } from "./attachments";
+import { MentionEditor } from "./MentionEditor";
 
 /** Approval-tier order for the composer dropdown (sandbox is macOS-only). */
 const APPROVAL_TIERS: ApprovalTier[] = ["manual", "sandbox", "off"];
@@ -62,7 +63,6 @@ export function Composer({
   workspaceId,
 }: ComposerProps) {
   const { t } = useTranslation("agent");
-  const [value, setValue] = useState("");
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [dropActive, setDropActive] = useState(false);
@@ -70,60 +70,16 @@ export function Composer({
   const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
   const [approvalMenuOpen, setApprovalMenuOpen] = useState(false);
   const providerNames = useProviderNames();
-  const [caretPosition, setCaretPosition] = useState(0);
-  const [referenceResults, setReferenceResults] = useState<WorkspaceFileResult[]>([]);
-  const [referenceSearchOpen, setReferenceSearchOpen] = useState(false);
-  const [selectedReferenceIndex, setSelectedReferenceIndex] = useState(0);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  // IME composition guard. WebKit (Tauri's macOS webview) doesn't reliably set
-  // `event.isComposing` on the Enter that commits a composition, so we track it
-  // ourselves: the committing keydown fires while this ref is still true.
-  const isComposingRef = useRef(false);
+  // The editor is non-controlled (see MentionEditor); we only mirror its empty
+  // state to enable/disable the send button.
+  const [inputEmpty, setInputEmpty] = useState(true);
+  const editorRef = useRef<MentionEditorHandle | null>(null);
   const activeModelId = modelId || (modelOptions[0] ? modelKey(modelOptions[0]) : "");
   const activeModel = modelOption(activeModelId, modelOptions);
   // Only offer/accept images when the active model advertises image input.
   // Unknown model (not in the catalog yet) → allow, to avoid over-restricting.
   const allowImages = activeModel ? activeModel.supportsImages !== false : true;
   const activeThinkingLevel = normalizeThinkingLevel(thinkingLevel);
-  const activeMention = useMemo(() => findActiveMention(value, caretPosition), [caretPosition, value]);
-
-  useEffect(() => {
-    // Hand-rolled cancel guard (not useAsyncResource): this effect drives several
-    // states (results + open flag) with an early-return branch, which doesn't map
-    // onto the primitive's single-resource shape. See gui/CLAUDE.md §4.
-    let cancelled = false;
-
-    if (!workspaceId || !activeMention || disabled) {
-      setReferenceResults([]);
-      setReferenceSearchOpen(false);
-      return;
-    }
-
-    async function loadFileResults(query: string, wsId: string) {
-      try {
-        const results = await searchWorkspaceFiles({ limit: 20, query, workspaceId: wsId });
-        if (!cancelled) {
-          setReferenceResults(results);
-          setReferenceSearchOpen(true);
-          setSelectedReferenceIndex(0);
-        }
-      }
-      catch {
-        if (!cancelled) {
-          setReferenceResults([]);
-          setReferenceSearchOpen(false);
-        }
-      }
-    }
-
-    // Debounce so a fast typist doesn't walk the workspace on every keystroke.
-    const timer = setTimeout(() => void loadFileResults(activeMention.query ?? "", workspaceId), 120);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [activeMention, disabled, workspaceId]);
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -131,88 +87,13 @@ export function Composer({
   }
 
   function submitValue() {
-    const trimmed = value.trim();
+    const trimmed = (editorRef.current?.getContent() ?? "").trim();
     if ((!trimmed && attachments.length === 0) || disabled)
       return;
     onSend({ attachments, content: trimmed });
-    setValue("");
+    editorRef.current?.clear();
     setAttachments([]);
     setAttachError(null);
-    setReferenceSearchOpen(false);
-  }
-
-  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    // While an IME composition is active, let the input method consume every key
-    // (Enter commits the composition, arrows move through candidates) — never run
-    // our own Enter/Tab/arrow shortcuts. `keyCode === 229` is the legacy sentinel
-    // for a keystroke routed to the IME, covering webviews that leave
-    // `isComposing` unset on the committing keydown.
-    if (event.nativeEvent.isComposing || isComposingRef.current || event.nativeEvent.keyCode === 229)
-      return;
-
-    if (referenceSearchOpen && referenceResults.length > 0) {
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setSelectedReferenceIndex(index => (index + 1) % referenceResults.length);
-        return;
-      }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setSelectedReferenceIndex(index => (index - 1 + referenceResults.length) % referenceResults.length);
-        return;
-      }
-      if (event.key === "Enter" || event.key === "Tab") {
-        event.preventDefault();
-        const selected = referenceResults[selectedReferenceIndex];
-        if (selected)
-          insertReference(selected);
-        return;
-      }
-    }
-
-    if (event.key === "Escape" && referenceSearchOpen) {
-      event.preventDefault();
-      setReferenceSearchOpen(false);
-      return;
-    }
-
-    if (event.key !== "Enter" || event.shiftKey)
-      return;
-
-    event.preventDefault();
-    submitValue();
-  }
-
-  function handleChange(event: ChangeEvent<HTMLTextAreaElement>) {
-    setValue(event.target.value);
-    setCaretPosition(event.target.selectionStart);
-  }
-
-  function updateCaret() {
-    setCaretPosition(textareaRef.current?.selectionStart ?? value.length);
-  }
-
-  function insertReference(file: WorkspaceFileResult) {
-    if (!activeMention)
-      return;
-
-    // Plain relative-path markdown link (not futureos://): the agent runs with
-    // the workspace as cwd, so `./path` is a real path it can read directly.
-    // Label is just the filename to stay short; the full path lives in the link
-    // target. Angle-bracket the target only when the path has spaces, which
-    // would otherwise break the markdown link.
-    const label = escapeMarkdownLinkLabel(file.name);
-    const target = `./${file.path}`;
-    const markdown = `[${label}](${/\s/.test(target) ? `<${target}>` : target})`;
-    const nextValue = `${value.slice(0, activeMention.start)}${markdown}${value.slice(activeMention.end)}`;
-    const nextCaret = activeMention.start + markdown.length;
-    setValue(nextValue);
-    setCaretPosition(nextCaret);
-    setReferenceSearchOpen(false);
-    window.requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(nextCaret, nextCaret);
-    });
   }
 
   const addAttachmentPaths = useCallback(async (paths: string[]) => {
@@ -245,6 +126,22 @@ export function Composer({
     setAttachError(rejected.length > 0 ? t("composer.attachIgnored", { items: rejected.join("，") }) : null);
   }, [allowImages, attachments, t]);
 
+  async function attachImageFiles(files: File[]) {
+    for (const file of files) {
+      try {
+        const buffer = await file.arrayBuffer();
+        const saved = await savePastedImage({
+          bytes: Array.from(new Uint8Array(buffer)),
+          extension: imageExtensionFromMime(file.type) ?? "png",
+        });
+        await addAttachmentPaths([saved.path]);
+      }
+      catch {
+        // Ignore a single failed paste; other clipboard items still attach.
+      }
+    }
+  }
+
   async function handleAttachFiles() {
     if (disabled)
       return;
@@ -259,36 +156,6 @@ export function Composer({
       return;
 
     await addAttachmentPaths(paths);
-  }
-
-  async function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
-    if (disabled)
-      return;
-
-    const imageItems = Array.from(event.clipboardData?.items ?? []).filter(
-      item => item.kind === "file" && item.type.startsWith("image/"),
-    );
-    if (imageItems.length === 0)
-      return;
-
-    event.preventDefault();
-    for (const item of imageItems) {
-      const file = item.getAsFile();
-      if (!file)
-        continue;
-
-      try {
-        const buffer = await file.arrayBuffer();
-        const saved = await savePastedImage({
-          bytes: Array.from(new Uint8Array(buffer)),
-          extension: imageExtensionFromMime(file.type) ?? "png",
-        });
-        await addAttachmentPaths([saved.path]);
-      }
-      catch {
-        // Ignore a single failed paste; other clipboard items still attach.
-      }
-    }
   }
 
   function removeAttachment(path: string) {
@@ -337,15 +204,6 @@ export function Composer({
       )}
       onSubmit={handleSubmit}
     >
-      {referenceSearchOpen && activeMention
-        ? (
-            <ReferenceSearchMenu
-              results={referenceResults}
-              selectedIndex={selectedReferenceIndex}
-              onSelect={insertReference}
-            />
-          )
-        : null}
       {attachments.length > 0
         ? (
             <div className="flex flex-wrap gap-1.5 px-1 pb-2">
@@ -370,23 +228,15 @@ export function Composer({
             </div>
           )
         : null}
-      <textarea
-        ref={textareaRef}
-        className={cn(
-          "h-14 w-full resize-none border-0 bg-transparent px-2 py-1 text-sm leading-5 text-ink outline-none placeholder:text-ink-muted",
-          textareaClassName,
-        )}
-        placeholder={placeholder ?? t("composer.placeholder")}
-        value={value}
+      <MentionEditor
+        ref={editorRef}
+        className={textareaClassName}
+        workspaceId={workspaceId}
         disabled={disabled}
-        onKeyDown={handleKeyDown}
-        onChange={handleChange}
-        onCompositionStart={() => { isComposingRef.current = true; }}
-        onCompositionEnd={() => { isComposingRef.current = false; }}
-        onPaste={handlePaste}
-        onClick={updateCaret}
-        onKeyUp={updateCaret}
-        onSelect={updateCaret}
+        placeholder={placeholder ?? t("composer.placeholder")}
+        onSubmit={submitValue}
+        onEmptyChange={setInputEmpty}
+        onPasteImages={files => void attachImageFiles(files)}
       />
       {attachError
         ? <div className="px-1 pb-1 text-xs text-warning">{attachError}</div>
@@ -537,7 +387,7 @@ export function Composer({
             : (
                 <button
                   className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
-                  disabled={(!value.trim() && attachments.length === 0) || disabled}
+                  disabled={(inputEmpty && attachments.length === 0) || disabled}
                   type="submit"
                   aria-label={t("composer.send")}
                   title={t("composer.send")}
@@ -568,72 +418,4 @@ function thinkingLevelLabel(level: string) {
     default:
       return level;
   }
-}
-
-function ReferenceSearchMenu({
-  onSelect,
-  results,
-  selectedIndex,
-}: {
-  onSelect: (file: WorkspaceFileResult) => void;
-  results: WorkspaceFileResult[];
-  selectedIndex: number;
-}) {
-  const { t } = useTranslation("agent");
-  return (
-    <div className="absolute bottom-full left-2 z-30 mb-2 w-[min(30rem,calc(100%-1rem))] rounded-lg border border-line-soft bg-surface p-1 shadow-panel">
-      {results.length === 0
-        ? <div className="px-2 py-2 text-sm text-ink-muted">{t("composer.noFiles")}</div>
-        : null}
-      {results.map((file, index) => {
-        // Split the path so the directory reads muted and the filename strong.
-        const dir = file.path.slice(0, file.path.length - file.name.length);
-        return (
-          <button
-            className={cn(
-              "flex h-9 w-full items-center gap-2 rounded-md px-2 text-left transition-colors",
-              index === selectedIndex ? "bg-surface-subtle" : "hover:bg-surface-subtle",
-            )}
-            key={file.path}
-            onMouseDown={(event) => {
-              event.preventDefault();
-              onSelect(file);
-            }}
-            type="button"
-          >
-            <FileText className="size-4 shrink-0 text-ink-soft" />
-            <span className="min-w-0 flex-1 truncate text-sm">
-              {dir ? <span className="text-ink-muted">{dir}</span> : null}
-              <span className="font-medium text-ink">{file.name}</span>
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function findActiveMention(value: string, caretPosition: number) {
-  const beforeCaret = value.slice(0, caretPosition);
-  const match = beforeCaret.match(/(^|\s)@([^\s@]*)$/);
-  if (!match)
-    return null;
-
-  // Group 1 `(^|\s)` is a required capture — present whenever `match` is.
-  const markerOffset = match[1]!.length;
-  const start = caretPosition - match[0].length + markerOffset;
-  return {
-    end: caretPosition,
-    query: match[2],
-    start,
-  };
-}
-
-function escapeMarkdownLinkLabel(value: string) {
-  return value
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\\/g, "/")
-    .replace(/\[/g, "(")
-    .replace(/\]/g, ")");
 }
