@@ -1,3 +1,6 @@
+#[macro_use]
+mod record_macro;
+
 mod app_settings;
 mod approvals;
 mod artifacts;

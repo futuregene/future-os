@@ -12,9 +12,10 @@
 - **方案四 ✅** — 删除 4 张死表（`DROPPED_TABLES` 迁移 + 测试）；PRODUCT/ER/CLAUDE/APPROVAL_PLAN 回写（DOC-01~06；口径：不做第三方付费市场，仅官方平台目录）
 - **方案五 ✅（部分）** — `useDropUpMenu`（DUP-01）、`NavButton`（消 5 处重复）、`lib/errors.ts errorMessage`（DUP-03，已迁移本次改动涉及文件）。**未做**：ActivityRail 多文件拆分（纯行数、暂缓）、`formatBytes` 合并（两处语义不同、非真重复）、BackButton/IconButton 变体、errorMessage 全量 23 处迁移
 - **追加批次 ✅** — FE-10（附件截断改 UTF-8 字符边界安全 `truncateToBytes`，PDF 加 `MAX_PDF_PAGES=100`）、FE-08（abort 部分文本落库不再受 `isCurrentSend` 门控，切线程不丢失）、FE-11（缩略图 key 改 SHA-256 前缀，抗碰撞）、STR-03（ActivityRail 826→484 行，拆出 `ThreadListItem.tsx` / `ActivityRailMenus.tsx`）
-- **仍暂缓** — SEC-02（远程零鉴权，功能未开发完）、SEC-04/05（端口冒充 / 更新包哈希，后者需流水线先发布 hash）、FE-09（仅 legacy 数据）、STR-04/07、DUP-08（列序漂移宏，较重）、DOC-07、HYG-02
+- **DUP-08 ✅** — 新增 `store/record_macro.rs` 的 `sql_record!` 宏：从单一字段列表同时生成 `*_COLUMNS` 与 `*_from_row`，两者不可能漂移；14 条记录中 13 条已转换（`research_resource` 因列名带 `r.`/`c.` 表别名保持手写）。含自包含宏测试（列序 + 位置映射 + bool/NULL）
+- **仍暂缓** — SEC-02（远程零鉴权，功能未开发完）、SEC-04/05（端口冒充 / 更新包哈希，后者需流水线先发布 hash）、FE-09（仅 legacy 数据）、STR-04/07、DOC-07、HYG-02
 
-验证：`cargo test`（90 通过）+ clippy + fmt 全绿；`tsc` + `eslint` + `vitest`（50 通过）全绿。
+验证：`cargo test`（91 通过）+ clippy + fmt 全绿；`tsc` + `eslint` + `vitest`（50 通过）全绿。
 
 处置批次定义：
 - **批次0** — P0 独立小改动，立即修

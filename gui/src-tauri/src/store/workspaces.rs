@@ -23,27 +23,10 @@ pub struct WorkspaceRecord {
     pub deleted_at: Option<i64>,
 }
 
-/// Column list for `workspace_from_row`, in struct order.
-pub(super) const WORKSPACE_COLUMNS: &str =
-    "id, name, kind, path, description, cleanup_status, cleanup_requested_at, \
-     cleaned_at, last_opened_at, created_at, updated_at, deleted_at";
-
-pub(super) fn workspace_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceRecord> {
-    Ok(WorkspaceRecord {
-        id: row.get(0)?,
-        name: row.get(1)?,
-        kind: row.get(2)?,
-        path: row.get(3)?,
-        description: row.get(4)?,
-        cleanup_status: row.get(5)?,
-        cleanup_requested_at: row.get(6)?,
-        cleaned_at: row.get(7)?,
-        last_opened_at: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
-        deleted_at: row.get(11)?,
-    })
-}
+sql_record!(pub(super) WORKSPACE_COLUMNS, workspace_from_row -> WorkspaceRecord {
+    id, name, kind, path, description, cleanup_status, cleanup_requested_at,
+    cleaned_at, last_opened_at, created_at, updated_at, deleted_at,
+});
 
 pub fn list_workspaces() -> Result<Vec<WorkspaceRecord>, crate::AppError> {
     let conn = connect()?;
