@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { AgentModelOption } from "../../../integrations/agent/agentClient";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { defaultAgentModelId, loadAgentModelOptions, modelOption, resolveInitialModelId } from "../../../integrations/agent/agentClient";
 import { listAgentProviders } from "../../../integrations/agent/providers";
 import { usePolling } from "../../../lib/usePolling";
@@ -14,8 +14,9 @@ export interface AgentConnectionState {
    * - `ready`: models available.
    * - `needs_login`: no FutureGene login and no custom provider → no credentials.
    * - `no_models`: credentials exist, but the model list is still empty.
+   * - `all_disabled`: models loaded, but the user has hidden every one.
    */
-  readiness?: "ready" | "needs_login" | "no_models" | null;
+  readiness?: "ready" | "needs_login" | "no_models" | "all_disabled" | null;
   checkedAt?: number | null;
 }
 
@@ -64,11 +65,8 @@ export function useAgentConnection(hiddenModels: string[]): UseAgentConnectionRe
     try {
       const nextModels = await loadAgentModelOptions();
       setModelOptions(nextModels);
-      setSelectedModelId(current =>
-        current && modelOption(current, nextModels)
-          ? current
-          : resolveInitialModelId(nextModels),
-      );
+      // Selection reconciliation lives in the visible-set effect below (so it
+      // also reacts to models being enabled/disabled, not just catalog changes).
       // Agent is reachable. If there are no models, find out whether that's
       // because nothing is configured (needs login / a provider) or because the
       // configured providers simply expose none — so the UI can say which.
@@ -113,8 +111,36 @@ export function useAgentConnection(hiddenModels: string[]): UseAgentConnectionRe
     [hiddenModels, modelOptions],
   );
 
+  // Reconcile the draft/global selection against the *visible* set (catalog minus
+  // the user's hidden models). Runs whenever that set changes, so a selection
+  // that was deleted from the catalog or disabled in Settings falls back to the
+  // default pick in real time, and an empty set clears it so pickers show their
+  // empty state. Per-thread selections persist separately and aren't touched here.
+  useEffect(() => {
+    setSelectedModelId(current =>
+      current && modelOption(current, visibleModelOptions)
+        ? current
+        : resolveInitialModelId(visibleModelOptions),
+    );
+  }, [visibleModelOptions]);
+
+  // Surface "loaded but all hidden" as its own readiness so the UI can tell it
+  // apart from "nothing loaded" (needs login / empty catalog). Derived rather
+  // than baked into the poll so it tracks hidden-model toggles immediately.
+  const connectionWithVisibility = useMemo<AgentConnectionState>(() => {
+    if (
+      agentConnection.status === "connected"
+      && agentConnection.readiness === "ready"
+      && modelOptions.length > 0
+      && visibleModelOptions.length === 0
+    ) {
+      return { ...agentConnection, readiness: "all_disabled" };
+    }
+    return agentConnection;
+  }, [agentConnection, modelOptions.length, visibleModelOptions.length]);
+
   return {
-    agentConnection,
+    agentConnection: connectionWithVisibility,
     modelOptions,
     refreshAgentModels,
     selectedModelId,

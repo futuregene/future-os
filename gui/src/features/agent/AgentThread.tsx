@@ -214,6 +214,7 @@ export function AgentThread({
               disabled={!thread || loadingThread || loadingStore || isSending}
               modelId={modelId}
               modelOptions={modelOptions}
+              modelsEmptyReason={agentConnection.readiness === "all_disabled" ? "all_disabled" : "no_models"}
               onModelChange={onModelChange}
               thinkingLevel={thinkingLevel}
               onThinkingLevelChange={onThinkingLevelChange}
@@ -234,7 +235,8 @@ export function AgentThread({
 function shouldShowAgentNotice(connection: AgentConnectionState) {
   return connection.status === "disconnected"
     || connection.readiness === "needs_login"
-    || connection.readiness === "no_models";
+    || connection.readiness === "no_models"
+    || connection.readiness === "all_disabled";
 }
 
 interface AgentNotice {
@@ -309,6 +311,14 @@ function agentNotice(
       title: t("notice.needsLogin.title"),
       detail: t("notice.needsLogin.detail"),
       action: { label: t("notice.needsLogin.action"), onClick: actions.onOpenProviders },
+    };
+  }
+  // Models loaded, but the user disabled every one — steer them to re-enable.
+  if (connection.readiness === "all_disabled") {
+    return {
+      title: t("notice.allModelsDisabled.title"),
+      detail: t("notice.allModelsDisabled.detail"),
+      action: { label: t("notice.allModelsDisabled.action"), onClick: actions.onOpenModels },
     };
   }
   return {

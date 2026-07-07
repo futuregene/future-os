@@ -31,6 +31,8 @@ interface ComposerProps {
   disabled?: boolean;
   modelId?: string;
   modelOptions: AgentModelOption[];
+  /** Why the picker list is empty, to tailor its empty-state copy. */
+  modelsEmptyReason?: "no_models" | "all_disabled";
   onModelChange?: (modelId: string) => void;
   thinkingLevel?: string;
   onThinkingLevelChange?: (thinkingLevel: string) => void;
@@ -51,6 +53,7 @@ export function Composer({
   disabled,
   modelId,
   modelOptions,
+  modelsEmptyReason,
   onModelChange,
   thinkingLevel,
   onThinkingLevelChange,
@@ -316,7 +319,11 @@ export function Composer({
           >
             {modelOptions.length === 0
               ? (
-                  <div className="px-3 py-2 text-sm text-ink-muted">{t("composer.startAgentForModels")}</div>
+                  <div className="px-3 py-2 text-sm text-ink-muted">
+                    {modelsEmptyReason === "all_disabled"
+                      ? t("composer.allModelsDisabled")
+                      : t("composer.startAgentForModels")}
+                  </div>
                 )
               : null}
             {modelOptions.map(model => (
