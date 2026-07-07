@@ -75,6 +75,10 @@ export function Composer({
   const [referenceSearchOpen, setReferenceSearchOpen] = useState(false);
   const [selectedReferenceIndex, setSelectedReferenceIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // IME composition guard. WebKit (Tauri's macOS webview) doesn't reliably set
+  // `event.isComposing` on the Enter that commits a composition, so we track it
+  // ourselves: the committing keydown fires while this ref is still true.
+  const isComposingRef = useRef(false);
   const activeModelId = modelId || (modelOptions[0] ? modelKey(modelOptions[0]) : "");
   const activeModel = modelOption(activeModelId, modelOptions);
   // Only offer/accept images when the active model advertises image input.
@@ -140,6 +144,14 @@ export function Composer({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    // While an IME composition is active, let the input method consume every key
+    // (Enter commits the composition, arrows move through candidates) — never run
+    // our own Enter/Tab/arrow shortcuts. `keyCode === 229` is the legacy sentinel
+    // for a keystroke routed to the IME, covering webviews that leave
+    // `isComposing` unset on the committing keydown.
+    if (event.nativeEvent.isComposing || isComposingRef.current || event.nativeEvent.keyCode === 229)
+      return;
+
     if (referenceSearchOpen && referenceResults.length > 0) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -166,7 +178,7 @@ export function Composer({
       return;
     }
 
-    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing)
+    if (event.key !== "Enter" || event.shiftKey)
       return;
 
     event.preventDefault();
@@ -366,6 +378,8 @@ export function Composer({
         disabled={disabled}
         onKeyDown={handleKeyDown}
         onChange={handleChange}
+        onCompositionStart={() => { isComposingRef.current = true; }}
+        onCompositionEnd={() => { isComposingRef.current = false; }}
         onPaste={handlePaste}
         onClick={updateCaret}
         onKeyUp={updateCaret}
