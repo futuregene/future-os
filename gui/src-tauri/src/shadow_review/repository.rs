@@ -105,7 +105,9 @@ impl ShadowRepo {
     // ── git invocation (isolated via env) ───────────────────────────────────
 
     fn base_command(&self, index: Option<&Path>) -> Command {
+        use crate::proc::NoWindow;
         let mut cmd = Command::new("git");
+        cmd.no_window();
         cmd.env("GIT_DIR", &self.git_dir);
         // Bare handles (open_bare) have no work tree; only set it when present.
         if !self.workspace_path.as_os_str().is_empty() {
@@ -362,7 +364,9 @@ impl ShadowRepo {
     /// Run git against the user's *real* repo (no GIT_DIR override), used only
     /// for read-only seeding lookups.
     fn real_git(&self, args: &[&str]) -> Result<String, AppError> {
+        use crate::proc::NoWindow;
         let output = Command::new("git")
+            .no_window()
             .arg("-C")
             .arg(&self.workspace_path)
             .args(args)

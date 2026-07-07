@@ -248,7 +248,9 @@ fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
 
 #[cfg(target_os = "windows")]
 fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
+    use crate::proc::NoWindow;
     Command::new("cmd")
+        .no_window()
         .args(["/C", "start", "", path])
         .status()
         .map_err(crate::AppError::from)
