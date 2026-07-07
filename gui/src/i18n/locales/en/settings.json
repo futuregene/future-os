@@ -47,12 +47,26 @@
     },
     "tabs": {
       "general": "General",
+      "account": "Account",
       "update": "Check for updates",
       "providers": "Providers",
       "models": "Models",
       "environment": "Environment",
       "reset": "Reset"
     }
+  },
+  "account": {
+    "loading": "Loading account…",
+    "title": "Account",
+    "futureGene": "FutureGene account",
+    "loggedIn": "Signed in",
+    "loggedOut": "Not signed in",
+    "login": "Sign in",
+    "viewInfo": "View account info",
+    "logout": "Sign out",
+    "confirmLogout": "Sign out?",
+    "logoutConfirm": "Sign out",
+    "cancel": "Cancel"
   },
   "models": {
     "searchPlaceholder": "Search models…",
