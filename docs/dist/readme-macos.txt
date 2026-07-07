@@ -15,6 +15,6 @@ FutureOS 使用说明（macOS）
 【说明】
 · 首次使用需联网登录（在应用内完成）。
 · 个人数据保存在 ~/.future ；退出应用时后台 future-agent 会一并关闭。
-· 已附带命令行工具 future-cli（位于 FutureOS.app/Contents/MacOS/）。
+· 已附带命令行工具 future（位于 FutureOS.app/Contents/MacOS/）。
 
 如遇问题，请把报错弹窗截图反馈给我们。

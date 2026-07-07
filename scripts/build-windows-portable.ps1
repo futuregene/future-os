@@ -8,7 +8,7 @@
       1. build the agent (release) and stage it as the Tauri sidecar,
       2. compile the CLI into a standalone .exe (bun --compile),
       3. build the GUI with Tauri (--no-bundle: just the .exe, no installer),
-      4. assemble FutureOS.exe + future-agent.exe + future-cli.exe + Readme.txt
+      4. assemble FutureOS.exe + future-agent.exe + future.exe + Readme.txt
          into FutureOS-portable-windows.zip.
 
     The resulting app needs the Microsoft Edge WebView2 runtime (ships with
@@ -97,13 +97,13 @@ Write-Host "==> Building CLI (standalone binary)" -ForegroundColor Cyan
 Push-Location cli
 try {
     Invoke-Native { npm run build }
-    Invoke-Native { bun build --compile dist/index.js --outfile dist/future-cli.exe --external chromium-bidi }
+    Invoke-Native { bun build --compile dist/index.js --outfile dist/future.exe --external chromium-bidi }
 }
 finally { Pop-Location }
 # Stage the CLI as a Tauri sidecar (bundle.externalBin), same as the agent, so a
 # full `tauri build` would bundle it into the installer. (This portable build
 # copies from cli/dist directly below, but keep the staging consistent with CI.)
-Copy-Item "cli/dist/future-cli.exe" "gui/src-tauri/binaries/future-cli-$triple.exe" -Force
+Copy-Item "cli/dist/future.exe" "gui/src-tauri/binaries/future-$triple.exe" -Force
 
 Write-Host "==> Building GUI (Tauri, no installer)" -ForegroundColor Cyan
 # --no-bundle: compile the frontend + release .exe but skip NSIS/MSI packaging.
@@ -120,7 +120,7 @@ New-Item -ItemType Directory -Force -Path $stage | Out-Null
 # so the GUI finds it next to its own exe.
 Copy-Item "gui/src-tauri/target/release/futureos.exe"       (Join-Path $stage "FutureOS.exe")     -Force
 Copy-Item "gui/src-tauri/binaries/future-agent-$triple.exe" (Join-Path $stage "future-agent.exe") -Force
-Copy-Item "cli/dist/future-cli.exe"                         (Join-Path $stage "future-cli.exe")   -Force
+Copy-Item "cli/dist/future.exe"                         (Join-Path $stage "future.exe")   -Force
 Copy-Item "docs/dist/readme-windows.txt"                    (Join-Path $stage "Readme.txt")       -Force
 
 if (-not $OutDir) { $OutDir = $Root }
@@ -132,5 +132,5 @@ Remove-Item -Recurse -Force $stage
 
 Write-Host ""
 Write-Host "Done: $zip" -ForegroundColor Green
-Write-Host "  Contents: FutureOS.exe, future-agent.exe, future-cli.exe, Readme.txt"
+Write-Host "  Contents: FutureOS.exe, future-agent.exe, future.exe, Readme.txt"
 Write-Host "  Requires the Microsoft Edge WebView2 runtime (bundled with Windows 10/11)."

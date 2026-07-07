@@ -53,4 +53,4 @@ Skills 页有两个标签:
 ## 另见
 
 - [[使用 FutureOS|Using-FutureOS]] —— 批准机制。
-- [[命令行工具(future-cli)|CLI]] —— 从命令行管理技能。
+- [[命令行工具(future)|CLI]] —— 从命令行管理技能。
