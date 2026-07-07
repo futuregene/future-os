@@ -2,6 +2,7 @@ import type { ResolvedMarkdownReference } from "../../integrations/storage/markd
 import type { FutureReference } from "./futureMarkdownTypes";
 import { useEffect, useSyncExternalStore } from "react";
 import { resolveMarkdownReferences } from "../../integrations/storage/markdownReferences";
+import { errorMessage } from "../../lib/errors";
 
 interface ReferenceIdentity {
   targetId: string;
@@ -43,8 +44,16 @@ export function useFutureReference(
 function loadFutureReferences(workspaceId: string, references: ReferenceIdentity[]) {
   const workspaceLoads = pendingLoads.get(workspaceId) ?? new Map<string, ReferenceIdentity>();
   for (const reference of references) {
+    // The parsed `references` array gets a fresh identity on every streaming
+    // delta, so this fires per keystroke. Already-resolved records stay hot via
+    // ContextPanel's poll (upsertFutureReferenceEntries), so re-resolving them
+    // is wasted IPC — only fetch unresolved/unknown identities.
+    if (records.get(storeKey(workspaceId, reference.targetType, reference.targetId))?.status === "resolved")
+      continue;
     workspaceLoads.set(referenceIdentityKey(reference), reference);
   }
+  if (workspaceLoads.size === 0)
+    return;
   pendingLoads.set(workspaceId, workspaceLoads);
 
   if (!pendingFlush) {
@@ -72,7 +81,11 @@ export function upsertFutureReferenceEntries(
     return;
 
   for (const entry of entries) {
-    records.set(storeKey(workspaceId, entry.targetType, entry.targetId), {
+    const key = storeKey(workspaceId, entry.targetType, entry.targetId);
+    // Delete-then-set so `set` moves the key to the end — Map preserves
+    // insertion order and does not refresh it on overwrite; keeps prune LRU.
+    records.delete(key);
+    records.set(key, {
       data: entry.data,
       status: "resolved",
       targetId: entry.targetId,
@@ -125,7 +138,7 @@ async function resolveAndStoreReferences(workspaceId: string, references: Refere
     );
   }
   catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     resolved = references.map(reference => ({
       error: message,
       status: "failed",
@@ -135,7 +148,10 @@ async function resolveAndStoreReferences(workspaceId: string, references: Refere
   }
 
   for (const reference of resolved) {
-    records.set(storeKey(workspaceId, reference.targetType, reference.targetId), reference);
+    const key = storeKey(workspaceId, reference.targetType, reference.targetId);
+    // Delete-then-set so overwrites refresh LRU order (see upsert).
+    records.delete(key);
+    records.set(key, reference);
   }
   pruneReferenceRecords();
   notifyFutureReferenceSubscribers();

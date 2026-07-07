@@ -86,6 +86,14 @@
     "startAgentForModels": "Start Future Agent to load models.",
     "allModelsDisabled": "Models are loaded but all disabled. Enable one in Settings.",
     "thinkingLevel": "Thinking level",
+    "thinkingLevelLabels": {
+      "off": "Off",
+      "minimal": "Minimal",
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "xhigh": "XHigh"
+    },
     "send": "Send",
     "stop": "Stop",
     "noFiles": "No matching files.",

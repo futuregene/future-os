@@ -2,7 +2,11 @@ import type { AppSettings } from "../../integrations/storage/appSettings";
 import type { RemoteStatus } from "./remoteClient";
 import { useEffect, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { Button } from "../../components/ui/Button";
+import { TextInput } from "../../components/ui/TextInput";
 import { cn } from "../../lib/cn";
+import { errorMessage } from "../../lib/errors";
+import { useAsyncResource } from "../../lib/useAsyncResource";
 import { getRemoteStatus, startRemote, stopRemote } from "./remoteClient";
 
 interface RemoteViewProps {
@@ -14,34 +18,32 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
   const { t } = useTranslation("remote");
   const [natsUrl, setNatsUrl] = useState(appSettings.remoteNatsUrl);
   const [pairId, setPairId] = useState(appSettings.remotePairId);
+  // Mirror the loaded status locally so start/stop can apply their returned
+  // status without waiting for a refetch. A failed initial fetch is non-fatal
+  // (status stays null → "not running") so its error isn't surfaced here.
+  const { data: loadedStatus } = useAsyncResource<RemoteStatus | null>(getRemoteStatus, [], null);
   const [status, setStatus] = useState<RemoteStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
-    void getRemoteStatus()
-      .then((next) => {
-        if (!cancelled)
-          setStatus(next);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (loadedStatus)
+      setStatus(loadedStatus);
+  }, [loadedStatus]);
 
   const running = status?.running ?? false;
 
   async function handleStart() {
     setBusy(true);
     setError(null);
-    onChangeSettings({ remoteNatsUrl: natsUrl, remotePairId: pairId, remoteEnabled: true });
     try {
       setStatus(await startRemote({ natsUrl, pairId }));
+      // Persist only after a successful start, so a failed attempt doesn't leave
+      // `remoteEnabled` true.
+      onChangeSettings({ remoteNatsUrl: natsUrl, remotePairId: pairId, remoteEnabled: true });
     }
     catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
+      setError(errorMessage(caught));
     }
     finally {
       setBusy(false);
@@ -51,12 +53,12 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
   async function handleStop() {
     setBusy(true);
     setError(null);
-    onChangeSettings({ remoteEnabled: false });
     try {
       setStatus(await stopRemote());
+      onChangeSettings({ remoteEnabled: false });
     }
     catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
+      setError(errorMessage(caught));
     }
     finally {
       setBusy(false);
@@ -96,8 +98,7 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
         <div className="space-y-4">
           <label className="block space-y-1">
             <span className="text-sm font-medium text-ink-soft">{t("natsUrlLabel")}</span>
-            <input
-              className="w-full rounded-md border border-line-soft bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
+            <TextInput
               disabled={running || busy}
               onChange={event => setNatsUrl(event.target.value)}
               placeholder="nats://localhost:4222"
@@ -110,8 +111,7 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
 
           <label className="block space-y-1">
             <span className="text-sm font-medium text-ink-soft">{t("pairIdLabel")}</span>
-            <input
-              className="w-full rounded-md border border-line-soft bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
+            <TextInput
               disabled={running || busy}
               onChange={event => setPairId(event.target.value)}
               placeholder="DEVPAIR"
@@ -122,31 +122,25 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
 
         {error
           ? (
-              <div className="rounded-md border border-danger/40 bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>
+              <div className="rounded-md border border-danger-line bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>
             )
           : null}
 
         <div className="flex gap-2">
           {running
             ? (
-                <button
-                  className="rounded-md border border-line-soft bg-surface px-4 py-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle disabled:opacity-50"
-                  disabled={busy}
-                  onClick={() => void handleStop()}
-                  type="button"
-                >
+                <Button disabled={busy} onClick={() => void handleStop()} variant="secondary">
                   {t("stop")}
-                </button>
+                </Button>
               )
             : (
-                <button
-                  className="rounded-md border border-accent bg-accent-soft px-4 py-2 text-sm font-medium text-accent transition-colors hover:opacity-90 disabled:opacity-50"
+                <Button
                   disabled={busy || !natsUrl.trim() || !pairId.trim()}
                   onClick={() => void handleStart()}
-                  type="button"
+                  variant="primary"
                 >
                   {t("start")}
-                </button>
+                </Button>
               )}
         </div>
 

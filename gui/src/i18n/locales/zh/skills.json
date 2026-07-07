@@ -7,8 +7,10 @@
   },
   "installed": {
     "emptyTitle": "还没有安装技能",
-    "emptyDetail": "在“全部”里浏览技能市场并安装。"
+    "emptyDetail": "在“全部”里浏览技能市场并安装。",
+    "loadError": "无法加载已安装技能："
   },
+  "actionFailed": "操作失败：{{message}}",
   "all": {
     "loadError": "无法加载技能市场：",
     "retry": "重试",

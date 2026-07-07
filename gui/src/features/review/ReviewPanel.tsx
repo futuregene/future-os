@@ -1,28 +1,19 @@
-import type { TFunction } from "i18next";
-import type {
-  GitReview,
-  GitReviewFile,
-  LastRunReviewData,
-  StoredReviewFileChange,
-} from "../../integrations/storage/types";
-import { AlertTriangle, GitBranch } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import type { GitReview, LastRunReviewData, WorkspaceReviewCapabilities } from "../../integrations/storage/types";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { DiffView } from "../../components/ui/DiffView";
-import { EmptyState } from "../../components/ui/EmptyState";
-import { Select } from "../../components/ui/Select";
-import { TextInput } from "../../components/ui/TextInput";
-import { getLastRunReview, retryRunReview, storedTimeToIso } from "../../integrations/storage/threadStore";
-import { formatTime } from "../../lib/date";
+import { getLastRunReview, retryRunReview } from "../../integrations/storage/threadStore";
+import { errorMessage } from "../../lib/errors";
 import { onFutureEvent } from "../../lib/futureEvents";
-import { CollapsibleFileDiff } from "./CollapsibleFileDiff";
-import { useExpandableFiles } from "./useExpandableFiles";
+import { useAsyncResource } from "../../lib/useAsyncResource";
+import { ReviewHeader, WorkingTreeReview } from "./GitChangesReview";
+import { LastRunReview } from "./LastRunReview";
 
 export type ReviewBase = "custom" | "head" | "merge-base" | "upstream";
 
 type ReviewView = "git_changes" | "last_run";
 
 export function ReviewPanel({
+  capabilities,
   changePreview = "ready",
   customBase,
   onCustomBaseChange,
@@ -31,6 +22,7 @@ export function ReviewPanel({
   reviewBase,
   threadId,
 }: {
+  capabilities: WorkspaceReviewCapabilities | null;
   changePreview?: "ready" | "unsupported_too_large";
   customBase: string;
   onCustomBaseChange: (value: string) => void;
@@ -41,11 +33,21 @@ export function ReviewPanel({
 }) {
   const { t } = useTranslation("review");
   const isGit = review?.isGitWorkspace ?? false;
-  const [activeView, setActiveView] = useState<ReviewView>(isGit ? "git_changes" : "last_run");
-  const [runReview, setRunReview] = useState<LastRunReviewData | null>(null);
-  const [runError, setRunError] = useState<string | null>(null);
-  const [loadingRun, setLoadingRun] = useState(false);
+  const [activeView, setActiveView] = useState<ReviewView>("last_run");
   const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  // Cancellation-safe per-thread load: a slow getLastRunReview for a previous
+  // thread can no longer land under the thread we've since switched to.
+  const runResource = useAsyncResource<LastRunReviewData | null>(
+    () => changePreview === "unsupported_too_large"
+      ? Promise.resolve(null)
+      : getLastRunReview(threadId),
+    [threadId, changePreview],
+    null,
+  );
+  const runReview = runResource.data;
+  const { reload } = runResource;
 
   // A non-git Workspace only ever shows the last-run view.
   useEffect(() => {
@@ -53,47 +55,34 @@ export function ReviewPanel({
       setActiveView("last_run");
   }, [isGit]);
 
-  const loadRunReview = useCallback(async () => {
-    if (changePreview === "unsupported_too_large") {
-      setRunReview(null);
-      return;
-    }
-    setLoadingRun(true);
-    setRunError(null);
-    try {
-      setRunReview(await getLastRunReview(threadId));
-    }
-    catch (error) {
-      setRunError(error instanceof Error ? error.message : String(error));
-    }
-    finally {
-      setLoadingRun(false);
-    }
-  }, [threadId, changePreview]);
-
-  // Initial load + reload when the thread or capability changes.
+  // Capabilities load after mount, so seed the active view from the backend's
+  // default once per thread — but never override a later manual tab choice.
+  const appliedDefaultThreadRef = useRef<string | null>(null);
   useEffect(() => {
-    void loadRunReview();
-  }, [loadRunReview]);
+    if (capabilities && appliedDefaultThreadRef.current !== threadId) {
+      appliedDefaultThreadRef.current = threadId;
+      setActiveView(capabilities.defaultView);
+    }
+  }, [capabilities, threadId]);
 
   // Refresh when a Run on this thread finishes (its changeset just landed).
   useEffect(() => onFutureEvent("review-updated", (detail) => {
     if (detail.threadId === threadId)
-      void loadRunReview();
-  }), [threadId, loadRunReview]);
+      reload();
+  }), [threadId, reload]);
 
   async function handleRetry() {
     const runId = runReview?.run?.id ?? runReview?.changeset.runId;
     if (!runId)
       return;
     setRetrying(true);
-    setRunError(null);
+    setRetryError(null);
     try {
-      const next = await retryRunReview(runId);
-      setRunReview(next);
+      await retryRunReview(runId);
+      reload();
     }
     catch (error) {
-      setRunError(error instanceof Error ? error.message : String(error));
+      setRetryError(errorMessage(error));
     }
     finally {
       setRetrying(false);
@@ -103,8 +92,8 @@ export function ReviewPanel({
   const lastRun = (
     <LastRunReview
       changePreview={changePreview}
-      error={runError}
-      loading={loadingRun}
+      error={retryError ?? runResource.error}
+      loading={runResource.loading}
       retrying={retrying}
       review={runReview}
       onRetry={handleRetry}
@@ -158,353 +147,5 @@ function ViewTab({ active, label, onClick }: { active: boolean; label: string; o
     >
       {label}
     </button>
-  );
-}
-
-function WorkingTreeReview({ files }: { files: GitReviewFile[] }) {
-  const { t } = useTranslation("review");
-  // Files default collapsed; open state is keyed by path.
-  const { allOpen, isOpen, toggle, toggleAll } = useExpandableFiles(files, file => file.path);
-
-  return (
-    <>
-      {files.length > 0
-        ? <ExpandCollapseAll allOpen={allOpen} onToggle={toggleAll} />
-        : null}
-      <div className="space-y-3">
-        {files.length === 0
-          ? <EmptyState title={t("workingTree.emptyTitle")} detail={t("workingTree.emptyDetail")} />
-          : files.map(file => (
-              <GitFileDiff
-                file={file}
-                key={file.path}
-                open={isOpen(file)}
-                onToggle={() => toggle(file)}
-              />
-            ))}
-      </div>
-    </>
-  );
-}
-
-function ExpandCollapseAll({ allOpen, onToggle }: { allOpen: boolean; onToggle: () => void }) {
-  const { t } = useTranslation("review");
-  return (
-    <div className="flex items-center justify-end">
-      <button className="text-xs text-ink-muted transition-colors hover:text-ink" onClick={onToggle} type="button">
-        {allOpen ? t("collapseAll") : t("expandAll")}
-      </button>
-    </div>
-  );
-}
-
-function LastRunReview({
-  changePreview,
-  error,
-  loading,
-  onRetry,
-  retrying,
-  review,
-}: {
-  changePreview: "ready" | "unsupported_too_large";
-  error: string | null;
-  loading: boolean;
-  onRetry: () => void;
-  retrying: boolean;
-  review: LastRunReviewData | null;
-}) {
-  const { t } = useTranslation("review");
-  // Files default collapsed; open state is keyed by file-change id.
-  const files = review?.files ?? [];
-  const { allOpen, isOpen, toggle, toggleAll } = useExpandableFiles(files, file => file.id);
-
-  if (changePreview === "unsupported_too_large")
-    return <EmptyState title={t("lastRun.tooLargeTitle")} detail={t("lastRun.tooLargeDetail")} />;
-
-  if (loading && !review)
-    return <div className="rounded-md border border-line-soft bg-surface p-3 text-sm text-ink-muted">{t("lastRun.loading")}</div>;
-
-  if (error)
-    return <div className="rounded-md border border-danger-line bg-danger-soft p-3 text-sm text-danger">{error}</div>;
-
-  if (!review)
-    return <EmptyState title={t("lastRun.noReviewTitle")} detail={t("lastRun.noReviewDetail")} />;
-
-  const { changeset } = review;
-  return (
-    <div className="space-y-3">
-      <RunReviewBanners review={review} retrying={retrying} onRetry={onRetry} />
-      <section className="rounded-md border border-line-soft bg-surface p-3">
-        <div className="text-sm font-semibold text-ink">{changeset.title}</div>
-        <div className="mt-1 text-xs text-ink-muted">
-          {formatTime(storedTimeToIso(changeset.createdAt))}
-          {" · "}
-          {t("lastRun.filesChanged", { count: changeset.filesChanged })}
-          {" "}
-          <span className="text-success">{`+${changeset.additions}`}</span>
-          {" "}
-          <span className="text-danger">{`-${changeset.deletions}`}</span>
-        </div>
-      </section>
-      {files.length > 0
-        ? <ExpandCollapseAll allOpen={allOpen} onToggle={toggleAll} />
-        : null}
-      <div className="space-y-2">
-        {files.length === 0
-          ? <EmptyState title={t("lastRun.noFilesTitle")} detail={t("lastRun.noFilesDetail")} />
-          : files.map(file => (
-              <ChangesetFileChange
-                file={file}
-                key={file.id}
-                open={isOpen(file)}
-                onToggle={() => toggle(file)}
-              />
-            ))}
-      </div>
-    </div>
-  );
-}
-
-function RunReviewBanners({
-  onRetry,
-  retrying,
-  review,
-}: {
-  onRetry: () => void;
-  retrying: boolean;
-  review: LastRunReviewData;
-}) {
-  const { t } = useTranslation("review");
-  const banners: Array<{ key: string; text: string; retry?: boolean }> = [];
-  if (review.overlapped)
-    banners.push({ key: "overlapped", text: t("banner.overlapped") });
-  if (review.confidence === "recovered")
-    banners.push({ key: "recovered", text: t("banner.recovered") });
-  if (review.snapshotStatus === "partial")
-    banners.push({ key: "partial", text: t("banner.partial") });
-  if (review.snapshotStatus === "incomplete")
-    banners.push({ key: "incomplete", text: t("banner.incomplete"), retry: true });
-  if (review.snapshotStatus === "unavailable")
-    banners.push({ key: "unavailable", text: t("banner.unavailable") });
-
-  if (banners.length === 0)
-    return null;
-
-  return (
-    <div className="space-y-2">
-      {banners.map(banner => (
-        <div
-          className="flex items-start gap-2 rounded-md border border-warning-line bg-warning-soft p-2.5 text-xs text-warning"
-          key={banner.key}
-        >
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-          <span className="min-w-0 flex-1">{banner.text}</span>
-          {banner.retry
-            ? (
-                <button
-                  className="shrink-0 rounded border border-warning-line px-1.5 py-0.5 font-medium transition-colors hover:bg-surface disabled:opacity-60"
-                  disabled={retrying}
-                  onClick={onRetry}
-                  type="button"
-                >
-                  {retrying ? t("banner.retrying") : t("banner.retry")}
-                </button>
-              )
-            : null}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ChangesetFileChange({
-  file,
-  onToggle,
-  open,
-}: {
-  file: StoredReviewFileChange;
-  onToggle: () => void;
-  open: boolean;
-}) {
-  const { t } = useTranslation("review");
-  return (
-    <CollapsibleFileDiff
-      title={(
-        <>
-          {file.previousPath ? `${file.previousPath} → ` : ""}
-          {file.path ?? t("file.unknown")}
-        </>
-      )}
-      headerExtras={(
-        <span className="rounded bg-surface-subtle px-1.5 py-0.5 text-[11px] text-ink-muted">
-          {changeTypeLabel(file, t)}
-        </span>
-      )}
-      additions={file.additions}
-      deletions={file.deletions}
-      showCounts={!file.binary}
-      open={open}
-      onToggle={onToggle}
-    >
-      {file.omissionReason === "sensitive"
-        ? <div className="px-3 py-3 text-xs text-warning">{t("file.sensitiveContent")}</div>
-        : file.binary
-          ? <BinaryFileDetail file={file} />
-          : file.diff
-            ? <DiffView diff={file.diff} />
-            : <div className="px-3 py-3 text-xs text-ink-muted">{t("file.noTextDiff")}</div>}
-      {file.diffTruncated
-        ? <div className="px-3 py-2 text-xs text-warning">{t("file.diffTruncated")}</div>
-        : null}
-    </CollapsibleFileDiff>
-  );
-}
-
-function BinaryFileDetail({ file }: { file: StoredReviewFileChange }) {
-  const { t } = useTranslation("review");
-  return (
-    <div className="space-y-1 px-3 py-3 text-xs text-ink-muted">
-      <div>{t("binary.notSupported")}</div>
-      {file.mime
-        ? (
-            <div>
-              {t("binary.type")}
-              {file.mime}
-            </div>
-          )
-        : null}
-      <div>
-        {t("binary.size")}
-        {formatBytes(file.beforeSize)}
-        {" → "}
-        {formatBytes(file.afterSize)}
-      </div>
-    </div>
-  );
-}
-
-function changeTypeLabel(file: StoredReviewFileChange, t: TFunction<"review">) {
-  if (file.omissionReason === "sensitive")
-    return t("changeType.sensitive");
-  if (file.binary)
-    return t("changeType.binary");
-  switch (file.changeType) {
-    case "A":
-      return t("changeType.added");
-    case "M":
-      return t("changeType.modified");
-    case "D":
-      return t("changeType.deleted");
-    case "R":
-      return t("changeType.renamed");
-    case "C":
-      return t("changeType.copied");
-    default:
-      return file.changeType;
-  }
-}
-
-function formatBytes(size?: number | null) {
-  if (size == null)
-    return "—";
-  if (size < 1024)
-    return `${size} B`;
-  if (size < 1024 * 1024)
-    return `${(size / 1024).toFixed(1)} KiB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MiB`;
-}
-
-function ReviewHeader({
-  customBase,
-  onCustomBaseChange,
-  onReviewBaseChange,
-  review,
-  reviewBase,
-}: {
-  customBase: string;
-  onCustomBaseChange: (value: string) => void;
-  onReviewBaseChange: (value: ReviewBase) => void;
-  review: GitReview;
-  reviewBase: ReviewBase;
-}) {
-  const { t } = useTranslation("review");
-  return (
-    <div className="space-y-2 border-b border-line-soft pb-3">
-      <div className="flex items-center gap-3 text-sm">
-        <div className="inline-flex min-w-0 items-center gap-2 text-ink">
-          <GitBranch className="size-4 shrink-0 text-ink-soft" />
-          <span className="truncate">{review.branch ?? "HEAD"}</span>
-        </div>
-        <span className="font-medium text-success">
-          +
-          {review.additions.toLocaleString()}
-        </span>
-        <span className="font-medium text-danger">
-          -
-          {review.deletions.toLocaleString()}
-        </span>
-      </div>
-      {review.upstream
-        ? (
-            <div className="truncate text-xs text-ink-muted">
-              {review.branch ?? "HEAD"}
-              {" "}
-              <span className="text-ink-soft">→</span>
-              {" "}
-              {review.upstream}
-            </div>
-          )
-        : null}
-      <div className="grid grid-cols-1 gap-2">
-        <label className="text-xs font-medium text-ink-muted" htmlFor="review-base-select">{t("header.diffBase")}</label>
-        <Select
-          className="text-ink-soft hover:border-line"
-          id="review-base-select"
-          onChange={event => onReviewBaseChange(event.target.value as ReviewBase)}
-          size="sm"
-          value={reviewBase}
-        >
-          <option value="head">{t("header.base.head")}</option>
-          <option disabled={!review.upstream} value="upstream">{t("header.base.upstream")}</option>
-          <option disabled={!review.upstream} value="merge-base">{t("header.base.mergeBase")}</option>
-          <option value="custom">{t("header.base.custom")}</option>
-        </Select>
-        {reviewBase === "custom"
-          ? (
-              <TextInput
-                className="h-8 w-auto px-2 hover:border-line"
-                onChange={event => onCustomBaseChange(event.target.value)}
-                placeholder={t("header.customPlaceholder")}
-                value={customBase}
-              />
-            )
-          : null}
-      </div>
-    </div>
-  );
-}
-
-function GitFileDiff({
-  file,
-  onToggle,
-  open,
-}: {
-  file: GitReviewFile;
-  onToggle: () => void;
-  open: boolean;
-}) {
-  const { t } = useTranslation("review");
-  return (
-    <CollapsibleFileDiff
-      title={file.path}
-      additions={file.additions}
-      deletions={file.deletions}
-      open={open}
-      onToggle={onToggle}
-    >
-      {file.diff
-        ? <DiffView diff={file.diff} />
-        : <div className="px-3 py-3 text-xs text-ink-muted">{t("git.noTextDiff")}</div>}
-    </CollapsibleFileDiff>
   );
 }

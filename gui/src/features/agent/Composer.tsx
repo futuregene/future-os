@@ -26,7 +26,14 @@ export interface ComposerSendPayload {
 }
 
 interface ComposerProps {
-  onSend: (payload: ComposerSendPayload) => void;
+  /**
+   * Sync send (thread path): the message renders as an optimistic bubble, so
+   * the composer clears immediately. Async send (new-conversation path): the
+   * message has nowhere to live until the thread exists, so the composer only
+   * clears after the promise resolves — a failed creation keeps the draft for
+   * retry (the caller surfaces the error itself, e.g. via toast).
+   */
+  onSend: (payload: ComposerSendPayload) => void | Promise<void>;
   className?: string;
   disabled?: boolean;
   modelId?: string;
@@ -76,6 +83,9 @@ export function Composer({
   // The editor is non-controlled (see MentionEditor); we only mirror its empty
   // state to enable/disable the send button.
   const [inputEmpty, setInputEmpty] = useState(true);
+  // An async onSend is in flight (see ComposerProps.onSend) — block re-submits
+  // until it settles.
+  const [sendPending, setSendPending] = useState(false);
   const editorRef = useRef<MentionEditorHandle | null>(null);
   const activeModelId = modelId || (modelOptions[0] ? modelKey(modelOptions[0]) : "");
   const activeModel = modelOption(activeModelId, modelOptions);
@@ -83,6 +93,8 @@ export function Composer({
   // Unknown model (not in the catalog yet) → allow, to avoid over-restricting.
   const allowImages = activeModel ? activeModel.supportsImages !== false : true;
   const activeThinkingLevel = normalizeThinkingLevel(thinkingLevel);
+  // Localized thinking-level label; unknown levels fall back to the raw value.
+  const thinkingLevelLabel = (level: string) => t(`composer.thinkingLevelLabels.${level}`, { defaultValue: level });
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -91,12 +103,25 @@ export function Composer({
 
   function submitValue() {
     const trimmed = (editorRef.current?.getContent() ?? "").trim();
-    if ((!trimmed && attachments.length === 0) || disabled)
+    if ((!trimmed && attachments.length === 0) || disabled || sendPending)
       return;
-    onSend({ attachments, content: trimmed });
-    editorRef.current?.clear();
-    setAttachments([]);
-    setAttachError(null);
+    const clearComposer = () => {
+      editorRef.current?.clear();
+      setAttachments([]);
+      setAttachError(null);
+    };
+    const result = onSend({ attachments, content: trimmed });
+    if (result) {
+      // Async send: clear only on success so a failure keeps the draft
+      // (rationale on ComposerProps.onSend). The caller reports the error.
+      setSendPending(true);
+      result
+        .then(clearComposer)
+        .catch(() => {})
+        .finally(() => setSendPending(false));
+      return;
+    }
+    clearComposer();
   }
 
   const addAttachmentPaths = useCallback(async (paths: string[]) => {
@@ -130,19 +155,26 @@ export function Composer({
   }, [allowImages, attachments, t]);
 
   async function attachImageFiles(files: File[]) {
+    // Save every file first, then attach in ONE addAttachmentPaths call:
+    // calling it per file inside the loop reuses the same closure over the
+    // pre-paste `attachments`, so each iteration's setAttachments overwrites
+    // the previous one and only the last image survives.
+    const saved: string[] = [];
     for (const file of files) {
       try {
         const buffer = await file.arrayBuffer();
-        const saved = await savePastedImage({
+        const result = await savePastedImage({
           bytes: Array.from(new Uint8Array(buffer)),
           extension: imageExtensionFromMime(file.type) ?? "png",
         });
-        await addAttachmentPaths([saved.path]);
+        saved.push(result.path);
       }
       catch {
         // Ignore a single failed paste; other clipboard items still attach.
       }
     }
+    if (saved.length > 0)
+      await addAttachmentPaths(saved);
   }
 
   async function handleAttachFiles() {
@@ -312,7 +344,7 @@ export function Composer({
                 type="button"
                 title={t("composer.model")}
               >
-                <span className="truncate">{modelLabel(activeModelId, modelOptions)}</span>
+                <span className="truncate">{modelLabel(activeModelId, modelOptions) ?? t("common:modelFallback")}</span>
                 <ChevronDown className="size-3 shrink-0" />
               </button>
             )}
@@ -394,7 +426,7 @@ export function Composer({
             : (
                 <button
                   className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
-                  disabled={(inputEmpty && attachments.length === 0) || disabled}
+                  disabled={(inputEmpty && attachments.length === 0) || disabled || sendPending}
                   type="submit"
                   aria-label={t("composer.send")}
                   title={t("composer.send")}
@@ -406,23 +438,4 @@ export function Composer({
       </div>
     </form>
   );
-}
-
-function thinkingLevelLabel(level: string) {
-  switch (level) {
-    case "off":
-      return "Off";
-    case "minimal":
-      return "Minimal";
-    case "low":
-      return "Low";
-    case "medium":
-      return "Medium";
-    case "high":
-      return "High";
-    case "xhigh":
-      return "XHigh";
-    default:
-      return level;
-  }
 }

@@ -77,17 +77,13 @@ fn client() -> Result<reqwest::Client, AppError> {
         .map_err(|error| AppError::Message(format!("Failed to create HTTP client: {error}")))
 }
 
-/// Device-code OAuth lives on the platform root (`{platform}/client/v1/...`),
-/// not the model API base — mirror the CLI (`cli/src/commands/auth.ts`).
-fn platform_url() -> String {
-    let auth = Value::Object(crate::auth_store::read().unwrap_or_default());
-    crate::future_platform::resolve_future_platform_url(&auth)
-}
-
 /// Begin device authorization: fetch a device/user code and open the
 /// verification page. Returns the codes for the dialog to display and poll.
+///
+/// Device-code OAuth lives on the platform root (`{platform}/client/v1/...`),
+/// not the model API base — mirror the CLI (`cli/src/commands/auth.ts`).
 pub async fn start() -> Result<FutureLoginStart, AppError> {
-    let platform = platform_url();
+    let platform = crate::future_platform::current_platform_url();
     let response = client()?
         .post(format!("{platform}/client/v1/oauth/device/code"))
         .json(&json!({ "client_name": CLIENT_NAME }))
@@ -148,7 +144,7 @@ pub async fn start() -> Result<FutureLoginStart, AppError> {
 /// Exchange the device code for an API key once. On success the key is written
 /// to `auth.json`; the returned status drives the frontend poll loop.
 pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
-    let platform = platform_url();
+    let platform = crate::future_platform::current_platform_url();
     let response = client()?
         .post(format!("{platform}/client/v1/oauth/device/token"))
         .json(&json!({ "device_code": device_code }))
@@ -243,19 +239,11 @@ fn validate_browser_url(target: &str) -> Result<(), AppError> {
 
 /// Open a URL in the default browser, detached and best-effort (mirrors the
 /// CLI). Caller must validate the URL first (see [`validate_browser_url`]).
+/// Uses the `open` crate (ShellExecuteW on Windows) — never `cmd /c start`,
+/// which re-parses the URL so a `&` truncates it and `&cmd`-style payloads
+/// from a hostile platform host would execute.
 fn open_browser(url: &str) {
-    #[cfg(target_os = "macos")]
-    let (command, args): (&str, Vec<&str>) = ("open", vec![url]);
-    #[cfg(target_os = "windows")]
-    let (command, args): (&str, Vec<&str>) = ("cmd", vec!["/c", "start", "", url]);
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let (command, args): (&str, Vec<&str>) = ("xdg-open", vec![url]);
-
-    use crate::proc::NoWindow;
-    let _ = std::process::Command::new(command)
-        .no_window()
-        .args(args)
-        .spawn();
+    let _ = open::that_detached(url);
 }
 
 #[cfg(test)]

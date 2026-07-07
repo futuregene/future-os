@@ -3,9 +3,6 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
-import { Dialog } from "../../components/ui/Dialog";
-import { Field } from "../../components/ui/Field";
-import { TextInput } from "../../components/ui/TextInput";
 import {
   deleteCustomProvider,
   listAgentProviders,
@@ -14,13 +11,12 @@ import {
   updateBuiltinProviderKey,
   upsertCustomProvider,
 } from "../../integrations/agent/providers";
+import { errorMessage } from "../../lib/errors";
 import { useAsyncResource } from "../../lib/useAsyncResource";
+import { BuiltinProviderKeyDialog } from "./BuiltinProviderKeyDialog";
 import { CustomProviderDialog } from "./CustomProviderDialog";
 import { FutureLoginDialog } from "./FutureLoginDialog";
 import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
-
-/** Marker left in a catalog base URL that the user must replace (Azure et al.). */
-const BASE_URL_PLACEHOLDER = "YOUR_RESOURCE";
 
 const DEFAULT_BUILTIN_PROVIDER_IDS = [
   "future",
@@ -60,6 +56,8 @@ export function ProvidersPage({
   const [confirmingLogout, setConfirmingLogout] = useState(false);
   const [showMoreBuiltin, setShowMoreBuiltin] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
+  // Feedback for delete/logout, which are `void`-called from confirm rows.
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     if (loadedProviders)
@@ -67,18 +65,30 @@ export function ProvidersPage({
   }, [loadedProviders]);
 
   async function handleDelete(id: string) {
-    const view = await deleteCustomProvider(id);
-    setProviders(view);
-    setConfirmingDelete(null);
-    onProvidersChanged?.();
+    setActionError(null);
+    try {
+      const view = await deleteCustomProvider(id);
+      setProviders(view);
+      setConfirmingDelete(null);
+      onProvidersChanged?.();
+    }
+    catch (error) {
+      setActionError(errorMessage(error));
+    }
   }
 
   async function handleLogout() {
-    const view = await logoutFutureProvider();
-    setProviders(view);
-    setConfirmingLogout(false);
-    setHint(null);
-    onProvidersChanged?.();
+    setActionError(null);
+    try {
+      const view = await logoutFutureProvider();
+      setProviders(view);
+      setConfirmingLogout(false);
+      setHint(null);
+      onProvidersChanged?.();
+    }
+    catch (error) {
+      setActionError(errorMessage(error));
+    }
   }
 
   async function handleBuiltinSubmit(
@@ -130,6 +140,7 @@ export function ProvidersPage({
   return (
     <div className="space-y-6">
       {error ? <p className="text-sm text-danger">{error}</p> : null}
+      {actionError ? <p className="text-sm text-danger">{actionError}</p> : null}
       {hint ? <p className="text-sm text-ink-soft">{hint}</p> : null}
 
       <SettingsSection title={t("providers.builtinTitle")}>
@@ -311,124 +322,5 @@ export function ProvidersPage({
         provider={editingBuiltinKey}
       />
     </div>
-  );
-}
-
-function BuiltinProviderKeyDialog({
-  onClose,
-  onSubmit,
-  open,
-  provider,
-}: {
-  onClose: () => void;
-  onSubmit: (payload: { apiKey?: string | null; baseUrl?: string }) => Promise<void>;
-  open: boolean;
-  provider: BuiltinProvider | null;
-}) {
-  const { t } = useTranslation("settings");
-  const requiresBaseUrl = Boolean(provider?.requiresBaseUrl);
-  const [apiKey, setApiKey] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    setApiKey("");
-    // Prefill the current override, but not the unfilled placeholder.
-    const current = provider?.baseUrl ?? "";
-    setBaseUrl(current.includes(BASE_URL_PLACEHOLDER) ? "" : current);
-    setError(null);
-    setSaving(false);
-  }, [open, provider?.id, provider?.baseUrl]);
-
-  async function run(payload: { apiKey?: string | null; baseUrl?: string }) {
-    setSaving(true);
-    setError(null);
-    try {
-      await onSubmit(payload);
-    }
-    catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : String(submitError));
-      setSaving(false);
-    }
-  }
-
-  function save() {
-    const trimmedKey = apiKey.trim();
-    const trimmedBaseUrl = baseUrl.trim();
-    const payload: { apiKey?: string | null; baseUrl?: string } = {};
-
-    if (requiresBaseUrl) {
-      if (!trimmedBaseUrl) {
-        setError(t("providers.baseUrlRequired"));
-        return;
-      }
-      payload.baseUrl = trimmedBaseUrl;
-      // Key is optional here — only touch it when the user typed one.
-      if (trimmedKey) {
-        payload.apiKey = trimmedKey;
-      }
-    }
-    else {
-      if (!trimmedKey) {
-        setError(t("providers.keyRequired"));
-        return;
-      }
-      payload.apiKey = trimmedKey;
-    }
-    void run(payload);
-  }
-
-  return (
-    <Dialog
-      className="max-w-md"
-      onClose={onClose}
-      open={open}
-      title={t("providers.keyDialogTitle", { provider: provider?.name ?? "" })}
-      description={requiresBaseUrl ? t("providers.baseUrlDialogDescription") : t("providers.keyDialogDescription")}
-      footer={(
-        <>
-          {provider?.hasApiKey
-            ? (
-                <Button disabled={saving} onClick={() => void run({ apiKey: null })} variant="secondary">
-                  {t("providers.clearKey")}
-                </Button>
-              )
-            : null}
-          <Button onClick={onClose} variant="secondary">{t("providers.cancel")}</Button>
-          <Button disabled={saving} onClick={save} variant="primary">
-            {saving ? t("providers.savingKey") : t("providers.saveKey")}
-          </Button>
-        </>
-      )}
-    >
-      <div className="space-y-3">
-        {requiresBaseUrl
-          ? (
-              <Field label={t("providers.baseUrlLabel")}>
-                <TextInput
-                  autoFocus
-                  onChange={event => setBaseUrl(event.target.value)}
-                  placeholder={provider?.baseUrl}
-                  value={baseUrl}
-                />
-              </Field>
-            )
-          : null}
-        <Field label={requiresBaseUrl ? t("providers.apiKeyOptionalLabel") : t("customProvider.apiKeyLabel")}>
-          <TextInput
-            autoFocus={!requiresBaseUrl}
-            onChange={event => setApiKey(event.target.value)}
-            placeholder={requiresBaseUrl && provider?.hasApiKey ? t("providers.apiKeyKeepPlaceholder") : t("customProvider.apiKeyPlaceholder")}
-            type="password"
-            value={apiKey}
-          />
-        </Field>
-        {error ? <p className="text-sm text-danger">{error}</p> : null}
-      </div>
-    </Dialog>
   );
 }

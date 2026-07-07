@@ -3,6 +3,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::future_platform::{PRODUCTION_PLATFORM_URL, TEST_PLATFORM_URL};
 use crate::{agent_supervisor, auth_store, store, AppError};
 
 /// Clear all GUI-local data (SQLite + temp workspaces + shadow review) and
@@ -19,11 +20,6 @@ pub fn clear_app_data(app: tauri::AppHandle) -> Result<(), AppError> {
     app.restart()
 }
 
-/// Selectable FutureGene environments. Mirrors the CLI's `auth login --url`
-/// targets — production is the default platform, test is the staging host.
-const PRODUCTION_PLATFORM_URL: &str = "https://future-os.cn";
-const TEST_PLATFORM_URL: &str = "https://test.future-os.cn";
-
 const ENV_PRODUCTION: &str = "production";
 const ENV_TEST: &str = "test";
 
@@ -34,38 +30,6 @@ pub struct FutureEnvironment {
     pub environment: String,
     /// The resolved platform root currently in effect (no `/api` suffix).
     pub platform_url: String,
-}
-
-/// Apply the environment policy for this build channel at startup (called once
-/// before the agent is spawned, so the agent reads the right `base_url`).
-///
-/// Release builds are production-locked: if the resolved platform is anything
-/// other than production (e.g. a stale test `base_url` from a prior dev build
-/// sharing `~/.future`), pin it back to production. Fresh installs already
-/// resolve to production by default, so this is a no-op for them.
-///
-/// Dev builds default to the test environment on first launch (no `future`
-/// base_url chosen yet), but leave an explicit choice alone so a manual switch
-/// sticks across restarts.
-pub fn apply_channel_environment_default() -> Result<(), AppError> {
-    let auth = Value::Object(auth_store::read()?);
-
-    if crate::build_info::is_release() {
-        let platform = crate::future_platform::resolve_future_platform_url(&auth);
-        if platform != PRODUCTION_PLATFORM_URL {
-            auth_store::set_future_base_url(&format!("{PRODUCTION_PLATFORM_URL}/api"))?;
-        }
-        return Ok(());
-    }
-
-    let has_explicit_env = auth
-        .get(auth_store::FUTURE_PROVIDER_ID)
-        .map(|future| future.get("base_url").is_some() || future.get("platform_base_url").is_some())
-        .unwrap_or(false);
-    if !has_explicit_env {
-        auth_store::set_future_base_url(&format!("{TEST_PLATFORM_URL}/api"))?;
-    }
-    Ok(())
 }
 
 /// Report which FutureGene environment the agent + GUI currently resolve to,

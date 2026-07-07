@@ -109,10 +109,15 @@ pub fn write_json_atomic(path: &Path, value: &Value, owner_only: bool) -> Result
     let tmp = path.with_file_name(format!("{file_name}.tmp.{}.{counter}", std::process::id()));
 
     let result = (|| -> Result<(), AppError> {
-        let mut file = std::fs::File::create(&tmp)?;
-        if owner_only {
-            set_owner_only(&tmp)?;
-        }
+        // Create with the final mode already applied (create_owner_only uses
+        // 0600 on unix) — a create-then-chmod window would let another local
+        // user open the world-readable temp file and keep the fd across the
+        // chmod, reading the secrets written below.
+        let mut file = if owner_only {
+            create_owner_only(&tmp)?
+        } else {
+            std::fs::File::create(&tmp)?
+        };
         file.write_all(serialized.as_bytes())?;
         file.sync_all()?;
         std::fs::rename(&tmp, path)?;
@@ -128,6 +133,22 @@ pub fn write_json_atomic(path: &Path, value: &Value, owner_only: bool) -> Result
         let _ = std::fs::remove_file(&tmp);
     }
     result
+}
+
+#[cfg(unix)]
+fn create_owner_only(path: &Path) -> Result<std::fs::File, AppError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    Ok(std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?)
+}
+
+#[cfg(not(unix))]
+fn create_owner_only(path: &Path) -> Result<std::fs::File, AppError> {
+    // Windows has no 0600 equivalent; rely on the per-user profile directory.
+    Ok(std::fs::File::create(path)?)
 }
 
 #[cfg(unix)]

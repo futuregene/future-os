@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::AppError;
 
@@ -98,11 +97,6 @@ pub struct SkillInfo {
     pub latest_version: Option<String>,
 }
 
-fn platform_url() -> String {
-    let auth = Value::Object(crate::auth_store::read().unwrap_or_default());
-    crate::future_platform::resolve_future_platform_url(&auth)
-}
-
 fn http_client() -> Result<reqwest::Client, AppError> {
     reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
@@ -119,7 +113,10 @@ pub async fn list_available_skills() -> Result<Vec<SkillInfo>, AppError> {
         skills: Vec<SkillInfo>,
     }
 
-    let url = format!("{}/client/v1/skills", platform_url());
+    let url = format!(
+        "{}/client/v1/skills",
+        crate::future_platform::current_platform_url()
+    );
     let response = http_client()?
         .get(&url)
         .send()
@@ -165,9 +162,17 @@ pub fn installed_versions() -> BTreeMap<String, Option<String>> {
 /// Download and unpack skill `id`@`version` into the app scope.
 pub async fn install_skill(id: String, version: String) -> Result<(), AppError> {
     let dest = skill_dir_in_scope(SkillScope::App, &id)?;
+    // `version` is interpolated into the URL path below — hold it to the same
+    // slug charset as `id` so `/../`, `?` or `#` can't reroute the request to
+    // another endpoint on the platform host.
+    if !is_skill_id_ok(&version) {
+        return Err(AppError::Message(format!(
+            "Invalid skill version: {version:?}."
+        )));
+    }
     let url = format!(
         "{}/client/v1/skills/{}/versions/{}/download",
-        platform_url(),
+        crate::future_platform::current_platform_url(),
         id,
         version
     );

@@ -49,6 +49,12 @@ export function useUnreadThreads(
   // Previous active thread, so a change can clear both the entered and left one.
   const prevActiveRef = useRef<string | null>(activeThreadId);
 
+  // Persist as a side effect of the state settling — keeping it out of the
+  // setState updaters below, which must stay pure (see Composer.tsx).
+  useEffect(() => {
+    saveUnread(unread);
+  }, [unread]);
+
   useEffect(() => {
     const seen = lastStatusRef.current;
     const justFinished: string[] = [];
@@ -72,7 +78,6 @@ export function useUnreadThreads(
       const next = new Set(current);
       for (const id of justFinished)
         next.add(id);
-      saveUnread(next);
       return next;
     });
   }, [runInfo]);
@@ -95,7 +100,6 @@ export function useUnreadThreads(
       }
       if (!changed)
         return current;
-      saveUnread(next);
       return next;
     });
   }, [activeThreadId]);

@@ -6,7 +6,6 @@ use std::{
     fs::File,
     io::Read,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 /// Resolve `path` to an absolute, symlink/`..`-collapsed form even when the
@@ -86,6 +85,7 @@ pub fn inspect_attachment(path: String) -> Result<AttachmentInfo, crate::AppErro
     if trimmed.is_empty() {
         return Err("path cannot be empty.".to_string().into());
     }
+    ensure_path_allowed(Path::new(trimmed))?;
     let meta = std::fs::metadata(trimmed)?;
     if meta.is_dir() {
         return Ok(AttachmentInfo {
@@ -111,8 +111,13 @@ pub fn inspect_attachment(path: String) -> Result<AttachmentInfo, crate::AppErro
     })
 }
 
+/// Hard ceiling for [`read_file_base64`]: the whole file is buffered in memory
+/// (×1.33 as base64), so a caller-supplied limit must never be able to raise it.
+const READ_BASE64_MAX_BYTES: u64 = 25 * 1024 * 1024;
+
 /// Read a whole file as base64 (for client-side PDF text extraction). Errors if
-/// the file exceeds `max_bytes` (default 25MB) — extraction targets must be small.
+/// the file exceeds `max_bytes` (default and cap 25MB) — extraction targets must
+/// be small.
 #[tauri::command]
 pub fn read_file_base64(path: String, max_bytes: Option<u64>) -> Result<String, crate::AppError> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -122,7 +127,9 @@ pub fn read_file_base64(path: String, max_bytes: Option<u64>) -> Result<String, 
     }
     ensure_path_allowed(Path::new(trimmed))?;
     let meta = std::fs::metadata(trimmed)?;
-    let limit = max_bytes.unwrap_or(25 * 1024 * 1024);
+    let limit = max_bytes
+        .unwrap_or(READ_BASE64_MAX_BYTES)
+        .clamp(1, READ_BASE64_MAX_BYTES);
     if meta.len() > limit {
         return Err(format!("File too large ({} bytes; limit {}).", meta.len(), limit).into());
     }
@@ -251,6 +258,10 @@ pub fn export_artifact_file(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "sourcePath or content is required.".to_string())?;
+    // The source must pass the same `~/.future` guard as the destination —
+    // otherwise a copy-out defeats the guard (copy auth.json somewhere
+    // readable, then preview it).
+    ensure_path_allowed(Path::new(source))?;
     std::fs::copy(source, destination)?;
     Ok(())
 }
@@ -288,46 +299,10 @@ pub fn save_pasted_image(
     })
 }
 
-#[cfg(target_os = "macos")]
+/// Hand the path/URL to the OS default handler via the `open` crate
+/// (`open`/`xdg-open`/ShellExecuteW). Never route through `cmd /C start`:
+/// cmd re-parses the argument, so `&`/`^`/`%VAR%` in an agent-produced path
+/// would be interpreted — an injection vector, not just a broken open.
 fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
-    Command::new("open")
-        .arg(path)
-        .status()
-        .map_err(crate::AppError::from)
-        .and_then(|status| {
-            status
-                .success()
-                .then_some(())
-                .ok_or_else(|| format!("open exited with status {status}").into())
-        })
-}
-
-#[cfg(target_os = "windows")]
-fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
-    use crate::proc::NoWindow;
-    Command::new("cmd")
-        .no_window()
-        .args(["/C", "start", "", path])
-        .status()
-        .map_err(crate::AppError::from)
-        .and_then(|status| {
-            status
-                .success()
-                .then_some(())
-                .ok_or_else(|| format!("start exited with status {status}").into())
-        })
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
-    Command::new("xdg-open")
-        .arg(path)
-        .status()
-        .map_err(crate::AppError::from)
-        .and_then(|status| {
-            status
-                .success()
-                .then_some(())
-                .ok_or_else(|| format!("xdg-open exited with status {status}").into())
-        })
+    open::that(path).map_err(|error| format!("Failed to open: {error}").into())
 }

@@ -1,19 +1,29 @@
 import type { AgentModelOption } from "../../../integrations/agent/agentClient";
 import type { StoredThread } from "../../../integrations/storage/threadStore";
 import { useEffect, useRef, useState } from "react";
-import { defaultThinkingLevel, modelThinkingLevel, normalizeThinkingLevel, rememberLastUsedModel } from "../../../integrations/agent/agentClient";
+import { defaultThinkingLevel, modelOption, modelThinkingLevel, normalizeThinkingLevel, rememberLastUsedModel, resolveInitialModelId } from "../../../integrations/agent/agentClient";
 import { updateThreadModel, updateThreadThinkingLevel } from "../../../integrations/storage/threadStore";
 
 interface UseModelSelectionParams {
   activeThread: StoredThread | null;
   selectedModelId: string;
   setSelectedModelId: (modelId: string) => void;
+  modelOptions: AgentModelOption[];
   visibleModelOptions: AgentModelOption[];
   refreshStore: (nextActiveThreadId?: string) => Promise<void>;
 }
 
 export interface ModelSelection {
   selectedThinkingLevel: string;
+  /**
+   * Why the composer's model picker is empty: nothing loaded vs. everything the
+   * user disabled. Only meaningful when the visible set is empty.
+   */
+  modelsEmptyReason: "no_models" | "all_disabled" | undefined;
+  /** Active thread's model, falling back to the default pick when unavailable. */
+  activeThreadModelId: string;
+  /** Active thread's thinking level, or the draft selection when no thread. */
+  activeThinkingLevel: string;
   /** Active-thread model change: persists model + its default thinking level. */
   changeModel: (modelId: string) => Promise<void>;
   /** Draft (no thread yet) model change: updates the local selection only. */
@@ -38,11 +48,32 @@ export function useModelSelection({
   activeThread,
   selectedModelId,
   setSelectedModelId,
+  modelOptions,
   visibleModelOptions,
   refreshStore,
 }: UseModelSelectionParams): ModelSelection {
   const [selectedThinkingLevel, setSelectedThinkingLevel] = useState(defaultThinkingLevel);
   const draftThinkingModelRef = useRef("");
+
+  // Why the composer's model picker is empty: nothing loaded vs. everything the
+  // user disabled. Only meaningful when the visible set is empty.
+  const modelsEmptyReason: "no_models" | "all_disabled" | undefined
+    = visibleModelOptions.length > 0
+      ? undefined
+      : modelOptions.length > 0
+        ? "all_disabled"
+        : "no_models";
+  // The active thread's persisted model may have since been deleted from the
+  // catalog or disabled in Settings. Fall back to the default pick (same rule as
+  // the draft selection) so the composer never shows / sends an unavailable model
+  // — resolves to "" when everything is disabled, which surfaces the empty state.
+  const rawThreadModelId = activeThread?.modelId ?? selectedModelId;
+  const activeThreadModelId = modelOption(rawThreadModelId, visibleModelOptions)
+    ? rawThreadModelId
+    : resolveInitialModelId(visibleModelOptions);
+  const activeThinkingLevel = activeThread
+    ? normalizeThinkingLevel(activeThread.thinkingLevel ?? modelThinkingLevel(activeThreadModelId, visibleModelOptions))
+    : selectedThinkingLevel;
 
   useEffect(() => {
     if (activeThread || draftThinkingModelRef.current === selectedModelId)
@@ -102,6 +133,9 @@ export function useModelSelection({
 
   return {
     selectedThinkingLevel,
+    modelsEmptyReason,
+    activeThreadModelId,
+    activeThinkingLevel,
     changeModel,
     changeDraftModel,
     changeThinkingLevel,

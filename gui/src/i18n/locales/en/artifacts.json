@@ -15,7 +15,8 @@
     "viewArtifact": "View artifact {{title}}",
     "viewDetails": "View details",
     "deleteArtifact": "Delete artifact {{title}}",
-    "delete": "Delete artifact"
+    "delete": "Delete artifact",
+    "deleteFailed": "Failed to delete artifact: {{message}}"
   },
   "detail": {
     "back": "Artifacts",

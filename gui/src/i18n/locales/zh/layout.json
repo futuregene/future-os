@@ -37,6 +37,7 @@
   },
   "appShell": {
     "storeInitFailed": "FutureOS 本地存储初始化失败：",
+    "startConversationFailed": "创建对话失败：{{error}}",
     "noWorkspaceSelected": "未选择工作区",
     "data": "数据",
     "skill": "技能",

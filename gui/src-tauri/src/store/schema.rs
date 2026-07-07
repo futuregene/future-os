@@ -294,16 +294,28 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_workspace ON artifacts(workspace_id, de
 /// Columns added to pre-existing tables after their initial `CREATE`. SQLite's
 /// `CREATE TABLE IF NOT EXISTS` will not add columns to a table that already
 /// exists, so these `ALTER`s run idempotently (a duplicate-column error is
-/// swallowed). Every column here must be nullable or carry a `DEFAULT`.
+/// swallowed). Every column here must be nullable or carry a `DEFAULT`, and its
+/// definition must match `SCHEMA` exactly — including `REFERENCES` clauses
+/// (which `ALTER TABLE ADD COLUMN` supports), so migrated and fresh databases
+/// enforce the same constraints.
 pub(super) const ADDED_COLUMNS: &[(&str, &str)] = &[
     ("threads", "thinking_level TEXT"),
     (
         "review_changesets",
         "source_kind TEXT NOT NULL DEFAULT 'run_snapshot'",
     ),
-    ("review_changesets", "workspace_id TEXT"),
-    ("review_changesets", "before_snapshot_id TEXT"),
-    ("review_changesets", "after_snapshot_id TEXT"),
+    (
+        "review_changesets",
+        "workspace_id TEXT REFERENCES workspaces(id)",
+    ),
+    (
+        "review_changesets",
+        "before_snapshot_id TEXT REFERENCES review_snapshots(id)",
+    ),
+    (
+        "review_changesets",
+        "after_snapshot_id TEXT REFERENCES review_snapshots(id)",
+    ),
     (
         "review_changesets",
         "binary_files INTEGER NOT NULL DEFAULT 0",

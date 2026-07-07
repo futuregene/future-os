@@ -39,7 +39,7 @@ export function MessageBlock({
   onRetry,
   workspaceId,
 }: MessageBlockProps) {
-  const { t } = useTranslation("agent");
+  const { i18n, t } = useTranslation("agent");
   const { copiedKey, copy } = useCopyState();
   const isUser = message.role === "user";
   // While the reply streams, the footer is pinned open and shows a live activity
@@ -68,7 +68,7 @@ export function MessageBlock({
           <span className="text-sm font-semibold text-ink">
             {message.authorKey ? t(message.authorKey) : message.author}
           </span>
-          <span className="text-xs text-ink-muted">{formatTime(message.createdAt)}</span>
+          <span className="text-xs text-ink-muted">{formatTime(message.createdAt, i18n.language)}</span>
         </div>
         <div
           className={cn(

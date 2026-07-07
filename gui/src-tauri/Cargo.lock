@@ -1153,6 +1153,7 @@ dependencies = [
  "futures",
  "fuzzy-matcher",
  "ignore",
+ "open",
  "prost",
  "reqwest",
  "rusqlite",

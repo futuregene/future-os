@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import i18n from "../../i18n";
+import { errorMessage } from "../../lib/errors";
 import { runStatusLabel } from "./runDisplayFormatters";
 import { RunError } from "./RunError";
 import { toolCommand } from "./toolInput";
@@ -23,6 +24,7 @@ export function RunsPanel({ onClearFinished, onInspectRun, onTerminateRun, runs,
   const [busyRunId, setBusyRunId] = useState<string | null>(null);
   const [actionErrors, setActionErrors] = useState<Record<string, string | undefined>>({});
   const [clearing, setClearing] = useState(false);
+  const [clearError, setClearError] = useState<string | null>(null);
   const visibleRuns = useMemo(
     () => runs.filter(run => commandToolCall(toolsByRun[run.id] ?? [])),
     [runs, toolsByRun],
@@ -51,7 +53,7 @@ export function RunsPanel({ onClearFinished, onInspectRun, onTerminateRun, runs,
     catch (error) {
       setActionErrors(current => ({
         ...current,
-        [run.id]: error instanceof Error ? error.message : String(error),
+        [run.id]: errorMessage(error),
       }));
     }
     finally {
@@ -64,8 +66,12 @@ export function RunsPanel({ onClearFinished, onInspectRun, onTerminateRun, runs,
       return;
 
     setClearing(true);
+    setClearError(null);
     try {
       await onClearFinished();
+    }
+    catch (error) {
+      setClearError(errorMessage(error));
     }
     finally {
       setClearing(false);
@@ -88,6 +94,9 @@ export function RunsPanel({ onClearFinished, onInspectRun, onTerminateRun, runs,
           {clearing ? t("runsPanel.clearing") : t("runsPanel.clearFinished")}
         </Button>
       </div>
+      {clearError
+        ? <div className="line-clamp-3 text-xs leading-5 text-danger">{clearError}</div>
+        : null}
       <div className="space-y-2">
         {orderedRuns.map(run => (
           <RunRow

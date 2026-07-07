@@ -93,9 +93,14 @@ pub fn promote_artifact_to_research(
             .into());
     }
 
-    let collection = get_or_create_default_research_collection(&artifact.workspace_id)?;
-    let conn = connect()?;
-    let existing = conn
+    // BEGIN IMMEDIATE so the two SELECT-then-INSERT pairs (default collection,
+    // resource dedup by source artifact) are one atomic write — two concurrent
+    // promotes must not create duplicate collections/resources; there is no
+    // UNIQUE constraint backstopping either (mirrors approvals/artifacts).
+    let mut conn = connect()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let collection = get_or_create_default_research_collection_in(&tx, &artifact.workspace_id)?;
+    let existing = tx
         .query_row(
             &format!(
                 "SELECT {RESEARCH_RESOURCE_COLUMNS}
@@ -110,12 +115,13 @@ pub fn promote_artifact_to_research(
         )
         .optional()?;
     if let Some(resource) = existing {
+        tx.commit()?;
         return Ok(resource);
     }
 
     let id = create_id("research");
     let now = now_millis();
-    conn.execute(
+    tx.execute(
         "INSERT INTO research_resources (
              id, collection_id, source_artifact_id, title, resource_type, source_uri,
              content, content_storage, summary, metadata, created_at, updated_at
@@ -134,6 +140,7 @@ pub fn promote_artifact_to_research(
             now
         ],
     )?;
+    tx.commit()?;
 
     loaded(get_research_resource(&id)?, "Created research resource")
 }
@@ -154,10 +161,13 @@ fn get_research_resource(id: &str) -> Result<Option<ResearchResourceRecord>, cra
     .map_err(crate::AppError::from)
 }
 
-fn get_or_create_default_research_collection(
+/// Connection-injecting variant: the caller owns the (IMMEDIATE) transaction so
+/// the collection get-or-create participates in the same atomic write as the
+/// resource insert.
+fn get_or_create_default_research_collection_in(
+    conn: &rusqlite::Connection,
     workspace_id: &str,
 ) -> Result<ResearchCollectionRecord, crate::AppError> {
-    let conn = connect()?;
     let existing = conn
         .query_row(
             &format!(

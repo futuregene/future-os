@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { AgentModelOption } from "../../../integrations/agent/agentClient";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { defaultAgentModelId, loadAgentModelOptions, modelOption, resolveInitialModelId } from "../../../integrations/agent/agentClient";
+import { defaultAgentModelId, loadAgentModelOptions, modelKey, modelOption, resolveInitialModelId } from "../../../integrations/agent/agentClient";
 import { listAgentProviders } from "../../../integrations/agent/providers";
 import { errorMessage } from "../../../lib/errors";
 import { usePolling } from "../../../lib/usePolling";
@@ -123,7 +123,7 @@ export function useAgentConnection(hiddenModels: string[]): UseAgentConnectionRe
   usePolling(refreshAgentModels, 10000, { deps: [refreshAgentModels] });
 
   const visibleModelOptions = useMemo(
-    () => modelOptions.filter(model => !hiddenModels.includes(`${model.provider}/${model.id}`)),
+    () => modelOptions.filter(model => !hiddenModels.includes(modelKey(model))),
     [hiddenModels, modelOptions],
   );
 

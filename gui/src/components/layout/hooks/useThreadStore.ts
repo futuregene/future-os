@@ -1,8 +1,8 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredThread, StoredWorkspace } from "../../../integrations/storage/threadStore";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import i18n from "../../../i18n";
 import {
-  cancelStaleApprovalRequests,
   getRecentOrCreateDefaultThread,
   initializeAppStore,
   listRuns,
@@ -139,16 +139,18 @@ export function useThreadStore(): ThreadStore {
 
   useEffect(() => {
     // Hand-rolled cancel guard (not useAsyncResource): a multi-step bootstrap
-    // (init store → cancel stale approvals → recent thread → threads+workspaces)
-    // writing several states, not a single resource. See gui/CLAUDE.md §4.
+    // (init store → recent thread → threads+workspaces) writing several
+    // states, not a single resource. See gui/CLAUDE.md §4.
+    // Stale-run convergence intentionally does NOT happen here: it lives in
+    // the backend's setup (once per process). Bootstrap re-runs on every
+    // webview reload, where the backend may still own live runs.
     let cancelled = false;
 
     async function bootstrapStore() {
       setLoadingStore(true);
       try {
         await initializeAppStore();
-        await cancelStaleApprovalRequests();
-        const recentThread = await getRecentOrCreateDefaultThread();
+        const recentThread = await getRecentOrCreateDefaultThread(i18n.t("common:newChat"));
         const [nextThreads, nextWorkspaces] = await Promise.all([listThreads(), listWorkspaces()]);
         if (cancelled) {
           return;

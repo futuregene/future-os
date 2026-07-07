@@ -2,12 +2,9 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TextInput } from "../../components/ui/TextInput";
+import { modelKey } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
-
-function modelKey(model: { id: string; provider: string }) {
-  return `${model.provider}/${model.id}`;
-}
 
 export function ModelsPage({
   hiddenModels,

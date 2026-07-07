@@ -69,6 +69,9 @@ export function ContextPanel({
   const [reviewCapabilities, setReviewCapabilities] = useState<WorkspaceReviewCapabilities | null>(null);
   const [reviewBase, setReviewBase] = useState<ReviewBase>("head");
   const [reviewCustomBase, setReviewCustomBase] = useState("");
+  // Debounced so typing a custom base doesn't refire the whole-tree diff (and
+  // listRuns / N×listToolCalls) on every keystroke — only the settled value does.
+  const [debouncedReviewCustomBase, setDebouncedReviewCustomBase] = useState("");
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -138,7 +141,7 @@ export function ContextPanel({
         activeWorkspaceId && activeTab === "review"
           ? getGitReview({
               base: reviewBase,
-              customBase: reviewCustomBase,
+              customBase: debouncedReviewCustomBase,
               workspaceId: activeWorkspaceId,
             })
           : Promise.resolve(null),
@@ -181,7 +184,7 @@ export function ContextPanel({
         setLoading(false);
       }
     }
-  }, [activeTab, activeThreadId, activeThreadMode, activeWorkspaceId, reviewBase, reviewCustomBase]);
+  }, [activeTab, activeThreadId, activeThreadMode, activeWorkspaceId, reviewBase, debouncedReviewCustomBase]);
 
   useEffect(() => {
     if (!tabs.some(tab => tab.value === activeTab)) {
@@ -224,8 +227,24 @@ export function ContextPanel({
   }, [activeTab, onTabChange]);
 
   useEffect(() => {
+    const timer = setTimeout(setDebouncedReviewCustomBase, 300, reviewCustomBase);
+    return () => clearTimeout(timer);
+  }, [reviewCustomBase]);
+
+  // Thread-changed bootstrap: blank + ensure git only when the active thread
+  // switches, so tab/base/base-typing changes never clear the loaded panel.
+  useEffect(() => {
     void refreshContext({ showLoading: true, ensureGit: true });
-  }, [refreshContext]);
+    // Keyed on the active thread only; refreshContext is intentionally omitted.
+    // eslint-disable-next-line react/exhaustive-deps
+  }, [activeThreadId]);
+
+  // Parameter-driven refresh: re-fetch for the current tab / diff base without
+  // blanking already-loaded state.
+  useEffect(() => {
+    void refreshContext();
+    // eslint-disable-next-line react/exhaustive-deps
+  }, [activeTab, reviewBase, debouncedReviewCustomBase]);
 
   useEffect(() => {
     setSelectedArtifactId(null);
@@ -329,6 +348,7 @@ export function ContextPanel({
         {!showInitialLoading && activeThread && activeTab === "review"
           ? (
               <ReviewPanel
+                capabilities={reviewCapabilities}
                 changePreview={changePreview}
                 customBase={reviewCustomBase}
                 review={gitReview}

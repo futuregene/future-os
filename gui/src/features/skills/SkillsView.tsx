@@ -1,4 +1,5 @@
 import type { AvailableSkill, InstalledSkill } from "../../integrations/skills/skillsClient";
+import type { SkillFilters } from "./skillsFilter";
 import { Blocks, Download, RotateCcw, Search, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -14,14 +15,17 @@ import {
   uninstallSkill,
 } from "../../integrations/skills/skillsClient";
 import { cn } from "../../lib/cn";
+import { errorMessage } from "../../lib/errors";
+import { emitFutureEvent } from "../../lib/futureEvents";
+import {
+  allCategoriesValue,
+  matchesAvailableSkill,
+  matchesInstalledSkill,
+  uniqueSorted,
+} from "./skillsFilter";
 
 type SkillsTab = "installed" | "all";
-interface SkillFilters {
-  category: string;
-  query: string;
-}
 
-const allCategoriesValue = "__all__";
 const emptyFilters: SkillFilters = { category: allCategoriesValue, query: "" };
 
 export function SkillsView() {
@@ -32,6 +36,7 @@ export function SkillsView() {
   const [installedFilters, setInstalledFilters] = useState<SkillFilters>(emptyFilters);
   const [allFilters, setAllFilters] = useState<SkillFilters>(emptyFilters);
   const [loading, setLoading] = useState(true);
+  const [installedError, setInstalledError] = useState<string | null>(null);
   const [availableError, setAvailableError] = useState<string | null>(null);
   // Skill ids with an install/uninstall in flight (disables their buttons).
   const [busy, setBusy] = useState<Record<string, boolean>>({});
@@ -80,11 +85,17 @@ export function SkillsView() {
     ]);
     if (installedResult.status === "fulfilled") {
       setInstalled(installedResult.value);
+      setInstalledError(null);
       if (!hasResolvedInitialTabRef.current) {
         hasResolvedInitialTabRef.current = true;
         if (installedResult.value.length === 0)
           setTab("all");
       }
+    }
+    else {
+      // Don't let a failed load masquerade as an empty Installed tab.
+      setInstalled([]);
+      setInstalledError(errorMessage(installedResult.reason));
     }
     if (availableResult.status === "fulfilled") {
       setAvailable(availableResult.value);
@@ -92,11 +103,7 @@ export function SkillsView() {
     }
     else {
       setAvailable([]);
-      setAvailableError(
-        availableResult.reason instanceof Error
-          ? availableResult.reason.message
-          : String(availableResult.reason),
-      );
+      setAvailableError(errorMessage(availableResult.reason));
     }
     setLoading(false);
   }, []);
@@ -111,10 +118,15 @@ export function SkillsView() {
       await action();
       await refresh();
     }
+    catch (error) {
+      // Every caller is `void runAction(...)`, so a rejected install/uninstall
+      // would otherwise vanish — surface it as a toast.
+      emitFutureEvent("toast", { message: t("actionFailed", { message: errorMessage(error) }), tone: "error" });
+    }
     finally {
       setBusy(current => ({ ...current, [id]: false }));
     }
-  }, [refresh]);
+  }, [refresh, t]);
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
@@ -139,8 +151,10 @@ export function SkillsView() {
                   resultCount={filteredInstalled.length}
                   skills={filteredInstalled}
                   totalCount={installed.length}
+                  error={installedError}
                   busy={busy}
                   onUninstall={id => void runAction(id, () => uninstallSkill(id))}
+                  onRetry={() => void refresh()}
                 />
               )
             : (
@@ -184,9 +198,11 @@ function TabButton({ active, label, onClick }: { active: boolean; label: string;
 function InstalledTab({
   busy,
   categories,
+  error,
   filters,
   loading,
   onFiltersChange,
+  onRetry,
   onUninstall,
   resultCount,
   skills,
@@ -194,9 +210,11 @@ function InstalledTab({
 }: {
   busy: Record<string, boolean>;
   categories: string[];
+  error: string | null;
   filters: SkillFilters;
   loading: boolean;
   onFiltersChange: (filters: SkillFilters) => void;
+  onRetry: () => void;
   onUninstall: (id: string) => void;
   resultCount: number;
   skills: InstalledSkill[];
@@ -205,6 +223,19 @@ function InstalledTab({
   const { t } = useTranslation("skills");
   if (loading && totalCount === 0)
     return <LoadingRow />;
+  if (error) {
+    return (
+      <div className="space-y-3">
+        <div className="rounded-md border border-danger-line bg-danger-soft p-3 text-sm text-danger">
+          {t("installed.loadError")}
+          {error}
+        </div>
+        <Button leftIcon={<RotateCcw className="size-3.5" />} onClick={onRetry} size="sm" variant="secondary">
+          {t("all.retry")}
+        </Button>
+      </div>
+    );
+  }
   if (totalCount === 0)
     return <EmptyState title={t("installed.emptyTitle")} detail={t("installed.emptyDetail")} />;
 
@@ -451,50 +482,4 @@ function UninstallButton({ busy, onClick }: { busy?: boolean; onClick: () => voi
 function LoadingRow() {
   const { t } = useTranslation("skills");
   return <div className="rounded-md border border-line-soft bg-surface p-3 text-sm text-ink-muted">{t("loading")}</div>;
-}
-
-function matchesInstalledSkill(skill: InstalledSkill, filters: SkillFilters, category?: string) {
-  if (!matchesCategory(category, filters.category))
-    return false;
-
-  return matchesQuery(filters.query, [
-    skill.id,
-    skill.name,
-    skill.description,
-    skill.version,
-    category,
-  ]);
-}
-
-function matchesAvailableSkill(skill: AvailableSkill, filters: SkillFilters) {
-  if (!matchesCategory(skill.category, filters.category))
-    return false;
-
-  return matchesQuery(filters.query, [
-    skill.id,
-    skill.name,
-    skill.description,
-    skill.category,
-    skill.latestVersion,
-  ]);
-}
-
-function matchesCategory(category: string | undefined, selectedCategory: string) {
-  return selectedCategory === allCategoriesValue || category === selectedCategory;
-}
-
-function matchesQuery(query: string, values: Array<string | null | undefined>) {
-  const normalizedQuery = normalizeSearchText(query);
-  if (!normalizedQuery)
-    return true;
-
-  return values.some(value => normalizeSearchText(value).includes(normalizedQuery));
-}
-
-function normalizeSearchText(value: string | null | undefined) {
-  return (value ?? "").trim().toLowerCase();
-}
-
-function uniqueSorted(values: Array<string | null | undefined>) {
-  return Array.from(new Set(values.filter((value): value is string => Boolean(value)))).sort((a, b) => a.localeCompare(b));
 }

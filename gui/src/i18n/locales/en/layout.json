@@ -37,6 +37,7 @@
   },
   "appShell": {
     "storeInitFailed": "FutureOS local storage failed to initialize: ",
+    "startConversationFailed": "Failed to start the conversation: {{error}}",
     "noWorkspaceSelected": "No workspace selected",
     "data": "Data",
     "skill": "Skill",
