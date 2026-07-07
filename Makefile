@@ -29,6 +29,8 @@ install-gui:
 	@mkdir -p gui/src-tauri/binaries
 	cd agent && cargo build --release
 	cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-aarch64-apple-darwin
+	cd cli && npm run build && bun build --compile dist/index.js --outfile dist/future --external chromium-bidi
+	cp cli/dist/future gui/src-tauri/binaries/future-aarch64-apple-darwin
 
 # ─── Build ──────────────────────────────────────────────────────────────────
 

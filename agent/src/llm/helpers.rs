@@ -79,6 +79,11 @@ impl Client {
                 {
                     body["reasoning_effort"] = serde_json::json!(level_value);
                 }
+                "reasoning-split" => {
+                    // MiniMax M3: reasoning_split only, no depth control.
+                    // Any non-off level → reasoning_split: true
+                    body["reasoning_split"] = serde_json::json!(reasoning_enabled);
+                }
                 _ => {}
             }
         }

@@ -57,3 +57,4 @@ bin/
 # Python cache
 channel/
 *.orig
+.claude/

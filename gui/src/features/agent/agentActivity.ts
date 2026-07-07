@@ -250,7 +250,7 @@ function usageOutputTokens(payload: unknown): number {
 /**
  * Walk the ordered slots into renderable segments. Adjacent tool slots (ignoring
  * whitespace-only text between them) are grouped with the same collapse rules as
- * the flat list, so a burst of edits still reads as "已编辑 N 个文件" — but real
+ * the flat list, so a burst of edits still reads as "Edited N files" — but real
  * prose between tools keeps them as separate inline lines.
  */
 function buildSegments(

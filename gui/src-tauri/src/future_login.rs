@@ -74,7 +74,7 @@ fn client() -> Result<reqwest::Client, AppError> {
     reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .build()
-        .map_err(|error| AppError::Message(format!("无法创建 HTTP 客户端：{error}")))
+        .map_err(|error| AppError::Message(format!("Failed to create HTTP client: {error}")))
 }
 
 /// Device-code OAuth lives on the platform root (`{platform}/client/v1/...`),
@@ -93,26 +93,26 @@ pub async fn start() -> Result<FutureLoginStart, AppError> {
         .json(&json!({ "client_name": CLIENT_NAME }))
         .send()
         .await
-        .map_err(|error| AppError::Message(format!("请求设备码失败：{error}")))?;
+        .map_err(|error| AppError::Message(format!("Failed to request device code: {error}")))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let message = error_message_from_body(response.json::<Value>().await.ok())
-            .unwrap_or_else(|| format!("请求设备码失败（HTTP {}）", status.as_u16()));
+            .unwrap_or_else(|| format!("Device code request failed (HTTP {})", status.as_u16()));
         return Err(AppError::Message(message));
     }
 
     let device: DeviceCodeResponse = response
         .json()
         .await
-        .map_err(|error| AppError::Message(format!("解析设备码响应失败：{error}")))?;
+        .map_err(|error| AppError::Message(format!("Failed to parse device code response: {error}")))?;
 
     if device.device_code.trim().is_empty() || device.user_code.trim().is_empty() {
-        return Err(AppError::Message("设备码响应缺少必要字段。".to_string()));
+        return Err(AppError::Message("Device code response is missing required fields.".to_string()));
     }
     if device.expires_in == 0 || device.interval == 0 {
         return Err(AppError::Message(
-            "设备码响应的过期时间或轮询间隔无效。".to_string(),
+            "Device code response has an invalid expiry or polling interval.".to_string(),
         ));
     }
 
@@ -124,7 +124,7 @@ pub async fn start() -> Result<FutureLoginStart, AppError> {
         .filter(|value| !value.trim().is_empty())
         .or_else(|| device.verification_uri.clone())
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| AppError::Message("设备码响应缺少授权链接。".to_string()))?;
+        .ok_or_else(|| AppError::Message("Device code response is missing the authorization URL.".to_string()))?;
     validate_browser_url(&verification)?;
 
     // Best-effort: failure is fine, the dialog shows a copyable link.
@@ -151,22 +151,22 @@ pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
         .json(&json!({ "device_code": device_code }))
         .send()
         .await
-        .map_err(|error| AppError::Message(format!("轮询授权状态失败：{error}")))?;
+        .map_err(|error| AppError::Message(format!("Failed to poll authorization status: {error}")))?;
 
     let success = response.status().is_success();
     let body: Value = response
         .json()
         .await
-        .map_err(|error| AppError::Message(format!("解析授权响应失败：{error}")))?;
+        .map_err(|error| AppError::Message(format!("Failed to parse authorization response: {error}")))?;
 
     if success {
         let token: DeviceTokenResponse = serde_json::from_value(body)
-            .map_err(|error| AppError::Message(format!("解析授权响应失败：{error}")))?;
+            .map_err(|error| AppError::Message(format!("Failed to parse authorization response: {error}")))?;
         let key = token.api_key.unwrap_or_default();
         if key.trim().is_empty() {
             return Ok(FutureLoginPoll::with_message(
                 "error",
-                "授权响应未包含 API key。",
+                "Authorization response did not contain an API key.",
             ));
         }
         if token
@@ -177,7 +177,7 @@ pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
         {
             return Ok(FutureLoginPoll::with_message(
                 "error",
-                "授权响应的凭证类型不受支持。",
+                "The credential type in the authorization response is not supported.",
             ));
         }
         // Only report success after the key is durably written. Pin `base_url`
@@ -197,15 +197,15 @@ pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
         "slow_down" => FutureLoginPoll::of("slow_down"),
         "access_denied" => FutureLoginPoll::with_message(
             "denied",
-            message.unwrap_or_else(|| "授权被拒绝。".to_string()),
+            message.unwrap_or_else(|| "Authorization was denied.".to_string()),
         ),
         "expired_token" => FutureLoginPoll::with_message(
             "expired",
-            message.unwrap_or_else(|| "授权码已过期，请重试。".to_string()),
+            message.unwrap_or_else(|| "Authorization code has expired; please try again.".to_string()),
         ),
         _ => FutureLoginPoll::with_message(
             "error",
-            message.unwrap_or_else(|| "授权失败。".to_string()),
+            message.unwrap_or_else(|| "Authorization failed.".to_string()),
         ),
     })
 }
@@ -226,9 +226,9 @@ fn error_message_from_body(body: Option<Value>) -> Option<String> {
 /// This matches the CLI, which opens the returned URL directly.
 fn validate_browser_url(target: &str) -> Result<(), AppError> {
     let url =
-        reqwest::Url::parse(target).map_err(|_| AppError::Message("授权链接无效。".to_string()))?;
+        reqwest::Url::parse(target).map_err(|_| AppError::Message("Authorization URL is invalid.".to_string()))?;
     if !matches!(url.scheme(), "http" | "https") {
-        return Err(AppError::Message("授权链接的协议不被允许。".to_string()));
+        return Err(AppError::Message("Authorization URL scheme is not permitted.".to_string()));
     }
     Ok(())
 }

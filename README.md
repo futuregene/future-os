@@ -1,3 +1,13 @@
+<p align="center">
+  <a href="https://github.com/futuregene/future-os/tree/main/docs/wiki/en"><img src="https://img.shields.io/badge/Docs-Wiki-FFD700?style=for-the-badge" alt="Documentation"></a>
+  <a href="https://github.com/futuregene/future-os/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
+</p>
+
+<p align="center">
+  <img src="docs/banner.png" alt="FutureOS" width="600">
+</p>
+
 # FutureOS
 
 > A local-first AI agent workspace — terminal, desktop, messaging platforms, all through one backend.

@@ -68,7 +68,7 @@ Agent config is under `~/.future/agent/`:
 
 Model config reads purely from these files. No model-related CLI flags or env vars.
 
-The TUI does **not** read a local settings file — all configuration flows through the agent via gRPC.
+The TUI persists client-side settings to `~/.future/tui/settings.json` (default model, thinking level, scoped model list). Most configuration flows through the agent via gRPC.
 
 Channel config is under `~/.future/channels/`:
 - `config.json` — agent gRPC address, per-channel settings (feishu with `enabled`, app credentials, policies)
@@ -105,10 +105,12 @@ Entry point: `main.rs` — only CLI flag is `--grpc-addr`. Resolves model from s
 | `rpc/mod.rs` | Command handler dispatch (25+ commands) and `ServerSession` state management. SSE event broadcasting via tokio broadcast channel (capacity: 4096) |
 | `session/mod.rs` | Conversation persistence as JSONL files in `~/.future/agent/sessions/<encoded-cwd>/`. Tree-structured entries with ParentID for forks. `Manager` handles save/load/list |
 | `types/mod.rs` | Core types: `Message`, `StreamEvent`, `AgentTool`, `ToolDef`, `AgentConfig`, `LLMProvider` trait, `ContentBlock` (polymorphic text/image/tool_result) |
-| `tools/mod.rs` | 6 tools: bash, read, write, edit, grep, ls. `coding_tools()` returns default 4 (read, bash, edit, write), `readonly_tools()` returns search tools, `all_tools()` returns all 6 |
+| `sandbox/mod.rs` | OS-level sandbox for tool execution: `ResolvedSandbox` (tier: off/manual/seatbelt), `EscalationRequest`/`EscalationRequester` for post-hoc approval of out-of-sandbox operations. macOS Seatbelt via `seatbelt.rs`, cross-platform path rules via `rules.rs` |
+| `rpc/approval.rs` | Approval system: file-path access requests, sandbox boundary checks, escalation flow. Approval rules stored in `${WS}/.future/approval_rule.json` and `~/.future/approval_rule.json` |
+| `tools/mod.rs` | 6 tools: bash, read, write, edit, grep, ls. Each tool runs within `ToolExecutionScope` (workspace boundary, sandbox tier, interrupt flag). `coding_tools()` returns default 4 (read, bash, edit, write), `readonly_tools()` returns search tools, `all_tools()` returns all 6 |
 | `compaction/mod.rs` | Context compaction: estimates tokens (chars/4 heuristic), finds safe cut points, summarizes file ops |
 | `models/mod.rs` | Model registry: generated built-in catalog (`generated/`, 906 models) + user `models.json` overrides, resolution, fuzzy matching. Default model from settings.json |
-| `config/mod.rs` | Settings struct (50+ fields) with deep-merge. Loads from `~/.future/agent/settings.json` (global) and `.future/agent/settings.json` (project) |
+| `config/mod.rs` | Settings struct (7 fields: steering_mode, follow_up_mode, compaction, retry, max_turns, default_permission_level). Loads from `~/.future/agent/settings.json` (global) and `.future/agent/settings.json` (project), deep-merged |
 | `auth/mod.rs` | Reads API credentials from `~/.future/agent/auth.json` or `~/.future/agent-app/auth.json`, keyed by provider |
 | `skills/mod.rs` | Discovers skills from `~/.future/agent/skills/`, `.future/agent/skills/`, `~/.agents/skills/` — parses YAML frontmatter from SKILL.md |
 | `prompt/mod.rs` | Builds system prompt from identity, project context (CLAUDE.md/AGENTS.md), skills, and metadata |
@@ -163,6 +165,10 @@ Key files:
 - `commands/tools.ts` — MCP JSON-RPC client with SSE parsing, tool catalog
 - `commands/skills.ts` — skill bundle definitions and SKILL.md generation
 - `commands/tui.ts` — TUI launcher
+
+### GUI (`gui/`)
+
+Tauri 2 + React + TypeScript desktop app. See `gui/CLAUDE.md` for detailed development guide. Architecture docs under `gui/DEV_MD/`: PRODUCT.md (product semantics), ER.md (data model), COLOR.md (design tokens), plus planning docs for approvals, sandbox, attachments, memory, and remote control.
 
 ### Channel bridge (`channels/src/`)
 
