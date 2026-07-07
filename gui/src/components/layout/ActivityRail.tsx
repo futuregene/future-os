@@ -538,6 +538,7 @@ function ThreadListItem({
         aria-label={thread.title}
         className="absolute inset-0 rounded-md"
         onClick={() => onSelectThread(thread)}
+        title={thread.title}
         type="button"
       />
       {/* Spacer keeps the non-compact title indent after dropping the (uniform,
@@ -548,7 +549,6 @@ function ThreadListItem({
           "pointer-events-none min-w-0 flex-1 truncate text-sm font-medium",
           archived ? "text-ink-muted" : "text-ink-soft",
         )}
-        title={thread.title}
       >
         {thread.title}
       </span>
