@@ -25,6 +25,8 @@ pub struct Model {
     pub compat_json: String,
     pub tlm_json: String,
     pub headers_json: String,
+    #[serde(default)]
+    pub hide: bool,
 }
 
 /// INIT_BUILTIN_MODELS returns the complete built-in model catalog.
@@ -48,6 +50,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "amazon.nova-lite-v1:0".into(),
@@ -66,6 +69,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "amazon.nova-micro-v1:0".into(),
@@ -84,6 +88,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "amazon.nova-pro-v1:0".into(),
@@ -102,6 +107,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic.claude-haiku-4-5-20251001-v1:0".into(),
@@ -120,6 +126,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic.claude-opus-4-1-20250805-v1:0".into(),
@@ -138,6 +145,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic.claude-opus-4-5-20251101-v1:0".into(),
@@ -156,6 +164,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic.claude-opus-4-6-v1".into(),
@@ -174,6 +183,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"max\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic.claude-opus-4-7".into(),
@@ -192,6 +202,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic.claude-sonnet-4-5-20250929-v1:0".into(),
@@ -210,6 +221,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic.claude-sonnet-4-6".into(),
@@ -228,6 +240,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "au.anthropic.claude-haiku-4-5-20251001-v1:0".into(),
@@ -246,6 +259,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "au.anthropic.claude-opus-4-6-v1".into(),
@@ -264,6 +278,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"max\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "au.anthropic.claude-sonnet-4-5-20250929-v1:0".into(),
@@ -282,6 +297,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "au.anthropic.claude-sonnet-4-6".into(),
@@ -300,6 +316,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek.r1-v1:0".into(),
@@ -318,6 +335,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek.v3-v1:0".into(),
@@ -336,6 +354,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek.v3.2".into(),
@@ -354,6 +373,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "eu.anthropic.claude-haiku-4-5-20251001-v1:0".into(),
@@ -372,6 +392,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "eu.anthropic.claude-opus-4-5-20251101-v1:0".into(),
@@ -390,6 +411,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "eu.anthropic.claude-opus-4-6-v1".into(),
@@ -408,6 +430,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"max\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "eu.anthropic.claude-opus-4-7".into(),
@@ -426,6 +449,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "eu.anthropic.claude-sonnet-4-5-20250929-v1:0".into(),
@@ -444,6 +468,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "eu.anthropic.claude-sonnet-4-6".into(),
@@ -462,6 +487,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "global.anthropic.claude-haiku-4-5-20251001-v1:0".into(),
@@ -480,6 +506,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "global.anthropic.claude-opus-4-5-20251101-v1:0".into(),
@@ -498,6 +525,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "global.anthropic.claude-opus-4-6-v1".into(),
@@ -516,6 +544,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"max\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "global.anthropic.claude-opus-4-7".into(),
@@ -534,6 +563,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "global.anthropic.claude-sonnet-4-5-20250929-v1:0".into(),
@@ -552,6 +582,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "global.anthropic.claude-sonnet-4-6".into(),
@@ -570,6 +601,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google.gemma-3-27b-it".into(),
@@ -588,6 +620,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google.gemma-3-4b-it".into(),
@@ -606,6 +639,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "jp.anthropic.claude-opus-4-7".into(),
@@ -624,6 +658,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "jp.anthropic.claude-sonnet-4-5-20250929-v1:0".into(),
@@ -642,6 +677,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "jp.anthropic.claude-sonnet-4-6".into(),
@@ -660,6 +696,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta.llama3-1-70b-instruct-v1:0".into(),
@@ -678,6 +715,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta.llama3-1-8b-instruct-v1:0".into(),
@@ -696,6 +734,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta.llama3-3-70b-instruct-v1:0".into(),
@@ -714,6 +753,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta.llama4-maverick-17b-instruct-v1:0".into(),
@@ -732,6 +772,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta.llama4-scout-17b-instruct-v1:0".into(),
@@ -750,6 +791,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "minimax.minimax-m2".into(),
@@ -768,6 +810,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "minimax.minimax-m2.1".into(),
@@ -786,6 +829,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "minimax.minimax-m2.5".into(),
@@ -804,6 +848,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral.devstral-2-123b".into(),
@@ -822,6 +867,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral.magistral-small-2509".into(),
@@ -840,6 +886,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral.ministral-3-14b-instruct".into(),
@@ -858,6 +905,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral.ministral-3-3b-instruct".into(),
@@ -876,6 +924,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral.ministral-3-8b-instruct".into(),
@@ -894,6 +943,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral.mistral-large-3-675b-instruct".into(),
@@ -912,6 +962,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral.pixtral-large-2502-v1:0".into(),
@@ -930,6 +981,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral.voxtral-mini-3b-2507".into(),
@@ -948,6 +1000,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral.voxtral-small-24b-2507".into(),
@@ -966,6 +1019,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshot.kimi-k2-thinking".into(),
@@ -984,6 +1038,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai.kimi-k2.5".into(),
@@ -1002,6 +1057,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "nvidia.nemotron-nano-12b-v2".into(),
@@ -1020,6 +1076,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "nvidia.nemotron-nano-3-30b".into(),
@@ -1038,6 +1095,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "nvidia.nemotron-nano-9b-v2".into(),
@@ -1056,6 +1114,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "nvidia.nemotron-super-3-120b".into(),
@@ -1074,6 +1133,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai.gpt-oss-120b-1:0".into(),
@@ -1092,6 +1152,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai.gpt-oss-20b-1:0".into(),
@@ -1110,6 +1171,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai.gpt-oss-safeguard-120b".into(),
@@ -1128,6 +1190,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai.gpt-oss-safeguard-20b".into(),
@@ -1146,6 +1209,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen.qwen3-235b-a22b-2507-v1:0".into(),
@@ -1164,6 +1228,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen.qwen3-32b-v1:0".into(),
@@ -1182,6 +1247,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen.qwen3-coder-30b-a3b-v1:0".into(),
@@ -1200,6 +1266,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen.qwen3-coder-480b-a35b-v1:0".into(),
@@ -1218,6 +1285,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen.qwen3-coder-next".into(),
@@ -1236,6 +1304,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen.qwen3-next-80b-a3b".into(),
@@ -1254,6 +1323,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen.qwen3-vl-235b-a22b".into(),
@@ -1272,6 +1342,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "us.anthropic.claude-haiku-4-5-20251001-v1:0".into(),
@@ -1290,6 +1361,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "us.anthropic.claude-opus-4-1-20250805-v1:0".into(),
@@ -1308,6 +1380,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "us.anthropic.claude-opus-4-5-20251101-v1:0".into(),
@@ -1326,6 +1399,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "us.anthropic.claude-opus-4-6-v1".into(),
@@ -1344,6 +1418,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"max\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "us.anthropic.claude-opus-4-7".into(),
@@ -1362,6 +1437,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0".into(),
@@ -1380,6 +1456,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "us.anthropic.claude-sonnet-4-6".into(),
@@ -1398,6 +1475,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "us.deepseek.r1-v1:0".into(),
@@ -1416,6 +1494,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "us.meta.llama4-maverick-17b-instruct-v1:0".into(),
@@ -1434,6 +1513,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "us.meta.llama4-scout-17b-instruct-v1:0".into(),
@@ -1452,6 +1532,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "writer.palmyra-x4-v1:0".into(),
@@ -1470,6 +1551,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "writer.palmyra-x5-v1:0".into(),
@@ -1488,6 +1570,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai.glm-4.7".into(),
@@ -1506,6 +1589,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai.glm-4.7-flash".into(),
@@ -1524,6 +1608,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai.glm-5".into(),
@@ -1542,6 +1627,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── anthropic -->
@@ -1562,6 +1648,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-3-5-haiku-latest".into(),
@@ -1580,6 +1667,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-3-5-sonnet-20240620".into(),
@@ -1598,6 +1686,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-3-5-sonnet-20241022".into(),
@@ -1616,6 +1705,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-3-7-sonnet-20250219".into(),
@@ -1634,6 +1724,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-3-haiku-20240307".into(),
@@ -1652,6 +1743,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-3-opus-20240229".into(),
@@ -1670,6 +1762,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-3-sonnet-20240229".into(),
@@ -1688,6 +1781,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-haiku-4-5".into(),
@@ -1706,6 +1800,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-haiku-4-5-20251001".into(),
@@ -1724,6 +1819,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-opus-4-0".into(),
@@ -1742,6 +1838,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-opus-4-1".into(),
@@ -1760,6 +1857,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-opus-4-1-20250805".into(),
@@ -1778,6 +1876,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-opus-4-20250514".into(),
@@ -1796,6 +1895,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-opus-4-5".into(),
@@ -1814,6 +1914,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-opus-4-5-20251101".into(),
@@ -1832,6 +1933,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-opus-4-6".into(),
@@ -1850,6 +1952,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"max\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-opus-4-7".into(),
@@ -1868,6 +1971,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-sonnet-4-0".into(),
@@ -1886,6 +1990,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-sonnet-4-20250514".into(),
@@ -1904,6 +2009,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-sonnet-4-5".into(),
@@ -1922,6 +2028,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-sonnet-4-5-20250929".into(),
@@ -1940,6 +2047,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-sonnet-4-6".into(),
@@ -1958,6 +2066,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── azure-openai-responses -->
@@ -1978,6 +2087,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-4-turbo".into(),
@@ -1996,6 +2106,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-4.1".into(),
@@ -2014,6 +2125,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-4.1-mini".into(),
@@ -2032,6 +2144,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-4.1-nano".into(),
@@ -2050,6 +2163,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-4o".into(),
@@ -2068,6 +2182,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-4o-2024-05-13".into(),
@@ -2086,6 +2201,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-4o-2024-08-06".into(),
@@ -2104,6 +2220,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-4o-2024-11-20".into(),
@@ -2122,6 +2239,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-4o-mini".into(),
@@ -2140,6 +2258,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5".into(),
@@ -2158,6 +2277,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5-codex".into(),
@@ -2176,6 +2296,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5-mini".into(),
@@ -2194,6 +2315,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5-nano".into(),
@@ -2212,6 +2334,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5-pro".into(),
@@ -2230,6 +2353,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.1".into(),
@@ -2248,6 +2372,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.1-chat-latest".into(),
@@ -2266,6 +2391,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.1-codex".into(),
@@ -2284,6 +2410,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.1-codex-max".into(),
@@ -2302,6 +2429,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.1-codex-mini".into(),
@@ -2320,6 +2448,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.2".into(),
@@ -2338,6 +2467,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.2-chat-latest".into(),
@@ -2356,6 +2486,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.2-codex".into(),
@@ -2374,6 +2505,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.2-pro".into(),
@@ -2392,6 +2524,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.3-chat-latest".into(),
@@ -2410,6 +2543,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.3-codex".into(),
@@ -2428,6 +2562,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.3-codex-spark".into(),
@@ -2446,6 +2581,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.4".into(),
@@ -2464,6 +2600,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.4-mini".into(),
@@ -2482,6 +2619,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.4-nano".into(),
@@ -2500,6 +2638,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.4-pro".into(),
@@ -2518,6 +2657,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.5".into(),
@@ -2536,6 +2676,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.5-pro".into(),
@@ -2554,6 +2695,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "o1".into(),
@@ -2572,6 +2714,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "o1-pro".into(),
@@ -2590,6 +2733,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "o3".into(),
@@ -2608,6 +2752,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "o3-deep-research".into(),
@@ -2626,6 +2771,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "o3-mini".into(),
@@ -2644,6 +2790,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "o3-pro".into(),
@@ -2662,6 +2809,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "o4-mini".into(),
@@ -2680,6 +2828,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "o4-mini-deep-research".into(),
@@ -2698,6 +2847,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── cerebras -->
@@ -2718,6 +2868,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "llama3.1-8b".into(),
@@ -2736,6 +2887,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen-3-235b-a22b-instruct-2507".into(),
@@ -2754,6 +2906,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai-glm-4.7".into(),
@@ -2772,6 +2925,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── cloudflare-workers-ai -->
@@ -2792,6 +2946,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"sendSessionAffinityHeaders\":true}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "@cf/meta/llama-4-scout-17b-16e-instruct".into(),
@@ -2810,6 +2965,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"sendSessionAffinityHeaders\":true}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "@cf/moonshotai/kimi-k2.5".into(),
@@ -2828,6 +2984,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"sendSessionAffinityHeaders\":true}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "@cf/moonshotai/kimi-k2.6".into(),
@@ -2846,6 +3003,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"sendSessionAffinityHeaders\":true}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "@cf/nvidia/nemotron-3-120b-a12b".into(),
@@ -2864,6 +3022,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"sendSessionAffinityHeaders\":true}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "@cf/openai/gpt-oss-120b".into(),
@@ -2882,6 +3041,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"sendSessionAffinityHeaders\":true}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "@cf/openai/gpt-oss-20b".into(),
@@ -2900,6 +3060,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"sendSessionAffinityHeaders\":true}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "@cf/zai-org/glm-4.7-flash".into(),
@@ -2918,6 +3079,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"sendSessionAffinityHeaders\":true}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── deepseek -->
@@ -2938,6 +3100,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek-reasoner".into(),
@@ -2956,6 +3119,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek-v4-flash".into(),
@@ -2974,6 +3138,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"requiresReasoningContentOnAssistantMessages\":true,\"thinkingFormat\":\"deepseek\"}"),
             tlm_json: String::from("{\"high\":\"high\",\"low\":null,\"medium\":null,\"minimal\":null,\"xhigh\":\"max\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek-v4-pro".into(),
@@ -2992,6 +3157,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"requiresReasoningContentOnAssistantMessages\":true,\"thinkingFormat\":\"deepseek\"}"),
             tlm_json: String::from("{\"high\":\"high\",\"low\":null,\"medium\":null,\"minimal\":null,\"xhigh\":\"max\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── github-copilot -->
@@ -3012,6 +3178,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "claude-opus-4.5".into(),
@@ -3030,6 +3197,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "claude-opus-4.6".into(),
@@ -3048,6 +3216,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"max\"}"),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "claude-opus-4.7".into(),
@@ -3066,6 +3235,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "claude-sonnet-4".into(),
@@ -3084,6 +3254,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "claude-sonnet-4.5".into(),
@@ -3102,6 +3273,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "claude-sonnet-4.6".into(),
@@ -3120,6 +3292,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-pro".into(),
@@ -3138,6 +3311,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "gemini-3-flash-preview".into(),
@@ -3156,6 +3330,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "gemini-3-pro-preview".into(),
@@ -3174,6 +3349,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "gemini-3.1-pro-preview".into(),
@@ -3192,6 +3368,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "gpt-4.1".into(),
@@ -3210,6 +3387,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "gpt-4o".into(),
@@ -3228,6 +3406,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "gpt-5".into(),
@@ -3246,6 +3425,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "gpt-5-mini".into(),
@@ -3264,6 +3444,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "gpt-5.1".into(),
@@ -3282,6 +3463,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "gpt-5.1-codex".into(),
@@ -3300,6 +3482,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "gpt-5.1-codex-max".into(),
@@ -3318,6 +3501,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "gpt-5.1-codex-mini".into(),
@@ -3336,6 +3520,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "gpt-5.2".into(),
@@ -3354,6 +3539,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "gpt-5.2-codex".into(),
@@ -3372,6 +3558,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "gpt-5.3-codex".into(),
@@ -3390,6 +3577,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "gpt-5.4".into(),
@@ -3408,6 +3596,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "gpt-5.4-mini".into(),
@@ -3426,6 +3615,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "gpt-5.5".into(),
@@ -3444,6 +3634,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         Model {
             id: "grok-code-fast-1".into(),
@@ -3462,6 +3653,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from("{\"User-Agent\":\"GitHubCopilotChat/0.35.0\",\"Editor-Version\":\"vscode/1.107.0\",\"Editor-Plugin-Version\":\"copilot-chat/0.35.0\",\"Copilot-Integration-Id\":\"vscode-chat\"}"),
+            hide: false,
         },
         // ── end -->
         // ── google -->
@@ -3482,6 +3674,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-1.5-flash-8b".into(),
@@ -3500,6 +3693,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-1.5-pro".into(),
@@ -3518,6 +3712,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.0-flash".into(),
@@ -3536,6 +3731,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.0-flash-lite".into(),
@@ -3554,6 +3750,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-flash".into(),
@@ -3572,6 +3769,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-flash-lite".into(),
@@ -3590,6 +3788,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-flash-lite-preview-06-17".into(),
@@ -3608,6 +3807,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-flash-lite-preview-09-2025".into(),
@@ -3626,6 +3826,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-flash-preview-04-17".into(),
@@ -3644,6 +3845,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-flash-preview-05-20".into(),
@@ -3662,6 +3864,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-flash-preview-09-2025".into(),
@@ -3680,6 +3883,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-pro".into(),
@@ -3698,6 +3902,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-pro-preview-05-06".into(),
@@ -3716,6 +3921,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-pro-preview-06-05".into(),
@@ -3734,6 +3940,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-3-flash-preview".into(),
@@ -3752,6 +3959,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-3-pro-preview".into(),
@@ -3770,6 +3978,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"high\":\"HIGH\",\"low\":\"LOW\",\"medium\":null,\"minimal\":null,\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-3.1-flash-lite".into(),
@@ -3788,6 +3997,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-3.1-flash-lite-preview".into(),
@@ -3806,6 +4016,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-3.1-pro-preview".into(),
@@ -3824,6 +4035,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"high\":\"HIGH\",\"low\":\"LOW\",\"medium\":null,\"minimal\":null,\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-3.1-pro-preview-customtools".into(),
@@ -3842,6 +4054,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"high\":\"HIGH\",\"low\":\"LOW\",\"medium\":null,\"minimal\":null,\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-flash-latest".into(),
@@ -3860,6 +4073,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-flash-lite-latest".into(),
@@ -3878,6 +4092,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-live-2.5-flash".into(),
@@ -3896,6 +4111,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-live-2.5-flash-preview-native-audio".into(),
@@ -3914,6 +4130,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemma-3-27b-it".into(),
@@ -3932,6 +4149,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemma-4-26b-a4b-it".into(),
@@ -3950,6 +4168,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"high\":\"HIGH\",\"low\":null,\"medium\":null,\"minimal\":\"MINIMAL\",\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemma-4-31b-it".into(),
@@ -3968,6 +4187,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"high\":\"HIGH\",\"low\":null,\"medium\":null,\"minimal\":\"MINIMAL\",\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── google-vertex -->
@@ -3988,6 +4208,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-3-5-sonnet@20241022".into(),
@@ -4006,6 +4227,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-3-7-sonnet@20250219".into(),
@@ -4024,6 +4246,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-haiku-4-5@20251001".into(),
@@ -4042,6 +4265,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-opus-4-1@20250805".into(),
@@ -4060,6 +4284,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-opus-4-5@20251101".into(),
@@ -4078,6 +4303,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-opus-4-6@default".into(),
@@ -4096,6 +4322,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"max\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-opus-4-7@default".into(),
@@ -4114,6 +4341,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-opus-4@20250514".into(),
@@ -4132,6 +4360,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-sonnet-4-5@20250929".into(),
@@ -4150,6 +4379,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-sonnet-4-6@default".into(),
@@ -4168,6 +4398,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "claude-sonnet-4@20250514".into(),
@@ -4186,6 +4417,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek-ai/deepseek-v3.1-maas".into(),
@@ -4204,6 +4436,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek-ai/deepseek-v3.2-maas".into(),
@@ -4222,6 +4455,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.0-flash".into(),
@@ -4240,6 +4474,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.0-flash-lite".into(),
@@ -4258,6 +4493,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-flash".into(),
@@ -4276,6 +4512,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-flash-lite".into(),
@@ -4294,6 +4531,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-flash-lite-preview-06-17".into(),
@@ -4312,6 +4550,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-flash-lite-preview-09-2025".into(),
@@ -4330,6 +4569,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-flash-preview-04-17".into(),
@@ -4348,6 +4588,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-flash-preview-05-20".into(),
@@ -4366,6 +4607,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-flash-preview-09-2025".into(),
@@ -4384,6 +4626,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-pro".into(),
@@ -4402,6 +4645,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-pro-preview-05-06".into(),
@@ -4420,6 +4664,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-2.5-pro-preview-06-05".into(),
@@ -4438,6 +4683,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-3-flash-preview".into(),
@@ -4456,6 +4702,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-3-pro-preview".into(),
@@ -4474,6 +4721,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"high\":\"HIGH\",\"low\":\"LOW\",\"medium\":null,\"minimal\":null,\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-3.1-flash-lite".into(),
@@ -4492,6 +4740,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-3.1-flash-lite-preview".into(),
@@ -4510,6 +4759,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-3.1-pro-preview".into(),
@@ -4528,6 +4778,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"high\":\"HIGH\",\"low\":\"LOW\",\"medium\":null,\"minimal\":null,\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-3.1-pro-preview-customtools".into(),
@@ -4546,6 +4797,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"high\":\"HIGH\",\"low\":\"LOW\",\"medium\":null,\"minimal\":null,\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-flash-latest".into(),
@@ -4564,6 +4816,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemini-flash-lite-latest".into(),
@@ -4582,6 +4835,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta/llama-3.3-70b-instruct-maas".into(),
@@ -4600,6 +4854,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta/llama-4-maverick-17b-128e-instruct-maas".into(),
@@ -4618,6 +4873,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/kimi-k2-thinking-maas".into(),
@@ -4636,6 +4892,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-oss-120b-maas".into(),
@@ -4654,6 +4911,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-oss-20b-maas".into(),
@@ -4672,6 +4930,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-235b-a22b-instruct-2507-maas".into(),
@@ -4690,6 +4949,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai-org/glm-4.7-maas".into(),
@@ -4708,6 +4968,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai-org/glm-5-maas".into(),
@@ -4726,6 +4987,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── groq -->
@@ -4746,6 +5008,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gemma2-9b-it".into(),
@@ -4764,6 +5027,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "groq/compound".into(),
@@ -4782,6 +5046,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "groq/compound-mini".into(),
@@ -4800,6 +5065,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "llama-3.1-8b-instant".into(),
@@ -4818,6 +5084,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "llama-3.3-70b-versatile".into(),
@@ -4836,6 +5103,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "llama3-70b-8192".into(),
@@ -4854,6 +5122,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "llama3-8b-8192".into(),
@@ -4872,6 +5141,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta-llama/llama-4-maverick-17b-128e-instruct".into(),
@@ -4890,6 +5160,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta-llama/llama-4-scout-17b-16e-instruct".into(),
@@ -4908,6 +5179,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral-saba-24b".into(),
@@ -4926,6 +5198,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/kimi-k2-instruct".into(),
@@ -4944,6 +5217,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/kimi-k2-instruct-0905".into(),
@@ -4962,6 +5236,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-oss-120b".into(),
@@ -4980,6 +5255,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-oss-20b".into(),
@@ -4998,6 +5274,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-oss-safeguard-20b".into(),
@@ -5016,6 +5293,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen-qwq-32b".into(),
@@ -5034,6 +5312,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-32b".into(),
@@ -5052,6 +5331,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"high\":\"default\",\"low\":null,\"medium\":null,\"minimal\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── huggingface -->
@@ -5072,6 +5352,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "MiniMaxAI/MiniMax-M2.5".into(),
@@ -5090,6 +5371,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "MiniMaxAI/MiniMax-M2.7".into(),
@@ -5108,6 +5390,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "Qwen/Qwen3-235B-A22B-Thinking-2507".into(),
@@ -5126,6 +5409,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "Qwen/Qwen3-Coder-480B-A35B-Instruct".into(),
@@ -5144,6 +5428,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "Qwen/Qwen3-Coder-Next".into(),
@@ -5162,6 +5447,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "Qwen/Qwen3-Next-80B-A3B-Instruct".into(),
@@ -5180,6 +5466,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "Qwen/Qwen3-Next-80B-A3B-Thinking".into(),
@@ -5198,6 +5485,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "Qwen/Qwen3.5-397B-A17B".into(),
@@ -5216,6 +5504,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "XiaomiMiMo/MiMo-V2-Flash".into(),
@@ -5234,6 +5523,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek-ai/DeepSeek-R1-0528".into(),
@@ -5252,6 +5542,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek-ai/DeepSeek-V3.2".into(),
@@ -5270,6 +5561,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek-ai/DeepSeek-V4-Pro".into(),
@@ -5288,6 +5580,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/Kimi-K2-Instruct".into(),
@@ -5306,6 +5599,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/Kimi-K2-Instruct-0905".into(),
@@ -5324,6 +5618,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/Kimi-K2-Thinking".into(),
@@ -5342,6 +5637,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/Kimi-K2.5".into(),
@@ -5360,6 +5656,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/Kimi-K2.6".into(),
@@ -5378,6 +5675,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai-org/GLM-4.7".into(),
@@ -5396,6 +5694,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai-org/GLM-4.7-Flash".into(),
@@ -5414,6 +5713,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai-org/GLM-5".into(),
@@ -5432,6 +5732,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai-org/GLM-5.1".into(),
@@ -5450,6 +5751,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── kimi-coding -->
@@ -5470,6 +5772,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from("{\"User-Agent\":\"KimiCLI/1.5\"}"),
+            hide: false,
         },
         Model {
             id: "kimi-k2-thinking".into(),
@@ -5488,6 +5791,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from("{\"User-Agent\":\"KimiCLI/1.5\"}"),
+            hide: false,
         },
         // ── end -->
         // ── minimax -->
@@ -5508,6 +5812,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "MiniMax-M2.1".into(),
@@ -5526,6 +5831,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "MiniMax-M2.5".into(),
@@ -5544,6 +5850,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "MiniMax-M2.5-highspeed".into(),
@@ -5562,6 +5869,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "MiniMax-M2.7".into(),
@@ -5580,6 +5888,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "MiniMax-M2.7-highspeed".into(),
@@ -5598,6 +5907,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── minimax-cn -->
@@ -5618,6 +5928,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "MiniMax-M2.1".into(),
@@ -5636,6 +5947,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "MiniMax-M2.5".into(),
@@ -5654,6 +5966,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "MiniMax-M2.5-highspeed".into(),
@@ -5672,6 +5985,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "MiniMax-M2.7".into(),
@@ -5690,6 +6004,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "MiniMax-M2.7-highspeed".into(),
@@ -5708,6 +6023,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── mistral -->
@@ -5728,6 +6044,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "devstral-2512".into(),
@@ -5746,6 +6063,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "devstral-medium-2507".into(),
@@ -5764,6 +6082,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "devstral-medium-latest".into(),
@@ -5782,6 +6101,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "devstral-small-2505".into(),
@@ -5800,6 +6120,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "devstral-small-2507".into(),
@@ -5818,6 +6139,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "labs-devstral-small-2512".into(),
@@ -5836,6 +6158,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "magistral-medium-latest".into(),
@@ -5854,6 +6177,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "magistral-small".into(),
@@ -5872,6 +6196,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "ministral-3b-latest".into(),
@@ -5890,6 +6215,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "ministral-8b-latest".into(),
@@ -5908,6 +6234,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral-large-2411".into(),
@@ -5926,6 +6253,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral-large-2512".into(),
@@ -5944,6 +6272,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral-large-latest".into(),
@@ -5962,6 +6291,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral-medium-2505".into(),
@@ -5980,6 +6310,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral-medium-2508".into(),
@@ -5998,6 +6329,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral-medium-2604".into(),
@@ -6016,6 +6348,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral-medium-latest".into(),
@@ -6034,6 +6367,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral-nemo".into(),
@@ -6052,6 +6386,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral-small-2506".into(),
@@ -6070,6 +6405,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral-small-2603".into(),
@@ -6088,6 +6424,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral-small-latest".into(),
@@ -6106,6 +6443,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "open-mistral-7b".into(),
@@ -6124,6 +6462,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "open-mixtral-8x22b".into(),
@@ -6142,6 +6481,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "open-mixtral-8x7b".into(),
@@ -6160,6 +6500,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "pixtral-12b".into(),
@@ -6178,6 +6519,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "pixtral-large-latest".into(),
@@ -6196,6 +6538,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── moonshotai -->
@@ -6216,6 +6559,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false,\"maxTokensField\":\"max_tokens\",\"supportsStrictMode\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "kimi-k2-0905-preview".into(),
@@ -6234,6 +6578,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false,\"maxTokensField\":\"max_tokens\",\"supportsStrictMode\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "kimi-k2-thinking".into(),
@@ -6252,6 +6597,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false,\"maxTokensField\":\"max_tokens\",\"supportsStrictMode\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "kimi-k2-thinking-turbo".into(),
@@ -6270,6 +6616,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false,\"maxTokensField\":\"max_tokens\",\"supportsStrictMode\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "kimi-k2-turbo-preview".into(),
@@ -6288,6 +6635,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false,\"maxTokensField\":\"max_tokens\",\"supportsStrictMode\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "kimi-k2.5".into(),
@@ -6306,6 +6654,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false,\"maxTokensField\":\"max_tokens\",\"supportsStrictMode\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "kimi-k2.6".into(),
@@ -6324,6 +6673,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false,\"maxTokensField\":\"max_tokens\",\"supportsStrictMode\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── moonshotai-cn -->
@@ -6344,6 +6694,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false,\"maxTokensField\":\"max_tokens\",\"supportsStrictMode\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "kimi-k2-0905-preview".into(),
@@ -6362,6 +6713,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false,\"maxTokensField\":\"max_tokens\",\"supportsStrictMode\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "kimi-k2-thinking".into(),
@@ -6380,6 +6732,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false,\"maxTokensField\":\"max_tokens\",\"supportsStrictMode\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "kimi-k2-thinking-turbo".into(),
@@ -6398,6 +6751,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false,\"maxTokensField\":\"max_tokens\",\"supportsStrictMode\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "kimi-k2-turbo-preview".into(),
@@ -6416,6 +6770,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false,\"maxTokensField\":\"max_tokens\",\"supportsStrictMode\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "kimi-k2.5".into(),
@@ -6434,6 +6789,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false,\"maxTokensField\":\"max_tokens\",\"supportsStrictMode\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "kimi-k2.6".into(),
@@ -6452,6 +6808,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsStore\":false,\"supportsDeveloperRole\":false,\"supportsReasoningEffort\":false,\"maxTokensField\":\"max_tokens\",\"supportsStrictMode\":false}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── openai -->
@@ -6472,6 +6829,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-4-turbo".into(),
@@ -6490,6 +6848,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-4.1".into(),
@@ -6508,6 +6867,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-4.1-mini".into(),
@@ -6526,6 +6886,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-4.1-nano".into(),
@@ -6544,6 +6905,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-4o".into(),
@@ -6562,6 +6924,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-4o-2024-05-13".into(),
@@ -6580,6 +6943,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-4o-2024-08-06".into(),
@@ -6598,6 +6962,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-4o-2024-11-20".into(),
@@ -6616,6 +6981,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-4o-mini".into(),
@@ -6634,6 +7000,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5".into(),
@@ -6652,6 +7019,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5-codex".into(),
@@ -6670,6 +7038,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5-mini".into(),
@@ -6688,6 +7057,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5-nano".into(),
@@ -6706,6 +7076,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5-pro".into(),
@@ -6724,6 +7095,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.1".into(),
@@ -6742,6 +7114,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.1-chat-latest".into(),
@@ -6760,6 +7133,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.1-codex".into(),
@@ -6778,6 +7152,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.1-codex-max".into(),
@@ -6796,6 +7171,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.1-codex-mini".into(),
@@ -6814,6 +7190,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.2".into(),
@@ -6832,6 +7209,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.2-chat-latest".into(),
@@ -6850,6 +7228,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.2-codex".into(),
@@ -6868,6 +7247,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.2-pro".into(),
@@ -6886,6 +7266,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.3-chat-latest".into(),
@@ -6904,6 +7285,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.3-codex".into(),
@@ -6922,6 +7304,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.3-codex-spark".into(),
@@ -6940,6 +7323,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.4".into(),
@@ -6958,6 +7342,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.4-mini".into(),
@@ -6976,6 +7361,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.4-nano".into(),
@@ -6994,6 +7380,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.4-pro".into(),
@@ -7012,6 +7399,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.5".into(),
@@ -7030,6 +7418,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "gpt-5.5-pro".into(),
@@ -7048,6 +7437,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "o1".into(),
@@ -7066,6 +7456,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "o1-pro".into(),
@@ -7084,6 +7475,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "o3".into(),
@@ -7102,6 +7494,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "o3-deep-research".into(),
@@ -7120,6 +7513,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "o3-mini".into(),
@@ -7138,6 +7532,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "o3-pro".into(),
@@ -7156,6 +7551,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "o4-mini".into(),
@@ -7174,6 +7570,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "o4-mini-deep-research".into(),
@@ -7192,6 +7589,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── openai-codex -->
@@ -7212,6 +7610,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"minimal\":\"low\",\"off\":null,\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── opencode -->
@@ -7232,6 +7631,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"requiresReasoningContentOnAssistantMessages\":true,\"thinkingFormat\":\"deepseek\"}"),
             tlm_json: String::from("{\"high\":\"high\",\"low\":null,\"medium\":null,\"minimal\":null,\"xhigh\":\"max\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "kimi-k2.6".into(),
@@ -7250,6 +7650,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── opencode-go -->
@@ -7270,6 +7671,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"requiresReasoningContentOnAssistantMessages\":true,\"thinkingFormat\":\"deepseek\"}"),
             tlm_json: String::from("{\"high\":\"high\",\"low\":null,\"medium\":null,\"minimal\":null,\"xhigh\":\"max\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "kimi-k2.6".into(),
@@ -7288,6 +7690,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── openrouter -->
@@ -7308,6 +7711,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "alibaba/tongyi-deepresearch-30b-a3b".into(),
@@ -7326,6 +7730,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "amazon/nova-2-lite-v1".into(),
@@ -7344,6 +7749,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "amazon/nova-lite-v1".into(),
@@ -7362,6 +7768,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "amazon/nova-micro-v1".into(),
@@ -7380,6 +7787,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "amazon/nova-premier-v1".into(),
@@ -7398,6 +7806,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "amazon/nova-pro-v1".into(),
@@ -7416,6 +7825,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-3-haiku".into(),
@@ -7434,6 +7844,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-3.5-haiku".into(),
@@ -7452,6 +7863,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-haiku-4.5".into(),
@@ -7470,6 +7882,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-opus-4".into(),
@@ -7488,6 +7901,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-opus-4.1".into(),
@@ -7506,6 +7920,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-opus-4.5".into(),
@@ -7524,6 +7939,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-opus-4.6".into(),
@@ -7542,6 +7958,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"max\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-opus-4.6-fast".into(),
@@ -7560,6 +7977,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"max\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-opus-4.7".into(),
@@ -7578,6 +7996,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-sonnet-4".into(),
@@ -7596,6 +8015,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-sonnet-4.5".into(),
@@ -7614,6 +8034,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-sonnet-4.6".into(),
@@ -7632,6 +8053,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "arcee-ai/trinity-large-preview".into(),
@@ -7650,6 +8072,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "arcee-ai/trinity-large-thinking".into(),
@@ -7668,6 +8091,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "arcee-ai/trinity-large-thinking:free".into(),
@@ -7686,6 +8110,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "arcee-ai/trinity-mini".into(),
@@ -7704,6 +8129,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "arcee-ai/virtuoso-large".into(),
@@ -7722,6 +8148,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "baidu/cobuddy:free".into(),
@@ -7740,6 +8167,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "baidu/ernie-4.5-21b-a3b".into(),
@@ -7758,6 +8186,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "baidu/ernie-4.5-vl-28b-a3b".into(),
@@ -7776,6 +8205,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "bytedance-seed/seed-1.6".into(),
@@ -7794,6 +8224,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "bytedance-seed/seed-1.6-flash".into(),
@@ -7812,6 +8243,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "bytedance-seed/seed-2.0-lite".into(),
@@ -7830,6 +8262,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "bytedance-seed/seed-2.0-mini".into(),
@@ -7848,6 +8281,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "cohere/command-r-08-2024".into(),
@@ -7866,6 +8300,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "cohere/command-r-plus-08-2024".into(),
@@ -7884,6 +8319,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek/deepseek-chat".into(),
@@ -7902,6 +8338,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek/deepseek-chat-v3-0324".into(),
@@ -7920,6 +8357,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek/deepseek-chat-v3.1".into(),
@@ -7938,6 +8376,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek/deepseek-r1".into(),
@@ -7956,6 +8395,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek/deepseek-r1-0528".into(),
@@ -7974,6 +8414,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek/deepseek-v3.1-terminus".into(),
@@ -7992,6 +8433,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek/deepseek-v3.2".into(),
@@ -8010,6 +8452,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek/deepseek-v3.2-exp".into(),
@@ -8028,6 +8471,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek/deepseek-v4-flash".into(),
@@ -8046,6 +8490,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"requiresReasoningContentOnAssistantMessages\":true,\"thinkingFormat\":\"deepseek\"}"),
             tlm_json: String::from("{\"high\":\"high\",\"low\":null,\"medium\":null,\"minimal\":null,\"xhigh\":\"max\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek/deepseek-v4-pro".into(),
@@ -8064,6 +8509,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"requiresReasoningContentOnAssistantMessages\":true,\"thinkingFormat\":\"deepseek\"}"),
             tlm_json: String::from("{\"high\":\"high\",\"low\":null,\"medium\":null,\"minimal\":null,\"xhigh\":\"max\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "essentialai/rnj-1-instruct".into(),
@@ -8082,6 +8528,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-2.0-flash-001".into(),
@@ -8100,6 +8547,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-2.0-flash-lite-001".into(),
@@ -8118,6 +8566,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-2.5-flash".into(),
@@ -8136,6 +8585,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-2.5-flash-lite".into(),
@@ -8154,6 +8604,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-2.5-flash-lite-preview-09-2025".into(),
@@ -8172,6 +8623,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-2.5-pro".into(),
@@ -8190,6 +8642,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-2.5-pro-preview".into(),
@@ -8208,6 +8661,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-2.5-pro-preview-05-06".into(),
@@ -8226,6 +8680,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-3-flash-preview".into(),
@@ -8244,6 +8699,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-3.1-flash-lite".into(),
@@ -8262,6 +8718,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-3.1-flash-lite-preview".into(),
@@ -8280,6 +8737,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-3.1-pro-preview".into(),
@@ -8298,6 +8756,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-3.1-pro-preview-customtools".into(),
@@ -8316,6 +8775,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemma-3-12b-it".into(),
@@ -8334,6 +8794,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemma-3-27b-it".into(),
@@ -8352,6 +8813,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemma-4-26b-a4b-it".into(),
@@ -8370,6 +8832,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemma-4-26b-a4b-it:free".into(),
@@ -8388,6 +8851,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemma-4-31b-it".into(),
@@ -8406,6 +8870,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemma-4-31b-it:free".into(),
@@ -8424,6 +8889,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "ibm-granite/granite-4.1-8b".into(),
@@ -8442,6 +8908,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "inception/mercury-2".into(),
@@ -8460,6 +8927,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "inclusionai/ling-2.6-1t".into(),
@@ -8478,6 +8946,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "inclusionai/ling-2.6-flash".into(),
@@ -8496,6 +8965,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "inclusionai/ring-2.6-1t:free".into(),
@@ -8514,6 +8984,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "kwaipilot/kat-coder-pro-v2".into(),
@@ -8532,6 +9003,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta-llama/llama-3.1-70b-instruct".into(),
@@ -8550,6 +9022,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta-llama/llama-3.1-8b-instruct".into(),
@@ -8568,6 +9041,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta-llama/llama-3.3-70b-instruct".into(),
@@ -8586,6 +9060,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta-llama/llama-3.3-70b-instruct:free".into(),
@@ -8604,6 +9079,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta-llama/llama-4-scout".into(),
@@ -8622,6 +9098,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "minimax/minimax-m1".into(),
@@ -8640,6 +9117,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "minimax/minimax-m2".into(),
@@ -8658,6 +9136,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "minimax/minimax-m2.1".into(),
@@ -8676,6 +9155,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "minimax/minimax-m2.5".into(),
@@ -8694,6 +9174,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "minimax/minimax-m2.5:free".into(),
@@ -8712,6 +9193,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "minimax/minimax-m2.7".into(),
@@ -8730,6 +9212,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/codestral-2508".into(),
@@ -8748,6 +9231,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/devstral-2512".into(),
@@ -8766,6 +9250,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/devstral-medium".into(),
@@ -8784,6 +9269,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/devstral-small".into(),
@@ -8802,6 +9288,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/ministral-14b-2512".into(),
@@ -8820,6 +9307,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/ministral-3b-2512".into(),
@@ -8838,6 +9326,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/ministral-8b-2512".into(),
@@ -8856,6 +9345,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/mistral-large".into(),
@@ -8874,6 +9364,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/mistral-large-2407".into(),
@@ -8892,6 +9383,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/mistral-large-2411".into(),
@@ -8910,6 +9402,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/mistral-large-2512".into(),
@@ -8928,6 +9421,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/mistral-medium-3".into(),
@@ -8946,6 +9440,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/mistral-medium-3-5".into(),
@@ -8964,6 +9459,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/mistral-medium-3.1".into(),
@@ -8982,6 +9478,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/mistral-nemo".into(),
@@ -9000,6 +9497,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/mistral-saba".into(),
@@ -9018,6 +9516,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/mistral-small-2603".into(),
@@ -9036,6 +9535,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/mistral-small-3.2-24b-instruct".into(),
@@ -9054,6 +9554,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/mixtral-8x22b-instruct".into(),
@@ -9072,6 +9573,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/pixtral-large-2411".into(),
@@ -9090,6 +9592,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistralai/voxtral-small-24b-2507".into(),
@@ -9108,6 +9611,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/kimi-k2".into(),
@@ -9126,6 +9630,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/kimi-k2-0905".into(),
@@ -9144,6 +9649,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/kimi-k2-thinking".into(),
@@ -9162,6 +9668,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/kimi-k2.5".into(),
@@ -9180,6 +9687,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/kimi-k2.6".into(),
@@ -9198,6 +9706,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "nex-agi/deepseek-v3.1-nex-n1".into(),
@@ -9216,6 +9725,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "nvidia/llama-3.3-nemotron-super-49b-v1.5".into(),
@@ -9234,6 +9744,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "nvidia/nemotron-3-nano-30b-a3b".into(),
@@ -9252,6 +9763,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "nvidia/nemotron-3-nano-30b-a3b:free".into(),
@@ -9270,6 +9782,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free".into(),
@@ -9288,6 +9801,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "nvidia/nemotron-3-super-120b-a12b".into(),
@@ -9306,6 +9820,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "nvidia/nemotron-3-super-120b-a12b:free".into(),
@@ -9324,6 +9839,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "nvidia/nemotron-nano-12b-v2-vl:free".into(),
@@ -9342,6 +9858,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "nvidia/nemotron-nano-9b-v2".into(),
@@ -9360,6 +9877,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "nvidia/nemotron-nano-9b-v2:free".into(),
@@ -9378,6 +9896,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-3.5-turbo".into(),
@@ -9396,6 +9915,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-3.5-turbo-0613".into(),
@@ -9414,6 +9934,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-3.5-turbo-16k".into(),
@@ -9432,6 +9953,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4".into(),
@@ -9450,6 +9972,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4-0314".into(),
@@ -9468,6 +9991,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4-1106-preview".into(),
@@ -9486,6 +10010,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4-turbo".into(),
@@ -9504,6 +10029,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4-turbo-preview".into(),
@@ -9522,6 +10048,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4.1".into(),
@@ -9540,6 +10067,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4.1-mini".into(),
@@ -9558,6 +10086,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4.1-nano".into(),
@@ -9576,6 +10105,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4o".into(),
@@ -9594,6 +10124,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4o-2024-05-13".into(),
@@ -9612,6 +10143,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4o-2024-08-06".into(),
@@ -9630,6 +10162,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4o-2024-11-20".into(),
@@ -9648,6 +10181,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4o-audio-preview".into(),
@@ -9666,6 +10200,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4o-mini".into(),
@@ -9684,6 +10219,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4o-mini-2024-07-18".into(),
@@ -9702,6 +10238,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5".into(),
@@ -9720,6 +10257,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5-codex".into(),
@@ -9738,6 +10276,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5-mini".into(),
@@ -9756,6 +10295,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5-nano".into(),
@@ -9774,6 +10314,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5-pro".into(),
@@ -9792,6 +10333,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.1".into(),
@@ -9810,6 +10352,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.1-chat".into(),
@@ -9828,6 +10371,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.1-codex".into(),
@@ -9846,6 +10390,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.1-codex-max".into(),
@@ -9864,6 +10409,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.1-codex-mini".into(),
@@ -9882,6 +10428,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.2".into(),
@@ -9900,6 +10447,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.2-chat".into(),
@@ -9918,6 +10466,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.2-codex".into(),
@@ -9936,6 +10485,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.2-pro".into(),
@@ -9954,6 +10504,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.3-chat".into(),
@@ -9972,6 +10523,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.3-codex".into(),
@@ -9990,6 +10542,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.4".into(),
@@ -10008,6 +10561,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.4-mini".into(),
@@ -10026,6 +10580,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.4-nano".into(),
@@ -10044,6 +10599,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.4-pro".into(),
@@ -10062,6 +10618,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.5".into(),
@@ -10080,6 +10637,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.5-pro".into(),
@@ -10098,6 +10656,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-audio".into(),
@@ -10116,6 +10675,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-audio-mini".into(),
@@ -10134,6 +10694,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-chat-latest".into(),
@@ -10152,6 +10713,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-oss-120b".into(),
@@ -10170,6 +10732,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-oss-120b:free".into(),
@@ -10188,6 +10751,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-oss-20b".into(),
@@ -10206,6 +10770,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-oss-20b:free".into(),
@@ -10224,6 +10789,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-oss-safeguard-20b".into(),
@@ -10242,6 +10808,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/o1".into(),
@@ -10260,6 +10827,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/o3".into(),
@@ -10278,6 +10846,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/o3-deep-research".into(),
@@ -10296,6 +10865,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/o3-mini".into(),
@@ -10314,6 +10884,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/o3-mini-high".into(),
@@ -10332,6 +10903,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/o3-pro".into(),
@@ -10350,6 +10922,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/o4-mini".into(),
@@ -10368,6 +10941,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/o4-mini-deep-research".into(),
@@ -10386,6 +10960,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/o4-mini-high".into(),
@@ -10404,6 +10979,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openrouter/auto".into(),
@@ -10422,6 +10998,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openrouter/free".into(),
@@ -10440,6 +11017,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openrouter/owl-alpha".into(),
@@ -10458,6 +11036,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "poolside/laguna-m.1:free".into(),
@@ -10476,6 +11055,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "poolside/laguna-xs.2:free".into(),
@@ -10494,6 +11074,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "prime-intellect/intellect-3".into(),
@@ -10512,6 +11093,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen-2.5-72b-instruct".into(),
@@ -10530,6 +11112,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen-2.5-7b-instruct".into(),
@@ -10548,6 +11131,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen-max".into(),
@@ -10566,6 +11150,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen-plus".into(),
@@ -10584,6 +11169,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen-plus-2025-07-28".into(),
@@ -10602,6 +11188,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen-plus-2025-07-28:thinking".into(),
@@ -10620,6 +11207,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen-turbo".into(),
@@ -10638,6 +11226,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen-vl-max".into(),
@@ -10656,6 +11245,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-14b".into(),
@@ -10674,6 +11264,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-235b-a22b".into(),
@@ -10692,6 +11283,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-235b-a22b-2507".into(),
@@ -10710,6 +11302,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-235b-a22b-thinking-2507".into(),
@@ -10728,6 +11321,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-30b-a3b".into(),
@@ -10746,6 +11340,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-30b-a3b-instruct-2507".into(),
@@ -10764,6 +11359,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-30b-a3b-thinking-2507".into(),
@@ -10782,6 +11378,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-32b".into(),
@@ -10800,6 +11397,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-8b".into(),
@@ -10818,6 +11416,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-coder".into(),
@@ -10836,6 +11435,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-coder-30b-a3b-instruct".into(),
@@ -10854,6 +11454,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-coder-flash".into(),
@@ -10872,6 +11473,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-coder-next".into(),
@@ -10890,6 +11492,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-coder-plus".into(),
@@ -10908,6 +11511,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-coder:free".into(),
@@ -10926,6 +11530,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-max".into(),
@@ -10944,6 +11549,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-max-thinking".into(),
@@ -10962,6 +11568,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-next-80b-a3b-instruct".into(),
@@ -10980,6 +11587,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-next-80b-a3b-instruct:free".into(),
@@ -10998,6 +11606,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-next-80b-a3b-thinking".into(),
@@ -11016,6 +11625,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-vl-235b-a22b-instruct".into(),
@@ -11034,6 +11644,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-vl-235b-a22b-thinking".into(),
@@ -11052,6 +11663,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-vl-30b-a3b-instruct".into(),
@@ -11070,6 +11682,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-vl-30b-a3b-thinking".into(),
@@ -11088,6 +11701,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-vl-32b-instruct".into(),
@@ -11106,6 +11720,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-vl-8b-instruct".into(),
@@ -11124,6 +11739,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3-vl-8b-thinking".into(),
@@ -11142,6 +11758,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3.5-122b-a10b".into(),
@@ -11160,6 +11777,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3.5-27b".into(),
@@ -11178,6 +11796,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3.5-35b-a3b".into(),
@@ -11196,6 +11815,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3.5-397b-a17b".into(),
@@ -11214,6 +11834,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3.5-9b".into(),
@@ -11232,6 +11853,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3.5-flash-02-23".into(),
@@ -11250,6 +11872,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3.5-plus-02-15".into(),
@@ -11268,6 +11891,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3.5-plus-20260420".into(),
@@ -11286,6 +11910,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3.6-27b".into(),
@@ -11304,6 +11929,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3.6-35b-a3b".into(),
@@ -11322,6 +11948,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3.6-flash".into(),
@@ -11340,6 +11967,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3.6-max-preview".into(),
@@ -11358,6 +11986,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "qwen/qwen3.6-plus".into(),
@@ -11376,6 +12005,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "rekaai/reka-edge".into(),
@@ -11394,6 +12024,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "relace/relace-search".into(),
@@ -11412,6 +12043,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "sao10k/l3-euryale-70b".into(),
@@ -11430,6 +12062,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "sao10k/l3.1-euryale-70b".into(),
@@ -11448,6 +12081,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "stepfun/step-3.5-flash".into(),
@@ -11466,6 +12100,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "tencent/hy3-preview".into(),
@@ -11484,6 +12119,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "thedrummer/rocinante-12b".into(),
@@ -11502,6 +12138,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "thedrummer/unslopnemo-12b".into(),
@@ -11520,6 +12157,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "upstage/solar-pro-3".into(),
@@ -11538,6 +12176,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "x-ai/grok-3".into(),
@@ -11556,6 +12195,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "x-ai/grok-3-beta".into(),
@@ -11574,6 +12214,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "x-ai/grok-3-mini".into(),
@@ -11592,6 +12233,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "x-ai/grok-3-mini-beta".into(),
@@ -11610,6 +12252,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "x-ai/grok-4".into(),
@@ -11628,6 +12271,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "x-ai/grok-4-fast".into(),
@@ -11646,6 +12290,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "x-ai/grok-4.1-fast".into(),
@@ -11664,6 +12309,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "x-ai/grok-4.20".into(),
@@ -11682,6 +12328,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "x-ai/grok-4.3".into(),
@@ -11700,6 +12347,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "x-ai/grok-code-fast-1".into(),
@@ -11718,6 +12366,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xiaomi/mimo-v2-flash".into(),
@@ -11736,6 +12385,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xiaomi/mimo-v2-omni".into(),
@@ -11754,6 +12404,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xiaomi/mimo-v2-pro".into(),
@@ -11772,6 +12423,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xiaomi/mimo-v2.5".into(),
@@ -11790,6 +12442,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xiaomi/mimo-v2.5-pro".into(),
@@ -11808,6 +12461,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "z-ai/glm-4-32b".into(),
@@ -11826,6 +12480,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "z-ai/glm-4.5".into(),
@@ -11844,6 +12499,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "z-ai/glm-4.5-air".into(),
@@ -11862,6 +12518,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "z-ai/glm-4.5-air:free".into(),
@@ -11880,6 +12537,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "z-ai/glm-4.5v".into(),
@@ -11898,6 +12556,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "z-ai/glm-4.6".into(),
@@ -11916,6 +12575,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "z-ai/glm-4.6v".into(),
@@ -11934,6 +12594,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "z-ai/glm-4.7".into(),
@@ -11952,6 +12613,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "z-ai/glm-4.7-flash".into(),
@@ -11970,6 +12632,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "z-ai/glm-5".into(),
@@ -11988,6 +12651,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "z-ai/glm-5-turbo".into(),
@@ -12006,6 +12670,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "z-ai/glm-5.1".into(),
@@ -12024,6 +12689,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "z-ai/glm-5v-turbo".into(),
@@ -12042,6 +12708,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "~anthropic/claude-haiku-latest".into(),
@@ -12060,6 +12727,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "~anthropic/claude-opus-latest".into(),
@@ -12078,6 +12746,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "~anthropic/claude-sonnet-latest".into(),
@@ -12096,6 +12765,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "~google/gemini-flash-latest".into(),
@@ -12114,6 +12784,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "~google/gemini-pro-latest".into(),
@@ -12132,6 +12803,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "~moonshotai/kimi-latest".into(),
@@ -12150,6 +12822,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "~openai/gpt-latest".into(),
@@ -12168,6 +12841,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "~openai/gpt-mini-latest".into(),
@@ -12186,6 +12860,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── vercel-ai-gateway -->
@@ -12206,6 +12881,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "alibaba/qwen-3-235b".into(),
@@ -12224,6 +12900,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "alibaba/qwen-3-30b".into(),
@@ -12242,6 +12919,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "alibaba/qwen-3-32b".into(),
@@ -12260,6 +12938,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "alibaba/qwen-3.6-max-preview".into(),
@@ -12278,6 +12957,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "alibaba/qwen3-235b-a22b-thinking".into(),
@@ -12296,6 +12976,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "alibaba/qwen3-coder".into(),
@@ -12314,6 +12995,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "alibaba/qwen3-coder-30b-a3b".into(),
@@ -12332,6 +13014,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "alibaba/qwen3-coder-next".into(),
@@ -12350,6 +13033,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "alibaba/qwen3-coder-plus".into(),
@@ -12368,6 +13052,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "alibaba/qwen3-max".into(),
@@ -12386,6 +13071,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "alibaba/qwen3-max-preview".into(),
@@ -12404,6 +13090,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "alibaba/qwen3-max-thinking".into(),
@@ -12422,6 +13109,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "alibaba/qwen3-vl-thinking".into(),
@@ -12440,6 +13128,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "alibaba/qwen3.5-flash".into(),
@@ -12458,6 +13147,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "alibaba/qwen3.5-plus".into(),
@@ -12476,6 +13166,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "alibaba/qwen3.6-27b".into(),
@@ -12494,6 +13185,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "alibaba/qwen3.6-plus".into(),
@@ -12512,6 +13204,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-3-haiku".into(),
@@ -12530,6 +13223,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-3.5-haiku".into(),
@@ -12548,6 +13242,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-haiku-4.5".into(),
@@ -12566,6 +13261,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-opus-4".into(),
@@ -12584,6 +13280,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-opus-4.1".into(),
@@ -12602,6 +13299,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-opus-4.5".into(),
@@ -12620,6 +13318,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-opus-4.6".into(),
@@ -12638,6 +13337,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"max\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-opus-4.7".into(),
@@ -12656,6 +13356,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-sonnet-4".into(),
@@ -12674,6 +13375,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-sonnet-4.5".into(),
@@ -12692,6 +13394,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "anthropic/claude-sonnet-4.6".into(),
@@ -12710,6 +13413,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "arcee-ai/trinity-large-preview".into(),
@@ -12728,6 +13432,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "arcee-ai/trinity-large-thinking".into(),
@@ -12746,6 +13451,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "bytedance/seed-1.6".into(),
@@ -12764,6 +13470,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "cohere/command-a".into(),
@@ -12782,6 +13489,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek/deepseek-r1".into(),
@@ -12800,6 +13508,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek/deepseek-v3".into(),
@@ -12818,6 +13527,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek/deepseek-v3.1".into(),
@@ -12836,6 +13546,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek/deepseek-v3.1-terminus".into(),
@@ -12854,6 +13565,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek/deepseek-v3.2".into(),
@@ -12872,6 +13584,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek/deepseek-v3.2-thinking".into(),
@@ -12890,6 +13603,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek/deepseek-v4-flash".into(),
@@ -12908,6 +13622,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "deepseek/deepseek-v4-pro".into(),
@@ -12926,6 +13641,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-2.0-flash".into(),
@@ -12944,6 +13660,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-2.0-flash-lite".into(),
@@ -12962,6 +13679,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-2.5-flash".into(),
@@ -12980,6 +13698,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-2.5-flash-lite".into(),
@@ -12998,6 +13717,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-2.5-pro".into(),
@@ -13016,6 +13736,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-3-flash".into(),
@@ -13034,6 +13755,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-3-pro-preview".into(),
@@ -13052,6 +13774,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-3.1-flash-lite".into(),
@@ -13070,6 +13793,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-3.1-flash-lite-preview".into(),
@@ -13088,6 +13812,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemini-3.1-pro-preview".into(),
@@ -13106,6 +13831,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemma-4-26b-a4b-it".into(),
@@ -13124,6 +13850,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "google/gemma-4-31b-it".into(),
@@ -13142,6 +13869,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "inception/mercury-2".into(),
@@ -13160,6 +13888,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "inception/mercury-coder-small".into(),
@@ -13178,6 +13907,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "kwaipilot/kat-coder-pro-v2".into(),
@@ -13196,6 +13926,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meituan/longcat-flash-chat".into(),
@@ -13214,6 +13945,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta/llama-3.1-70b".into(),
@@ -13232,6 +13964,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta/llama-3.1-8b".into(),
@@ -13250,6 +13983,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta/llama-3.2-11b".into(),
@@ -13268,6 +14002,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta/llama-3.2-90b".into(),
@@ -13286,6 +14021,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta/llama-3.3-70b".into(),
@@ -13304,6 +14040,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta/llama-4-maverick".into(),
@@ -13322,6 +14059,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "meta/llama-4-scout".into(),
@@ -13340,6 +14078,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "minimax/minimax-m2".into(),
@@ -13358,6 +14097,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "minimax/minimax-m2.1".into(),
@@ -13376,6 +14116,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "minimax/minimax-m2.1-lightning".into(),
@@ -13394,6 +14135,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "minimax/minimax-m2.5".into(),
@@ -13412,6 +14154,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "minimax/minimax-m2.5-highspeed".into(),
@@ -13430,6 +14173,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "minimax/minimax-m2.7".into(),
@@ -13448,6 +14192,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "minimax/minimax-m2.7-highspeed".into(),
@@ -13466,6 +14211,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral/codestral".into(),
@@ -13484,6 +14230,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral/devstral-2".into(),
@@ -13502,6 +14249,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral/devstral-small".into(),
@@ -13520,6 +14268,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral/devstral-small-2".into(),
@@ -13538,6 +14287,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral/ministral-3b".into(),
@@ -13556,6 +14306,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral/ministral-8b".into(),
@@ -13574,6 +14325,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral/mistral-medium".into(),
@@ -13592,6 +14344,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral/mistral-small".into(),
@@ -13610,6 +14363,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral/pixtral-12b".into(),
@@ -13628,6 +14382,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mistral/pixtral-large".into(),
@@ -13646,6 +14401,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/kimi-k2".into(),
@@ -13664,6 +14420,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/kimi-k2-thinking".into(),
@@ -13682,6 +14439,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/kimi-k2-thinking-turbo".into(),
@@ -13700,6 +14458,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/kimi-k2-turbo".into(),
@@ -13718,6 +14477,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/kimi-k2.5".into(),
@@ -13736,6 +14496,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "moonshotai/kimi-k2.6".into(),
@@ -13754,6 +14515,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "nvidia/nemotron-nano-12b-v2-vl".into(),
@@ -13772,6 +14534,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "nvidia/nemotron-nano-9b-v2".into(),
@@ -13790,6 +14553,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4-turbo".into(),
@@ -13808,6 +14572,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4.1".into(),
@@ -13826,6 +14591,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4.1-mini".into(),
@@ -13844,6 +14610,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4.1-nano".into(),
@@ -13862,6 +14629,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4o".into(),
@@ -13880,6 +14648,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-4o-mini".into(),
@@ -13898,6 +14667,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5".into(),
@@ -13916,6 +14686,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5-chat".into(),
@@ -13934,6 +14705,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5-codex".into(),
@@ -13952,6 +14724,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5-mini".into(),
@@ -13970,6 +14743,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5-nano".into(),
@@ -13988,6 +14762,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5-pro".into(),
@@ -14006,6 +14781,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.1-codex".into(),
@@ -14024,6 +14800,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.1-codex-max".into(),
@@ -14042,6 +14819,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.1-codex-mini".into(),
@@ -14060,6 +14838,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.1-instant".into(),
@@ -14078,6 +14857,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.1-thinking".into(),
@@ -14096,6 +14876,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.2".into(),
@@ -14114,6 +14895,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.2-chat".into(),
@@ -14132,6 +14914,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.2-codex".into(),
@@ -14150,6 +14933,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.2-pro".into(),
@@ -14168,6 +14952,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.3-chat".into(),
@@ -14186,6 +14971,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.3-codex".into(),
@@ -14204,6 +14990,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.4".into(),
@@ -14222,6 +15009,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.4-mini".into(),
@@ -14240,6 +15028,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.4-nano".into(),
@@ -14258,6 +15047,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.4-pro".into(),
@@ -14276,6 +15066,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.5".into(),
@@ -14294,6 +15085,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-5.5-pro".into(),
@@ -14312,6 +15104,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from("{\"xhigh\":\"xhigh\"}"),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-oss-20b".into(),
@@ -14330,6 +15123,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/gpt-oss-safeguard-20b".into(),
@@ -14348,6 +15142,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/o1".into(),
@@ -14366,6 +15161,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/o3".into(),
@@ -14384,6 +15180,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/o3-deep-research".into(),
@@ -14402,6 +15199,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/o3-mini".into(),
@@ -14420,6 +15218,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/o3-pro".into(),
@@ -14438,6 +15237,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "openai/o4-mini".into(),
@@ -14456,6 +15256,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "perplexity/sonar".into(),
@@ -14474,6 +15275,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "perplexity/sonar-pro".into(),
@@ -14492,6 +15294,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xai/grok-3".into(),
@@ -14510,6 +15313,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xai/grok-3-fast".into(),
@@ -14528,6 +15332,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xai/grok-3-mini".into(),
@@ -14546,6 +15351,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xai/grok-3-mini-fast".into(),
@@ -14564,6 +15370,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xai/grok-4".into(),
@@ -14582,6 +15389,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xai/grok-4-fast-non-reasoning".into(),
@@ -14600,6 +15408,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xai/grok-4-fast-reasoning".into(),
@@ -14618,6 +15427,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xai/grok-4.1-fast-non-reasoning".into(),
@@ -14636,6 +15446,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xai/grok-4.1-fast-reasoning".into(),
@@ -14654,6 +15465,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xai/grok-4.20-multi-agent".into(),
@@ -14672,6 +15484,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xai/grok-4.20-multi-agent-beta".into(),
@@ -14690,6 +15503,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xai/grok-4.20-non-reasoning".into(),
@@ -14708,6 +15522,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xai/grok-4.20-non-reasoning-beta".into(),
@@ -14726,6 +15541,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xai/grok-4.20-reasoning".into(),
@@ -14744,6 +15560,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xai/grok-4.20-reasoning-beta".into(),
@@ -14762,6 +15579,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xai/grok-4.3".into(),
@@ -14780,6 +15598,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xai/grok-code-fast-1".into(),
@@ -14798,6 +15617,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xiaomi/mimo-v2-flash".into(),
@@ -14816,6 +15636,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xiaomi/mimo-v2-pro".into(),
@@ -14834,6 +15655,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xiaomi/mimo-v2.5".into(),
@@ -14852,6 +15674,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "xiaomi/mimo-v2.5-pro".into(),
@@ -14870,6 +15693,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai/glm-4.5".into(),
@@ -14888,6 +15712,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai/glm-4.5-air".into(),
@@ -14906,6 +15731,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai/glm-4.5v".into(),
@@ -14924,6 +15750,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai/glm-4.6".into(),
@@ -14942,6 +15769,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai/glm-4.6v".into(),
@@ -14960,6 +15788,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai/glm-4.6v-flash".into(),
@@ -14978,6 +15807,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai/glm-4.7".into(),
@@ -14996,6 +15826,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai/glm-4.7-flash".into(),
@@ -15014,6 +15845,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai/glm-4.7-flashx".into(),
@@ -15032,6 +15864,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai/glm-5".into(),
@@ -15050,6 +15883,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai/glm-5-turbo".into(),
@@ -15068,6 +15902,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai/glm-5.1".into(),
@@ -15086,6 +15921,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "zai/glm-5v-turbo".into(),
@@ -15104,6 +15940,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── xai -->
@@ -15124,6 +15961,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-2-1212".into(),
@@ -15142,6 +15980,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-2-latest".into(),
@@ -15160,6 +15999,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-2-vision".into(),
@@ -15178,6 +16018,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-2-vision-1212".into(),
@@ -15196,6 +16037,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-2-vision-latest".into(),
@@ -15214,6 +16056,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-3".into(),
@@ -15232,6 +16075,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-3-fast".into(),
@@ -15250,6 +16094,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-3-fast-latest".into(),
@@ -15268,6 +16113,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-3-latest".into(),
@@ -15286,6 +16132,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-3-mini".into(),
@@ -15304,6 +16151,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-3-mini-fast".into(),
@@ -15322,6 +16170,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-3-mini-fast-latest".into(),
@@ -15340,6 +16189,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-3-mini-latest".into(),
@@ -15358,6 +16208,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-4".into(),
@@ -15376,6 +16227,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-4-1-fast".into(),
@@ -15394,6 +16246,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-4-1-fast-non-reasoning".into(),
@@ -15412,6 +16265,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-4-fast".into(),
@@ -15430,6 +16284,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-4-fast-non-reasoning".into(),
@@ -15448,6 +16303,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-4.20-0309-non-reasoning".into(),
@@ -15466,6 +16322,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-4.20-0309-reasoning".into(),
@@ -15484,6 +16341,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-4.3".into(),
@@ -15502,6 +16360,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-beta".into(),
@@ -15520,6 +16379,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-code-fast-1".into(),
@@ -15538,6 +16398,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "grok-vision-beta".into(),
@@ -15556,6 +16417,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── xiaomi -->
@@ -15576,6 +16438,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mimo-v2-omni".into(),
@@ -15594,6 +16457,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mimo-v2-pro".into(),
@@ -15612,6 +16476,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mimo-v2.5".into(),
@@ -15630,6 +16495,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mimo-v2.5-pro".into(),
@@ -15648,6 +16514,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── xiaomi-token-plan-ams -->
@@ -15668,6 +16535,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mimo-v2-omni".into(),
@@ -15686,6 +16554,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mimo-v2-pro".into(),
@@ -15704,6 +16573,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mimo-v2.5".into(),
@@ -15722,6 +16592,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mimo-v2.5-pro".into(),
@@ -15740,6 +16611,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── xiaomi-token-plan-cn -->
@@ -15760,6 +16632,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mimo-v2-omni".into(),
@@ -15778,6 +16651,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mimo-v2-pro".into(),
@@ -15796,6 +16670,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mimo-v2.5".into(),
@@ -15814,6 +16689,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mimo-v2.5-pro".into(),
@@ -15832,6 +16708,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── xiaomi-token-plan-sgp -->
@@ -15852,6 +16729,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mimo-v2-omni".into(),
@@ -15870,6 +16748,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mimo-v2-pro".into(),
@@ -15888,6 +16767,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mimo-v2.5".into(),
@@ -15906,6 +16786,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "mimo-v2.5-pro".into(),
@@ -15924,6 +16805,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── zai -->
@@ -15944,6 +16826,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false,\"thinkingFormat\":\"zai\"}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-4.5-air".into(),
@@ -15962,6 +16845,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false,\"thinkingFormat\":\"zai\"}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-4.5-flash".into(),
@@ -15980,6 +16864,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false,\"thinkingFormat\":\"zai\"}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-4.5v".into(),
@@ -15998,6 +16883,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false,\"thinkingFormat\":\"zai\"}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-4.6".into(),
@@ -16016,6 +16902,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false,\"thinkingFormat\":\"zai\",\"zaiToolStream\":true}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-4.6v".into(),
@@ -16034,6 +16921,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false,\"thinkingFormat\":\"zai\",\"zaiToolStream\":true}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-4.7".into(),
@@ -16052,6 +16940,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false,\"thinkingFormat\":\"zai\",\"zaiToolStream\":true}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-4.7-flash".into(),
@@ -16070,6 +16959,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false,\"thinkingFormat\":\"zai\",\"zaiToolStream\":true}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-4.7-flashx".into(),
@@ -16088,6 +16978,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false,\"thinkingFormat\":\"zai\",\"zaiToolStream\":true}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-5".into(),
@@ -16106,6 +16997,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false,\"thinkingFormat\":\"zai\",\"zaiToolStream\":true}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-5-turbo".into(),
@@ -16124,6 +17016,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false,\"thinkingFormat\":\"zai\",\"zaiToolStream\":true}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-5.1".into(),
@@ -16142,6 +17035,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false,\"thinkingFormat\":\"zai\",\"zaiToolStream\":true}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-5v-turbo".into(),
@@ -16160,6 +17054,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from("{\"supportsDeveloperRole\":false,\"thinkingFormat\":\"zai\",\"zaiToolStream\":true}"),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
         // ── zhipuai -->
@@ -16180,6 +17075,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-4.5-air".into(),
@@ -16198,6 +17094,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-4.5-flash".into(),
@@ -16216,6 +17113,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-4.5v".into(),
@@ -16234,6 +17132,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-4.6".into(),
@@ -16252,6 +17151,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-4.6v".into(),
@@ -16270,6 +17170,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-4.7".into(),
@@ -16288,6 +17189,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-4.7-flash".into(),
@@ -16306,6 +17208,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-4.7-flashx".into(),
@@ -16324,6 +17227,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-5".into(),
@@ -16342,6 +17246,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-5.1".into(),
@@ -16360,6 +17265,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         Model {
             id: "glm-5v-turbo".into(),
@@ -16378,6 +17284,7 @@ pub fn init_builtin_models() -> Vec<Model> {
             compat_json: String::from(""),
             tlm_json: String::from(""),
             headers_json: String::from(""),
+            hide: false,
         },
         // ── end -->
     ]

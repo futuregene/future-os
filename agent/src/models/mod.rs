@@ -11,18 +11,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Default Future API base URL (platform URL + /api)
 const DEFAULT_FUTURE_BASE_URL: &str = "https://future-os.cn/api";
 
-/// Cache TTL in seconds (1 hour)
-const FUTURE_MODELS_CACHE_TTL: u64 = 3600;
-
 /// After a refresh attempt, don't re-hit the network for this long. `Registry::new()`
 /// rebuilds on the startup path and on every RPC, so without this backoff each
 /// rebuild would re-probe a slow/unreachable Future API.
-const FUTURE_MODELS_REFRESH_BACKOFF: u64 = 120;
+const FUTURE_MODELS_REFRESH_BACKOFF: u64 = 30;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::RwLock;
 
 static FUTURE_MODELS_LAST_ATTEMPT: AtomicU64 = AtomicU64::new(0);
 static FUTURE_MODELS_REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// In-process cache so background refreshes take effect immediately on the
+/// next `Registry::new()` call (GUI polls every 10s), without waiting for
+/// the file cache to be read back from disk.
+static FUTURE_MODELS_MEMORY_CACHE: RwLock<Option<FutureModelsCache>> = RwLock::new(None);
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -33,7 +36,8 @@ fn now_secs() -> u64 {
 
 /// Kick off a one-at-a-time background refresh of the Future model catalog,
 /// respecting a backoff window. Never blocks the caller — the fetched models are
-/// written to the cache file and picked up by the next registry rebuild.
+/// written to both the file cache and the in-process memory cache, so the next
+/// registry rebuild picks up fresh data immediately.
 fn spawn_future_models_refresh(api_key: &str, base_url: &str) {
     let now = now_secs();
     if now.saturating_sub(FUTURE_MODELS_LAST_ATTEMPT.load(Ordering::Relaxed))
@@ -54,7 +58,20 @@ fn spawn_future_models_refresh(api_key: &str, base_url: &str) {
     let base_url = base_url.to_string();
     std::thread::spawn(move || {
         if let Some(models) = fetch_future_models(&api_key, &base_url) {
-            save_future_models_cache(&models);
+            // Persist to disk AND update in-process cache so the next
+            // `Registry::new()` sees fresh models without re-reading the file.
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let cache = FutureModelsCache {
+                fetched_at: now,
+                models,
+            };
+            save_future_models_cache_inner(&cache);
+            if let Ok(mut mem) = FUTURE_MODELS_MEMORY_CACHE.write() {
+                *mem = Some(cache);
+            }
         }
         FUTURE_MODELS_REFRESH_IN_FLIGHT.store(false, Ordering::Release);
     });
@@ -89,6 +106,9 @@ pub struct Model {
     pub thinking_level_map: HashMap<String, serde_json::Value>,
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// If true, the model is hidden from model lists but still callable.
+    #[serde(default)]
+    pub hide: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -129,6 +149,7 @@ pub fn builtin_models() -> Vec<Model> {
             compat: serde_json::from_str(&m.compat_json).unwrap_or_default(),
             thinking_level_map: serde_json::from_str(&m.tlm_json).unwrap_or_default(),
             headers: serde_json::from_str(&m.headers_json).unwrap_or_default(),
+            hide: m.hide,
         })
         .collect()
 }
@@ -285,7 +306,10 @@ fn fetch_future_models(api_key: &str, base_url: &str) -> Option<Vec<Model>> {
 /// entries in generated/mod.rs for the direct-provider case.
 fn derive_thinking_compat(
     supported_params: &[String],
-) -> (HashMap<String, serde_json::Value>, HashMap<String, serde_json::Value>) {
+) -> (
+    HashMap<String, serde_json::Value>,
+    HashMap<String, serde_json::Value>,
+) {
     use std::collections::HashMap;
 
     let mut compat: HashMap<String, serde_json::Value> = HashMap::new();
@@ -297,10 +321,7 @@ fn derive_thinking_compat(
         // Qwen family: enable_thinking + thinking_budget
         compat.insert("thinkingFormat".into(), serde_json::json!("qwen"));
         // Qwen supports reasoning_effort alongside enable_thinking
-        compat.insert(
-            "supportsReasoningEffort".into(),
-            serde_json::json!(true),
-        );
+        compat.insert("supportsReasoningEffort".into(), serde_json::json!(true));
     } else if has("reasoning_split") {
         // MiniMax M3: reasoning_split only, no depth control
         compat.insert(
@@ -411,6 +432,7 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         compat,
         thinking_level_map,
         headers: HashMap::new(),
+        hide: false,
     }
 }
 
@@ -430,51 +452,56 @@ fn load_future_models_cache() -> Option<FutureModelsCache> {
     serde_json::from_str(&contents).ok()
 }
 
-/// Save future models to cache
-fn save_future_models_cache(models: &[Model]) {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    let cache = FutureModelsCache {
-        fetched_at: now,
-        models: models.to_vec(),
-    };
-
-    if let Ok(json) = serde_json::to_string_pretty(&cache) {
+/// Save future models cache to disk (internal helper).
+fn save_future_models_cache_inner(cache: &FutureModelsCache) {
+    if let Ok(json) = serde_json::to_string_pretty(cache) {
         let path = future_models_cache_path();
         let _ = std::fs::write(&path, json);
     }
 }
 
-/// Get future models with caching logic
-/// 1. Check if cache exists and is fresh (within TTL)
-/// 2. If fresh, return cached models
-/// 3. Otherwise, fetch from server
-/// 4. On success, update cache
-/// 5. On failure, return stale cache if available
+/// Get future models with caching logic.
+///
+/// Never blocks the caller — always returns whatever cache is available
+/// immediately (in-memory first, then on-disk) and triggers a background
+/// refresh.  When the background refresh completes, it writes fresh data
+/// into the in-process memory cache so the very next `Registry::new()`
+/// call (GUI polls models every 10s) picks up the updated catalog without
+/// re-reading the file.
 fn get_future_models_with_cache(api_key: &str, base_url: &str) -> Vec<Model> {
-    // Never block the caller. `Registry::new()` runs before the gRPC server binds
-    // and again on every RPC, so a synchronous network fetch here stalls agent
-    // startup and every model query whenever the Future API is slow or
-    // unreachable. Instead serve whatever cache we have (even stale) immediately
-    // and refresh in the background; the next registry rebuild (the GUI polls
-    // models every 10s) picks up the fresh catalog.
-    match load_future_models_cache() {
-        Some(cache) => {
-            if now_secs().saturating_sub(cache.fetched_at) >= FUTURE_MODELS_CACHE_TTL {
-                spawn_future_models_refresh(api_key, base_url);
-            }
-            cache.models
-        }
-        None => {
-            // First login on this machine: no cache yet. Fetch in the background
-            // and return empty for now.
-            spawn_future_models_refresh(api_key, base_url);
-            Vec::new()
+    // Always kick off a background refresh (backoff + single-flight prevent
+    // hammering the server).  This ensures that when the user removes models
+    // from the API, the client picks up the change within one backoff window
+    // instead of waiting for an hour-long TTL.
+    spawn_future_models_refresh(api_key, base_url);
+
+    // Prefer the in-process memory cache — it is updated by completed
+    // background refreshes and avoids reading the file from disk.
+    if let Ok(mem) = FUTURE_MODELS_MEMORY_CACHE.read() {
+        if let Some(ref cache) = *mem {
+            return cache.models.clone();
         }
     }
+
+    // Fall back to on-disk cache.
+    if let Some(cache) = load_future_models_cache() {
+        // Seed the in-process cache so we don't keep hitting disk.
+        if let Ok(mut mem) = FUTURE_MODELS_MEMORY_CACHE.write() {
+            if mem.is_none() {
+                *mem = Some(cache);
+            }
+        }
+        // Re-read to return (avoids clone before moving into mem).
+        if let Ok(mem) = FUTURE_MODELS_MEMORY_CACHE.read() {
+            if let Some(ref cache) = *mem {
+                return cache.models.clone();
+            }
+        }
+    }
+
+    // First login on this machine: no cache at all.  The background refresh
+    // kicked off above will populate both caches.
+    Vec::new()
 }
 
 /// Get the first available model, or None.
@@ -560,6 +587,7 @@ fn load_user_models_with_overrides(
                         .and_then(|c| c.cache_write)
                         .unwrap_or(0.0),
                 },
+                hide: model.hide,
                 ..Default::default()
             };
             if let Some(ref compat) = provider.compat {
@@ -630,6 +658,9 @@ struct ModelConfig {
     limit: Option<ModelLimit>,
     #[serde(rename = "cost", default)]
     cost: Option<ModelCost>,
+    /// If true, the model is hidden from model lists but still callable.
+    #[serde(default)]
+    hide: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -727,7 +758,8 @@ impl Registry {
         }
     }
 
-    /// Get all available models (user models override built-in with same ID)
+    /// Get all available models (user models override built-in with same ID).
+    /// Models with `hide: true` are excluded from the listing but remain callable via `resolve()`.
     pub fn all_models(&self) -> Vec<Model> {
         let mut models = self.builtin.clone();
         for user_model in &self.user {
@@ -740,6 +772,8 @@ impl Registry {
         for m in &mut models {
             self.apply_override(m);
         }
+        // Filter out hidden models from the list
+        models.retain(|m| !m.hide);
         models
     }
 
