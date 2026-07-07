@@ -1,4 +1,4 @@
-import type { Dispatch, PointerEvent as ReactPointerEvent, SetStateAction } from "react";
+import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredRunEvent, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment, MessageSegment } from "./agentThreadTypes";
 import type { ComposerSendPayload } from "./Composer";
@@ -17,6 +17,7 @@ import {
   listRuns,
   storedTimeToIso,
 } from "../../integrations/storage/threadStore";
+import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
 import { buildAssistantRunProjection } from "./agentActivity";
 import {
@@ -55,9 +56,13 @@ export function useAgentThreadState({
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [loadingThread, setLoadingThread] = useState(true);
   const [recentRun, setRecentRun] = useState<StoredRun | null>(null);
-  const [scrollbar, setScrollbar] = useState({ height: 0, top: 0, visible: false });
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const {
+    scrollRef,
+    scrollbar,
+    updateFloatingScrollbar,
+    handleScroll: handleScrollbarVisibility,
+    handleThumbPointerDown,
+  } = useFloatingScrollbar();
   // Sticky auto-scroll: follow streaming output only while pinned near the
   // bottom. When the user scrolls up past the threshold we stop following (so
   // they can read history) and offer a "jump to latest" button once they're far.
@@ -89,46 +94,20 @@ export function useAgentThreadState({
   const activeRunStartedAt = activeRunId ? (recentRun?.startedAt ?? recentRun?.createdAt ?? null) : null;
   const prevActiveRunIdRef = useRef<string | null>(null);
 
-  const updateFloatingScrollbar = useCallback((visible: boolean) => {
-    const scrollContainer = scrollRef.current;
-    if (!scrollContainer)
-      return;
-
-    const { clientHeight, scrollHeight, scrollTop } = scrollContainer;
-    const scrollbarInset = 4;
-    const canScroll = scrollHeight > clientHeight;
-    const minThumbHeight = 36;
-    const height = canScroll
-      ? Math.max(minThumbHeight, (clientHeight / scrollHeight) * (clientHeight - scrollbarInset * 2))
-      : 0;
-    const maxTop = clientHeight - scrollbarInset * 2 - height;
-    const top = canScroll ? scrollbarInset + (scrollTop / (scrollHeight - clientHeight)) * maxTop : scrollbarInset;
-
-    setScrollbar({ height, top, visible: visible && canScroll });
-  }, []);
-
+  // Compose the shared scrollbar's visibility handling with sticky detection:
+  // re-derive stickiness from the caret's distance to the bottom. A programmatic
+  // scroll-to-bottom lands here too, leaving distance ≈ 0 → stays stuck; a user
+  // scroll-up grows the distance → unsticks. Two thresholds: a tight one to keep
+  // following, a looser one to reveal the jump button.
   const handleScroll = useCallback(() => {
-    updateFloatingScrollbar(true);
-
-    // Re-derive stickiness from the caret's distance to the bottom. A
-    // programmatic scroll-to-bottom lands here too, leaving distance ≈ 0 → stays
-    // stuck; a user scroll-up grows the distance → unsticks. Two thresholds: a
-    // tight one to keep following, a looser one to reveal the jump button.
+    handleScrollbarVisibility();
     const scrollContainer = scrollRef.current;
     if (scrollContainer) {
       const distance = scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
       stickToBottomRef.current = distance <= STICK_THRESHOLD_PX;
       setShowJumpToLatest(distance > JUMP_BUTTON_THRESHOLD_PX);
     }
-
-    if (scrollTimerRef.current) {
-      clearTimeout(scrollTimerRef.current);
-    }
-
-    scrollTimerRef.current = setTimeout(() => {
-      updateFloatingScrollbar(false);
-    }, 1200);
-  }, [updateFloatingScrollbar]);
+  }, [handleScrollbarVisibility, scrollRef]);
 
   // Jump straight to the latest message and re-enable auto-follow.
   const scrollToLatest = useCallback(() => {
@@ -138,48 +117,13 @@ export function useAgentThreadState({
     stickToBottomRef.current = true;
     setShowJumpToLatest(false);
     scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: "smooth" });
-  }, []);
+  }, [scrollRef]);
 
   // Opening/switching a thread starts pinned to the latest message.
   useEffect(() => {
     stickToBottomRef.current = true;
     setShowJumpToLatest(false);
   }, [threadId]);
-
-  // Drag the floating thumb to scroll (the native bar is hidden by
-  // `.floating-scrollbar`). Maps thumb travel back to scrollTop using the same
-  // geometry as updateFloatingScrollbar; the resulting scroll fires handleScroll
-  // to keep the thumb visible and re-derive stickiness.
-  const handleScrollbarPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    const scrollContainer = scrollRef.current;
-    if (!scrollContainer)
-      return;
-    event.preventDefault();
-
-    const scrollbarInset = 4;
-    const minThumbHeight = 36;
-    const { clientHeight, scrollHeight } = scrollContainer;
-    const scrollable = scrollHeight - clientHeight;
-    const thumbHeight = Math.max(minThumbHeight, (clientHeight / scrollHeight) * (clientHeight - scrollbarInset * 2));
-    const maxTop = clientHeight - scrollbarInset * 2 - thumbHeight;
-    if (scrollable <= 0 || maxTop <= 0)
-      return;
-
-    const startY = event.clientY;
-    const startScrollTop = scrollContainer.scrollTop;
-
-    const onMove = (moveEvent: PointerEvent) => {
-      const delta = moveEvent.clientY - startY;
-      scrollContainer.scrollTop = startScrollTop + (delta / maxTop) * scrollable;
-      updateFloatingScrollbar(true);
-    };
-    const onUp = () => {
-      document.removeEventListener("pointermove", onMove);
-      document.removeEventListener("pointerup", onUp);
-    };
-    document.addEventListener("pointermove", onMove);
-    document.addEventListener("pointerup", onUp);
-  }, [updateFloatingScrollbar]);
 
   // Guard against overlapping refreshes (poll tick, send, thread switch) where a
   // slow response lands after a newer one and writes stale run state — e.g. a
@@ -530,17 +474,7 @@ export function useAgentThreadState({
       setShowJumpToLatest(distance > JUMP_BUTTON_THRESHOLD_PX);
     }
     updateFloatingScrollbar(false);
-  }, [messages, updateFloatingScrollbar]);
-
-  useEffect(() => {
-    updateFloatingScrollbar(false);
-
-    return () => {
-      if (scrollTimerRef.current) {
-        clearTimeout(scrollTimerRef.current);
-      }
-    };
-  }, [updateFloatingScrollbar]);
+  }, [messages, scrollRef, updateFloatingScrollbar]);
 
   useEffect(() => {
     return () => {
@@ -699,8 +633,8 @@ export function useAgentThreadState({
   return {
     handleAbort,
     handleScroll,
-    handleScrollbarPointerDown,
     handleSend,
+    handleThumbPointerDown,
     loadingThread,
     messages,
     recentRun,
