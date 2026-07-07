@@ -4,6 +4,11 @@ export async function openPath(path: string) {
   return invokeCommand<void>("open_path", { path });
 }
 
+/** Open an http(s) URL in the system default browser (backend restricts scheme). */
+export async function openExternalUrl(url: string) {
+  return invokeCommand<void>("open_external_url", { url });
+}
+
 export async function readTextFilePreview(input: {
   path: string;
   maxBytes?: number | null;

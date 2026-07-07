@@ -154,18 +154,8 @@ export function ProvidersPage({
                         : (
                             <>
                               <Badge tone={provider.hasApiKey ? "success" : "neutral"}>
-                                {provider.hasApiKey ? t("providers.hasApiKey") : t("providers.noApiKey")}
+                                {provider.hasApiKey ? t("providers.loggedIn") : t("providers.loggedOut")}
                               </Badge>
-                              <Button
-                                onClick={() => {
-                                  setHint(null);
-                                  setLoginOpen(true);
-                                }}
-                                size="sm"
-                                variant="secondary"
-                              >
-                                {provider.hasApiKey ? t("providers.reLogin") : t("providers.connect")}
-                              </Button>
                               {provider.hasApiKey
                                 ? (
                                     <Button
@@ -177,7 +167,18 @@ export function ProvidersPage({
                                       {t("providers.logout")}
                                     </Button>
                                   )
-                                : null}
+                                : (
+                                    <Button
+                                      onClick={() => {
+                                        setHint(null);
+                                        setLoginOpen(true);
+                                      }}
+                                      size="sm"
+                                      variant="secondary"
+                                    >
+                                      {t("providers.connect")}
+                                    </Button>
+                                  )}
                             </>
                           )}
                     </div>
