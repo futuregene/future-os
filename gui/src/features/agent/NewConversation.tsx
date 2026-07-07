@@ -50,6 +50,7 @@ interface NewConversationProps {
   leftPanelExpanded: boolean;
   modelId: string;
   modelOptions: AgentModelOption[];
+  modelsEmptyReason?: "no_models" | "all_disabled";
   onModelChange: (modelId: string) => void;
   thinkingLevel: string;
   onThinkingLevelChange: (thinkingLevel: string) => void;
@@ -68,6 +69,7 @@ export function NewConversation({
   leftPanelExpanded,
   modelId,
   modelOptions,
+  modelsEmptyReason,
   onAddWorkspace,
   onModelChange,
   thinkingLevel,
@@ -257,6 +259,7 @@ export function NewConversation({
               className="w-full rounded-b-none bg-surface"
               modelId={modelId}
               modelOptions={modelOptions}
+              modelsEmptyReason={modelsEmptyReason}
               onModelChange={onModelChange}
               thinkingLevel={thinkingLevel}
               onThinkingLevelChange={onThinkingLevelChange}

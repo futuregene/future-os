@@ -14,7 +14,7 @@ import { ResearchView } from "../../features/research/ResearchView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
 import i18n from "../../i18n";
-import { modelThinkingLevel, normalizeThinkingLevel } from "../../integrations/agent/agentClient";
+import { modelOption, modelThinkingLevel, normalizeThinkingLevel, resolveInitialModelId } from "../../integrations/agent/agentClient";
 import {
   createThread,
   createWorkspace,
@@ -126,7 +126,22 @@ export function AppShell() {
     confirmDelete: confirmWorkspaceDelete,
   } = useWorkspaceDialogs({ refreshStore });
   const unreadThreadIds = useUnreadThreads(threadRunStatuses, activeThreadId);
-  const activeThreadModelId = activeThread?.modelId ?? selectedModelId;
+  // Why the composer's model picker is empty: nothing loaded vs. everything the
+  // user disabled. Only meaningful when the visible set is empty.
+  const modelsEmptyReason: "no_models" | "all_disabled" | undefined
+    = visibleModelOptions.length > 0
+      ? undefined
+      : modelOptions.length > 0
+        ? "all_disabled"
+        : "no_models";
+  // The active thread's persisted model may have since been deleted from the
+  // catalog or disabled in Settings. Fall back to the default pick (same rule as
+  // the draft selection) so the composer never shows / sends an unavailable model
+  // — resolves to "" when everything is disabled, which surfaces the empty state.
+  const rawThreadModelId = activeThread?.modelId ?? selectedModelId;
+  const activeThreadModelId = modelOption(rawThreadModelId, visibleModelOptions)
+    ? rawThreadModelId
+    : resolveInitialModelId(visibleModelOptions);
   const activeThinkingLevel = activeThread
     ? normalizeThinkingLevel(activeThread.thinkingLevel ?? modelThinkingLevel(activeThreadModelId, visibleModelOptions))
     : selectedThinkingLevel;
@@ -354,6 +369,7 @@ export function AppShell() {
                 leftPanelExpanded={leftExpanded}
                 modelId={selectedModelId}
                 modelOptions={visibleModelOptions}
+                modelsEmptyReason={modelsEmptyReason}
                 onAddWorkspace={handleAddWorkspace}
                 onModelChange={changeDraftModel}
                 thinkingLevel={selectedThinkingLevel}
@@ -399,7 +415,7 @@ export function AppShell() {
                           approvalTier={appSettings.approvalTier}
                           showThinking={appSettings.showThinking}
                           loadingStore={loadingStore}
-                          modelId={activeThread?.modelId ?? selectedModelId}
+                          modelId={activeThreadModelId}
                           modelOptions={visibleModelOptions}
                           onModelChange={changeModel}
                           onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
