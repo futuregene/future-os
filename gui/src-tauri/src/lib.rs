@@ -12,6 +12,7 @@ mod git_diff_parse;
 mod git_review;
 #[cfg(target_os = "macos")]
 mod menu;
+mod proc;
 mod remote;
 mod run_error;
 mod shadow_review;

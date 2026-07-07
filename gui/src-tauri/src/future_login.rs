@@ -102,13 +102,14 @@ pub async fn start() -> Result<FutureLoginStart, AppError> {
         return Err(AppError::Message(message));
     }
 
-    let device: DeviceCodeResponse = response
-        .json()
-        .await
-        .map_err(|error| AppError::Message(format!("Failed to parse device code response: {error}")))?;
+    let device: DeviceCodeResponse = response.json().await.map_err(|error| {
+        AppError::Message(format!("Failed to parse device code response: {error}"))
+    })?;
 
     if device.device_code.trim().is_empty() || device.user_code.trim().is_empty() {
-        return Err(AppError::Message("Device code response is missing required fields.".to_string()));
+        return Err(AppError::Message(
+            "Device code response is missing required fields.".to_string(),
+        ));
     }
     if device.expires_in == 0 || device.interval == 0 {
         return Err(AppError::Message(
@@ -124,7 +125,9 @@ pub async fn start() -> Result<FutureLoginStart, AppError> {
         .filter(|value| !value.trim().is_empty())
         .or_else(|| device.verification_uri.clone())
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| AppError::Message("Device code response is missing the authorization URL.".to_string()))?;
+        .ok_or_else(|| {
+            AppError::Message("Device code response is missing the authorization URL.".to_string())
+        })?;
     validate_browser_url(&verification)?;
 
     // Best-effort: failure is fine, the dialog shows a copyable link.
@@ -151,17 +154,19 @@ pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
         .json(&json!({ "device_code": device_code }))
         .send()
         .await
-        .map_err(|error| AppError::Message(format!("Failed to poll authorization status: {error}")))?;
+        .map_err(|error| {
+            AppError::Message(format!("Failed to poll authorization status: {error}"))
+        })?;
 
     let success = response.status().is_success();
-    let body: Value = response
-        .json()
-        .await
-        .map_err(|error| AppError::Message(format!("Failed to parse authorization response: {error}")))?;
+    let body: Value = response.json().await.map_err(|error| {
+        AppError::Message(format!("Failed to parse authorization response: {error}"))
+    })?;
 
     if success {
-        let token: DeviceTokenResponse = serde_json::from_value(body)
-            .map_err(|error| AppError::Message(format!("Failed to parse authorization response: {error}")))?;
+        let token: DeviceTokenResponse = serde_json::from_value(body).map_err(|error| {
+            AppError::Message(format!("Failed to parse authorization response: {error}"))
+        })?;
         let key = token.api_key.unwrap_or_default();
         if key.trim().is_empty() {
             return Ok(FutureLoginPoll::with_message(
@@ -201,7 +206,8 @@ pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
         ),
         "expired_token" => FutureLoginPoll::with_message(
             "expired",
-            message.unwrap_or_else(|| "Authorization code has expired; please try again.".to_string()),
+            message
+                .unwrap_or_else(|| "Authorization code has expired; please try again.".to_string()),
         ),
         _ => FutureLoginPoll::with_message(
             "error",
@@ -225,10 +231,12 @@ fn error_message_from_body(body: Option<Value>) -> Option<String> {
 /// console / login page), so requiring same-origin would reject the real URL.
 /// This matches the CLI, which opens the returned URL directly.
 fn validate_browser_url(target: &str) -> Result<(), AppError> {
-    let url =
-        reqwest::Url::parse(target).map_err(|_| AppError::Message("Authorization URL is invalid.".to_string()))?;
+    let url = reqwest::Url::parse(target)
+        .map_err(|_| AppError::Message("Authorization URL is invalid.".to_string()))?;
     if !matches!(url.scheme(), "http" | "https") {
-        return Err(AppError::Message("Authorization URL scheme is not permitted.".to_string()));
+        return Err(AppError::Message(
+            "Authorization URL scheme is not permitted.".to_string(),
+        ));
     }
     Ok(())
 }
@@ -243,7 +251,11 @@ fn open_browser(url: &str) {
     #[cfg(all(unix, not(target_os = "macos")))]
     let (command, args): (&str, Vec<&str>) = ("xdg-open", vec![url]);
 
-    let _ = std::process::Command::new(command).args(args).spawn();
+    use crate::proc::NoWindow;
+    let _ = std::process::Command::new(command)
+        .no_window()
+        .args(args)
+        .spawn();
 }
 
 #[cfg(test)]
