@@ -109,7 +109,7 @@
     "clearKey": "Clear key",
     "keySaved": "Saved the {{provider}} key. Takes effect in new sessions.",
     "keyCleared": "Cleared the {{provider}} key.",
-    "connected": "Connected to FutureGene. Takes effect in new sessions; if it doesn't, run future-cli agent restart.",
+    "connected": "Connected to FutureGene. Takes effect in new sessions; if it doesn't, run future agent restart.",
     "baseUrlLabel": "Base URL",
     "baseUrlRequired": "Please enter a Base URL.",
     "baseUrlDialogDescription": "This provider's Base URL is a placeholder — replace it with your own (e.g. your Azure resource name).",
