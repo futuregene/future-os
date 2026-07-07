@@ -199,15 +199,18 @@ impl crate::types::LLMProvider for Client {
             body["tools"] = serde_json::json!(openai_tools);
 
             // Z.AI (GLM) models require tool_stream=true for incremental
-            // tool-call argument streaming. Without it, every chunk repeats
-            // id+name, causing parse_sse_chunk to emit toolcall_start for
-            // each fragment instead of toolcall_delta.
-            let model_lower = model.to_lowercase();
+            // tool-call argument streaming when connecting directly to
+            // ZhipuAI's API. Without it, every chunk repeats id+name,
+            // causing parse_sse_chunk to emit toolcall_start for each
+            // fragment instead of toolcall_delta.
+            //
+            // Only enable for direct ZhipuAI connections (bigmodel.cn / z.ai).
+            // When GLM models are accessed through third-party gateways
+            // (Alibaba Cloud MaaS, Vercel AI Gateway, etc.), tool_stream
+            // is either unsupported or handled differently, and the
+            // run-loop's duplicate-id fallback handles streaming correctly.
             let base_url_lower = base_url.to_lowercase();
-            if model_lower.contains("glm")
-                || model_lower.contains("zai")
-                || base_url_lower.contains("bigmodel")
-            {
+            if base_url_lower.contains("bigmodel") || base_url_lower.contains("z.ai") {
                 body["tool_stream"] = serde_json::json!(true);
             }
         }
