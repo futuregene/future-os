@@ -280,12 +280,64 @@ fn fetch_future_models(api_key: &str, base_url: &str) -> Option<Vec<Model>> {
     .ok()?
 }
 
+/// Derive compat and thinking_level_map for a Future platform model from its
+/// supported_parameters list. This mirrors the manual compat_json / tlm_json
+/// entries in generated/mod.rs for the direct-provider case.
+fn derive_thinking_compat(
+    supported_params: &[String],
+) -> (HashMap<String, serde_json::Value>, HashMap<String, serde_json::Value>) {
+    use std::collections::HashMap;
+
+    let mut compat: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut tlm: HashMap<String, serde_json::Value> = HashMap::new();
+
+    let has = |s: &str| supported_params.iter().any(|p| p == s);
+
+    if has("enable_thinking") {
+        // Qwen family: enable_thinking + thinking_budget
+        compat.insert("thinkingFormat".into(), serde_json::json!("qwen"));
+        // Qwen supports reasoning_effort alongside enable_thinking
+        compat.insert(
+            "supportsReasoningEffort".into(),
+            serde_json::json!(true),
+        );
+    } else if has("reasoning_split") {
+        // MiniMax M3: reasoning_split only, no depth control
+        compat.insert(
+            "thinkingFormat".into(),
+            serde_json::json!("reasoning-split"),
+        );
+    } else if has("thinking") || has("reasoning_effort") || has("reasoning") {
+        // DeepSeek / Doubao / GLM / Kimi K2.6:
+        // thinking toggle + reasoning_effort for depth
+        compat.insert("thinkingFormat".into(), serde_json::json!("deepseek"));
+        tlm.insert("high".into(), serde_json::json!("high"));
+        tlm.insert("xhigh".into(), serde_json::json!("max"));
+    }
+    // else: no thinking parameters → empty compat (model doesn't support thinking)
+
+    (compat, tlm)
+}
+
 /// Convert Future server model entry to agent Model
 fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
     let supported_params = entry.supported_parameters.unwrap_or_default();
-    let reasoning = supported_params
-        .iter()
-        .any(|p| p == "reasoning" || p == "include_reasoning");
+    // A model supports reasoning if it has ANY thinking-related parameter.
+    let reasoning = supported_params.iter().any(|p| {
+        matches!(
+            p.as_str(),
+            "reasoning"
+                | "reasoning_effort"
+                | "include_reasoning"
+                | "thinking"
+                | "enable_thinking"
+                | "reasoning_split"
+                | "thinking_budget"
+        )
+    });
+
+    // Derive compat and thinking_level_map from supported_parameters.
+    let (compat, thinking_level_map) = derive_thinking_compat(&supported_params);
 
     let (input, output) = entry
         .architecture
@@ -356,8 +408,8 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
             cache_read: cost_cache_read,
             cache_write: cost_cache_write,
         },
-        compat: HashMap::new(),
-        thinking_level_map: HashMap::new(),
+        compat,
+        thinking_level_map,
         headers: HashMap::new(),
     }
 }
