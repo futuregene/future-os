@@ -285,7 +285,10 @@ fn fetch_future_models(api_key: &str, base_url: &str) -> Option<Vec<Model>> {
 /// entries in generated/mod.rs for the direct-provider case.
 fn derive_thinking_compat(
     supported_params: &[String],
-) -> (HashMap<String, serde_json::Value>, HashMap<String, serde_json::Value>) {
+) -> (
+    HashMap<String, serde_json::Value>,
+    HashMap<String, serde_json::Value>,
+) {
     use std::collections::HashMap;
 
     let mut compat: HashMap<String, serde_json::Value> = HashMap::new();
@@ -297,10 +300,7 @@ fn derive_thinking_compat(
         // Qwen family: enable_thinking + thinking_budget
         compat.insert("thinkingFormat".into(), serde_json::json!("qwen"));
         // Qwen supports reasoning_effort alongside enable_thinking
-        compat.insert(
-            "supportsReasoningEffort".into(),
-            serde_json::json!(true),
-        );
+        compat.insert("supportsReasoningEffort".into(), serde_json::json!(true));
     } else if has("reasoning_split") {
         // MiniMax M3: reasoning_split only, no depth control
         compat.insert(
