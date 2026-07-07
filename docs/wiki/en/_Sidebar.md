@@ -13,5 +13,9 @@
 **Command line (advanced)**
 - [[CLI (future-cli)|CLI]]
 
+**Integrations**
+- [[Feishu Integration|Feishu]]
+- [[DingTalk Integration|DingTalk]]
+
 **Help**
 - [[FAQ]]
