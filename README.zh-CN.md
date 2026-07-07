@@ -1,7 +1,4 @@
 <p align="center">
-  <a href="https://future-os.cn/">FutureOS</a>
-</p>
-<p align="center">
   <a href="https://github.com/futuregene/future-os/tree/main/docs/wiki/zh"><img src="https://img.shields.io/badge/Docs-Wiki-FFD700?style=for-the-badge" alt="Documentation"></a>
   <a href="https://github.com/futuregene/future-os/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
   <a href="README.md"><img src="https://img.shields.io/badge/Lang-English-blue?style=for-the-badge" alt="English"></a>
