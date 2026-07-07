@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 复用根目录 proto/future.proto（与 channels/build.rs 一致）
+    // Reuse the repo-root proto/future.proto (same as channels/build.rs)
     let proto_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("proto");

@@ -1,5 +1,5 @@
-//! 本地 agent 的 gRPC 客户端（照 channels/grpc_client.rs 精简）。
-//! Bridge 只需要两件事：转发任意 RpcCommand、订阅某 session 的事件流。
+//! gRPC client for the local agent (stripped-down from channels/grpc_client.rs).
+//! The bridge only needs two things: forward arbitrary RpcCommands, and subscribe to a session's event stream.
 
 use crate::proto::{
     future_agent_client::FutureAgentClient, RpcCommand, RpcResponse, StreamEvent, StreamRequest,
@@ -29,7 +29,7 @@ impl AgentClient {
         })
     }
 
-    /// 透传任意命令给 agent（prompt/get_state/abort/approval_decision/...）。
+    /// Pass any command through to the agent (prompt/get_state/abort/approval_decision/...).
     pub async fn execute(&mut self, cmd: RpcCommand) -> Result<RpcResponse> {
         Ok(self
             .inner
@@ -39,7 +39,7 @@ impl AgentClient {
             .into_inner())
     }
 
-    /// 订阅某 session 的实时事件流。
+    /// Subscribe to a session's real-time event stream.
     pub async fn stream_events(
         &mut self,
         session_id: &str,
