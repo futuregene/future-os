@@ -16,7 +16,9 @@ export function ThinkingBlock({
   return (
     <div
       className={cn(
-        "rounded-lg border border-line-soft bg-surface-subtle px-3 py-2 text-ink-muted",
+        // A dimmed, borderless aside with a left rail — reads as reasoning, not
+        // a filled content box (which is now reserved for code blocks).
+        "border-l-2 border-line-soft pl-3 text-ink-muted",
         "[&_*]:text-ink-muted",
       )}
     >
