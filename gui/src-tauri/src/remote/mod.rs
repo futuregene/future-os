@@ -1,24 +1,24 @@
-//! 远程控制运行时（内嵌 Bridge）。
+//! Remote control runtime (embedded bridge).
 //!
-//! 设计见仓库根 `docs/remote-control-*.md`。已落地：
-//!  - Step A：连 NATS、持有 client、报状态。
-//!  - Step B：`publish_event` —— 在 `agent_bridge::stream` 消费处把事件镜像给手机。
-//!  - Step C（本文件）：订阅 `p.{pairId}.cmd.>`，把手机命令路由进 GUI 的持久化路径。
-//!     - `list_sessions` / `get_messages` / `new_session` → 直接读写 GUI store。
-//!     - `prompt` → 复刻前端 handleSend：建 thread/run + append user → `agent_prompt`
-//!       （流式→落 run_events + tap 镜像）→ append assistant → 通知前端刷新。
+//! Design: see repo-root `docs/remote-control-*.md`. Currently implemented:
+//!  - Step A: connect NATS, hold client, report status.
+//!  - Step B: `publish_event` — mirror events to mobile at the `agent_bridge::stream` consumption point.
+//!  - Step C (this file): subscribe to `p.{pairId}.cmd.>`, route mobile commands into the GUI's persistence path.
+//!     - `list_sessions` / `get_messages` / `new_session` → directly read/write GUI store.
+//!     - `prompt` → replicate the frontend handleSend: create thread/run + append user → `agent_prompt`
+//!       (streaming → write run_events + tap mirror) → append assistant → notify frontend to refresh.
 
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Mutex;
 
-/// 运行中的远程连接。持有 async-nats client + JetStream 上下文 + 命令订阅任务；
-/// stop 时 abort 任务并 drop client。
+/// Active remote connection. Holds async-nats client + JetStream context + command subscription task;
+/// on stop, aborts the task and drops the client.
 struct RemoteState {
-    /// JetStream 上下文：事件用它发布（带 `Nats-Msg-Id` 幂等去重 + 落 EVT_* 流做重连回放）。
-    /// 未建流时 publish 仍会把消息投到 subject，实时订阅者照收（仅少了持久化），故可优雅降级。
-    /// 内部持有 NATS client 的克隆，保活连接；stop 时随 RemoteState 一并 drop。
+    /// JetStream context: events are published through it (with `Nats-Msg-Id` idempotent dedup + written to EVT_* stream for reconnect replay).
+    /// When no stream exists, publish still delivers messages to the subject; real-time subscribers still receive them (only persistence is lost), so graceful degradation.
+    /// Internally holds a clone of the NATS client to keep the connection alive; dropped with RemoteState on stop.
     js: async_nats::jetstream::Context,
     nats_url: String,
     pair_id: String,
@@ -30,7 +30,7 @@ static STATE: Mutex<Option<RemoteState>> = Mutex::new(None);
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteStartInput {
-    /// GUI 后端连的是 NATS **客户端端口**（`nats://host:4222`），不是浏览器的 ws 端口。
+    /// The GUI backend connects to the NATS **client port** (`nats://host:4222`), NOT the browser WebSocket port.
     pub nats_url: String,
     pub pair_id: String,
 }
@@ -56,15 +56,15 @@ fn empty() -> RemoteStatus {
 }
 
 pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppError> {
-    // 先停旧连接（幂等：abort 旧订阅任务）。
+    // Stop any previous connection first (idempotent: aborts the old subscription task).
     let _ = stop();
 
     let client = async_nats::connect(&input.nats_url)
         .await
-        .map_err(|e| crate::AppError::Message(format!("连接 NATS 失败: {e}")))?;
+        .map_err(|e| crate::AppError::Message(format!("Failed to connect to NATS: {e}")))?;
     let js = async_nats::jetstream::new(client.clone());
 
-    // 启动命令订阅任务（Step C）。
+    // Start the command subscription task (Step C).
     let cmd_task = tokio::spawn(command_loop(client.clone(), input.pair_id.clone()));
 
     let status = RemoteStatus {
@@ -103,14 +103,14 @@ pub fn status() -> RemoteStatus {
     }
 }
 
-/// 事件 tap（Step B / P1）：若远程在运行，把一条 agent 事件镜像发布到
-/// `p.{pairId}.evt.{session}`。无连接时直接返回，不阻塞 GUI 的事件消费。
+/// Event tap (Step B / P1): if remote is running, mirror an agent event to
+/// `p.{pairId}.evt.{session}`. Returns immediately when not connected — does not block GUI event consumption.
 ///
-/// 走 JetStream 发布并带 `Nats-Msg-Id = {session}:{runId}:{idx}`：
-///  - 幂等：断线重发/重放同一事件被 broker 依 dupe-window 去重；
-///  - 持久：落 EVT_* 流，客户端重连可回放(见 web `backfillActiveRun`)；
-///  - 降级：即使未建流，消息仍投到 subject，实时核心订阅者照收(仅少持久化)。
-///    我们不 await ack(避免逐 token 阻塞)——消息在 publish 时即已发出。
+/// Uses JetStream publish with `Nats-Msg-Id = {session}:{runId}:{idx}`:
+///  - Idempotent: re-sent/replayed events deduplicated by broker via dupe-window;
+///  - Durable: written to EVT_* stream, clients can replay on reconnect (see web `backfillActiveRun`);
+///  - Graceful degradation: even without a stream, messages still reach the subject; real-time core subscribers still receive them (only persistence is lost).
+///    We don't await the ack (to avoid per-token blocking) — the message is already sent on publish.
 pub async fn publish_event(session_id: &str, event_type: &str, data: &str, run_id: &str, idx: i64) {
     let target = {
         let guard = STATE.lock().unwrap();
@@ -125,7 +125,7 @@ pub async fn publish_event(session_id: &str, event_type: &str, data: &str, run_i
         return;
     };
     if run_id.is_empty() {
-        // 无 run_id 的事件(理论上仅早期/边界)不参与去重，直接投递。
+        // Events without a run_id (theoretically only early/edge cases) skip dedup, publish directly.
         let _ = js.publish(subject, payload.into()).await;
     } else {
         let mut headers = async_nats::HeaderMap::new();
@@ -139,9 +139,9 @@ pub async fn publish_event(session_id: &str, event_type: &str, data: &str, run_i
     }
 }
 
-// ─── Step C：命令订阅 + 路由 ────────────────────────────────────────────────
+// ─── Step C: Command subscription + routing ──────────────────────────────────
 
-/// 客户端经 NATS 发来的命令（camelCase JSON，取 Bridge 需要的字段）。
+/// Command sent by the client via NATS (camelCase JSON, only the fields the bridge needs).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct IncomingCmd {
@@ -174,15 +174,15 @@ async fn command_loop(client: async_nats::Client, pair_id: String) {
     let mut sub = match client.queue_subscribe(subject.clone(), queue).await {
         Ok(sub) => sub,
         Err(e) => {
-            eprintln!("remote: 订阅命令失败 {subject}: {e}");
+            eprintln!("remote: failed to subscribe to commands {subject}: {e}");
             return;
         }
     };
-    eprintln!("remote: 已订阅命令 {subject}");
+    eprintln!("remote: subscribed to commands {subject}");
     while let Some(msg) = sub.next().await {
         let client = client.clone();
         let pair_id = pair_id.clone();
-        // 每命令 spawn：防一个慢命令阻塞其它。
+        // Spawn per command: prevent a slow command from blocking others.
         tokio::spawn(async move {
             handle_command(&client, &pair_id, msg).await;
         });
@@ -198,7 +198,7 @@ async fn handle_command(client: &async_nats::Client, pair_id: &str, msg: async_n
                 &msg,
                 false,
                 Value::Null,
-                Some(&format!("命令 JSON 解析失败: {e}")),
+                Some(&format!("Failed to parse command JSON: {e}")),
             )
             .await;
             return;
@@ -236,7 +236,7 @@ async fn handle_command(client: &async_nats::Client, pair_id: &str, msg: async_n
             }
         }
         "get_events_since" => {
-            // P1c：回放当前进行中这一轮的缓冲事件，让中途加入的客户端补齐丢失的前缀。
+            // P1c: replay buffered events for the current in-progress run, so late-joining clients can catch up on missed prefix events.
             match crate::agent_bridge::get_events_since(
                 cmd.session_id.clone(),
                 cmd.run_id.clone(),
@@ -257,13 +257,13 @@ async fn handle_command(client: &async_nats::Client, pair_id: &str, msg: async_n
             Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
         },
         "prompt" => {
-            // accept-ack 立即回；实际执行在后台（完成看事件流 agent_end）。
+            // Accept-ack immediately; actual execution runs in the background (completion visible via event stream agent_end).
             let session_id = cmd.session_id.clone();
             let message = cmd.message.clone();
             let _pair = pair_id.to_string();
             tokio::spawn(async move {
                 if let Err(e) = handle_remote_prompt(session_id, message).await {
-                    eprintln!("remote: prompt 处理失败: {e}");
+                    eprintln!("remote: prompt processing failed: {e}");
                 }
             });
             reply(client, &msg, true, json!({}), None).await;
@@ -274,7 +274,7 @@ async fn handle_command(client: &async_nats::Client, pair_id: &str, msg: async_n
                 &msg,
                 false,
                 Value::Null,
-                Some(&format!("暂不支持的命令: {other}")),
+                Some(&format!("Unsupported command: {other}")),
             )
             .await;
         }
@@ -294,9 +294,9 @@ fn new_chat_thread_input() -> crate::store::CreateThreadInput {
     }
 }
 
-/// 复刻前端 handleSend 的持久化序列：手机 prompt → 落 GUI SQLite + 显示 + tap 镜像。
+/// Replicate the frontend handleSend persistence sequence: mobile prompt → write to GUI SQLite + display + tap mirror.
 async fn handle_remote_prompt(session_id: String, message: String) -> Result<(), crate::AppError> {
-    // (a) 找/建 thread（按 agent_session_id；找不到就新建 chat thread）。
+    // (a) Find or create thread (by agent_session_id; create a new chat thread if not found).
     let thread = match crate::store::find_thread_by_agent_session(&session_id)? {
         Some(thread) => thread,
         None => crate::store::create_thread(new_chat_thread_input())?,
@@ -316,7 +316,7 @@ async fn handle_remote_prompt(session_id: String, message: String) -> Result<(),
         status: Some("complete".to_string()),
     })?;
 
-    // (c) 建 run。
+    // (c) Create run.
     let run = crate::store::create_run(crate::store::CreateRunInput {
         thread_id: thread.id.clone(),
         trigger_message_id: Some(user_msg.id),
@@ -324,10 +324,10 @@ async fn handle_remote_prompt(session_id: String, message: String) -> Result<(),
         model_id: thread.model_id.clone(),
     })?;
 
-    // 通知前端：新 thread/run 出现（列表刷新）。
+    // Notify frontend: new thread/run appeared (trigger list refresh).
     crate::emit_remote_activity(&thread.id);
 
-    // (d) 跑 agent_prompt（流式事件由 stream.rs 落 run_events + tap 镜像给手机）。
+    // (d) Run agent_prompt (streaming events written to run_events by stream.rs + tapped and mirrored to mobile).
     let result = crate::agent_bridge::agent_prompt(
         message,
         None,
@@ -339,7 +339,7 @@ async fn handle_remote_prompt(session_id: String, message: String) -> Result<(),
     )
     .await;
 
-    // (e) 结算 run + append assistant message（内容=返回全文），和前端一致。
+    // (e) Finalize run + append assistant message (content = full response text), matching the frontend.
     match result {
         Ok(response) => {
             let _ = crate::store::update_run_status(crate::store::UpdateRunStatusInput {
@@ -349,7 +349,7 @@ async fn handle_remote_prompt(session_id: String, message: String) -> Result<(),
                 error_type: None,
             });
             let content = if response.content.trim().is_empty() {
-                "Future Agent 已完成，但没有返回文本。".to_string()
+                "Future Agent completed but returned no text.".to_string()
             } else {
                 response.content
             };
@@ -374,7 +374,7 @@ async fn handle_remote_prompt(session_id: String, message: String) -> Result<(),
                 run_id: Some(run.id.clone()),
                 role: "assistant".to_string(),
                 content_type: Some("markdown".to_string()),
-                content: format!("Future Agent 出错：{e}"),
+                content: format!("Future Agent error: {e}"),
                 status: Some("failed".to_string()),
             });
         }
@@ -384,7 +384,7 @@ async fn handle_remote_prompt(session_id: String, message: String) -> Result<(),
     Ok(())
 }
 
-/// 统一回 request-reply 应答（`RpcResponse` 形状），并 flush 保证及时送达。
+/// Send a unified request-reply response (in `RpcResponse` shape), and flush to ensure timely delivery.
 async fn reply(
     client: &async_nats::Client,
     msg: &async_nats::Message,

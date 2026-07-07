@@ -71,7 +71,7 @@ fn http_client() -> Result<reqwest::Client, AppError> {
     reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .build()
-        .map_err(|error| AppError::Message(format!("无法创建 HTTP 客户端：{error}")))
+        .map_err(|error| AppError::Message(format!("Failed to create HTTP client: {error}")))
 }
 
 /// The platform skill catalogue (`GET /client/v1/skills`). Unauthenticated, like
@@ -88,17 +88,17 @@ pub async fn list_available_skills() -> Result<Vec<SkillInfo>, AppError> {
         .get(&url)
         .send()
         .await
-        .map_err(|error| AppError::Message(format!("获取技能列表失败：{error}")))?;
+        .map_err(|error| AppError::Message(format!("Failed to fetch skill list: {error}")))?;
     if !response.status().is_success() {
         return Err(AppError::Message(format!(
-            "获取技能列表失败（HTTP {}）",
+            "Failed to fetch skill list (HTTP {})",
             response.status().as_u16()
         )));
     }
     let parsed: CatalogueResponse = response
         .json()
         .await
-        .map_err(|error| AppError::Message(format!("解析技能列表失败：{error}")))?;
+        .map_err(|error| AppError::Message(format!("Failed to parse skill list: {error}")))?;
     Ok(parsed.skills)
 }
 
@@ -138,28 +138,28 @@ pub async fn install_skill(id: String, version: String) -> Result<(), AppError> 
         .get(&url)
         .send()
         .await
-        .map_err(|error| AppError::Message(format!("下载技能失败：{error}")))?;
+        .map_err(|error| AppError::Message(format!("Failed to download skill: {error}")))?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(AppError::Message(format!(
-            "未找到技能版本 {id}@{version}。"
+            "Skill version not found: {id}@{version}."
         )));
     }
     if !response.status().is_success() {
         return Err(AppError::Message(format!(
-            "下载技能失败（HTTP {}）",
+            "Skill download failed (HTTP {})",
             response.status().as_u16()
         )));
     }
     let bytes = response
         .bytes()
         .await
-        .map_err(|error| AppError::Message(format!("读取技能数据失败：{error}")))?;
+        .map_err(|error| AppError::Message(format!("Failed to read skill data: {error}")))?;
 
     let dest = SkillScope::App.dir()?.join(&id);
     // Unzip + filesystem work is blocking; keep it off the async runtime.
     tokio::task::spawn_blocking(move || extract_skill_zip(&bytes, &dest))
         .await
-        .map_err(|error| AppError::Message(format!("安装任务失败：{error}")))?
+        .map_err(|error| AppError::Message(format!("Install task failed: {error}")))?
 }
 
 /// Remove skill `id` from every scope it's installed in. Returns whether any
@@ -184,10 +184,10 @@ fn extract_skill_zip(bytes: &[u8], dest: &Path) -> Result<(), AppError> {
     std::fs::create_dir_all(dest)?;
 
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
-        .map_err(|error| AppError::Message(format!("技能包不是有效的 zip：{error}")))?;
+        .map_err(|error| AppError::Message(format!("Skill package is not a valid zip: {error}")))?;
     archive
         .extract(dest)
-        .map_err(|error| AppError::Message(format!("解压技能失败：{error}")))?;
+        .map_err(|error| AppError::Message(format!("Failed to extract skill: {error}")))?;
 
     // Some zips wrap everything in a single top-level directory; flatten it so
     // SKILL.md lands at the skill root (matches the CLI).

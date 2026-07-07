@@ -280,6 +280,7 @@ export function NewConversation({
                     setMode("workspace");
                     setWorkspaceMenuOpen(open => !open);
                   }}
+                  title={activeWorkspace?.label ?? t("newConversation.workspace")}
                   type="button"
                 >
                   <Folder className="size-4 shrink-0" />
@@ -415,26 +416,25 @@ function WorkspaceModal({
           <div className="mt-1 text-xs leading-5 text-ink-muted">{t("newConversation.modal.openDescription")}</div>
         </div>
         <div className="space-y-2">
-          <div className="flex h-9 overflow-hidden rounded-md border border-line-soft bg-surface">
-            <button
-              aria-label={t("newConversation.modal.chooseWorkspaceAria")}
-              className="inline-flex h-full w-10 shrink-0 items-center justify-center border-r border-line-soft text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
-              onClick={onPickFolder}
-              title={t("newConversation.modal.chooseWorkspaceAria")}
-              type="button"
-            >
+          <button
+            aria-label={t("newConversation.modal.chooseWorkspaceAria")}
+            className="flex h-9 w-full overflow-hidden rounded-md border border-line-soft bg-surface text-left transition-colors hover:bg-surface-subtle"
+            onClick={onPickFolder}
+            title={t("newConversation.modal.chooseWorkspaceAria")}
+            type="button"
+          >
+            <span className="inline-flex h-full w-10 shrink-0 items-center justify-center border-r border-line-soft text-ink-soft">
               <FolderOpen className="size-4" />
-            </button>
-            <div
+            </span>
+            <span
               className={cn(
                 "flex min-w-0 flex-1 items-center px-2 text-sm",
                 path ? "text-ink" : "text-ink-muted",
               )}
-              title={path || pathPlaceholder}
             >
               <span className="truncate">{path || pathPlaceholder}</span>
-            </div>
-          </div>
+            </span>
+          </button>
           <input
             className="h-9 w-full rounded-md border border-line-soft bg-surface px-2 text-sm text-ink outline-none focus:border-accent"
             onChange={event => onDisplayNameChange(event.target.value)}

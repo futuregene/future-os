@@ -1,4 +1,4 @@
-//! Debug / reset Tauri commands (Settings ▸ 调试).
+//! Debug / reset Tauri commands (Settings ▸ Debug).
 
 use serde::Serialize;
 use serde_json::Value;
@@ -116,13 +116,13 @@ pub fn set_future_environment(app: tauri::AppHandle, environment: String) -> Res
     // the backend guard behind it). Only dev builds may switch environments.
     if crate::build_info::is_release() && environment != ENV_PRODUCTION {
         return Err(AppError::Message(
-            "正式版仅支持正式环境，无法切换。".to_string(),
+            "Production builds only support the production environment; cannot switch.".to_string(),
         ));
     }
     let platform_url = match environment.as_str() {
         ENV_PRODUCTION => PRODUCTION_PLATFORM_URL,
         ENV_TEST => TEST_PLATFORM_URL,
-        other => return Err(AppError::Message(format!("未知的环境：{other}"))),
+        other => return Err(AppError::Message(format!("Unknown environment: {other}"))),
     };
     auth_store::set_future_base_url(&format!("{platform_url}/api"))?;
     agent_supervisor::shutdown_agent();

@@ -45,7 +45,7 @@ pub(crate) fn read() -> Result<Map<String, Value>, AppError> {
 
     let value: Value = serde_json::from_str(&contents).map_err(|error| {
         AppError::Message(format!(
-            "{} 解析失败：{error}。请修复该文件后重试。",
+            "Failed to parse {}: {error}. Please fix the file and retry.",
             path.display()
         ))
     })?;
@@ -53,7 +53,7 @@ pub(crate) fn read() -> Result<Map<String, Value>, AppError> {
     match value {
         Value::Object(map) => Ok(map),
         _ => Err(AppError::Message(format!(
-            "{} 的根节点必须是 JSON 对象。",
+            "The root of {} must be a JSON object.",
             path.display()
         ))),
     }

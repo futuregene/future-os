@@ -1,4 +1,4 @@
-//! Bridge 配置（L0：从环境变量读，带默认值）。
+//! Bridge configuration (L0: read from environment variables, with defaults).
 
 pub struct Config {
     pub nats_url: String,
