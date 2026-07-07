@@ -198,9 +198,10 @@ export function Composer({
 
     // Plain relative-path markdown link (not futureos://): the agent runs with
     // the workspace as cwd, so `./path` is a real path it can read directly.
-    // Angle-bracket the target only when the path has spaces, which would
-    // otherwise break the markdown link.
-    const label = escapeMarkdownLinkLabel(file.path);
+    // Label is just the filename to stay short; the full path lives in the link
+    // target. Angle-bracket the target only when the path has spaces, which
+    // would otherwise break the markdown link.
+    const label = escapeMarkdownLinkLabel(file.name);
     const target = `./${file.path}`;
     const markdown = `[${label}](${/\s/.test(target) ? `<${target}>` : target})`;
     const nextValue = `${value.slice(0, activeMention.start)}${markdown}${value.slice(activeMention.end)}`;
