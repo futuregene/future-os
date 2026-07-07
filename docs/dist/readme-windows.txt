@@ -21,6 +21,6 @@ Runtime」（Evergreen 版），再重新运行。
 【说明】
 · 首次使用需联网登录。个人数据保存在 C:\Users\<用户名>\.future 。
 · 关闭窗口即退出，后台 future-agent 会一并关闭。
-· 已附带命令行工具 future-cli.exe（同目录）。
+· 已附带命令行工具 future.exe（同目录）。
 
 如遇问题，请把报错窗口截图反馈给我们。

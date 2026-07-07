@@ -15,7 +15,7 @@ Get the latest version for your system from the Releases page:
 | **macOS** | `.dmg` disk image |
 | **Windows** | An installer (`.exe` / `.msi`), or the portable `.zip` |
 
-The command-line tool `future-cli` ships **inside every download** — it sits next to the app in both the installer and the portable package. You don't need to install it separately. See the [[CLI (future-cli)|CLI]] page if you want to use it.
+The command-line tool `future` ships **inside every download** — it sits next to the app in both the installer and the portable package. You don't need to install it separately. See the [[CLI (future)|CLI]] page if you want to use it.
 
 ---
 
