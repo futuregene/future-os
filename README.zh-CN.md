@@ -55,30 +55,77 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
 > （target triple 是硬编码的）。在 Linux 或 Intel macOS 上，请分别构建各组件，
 > 或将 sidecar 名称改为你的宿主 triple（`rustc -vV | grep host`）。
 
-### 构建与运行
+### 构建
 
 ```bash
-# 克隆并构建
 git clone https://github.com/futuregene/future-os.git
 cd future-os
-make install   # 安装所有依赖
+make install   # 安装 JS 依赖、link `future` CLI、暂存 GUI sidecar
 make build     # 构建 agent + TUI + CLI + GUI
-
-# 启动 Agent（gRPC 服务，监听 127.0.0.1:50051）
-make run-agent &
-
-# 启动客户端
-make run-tui    # 终端界面
-make run-gui    # 桌面应用
 ```
+
+### 启动 Agent（必须先启动）
+
+所有客户端——TUI、GUI、CLI、channels——都只是轻量 gRPC 客户端。**必须先启动 Agent**,监听 `127.0.0.1:50051`。启动方式有两种,对应两种场景:
+
+| 模式 | 命令 | 适用场景 |
+|---|---|---|
+| **开发 / 前台** | `make run-agent` | 开发调试 Agent。从源码重新构建,跑在当前终端,日志打到 stdout,Ctrl-C 停止。 |
+| **后台服务** | `future agent start` | 日常使用。安装为托管服务(macOS launchctl / Linux systemd / Windows sc),开机自启,启动一次即可。用 `future agent stop \| restart \| status` 管理。 |
+
+二选一即可,无需都开。然后启动任意客户端:
+
+```bash
+make run-tui     # 终端界面   (或: future tui)
+make run-gui     # 桌面应用
+```
+
+> 客户端如果报连接 / gRPC 错误,几乎都是 Agent 还没启动——见 [故障排查](#故障排查)。
+
+### 配置模型
+
+Agent 至少需要一个带 API key 的模型才能回复。两种方式:
+
+**A —— FutureGene 托管模型。** 设备码登录会自动配好 key 和模型列表:
+
+```bash
+future auth login
+```
+
+**B —— 自带 key。** 编辑 `~/.future/agent/models.json`,指向任意 OpenAI 兼容的 provider:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "apiKey": "sk-...",
+      "baseUrl": "https://api.openai.com/v1",
+      "models": [
+        { "id": "gpt-4o", "name": "GPT-4o", "contextWindow": 128000 }
+      ]
+    }
+  }
+}
+```
+
+`baseUrl` 对 `openai`、`anthropic`、`google`、`deepseek`、`openrouter`、`dashscope` 有内置默认值,这些 provider 可省略。若不想把密钥写进 `models.json`,可改放到 `~/.future/agent/auth.json`,按 provider 名索引:
+
+```json
+{
+  "openai": { "type": "api_key", "key": "sk-..." }
+}
+```
+
+随时用 TUI 里的 `/model <id>` 切换当前模型,或 `ctrl+p` 循环切换。
 
 ### CLI 快速上手
 
 ```bash
-future auth login                          # 登录
-future run "用 Python 写个排序函数"         # 单次对话
+future auth login                          # 登录托管模型
+future run "用 Python 写个排序函数"         # 单次对话（需 Agent 已启动）
 future tui                                 # 打开 TUI
-future agent start                         # 将 Agent 安装为系统服务（macOS launchctl / Linux systemd）
+future agent start                         # 将 Agent 作为后台服务运行
+future --help                              # 查看全部命令（account、tools、skills、channel、mcp…）
 ```
 
 ### 常用斜杠命令（TUI）
@@ -163,6 +210,16 @@ make clean    # 清理所有构建产物
 make generate-proto          # agent + channels
 cd tui && npm run generate-proto  # TUI 内嵌 proto
 ```
+
+## 故障排查
+
+| 现象 | 解决 |
+|---|---|
+| 客户端报连接 / gRPC 错误退出 | Agent 没启动。先启动它(`make run-agent` 或 `future agent start`),并确认端口没被占用:`lsof -i :50051`。 |
+| 构建时报 `protoc` 找不到 | 安装 Protocol Buffers 编译器——见 [环境要求](#环境要求)。 |
+| Agent 回复鉴权 / "no model" 错误 | 还没配置模型。运行 `future auth login`,或在 `models.json` 里加一个 provider——见 [配置模型](#配置模型)。 |
+| Linux / Intel macOS 上 GUI 找不到 Agent | `make install` 只按 Apple Silicon 的 triple 暂存 sidecar。把 release 二进制拷到你的宿主 triple:`cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-$(rustc -Vv | sed -n 's/^host: //p')`。 |
+| Linux 上 GUI 构建失败(webkit / gtk 报错) | 安装 Tauri 系统依赖——见 [环境要求](#环境要求)。 |
 
 ## License
 
