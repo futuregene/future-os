@@ -52,6 +52,17 @@ export function SkillsView() {
     [available],
   );
 
+  // Categories that have at least one installed skill (matched via catalogue).
+  const installedCategories = useMemo(() => {
+    const catSet = new Set<string>();
+    for (const s of installed) {
+      const cat = available.find(a => a.id === s.id)?.category;
+      if (cat)
+        catSet.add(cat);
+    }
+    return [...catSet].sort();
+  }, [installed, available]);
+
   const filteredInstalled = useMemo(
     () => installed.filter(skill => matchesInstalledSkill(skill, installedFilters)),
     [installed, installedFilters],
@@ -132,6 +143,7 @@ export function SkillsView() {
             ? (
                 <InstalledTab
                   loading={loading}
+                  categories={installedCategories}
                   filters={installedFilters}
                   onFiltersChange={setInstalledFilters}
                   resultCount={filteredInstalled.length}
@@ -185,6 +197,7 @@ function TabButton({ active, label, onClick }: { active: boolean; label: string;
 function InstalledTab({
   busy,
   catalogue,
+  categories,
   error,
   filters,
   loading,
@@ -197,6 +210,7 @@ function InstalledTab({
 }: {
   busy: Record<string, boolean>;
   catalogue: AvailableSkill[];
+  categories: string[];
   error: string | null;
   filters: SkillFilters;
   loading: boolean;
@@ -212,7 +226,8 @@ function InstalledTab({
   const catalogueByName = useMemo(() => {
     const map = new Map<string, AvailableSkill>();
     for (const s of catalogue) {
-      if (!map.has(s.id)) map.set(s.id, s);
+      if (!map.has(s.id))
+        map.set(s.id, s);
     }
     return map;
   }, [catalogue]);
@@ -237,11 +252,10 @@ function InstalledTab({
   return (
     <>
       <SkillFiltersBar
-        categories={[]}
+        categories={categories}
         filters={filters}
         onChange={onFiltersChange}
         resultCount={resultCount}
-        showCategory={false}
         totalCount={totalCount}
       />
       {skills.length === 0
@@ -261,6 +275,7 @@ function InstalledTab({
             name={name || skill.id}
             description={description}
             version={skill.version}
+            meta={cat?.category || undefined}
             action={(
               <UninstallButton busy={busy[skill.id]} onClick={() => onUninstall(skill.id)} />
             )}
