@@ -49,7 +49,7 @@ export function FilePreviewOverlay({
     return null;
 
   return (
-    <Overlay backdropClassName="bg-ink-strong/60" onClose={onClose} open={open}>
+    <Overlay onClose={onClose} open={open}>
       <IconButton
         className="fixed right-4 top-4 z-10 bg-surface/80 text-ink shadow-panel hover:bg-surface"
         icon={<X className="size-5" />}
