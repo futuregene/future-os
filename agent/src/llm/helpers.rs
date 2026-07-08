@@ -87,9 +87,7 @@ impl Client {
                     }
                 }
                 "openrouter" | "openai" => {
-                    if reasoning_enabled
-                        && *self.compat_supports_reasoning_effort.read().unwrap()
-                    {
+                    if reasoning_enabled && *self.compat_supports_reasoning_effort.read().unwrap() {
                         body["reasoning_effort"] = serde_json::json!(level_value);
                     }
                     // When reasoning is off, intentionally emit nothing:
@@ -460,9 +458,13 @@ mod apply_thinking_params_tests {
     fn qwen_off_autodetected_from_aliyuncs_base_url() {
         // No explicit compat format — the aliyuncs base URL auto-detects qwen,
         // and "off" must still emit enable_thinking=false.
-        let client =
-            Client::new("https://dashscope.aliyuncs.com/compatible-mode/v1", "k", None, None)
-                .with_thinking_level("off");
+        let client = Client::new(
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "k",
+            None,
+            None,
+        )
+        .with_thinking_level("off");
         let mut body = body();
         client.apply_thinking_params(&mut body);
         assert_eq!(body.get("enable_thinking"), Some(&json!(false)));
@@ -487,8 +489,8 @@ mod apply_thinking_params_tests {
     fn empty_format_off_emits_nothing() {
         // A provider that doesn't support thinking params: "off" must not
         // inject any thinking-related field (preserve provider default).
-        let client = Client::new("https://example.com/v1", "k", None, None)
-            .with_thinking_level("off");
+        let client =
+            Client::new("https://example.com/v1", "k", None, None).with_thinking_level("off");
         let mut body = body();
         client.apply_thinking_params(&mut body);
         assert_eq!(body.get("enable_thinking"), None);

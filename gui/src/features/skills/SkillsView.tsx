@@ -204,7 +204,8 @@ function InstalledTab({
   skills: InstalledSkill[];
   totalCount: number;
 }) {
-  const { t } = useTranslation("skills");
+  const { i18n, t } = useTranslation("skills");
+  const useChinese = i18n.language !== "en";
   if (loading && totalCount === 0)
     return <LoadingRow />;
   if (error) {
@@ -236,17 +237,21 @@ function InstalledTab({
       {skills.length === 0
         ? <EmptyState title={t("filter.emptyTitle")} detail={t("filter.emptyDetail")} />
         : null}
-      {skills.map(skill => (
-        <SkillRow
-          key={skill.id}
-          name={skill.name}
-          description={skill.description}
-          version={skill.version}
-          action={(
-            <UninstallButton busy={busy[skill.id]} onClick={() => onUninstall(skill.id)} />
-          )}
-        />
-      ))}
+      {skills.map((skill) => {
+        const name = useChinese ? skill.nameZh || skill.name : skill.name;
+        const description = useChinese ? skill.descriptionZh || skill.description : skill.description;
+        return (
+          <SkillRow
+            key={skill.id}
+            name={name || skill.id}
+            description={description}
+            version={skill.version}
+            action={(
+              <UninstallButton busy={busy[skill.id]} onClick={() => onUninstall(skill.id)} />
+            )}
+          />
+        );
+      })}
     </>
   );
 }
