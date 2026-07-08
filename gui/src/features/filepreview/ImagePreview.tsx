@@ -49,9 +49,12 @@ export function ImagePreview({
     return <PreviewNotice message={t("filePreview.loading")} />;
 
   return (
+    // Cap against the viewport (a definite length) rather than `max-h/w-full`:
+    // the image's parent is content-sized, so a percentage max would resolve to
+    // "no limit" and the image would overflow. The inset leaves breathing room.
     <img
       alt={name}
-      className="max-h-full max-w-full rounded-md object-contain shadow-panel"
+      className="max-h-[calc(100vh-4rem)] max-w-[calc(100vw-4rem)] rounded-md object-contain shadow-panel"
       onError={onError}
       src={src}
     />
