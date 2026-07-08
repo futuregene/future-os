@@ -3,16 +3,20 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
+import { ArrowDown } from "lucide-react";
 import { useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
+import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { cn } from "../../lib/cn";
 import { onFutureEvent } from "../../lib/futureEvents";
+import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { ApprovalPrompt } from "./ApprovalPrompt";
 import { buildContinuePrompt, loadRunResumeSummary, previousUserForRun } from "./buildContinuePrompt";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { ThreadHeader } from "./ThreadHeader";
 import { useAgentThreadState } from "./useAgentThreadState";
+import { useStickyAutoScroll } from "./useStickyAutoScroll";
 
 interface AgentThreadProps {
   thread: StoredThread | null;
@@ -27,7 +31,7 @@ interface AgentThreadProps {
   approvalTier: ApprovalTier;
   onChangeApprovalTier: (value: ApprovalTier) => void;
   showThinking: boolean;
-  pendingPrompt: { attachments?: MessageAttachment[]; id: string; content: string } | null;
+  pendingPrompt: { attachments?: MessageAttachment[]; id: string; content: string; targetThreadId: string } | null;
   activeApproval?: StoredApprovalRequest | null;
   onApprovalDecision: (approval: StoredApprovalRequest, status: "approved" | "rejected") => Promise<void>;
   onPromptConsumed: (id: string) => void;
@@ -64,12 +68,9 @@ export function AgentThread({
   const { t } = useTranslation("agent");
   const {
     handleAbort,
-    handleScroll,
     handleSend,
     loadingThread,
     messages,
-    scrollRef,
-    scrollbar,
   } = useAgentThreadState({
     thread,
     loadingStore,
@@ -78,6 +79,24 @@ export function AgentThread({
     pendingPrompt,
     onPromptConsumed,
     onThreadActivity,
+  });
+
+  const {
+    scrollRef,
+    scrollbar,
+    updateFloatingScrollbar,
+    handleScroll: handleScrollbarVisibility,
+    handleThumbPointerDown,
+  } = useFloatingScrollbar();
+
+  // Sticky auto-scroll: follow streaming output only while pinned near the
+  // bottom; re-pins on thread switch and follows the growing message list.
+  const { handleScroll, scrollToLatest, showJumpToLatest } = useStickyAutoScroll({
+    scrollRef,
+    resetKey: thread?.id ?? null,
+    contentKey: messages,
+    onScroll: handleScrollbarVisibility,
+    onContentSettled: () => updateFloatingScrollbar(false),
   });
 
   // A run is in flight while its assistant bubble is still streaming; the agent
@@ -136,7 +155,7 @@ export function AgentThread({
         thread={thread}
         onToggleLeftPanel={onToggleLeftPanel}
       />
-      <div className="relative min-h-0 flex-1 overflow-hidden">
+      <div className="group relative min-h-0 flex-1 overflow-hidden">
         <div
           ref={scrollRef}
           className={cn(
@@ -166,16 +185,7 @@ export function AgentThread({
                     )}
           </div>
         </div>
-        <div
-          className={cn(
-            "pointer-events-none absolute right-1 top-0 z-20 w-1.5 rounded-full bg-line transition-opacity duration-300",
-            scrollbar.visible ? "opacity-80" : "opacity-0",
-          )}
-          style={{
-            height: `${scrollbar.height}px`,
-            transform: `translateY(${scrollbar.top}px)`,
-          }}
-        />
+        <FloatingScrollbar scrollbar={scrollbar} onPointerDown={handleThumbPointerDown} />
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-linear-to-t from-surface from-80% to-transparent px-8 pb-5 pt-10">
           <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
             {activeApproval
@@ -199,11 +209,26 @@ export function AgentThread({
                   />
                 )
               : null}
+            {showJumpToLatest
+              ? (
+                  <button
+                    type="button"
+                    onClick={scrollToLatest}
+                    aria-label={t("thread.jumpToLatest")}
+                    title={t("thread.jumpToLatest")}
+                    className="pointer-events-auto mx-auto flex items-center gap-1 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
+                  >
+                    <ArrowDown className="size-3.5" />
+                    {t("thread.jumpToLatest")}
+                  </button>
+                )
+              : null}
             <Composer
               className="pointer-events-auto mx-auto w-full max-w-3xl"
               disabled={!thread || loadingThread || loadingStore || isSending}
               modelId={modelId}
               modelOptions={modelOptions}
+              modelsEmptyReason={agentConnection.readiness === "all_disabled" ? "all_disabled" : "no_models"}
               onModelChange={onModelChange}
               thinkingLevel={thinkingLevel}
               onThinkingLevelChange={onThinkingLevelChange}
@@ -211,7 +236,7 @@ export function AgentThread({
               onChangeApprovalTier={onChangeApprovalTier}
               sending={isSending}
               onAbort={() => void handleAbort()}
-              onSend={handleSend}
+              onSend={payload => void handleSend(payload)}
               workspaceId={thread?.workspaceId}
             />
           </div>
@@ -224,7 +249,8 @@ export function AgentThread({
 function shouldShowAgentNotice(connection: AgentConnectionState) {
   return connection.status === "disconnected"
     || connection.readiness === "needs_login"
-    || connection.readiness === "no_models";
+    || connection.readiness === "no_models"
+    || connection.readiness === "all_disabled";
 }
 
 interface AgentNotice {
@@ -299,6 +325,14 @@ function agentNotice(
       title: t("notice.needsLogin.title"),
       detail: t("notice.needsLogin.detail"),
       action: { label: t("notice.needsLogin.action"), onClick: actions.onOpenProviders },
+    };
+  }
+  // Models loaded, but the user disabled every one — steer them to re-enable.
+  if (connection.readiness === "all_disabled") {
+    return {
+      title: t("notice.allModelsDisabled.title"),
+      detail: t("notice.allModelsDisabled.detail"),
+      action: { label: t("notice.allModelsDisabled.action"), onClick: actions.onOpenModels },
     };
   }
   return {

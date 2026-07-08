@@ -42,10 +42,6 @@ fn main() {
     // Proto files change rarely; re-running protoc every build is wasteful and
     // can fail in sandboxed environments where prost-build can't write temp files.
     if generated.exists() {
-        println!(
-            "cargo:warning=Generated proto at {:?} already exists; skipping proto compilation",
-            generated
-        );
         return;
     }
 

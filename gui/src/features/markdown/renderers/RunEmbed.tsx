@@ -16,7 +16,7 @@ export function RunEmbed({
   reference: FutureReference;
   run: StoredRun;
 }) {
-  const { t } = useTranslation("markdown");
+  const { i18n, t } = useTranslation("markdown");
   function inspectRun() {
     emitFutureEvent("inspect-run", { runId: run.id });
   }
@@ -31,7 +31,7 @@ export function RunEmbed({
             <Badge tone={runTone(run.status)}>{formatRunStatus(run.status)}</Badge>
           </div>
           <div className="mt-1 text-xs text-ink-muted">
-            {run.startedAt ? formatTime(storedTimeToIso(run.startedAt)) : formatTime(storedTimeToIso(run.createdAt))}
+            {run.startedAt ? formatTime(storedTimeToIso(run.startedAt), i18n.language) : formatTime(storedTimeToIso(run.createdAt), i18n.language)}
           </div>
           <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-ink-soft">
             <div>

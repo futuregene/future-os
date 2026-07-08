@@ -1,5 +1,5 @@
-import { invokeCommand } from "../integrations/tauri/invoke";
-import { useAsyncResource } from "./useAsyncResource";
+import { useAsyncResource } from "../../lib/useAsyncResource";
+import { invokeCommand } from "./invoke";
 
 /** Version + release/dev channel, injected at build time (see scripts/version.mjs). */
 export interface BuildInfo {

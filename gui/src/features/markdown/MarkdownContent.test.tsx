@@ -28,13 +28,16 @@ describe("markdown content", () => {
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
   });
 
-  it("keeps future references as safe unresolved chips without a workspace", () => {
+  it("renders unresolved references as neutral placeholders, not the red missing badge", () => {
     const html = renderToStaticMarkup(
       <MarkdownContent content="[artifact:Report](futureos://artifact/artifact_123)" />,
     );
 
-    expect(html).toContain("Missing");
-    expect(html).toContain("artifact");
+    // Without a workspace the resolve IPC can't run, so `resolved` is undefined —
+    // a pending state, not a failure. Show the label neutrally; the red badge is
+    // reserved for genuinely missing / failed targets.
+    expect(html).not.toContain("Missing");
+    expect(html).toContain("artifact:Report");
   });
 
   it("renders references from the shared future reference store", () => {

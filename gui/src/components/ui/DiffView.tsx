@@ -10,6 +10,7 @@ export function DiffView({ diff }: { diff: string }) {
       {rows.map(row => (
         <DiffLine
           key={row.key}
+          kind={row.kind}
           line={row.line}
           newLineNumber={row.newLineNumber}
           oldLineNumber={row.oldLineNumber}
@@ -20,15 +21,16 @@ export function DiffView({ diff }: { diff: string }) {
 }
 
 function DiffLine({
+  kind,
   line,
   newLineNumber,
   oldLineNumber,
 }: {
+  kind: string;
   line: string;
   newLineNumber?: number;
   oldLineNumber?: number;
 }) {
-  const kind = diffLineKind(line);
   const content = line.length === 0 ? " " : line;
 
   return (
@@ -47,6 +49,9 @@ function diffRows(diff: string) {
   const seen = new Map<string, number>();
   let oldLine = 0;
   let newLine = 0;
+  // `---`/`+++` are file-header meta only up to the first hunk; after that a
+  // leading `--`/`++` belongs to a real deleted/added line (e.g. SQL comments).
+  let hasHunk = false;
   return diff
     .split("\n")
     .filter(line => !line.startsWith("diff --git ") && !line.startsWith("index "))
@@ -61,7 +66,9 @@ function diffRows(diff: string) {
 
       let oldLineNumber: number | undefined;
       let newLineNumber: number | undefined;
-      const kind = diffLineKind(line);
+      const kind = diffLineKind(line, hasHunk);
+      if (hunk)
+        hasHunk = true;
       if (kind === "add") {
         newLineNumber = newLine;
         newLine += 1;
@@ -78,6 +85,7 @@ function diffRows(diff: string) {
       }
       return {
         key: `${count}:${line}`,
+        kind,
         line,
         newLineNumber,
         oldLineNumber,
@@ -96,9 +104,16 @@ function parseHunkHeader(line: string) {
   };
 }
 
-function diffLineKind(line: string) {
-  if (line.startsWith("@@") || line.startsWith("---") || line.startsWith("+++") || line.startsWith("new file")) {
+function diffLineKind(line: string, hasHunk: boolean) {
+  if (line.startsWith("@@") || line.startsWith("new file")) {
     return "meta";
+  }
+  // A `---`/`+++` line is a file header only in the pre-hunk header block or when
+  // it carries a git `a/`, `b/`, or `/dev/null` path; otherwise it's diff content.
+  if (line.startsWith("---") || line.startsWith("+++")) {
+    if (!hasHunk || /^(?:---|\+\+\+) (?:a\/|b\/|\/dev\/null)/.test(line)) {
+      return "meta";
+    }
   }
   if (line.startsWith("+")) {
     return "add";

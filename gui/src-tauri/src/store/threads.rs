@@ -4,7 +4,9 @@ use serde::Serialize;
 use super::db::*;
 use super::records::*;
 use super::util::*;
-use super::workspaces::{get_or_create_chat_workspace_in, get_workspace_in};
+use super::workspaces::{
+    get_or_create_chat_workspace_in, get_or_create_user_workspace_in, get_workspace_in,
+};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,34 +30,13 @@ pub struct ThreadRecord {
     pub deleted_at: Option<i64>,
 }
 
-/// Column list for `thread_from_row`, in struct order. Reuse this in every
-/// `SELECT` that maps into `ThreadRecord`.
-pub(super) const THREAD_COLUMNS: &str =
-    "id, workspace_id, mode, title, status, pinned, readonly, model_provider, \
-     model_id, thinking_level, agent_session_id, last_message_at, last_opened_at, \
-     created_at, updated_at, archived_at, deleted_at";
-
-pub(super) fn thread_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadRecord> {
-    Ok(ThreadRecord {
-        id: row.get(0)?,
-        workspace_id: row.get(1)?,
-        mode: row.get(2)?,
-        title: row.get(3)?,
-        status: row.get(4)?,
-        pinned: row.get::<_, i64>(5)? != 0,
-        readonly: row.get::<_, i64>(6)? != 0,
-        model_provider: row.get(7)?,
-        model_id: row.get(8)?,
-        thinking_level: row.get(9)?,
-        agent_session_id: row.get(10)?,
-        last_message_at: row.get(11)?,
-        last_opened_at: row.get(12)?,
-        created_at: row.get(13)?,
-        updated_at: row.get(14)?,
-        archived_at: row.get(15)?,
-        deleted_at: row.get(16)?,
-    })
-}
+// `pinned`/`readonly` are `bool` fields; rusqlite's `FromSql for bool` maps the
+// stored 0/1 integers (same as the prior explicit `i64 != 0`).
+sql_record!(pub(super) THREAD_COLUMNS, thread_from_row -> ThreadRecord {
+    id, workspace_id, mode, title, status, pinned, readonly, model_provider,
+    model_id, thinking_level, agent_session_id, last_message_at, last_opened_at,
+    created_at, updated_at, archived_at, deleted_at,
+});
 
 pub fn list_threads() -> Result<Vec<ThreadRecord>, crate::AppError> {
     let conn = connect()?;
@@ -121,8 +102,12 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
     // Resolve/create the workspace and insert the thread in one transaction so a
     // crash between the two writes can't leave an orphan workspace with no thread
     // pointing at it. `&tx` deref-coerces to `&Connection` for the `_in` helpers.
+    // BEGIN IMMEDIATE because the `_in` helpers are SELECT-then-INSERT: under a
+    // deferred transaction in WAL a concurrent commit between the read and the
+    // write fails the whole create with SQLITE_BUSY_SNAPSHOT instead of being
+    // serialized (matches the standalone get_or_create_user_workspace).
     let mut conn = connect()?;
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
     let workspace = if mode == "chat" {
         get_or_create_chat_workspace_in(&tx, &thread_id, Some(title.clone()))?
@@ -249,6 +234,27 @@ pub fn pin_thread(input: PinThreadInput) -> Result<ThreadRecord, crate::AppError
     loaded(get_thread(&input.thread_id)?, "Thread")
 }
 
+pub(super) fn update_thread_status(
+    thread_id: &str,
+    status: &str,
+) -> Result<ThreadRecord, crate::AppError> {
+    let now = now_millis();
+    let archived_at = if status == "archived" {
+        Some(now)
+    } else {
+        None
+    };
+    let conn = connect()?;
+    conn.execute(
+        "UPDATE threads
+         SET status = ?1, archived_at = ?2, updated_at = ?3
+         WHERE id = ?4 AND status != 'deleted'",
+        params![status, archived_at, now, thread_id],
+    )?;
+
+    loaded(get_thread(thread_id)?, "Thread")
+}
+
 pub fn archive_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> {
     update_thread_status(thread_id, "archived")
 }
@@ -259,9 +265,13 @@ pub fn restore_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> 
 
 pub fn delete_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> {
     let now = now_millis();
-    let conn = connect()?;
+    let mut conn = connect()?;
     let thread = loaded(get_thread(thread_id)?, "Thread")?;
-    conn.execute(
+    // One transaction: the soft-delete and the temp-workspace cleanup flag must
+    // land together — the flag is never retried later, so a crash in between
+    // would leak the chat workspace directory forever (mirrors delete_workspace).
+    let tx = conn.transaction()?;
+    tx.execute(
         "UPDATE threads
          SET status = 'deleted', deleted_at = ?1, updated_at = ?1
          WHERE id = ?2 AND status != 'deleted'",
@@ -269,7 +279,7 @@ pub fn delete_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> {
     )?;
 
     if thread.mode == "chat" {
-        conn.execute(
+        tx.execute(
             "UPDATE workspaces
              SET cleanup_status = 'pending_cleanup',
                  cleanup_requested_at = COALESCE(cleanup_requested_at, ?1),
@@ -280,6 +290,7 @@ pub fn delete_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> {
             params![now, thread.workspace_id],
         )?;
     }
+    tx.commit()?;
 
     loaded(get_thread(thread_id)?, "Thread")
 }
@@ -294,8 +305,8 @@ fn normalize_optional_thinking_level(level: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::get_thread_in;
-    use crate::store::db::get_or_create_user_workspace_in;
     use crate::store::schema::SCHEMA;
+    use crate::store::workspaces::get_or_create_user_workspace_in;
     use crate::store::workspaces::get_workspace_in;
     use rusqlite::{params, Connection};
     use std::path::PathBuf;

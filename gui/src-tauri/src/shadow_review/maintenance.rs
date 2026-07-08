@@ -111,16 +111,15 @@ fn recover_one(run_id: &str, thread_id: &str, workspace_id: &str) -> Result<(), 
         // §6.6: the Run was interrupted before its after snapshot. Settle it
         // cancelled, then capture the current workspace state as the after.
         None => {
-            if let Ok(Some(run)) = store::get_run(run_id) {
-                if !matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
-                    let _ = store::update_run_status(store::UpdateRunStatusInput {
-                        run_id: run_id.to_string(),
-                        status: "cancelled".to_string(),
-                        error_message: Some("Interrupted by application restart.".to_string()),
-                        error_type: Some("interrupted".to_string()),
-                    });
-                }
-            }
+            // CAS instead of read-then-write: only settle a run that is still
+            // non-terminal, atomically, so a run that finished in the startup
+            // window isn't rewritten to cancelled.
+            let _ = store::update_run_status_if_active(store::UpdateRunStatusInput {
+                run_id: run_id.to_string(),
+                status: "cancelled".to_string(),
+                error_message: Some("Interrupted by application restart.".to_string()),
+                error_type: Some("interrupted".to_string()),
+            });
 
             let Some(workspace) = store::get_workspace(workspace_id)? else {
                 return Ok(());

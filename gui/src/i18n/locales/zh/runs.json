@@ -30,9 +30,9 @@
   "runsPanel": {
     "emptyTitle": "没有后台程序",
     "emptyDetail": "Agent 运行时的工作会显示在这里。",
-    "runningFinished": "{{running}} 运行中 / {{finished}} 已完成",
+    "runningFinished": "{{running}} 运行中 / {{finished}} 已结束",
     "clearing": "清理中",
-    "clearFinished": "清理已完成",
+    "clearFinished": "清除已结束的程序",
     "commands_one": "{{count}} 条命令",
     "commands_other": "{{count}} 条命令",
     "inspectRun": "查看运行",

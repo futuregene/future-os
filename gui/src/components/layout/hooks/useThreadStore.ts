@@ -1,14 +1,15 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredThread, StoredWorkspace } from "../../../integrations/storage/threadStore";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import i18n from "../../../i18n";
 import {
-  cancelStaleApprovalRequests,
   getRecentOrCreateDefaultThread,
   initializeAppStore,
   listRuns,
   listThreads,
   listWorkspaces,
 } from "../../../integrations/storage/threadStore";
+import { errorMessage } from "../../../lib/errors";
 import { usePolling } from "../../../lib/usePolling";
 
 export interface ThreadRunInfo {
@@ -78,21 +79,46 @@ export function useThreadStore(): ThreadStore {
   const runStatusGenRef = useRef(0);
   const refreshThreadRunStatuses = useCallback(async (nextThreads: StoredThread[]) => {
     const generation = ++runStatusGenRef.current;
+    // Per-thread catch (not a bare Promise.all): one thread's failed listRuns
+    // must not reject the whole batch — that would blank every thread's run
+    // indicator and surface an unhandled rejection. A failed thread keeps
+    // its previous status and self-heals on the next 1.5s tick.
     const entries = await Promise.all(
       nextThreads.map(async (thread) => {
-        const runs = await listRuns(thread.id);
-        const latest = runs[0];
-        return [thread.id, latest ? { endedAt: latest.endedAt ?? null, status: latest.status } : undefined] as const;
+        try {
+          const runs = await listRuns(thread.id);
+          const latest = runs[0];
+          const value = latest ? { endedAt: latest.endedAt ?? null, status: latest.status } : undefined;
+          return { id: thread.id, ok: true as const, value };
+        }
+        catch {
+          return { id: thread.id, ok: false as const };
+        }
       }),
     );
     if (generation !== runStatusGenRef.current) {
       return;
     }
-    setThreadRunStatuses(Object.fromEntries(entries));
+    setThreadRunStatuses((previous) => {
+      const next: ThreadRunStatuses = {};
+      for (const entry of entries) {
+        next[entry.id] = entry.ok ? entry.value : previous[entry.id];
+      }
+      return next;
+    });
   }, []);
 
+  // Guard against overlapping refreshes (rapid deletes/creates, each calling
+  // refreshStore): a slow listThreads landing after a newer one would revive a
+  // stale list — briefly resurrecting a just-deleted thread and possibly
+  // re-selecting it. Newest call wins.
+  const refreshStoreGenRef = useRef(0);
   const refreshStore = useCallback(async (nextActiveThreadId?: string) => {
+    const generation = ++refreshStoreGenRef.current;
     const [nextThreads, nextWorkspaces] = await Promise.all([listThreads(), listWorkspaces()]);
+    if (generation !== refreshStoreGenRef.current) {
+      return;
+    }
     const selectableThreads = nextThreads.filter(thread => thread.status === "active");
     setThreads(nextThreads);
     setWorkspaces(nextWorkspaces);
@@ -113,16 +139,18 @@ export function useThreadStore(): ThreadStore {
 
   useEffect(() => {
     // Hand-rolled cancel guard (not useAsyncResource): a multi-step bootstrap
-    // (init store → cancel stale approvals → recent thread → threads+workspaces)
-    // writing several states, not a single resource. See gui/CLAUDE.md §4.
+    // (init store → recent thread → threads+workspaces) writing several
+    // states, not a single resource. See gui/CLAUDE.md §4.
+    // Stale-run convergence intentionally does NOT happen here: it lives in
+    // the backend's setup (once per process). Bootstrap re-runs on every
+    // webview reload, where the backend may still own live runs.
     let cancelled = false;
 
     async function bootstrapStore() {
       setLoadingStore(true);
       try {
         await initializeAppStore();
-        await cancelStaleApprovalRequests();
-        const recentThread = await getRecentOrCreateDefaultThread();
+        const recentThread = await getRecentOrCreateDefaultThread(i18n.t("common:newChat"));
         const [nextThreads, nextWorkspaces] = await Promise.all([listThreads(), listWorkspaces()]);
         if (cancelled) {
           return;
@@ -136,7 +164,7 @@ export function useThreadStore(): ThreadStore {
       }
       catch (error) {
         if (!cancelled) {
-          setStoreError(error instanceof Error ? error.message : String(error));
+          setStoreError(errorMessage(error));
         }
       }
       finally {

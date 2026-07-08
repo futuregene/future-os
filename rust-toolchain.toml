@@ -3,5 +3,5 @@
 # local rustc and CI's floating stable). Bump deliberately, in step with the
 # `dtolnay/rust-toolchain` pin in .github/workflows/build.yml.
 [toolchain]
-channel = "stable"
+channel = "1.96.0"
 components = ["rustfmt", "clippy"]

@@ -13,6 +13,9 @@ import {
   storedTimeToIso,
 } from "../../integrations/storage/threadStore";
 import { formatTime } from "../../lib/date";
+import { errorMessage } from "../../lib/errors";
+import { formatBytes } from "../../lib/format";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { READ_SOURCE_MAX_BYTES } from "../agent/attachments";
 
 export function ArtifactsPanel({
@@ -61,7 +64,7 @@ export function ArtifactsPanel({
       onChanged();
     }
     catch (error) {
-      setUploadError(t("panel.uploadFailed", { message: error instanceof Error ? error.message : String(error) }));
+      setUploadError(t("panel.uploadFailed", { message: errorMessage(error) }));
     }
     finally {
       setUploading(false);
@@ -114,11 +117,6 @@ export function ArtifactsPanel({
   );
 }
 
-function formatBytes(bytes: number) {
-  const mb = bytes / (1024 * 1024);
-  return Number.isInteger(mb) ? `${mb} MB` : `${mb.toFixed(1)} MB`;
-}
-
 function ArtifactCard({
   artifact,
   onChanged,
@@ -128,10 +126,15 @@ function ArtifactCard({
   onChanged: () => void;
   onSelectArtifact: (artifactId: string) => void;
 }) {
-  const { t } = useTranslation("artifacts");
+  const { i18n, t } = useTranslation("artifacts");
   async function handleDelete() {
-    await deleteArtifact(artifact.id);
-    onChanged();
+    try {
+      await deleteArtifact(artifact.id);
+      onChanged();
+    }
+    catch (error) {
+      emitFutureEvent("toast", { message: t("card.deleteFailed", { message: errorMessage(error) }), tone: "error" });
+    }
   }
 
   return (
@@ -142,7 +145,7 @@ function ArtifactCard({
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold text-ink">{artifact.title}</div>
-              <div className="mt-1 text-xs text-ink-muted">{formatTime(storedTimeToIso(artifact.createdAt))}</div>
+              <div className="mt-1 text-xs text-ink-muted">{formatTime(storedTimeToIso(artifact.createdAt), i18n.language)}</div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
               <button

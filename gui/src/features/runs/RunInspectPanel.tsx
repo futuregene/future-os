@@ -14,7 +14,7 @@ import {
   listToolOutputs,
   storedTimeToIso,
 } from "../../integrations/storage/threadStore";
-import { formatTime } from "../../lib/date";
+import { formatDuration, formatTime } from "../../lib/date";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { isRecord } from "../../lib/objects";
 import { useAsyncResource } from "../../lib/useAsyncResource";
@@ -33,7 +33,7 @@ interface RunDetails {
 }
 
 export function RunInspectPanel({ onBack, run, tools }: RunInspectPanelProps) {
-  const { t } = useTranslation("runs");
+  const { i18n, t } = useTranslation("runs");
   const [query, setQuery] = useState("");
   const sortedTools = useMemo(
     () => [...tools].sort((left, right) => (left.startedAt ?? left.createdAt) - (right.startedAt ?? right.createdAt)),
@@ -76,8 +76,8 @@ export function RunInspectPanel({ onBack, run, tools }: RunInspectPanelProps) {
           <div className="min-w-0">
             <h3 className="truncate text-sm font-semibold text-ink">{shortId(run.id)}</h3>
             <div className="mt-1 text-xs text-ink-muted">
-              {run.startedAt ? formatTime(storedTimeToIso(run.startedAt)) : formatTime(storedTimeToIso(run.createdAt))}
-              {run.endedAt ? ` - ${formatTime(storedTimeToIso(run.endedAt))}` : ""}
+              {run.startedAt ? formatTime(storedTimeToIso(run.startedAt), i18n.language) : formatTime(storedTimeToIso(run.createdAt), i18n.language)}
+              {run.endedAt ? ` - ${formatTime(storedTimeToIso(run.endedAt), i18n.language)}` : ""}
             </div>
           </div>
           <Badge tone={runTone(run.status)}>{formatRunStatus(run.status)}</Badge>
@@ -254,11 +254,11 @@ function ToolDetailFields({
   details: ToolDetails;
   tool: StoredToolCall;
 }) {
-  const { t } = useTranslation("runs");
+  const { i18n, t } = useTranslation("runs");
   const fields = [
     ["kind", t("runInspect.field.kind"), tool.kind],
-    ["started", t("runInspect.field.started"), tool.startedAt ? formatTime(storedTimeToIso(tool.startedAt)) : null],
-    ["ended", t("runInspect.field.ended"), tool.endedAt ? formatTime(storedTimeToIso(tool.endedAt)) : null],
+    ["started", t("runInspect.field.started"), tool.startedAt ? formatTime(storedTimeToIso(tool.startedAt), i18n.language) : null],
+    ["ended", t("runInspect.field.ended"), tool.endedAt ? formatTime(storedTimeToIso(tool.endedAt), i18n.language) : null],
     ["duration", t("runInspect.field.duration"), details.duration],
     ["cwd", t("runInspect.field.cwd"), details.cwd],
     ["exit", t("runInspect.field.exit"), details.exitStatus],
@@ -321,7 +321,7 @@ function toolDetails(tool: StoredToolCall, outputs: StoredToolOutput[]): ToolDet
     command: stringField(input, ["command", "cmd", "shellCommand", "shell_command"]),
     cwd: stringField(input, ["cwd", "workingDirectory", "working_directory", "workdir"])
       ?? stringField(firstOutput, ["cwd", "workingDirectory", "working_directory", "workdir"]),
-    duration: durationMs !== null ? formatDuration(durationMs) : durationField(firstOutput),
+    duration: durationMs !== null ? formatDuration(durationMs, { subSecond: true }) : durationField(firstOutput),
     exitStatus: numberOrStringField(firstOutput, ["exitStatus", "exit_status", "exitCode", "exit_code", "statusCode", "status_code"]),
     path: stringField(input, ["path", "filePath", "file_path", "targetPath", "target_path", "target"]),
     stderr: stringField(firstOutput, ["stderr", "standardError", "standard_error", "error"]),
@@ -352,15 +352,5 @@ function durationField(value: Record<string, unknown> | null) {
   if (!raw)
     return null;
   const numeric = Number(raw);
-  return Number.isFinite(numeric) ? formatDuration(numeric) : raw;
-}
-
-function formatDuration(milliseconds: number) {
-  if (milliseconds < 1000)
-    return `${milliseconds}ms`;
-  if (milliseconds < 60_000)
-    return `${(milliseconds / 1000).toFixed(1)}s`;
-  const minutes = Math.floor(milliseconds / 60_000);
-  const seconds = Math.round((milliseconds % 60_000) / 1000);
-  return `${minutes}m ${seconds}s`;
+  return Number.isFinite(numeric) ? formatDuration(numeric, { subSecond: true }) : raw;
 }

@@ -5,12 +5,14 @@
 //! never touching the user's real `.git`.
 
 mod diff;
+mod last_run;
 mod maintenance;
 mod policy;
 mod repository;
 mod snapshot;
 
 pub use diff::{materialize, MaterializedDiff};
+pub use last_run::{build_last_run_review, LastRunReviewData};
 pub use maintenance::{enforce_retention, run_startup_maintenance};
 pub use policy::{evaluate_volume, Limits, VolumeRedline, VolumeVerdict};
 pub use repository::{with_workspace_lock, ShadowRepo};

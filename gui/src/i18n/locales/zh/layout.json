@@ -29,11 +29,15 @@
     "pin": "置顶",
     "unpin": "取消置顶",
     "delete": "删除",
+    "revealInFinder": "在访达中显示",
+    "revealInExplorer": "在资源管理器中打开",
+    "revealInFileManager": "在文件管理器中打开",
     "workspaceActions": "{{name}} 的操作",
     "pinnedHeader": "置顶"
   },
   "appShell": {
     "storeInitFailed": "FutureOS 本地存储初始化失败：",
+    "startConversationFailed": "创建对话失败：{{error}}",
     "noWorkspaceSelected": "未选择工作区",
     "data": "数据",
     "skill": "技能",

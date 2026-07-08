@@ -1,6 +1,6 @@
-# Command line tool (`future-cli`)
+# Command line tool (`future`)
 
-FutureOS ships with an **optional** command-line tool called `future-cli`. It comes with every download.
+FutureOS ships with an **optional** command-line tool called `future`. It comes with every download.
 
 > **You probably don't need this.** The desktop app already handles everyday use. Reach for the CLI only when you want to script things, automate a task, or work purely in a terminal. **If you're not comfortable with a terminal, you can skip this page.**
 
@@ -12,10 +12,10 @@ The tool travels with the app:
 
 | System | Location |
 |---|---|
-| **macOS** (`.dmg`) | Inside the app: `/Applications/FutureOS.app/Contents/MacOS/future-cli` |
-| **Windows** (portable `.zip`) | `future-cli.exe` in the unzipped folder |
+| **macOS** (`.dmg`) | Inside the app: `/Applications/FutureOS.app/Contents/MacOS/future` |
+| **Windows** (portable `.zip`) | `future.exe` in the unzipped folder |
 
-> On Windows, the command-line tool is in the **portable** package. The regular installer version contains the app and its background service, not a separate `future-cli.exe`.
+> On Windows, the command-line tool is in the **portable** package. The regular installer version contains the app and its background service, not a separate `future.exe`.
 
 ---
 
@@ -24,13 +24,13 @@ The tool travels with the app:
 Open a terminal in the folder that contains the binary, then run it with `--help` to see everything:
 
 ```bash
-future-cli --help
+future --help
 ```
 
 To make it easier to run from anywhere, add its folder to your `PATH`, or set up an alias. For example, on macOS:
 
 ```bash
-alias future-cli="/Applications/FutureOS.app/Contents/MacOS/future-cli"
+alias future="/Applications/FutureOS.app/Contents/MacOS/future"
 ```
 
 ### The agent must be running
@@ -38,7 +38,7 @@ alias future-cli="/Applications/FutureOS.app/Contents/MacOS/future-cli"
 Every command connects to the FutureOS agent (the background service). If the **desktop app is open**, the agent is already running. Otherwise, start it first:
 
 ```bash
-future-cli agent start
+future agent start
 ```
 
 ---
@@ -48,24 +48,24 @@ future-cli agent start
 ### `auth` — sign in and out
 
 ```bash
-future-cli auth login     # sign in via your browser
-future-cli auth status    # show whether you're signed in
-future-cli auth logout    # sign out
+future auth login     # sign in via your browser
+future auth status    # show whether you're signed in
+future auth logout    # sign out
 ```
 
 ### `agent` — manage the background agent
 
 ```bash
-future-cli agent start
-future-cli agent stop
-future-cli agent restart
-future-cli agent status
+future agent start
+future agent stop
+future agent restart
+future agent status
 ```
 
 ### `run` — send a one-off prompt and print the answer
 
 ```bash
-future-cli run "Explain this project"
+future run "Explain this project"
 ```
 
 Useful options and forms:
@@ -83,18 +83,18 @@ Useful options and forms:
 Examples:
 
 ```bash
-future-cli run --model sonnet:high "Review the changes"
-future-cli run @README.md "Summarize this file"
-echo "some text" | future-cli run "Clean up this text"
+future run --model sonnet:high "Review the changes"
+future run @README.md "Summarize this file"
+echo "some text" | future run "Clean up this text"
 ```
 
 ### `tools` — list and call tools
 
 ```bash
-future-cli tools list
-future-cli tools call <name> --args '<json>'
-future-cli tools call <name> --stdin
-future-cli tools call <name> --args '<json>' --output result.png
+future tools list
+future tools call <name> --args '<json>'
+future tools call <name> --stdin
+future tools call <name> --args '<json>' --output result.png
 ```
 
 File-path arguments are converted automatically where a tool expects file content.
@@ -102,9 +102,9 @@ File-path arguments are converted automatically where a tool expects file conten
 ### `skills` — manage capability packs
 
 ```bash
-future-cli skills list
-future-cli skills install <name>
-future-cli skills uninstall <name>
+future skills list
+future skills install <name>
+future skills uninstall <name>
 ```
 
 ### `channel` — chat platform bridge (advanced)
@@ -116,7 +116,7 @@ Bridges external chat platforms to the agent (`start` / `stop` / `restart` / `st
 ## Tips
 
 - **macOS blocked it the first time?** Open the FutureOS app once via right-click → **Open** to clear the block, then the CLI runs too.
-- **"Connection refused"?** The agent isn't running. Run `future-cli agent start`, or just open the desktop app.
+- **"Connection refused"?** The agent isn't running. Run `future agent start`, or just open the desktop app.
 
 ---
 

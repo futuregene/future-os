@@ -28,28 +28,10 @@ pub struct ArtifactRecord {
     pub deleted_at: Option<i64>,
 }
 
-/// Column list for `artifact_from_row`, in struct order.
-pub(super) const ARTIFACT_COLUMNS: &str =
-    "id, workspace_id, thread_id, run_id, title, artifact_type, path, content, \
-     content_storage, summary, created_at, updated_at, deleted_at";
-
-pub(super) fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtifactRecord> {
-    Ok(ArtifactRecord {
-        id: row.get(0)?,
-        workspace_id: row.get(1)?,
-        thread_id: row.get(2)?,
-        run_id: row.get(3)?,
-        title: row.get(4)?,
-        artifact_type: row.get(5)?,
-        path: row.get(6)?,
-        content: row.get(7)?,
-        content_storage: row.get(8)?,
-        summary: row.get(9)?,
-        created_at: row.get(10)?,
-        updated_at: row.get(11)?,
-        deleted_at: row.get(12)?,
-    })
-}
+sql_record!(pub(super) ARTIFACT_COLUMNS, artifact_from_row -> ArtifactRecord {
+    id, workspace_id, thread_id, run_id, title, artifact_type, path, content,
+    content_storage, summary, created_at, updated_at, deleted_at,
+});
 
 pub fn list_artifacts(thread_id: &str) -> Result<Vec<ArtifactRecord>, crate::AppError> {
     let thread = loaded(get_thread(thread_id)?, "Thread")?;

@@ -9,11 +9,11 @@
 //! a hand-edited file). Write semantics: serialize to a sibling temp file with
 //! `0600`, then atomically `rename` over the target.
 
-use std::io::{ErrorKind, Write};
 use std::path::PathBuf;
 
 use serde_json::{json, Map, Value};
 
+use crate::config_io;
 use crate::AppError;
 
 /// The built-in FutureGene provider id. Shared so `agent_providers` doesn't keep
@@ -36,96 +36,47 @@ pub(crate) fn auth_json_path() -> Result<PathBuf, AppError> {
 /// Missing file → empty map. Corrupt JSON or a non-object root → error, so
 /// callers never overwrite an unreadable file with partial state.
 pub(crate) fn read() -> Result<Map<String, Value>, AppError> {
-    let path = auth_json_path()?;
-    let contents = match std::fs::read_to_string(&path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Map::new()),
-        Err(error) => return Err(error.into()),
-    };
-
-    let value: Value = serde_json::from_str(&contents).map_err(|error| {
-        AppError::Message(format!(
-            "{} 解析失败：{error}。请修复该文件后重试。",
-            path.display()
-        ))
-    })?;
-
-    match value {
+    // Strictness (missing → empty, corrupt/non-object → error) is owned by the
+    // shared config reader so auth.json and the other GUI configs stay identical;
+    // `read_json_object` guarantees an object root, so the else arm is unreachable.
+    match config_io::read_json_object(&auth_json_path()?)? {
         Value::Object(map) => Ok(map),
-        _ => Err(AppError::Message(format!(
-            "{} 的根节点必须是 JSON 对象。",
-            path.display()
-        ))),
+        _ => unreachable!("read_json_object returns an object root or an error"),
     }
 }
 
-/// Atomically write `auth.json` with `0600` permissions (unix).
+/// Atomically write `auth.json` with `0600` permissions (unix). Delegates the
+/// temp-file + rename + permission dance to the shared [`config_io`] helper so
+/// all config writers stay consistent (owner-only here).
 pub(crate) fn write(map: &Map<String, Value>) -> Result<(), AppError> {
     let path = auth_json_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let serialized = format!(
-        "{}\n",
-        serde_json::to_string_pretty(&Value::Object(map.clone()))?
-    );
-
-    // Unique temp name in the same directory so the final `rename` is atomic on
-    // the same filesystem; the pid keeps concurrent writers from colliding.
-    let tmp = path.with_file_name(format!("auth.json.tmp.{}", std::process::id()));
-
-    let result = (|| -> Result<(), AppError> {
-        let mut file = std::fs::File::create(&tmp)?;
-        set_owner_only(&tmp)?;
-        file.write_all(serialized.as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(&tmp, &path)?;
-        // rename preserves the temp file's mode; re-assert in case the target
-        // pre-existed with looser perms on some platforms.
-        set_owner_only(&path)?;
-        Ok(())
-    })();
-
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
-}
-
-#[cfg(unix)]
-fn set_owner_only(path: &PathBuf) -> Result<(), AppError> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_owner_only(_path: &PathBuf) -> Result<(), AppError> {
-    // Windows has no 0600 equivalent; rely on the per-user profile directory.
-    Ok(())
+    config_io::write_json_atomic(&path, &Value::Object(map.clone()), true)
 }
 
 /// Read `auth.json`, upsert the provider's entry (creating it / normalizing a
 /// non-object to `{}`, defaulting `type` to `api_key`), let `mutate` set fields,
-/// then write atomically. Single read+write — shared by all key writers.
+/// then write atomically. The whole read+write is serialized per-path so two
+/// concurrent commands can't lose each other's update.
 fn upsert_provider_entry(
     id: &str,
     mutate: impl FnOnce(&mut Map<String, Value>),
 ) -> Result<(), AppError> {
-    let mut auth = read()?;
-    let entry = auth.entry(id.to_string()).or_insert_with(|| json!({}));
-    if !entry.is_object() {
-        *entry = json!({});
-    }
-    let object = entry
-        .as_object_mut()
-        .expect("entry was just normalized to an object");
-    object
-        .entry("type".to_string())
-        .or_insert_with(|| Value::String("api_key".to_string()));
-    mutate(object);
-    write(&auth)
+    let path = auth_json_path()?;
+    config_io::with_config_lock(&path, || {
+        let mut auth = read()?;
+        let entry = auth.entry(id.to_string()).or_insert_with(|| json!({}));
+        if !entry.is_object() {
+            *entry = json!({});
+        }
+        let object = entry
+            .as_object_mut()
+            .expect("entry was just normalized to an object");
+        object
+            .entry("type".to_string())
+            .or_insert_with(|| Value::String("api_key".to_string()));
+        mutate(object);
+        write(&auth)
+    })
 }
 
 /// Set a provider's API key, preserving any other fields on the entry (e.g. the
@@ -139,27 +90,33 @@ pub(crate) fn set_provider_key(id: &str, key: &str) -> Result<(), AppError> {
 /// Remove a provider's API key but keep the rest of the entry (e.g. FutureGene
 /// logout retains `base_url`). Returns whether a key was present.
 pub(crate) fn remove_provider_key(id: &str) -> Result<bool, AppError> {
-    let mut auth = read()?;
-    let removed = auth
-        .get_mut(id)
-        .and_then(Value::as_object_mut)
-        .map(|entry| entry.remove("key").is_some())
-        .unwrap_or(false);
-    if removed {
-        write(&auth)?;
-    }
-    Ok(removed)
+    let path = auth_json_path()?;
+    config_io::with_config_lock(&path, || {
+        let mut auth = read()?;
+        let removed = auth
+            .get_mut(id)
+            .and_then(Value::as_object_mut)
+            .map(|entry| entry.remove("key").is_some())
+            .unwrap_or(false);
+        if removed {
+            write(&auth)?;
+        }
+        Ok(removed)
+    })
 }
 
 /// Remove a provider's whole auth entry (used when a custom provider is deleted).
 /// Returns whether an entry was present.
 pub(crate) fn remove_provider_entry(id: &str) -> Result<bool, AppError> {
-    let mut auth = read()?;
-    let removed = auth.remove(id).is_some();
-    if removed {
-        write(&auth)?;
-    }
-    Ok(removed)
+    let path = auth_json_path()?;
+    config_io::with_config_lock(&path, || {
+        let mut auth = read()?;
+        let removed = auth.remove(id).is_some();
+        if removed {
+            write(&auth)?;
+        }
+        Ok(removed)
+    })
 }
 
 /// FutureGene login: store the device-flow API key and pin `base_url` under the
@@ -191,27 +148,29 @@ pub(crate) fn set_future_base_url(base_url: &str) -> Result<(), AppError> {
     })
 }
 
+/// Shared test fixture: points `HOME` at a fresh temp dir so config reads/writes
+/// are isolated and never touch the developer's real `~/.future/`. Lives here (the
+/// single owner of the auth file) so `auth_store` and `agent_providers` tests use
+/// one copy. Serialized on [`crate::TEST_HOME_LOCK`] since `HOME` is process-global.
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_support {
+    use std::path::PathBuf;
     use std::sync::MutexGuard;
 
-    // Each test points HOME at a fresh temp dir so reads/writes are isolated and
-    // never touch the developer's real ~/.future/agent/auth.json.
-    struct HomeGuard {
+    pub(crate) struct HomeGuard {
         previous: Option<String>,
-        dir: std::path::PathBuf,
+        dir: PathBuf,
         _lock: MutexGuard<'static, ()>,
     }
 
     impl HomeGuard {
-        fn new(label: &str) -> Self {
+        pub(crate) fn new(label: &str) -> Self {
             let lock = crate::TEST_HOME_LOCK
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
             let previous = std::env::var("HOME").ok();
             let dir = std::env::temp_dir().join(format!(
-                "futureos-auth-test-{}-{}",
+                "futureos-test-{}-{}",
                 std::process::id(),
                 label
             ));
@@ -235,6 +194,12 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::HomeGuard;
+    use super::*;
 
     #[test]
     fn read_missing_file_is_empty() {

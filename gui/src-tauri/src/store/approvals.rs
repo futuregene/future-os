@@ -36,39 +36,12 @@ pub struct ApprovalRequestRecord {
     pub decision_source: String,
 }
 
-/// Column list for `approval_request_from_row`, in struct order.
-pub(super) const APPROVAL_REQUEST_COLUMNS: &str =
-    "id, thread_id, run_id, tool_call_id, kind, status, title, summary, \
-     risk_level, requested_action, decision_note, decided_at, created_at, updated_at, \
-     action_category, action_payload, sandbox_boundary, save_suggestion, reviewer, decision_scope, decision_source";
-
-pub(super) fn approval_request_from_row(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<ApprovalRequestRecord> {
-    Ok(ApprovalRequestRecord {
-        id: row.get(0)?,
-        thread_id: row.get(1)?,
-        run_id: row.get(2)?,
-        tool_call_id: row.get(3)?,
-        kind: row.get(4)?,
-        status: row.get(5)?,
-        title: row.get(6)?,
-        summary: row.get(7)?,
-        risk_level: row.get(8)?,
-        requested_action: row.get(9)?,
-        decision_note: row.get(10)?,
-        decided_at: row.get(11)?,
-        created_at: row.get(12)?,
-        updated_at: row.get(13)?,
-        action_category: row.get(14)?,
-        action_payload: row.get(15)?,
-        sandbox_boundary: row.get(16)?,
-        save_suggestion: row.get(17)?,
-        reviewer: row.get(18)?,
-        decision_scope: row.get(19)?,
-        decision_source: row.get(20)?,
-    })
-}
+sql_record!(pub(super) APPROVAL_REQUEST_COLUMNS, approval_request_from_row -> ApprovalRequestRecord {
+    id, thread_id, run_id, tool_call_id, kind, status, title, summary,
+    risk_level, requested_action, decision_note, decided_at, created_at, updated_at,
+    action_category, action_payload, sandbox_boundary, save_suggestion, reviewer,
+    decision_scope, decision_source,
+});
 
 pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), crate::AppError> {
     // BEGIN IMMEDIATE so the existence check and the insert are one atomic
@@ -155,10 +128,14 @@ pub fn decide_approval_request(
     };
     let now = now_millis();
     let conn = connect()?;
+    // Compare-and-set on `pending`: a decision is only recorded once, so a
+    // concurrent/late decision (or a duplicate event) can't rewrite an already
+    // decided request — the audit record stays immutable.
     conn.execute(
         "UPDATE approval_requests
          SET status = ?1, decision_note = ?2, decided_at = ?3, updated_at = ?3
-         WHERE id = ?4",
+         WHERE id = ?4
+           AND status = 'pending'",
         params![status, input.decision_note, now, input.approval_request_id],
     )?;
 

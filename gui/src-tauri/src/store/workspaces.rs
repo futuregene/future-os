@@ -1,6 +1,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::fs;
+use std::path::PathBuf;
 
 use super::db::*;
 use super::records::*;
@@ -23,27 +24,10 @@ pub struct WorkspaceRecord {
     pub deleted_at: Option<i64>,
 }
 
-/// Column list for `workspace_from_row`, in struct order.
-pub(super) const WORKSPACE_COLUMNS: &str =
-    "id, name, kind, path, description, cleanup_status, cleanup_requested_at, \
-     cleaned_at, last_opened_at, created_at, updated_at, deleted_at";
-
-pub(super) fn workspace_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceRecord> {
-    Ok(WorkspaceRecord {
-        id: row.get(0)?,
-        name: row.get(1)?,
-        kind: row.get(2)?,
-        path: row.get(3)?,
-        description: row.get(4)?,
-        cleanup_status: row.get(5)?,
-        cleanup_requested_at: row.get(6)?,
-        cleaned_at: row.get(7)?,
-        last_opened_at: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
-        deleted_at: row.get(11)?,
-    })
-}
+sql_record!(pub(super) WORKSPACE_COLUMNS, workspace_from_row -> WorkspaceRecord {
+    id, name, kind, path, description, cleanup_status, cleanup_requested_at,
+    cleaned_at, last_opened_at, created_at, updated_at, deleted_at,
+});
 
 pub fn list_workspaces() -> Result<Vec<WorkspaceRecord>, crate::AppError> {
     let conn = connect()?;
@@ -74,6 +58,59 @@ pub fn create_workspace(input: CreateWorkspaceInput) -> Result<WorkspaceRecord, 
         .name
         .unwrap_or_else(|| workspace_name_from_path(&path));
     get_or_create_user_workspace(name, path, input.description)
+}
+
+pub(super) fn get_or_create_user_workspace(
+    name: String,
+    path: PathBuf,
+    description: Option<String>,
+) -> Result<WorkspaceRecord, crate::AppError> {
+    let mut conn = connect()?;
+    // BEGIN IMMEDIATE so the SELECT-then-INSERT is atomic against a concurrent
+    // create for the same path (mirrors the approvals/artifacts write paths).
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let workspace = get_or_create_user_workspace_in(&tx, name, path, description)?;
+    tx.commit()?;
+    Ok(workspace)
+}
+
+/// Connection-injecting variant so a composite write (e.g. `create_thread`) can
+/// resolve/create the workspace and insert its own row in one transaction.
+pub(super) fn get_or_create_user_workspace_in(
+    conn: &Connection,
+    name: String,
+    path: PathBuf,
+    description: Option<String>,
+) -> Result<WorkspaceRecord, crate::AppError> {
+    let normalized_path = path.display().to_string();
+    let existing = conn
+        .query_row(
+            &format!(
+                "SELECT {WORKSPACE_COLUMNS}
+             FROM workspaces
+             WHERE kind = 'user' AND path = ?1 AND deleted_at IS NULL
+             LIMIT 1"
+            ),
+            params![normalized_path],
+            workspace_from_row,
+        )
+        .optional()?;
+
+    if let Some(workspace) = existing {
+        return Ok(workspace);
+    }
+
+    let now = now_millis();
+    let workspace_id = create_id("ws");
+    conn.execute(
+        "INSERT INTO workspaces (
+             id, name, kind, path, description, cleanup_status, last_opened_at,
+             created_at, updated_at
+         ) VALUES (?1, ?2, 'user', ?3, ?4, 'active', ?5, ?5, ?5)",
+        params![workspace_id, name, normalized_path, description, now],
+    )?;
+
+    loaded(get_workspace_in(conn, &workspace_id)?, "Created workspace")
 }
 
 pub fn get_or_create_chat_workspace(

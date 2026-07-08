@@ -26,9 +26,15 @@ tokio = { version = "1", features = ["time"] }
 async-nats = "0.49"
 futures = "0.3"
 tauri-plugin-dialog = "2"
+# System opener for paths/URLs (ShellExecuteW on Windows — never `cmd /C start`,
+# whose re-parsing of `&`/`^`/`%VAR%` in arguments is an injection vector).
+open = "5"
 base64 = "0.22"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 zip = { version = "8", default-features = false, features = ["deflate"] }
+# Workspace file `@`-mention picker: gitignore-aware directory walk + fuzzy rank.
+ignore = "0.4"
+fuzzy-matcher = "0.3"
 
 # Stripped symbols + no debug info: smaller desktop binary and less link/scan
 # I/O, negligible runtime cost for a Tauri shell. See ../../.cargo/config.toml.

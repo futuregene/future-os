@@ -20,10 +20,12 @@ export interface ApprovalsState {
 
 /**
  * Owns the pending-approval queue for the active thread: a 1.5s poll and the
- * derived "active" (oldest pending) approval. A load is dropped (and the list
- * cleared) on error, matching the previous inline behavior. There is no
- * frontend auto-approve engine — the "off" tier suppresses approval requests at
- * the agent, so nothing reaches this queue when the user opts out.
+ * derived "active" (oldest pending) approval. On a transient load error the
+ * previous list is preserved (the loader lets the error propagate, and
+ * useAsyncResource keeps the last good data) so the approval card doesn't flicker
+ * out and back next tick — a real risk since it sits right above the
+ * composer. There is no frontend auto-approve engine — the "off" tier suppresses
+ * approval requests at the agent, so nothing reaches this queue when off.
  */
 export function useApprovals(activeThreadId: string | null): ApprovalsState {
   const { data: pendingApprovals, reload } = useAsyncResource(
@@ -31,19 +33,17 @@ export function useApprovals(activeThreadId: string | null): ApprovalsState {
       if (!activeThreadId) {
         return NO_APPROVALS;
       }
-      try {
-        const approvals = await listApprovalRequests(activeThreadId);
-        return approvals.filter(approval => approval.status === "pending");
-      }
-      catch {
-        return NO_APPROVALS;
-      }
+      const approvals = await listApprovalRequests(activeThreadId);
+      return approvals.filter(approval => approval.status === "pending");
     },
     [activeThreadId],
     NO_APPROVALS,
   );
 
-  usePolling(reload, 1500, { enabled: activeThreadId !== null, deps: [activeThreadId] });
+  // No `activeThreadId` in the poll deps: useAsyncResource already reloads when
+  // the thread changes, so restarting the poll on switch too would fire a
+  // duplicate fetch every switch. The interval calls the stable `reload`.
+  usePolling(reload, 1500, { enabled: activeThreadId !== null });
 
   const activeApproval = useMemo(
     // The loader already returns only pending requests; just take the oldest.

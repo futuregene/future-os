@@ -1,28 +1,27 @@
-import type { FormEvent } from "react";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { MessageAttachment } from "./agentThreadTypes";
 import type { ComposerSendPayload } from "./Composer";
-import { open } from "@tauri-apps/plugin-dialog";
+import type { WorkspaceCreateRequest, WorkspaceFormMode } from "./useWorkspaceForm";
 import {
   Check,
   Folder,
   FolderOpen,
   MessageSquare,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
-import { Button } from "../../components/ui/Button";
 import { defaultAgentModelId } from "../../integrations/agent/agentClient";
 import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { Composer } from "./Composer";
+import { WorkspaceModal } from "./NewConversationWorkspaceForm";
+import { useWorkspaceForm } from "./useWorkspaceForm";
 
-type ConversationMode = "workspace" | "chat";
-type WorkspaceFormMode = "open" | null;
+export type ConversationMode = "workspace" | "chat";
 
 export interface NewConversationStart {
   attachments?: MessageAttachment[];
@@ -37,12 +36,6 @@ export interface NewConversationStart {
   };
 }
 
-interface WorkspaceCreateRequest {
-  name?: string | null;
-  path: string;
-  createDirectory: boolean;
-}
-
 interface NewConversationProps {
   initialWorkspaceForm?: WorkspaceFormMode;
   initialMode?: ConversationMode;
@@ -50,12 +43,17 @@ interface NewConversationProps {
   leftPanelExpanded: boolean;
   modelId: string;
   modelOptions: AgentModelOption[];
+  modelsEmptyReason?: "no_models" | "all_disabled";
   onModelChange: (modelId: string) => void;
   thinkingLevel: string;
   onThinkingLevelChange: (thinkingLevel: string) => void;
   approvalTier: ApprovalTier;
   onChangeApprovalTier: (value: ApprovalTier) => void;
-  onStart: (input: NewConversationStart) => void;
+  /**
+   * May return a promise: the composer then keeps the draft until it resolves
+   * (a failed thread creation must not wipe the composed first message).
+   */
+  onStart: (input: NewConversationStart) => void | Promise<void>;
   onAddWorkspace: (input: WorkspaceCreateRequest) => Promise<StoredWorkspace | null>;
   onToggleLeftPanel: () => void;
   workspaces: StoredWorkspace[];
@@ -68,6 +66,7 @@ export function NewConversation({
   leftPanelExpanded,
   modelId,
   modelOptions,
+  modelsEmptyReason,
   onAddWorkspace,
   onModelChange,
   thinkingLevel,
@@ -94,12 +93,14 @@ export function NewConversation({
   );
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [selectedWorkspace, setSelectedWorkspace] = useState(initialWorkspace?.id ?? workspaceOptions[0]?.id ?? "");
-  const [workspaceFormMode, setWorkspaceFormMode] = useState<WorkspaceFormMode>(initialWorkspaceForm ?? null);
-  const [workspaceDisplayName, setWorkspaceDisplayName] = useState("");
-  const [workspacePath, setWorkspacePath] = useState("");
-  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
-  const [workspaceNotice, setWorkspaceNotice] = useState<string | null>(null);
-  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  const workspaceForm = useWorkspaceForm({
+    initialWorkspaceForm,
+    workspaces,
+    onAddWorkspace,
+    onSelectWorkspace: setSelectedWorkspace,
+    onModeChange: setMode,
+    onCloseMenu: () => setWorkspaceMenuOpen(false),
+  });
   const workspaceMenuRef = useDismissableLayer<HTMLDivElement>({
     enabled: workspaceMenuOpen,
     onDismiss: () => setWorkspaceMenuOpen(false),
@@ -116,101 +117,29 @@ export function NewConversation({
     setSelectedWorkspace(first.id);
   }, [activeWorkspace, workspaceOptions]);
 
+  // Adopt the caller-requested workspace exactly once (when it appears in the
+  // options, which may lag the mount). Without the ref guard this effect
+  // re-fires whenever `workspaceOptions` changes identity — AppShell re-renders
+  // at least every run-status poll tick — and would snap a user-chosen
+  // mode/workspace back to the initial one mid-composition.
+  const adoptedInitialWorkspaceRef = useRef(false);
   useEffect(() => {
-    if (!initialWorkspaceId)
+    if (!initialWorkspaceId || adoptedInitialWorkspaceRef.current)
       return;
     const workspace = workspaceOptions.find(item => item.id === initialWorkspaceId);
     if (!workspace)
       return;
 
+    adoptedInitialWorkspaceRef.current = true;
     setSelectedWorkspace(workspace.id);
     setMode("workspace");
   }, [initialWorkspaceId, workspaceOptions]);
 
-  async function handleWorkspaceSubmit(event: FormEvent) {
-    event.preventDefault();
-    const path = workspacePath.trim();
-    const displayName = workspaceDisplayName.trim();
-    if (!path) {
-      setWorkspaceError(t("newConversation.errorChooseDir"));
-      return;
-    }
-
-    setCreatingWorkspace(true);
-    setWorkspaceError(null);
-    try {
-      const workspace = await onAddWorkspace({
-        name: displayName || null,
-        path,
-        createDirectory: false,
-      });
-      if (workspace) {
-        setSelectedWorkspace(workspace.id);
-        setMode("workspace");
-      }
-      setWorkspaceDisplayName("");
-      setWorkspacePath("");
-      setWorkspaceFormMode(null);
-      setWorkspaceMenuOpen(false);
-    }
-    catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : String(error));
-    }
-    finally {
-      setCreatingWorkspace(false);
-    }
-  }
-
-  function beginWorkspaceForm() {
-    setWorkspaceFormMode("open");
-    setWorkspaceMenuOpen(false);
-    setWorkspaceError(null);
-    setWorkspaceNotice(null);
-    setWorkspaceDisplayName("");
-    setWorkspacePath("");
-  }
-
-  // Cancelling the create-workspace dialog: fall back to the most-recently-used
-  // workspace when one exists (list is ordered last-opened first), otherwise
-  // there's nothing to land on, so switch to plain chat.
-  function cancelWorkspaceForm() {
-    setWorkspaceFormMode(null);
-    setWorkspaceError(null);
-    setWorkspaceNotice(null);
-    setWorkspaceDisplayName("");
-    setWorkspacePath("");
-    const mostRecent = workspaceOptions[0];
-    if (mostRecent) {
-      setSelectedWorkspace(mostRecent.id);
-      setMode("workspace");
-    }
-    else {
-      setMode("chat");
-    }
-  }
-
-  async function pickFolder() {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: t("newConversation.openWorkspaceDialog"),
-    });
-
-    if (typeof selected === "string") {
-      setWorkspacePath(selected);
-      // Opening a folder that already has a workspace record just reopens the
-      // existing one (the backend dedupes by path) — flag it so the user knows.
-      const existing = workspaces.find(workspace => samePath(workspace.path, selected));
-      setWorkspaceNotice(existing ? t("newConversation.workspaceExists", { name: existing.name }) : null);
-      if (!workspaceDisplayName.trim()) {
-        setWorkspaceDisplayName(lastPathSegment(selected));
-      }
-    }
-  }
-
   function handleSend({ attachments, content }: ComposerSendPayload) {
+    // Return onStart's promise so the composer clears only after the thread is
+    // actually created (see ComposerProps.onSend).
     if (mode === "workspace" && activeWorkspace) {
-      onStart({
+      return onStart({
         attachments,
         content,
         mode,
@@ -218,10 +147,9 @@ export function NewConversation({
         thinkingLevel,
         workspace: activeWorkspace,
       });
-      return;
     }
 
-    onStart({
+    return onStart({
       attachments,
       content,
       mode: "chat",
@@ -257,6 +185,7 @@ export function NewConversation({
               className="w-full rounded-b-none bg-surface"
               modelId={modelId}
               modelOptions={modelOptions}
+              modelsEmptyReason={modelsEmptyReason}
               onModelChange={onModelChange}
               thinkingLevel={thinkingLevel}
               onThinkingLevelChange={onThinkingLevelChange}
@@ -280,6 +209,7 @@ export function NewConversation({
                     setMode("workspace");
                     setWorkspaceMenuOpen(open => !open);
                   }}
+                  title={activeWorkspace?.label ?? t("newConversation.workspace")}
                   type="button"
                 >
                   <Folder className="size-4 shrink-0" />
@@ -317,7 +247,7 @@ export function NewConversation({
                         <div className="mt-1 space-y-0.5 border-t border-line-soft pt-1">
                           <button
                             className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
-                            onClick={beginWorkspaceForm}
+                            onClick={workspaceForm.begin}
                             type="button"
                           >
                             <FolderOpen className="size-3.5" />
@@ -364,125 +294,21 @@ export function NewConversation({
           </div>
         </div>
       </div>
-      {workspaceFormMode
+      {workspaceForm.mode
         ? (
             <WorkspaceModal
-              creating={creatingWorkspace}
-              error={workspaceError}
-              notice={workspaceNotice}
-              displayName={workspaceDisplayName}
-              path={workspacePath}
-              onCancel={cancelWorkspaceForm}
-              onDisplayNameChange={setWorkspaceDisplayName}
-              onPickFolder={pickFolder}
-              onSubmit={handleWorkspaceSubmit}
+              creating={workspaceForm.creating}
+              error={workspaceForm.error}
+              notice={workspaceForm.notice}
+              displayName={workspaceForm.displayName}
+              path={workspaceForm.path}
+              onCancel={workspaceForm.cancel}
+              onDisplayNameChange={workspaceForm.setDisplayName}
+              onPickFolder={() => void workspaceForm.pickFolder()}
+              onSubmit={workspaceForm.submit}
             />
           )
         : null}
     </div>
   );
-}
-
-function WorkspaceModal({
-  creating,
-  displayName,
-  error,
-  notice,
-  path,
-  onCancel,
-  onDisplayNameChange,
-  onPickFolder,
-  onSubmit,
-}: {
-  creating: boolean;
-  displayName: string;
-  error: string | null;
-  notice: string | null;
-  path: string;
-  onCancel: () => void;
-  onDisplayNameChange: (value: string) => void;
-  onPickFolder: () => void;
-  onSubmit: (event: FormEvent) => void;
-}) {
-  const { t } = useTranslation("agent");
-  const pathPlaceholder = t("newConversation.modal.selectExisting");
-
-  return (
-    <div className="absolute inset-0 z-40 flex items-center justify-center bg-ink-strong/20 px-6">
-      <form className="w-full max-w-md rounded-lg border border-line-soft bg-surface p-4 shadow-panel" onSubmit={onSubmit}>
-        <div className="mb-3">
-          <div className="text-sm font-semibold text-ink">{t("newConversation.modal.openTitle")}</div>
-          <div className="mt-1 text-xs leading-5 text-ink-muted">{t("newConversation.modal.openDescription")}</div>
-        </div>
-        <div className="space-y-2">
-          <div className="flex h-9 overflow-hidden rounded-md border border-line-soft bg-surface">
-            <button
-              aria-label={t("newConversation.modal.chooseWorkspaceAria")}
-              className="inline-flex h-full w-10 shrink-0 items-center justify-center border-r border-line-soft text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
-              onClick={onPickFolder}
-              title={t("newConversation.modal.chooseWorkspaceAria")}
-              type="button"
-            >
-              <FolderOpen className="size-4" />
-            </button>
-            <div
-              className={cn(
-                "flex min-w-0 flex-1 items-center px-2 text-sm",
-                path ? "text-ink" : "text-ink-muted",
-              )}
-              title={path || pathPlaceholder}
-            >
-              <span className="truncate">{path || pathPlaceholder}</span>
-            </div>
-          </div>
-          <input
-            className="h-9 w-full rounded-md border border-line-soft bg-surface px-2 text-sm text-ink outline-none focus:border-accent"
-            onChange={event => onDisplayNameChange(event.target.value)}
-            placeholder={t("newConversation.modal.displayNameOpen")}
-            value={displayName}
-          />
-          <div className="min-h-5 truncate px-1 text-xs text-ink-muted" title={path || undefined}>
-            {path
-              ? t("newConversation.modal.pathPreview", { path })
-              : t("newConversation.modal.chooseExisting")}
-          </div>
-        </div>
-        {error ? <div className="mt-2 text-xs leading-5 text-danger">{error}</div> : null}
-        {!error && notice ? <div className="mt-2 text-xs leading-5 text-warning">{notice}</div> : null}
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            className="h-8 rounded-md px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
-            onClick={onCancel}
-            type="button"
-          >
-            {t("newConversation.modal.cancel")}
-          </button>
-          <Button
-            disabled={creating}
-            size="sm"
-            type="submit"
-            variant="primary"
-          >
-            {t("newConversation.modal.open")}
-          </Button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-function lastPathSegment(path: string) {
-  // Split on both separators so Windows paths (C:\Users\project) work too,
-  // mirroring fileNameFromPath in attachments.ts.
-  const parts = path.split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] ?? "Workspace";
-}
-
-/**
- * Compare filesystem paths ignoring a trailing separator and case (macOS /
- * Windows are case-insensitive; the backend also dedupes by exact string).
- */
-function samePath(a: string, b: string) {
-  const normalize = (value: string) => value.replace(/[/\\]+$/, "").toLowerCase();
-  return normalize(a) === normalize(b);
 }

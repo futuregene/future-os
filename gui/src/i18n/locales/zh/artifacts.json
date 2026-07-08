@@ -15,7 +15,8 @@
     "viewArtifact": "查看工作成果 {{title}}",
     "viewDetails": "查看详情",
     "deleteArtifact": "删除工作成果 {{title}}",
-    "delete": "删除工作成果"
+    "delete": "删除工作成果",
+    "deleteFailed": "删除工作成果失败：{{message}}"
   },
   "detail": {
     "back": "工作成果",

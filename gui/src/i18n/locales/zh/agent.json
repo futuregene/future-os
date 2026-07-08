@@ -27,9 +27,12 @@
   "thread": {
     "loading": "正在加载 FutureOS 对话…",
     "noActiveThread": "没有活动对话。",
+    "jumpToLatest": "回到最新",
     "defaultTitle": "FutureOS",
     "agentDoneNoText": "Future Agent 已完成，但没有返回文本。",
-    "messagesLoadFailed": "FutureOS 消息读取失败：{{message}}"
+    "messagesLoadFailed": "FutureOS 消息读取失败：{{message}}",
+    "alreadyRunning": "该对话已有一个回复正在进行中。",
+    "responseInterrupted": "回复在完成前被中断。"
   },
   "failure": {
     "connect": "Future Agent 连接失败：{{message}}\n\n请确认 Agent 已启动，并且 FUTURE_AGENT_GRPC_ADDR 指向 127.0.0.1:50051。",
@@ -58,6 +61,11 @@
       "title": "没有可用模型",
       "detail": "已配置提供商，但模型列表为空。请检查模型是否已启用，或确认账号配额 / 权限。",
       "action": "模型设置"
+    },
+    "allModelsDisabled": {
+      "title": "模型已全部禁用",
+      "detail": "已加载到模型，但你在设置中禁用了全部模型。请至少启用一个模型。",
+      "action": "模型设置"
     }
   },
   "composer": {
@@ -73,10 +81,19 @@
     "attachRejectedReason": "{{name}}（{{reason}}）",
     "model": "模型",
     "startAgentForModels": "启动 Future Agent 以加载模型。",
+    "allModelsDisabled": "已加载到模型，但已全部禁用。请在设置中启用。",
     "thinkingLevel": "思考强度",
+    "thinkingLevelLabels": {
+      "off": "关闭",
+      "minimal": "最简",
+      "low": "低",
+      "medium": "中",
+      "high": "高",
+      "xhigh": "极高"
+    },
     "send": "发送",
     "stop": "停止",
-    "noReferences": "未找到引用。",
+    "noFiles": "未找到文件。",
     "approval": "审批模式",
     "approvalTier": {
       "manual": "手动审批",

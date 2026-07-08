@@ -32,11 +32,30 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
 
 ### 环境要求
 
-- **Rust** 1.80+
-- **Node.js** 22+ / **Bun**（TUI 运行时）
-- macOS / Linux / Windows
+完整 `make build`（agent + TUI + CLI + GUI）所需：
 
-### 构建与运行（60 秒）
+- **Rust** 1.96+（由 `rust-toolchain.toml` 固定）
+- **Node.js** 24+（见 `.nvmrc`）
+- **Bun** —— 必需项，非可选：TUI 构建和 CLI/GUI 打包均使用 `bun build`
+- **protoc**（Protocol Buffers 编译器）—— GUI 与 channels 的 proto 代码生成必需
+  - macOS：`brew install protobuf`
+  - Linux（Debian/Ubuntu）：`sudo apt install protobuf-compiler`
+  - Windows：`choco install protoc`（或从 protobuf releases 下载）
+- **Tauri 系统依赖**（构建 GUI 需要）：
+  - macOS：`xcode-select --install`
+  - Linux（Debian/Ubuntu）：`sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libssl-dev libayatana-appindicator3-dev patchelf`
+  - Windows：WebView2 Runtime（Win 10/11 自带）+ MSVC 构建工具
+- 可选：**Python 3** —— 仅 `make generate-models` 需要
+- 平台：macOS / Linux / Windows
+
+> **只构建终端版？** 跳过 GUI/Tauri 工具链，只构建终端相关组件：
+> `make build-agent && make build-tui && make build-cli`。
+>
+> **注意：** `make install` 目前仅面向 Apple Silicon macOS 暂存 GUI 的 agent/CLI sidecar
+> （target triple 是硬编码的）。在 Linux 或 Intel macOS 上，请分别构建各组件，
+> 或将 sidecar 名称改为你的宿主 triple（`rustc -vV | grep host`）。
+
+### 构建与运行
 
 ```bash
 # 克隆并构建
@@ -129,6 +148,7 @@ future agent start                         # 将 Agent 安装为系统服务（m
 ## 开发
 
 ```bash
+make build-channels  # channel bridge —— 不在 `make build` 内，需单独构建
 make lint     # 全量检查（agent clippy + channels clippy + TUI tsc + CLI tsc + GUI eslint）
 make fmt      # cargo fmt（agent + channels）
 make test     # cargo test（agent）

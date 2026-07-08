@@ -15,6 +15,7 @@ import {
   storedTimeToIso,
 } from "../../integrations/storage/threadStore";
 import { formatTime } from "../../lib/date";
+import { errorMessage } from "../../lib/errors";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { PdfPreview } from "./PdfPreview";
 
@@ -25,7 +26,7 @@ interface ArtifactDetailPanelProps {
 }
 
 export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDetailPanelProps) {
-  const { t } = useTranslation("artifacts");
+  const { i18n, t } = useTranslation("artifacts");
   const [error, setError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<"delete" | "export" | "open" | null>(null);
   const { copiedKey, copy } = useCopyState<"content" | "path">();
@@ -37,7 +38,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
   const shouldLoadTextPreview = Boolean(artifact.path && !artifact.content && isTextPreviewArtifact(artifact));
   const shouldShowPdfPreview = Boolean(artifact.path && isPdfArtifact(artifact));
 
-  const { data: filePreview, error: previewError } = useAsyncResource<{ content: string; size: number; truncated: boolean } | null>(
+  const { data: filePreview, error: previewError, loading: previewLoading } = useAsyncResource<{ content: string; size: number; truncated: boolean } | null>(
     () => (shouldLoadTextPreview && artifact.path
       ? readTextFilePreview({ maxBytes: 200 * 1024, path: artifact.path })
       : Promise.resolve(null)),
@@ -49,6 +50,8 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
     artifact.path
     && !artifact.content
     && !filePreview
+    // Don't flash "Preview unavailable" while the text preview is still loading.
+    && !previewLoading
     && !imageSrc
     && !previewError
     && !shouldShowPdfPreview,
@@ -72,7 +75,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
       }
     }
     catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : String(nextError));
+      setError(errorMessage(nextError));
     }
     finally {
       setBusyAction(null);
@@ -109,7 +112,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
       <section className="rounded-md border border-line-soft bg-surface p-3">
         <div className="min-w-0">
           <h3 className="wrap-break-word text-sm font-semibold leading-5 text-ink">{artifact.title}</h3>
-          <div className="mt-2 text-xs text-ink-muted">{formatTime(storedTimeToIso(artifact.createdAt))}</div>
+          <div className="mt-2 text-xs text-ink-muted">{formatTime(storedTimeToIso(artifact.createdAt), i18n.language)}</div>
         </div>
 
         {artifact.path

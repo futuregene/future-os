@@ -92,7 +92,7 @@ fn http_client(timeout: Duration) -> Result<reqwest::Client, AppError> {
     reqwest::Client::builder()
         .timeout(timeout)
         .build()
-        .map_err(|error| AppError::Message(format!("无法创建 HTTP 客户端：{error}")))
+        .map_err(|error| AppError::Message(format!("Failed to create HTTP client: {error}")))
 }
 
 /// Fetch the release manifest and report whether an update is available for the
@@ -104,17 +104,17 @@ pub async fn check_app_update() -> Result<UpdateStatus, AppError> {
         .get(MANIFEST_URL)
         .send()
         .await
-        .map_err(|error| AppError::Message(format!("检查更新失败：{error}")))?;
+        .map_err(|error| AppError::Message(format!("Failed to check for updates: {error}")))?;
     if !response.status().is_success() {
         return Err(AppError::Message(format!(
-            "检查更新失败：服务器返回 {}",
+            "Update check failed: server returned {}",
             response.status()
         )));
     }
     let manifest: Manifest = response
         .json()
         .await
-        .map_err(|error| AppError::Message(format!("解析版本信息失败：{error}")))?;
+        .map_err(|error| AppError::Message(format!("Failed to parse version info: {error}")))?;
 
     let current_version = build_info::VERSION.to_string();
     let has_update = is_newer(&manifest.version, &current_version);
@@ -141,6 +141,12 @@ pub async fn check_app_update() -> Result<UpdateStatus, AppError> {
 
 /// Stream the installer to the user's Downloads directory, emitting
 /// `app-update-progress` events, and return the saved path.
+///
+/// SECURITY (deferred): the installer is protected only by HTTPS + the release
+/// host prefix — the manifest (`latest.json`, `{version}` only) and the package
+/// carry no signature/checksum, so a compromised OSS bucket could serve a poisoned
+/// installer (→ RCE on install). Fix needs the release pipeline to publish a
+/// per-installer SHA-256; verify it here before returning the path.
 #[tauri::command]
 pub async fn download_app_update(
     app: tauri::AppHandle,
@@ -151,32 +157,31 @@ pub async fn download_app_update(
     // frontend, so pin the origin rather than trust it blindly.
     if !url.starts_with(RELEASE_BASE) {
         return Err(AppError::Message(
-            "下载地址不在允许的发布源内。".to_string(),
+            "Download URL is not from an allowed release source.".to_string(),
         ));
     }
     // Guard against a crafted file_name escaping the Downloads directory.
     if file_name.is_empty() || file_name.contains('/') || file_name.contains('\\') {
-        return Err(AppError::Message("非法的文件名。".to_string()));
+        return Err(AppError::Message("Illegal filename.".to_string()));
     }
 
-    let dir = app
-        .path()
-        .download_dir()
-        .map_err(|error| AppError::Message(format!("无法定位下载目录：{error}")))?;
+    let dir = app.path().download_dir().map_err(|error| {
+        AppError::Message(format!("Failed to locate download directory: {error}"))
+    })?;
     let dest = dir.join(&file_name);
 
     // No timeout: installers are large and a slow link shouldn't abort mid-file.
     let client = reqwest::Client::builder()
         .build()
-        .map_err(|error| AppError::Message(format!("无法创建 HTTP 客户端：{error}")))?;
+        .map_err(|error| AppError::Message(format!("Failed to create HTTP client: {error}")))?;
     let mut response = client
         .get(&url)
         .send()
         .await
-        .map_err(|error| AppError::Message(format!("下载失败：{error}")))?;
+        .map_err(|error| AppError::Message(format!("Download failed: {error}")))?;
     if !response.status().is_success() {
         return Err(AppError::Message(format!(
-            "下载失败：服务器返回 {}",
+            "Download failed: server returned {}",
             response.status()
         )));
     }
@@ -189,7 +194,7 @@ pub async fn download_app_update(
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|error| AppError::Message(format!("下载中断：{error}")))?
+        .map_err(|error| AppError::Message(format!("Download interrupted: {error}")))?
     {
         file.write_all(&chunk)?;
         downloaded += chunk.len() as u64;

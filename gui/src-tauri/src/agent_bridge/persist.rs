@@ -89,7 +89,7 @@ fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
     let reviewer = value_string(value, &["reviewer"]);
 
     if let Err(error) = store::ensure_approval_request(store::EnsureApprovalRequestInput {
-        approval_request_id: Some(approval_request_id),
+        approval_request_id: Some(approval_request_id.clone()),
         run_id: run_id.to_string(),
         tool_call_id,
         kind: value_string(value, &["kind"]).unwrap_or_else(|| "tool".to_string()),
@@ -105,13 +105,29 @@ fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
     }) {
         eprintln!("FutureOS approval persistence failed: {error}");
     }
-    if let Err(error) = store::update_run_status(store::UpdateRunStatusInput {
+    // CAS the run to waiting_approval only if it isn't already terminal. Without
+    // the guard a late-arriving approval_request event (the user aborted while
+    // this event was in flight) would resurrect a `cancelled` run — and since
+    // the agent has already aborted, no decision event ever comes back, stranding
+    // the run in `waiting_approval` forever. When the run is terminal we
+    // cancel the approval we just recorded so no dangling pending card remains.
+    match store::update_run_status_if_active(store::UpdateRunStatusInput {
         run_id: run_id.to_string(),
         status: "waiting_approval".to_string(),
         error_message: None,
         error_type: None,
     }) {
-        eprintln!("FutureOS run approval status update failed: {error}");
+        Ok(false) => {
+            if let Err(error) = store::decide_approval_request(store::DecideApprovalRequestInput {
+                approval_request_id,
+                status: "cancelled".to_string(),
+                decision_note: Some("Cancelled because the run had already ended.".to_string()),
+            }) {
+                eprintln!("FutureOS stale approval cancellation failed: {error}");
+            }
+        }
+        Ok(true) => {}
+        Err(error) => eprintln!("FutureOS run approval status update failed: {error}"),
     }
 }
 
@@ -202,7 +218,7 @@ fn persist_tool_end(run_id: &str, value: &serde_json::Value, sequence: i64) {
     let final_output = error.or(output_content);
 
     if status == "completed" {
-        persist_written_file_artifact(run_id, &tool_name, final_output.as_deref());
+        persist_written_file_artifact(run_id, &tool_name, &tool_call_id, final_output.as_deref());
     }
 
     if let Err(error) = store::complete_tool_call(store::CompleteToolCallInput {
@@ -217,12 +233,23 @@ fn persist_tool_end(run_id: &str, value: &serde_json::Value, sequence: i64) {
     }
 }
 
-fn persist_written_file_artifact(run_id: &str, tool_name: &str, output: Option<&str>) {
+fn persist_written_file_artifact(
+    run_id: &str,
+    tool_name: &str,
+    tool_call_id: &str,
+    output: Option<&str>,
+) {
     if tool_name != "write" {
         return;
     }
 
-    let Some(path) = output.and_then(written_path_from_tool_output) else {
+    // Prefer the structured `tool_args` persisted at tool_start — the output
+    // prose ("Written to …") is display text, not a contract, and a reworded
+    // agent message would otherwise silently stop artifact recording. The
+    // prose parse stays as a fallback for rows without a stored input.
+    let Some(path) = written_path_from_tool_input(run_id, tool_call_id)
+        .or_else(|| output.and_then(written_path_from_tool_output))
+    else {
         return;
     };
     match path_allowed_for_run(run_id, Some(&path)) {
@@ -254,6 +281,27 @@ fn persist_written_file_artifact(run_id: &str, tool_name: &str, output: Option<&
     }) {
         eprintln!("FutureOS write artifact persistence failed: {error}");
     }
+}
+
+/// Extract the write target from the tool call's stored `input` (the agent's
+/// `tool_args`). The stored value may be a JSON object or a JSON-encoded string
+/// of one (the agent serializes args to a string field), so unwrap up to two
+/// string layers before reading `path`.
+fn written_path_from_tool_input(run_id: &str, tool_call_id: &str) -> Option<String> {
+    let input = store::get_tool_call_input(run_id, tool_call_id).ok()??;
+    let mut value: serde_json::Value = serde_json::from_str(&input).ok()?;
+    for _ in 0..2 {
+        match value {
+            serde_json::Value::String(inner) => value = serde_json::from_str(&inner).ok()?,
+            _ => break,
+        }
+    }
+    value
+        .get("path")?
+        .as_str()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
 }
 
 fn written_path_from_tool_output(output: &str) -> Option<String> {

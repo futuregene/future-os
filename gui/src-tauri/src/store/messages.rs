@@ -20,23 +20,9 @@ pub struct MessageRecord {
     pub updated_at: i64,
 }
 
-/// Column list for `message_from_row`, in struct order.
-pub(super) const MESSAGE_COLUMNS: &str =
-    "id, thread_id, run_id, role, content_type, content, status, created_at, updated_at";
-
-pub(super) fn message_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRecord> {
-    Ok(MessageRecord {
-        id: row.get(0)?,
-        thread_id: row.get(1)?,
-        run_id: row.get(2)?,
-        role: row.get(3)?,
-        content_type: row.get(4)?,
-        content: row.get(5)?,
-        status: row.get(6)?,
-        created_at: row.get(7)?,
-        updated_at: row.get(8)?,
-    })
-}
+sql_record!(pub(super) MESSAGE_COLUMNS, message_from_row -> MessageRecord {
+    id, thread_id, run_id, role, content_type, content, status, created_at, updated_at,
+});
 
 pub fn list_messages(thread_id: &str) -> Result<Vec<MessageRecord>, crate::AppError> {
     let conn = connect()?;

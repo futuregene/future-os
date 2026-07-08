@@ -19,6 +19,7 @@ use crate::store::review_snapshots::{
 use crate::store::runs::{
     run_from_row, tool_call_from_row, RunRecord, ToolCallRecord, RUN_COLUMNS, TOOL_CALL_COLUMNS,
 };
+use crate::store::util::qualify_columns;
 
 pub fn resolve_markdown_references(
     input: ResolveMarkdownReferencesInput,
@@ -237,11 +238,7 @@ fn get_run_in_workspace(
     workspace_id: &str,
     id: &str,
 ) -> Result<Option<RunRecord>, crate::AppError> {
-    let cols = RUN_COLUMNS
-        .split(", ")
-        .map(|c| format!("r.{}", c.trim()))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let cols = qualify_columns("r", RUN_COLUMNS);
     conn.query_row(
         &format!(
             "SELECT {cols} FROM runs r
@@ -260,11 +257,7 @@ fn get_tool_call_in_workspace(
     workspace_id: &str,
     id: &str,
 ) -> Result<Option<ToolCallRecord>, crate::AppError> {
-    let cols = TOOL_CALL_COLUMNS
-        .split(", ")
-        .map(|c| format!("tc.{}", c.trim()))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let cols = qualify_columns("tc", TOOL_CALL_COLUMNS);
     conn.query_row(
         &format!(
             "SELECT {cols} FROM tool_calls tc
@@ -284,11 +277,7 @@ fn get_approval_request_in_workspace(
     workspace_id: &str,
     id: &str,
 ) -> Result<Option<ApprovalRequestRecord>, crate::AppError> {
-    let cols = APPROVAL_REQUEST_COLUMNS
-        .split(", ")
-        .map(|c| format!("a.{}", c.trim()))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let cols = qualify_columns("a", APPROVAL_REQUEST_COLUMNS);
     conn.query_row(
         &format!(
             "SELECT {cols} FROM approval_requests a
@@ -310,11 +299,7 @@ fn get_review_changeset_in_workspace(
     // Columns qualified with `c.` because the JOIN onto `threads` makes several
     // names (id, thread_id, created_at, updated_at) ambiguous. Use the shared
     // column list so this stays in sync with `review_changeset_from_row`.
-    let cols = REVIEW_CHANGESET_COLUMNS
-        .split(", ")
-        .map(|c| format!("c.{}", c.trim()))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let cols = qualify_columns("c", REVIEW_CHANGESET_COLUMNS);
     conn.query_row(
         &format!(
             "SELECT {cols} FROM review_changesets c
