@@ -40,7 +40,7 @@ export function AboutPage() {
           {isTestBuild ? <Badge tone="warning">Test build</Badge> : null}
         </div>
         <p className="mt-0.5 text-sm text-ink-soft">
-          {build.data ? `Version ${build.data.version}` : "Version —"}
+          {build.data ? build.data.version : "—"}
         </p>
       </div>
 
