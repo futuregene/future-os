@@ -8,7 +8,6 @@ import i18n from "../../i18n";
 import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
 import { relativizeWorkspacePath } from "../../lib/workspacePath";
-import { RunError } from "./RunError";
 import { toolCommand, toolTarget } from "./toolInput";
 
 // Only these tool calls are worth a row of their own; `read`/`grep`/`ls` are
@@ -154,8 +153,12 @@ function ToolRow({
   // Bash rows show the command verbatim; file rows (write/edit) get the
   // workspace-relative path, absolute kept for files outside the workspace.
   const primary = isBash ? rawPrimary : relativizeWorkspacePath(rawPrimary, workspacePath);
-  const running = tool.status === "running" || terminable;
-  const meta = [toolLabel(tool), toolStatusLabel(tool.status)].filter(Boolean).join(" · ");
+  // Show the tool's own status, never the run's. A tool still marked "running"
+  // after its run has ended was interrupted — we can't tell a user abort from a
+  // real failure, so treat it as failed rather than a perpetual "running".
+  const status = tool.status === "running" && !isActiveRun(run) ? "failed" : tool.status;
+  const running = status === "running" || terminable;
+  const meta = [toolLabel(tool), toolStatusLabel(status)].filter(Boolean).join(" · ");
 
   return (
     <div className="rounded-md border border-line-soft bg-surface p-3">
@@ -194,9 +197,6 @@ function ToolRow({
           <div className="mt-2 text-xs font-medium text-ink-muted">
             {meta}
           </div>
-          {run.errorMessage && !terminable
-            ? <RunError errorMessage={run.errorMessage} errorType={run.errorType} variant="summary" />
-            : null}
           {actionError
             ? <div className="mt-2 line-clamp-3 text-xs leading-5 text-danger">{actionError}</div>
             : null}
