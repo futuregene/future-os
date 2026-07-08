@@ -70,6 +70,13 @@ GUI 的颜色全部走 [`tailwind.config.js`](tailwind.config.js) 里定义的**
 | `shadow-sidebar-divider` | 左侧栏分割线内侧柔和阴影 |
 | `shadow-sidebar-floating` | 左侧栏浮动预览阴影 |
 
+### 遮罩层 / Overlay
+| token | 值 | 用途 |
+|---|---|---|
+| `overlay` | `rgba(0, 0, 0, 0.6)` | 全屏模态背景遮罩(纯黑 60%,alpha 已烘进 token,直接 `bg-overlay`) |
+
+> 遮罩色与导航蓝黑 `ink-strong`(`#0f172a`)语义不同,单列一个 token。所有模态(对话框、设置、文件预览等)都经共享 `components/ui/Overlay` 复用这一层(`bg-overlay` + `backdrop-blur-[1px]`)——**不要**在别处另写遮罩色;要调整深浅统一改 token,改模糊改 `Overlay`。
+
 ## 选色速查
 
 - 文字 → `ink` / `ink-soft` / `ink-muted` / `ink-strong`
@@ -78,11 +85,13 @@ GUI 的颜色全部走 [`tailwind.config.js`](tailwind.config.js) 里定义的**
 - 主操作 / 激活 → `accent`(+ `accent-hover` / `accent-disabled`);focus ring → `focus`
 - 状态(成功 / 失败 / 警告 / 信息)→ `<Badge tone>`,或手动 `text-X` + `bg-X-soft` + `border-X-line`
 - diff → `diff-add*` / `diff-remove*`
+- 弹层遮罩 → `overlay`(用共享 `Overlay` 组件,`bg-overlay`),不手写遮罩色
 
 ## 反模式
 
 - ❌ 直接写 `bg-blue-50` / `text-green-700` / `focus:ring-blue-100` 等 Tailwind 原生色
 - ❌ 手写 `function xxxStatusClass(): string` 返回状态色类 —— 改用 `<Badge tone>`
+- ❌ 在组件里另写遮罩色(`bg-black/…` / `bg-*/…`)—— 用 `overlay` token,经共享 `Overlay`
 - ✅ 唯一例外:**分类色**(事件类别 / 错误子类型)用原生色板区分并列种类,见上方「原则」
 
 ## 来源

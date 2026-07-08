@@ -26,11 +26,17 @@
     "open": "打开"
   },
   "fileLink": {
+    "preview": "预览",
     "copyPath": "复制路径",
     "copyRelativePath": "复制相对路径",
     "copyFilename": "复制文件名",
     "open": "打开",
     "notFound": "文件找不到了：{{name}}"
+  },
+  "filePreview": {
+    "loading": "正在加载预览…",
+    "close": "关闭预览",
+    "unavailable": "无法预览 {{name}}，已改用默认程序打开。"
   },
   "link": {
     "visit": "访问",
