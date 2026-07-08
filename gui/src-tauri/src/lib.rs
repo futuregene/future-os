@@ -118,6 +118,23 @@ pub fn run() {
             #[cfg(not(target_os = "macos"))]
             let _ = (app, event);
         })
+        .on_window_event(|window, event| {
+            // Guard quit: if a conversation is still generating, warn before we
+            // tear the agent down. The confirmation is a native dialog (see
+            // agent_supervisor) so it survives even a hung webview.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                use tauri::Manager;
+                match agent_supervisor::on_close_requested() {
+                    agent_supervisor::QuitDecision::Proceed => {}
+                    agent_supervisor::QuitDecision::Confirm { open_dialog } => {
+                        api.prevent_close();
+                        if open_dialog {
+                            agent_supervisor::confirm_quit(window.app_handle().clone());
+                        }
+                    }
+                }
+            }
+        })
         .setup(|app| {
             let _ = APP_HANDLE.set(app.handle().clone());
             // Replace Tauri's default macOS menu so the brand name always reads
@@ -243,9 +260,24 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while running FutureOS")
-        .run(|_app_handle, event| {
-            if let tauri::RunEvent::Exit = event {
+        .run(|app_handle, event| match event {
+            // ⌘Q / the menu's "Quit FutureOS" / a programmatic `app.exit()` come
+            // through here, NOT the window's `CloseRequested`. Guard them the same
+            // way so a running conversation can't be torn down without warning.
+            tauri::RunEvent::ExitRequested { api, .. } => {
+                match agent_supervisor::on_close_requested() {
+                    agent_supervisor::QuitDecision::Proceed => {}
+                    agent_supervisor::QuitDecision::Confirm { open_dialog } => {
+                        api.prevent_exit();
+                        if open_dialog {
+                            agent_supervisor::confirm_quit(app_handle.clone());
+                        }
+                    }
+                }
+            }
+            tauri::RunEvent::Exit => {
                 agent_supervisor::shutdown_agent();
             }
+            _ => {}
         });
 }
