@@ -8,16 +8,27 @@
 //! bind the port.
 
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
 /// The sidecar child, kept so we can kill it on app exit. `None` when we
 /// attached to an externally-managed agent (or failed to spawn).
 static AGENT_CHILD: Mutex<Option<CommandChild>> = Mutex::new(None);
+
+/// Set once the user has confirmed a force-quit, so the follow-up programmatic
+/// `app.exit()` closes the window without the `CloseRequested` guard re-prompting.
+static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
+
+/// True while the force-quit confirmation dialog is on screen. Repeated close
+/// attempts (clicking the traffic-light again, ⌘Q) are then swallowed instead of
+/// stacking a second dialog. Reset if the user cancels, so a later close re-prompts.
+static QUIT_DIALOG_OPEN: AtomicBool = AtomicBool::new(false);
 
 /// Bare `host:port` the GUI talks to — the shared `raw_agent_addr` (single source
 /// of the default), minus any URL scheme (the agent's `--grpc-addr` wants a bare
@@ -114,5 +125,116 @@ pub fn shutdown_agent() {
         if let Err(error) = child.kill() {
             eprintln!("FutureOS: failed to kill bundled agent on shutdown: {error}");
         }
+    }
+}
+
+/// What the window-close handler should do about a pending close, decided by the
+/// quit guard.
+pub enum QuitDecision {
+    /// Nothing is generating (or the user already confirmed the quit) — let the
+    /// window close normally. `RunEvent::Exit` then kills the sidecar as usual.
+    Proceed,
+    /// A conversation is still running. The caller must `prevent_close()`; when
+    /// `open_dialog` is set it must also call [`confirm_quit`] to raise the
+    /// confirmation. `open_dialog` is false when a dialog is already up, so the
+    /// repeat close is simply swallowed.
+    Confirm { open_dialog: bool },
+}
+
+/// Decide how to handle a window close request. Cheap enough to call on the
+/// event-loop thread: a single indexed `COUNT`-style query, only when a close is
+/// actually requested.
+pub fn on_close_requested() -> QuitDecision {
+    // Already committed to quitting — the abort/kill ran and we called `exit`.
+    if QUIT_CONFIRMED.load(Ordering::SeqCst) {
+        return QuitDecision::Proceed;
+    }
+    // A confirmation is already on screen; don't stack another.
+    if QUIT_DIALOG_OPEN.load(Ordering::SeqCst) {
+        return QuitDecision::Confirm { open_dialog: false };
+    }
+    // A failed query must not silently let a running conversation be killed —
+    // treat "unknown" as "nothing running" only because the alternative (blocking
+    // every quit on a DB hiccup) is worse; the abort path is best-effort anyway.
+    let running = crate::store::active_run_sessions()
+        .map(|sessions| !sessions.is_empty())
+        .unwrap_or(false);
+    if running {
+        QuitDecision::Confirm { open_dialog: true }
+    } else {
+        QuitDecision::Proceed
+    }
+}
+
+/// Raise the native "a conversation is still running" confirmation. It renders
+/// from the Rust process, not the webview, so it still works when the webview is
+/// hung — the whole point of guarding quit natively rather than in React.
+///
+/// MUST be called on the main/event-loop thread (it is: both callers —
+/// `on_window_event` and `RunEvent::ExitRequested` — run there). That lets us
+/// read the main window handle to parent the dialog, which macOS forbids off the
+/// UI thread, and lets `show` (non-blocking, callback-based) present without
+/// blocking the event loop.
+///
+/// On confirm: abort every still-running session (whether the agent is our
+/// bundled sidecar or an externally-managed one), then kill the sidecar if we own
+/// it, then exit. On cancel: clear the in-progress flag so a later close prompts
+/// again.
+pub fn confirm_quit(app: AppHandle) {
+    QUIT_DIALOG_OPEN.store(true, Ordering::SeqCst);
+    // Read at prompt time so the count/list reflects the moment the user is
+    // asked, not when the close was first requested.
+    let sessions = crate::store::active_run_sessions().unwrap_or_default();
+
+    let mut dialog = app
+        .dialog()
+        .message(quit_prompt_message(sessions.len()))
+        .title("Quit FutureOS?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Force quit".to_string(),
+            "Keep running".to_string(),
+        ));
+    // Parent to the main window so the confirmation is app-modal (on
+    // Windows/Linux a parentless dialog can surface behind or unfocused). Safe on
+    // macOS because we're on the main thread here.
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.parent(&window);
+    }
+
+    let callback_app = app.clone();
+    // `show` is non-blocking: it presents on the main thread and invokes the
+    // callback (on a background thread) once the user answers.
+    dialog.show(move |confirmed| {
+        if !confirmed {
+            QUIT_DIALOG_OPEN.store(false, Ordering::SeqCst);
+            return;
+        }
+        // Commit to quitting before any close can be re-requested.
+        QUIT_CONFIRMED.store(true, Ordering::SeqCst);
+        // Abort each running session best-effort — an unreachable agent or a
+        // session that finished in the meantime is a harmless no-op.
+        tauri::async_runtime::block_on(async {
+            for session in sessions {
+                if let Err(error) = crate::agent_bridge::abort_session(&session).await {
+                    eprintln!("FutureOS: failed to abort session {session} on quit: {error}");
+                }
+            }
+        });
+        // Kill the bundled sidecar if we own it (no-op for an external agent).
+        shutdown_agent();
+        callback_app.exit(0);
+    });
+}
+
+/// Body of the force-quit confirmation, singular/plural by running-conversation
+/// count. `count` is always ≥ 1 at the call site.
+fn quit_prompt_message(count: usize) -> String {
+    if count <= 1 {
+        "A conversation is still running. Quitting now will interrupt it. Quit anyway?".to_string()
+    } else {
+        format!(
+            "{count} conversations are still running. Quitting now will interrupt them. Quit anyway?"
+        )
     }
 }
