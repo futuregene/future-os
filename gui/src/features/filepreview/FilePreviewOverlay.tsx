@@ -49,7 +49,7 @@ export function FilePreviewOverlay({
     return null;
 
   return (
-    <Overlay onClose={onClose} open={open}>
+    <Overlay backdropClassName="bg-ink-strong/60" onClose={onClose} open={open}>
       <IconButton
         className="fixed right-4 top-4 z-10 bg-surface/80 text-ink shadow-panel hover:bg-surface"
         icon={<X className="size-5" />}
@@ -58,14 +58,14 @@ export function FilePreviewOverlay({
       />
       {kind === "image"
         ? (
-            <div className="relative z-10 flex max-h-full max-w-full items-center justify-center">
+            <div className="relative z-10 flex max-h-full max-w-full items-center justify-center p-4">
               <ImagePreview name={name} onError={handleError} path={path} />
             </div>
           )
         : null}
       {kind === "pdf"
         ? (
-            <div className="relative z-10 h-full max-h-full w-full max-w-[900px] overflow-y-auto">
+            <div className="relative z-10 max-h-full w-full max-w-[900px] overflow-y-auto px-6 py-6">
               <Suspense fallback={<PreviewNotice message={t("filePreview.loading")} />}>
                 <PdfScrollPreview onError={handleError} path={path} />
               </Suspense>
