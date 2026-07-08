@@ -58,14 +58,14 @@ export function FilePreviewOverlay({
       />
       {kind === "image"
         ? (
-            <div className="flex max-h-full max-w-full items-center justify-center">
+            <div className="relative z-10 flex max-h-full max-w-full items-center justify-center">
               <ImagePreview name={name} onError={handleError} path={path} />
             </div>
           )
         : null}
       {kind === "pdf"
         ? (
-            <div className="h-full max-h-full w-full max-w-[900px] overflow-y-auto">
+            <div className="relative z-10 h-full max-h-full w-full max-w-[900px] overflow-y-auto">
               <Suspense fallback={<PreviewNotice message={t("filePreview.loading")} />}>
                 <PdfScrollPreview onError={handleError} path={path} />
               </Suspense>
@@ -74,7 +74,7 @@ export function FilePreviewOverlay({
         : null}
       {kind === "markdown"
         ? (
-            <div className="max-h-full w-full max-w-3xl overflow-y-auto">
+            <div className="relative z-10 max-h-full w-full max-w-3xl overflow-y-auto">
               <MarkdownPreview onError={handleError} path={path} />
             </div>
           )
