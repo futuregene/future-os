@@ -9,13 +9,10 @@ impl Client {
         let thinking_level = self.thinking_level.read().unwrap();
         let thinking_budget = *self.thinking_budget.read().unwrap();
 
-        if (thinking_level.is_empty() || *thinking_level == "off")
-            && thinking_budget == 0
-            && self.reasoning_effort.is_empty()
-        {
-            return;
-        }
-
+        // Resolve the effective compat thinking format BEFORE deciding whether
+        // to skip.  When a format is configured (explicitly or auto-detected)
+        // we must still emit disable parameters for the "off" case — otherwise
+        // the provider defaults to its own behaviour (often enabling thinking).
         let compat_thinking_format = self.compat_thinking_format.read().unwrap();
         // Auto-detect qwen format for dashscope/aliyuncs endpoints when no explicit format set
         let effective_format: String = if compat_thinking_format.is_empty() {
@@ -28,6 +25,22 @@ impl Client {
         } else {
             compat_thinking_format.clone()
         };
+
+        // No explicit thinking level set at all — leave the provider default.
+        if thinking_level.is_empty() {
+            return;
+        }
+
+        // When thinking is "off" and there is NO compat format, there's nothing
+        // to disable (the provider doesn't understand thinking params at all).
+        if *thinking_level == "off"
+            && effective_format.is_empty()
+            && thinking_budget == 0
+            && self.reasoning_effort.is_empty()
+        {
+            return;
+        }
+
         let effective_format_str = effective_format.as_str();
         if !effective_format.is_empty() {
             let reasoning_enabled = *thinking_level != "off";
@@ -394,5 +407,94 @@ mod usage_parse_tests {
         );
         assert_eq!(event.tool_id, "call_001");
         assert_eq!(event.tool_name, "read");
+    }
+}
+
+#[cfg(test)]
+mod apply_thinking_params_tests {
+    use super::Client;
+    use serde_json::json;
+
+    fn body() -> serde_json::Value {
+        json!({"model": "qwen3.7-plus", "messages": []})
+    }
+
+    #[test]
+    fn qwen_off_emits_enable_thinking_false() {
+        // Regression: Qwen3 on DashScope defaults to thinking-on. Setting the
+        // GUI thinking level to "off" must send `enable_thinking: false`;
+        // otherwise the upstream ignores the omission and produces reasoning.
+        let client = Client::new("https://future-os.cn/api", "k", None, None)
+            .with_compat("qwen", true, false)
+            .with_thinking_level("off");
+        let mut body = body();
+        client.apply_thinking_params(&mut body);
+        assert_eq!(
+            body.get("enable_thinking"),
+            Some(&json!(false)),
+            "off must produce enable_thinking=false, got {body}"
+        );
+        assert_eq!(body.get("reasoning_effort"), None);
+    }
+
+    #[test]
+    fn qwen_high_emits_enable_thinking_true_and_effort() {
+        let client = Client::new("https://future-os.cn/api", "k", None, None)
+            .with_compat("qwen", true, false)
+            .with_thinking_level("high");
+        let mut body = body();
+        client.apply_thinking_params(&mut body);
+        assert_eq!(body.get("enable_thinking"), Some(&json!(true)));
+        assert_eq!(body.get("reasoning_effort"), Some(&json!("high")));
+    }
+
+    #[test]
+    fn qwen_off_autodetected_from_aliyuncs_base_url() {
+        // No explicit compat format — the aliyuncs base URL auto-detects qwen,
+        // and "off" must still emit enable_thinking=false.
+        let client =
+            Client::new("https://dashscope.aliyuncs.com/compatible-mode/v1", "k", None, None)
+                .with_thinking_level("off");
+        let mut body = body();
+        client.apply_thinking_params(&mut body);
+        assert_eq!(body.get("enable_thinking"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn deepseek_off_emits_thinking_disabled() {
+        let client = Client::new("https://api.deepseek.com/v1", "k", None, None)
+            .with_compat("deepseek", true, false)
+            .with_thinking_level("off");
+        let mut body = body();
+        client.apply_thinking_params(&mut body);
+        assert_eq!(
+            body.get("thinking"),
+            Some(&json!({ "type": "disabled" })),
+            "off must produce thinking.type=disabled, got {body}"
+        );
+        assert_eq!(body.get("reasoning_effort"), None);
+    }
+
+    #[test]
+    fn empty_format_off_emits_nothing() {
+        // A provider that doesn't support thinking params: "off" must not
+        // inject any thinking-related field (preserve provider default).
+        let client = Client::new("https://example.com/v1", "k", None, None)
+            .with_thinking_level("off");
+        let mut body = body();
+        client.apply_thinking_params(&mut body);
+        assert_eq!(body.get("enable_thinking"), None);
+        assert_eq!(body.get("thinking"), None);
+        assert_eq!(body.get("reasoning_effort"), None);
+    }
+
+    #[test]
+    fn empty_level_emits_nothing() {
+        // No thinking level configured at all → nothing injected.
+        let client = Client::new("https://future-os.cn/api", "k", None, None)
+            .with_compat("qwen", true, false);
+        let mut body = body();
+        client.apply_thinking_params(&mut body);
+        assert_eq!(body.get("enable_thinking"), None);
     }
 }
