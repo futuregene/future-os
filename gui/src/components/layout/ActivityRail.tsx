@@ -137,10 +137,10 @@ export function ActivityRail({
   return (
     <nav
       className={cn(
-        "flex h-full flex-col bg-surface transition-[width] duration-200",
+        "relative flex h-full flex-col bg-surface transition-[width] duration-200",
         floating
-          ? "w-full rounded-r-lg border-r border-line-soft/70 shadow-[10px_0_28px_rgba(15,23,42,0.12)]"
-          : "shrink-0 border-r border-line-soft",
+          ? "w-full rounded-r-lg border-r border-line-soft/70 shadow-sidebar-floating"
+          : "shrink-0 border-r border-line-soft/70",
         expanded ? (floating ? "" : "w-56 md:w-64 xl:w-72") : "w-14 items-center",
       )}
     >
@@ -431,6 +431,7 @@ export function ActivityRail({
               />
             )}
       </div>
+      {!floating ? <div className="pointer-events-none absolute inset-y-0 right-0 z-30 w-6 shadow-sidebar-divider" /> : null}
     </nav>
   );
 }
