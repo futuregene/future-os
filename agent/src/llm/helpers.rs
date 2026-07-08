@@ -86,16 +86,24 @@ impl Client {
                         body[k] = v.clone();
                     }
                 }
-                "openrouter" | "openai"
+                "openrouter" | "openai" => {
                     if reasoning_enabled
-                        && *self.compat_supports_reasoning_effort.read().unwrap() =>
-                {
-                    body["reasoning_effort"] = serde_json::json!(level_value);
+                        && *self.compat_supports_reasoning_effort.read().unwrap()
+                    {
+                        body["reasoning_effort"] = serde_json::json!(level_value);
+                    }
+                    // When reasoning is off, intentionally emit nothing:
+                    // models using this format don't reason by default.
                 }
                 "reasoning-split" => {
-                    // MiniMax M3: reasoning_split only, no depth control.
-                    // Any non-off level → reasoning_split: true
-                    body["reasoning_split"] = serde_json::json!(reasoning_enabled);
+                    // MiniMax M3: reasoning_split controls *where* reasoning
+                    // appears, not *whether*.  The model defaults to
+                    // reasoning_split=false (inline <think> tags).  Always
+                    // send true so reasoning stays in reasoning_content where
+                    // the agent's thinking_delta pipeline captures it and the
+                    // GUI's "show thinking" toggle can hide it.  There is no
+                    // "disable thinking" parameter for this format.
+                    body["reasoning_split"] = serde_json::json!(true);
                 }
                 _ => {}
             }
@@ -496,5 +504,62 @@ mod apply_thinking_params_tests {
         let mut body = body();
         client.apply_thinking_params(&mut body);
         assert_eq!(body.get("enable_thinking"), None);
+    }
+
+    #[test]
+    fn openai_off_emits_nothing() {
+        // openai-format models don't reason by default; "off" is the default
+        // state so nothing needs to be injected.
+        let client = Client::new("https://api.openai.com/v1", "k", None, None)
+            .with_compat("openai", true, false)
+            .with_thinking_level("off");
+        let mut body = body();
+        client.apply_thinking_params(&mut body);
+        assert_eq!(body.get("reasoning_effort"), None);
+        assert_eq!(body.get("enable_thinking"), None);
+        assert_eq!(body.get("thinking"), None);
+    }
+
+    #[test]
+    fn openai_high_emits_reasoning_effort() {
+        let client = Client::new("https://api.openai.com/v1", "k", None, None)
+            .with_compat("openai", true, false)
+            .with_thinking_level("high");
+        let mut body = body();
+        client.apply_thinking_params(&mut body);
+        assert_eq!(body.get("reasoning_effort"), Some(&json!("high")));
+    }
+
+    #[test]
+    fn reasoning_split_off_emits_true() {
+        // reasoning_split controls *where*, not *whether*.  The model defaults
+        // to inline <think> tags; "off" must still send true to route thinking
+        // into reasoning_content where the agent pipeline hides it.
+        let client = Client::new("https://api.minimax.io/v1", "k", None, None)
+            .with_compat("reasoning-split", false, false)
+            .with_thinking_level("off");
+        let mut body = body();
+        client.apply_thinking_params(&mut body);
+        assert_eq!(body.get("reasoning_split"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn reasoning_split_high_emits_true() {
+        let client = Client::new("https://api.minimax.io/v1", "k", None, None)
+            .with_compat("reasoning-split", false, false)
+            .with_thinking_level("high");
+        let mut body = body();
+        client.apply_thinking_params(&mut body);
+        assert_eq!(body.get("reasoning_split"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn openrouter_off_emits_nothing() {
+        let client = Client::new("https://openrouter.ai/api/v1", "k", None, None)
+            .with_compat("openrouter", true, false)
+            .with_thinking_level("off");
+        let mut body = body();
+        client.apply_thinking_params(&mut body);
+        assert_eq!(body.get("reasoning_effort"), None);
     }
 }
