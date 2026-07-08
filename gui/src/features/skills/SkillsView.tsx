@@ -52,20 +52,30 @@ export function SkillsView() {
     [available],
   );
 
+  // Category lookup for installed skills (from catalogue). Used for filtering
+  // and the category dropdown — uncategorized skills are excluded when a
+  // specific category is selected.
+  const installedCategoryMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const a of available) {
+      if (a.category) map.set(a.id, a.category);
+    }
+    return map;
+  }, [available]);
+
   // Categories that have at least one installed skill (matched via catalogue).
   const installedCategories = useMemo(() => {
     const catSet = new Set<string>();
     for (const s of installed) {
-      const cat = available.find(a => a.id === s.id)?.category;
-      if (cat)
-        catSet.add(cat);
+      const cat = installedCategoryMap.get(s.id);
+      if (cat) catSet.add(cat);
     }
     return [...catSet].sort();
-  }, [installed, available]);
+  }, [installed, installedCategoryMap]);
 
   const filteredInstalled = useMemo(
-    () => installed.filter(skill => matchesInstalledSkill(skill, installedFilters)),
-    [installed, installedFilters],
+    () => installed.filter(skill => matchesInstalledSkill(skill, installedFilters, installedCategoryMap.get(skill.id))),
+    [installed, installedFilters, installedCategoryMap],
   );
 
   const filteredAvailable = useMemo(
