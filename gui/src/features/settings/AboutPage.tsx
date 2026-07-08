@@ -1,32 +1,32 @@
 import { Badge } from "../../components/ui/Badge";
+import { openExternalUrl } from "../../integrations/storage/files";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
 
-// The About page is intentionally English-only for now (no i18n), so its copy
-// is inlined here rather than routed through the settings locale bundle.
+// The About page body is intentionally English-only for now (no i18n); only the
+// nav tab label is translated.
 const APP_NAME = "FutureOS";
-const APP_TAGLINE = "AI agent desktop for FutureOS.";
-const APP_LICENSE = "MIT License";
-const APP_COPYRIGHT = "© 2026 FutureGene";
+const LICENSE = "MIT License";
+const HOMEPAGE_URL = "https://www.future-os.cn";
+const HOMEPAGE_LABEL = "www.future-os.cn";
+const GITHUB_URL = "https://github.com/futuregene/future-os";
+const GITHUB_LABEL = "github.com/futuregene/future-os";
 
-// Curated list of the primary open-source libraries FutureOS is built on, with
-// the license each is distributed under (scanned from the frontend `node_modules`
-// and the Tauri/agent Cargo dependencies). The full dependency tree is larger —
-// these are the notable ones surfaced as acknowledgements.
-const ACKNOWLEDGEMENTS: { license: string; name: string }[] = [
-  { license: "MIT / Apache-2.0", name: "Tauri" },
-  { license: "MIT", name: "React" },
-  { license: "MIT", name: "Tokio" },
-  { license: "MIT / Apache-2.0", name: "Serde" },
-  { license: "MIT / Apache-2.0", name: "tonic · prost (gRPC)" },
-  { license: "MIT / Apache-2.0", name: "reqwest" },
-  { license: "Public Domain", name: "SQLite (rusqlite)" },
-  { license: "MIT", name: "Shiki" },
-  { license: "Apache-2.0", name: "PDF.js" },
-  { license: "MIT", name: "unified · remark" },
-  { license: "MIT", name: "i18next" },
-  { license: "ISC", name: "Lucide" },
-];
+// Just the major open-source projects FutureOS is built on — names only, big
+// ones first, trailing off with "etc." since the full tree is long.
+const OPEN_SOURCE = "Tauri, React, Tokio, Serde, SQLite, etc.";
+
+function ExternalLink({ label, url }: { label: string; url: string }) {
+  return (
+    <button
+      className="text-sm text-accent hover:underline"
+      onClick={() => void openExternalUrl(url)}
+      type="button"
+    >
+      {label}
+    </button>
+  );
+}
 
 export function AboutPage() {
   const build = useBuildInfo();
@@ -34,46 +34,34 @@ export function AboutPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-4">
-        <div className="flex size-14 shrink-0 items-center justify-center rounded-2xl bg-accent-soft text-2xl font-semibold text-accent">
-          F
+      <div>
+        <div className="flex items-center gap-2">
+          <h3 className="text-lg font-semibold text-ink">{APP_NAME}</h3>
+          {isTestBuild ? <Badge tone="warning">Test build</Badge> : null}
         </div>
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <h3 className="text-lg font-semibold text-ink">{APP_NAME}</h3>
-            {isTestBuild ? <Badge tone="warning">Test build</Badge> : null}
-          </div>
-          <p className="mt-0.5 text-sm text-ink-soft">
-            {build.data ? `Version ${build.data.version}` : "Version —"}
-          </p>
-        </div>
+        <p className="mt-0.5 text-sm text-ink-soft">
+          {build.data ? `Version ${build.data.version}` : "Version —"}
+        </p>
       </div>
 
       <SettingsSection>
         <SettingsList>
-          <SettingsRow title="Description">
-            <span className="text-sm text-ink-soft">{APP_TAGLINE}</span>
-          </SettingsRow>
           <SettingsRow title="License">
-            <span className="text-sm text-ink-soft">{APP_LICENSE}</span>
+            <span className="text-sm text-ink-soft">{LICENSE}</span>
           </SettingsRow>
-          <SettingsRow title="Copyright">
-            <span className="text-sm text-ink-soft">{APP_COPYRIGHT}</span>
+          <SettingsRow title="Website">
+            <ExternalLink label={HOMEPAGE_LABEL} url={HOMEPAGE_URL} />
+          </SettingsRow>
+          <SettingsRow title="GitHub">
+            <ExternalLink label={GITHUB_LABEL} url={GITHUB_URL} />
           </SettingsRow>
         </SettingsList>
       </SettingsSection>
 
-      <SettingsSection
-        description="FutureOS is built with open-source software. We gratefully acknowledge the projects below."
-        title="Open source"
-      >
-        <SettingsList>
-          {ACKNOWLEDGEMENTS.map(item => (
-            <SettingsRow key={item.name} title={item.name}>
-              <Badge tone="neutral">{item.license}</Badge>
-            </SettingsRow>
-          ))}
-        </SettingsList>
+      <SettingsSection title="Open source">
+        <p className="text-sm leading-6 text-ink-soft">
+          {`Built with open-source software, including ${OPEN_SOURCE}`}
+        </p>
       </SettingsSection>
     </div>
   );
