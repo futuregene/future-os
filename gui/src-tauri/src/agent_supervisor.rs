@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -166,10 +166,15 @@ pub fn on_close_requested() -> QuitDecision {
     }
 }
 
-/// Raise the native "a conversation is still running" confirmation off the main
-/// thread (the dialog blocks, and it must never block the event loop). It renders
+/// Raise the native "a conversation is still running" confirmation. It renders
 /// from the Rust process, not the webview, so it still works when the webview is
 /// hung — the whole point of guarding quit natively rather than in React.
+///
+/// MUST be called on the main/event-loop thread (it is: both callers —
+/// `on_window_event` and `RunEvent::ExitRequested` — run there). That lets us
+/// read the main window handle to parent the dialog, which macOS forbids off the
+/// UI thread, and lets `show` (non-blocking, callback-based) present without
+/// blocking the event loop.
 ///
 /// On confirm: abort every still-running session (whether the agent is our
 /// bundled sidecar or an externally-managed one), then kill the sidecar if we own
@@ -177,26 +182,34 @@ pub fn on_close_requested() -> QuitDecision {
 /// again.
 pub fn confirm_quit(app: AppHandle) {
     QUIT_DIALOG_OPEN.store(true, Ordering::SeqCst);
-    std::thread::spawn(move || {
-        // Re-read at prompt time so the count/list reflects the moment the user
-        // is asked, not when the close was first requested.
-        let sessions = crate::store::active_run_sessions().unwrap_or_default();
-        let confirmed = app
-            .dialog()
-            .message(quit_prompt_message(sessions.len()))
-            .title("Quit FutureOS?")
-            .kind(MessageDialogKind::Warning)
-            .buttons(MessageDialogButtons::OkCancelCustom(
-                "Force quit".to_string(),
-                "Keep running".to_string(),
-            ))
-            .blocking_show();
+    // Read at prompt time so the count/list reflects the moment the user is
+    // asked, not when the close was first requested.
+    let sessions = crate::store::active_run_sessions().unwrap_or_default();
 
+    let mut dialog = app
+        .dialog()
+        .message(quit_prompt_message(sessions.len()))
+        .title("Quit FutureOS?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Force quit".to_string(),
+            "Keep running".to_string(),
+        ));
+    // Parent to the main window so the confirmation is app-modal (on
+    // Windows/Linux a parentless dialog can surface behind or unfocused). Safe on
+    // macOS because we're on the main thread here.
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.parent(&window);
+    }
+
+    let callback_app = app.clone();
+    // `show` is non-blocking: it presents on the main thread and invokes the
+    // callback (on a background thread) once the user answers.
+    dialog.show(move |confirmed| {
         if !confirmed {
             QUIT_DIALOG_OPEN.store(false, Ordering::SeqCst);
             return;
         }
-
         // Commit to quitting before any close can be re-requested.
         QUIT_CONFIRMED.store(true, Ordering::SeqCst);
         // Abort each running session best-effort — an unreachable agent or a
@@ -210,7 +223,7 @@ pub fn confirm_quit(app: AppHandle) {
         });
         // Kill the bundled sidecar if we own it (no-op for an external agent).
         shutdown_agent();
-        app.exit(0);
+        callback_app.exit(0);
     });
 }
 
