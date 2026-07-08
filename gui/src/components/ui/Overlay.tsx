@@ -50,7 +50,7 @@ export function Overlay({
         aria-label={t("close")}
         className={cn(
           "absolute inset-0 cursor-default backdrop-blur-[1px]",
-          backdropClassName ?? "bg-ink-strong/20",
+          backdropClassName ?? "bg-ink-strong/40",
         )}
         onClick={onClose}
         type="button"
