@@ -1,6 +1,7 @@
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { FileText, Paperclip, RotateCcw, StepForward } from "lucide-react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CopyButton } from "../../components/ui/CopyButton";
 import { useCopyState } from "../../components/ui/useCopyState";
@@ -282,8 +283,12 @@ function StreamingIndicator({ label }: { label: string }) {
 }
 
 function AttachmentChip({ attachment }: { attachment: MessageAttachment }) {
+  // The thumbnail/original file can be missing (e.g. the thread's image dir was
+  // reclaimed, or an old message predates the persistent-image change); fall
+  // back to the file chip instead of rendering a blank box.
+  const [failed, setFailed] = useState(false);
   const thumbSrc = attachment.thumbnail ?? (attachment.kind === "image" ? attachment.path : null);
-  if (attachment.kind === "image" && thumbSrc) {
+  if (attachment.kind === "image" && thumbSrc && !failed) {
     return (
       <span
         className="inline-flex items-center overflow-hidden rounded-md ring-1 ring-line-soft"
@@ -292,6 +297,7 @@ function AttachmentChip({ attachment }: { attachment: MessageAttachment }) {
         <img
           alt={attachment.name}
           className="size-16 object-cover"
+          onError={() => setFailed(true)}
           src={convertFileSrc(thumbSrc)}
         />
       </span>

@@ -296,29 +296,11 @@ function loadImage(src: string) {
 }
 
 /**
- * Cache-key for a path's thumbnail. Uses a SHA-256 prefix (128 bits) so distinct
- * image paths don't collide and show each other's thumbnail — the prior
- * 32-bit djb2 was collision-prone. Falls back to djb2 only if SubtleCrypto is
- * unavailable (non-secure context).
+ * Downscale an image to ~96px and persist a JPEG thumbnail under the thread's
+ * persistent image dir (`~/.future/app/images/<threadId>/thumb`). The backend
+ * assigns a unique filename, so no client-side key is needed.
  */
-async function thumbnailKey(path: string): Promise<string> {
-  try {
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(path));
-    const hex = Array.from(new Uint8Array(digest, 0, 16))
-      .map(byte => byte.toString(16).padStart(2, "0"))
-      .join("");
-    return `thumb-${hex}`;
-  }
-  catch {
-    let hash = 5381;
-    for (let i = 0; i < path.length; i++)
-      hash = ((hash << 5) + hash + path.charCodeAt(i)) >>> 0;
-    return `thumb-${hash.toString(36)}`;
-  }
-}
-
-/** Downscale an image to ~96px and persist a JPEG thumbnail in the app cache. */
-export async function generateImageThumbnail(path: string): Promise<string | null> {
+export async function generateImageThumbnail(path: string, threadId: string): Promise<string | null> {
   try {
     const ext = extOf(path);
     const base64 = await readFileBase64({ maxBytes: READ_SOURCE_MAX_BYTES, path });
@@ -338,7 +320,7 @@ export async function generateImageThumbnail(path: string): Promise<string | nul
     const jpeg = canvas.toDataURL("image/jpeg", 0.6).split(",")[1] ?? "";
     if (!jpeg)
       return null;
-    return await writeThumbnail({ base64Jpeg: jpeg, key: await thumbnailKey(path) });
+    return await writeThumbnail({ base64Jpeg: jpeg, threadId });
   }
   catch {
     return null;

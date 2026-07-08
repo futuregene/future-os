@@ -35,7 +35,7 @@ pub use artifacts::{
 pub use cleanup::{
     cancel_stale_approval_requests, clear_finished_runs, get_thread_cleanup_summary,
 };
-pub use db::{get_approval_request, get_run};
+pub use db::{app_images_root, get_approval_request, get_run, thread_images_dir};
 pub use markdown_refs::resolve_markdown_references;
 pub use messages::{append_message, list_messages, MessageRecord};
 pub use records::*;
@@ -82,6 +82,11 @@ pub fn initialize_app_store() -> Result<(), crate::AppError> {
     if let Err(error) = cleanup::reconcile_orphan_sessions() {
         eprintln!("reconcile_orphan_sessions failed: {error}");
     }
+    // Reclaim per-thread image dirs (thumbnails + workspace-mode originals) whose
+    // thread is gone — including threads deleted out-of-band via the TUI/CLI.
+    if let Err(error) = cleanup::reconcile_orphan_images() {
+        eprintln!("reconcile_orphan_images failed: {error}");
+    }
     Ok(())
 }
 
@@ -115,5 +120,6 @@ pub fn clear_all_data() -> Result<(), crate::AppError> {
     let app = app_dir()?;
     let _ = std::fs::remove_dir_all(app.join("workspaces"));
     let _ = std::fs::remove_dir_all(app.join("review"));
+    let _ = std::fs::remove_dir_all(app.join("images"));
     Ok(())
 }

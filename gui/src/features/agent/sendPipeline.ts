@@ -19,7 +19,7 @@ import {
 } from "./agentMessageFormatters";
 import { buildInlineAttachmentContext, imageAttachmentPaths, stringifyMessageContent } from "./attachments";
 import { buildReferencePrompt } from "./buildReferencePrompt";
-import { importChatAttachments, withImageThumbnails } from "./threadAttachments";
+import { importChatAttachments, importWorkspaceImages, withImageThumbnails } from "./threadAttachments";
 import {
   clientId,
   deriveRenderFields,
@@ -100,7 +100,8 @@ export async function runSendPipeline(
 
   try {
     const importedAttachments = await withImageThumbnails(
-      await importChatAttachments(thread, attachments),
+      await importWorkspaceImages(thread, await importChatAttachments(thread, attachments)),
+      thread.id,
     );
 
     // Extract PDF/text into the model-facing prompt only; keep the visible
@@ -174,12 +175,12 @@ export async function runSendPipeline(
     );
     clearStreamTimer();
 
-    // Chat attachments were copied into the artifact store, so the pasted temp
-    // originals are now redundant. (Guarded to our temp dir; user-picked files
-    // are rejected and left untouched. Workspace threads keep temps for resend.)
-    if (thread.mode === "chat") {
-      void Promise.all(attachments.map(item => deleteTempAttachment(item.path).catch(() => {})));
-    }
+    // Both modes now hold a durable copy of pasted images — chat in the artifact
+    // store, workspace in images/<tid>/origin — so the pasted temp originals are
+    // redundant and can go. deleteTempAttachment is guarded to our
+    // futureos-attachments dir, so user-picked files (real paths) are rejected
+    // and left untouched.
+    void Promise.all(attachments.map(item => deleteTempAttachment(item.path).catch(() => {})));
 
     const currentRun = await loadCurrentRun(thread.id, run.id);
     if (currentRun && matchesSettledRun(currentRun.status)) {
