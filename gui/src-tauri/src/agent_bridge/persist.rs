@@ -205,10 +205,16 @@ fn persist_tool_end(run_id: &str, value: &serde_json::Value, sequence: i64) {
     let error = value_string(value, &["error", "errorText"]);
     let output_content =
         value_string(value, &["text", "result"]).or_else(|| value.get("output").map(compact_json));
-    let status = if error.as_deref().unwrap_or_default().is_empty() {
-        "completed".to_string()
-    } else {
+    // A bash command that runs but exits non-zero is returned as a *successful*
+    // tool result (no error field) with the code baked into the output text as
+    // "[exit code: N]\n…". Treat a non-zero code as a failure so the Runs panel
+    // and inspector don't mark an errored command as completed.
+    let failed = !error.as_deref().unwrap_or_default().is_empty()
+        || output_is_failure(output_content.as_deref(), run_id, &tool_call_id);
+    let status = if failed {
         "failed".to_string()
+    } else {
+        "completed".to_string()
     };
     let output_kind = if status == "completed" {
         "text".to_string()
@@ -370,6 +376,73 @@ fn event_value(payload: &str) -> Option<serde_json::Value> {
     serde_json::from_str::<serde_json::Value>(payload).ok()
 }
 
+/// Whether a tool_end output represents a failure. A bash result is formatted
+/// "[exit code: N]\n…" only when the command exited non-zero (see agent
+/// `tools::run_bash`). Any non-zero code is a failure, except exit 1 from a
+/// bare grep/diff/cmp/test (a normal "no match / differs / false" signal).
+fn output_is_failure(output: Option<&str>, run_id: &str, tool_call_id: &str) -> bool {
+    let Some(code) = nonzero_exit_code(output) else {
+        return false;
+    };
+    if code != 1 {
+        return true;
+    }
+    !is_soft_fail_command(bash_command_from_input(run_id, tool_call_id).as_deref())
+}
+
+/// The non-zero code from a "[exit code: N]" bash prefix, or None (exit 0 / not bash).
+fn nonzero_exit_code(output: Option<&str>) -> Option<i64> {
+    let rest = output?.trim_start().strip_prefix("[exit code: ")?;
+    let (code, _) = rest.split_once(']')?;
+    code.trim().parse::<i64>().ok().filter(|code| *code != 0)
+}
+
+/// A bare grep/diff/cmp/test command exiting 1 is a normal signal, not an error.
+/// Any shell operator makes the exit code ambiguous (pipeline/list), so those
+/// stay failures. `findstr` is the Windows grep (bash tool runs via `cmd /c`
+/// there); `find` is deliberately absent — it means different things on Windows
+/// vs Unix.
+fn is_soft_fail_command(command: Option<&str>) -> bool {
+    let Some(command) = command else {
+        return false;
+    };
+    if command.contains(['|', '&', ';', '\n', '`', '<', '>']) || command.contains("$(") {
+        return false;
+    }
+    let Some(first) = command.split_whitespace().next() else {
+        return false;
+    };
+    // Basename of the program, tolerant of Windows paths (`\`), a `.exe` suffix,
+    // and case (Windows resolves names case-insensitively).
+    let base = first
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(first)
+        .to_ascii_lowercase();
+    let program = base.strip_suffix(".exe").unwrap_or(base.as_str());
+    matches!(
+        program,
+        "grep" | "egrep" | "fgrep" | "rg" | "findstr" | "diff" | "cmp" | "test" | "["
+    )
+}
+
+/// The `command` string persisted at tool_start for a bash tool call, if any.
+fn bash_command_from_input(run_id: &str, tool_call_id: &str) -> Option<String> {
+    let input = store::get_tool_call_input(run_id, tool_call_id).ok()??;
+    let mut value: serde_json::Value = serde_json::from_str(&input).ok()?;
+    for _ in 0..2 {
+        match value {
+            serde_json::Value::String(inner) => value = serde_json::from_str(&inner).ok()?,
+            _ => break,
+        }
+    }
+    value
+        .get("command")?
+        .as_str()
+        .map(str::to_string)
+        .filter(|command| !command.trim().is_empty())
+}
+
 fn value_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|key| {
         value.get(*key).and_then(|field| {
@@ -383,4 +456,57 @@ fn value_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
 
 fn compact_json(value: &serde_json::Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_soft_fail_command, nonzero_exit_code};
+
+    #[test]
+    fn parses_nonzero_exit_prefix() {
+        assert_eq!(
+            nonzero_exit_code(Some("[exit code: 127]\nbash: future: command not found")),
+            Some(127)
+        );
+        assert_eq!(nonzero_exit_code(Some("  [exit code: 2]\noops")), Some(2));
+        assert_eq!(nonzero_exit_code(Some("[exit code: 1]\n")), Some(1));
+    }
+
+    #[test]
+    fn no_prefix_or_zero_is_not_nonzero() {
+        // exit 0 never carries the prefix (agent only prepends it when non-zero).
+        assert_eq!(nonzero_exit_code(Some("[exit code: 0]\n")), None);
+        assert_eq!(nonzero_exit_code(Some("hello world")), None);
+        assert_eq!(nonzero_exit_code(Some("")), None);
+        assert_eq!(nonzero_exit_code(None), None);
+        assert_eq!(nonzero_exit_code(Some("[exit code: abc]\n")), None);
+    }
+
+    #[test]
+    fn bare_soft_fail_commands_are_exempt() {
+        assert!(is_soft_fail_command(Some("grep foo file.txt")));
+        assert!(is_soft_fail_command(Some("rg pattern")));
+        assert!(is_soft_fail_command(Some("diff a b")));
+        assert!(is_soft_fail_command(Some("test -f missing")));
+        assert!(is_soft_fail_command(Some("[ -f missing ]")));
+        assert!(is_soft_fail_command(Some("/usr/bin/grep foo")));
+    }
+
+    #[test]
+    fn windows_forms_are_exempt() {
+        assert!(is_soft_fail_command(Some("findstr foo file.txt")));
+        assert!(is_soft_fail_command(Some("grep.exe foo")));
+        assert!(is_soft_fail_command(Some("GREP.EXE foo")));
+        assert!(is_soft_fail_command(Some(r"C:\tools\grep.exe foo")));
+    }
+
+    #[test]
+    fn pipelines_lists_and_other_commands_are_not_exempt() {
+        assert!(!is_soft_fail_command(Some("grep foo | head")));
+        assert!(!is_soft_fail_command(Some("grep foo && echo hi")));
+        assert!(!is_soft_fail_command(Some("grep foo; echo hi")));
+        assert!(!is_soft_fail_command(Some("python script.py")));
+        assert!(!is_soft_fail_command(Some("npm run build")));
+        assert!(!is_soft_fail_command(None));
+    }
 }
