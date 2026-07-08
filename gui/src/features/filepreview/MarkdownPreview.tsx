@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { readTextFilePreview } from "../../integrations/storage/files";
 import { MarkdownContent } from "../markdown/MarkdownContent";
@@ -19,6 +19,9 @@ export function MarkdownPreview({
 }) {
   const { t } = useTranslation("markdown");
   const [content, setContent] = useState<string | null>(null);
+  // See ImagePreview: keep onError in a ref so the effect depends only on `path`.
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
 
   useEffect(() => {
     let cancelled = false;
@@ -30,12 +33,12 @@ export function MarkdownPreview({
       })
       .catch(() => {
         if (!cancelled)
-          onError();
+          onErrorRef.current();
       });
     return () => {
       cancelled = true;
     };
-  }, [path, onError]);
+  }, [path]);
 
   if (content == null)
     return <PreviewNotice message={t("filePreview.loading")} />;

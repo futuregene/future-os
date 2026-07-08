@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { readFileBase64 } from "../../integrations/storage/files";
 import { imageMimeForPath } from "./previewKind";
@@ -22,6 +22,11 @@ export function ImagePreview({
 }) {
   const { t } = useTranslation("markdown");
   const [src, setSrc] = useState<string | null>(null);
+  // Hold onError in a ref so the load effect depends only on `path` — callers
+  // often pass a fresh callback each render, which would otherwise re-fire the
+  // fetch on every render and thrash the preview.
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
 
   useEffect(() => {
     let cancelled = false;
@@ -33,12 +38,12 @@ export function ImagePreview({
       })
       .catch(() => {
         if (!cancelled)
-          onError();
+          onErrorRef.current();
       });
     return () => {
       cancelled = true;
     };
-  }, [path, onError]);
+  }, [path]);
 
   if (!src)
     return <PreviewNotice message={t("filePreview.loading")} />;
