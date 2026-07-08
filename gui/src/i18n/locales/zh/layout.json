@@ -63,6 +63,7 @@
     "panelView": "上下文面板视图",
     "collapse": "收起上下文面板",
     "expand": "展开上下文面板",
+    "resize": "拖动调整面板宽度",
     "loading": "正在加载上下文…",
     "noThreadSelected": "未选择对话"
   },

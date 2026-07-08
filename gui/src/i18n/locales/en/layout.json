@@ -63,6 +63,7 @@
     "panelView": "Context panel view",
     "collapse": "Collapse context panel",
     "expand": "Expand context panel",
+    "resize": "Drag to resize panel",
     "loading": "Loading context...",
     "noThreadSelected": "No thread selected"
   },

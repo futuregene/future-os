@@ -3,7 +3,7 @@ import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../..
 import type { ActivitySection } from "./ActivityRail";
 import type { ContextTab } from "./ContextPanel";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { NewConversation } from "../../features/agent/NewConversation";
@@ -26,6 +26,7 @@ import { useApprovals } from "./hooks/useApprovals";
 import { useAppSettings } from "./hooks/useAppSettings";
 import { useModelSelection } from "./hooks/useModelSelection";
 import { useNewConversation } from "./hooks/useNewConversation";
+import { useRightPanelWidth } from "./hooks/useRightPanelWidth";
 import { useThreadDialogs } from "./hooks/useThreadDialogs";
 import { useThreadStore } from "./hooks/useThreadStore";
 import { useUnreadThreads } from "./hooks/useUnreadThreads";
@@ -59,6 +60,21 @@ export function AppShell() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
 
   const { appSettings, changeSettings } = useAppSettings();
+
+  const centerRef = useRef<HTMLElement>(null);
+  const {
+    width: rightPanelWidth,
+    resizing: rightPanelResizing,
+    startResize: startRightPanelResize,
+    reclamp: reclampRightPanel,
+    nudge: nudgeRightPanel,
+  } = useRightPanelWidth(centerRef);
+
+  // The left rail's width changes the center's left edge, so a collapse/expand
+  // can shrink the space available to the center — re-clamp the right panel.
+  useEffect(() => {
+    reclampRightPanel();
+  }, [leftExpanded, reclampRightPanel]);
 
   const {
     threads,
@@ -327,7 +343,7 @@ export function AppShell() {
             </div>
           )
         : null}
-      <main className="min-w-0 flex-1 bg-surface">
+      <main ref={centerRef} className="min-w-0 flex-1 bg-surface">
         {centerMode === "new-chat"
           ? (
               <NewConversation
@@ -415,10 +431,19 @@ export function AppShell() {
               activeWorkspace={activeWorkspace}
               activeTab={contextTab}
               expanded={rightExpanded}
+              width={rightPanelWidth}
+              resizing={rightPanelResizing}
+              onResizeStart={startRightPanelResize}
+              onResizeNudge={nudgeRightPanel}
               onTabChange={setContextTab}
               onToggleExpanded={() => setRightExpanded(value => !value)}
             />
           )}
+      {/* While dragging the divider, a full-window overlay keeps the cursor and
+          captures mouse events even over embedded iframes (PDF preview). */}
+      {rightPanelResizing
+        ? <div className="fixed inset-0 z-50 cursor-ew-resize select-none" />
+        : null}
       <AppShellDialogs
         deleteDialog={deleteDialog}
         renameDialog={renameDialog}
