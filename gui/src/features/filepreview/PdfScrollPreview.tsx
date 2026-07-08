@@ -26,6 +26,9 @@ export function PdfScrollPreview({
   const { t } = useTranslation("markdown");
   const containerRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
+  // See ImagePreview: keep onError in a ref so the effect depends only on `path`.
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
 
   useEffect(() => {
     let cancelled = false;
@@ -84,7 +87,7 @@ export function PdfScrollPreview({
       }
       catch {
         if (!cancelled)
-          onError();
+          onErrorRef.current();
       }
     }
 
@@ -95,7 +98,7 @@ export function PdfScrollPreview({
       if (loadingTask)
         void loadingTask.destroy();
     };
-  }, [path, onError]);
+  }, [path]);
 
   return (
     <div className="relative w-full">
