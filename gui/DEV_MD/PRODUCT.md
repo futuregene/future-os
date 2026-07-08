@@ -236,7 +236,7 @@ GUI 采用三栏结构：
 
 - New Chat。
 - Research、Data、Skill（**当前已暂时隐藏**，优先级下调；入口在 `ActivityRail.tsx` 中注释保留，待相应模块可用后再放开）。
-- Remote（仅非 release 构建显示，`ActivityRail.tsx`）。
+- Remote（仅非 release 构建可用：前端 `ActivityRail.tsx` 隐藏入口，后端 `remote_start` 在 release 构建直接拒绝——命令面无鉴权，门禁不能只靠前端）。
 - 置顶分区（所有置顶对话）。
 - Workspace 列表。
 - Workspace 下子对话。
