@@ -23,7 +23,7 @@ export function RunError({
       {meta
         ? (
             <div className={cn("flex items-center gap-1.5 text-xs font-medium", banner && "mb-1", meta.color)}>
-              <span>{meta.icon}</span>
+              <meta.Icon className="size-3.5 shrink-0" />
               <span>{meta.label}</span>
             </div>
           )
