@@ -1,3 +1,4 @@
+import { Bot, CircleHelp, CircleStop, Clock, TriangleAlert, Unplug } from "lucide-react";
 import { describe, expect, it } from "vitest";
 import { formatErrorType } from "./runDisplayFormatters";
 
@@ -11,7 +12,7 @@ describe("formatErrorType", () => {
     const result = formatErrorType("stream_disconnected");
     expect(result).not.toBeNull();
     expect(result!.label).toBe("Stream disconnected");
-    expect(result!.icon).toBe("🔌");
+    expect(result!.Icon).toBe(Unplug);
     expect(result!.color).toBe("text-orange-600");
   });
 
@@ -19,7 +20,7 @@ describe("formatErrorType", () => {
     const result = formatErrorType("command_failed");
     expect(result).not.toBeNull();
     expect(result!.label).toBe("Command failed");
-    expect(result!.icon).toBe("⚠️");
+    expect(result!.Icon).toBe(TriangleAlert);
     expect(result!.color).toBe("text-red-600");
   });
 
@@ -27,7 +28,7 @@ describe("formatErrorType", () => {
     const result = formatErrorType("model_failed");
     expect(result).not.toBeNull();
     expect(result!.label).toBe("Model failed");
-    expect(result!.icon).toBe("🤖");
+    expect(result!.Icon).toBe(Bot);
     expect(result!.color).toBe("text-purple-600");
   });
 
@@ -35,7 +36,7 @@ describe("formatErrorType", () => {
     const result = formatErrorType("abort_requested");
     expect(result).not.toBeNull();
     expect(result!.label).toBe("Aborted by user");
-    expect(result!.icon).toBe("⏹️");
+    expect(result!.Icon).toBe(CircleStop);
     expect(result!.color).toBe("text-gray-600");
   });
 
@@ -43,7 +44,7 @@ describe("formatErrorType", () => {
     const result = formatErrorType("timeout");
     expect(result).not.toBeNull();
     expect(result!.label).toBe("Timeout");
-    expect(result!.icon).toBe("⏰");
+    expect(result!.Icon).toBe(Clock);
     expect(result!.color).toBe("text-yellow-600");
   });
 
@@ -51,7 +52,7 @@ describe("formatErrorType", () => {
     const result = formatErrorType("unknown");
     expect(result).not.toBeNull();
     expect(result!.label).toBe("Unknown error");
-    expect(result!.icon).toBe("❓");
+    expect(result!.Icon).toBe(CircleHelp);
     expect(result!.color).toBe("text-gray-600");
   });
 });
