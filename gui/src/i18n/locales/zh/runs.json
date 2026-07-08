@@ -23,6 +23,9 @@
     "command": "命令",
     "target": "目标",
     "input": "输入",
+    "content": "内容",
+    "output": "输出",
+    "outputError": "错误",
     "noInput": "无输入",
     "expand": "展开",
     "collapse": "收起"
@@ -36,6 +39,7 @@
     "commands_one": "{{count}} 条命令",
     "commands_other": "{{count}} 条命令",
     "inspectRun": "查看运行",
+    "inspectTool": "查看详情",
     "confirmTerminate": "要终止此程序吗？",
     "cancel": "取消",
     "stopping": "停止中",

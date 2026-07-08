@@ -74,6 +74,7 @@ export function ContextPanel({
   const [debouncedReviewCustomBase, setDebouncedReviewCustomBase] = useState("");
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const refreshGenerationRef = useRef(0);
   const activeThreadId = activeThread?.id ?? null;
@@ -94,6 +95,19 @@ export function ContextPanel({
     : null;
   const selectedRun = selectedRunId
     ? runs.find(run => run.id === selectedRunId) ?? null
+    : null;
+  // The Runs panel drills into a single tool call; find it (and its owning run)
+  // across the per-run tool map so the inspector reuses the run detail view.
+  const selectedTool = selectedToolId
+    ? Object.entries(toolsByRun).reduce<{ run: StoredRun; tool: StoredToolCall } | null>((found, [runId, tools]) => {
+        if (found)
+          return found;
+        const tool = tools.find(entry => entry.id === selectedToolId);
+        if (!tool)
+          return null;
+        const run = runs.find(entry => entry.id === runId);
+        return run ? { run, tool } : null;
+      }, null)
     : null;
 
   const refreshContext = useCallback(async (options?: { showLoading?: boolean; ensureGit?: boolean }) => {
@@ -212,6 +226,16 @@ export function ContextPanel({
 
   const handleSelectRun = useCallback((runId: string) => {
     setSelectedRunId(runId);
+    setSelectedToolId(null);
+    setSelectedArtifactId(null);
+    if (activeTab !== "runs") {
+      onTabChange("runs");
+    }
+  }, [activeTab, onTabChange]);
+
+  const handleSelectTool = useCallback((toolId: string) => {
+    setSelectedToolId(toolId);
+    setSelectedRunId(null);
     setSelectedArtifactId(null);
     if (activeTab !== "runs") {
       onTabChange("runs");
@@ -224,6 +248,7 @@ export function ContextPanel({
     if (activeTab !== "artifacts") {
       onTabChange("artifacts");
     }
+    setSelectedToolId(null);
   }, [activeTab, onTabChange]);
 
   useEffect(() => {
@@ -249,6 +274,7 @@ export function ContextPanel({
   useEffect(() => {
     setSelectedArtifactId(null);
     setSelectedRunId(null);
+    setSelectedToolId(null);
   }, [activeThreadId]);
 
   useEffect(() => {
@@ -268,6 +294,7 @@ export function ContextPanel({
       onFutureEvent("open-review", () => {
         setSelectedArtifactId(null);
         setSelectedRunId(null);
+        setSelectedToolId(null);
         onTabChange("review");
         if (!expanded) {
           onToggleExpanded();
@@ -327,23 +354,32 @@ export function ContextPanel({
         {showInitialLoading ? <div className="py-4 text-sm text-ink-muted">{t("contextPanel.loading")}</div> : null}
         {!showInitialLoading && !activeThread ? <EmptyState title={t("contextPanel.noThreadSelected")} /> : null}
         {!showInitialLoading && activeThread && activeTab === "runs"
-          ? selectedRun
+          ? selectedTool
             ? (
                 <RunInspectPanel
-                  run={selectedRun}
-                  tools={toolsByRun[selectedRun.id] ?? []}
-                  onBack={() => setSelectedRunId(null)}
+                  compact
+                  run={selectedTool.run}
+                  tools={[selectedTool.tool]}
+                  onBack={() => setSelectedToolId(null)}
                 />
               )
-            : (
-                <RunsPanel
-                  runs={runs}
-                  toolsByRun={toolsByRun}
-                  onClearFinished={handleClearFinishedRuns}
-                  onInspectRun={handleSelectRun}
-                  onTerminateRun={handleTerminateRun}
-                />
-              )
+            : selectedRun
+              ? (
+                  <RunInspectPanel
+                    run={selectedRun}
+                    tools={toolsByRun[selectedRun.id] ?? []}
+                    onBack={() => setSelectedRunId(null)}
+                  />
+                )
+              : (
+                  <RunsPanel
+                    runs={runs}
+                    toolsByRun={toolsByRun}
+                    onClearFinished={handleClearFinishedRuns}
+                    onInspectTool={handleSelectTool}
+                    onTerminateRun={handleTerminateRun}
+                  />
+                )
           : null}
         {!showInitialLoading && activeThread && activeTab === "review"
           ? (

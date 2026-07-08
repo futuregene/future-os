@@ -1,45 +1,47 @@
 import type { StoredRun, StoredToolCall } from "../../integrations/storage/threadStore";
-import { CircleStop, Eye, Trash2 } from "lucide-react";
+import { ChevronRight, CircleStop, Pencil, TerminalSquare, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import i18n from "../../i18n";
+import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
-import { runStatusLabel } from "./runDisplayFormatters";
 import { RunError } from "./RunError";
-import { toolCommand } from "./toolInput";
+import { toolCommand, toolTarget } from "./toolInput";
+
+// Only these tool calls are worth a row of their own; `read`/`grep`/`ls` are
+// navigation noise and stay collapsed out of the panel.
+const DISPLAY_TOOLS = new Set(["bash", "write", "edit"]);
 
 interface RunsPanelProps {
   runs: StoredRun[];
   toolsByRun: Record<string, StoredToolCall[]>;
   onClearFinished: () => Promise<void>;
-  onInspectRun: (runId: string) => void;
+  onInspectTool: (toolId: string) => void;
   onTerminateRun: (run: StoredRun) => Promise<void>;
 }
 
-export function RunsPanel({ onClearFinished, onInspectRun, onTerminateRun, runs, toolsByRun }: RunsPanelProps) {
+interface ToolEntry {
+  tool: StoredToolCall;
+  run: StoredRun;
+  // Exactly one row per active run carries the terminate control — its latest
+  // command — so a multi-command run isn't cluttered with duplicate stop buttons.
+  terminable: boolean;
+}
+
+export function RunsPanel({ onClearFinished, onInspectTool, onTerminateRun, runs, toolsByRun }: RunsPanelProps) {
   const { t } = useTranslation("runs");
   const [confirmRunId, setConfirmRunId] = useState<string | null>(null);
   const [busyRunId, setBusyRunId] = useState<string | null>(null);
   const [actionErrors, setActionErrors] = useState<Record<string, string | undefined>>({});
   const [clearing, setClearing] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
-  const visibleRuns = useMemo(
-    () => runs.filter(run => commandToolCall(toolsByRun[run.id] ?? [])),
-    [runs, toolsByRun],
-  );
-  const runningRuns = visibleRuns.filter(isActiveRun);
-  const finishedRuns = visibleRuns.filter(run => !isActiveRun(run));
-  const orderedRuns = useMemo(
-    () => [
-      ...[...runningRuns].sort(compareRunTimeDesc),
-      ...[...finishedRuns].sort(compareRunTimeDesc),
-    ],
-    [finishedRuns, runningRuns],
-  );
 
-  if (visibleRuns.length === 0) {
+  const entries = useMemo(() => buildToolEntries(runs, toolsByRun), [runs, toolsByRun]);
+  const { runningCount, finishedCount } = useMemo(() => countRuns(runs, toolsByRun), [runs, toolsByRun]);
+
+  if (entries.length === 0) {
     return <EmptyState title={t("runsPanel.emptyTitle")} detail={t("runsPanel.emptyDetail")} />;
   }
 
@@ -62,7 +64,7 @@ export function RunsPanel({ onClearFinished, onInspectRun, onTerminateRun, runs,
   }
 
   async function clearFinished() {
-    if (clearing || finishedRuns.length === 0)
+    if (clearing || finishedCount === 0)
       return;
 
     setClearing(true);
@@ -82,10 +84,10 @@ export function RunsPanel({ onClearFinished, onInspectRun, onTerminateRun, runs,
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div className="text-xs text-ink-muted">
-          {t("runsPanel.runningFinished", { running: runningRuns.length, finished: finishedRuns.length })}
+          {t("runsPanel.runningFinished", { running: runningCount, finished: finishedCount })}
         </div>
         <Button
-          disabled={clearing || finishedRuns.length === 0}
+          disabled={clearing || finishedCount === 0}
           leftIcon={<Trash2 className="size-3.5" />}
           onClick={() => void clearFinished()}
           size="xs"
@@ -98,18 +100,17 @@ export function RunsPanel({ onClearFinished, onInspectRun, onTerminateRun, runs,
         ? <div className="line-clamp-3 text-xs leading-5 text-danger">{clearError}</div>
         : null}
       <div className="space-y-2">
-        {orderedRuns.map(run => (
-          <RunRow
-            busy={busyRunId === run.id}
-            confirming={confirmRunId === run.id}
-            key={run.id}
-            run={run}
-            actionError={actionErrors[run.id]}
-            tools={toolsByRun[run.id] ?? []}
+        {entries.map(entry => (
+          <ToolRow
+            busy={busyRunId === entry.run.id}
+            confirming={confirmRunId === entry.run.id}
+            key={entry.tool.id}
+            entry={entry}
+            actionError={actionErrors[entry.run.id]}
             onCancelConfirm={() => setConfirmRunId(null)}
-            onInspect={() => onInspectRun(run.id)}
-            onRequestTerminate={() => setConfirmRunId(run.id)}
-            onTerminate={() => void terminate(run)}
+            onInspect={() => onInspectTool(entry.tool.id)}
+            onRequestTerminate={() => setConfirmRunId(entry.run.id)}
+            onTerminate={() => void terminate(entry.run)}
           />
         ))}
       </div>
@@ -117,77 +118,81 @@ export function RunsPanel({ onClearFinished, onInspectRun, onTerminateRun, runs,
   );
 }
 
-function RunRow({
+function ToolRow({
   busy,
   confirming,
   actionError,
+  entry,
   onCancelConfirm,
   onInspect,
   onRequestTerminate,
   onTerminate,
-  run,
-  tools,
 }: {
   actionError?: string;
   busy: boolean;
   confirming: boolean;
+  entry: ToolEntry;
   onCancelConfirm: () => void;
   onInspect: () => void;
   onRequestTerminate: () => void;
   onTerminate: () => void;
-  run: StoredRun;
-  tools: StoredToolCall[];
 }) {
   const { t } = useTranslation("runs");
-  const active = isActiveRun(run);
-  const displayTool = commandToolCall(tools);
-  const command = displayTool ? toolCommand(displayTool.input) : null;
-  // A run can fire several commands; the card previews the latest one, so call
-  // out the total to stay consistent with the thread's "ran N commands" line.
-  const commandCount = tools.filter(tool => toolCommand(tool.input)).length;
-  const toolMeta = displayTool
-    ? [
-        toolLabel(displayTool),
-        commandCount > 1 ? t("runsPanel.commands", { count: commandCount }) : null,
-        toolStatusLabel(displayTool),
-      ].filter(Boolean).join(" · ")
-    : runStatusLabel(run.status);
-
-  if (!command)
-    return null;
+  const { run, terminable, tool } = entry;
+  const name = displayName(tool);
+  const isBash = name === "bash";
+  const primary = (isBash ? toolCommand(tool.input) : toolTarget(tool.input))
+    ?? toolCommand(tool.input)
+    ?? toolTarget(tool.input)
+    ?? tool.input
+    ?? toolLabel(tool);
+  const running = tool.status === "running" || terminable;
+  const meta = [toolLabel(tool), toolStatusLabel(tool.status)].filter(Boolean).join(" · ");
 
   return (
     <div className="rounded-md border border-line-soft bg-surface p-3">
       <div className="flex items-start gap-2.5">
-        <span className={active ? "mt-1.5 size-2.5 shrink-0 rounded-full bg-accent" : "mt-1.5 size-2.5 shrink-0 rounded-full bg-line"} />
+        {/* Icon + chevron sit in a first-line-tall (h-5 == leading-5) box and
+            center within it, so both stay level with the text's first line
+            whether the command wraps to one line or many. */}
+        <span className="flex h-5 shrink-0 items-center">
+          {isBash
+            ? <TerminalSquare className={cn("size-4", running ? "text-accent" : "text-ink-muted")} />
+            : <Pencil className={cn("size-4", running ? "text-accent" : "text-ink-muted")} />}
+        </span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex items-start justify-between gap-2">
             <div
-              className="min-w-0 flex-1 whitespace-pre-wrap wrap-break-word text-sm font-normal leading-5 text-ink"
-              title={command}
+              className={cn(
+                "min-w-0 flex-1 wrap-break-word text-sm font-normal leading-5 text-ink",
+                isBash ? "whitespace-pre-wrap" : "truncate font-mono text-[0.85rem]",
+              )}
+              title={primary}
             >
-              {command}
+              {primary}
             </div>
-            <button
-              aria-label={t("runsPanel.inspectRun")}
-              className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
-              onClick={onInspect}
-              title={t("runsPanel.inspectRun")}
-              type="button"
-            >
-              <Eye className="size-3.5" />
-            </button>
+            <span className="flex h-5 shrink-0 items-center">
+              <button
+                aria-label={t("runsPanel.inspectTool")}
+                className="-my-1 inline-flex size-7 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
+                onClick={onInspect}
+                title={t("runsPanel.inspectTool")}
+                type="button"
+              >
+                <ChevronRight className="size-4" />
+              </button>
+            </span>
           </div>
           <div className="mt-2 text-xs font-medium text-ink-muted">
-            {toolMeta}
+            {meta}
           </div>
-          {run.errorMessage && !active
+          {run.errorMessage && !terminable
             ? <RunError errorMessage={run.errorMessage} errorType={run.errorType} variant="summary" />
             : null}
           {actionError
             ? <div className="mt-2 line-clamp-3 text-xs leading-5 text-danger">{actionError}</div>
             : null}
-          {active
+          {terminable
             ? (
                 <div className="mt-3 flex justify-end">
                   {confirming
@@ -227,19 +232,56 @@ function RunRow({
   );
 }
 
+function displayName(tool: StoredToolCall) {
+  return tool.name.trim().toLowerCase();
+}
+
 function isActiveRun(run: StoredRun) {
   return run.status === "queued" || run.status === "running" || run.status === "waiting_approval";
 }
 
-function compareRunTimeDesc(left: StoredRun, right: StoredRun) {
+function compareToolTimeDesc(left: StoredToolCall, right: StoredToolCall) {
   return (right.startedAt ?? right.createdAt) - (left.startedAt ?? left.createdAt);
 }
 
-function commandToolCall(tools: StoredToolCall[]) {
-  return [...tools]
-    .filter(tool => toolCommand(tool.input))
-    .sort((left, right) => (right.startedAt ?? right.createdAt) - (left.startedAt ?? left.createdAt))[0]
-    ?? null;
+/**
+ * Flatten every run's bash/write/edit tool calls into one chronological list —
+ * active runs' tools first, then finished ones — so each command is its own row
+ * instead of collapsing a run into a single card.
+ */
+function buildToolEntries(runs: StoredRun[], toolsByRun: Record<string, StoredToolCall[]>): ToolEntry[] {
+  const active: ToolEntry[] = [];
+  const finished: ToolEntry[] = [];
+  for (const run of runs) {
+    const tools = (toolsByRun[run.id] ?? []).filter(tool => DISPLAY_TOOLS.has(displayName(tool)));
+    if (tools.length === 0)
+      continue;
+
+    const runActive = isActiveRun(run);
+    const latestId = [...tools].sort(compareToolTimeDesc)[0]?.id;
+    for (const tool of tools) {
+      const entry: ToolEntry = { tool, run, terminable: runActive && tool.id === latestId };
+      (runActive ? active : finished).push(entry);
+    }
+  }
+  active.sort((left, right) => compareToolTimeDesc(left.tool, right.tool));
+  finished.sort((left, right) => compareToolTimeDesc(left.tool, right.tool));
+  return [...active, ...finished];
+}
+
+function countRuns(runs: StoredRun[], toolsByRun: Record<string, StoredToolCall[]>) {
+  let runningCount = 0;
+  let finishedCount = 0;
+  for (const run of runs) {
+    const hasVisible = (toolsByRun[run.id] ?? []).some(tool => DISPLAY_TOOLS.has(displayName(tool)));
+    if (!hasVisible)
+      continue;
+    if (isActiveRun(run))
+      runningCount += 1;
+    else
+      finishedCount += 1;
+  }
+  return { finishedCount, runningCount };
 }
 
 function toolLabel(tool: StoredToolCall) {
@@ -250,8 +292,8 @@ function toolLabel(tool: StoredToolCall) {
   return name.slice(0, 1).toUpperCase() + name.slice(1);
 }
 
-function toolStatusLabel(tool: StoredToolCall) {
-  switch (tool.status) {
+function toolStatusLabel(status: string) {
+  switch (status) {
     case "completed":
       return i18n.t("runs:toolStatus.completed");
     case "failed":
@@ -261,6 +303,6 @@ function toolStatusLabel(tool: StoredToolCall) {
     case "running":
       return i18n.t("runs:toolStatus.running");
     default:
-      return tool.status ? tool.status : i18n.t("runs:toolStatus.unknown");
+      return status || i18n.t("runs:toolStatus.unknown");
   }
 }

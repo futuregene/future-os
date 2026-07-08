@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { numberOrStringField, parseJsonish, recordOf, stringField, toolCommand } from "./toolInput";
+import { numberOrStringField, parseJsonish, recordOf, stringField, toolCommand, toolTarget } from "./toolInput";
 
 describe("toolInput", () => {
   it("toolCommand reads a plain JSON object", () => {
@@ -20,6 +20,14 @@ describe("toolInput", () => {
     expect(toolCommand("   ")).toBeNull();
     expect(toolCommand(null)).toBeNull();
     expect(toolCommand(undefined)).toBeNull();
+  });
+
+  it("toolTarget reads common file-path fields (incl. double-encoded)", () => {
+    expect(toolTarget("{\"path\":\"src/a.ts\"}")).toBe("src/a.ts");
+    expect(toolTarget("{\"file_path\":\"src/b.ts\"}")).toBe("src/b.ts");
+    expect(toolTarget(JSON.stringify(JSON.stringify({ target: "src/c.ts" })))).toBe("src/c.ts");
+    expect(toolTarget("{\"command\":\"ls\"}")).toBeNull();
+    expect(toolTarget(null)).toBeNull();
   });
 
   it("recordOf narrows objects and rejects arrays / scalars", () => {
