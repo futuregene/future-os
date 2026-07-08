@@ -33,8 +33,8 @@ export function AgentActivityLine({ item, workspacePath }: { item: AgentActivity
       className={cn(
         // One uniform size for icon + label + target so the row reads as a
         // single line; `items-center` keeps the mono target vertically centred
-        // against the sans label.
-        "flex min-w-0 items-center gap-2 text-[13px] leading-6",
+        // against the sans label. `group` drives the hover-reveal of the target.
+        "group flex min-w-0 items-center gap-2 text-[13px] leading-6",
         failed ? "text-danger" : "text-ink-muted",
       )}
     >
@@ -42,8 +42,10 @@ export function AgentActivityLine({ item, workspacePath }: { item: AgentActivity
       <span className="shrink-0">{label}</span>
       {displayTarget
         ? (
+            // Hidden by default to keep the transcript quiet — the path only
+            // appears while the row is hovered.
             <span
-              className="min-w-0 truncate font-mono"
+              className="hidden min-w-0 truncate font-mono group-hover:block"
               title={item.detail ?? item.target}
             >
               {displayTarget}
