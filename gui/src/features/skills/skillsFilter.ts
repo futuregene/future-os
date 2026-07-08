@@ -8,16 +8,12 @@ export interface SkillFilters {
   query: string;
 }
 
-export function matchesInstalledSkill(skill: InstalledSkill, filters: SkillFilters, category?: string) {
-  if (!matchesCategory(category, filters.category))
-    return false;
-
+export function matchesInstalledSkill(skill: InstalledSkill, filters: SkillFilters) {
   return matchesQuery(filters.query, [
     skill.id,
     skill.name,
     skill.description,
     skill.version,
-    category,
   ]);
 }
 
@@ -28,7 +24,9 @@ export function matchesAvailableSkill(skill: AvailableSkill, filters: SkillFilte
   return matchesQuery(filters.query, [
     skill.id,
     skill.name,
+    skill.nameZh,
     skill.description,
+    skill.descriptionZh,
     skill.category,
     skill.latestVersion,
   ]);

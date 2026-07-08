@@ -91,6 +91,10 @@ pub struct SkillInfo {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default, alias = "name_zh")]
+    pub name_zh: String,
+    #[serde(default, alias = "description_zh")]
+    pub description_zh: String,
     #[serde(default)]
     pub category: String,
     #[serde(default, alias = "latest_version")]

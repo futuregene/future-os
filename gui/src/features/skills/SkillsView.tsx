@@ -47,27 +47,14 @@ export function SkillsView() {
     [installed],
   );
 
-  const categoryBySkillId = useMemo(() => {
-    return new Map(
-      available
-        .filter(skill => skill.category)
-        .map(skill => [skill.id, skill.category] as const),
-    );
-  }, [available]);
-
-  const installedCategories = useMemo(
-    () => uniqueSorted(installed.map(skill => categoryBySkillId.get(skill.id))),
-    [categoryBySkillId, installed],
-  );
-
   const allCategories = useMemo(
     () => uniqueSorted(available.map(skill => skill.category)),
     [available],
   );
 
   const filteredInstalled = useMemo(
-    () => installed.filter(skill => matchesInstalledSkill(skill, installedFilters, categoryBySkillId.get(skill.id))),
-    [categoryBySkillId, installed, installedFilters],
+    () => installed.filter(skill => matchesInstalledSkill(skill, installedFilters)),
+    [installed, installedFilters],
   );
 
   const filteredAvailable = useMemo(
@@ -145,7 +132,6 @@ export function SkillsView() {
             ? (
                 <InstalledTab
                   loading={loading}
-                  categories={installedCategories}
                   filters={installedFilters}
                   onFiltersChange={setInstalledFilters}
                   resultCount={filteredInstalled.length}
@@ -197,7 +183,6 @@ function TabButton({ active, label, onClick }: { active: boolean; label: string;
 
 function InstalledTab({
   busy,
-  categories,
   error,
   filters,
   loading,
@@ -209,7 +194,6 @@ function InstalledTab({
   totalCount,
 }: {
   busy: Record<string, boolean>;
-  categories: string[];
   error: string | null;
   filters: SkillFilters;
   loading: boolean;
@@ -242,10 +226,11 @@ function InstalledTab({
   return (
     <>
       <SkillFiltersBar
-        categories={categories}
+        categories={[]}
         filters={filters}
         onChange={onFiltersChange}
         resultCount={resultCount}
+        showCategory={false}
         totalCount={totalCount}
       />
       {skills.length === 0
@@ -295,7 +280,8 @@ function AllTab({
   skills: AvailableSkill[];
   totalCount: number;
 }) {
-  const { t } = useTranslation("skills");
+  const { i18n, t } = useTranslation("skills");
+  const useChineseCatalogueText = i18n.language !== "en";
   if (loading && totalCount === 0)
     return <LoadingRow />;
   if (error) {
@@ -329,11 +315,13 @@ function AllTab({
       {skills.map((skill) => {
         const isInstalled = installedIds.has(skill.id);
         const canInstall = Boolean(skill.latestVersion);
+        const name = useChineseCatalogueText ? skill.nameZh || skill.name : skill.name;
+        const description = useChineseCatalogueText ? skill.descriptionZh || skill.description : skill.description;
         return (
           <SkillRow
             key={skill.id}
-            name={skill.name || skill.id}
-            description={skill.description}
+            name={name || skill.id}
+            description={description}
             version={skill.latestVersion}
             meta={skill.category || undefined}
             action={
@@ -363,31 +351,37 @@ function SkillFiltersBar({
   filters,
   onChange,
   resultCount,
+  showCategory = true,
   totalCount,
 }: {
   categories: string[];
   filters: SkillFilters;
   onChange: (filters: SkillFilters) => void;
   resultCount: number;
+  showCategory?: boolean;
   totalCount: number;
 }) {
   const { t } = useTranslation("skills");
-  const hasActiveFilters = filters.category !== allCategoriesValue || filters.query.trim().length > 0;
+  const hasActiveFilters = (showCategory && filters.category !== allCategoriesValue) || filters.query.trim().length > 0;
 
   return (
     <div className="flex flex-col gap-2 rounded-md border border-line-soft bg-surface p-3 sm:flex-row sm:items-center">
-      <Select
-        aria-label={t("filter.categoryLabel")}
-        onChange={event => onChange({ ...filters, category: event.target.value })}
-        size="sm"
-        value={filters.category}
-        wrapperClassName="w-full sm:w-48"
-      >
-        <option value={allCategoriesValue}>{t("filter.allCategories")}</option>
-        {categories.map(category => (
-          <option key={category} value={category}>{category}</option>
-        ))}
-      </Select>
+      {showCategory
+        ? (
+            <Select
+              aria-label={t("filter.categoryLabel")}
+              onChange={event => onChange({ ...filters, category: event.target.value })}
+              size="sm"
+              value={filters.category}
+              wrapperClassName="w-full sm:w-48"
+            >
+              <option value={allCategoriesValue}>{t("filter.allCategories")}</option>
+              {categories.map(category => (
+                <option key={category} value={category}>{category}</option>
+              ))}
+            </Select>
+          )
+        : null}
       <div className="relative min-w-0 flex-1">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-ink-muted" />
         <TextInput
@@ -436,7 +430,7 @@ function SkillRow({
           {version ? <Badge tone="neutral">{`v${version}`}</Badge> : null}
         </div>
         {description
-          ? <p className="mt-1 line-clamp-2 text-xs leading-5 text-ink-muted">{description}</p>
+          ? <p className="mt-1 text-xs leading-5 text-ink-muted">{description}</p>
           : null}
         {meta
           ? (
