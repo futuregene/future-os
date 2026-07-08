@@ -1,11 +1,12 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { AppSettings } from "../../integrations/storage/appSettings";
-import { Boxes, FlaskConical, RefreshCw, RotateCcw, Settings2, Sparkles, UserRound } from "lucide-react";
+import { Boxes, FlaskConical, Info, RefreshCw, RotateCcw, Settings2, Sparkles, UserRound } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Overlay } from "../../components/ui/Overlay";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { cn } from "../../lib/cn";
+import { AboutPage } from "./AboutPage";
 import { AccountPage } from "./AccountPage";
 import { EnvironmentPage } from "./EnvironmentPage";
 import { GeneralPage } from "./GeneralPage";
@@ -14,7 +15,7 @@ import { ProvidersPage } from "./ProvidersPage";
 import { ResetPage } from "./ResetPage";
 import { UpdatePage } from "./UpdatePage";
 
-export type SettingsTab = "general" | "account" | "update" | "providers" | "models" | "environment" | "reset";
+export type SettingsTab = "general" | "account" | "update" | "about" | "providers" | "models" | "environment" | "reset";
 
 // `devOnly` items are only shown on non-release builds — the environment switch
 // is a dev affordance; release builds are production-locked.
@@ -24,6 +25,7 @@ const NAV_GROUPS = [
       { icon: Settings2, labelKey: "dialog.tabs.general", value: "general" as const },
       { icon: UserRound, labelKey: "dialog.tabs.account", value: "account" as const },
       { icon: RefreshCw, labelKey: "dialog.tabs.update", value: "update" as const },
+      { icon: Info, labelKey: "dialog.tabs.about", value: "about" as const },
     ],
     labelKey: "dialog.nav.desktop",
   },
@@ -47,6 +49,7 @@ const TAB_TITLE_KEYS: Record<SettingsTab, string> = {
   general: "dialog.tabs.general",
   account: "dialog.tabs.account",
   update: "dialog.tabs.update",
+  about: "dialog.tabs.about",
   models: "dialog.tabs.models",
   providers: "dialog.tabs.providers",
   environment: "dialog.tabs.environment",
@@ -127,21 +130,13 @@ export function SettingsDialog({
               </div>
             ))}
           </div>
-          <div className="px-2 pt-3 text-xs text-ink-muted">
-            <div>{t("dialog.appName")}</div>
-            {build.data
-              ? (
-                  <div className="mt-0.5">
-                    {t("dialog.version", { version: build.data.version })}
-                  </div>
-                )
-              : null}
-            {build.data && !build.data.isRelease
-              ? (
-                  <div className="mt-0.5 text-warning">{t("dialog.testBuild")}</div>
-                )
-              : null}
-          </div>
+          {/* The app name + version now live on the About page; only the
+              test-build hint stays here (release builds show nothing). */}
+          {build.data && !build.data.isRelease
+            ? (
+                <div className="px-2 pt-3 text-xs text-warning">{t("dialog.testBuild")}</div>
+              )
+            : null}
         </nav>
 
         <div className="flex min-w-0 flex-1 flex-col">
@@ -161,6 +156,7 @@ export function SettingsDialog({
               : null}
             {tab === "account" ? <AccountPage /> : null}
             {tab === "update" ? <UpdatePage /> : null}
+            {tab === "about" ? <AboutPage /> : null}
             {tab === "providers" ? <ProvidersPage onProvidersChanged={onProvidersChanged} /> : null}
             {tab === "models"
               ? (

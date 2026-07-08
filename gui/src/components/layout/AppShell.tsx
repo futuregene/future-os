@@ -172,11 +172,11 @@ export function AppShell() {
     };
   }, []);
 
-  // macOS app menu "About FutureOS" opens the in-app Settings page (there is no
+  // macOS app menu "About FutureOS" opens the in-app About page (there is no
   // native About dialog). The backend emits this event from the menu handler.
   useEffect(() => {
     const unlisten = listen("open-settings", () => {
-      setSettingsTab("general");
+      setSettingsTab("about");
       setSettingsOpen(true);
     });
     return () => {

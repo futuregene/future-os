@@ -4,7 +4,7 @@
 //! take the app name from the bundle — or, in dev and unbundled runs, from the
 //! lowercase executable name (`futureos`). We build the menu explicitly so the
 //! brand name always reads "FutureOS", and so we can add two macOS-only items:
-//! "About FutureOS" (opens the in-app Settings page) and "Restart Webview" (a
+//! "About FutureOS" (opens the in-app About page) and "Restart Webview" (a
 //! debug escape hatch to reload a hung/crashed webview without relaunching).
 //!
 //! Windows/Linux keep Tauri's default behaviour (no window menu, no About), so
