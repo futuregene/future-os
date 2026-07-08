@@ -70,6 +70,21 @@ struct DeviceTokenResponse {
     token_type: Option<String>,
 }
 
+/// The signed-in account, as returned by `{platform}/client/v1/account/profile`.
+/// Deserialized from the platform's snake_case payload; serialized to camelCase
+/// for the frontend. Mirrors the CLI's `future account profile`.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub struct FutureProfile {
+    pub email: String,
+    #[serde(default)]
+    pub user_id: String,
+    #[serde(default)]
+    pub email_verified: bool,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
 fn client() -> Result<reqwest::Client, AppError> {
     reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
@@ -219,6 +234,48 @@ fn error_message_from_body(body: Option<Value>) -> Option<String> {
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map(str::to_string)
+}
+
+/// The stored FutureGene API key, or an error when signed out. Mirrors the CLI's
+/// precedence trivially: the GUI only ever writes the key to the `future` entry.
+fn future_api_key() -> Result<String, AppError> {
+    crate::auth_store::read()?
+        .get(crate::auth_store::FUTURE_PROVIDER_ID)
+        .and_then(|entry| entry.get("key"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| AppError::Message("Not signed in to FutureOS.".to_string()))
+}
+
+/// Fetch the signed-in account profile (`GET {platform}/client/v1/account/profile`,
+/// Bearer the stored `future` key) — mirrors the CLI's `future account profile`
+/// (`cli/src/commands/account.ts`). Errors when signed out or on a failed request.
+pub async fn fetch_profile() -> Result<FutureProfile, AppError> {
+    let key = future_api_key()?;
+    let platform = crate::future_platform::current_platform_url();
+    let response = client()?
+        .get(format!("{platform}/client/v1/account/profile"))
+        .bearer_auth(&key)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|error| AppError::Message(format!("Failed to fetch account profile: {error}")))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let message =
+            error_message_from_body(response.json::<Value>().await.ok()).unwrap_or_else(|| {
+                format!("Account profile request failed (HTTP {})", status.as_u16())
+            });
+        return Err(AppError::Message(message));
+    }
+
+    response
+        .json::<FutureProfile>()
+        .await
+        .map_err(|error| AppError::Message(format!("Failed to parse account profile: {error}")))
 }
 
 /// Allow opening only `http(s)` URLs, rejecting `file:` / `javascript:` /

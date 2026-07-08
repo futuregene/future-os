@@ -205,6 +205,7 @@ pub fn run() {
             start_future_login,
             poll_future_login,
             logout_future_provider,
+            get_future_profile,
             clear_finished_runs,
             list_threads,
             list_workspaces,

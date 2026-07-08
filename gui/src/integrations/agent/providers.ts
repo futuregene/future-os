@@ -1,5 +1,8 @@
 import { invokeCommand } from "../tauri/invoke";
 
+/** The FutureOS builtin provider id — its key backs the signed-in account. */
+export const FUTURE_PROVIDER_ID = "future";
+
 export interface BuiltinProvider {
   id: string;
   name: string;
@@ -55,7 +58,11 @@ export async function updateBuiltinProviderKey(input: {
   id: string;
   apiKey?: string | null;
 }) {
-  return invokeCommand<ProvidersView>("update_builtin_provider_key", { input });
+  const view = await invokeCommand<ProvidersView>("update_builtin_provider_key", { input });
+  // Setting the FutureOS key by hand (Providers page) changes the account too.
+  if (input.id === FUTURE_PROVIDER_ID)
+    clearFutureProfileCache();
+  return view;
 }
 
 export async function setBuiltinProviderBaseUrl(input: {
@@ -99,9 +106,50 @@ export async function startFutureLogin() {
 }
 
 export async function pollFutureLogin(deviceCode: string) {
-  return invokeCommand<FutureLoginPoll>("poll_future_login", { deviceCode });
+  const result = await invokeCommand<FutureLoginPoll>("poll_future_login", { deviceCode });
+  // A completed device login writes a new key — invalidate here so it doesn't
+  // matter which page (Account or Providers) ran the login dialog.
+  if (result.status === "authorized")
+    clearFutureProfileCache();
+  return result;
 }
 
 export async function logoutFutureProvider() {
-  return invokeCommand<ProvidersView>("logout_future_provider");
+  const view = await invokeCommand<ProvidersView>("logout_future_provider");
+  clearFutureProfileCache();
+  return view;
+}
+
+/** The signed-in FutureOS account, from `{platform}/client/v1/account/profile`. */
+export interface FutureProfile {
+  email: string;
+  userId: string;
+  emailVerified: boolean;
+  createdAt: string | null;
+}
+
+// The profile rarely changes (only on logout/login), so cache it in-memory for
+// the app session: reopening the account page reuses this instead of refetching
+// (which flashed the label). Cleared on logout; `force` refetches after login.
+let profileCache: FutureProfile | null = null;
+
+/**
+ * Fetch the signed-in account profile, served from the session cache after the
+ * first call. Pass `force` to bypass the cache (e.g. right after a login).
+ * Rejects when signed out or on error.
+ */
+export async function getFutureProfile(force = false): Promise<FutureProfile> {
+  if (force || !profileCache)
+    profileCache = await invokeCommand<FutureProfile>("get_future_profile");
+  return profileCache;
+}
+
+/** The cached profile if one was fetched this session, else null (sync read). */
+export function peekFutureProfile(): FutureProfile | null {
+  return profileCache;
+}
+
+/** Drop the cached profile so the next login refetches (call on logout). */
+export function clearFutureProfileCache(): void {
+  profileCache = null;
 }
