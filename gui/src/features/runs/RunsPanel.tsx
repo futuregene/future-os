@@ -7,6 +7,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import i18n from "../../i18n";
 import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
+import { relativizeWorkspacePath } from "../../lib/workspacePath";
 import { RunError } from "./RunError";
 import { toolCommand, toolTarget } from "./toolInput";
 
@@ -17,6 +18,7 @@ const DISPLAY_TOOLS = new Set(["bash", "write", "edit"]);
 interface RunsPanelProps {
   runs: StoredRun[];
   toolsByRun: Record<string, StoredToolCall[]>;
+  workspacePath?: string | null;
   onClearFinished: () => Promise<void>;
   onInspectTool: (toolId: string) => void;
   onTerminateRun: (run: StoredRun) => Promise<void>;
@@ -30,7 +32,7 @@ interface ToolEntry {
   terminable: boolean;
 }
 
-export function RunsPanel({ onClearFinished, onInspectTool, onTerminateRun, runs, toolsByRun }: RunsPanelProps) {
+export function RunsPanel({ onClearFinished, onInspectTool, onTerminateRun, runs, toolsByRun, workspacePath }: RunsPanelProps) {
   const { t } = useTranslation("runs");
   const [confirmRunId, setConfirmRunId] = useState<string | null>(null);
   const [busyRunId, setBusyRunId] = useState<string | null>(null);
@@ -106,6 +108,7 @@ export function RunsPanel({ onClearFinished, onInspectTool, onTerminateRun, runs
             confirming={confirmRunId === entry.run.id}
             key={entry.tool.id}
             entry={entry}
+            workspacePath={workspacePath}
             actionError={actionErrors[entry.run.id]}
             onCancelConfirm={() => setConfirmRunId(null)}
             onInspect={() => onInspectTool(entry.tool.id)}
@@ -123,6 +126,7 @@ function ToolRow({
   confirming,
   actionError,
   entry,
+  workspacePath,
   onCancelConfirm,
   onInspect,
   onRequestTerminate,
@@ -132,6 +136,7 @@ function ToolRow({
   busy: boolean;
   confirming: boolean;
   entry: ToolEntry;
+  workspacePath?: string | null;
   onCancelConfirm: () => void;
   onInspect: () => void;
   onRequestTerminate: () => void;
@@ -141,11 +146,14 @@ function ToolRow({
   const { run, terminable, tool } = entry;
   const name = displayName(tool);
   const isBash = name === "bash";
-  const primary = (isBash ? toolCommand(tool.input) : toolTarget(tool.input))
+  const rawPrimary = (isBash ? toolCommand(tool.input) : toolTarget(tool.input))
     ?? toolCommand(tool.input)
     ?? toolTarget(tool.input)
     ?? tool.input
     ?? toolLabel(tool);
+  // Bash rows show the command verbatim; file rows (write/edit) get the
+  // workspace-relative path, absolute kept for files outside the workspace.
+  const primary = isBash ? rawPrimary : relativizeWorkspacePath(rawPrimary, workspacePath);
   const running = tool.status === "running" || terminable;
   const meta = [toolLabel(tool), toolStatusLabel(tool.status)].filter(Boolean).join(" · ");
 
@@ -167,7 +175,7 @@ function ToolRow({
                 "min-w-0 flex-1 wrap-break-word text-sm font-normal leading-5 text-ink",
                 isBash ? "whitespace-pre-wrap" : "truncate font-mono text-[0.85rem]",
               )}
-              title={primary}
+              title={rawPrimary}
             >
               {primary}
             </div>
