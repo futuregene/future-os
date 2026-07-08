@@ -537,7 +537,20 @@ function hasToolError(payload: unknown) {
   if (!isRecord(payload))
     return false;
   const error = stringValue(payload.error) ?? stringValue(payload.errorText);
-  return Boolean(error?.trim());
+  if (error?.trim())
+    return true;
+  // A bash command that runs but exits non-zero comes back as a *successful*
+  // tool result (no error field) with the code baked into the output text as
+  // "[exit code: N]\n…". Treat a non-zero code as a failure so the row isn't
+  // shown as completed.
+  return hasNonZeroExit(stringValue(payload.text) ?? stringValue(payload.result));
+}
+
+function hasNonZeroExit(output: string | undefined) {
+  if (!output)
+    return false;
+  const match = /^\[exit code: (-?\d+)\]/.exec(output.trimStart());
+  return match ? Number(match[1]) !== 0 : false;
 }
 
 function stringValue(value: unknown) {
