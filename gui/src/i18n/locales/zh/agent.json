@@ -173,6 +173,8 @@
     "generating": "生成中",
     "thinking": "正在思考中…",
     "stopped": "已停止",
-    "tokens": "{{formattedCount}} tokens"
+    "tokens": "{{formattedCount}} tokens",
+    "compacted": "上下文已压缩",
+    "compactedTokens": "上下文已压缩 · {{formattedCount}} tokens"
   }
 }

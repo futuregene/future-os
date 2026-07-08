@@ -38,6 +38,35 @@ describe("buildAssistantRunProjection segments", () => {
     expect(projection.content).toBe("First. Second.");
   });
 
+  it("surfaces a compaction marker inline, carrying the pre-compaction token count", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["compaction_start", { reason: "auto" }],
+        ["compaction_end", { tokens_before: 190000, summary: "…", aborted: false, reason: "auto" }],
+        ["text_chunk", { text: "Continuing." }],
+      ]),
+    );
+
+    expect(projection.segments.map(s => s.kind)).toEqual(["compaction", "text"]);
+    expect(projection.segments[0]).toMatchObject({ kind: "compaction", tokensBefore: 190000 });
+    // The marker must not leak into the copyable/rendered answer text.
+    expect(projection.content).toBe("Continuing.");
+  });
+
+  it("omits the token count for the retry-path compaction (tokens_before 0) and skips aborted ones", () => {
+    const retryPath = buildAssistantRunProjection(
+      events([["compaction_end", { tokens_before: 0, summary: "", aborted: false, reason: "auto" }]]),
+    );
+    expect(retryPath.segments).toHaveLength(1);
+    expect(retryPath.segments[0]).toMatchObject({ kind: "compaction" });
+    expect(retryPath.segments[0]).not.toHaveProperty("tokensBefore", 0);
+
+    const aborted = buildAssistantRunProjection(
+      events([["compaction_end", { tokens_before: 5, aborted: true, reason: "auto" }]]),
+    );
+    expect(aborted.segments).toHaveLength(0);
+  });
+
   it("collapses a run of adjacent same-kind tools into one grouped line", () => {
     const projection = buildAssistantRunProjection(
       events([
