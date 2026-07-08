@@ -55,30 +55,77 @@ Required for a full `make build` (agent + TUI + CLI + GUI):
 > (the target triple is hardcoded). On Linux or Intel macOS, build the pieces individually or adjust
 > the sidecar names to your host triple (`rustc -vV | grep host`).
 
-### Build & Run
+### Build
 
 ```bash
-# Clone and build
 git clone https://github.com/futuregene/future-os.git
 cd future-os
-make install   # install all dependencies
+make install   # install JS deps, link the `future` CLI, stage GUI sidecars
 make build     # build agent + TUI + CLI + GUI
-
-# Start the agent (gRPC server on 127.0.0.1:50051)
-make run-agent &
-
-# Launch a client
-make run-tui    # terminal interface
-make run-gui    # desktop app
 ```
+
+### Run the agent (start this first)
+
+Every client — TUI, GUI, CLI, channels — is a thin gRPC client. **The agent must be running first**, listening on `127.0.0.1:50051`. There are two ways to start it, for two different situations:
+
+| Mode | Command | Use when |
+|---|---|---|
+| **Dev / foreground** | `make run-agent` | Hacking on the agent. Rebuilds from source, runs in your terminal, logs to stdout, stops on Ctrl-C. |
+| **Background service** | `future agent start` | Daily use. Installed as a managed service (macOS launchctl / Linux systemd / Windows sc), survives reboots, started once. Manage with `future agent stop \| restart \| status`. |
+
+Pick one — you don't need both. Then launch a client:
+
+```bash
+make run-tui     # terminal interface   (or: future tui)
+make run-gui     # desktop app
+```
+
+> A client that exits with a connection / gRPC error almost always means the agent isn't running yet — see [Troubleshooting](#troubleshooting).
+
+### Configure a model
+
+The agent needs at least one model with an API key before it can answer. Two options:
+
+**A — FutureGene hosted models.** Device-flow sign-in provisions keys and a model list automatically:
+
+```bash
+future auth login
+```
+
+**B — Bring your own key.** Point the agent at any OpenAI-compatible provider via `~/.future/agent/models.json`:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "apiKey": "sk-...",
+      "baseUrl": "https://api.openai.com/v1",
+      "models": [
+        { "id": "gpt-4o", "name": "GPT-4o", "contextWindow": 128000 }
+      ]
+    }
+  }
+}
+```
+
+`baseUrl` has built-in defaults for `openai`, `anthropic`, `google`, `deepseek`, `openrouter`, and `dashscope`, so you can omit it for those. To keep secrets out of `models.json`, put keys in `~/.future/agent/auth.json` instead, keyed by provider:
+
+```json
+{
+  "openai": { "type": "api_key", "key": "sk-..." }
+}
+```
+
+Switch the active model any time with `/model <id>` in the TUI, or `ctrl+p` to cycle.
 
 ### CLI Quick Start
 
 ```bash
-future auth login                            # sign in
-future run "Write a Python sort function"    # one-shot prompt
-future tui                                   # open TUI
-future agent start                           # start agent as a service (macOS launchctl / Linux systemd)
+future auth login                            # sign in to hosted models
+future run "Write a Python sort function"    # one-shot prompt (needs the agent running)
+future tui                                   # open the TUI
+future agent start                           # run the agent as a background service
+future --help                                # full command list (account, tools, skills, channel, mcp, …)
 ```
 
 ### Essential Slash Commands (TUI)
@@ -163,6 +210,16 @@ The canonical API is `proto/future.proto`. Generated code updates automatically 
 make generate-proto          # agent + channels
 cd tui && npm run generate-proto  # TUI embedded proto
 ```
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| Client exits with a connection / gRPC error | The agent isn't running. Start it (`make run-agent` or `future agent start`) and check nothing else holds the port: `lsof -i :50051`. |
+| Build fails with a `protoc` not-found error | Install the Protocol Buffers compiler — see [Prerequisites](#prerequisites). |
+| Agent replies with an auth / "no model" error | No model configured yet. Run `future auth login`, or add a provider to `models.json` — see [Configure a model](#configure-a-model). |
+| GUI can't find the agent on Linux / Intel macOS | `make install` stages the sidecar under an Apple-Silicon triple only. Copy the release binary to your host triple: `cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-$(rustc -Vv | sed -n 's/^host: //p')`. |
+| GUI build fails on Linux (webkit / gtk errors) | Install the Tauri system dependencies — see [Prerequisites](#prerequisites). |
 
 ## License
 
