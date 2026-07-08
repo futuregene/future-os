@@ -13,6 +13,8 @@ export interface AvailableSkill {
   id: string;
   name: string;
   description: string;
+  nameZh: string;
+  descriptionZh: string;
   category: string;
   latestVersion: string | null;
 }

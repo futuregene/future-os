@@ -141,6 +141,27 @@ fn extract_description(content: &str) -> String {
 }
 
 fn extract_frontmatter_field(content: &str, key: &str) -> Option<String> {
+    let frontmatter = frontmatter(content)?;
+    let lines: Vec<&str> = frontmatter.lines().collect();
+
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed_line = line.trim();
+        if trimmed_line.is_empty() || trimmed_line.starts_with('#') {
+            continue;
+        }
+
+        if let Some(val) = extract_yaml_value(trimmed_line, key) {
+            if let Some(style) = yaml_block_scalar_style(&val) {
+                return Some(extract_yaml_block_scalar(&lines[index + 1..], line, style));
+            }
+            return Some(val);
+        }
+    }
+
+    None
+}
+
+fn frontmatter(content: &str) -> Option<&str> {
     let trimmed = content.trim_start_matches(['\r', '\n']);
     if !trimmed.starts_with("---") {
         return None;
@@ -148,20 +169,99 @@ fn extract_frontmatter_field(content: &str, key: &str) -> Option<String> {
 
     let rest = &trimmed[3..];
     let end_idx = rest.find("\n---").or_else(|| rest.find("---"))?;
-    let frontmatter = &rest[..end_idx];
+    Some(&rest[..end_idx])
+}
 
-    for line in frontmatter.lines() {
-        let trimmed_line = line.trim();
-        if trimmed_line.is_empty() || trimmed_line.starts_with('#') {
+fn yaml_block_scalar_style(value: &str) -> Option<char> {
+    let value = value.trim();
+    let mut chars = value.chars();
+    let style = chars.next()?;
+    if !matches!(style, '>' | '|') {
+        return None;
+    }
+    let modifiers = chars.as_str().trim();
+    if modifiers
+        .chars()
+        .all(|ch| matches!(ch, '+' | '-') || ch.is_ascii_digit())
+    {
+        Some(style)
+    } else {
+        None
+    }
+}
+
+fn extract_yaml_block_scalar(lines: &[&str], parent_line: &str, style: char) -> String {
+    let parent_indent = leading_spaces(parent_line);
+    let mut block_lines = Vec::new();
+
+    for line in lines {
+        if line.trim().is_empty() {
+            block_lines.push(*line);
             continue;
         }
-
-        if let Some(val) = extract_yaml_value(trimmed_line, key) {
-            return Some(val);
+        if leading_spaces(line) <= parent_indent {
+            break;
         }
+        block_lines.push(*line);
     }
 
-    None
+    let content_indent = block_lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| leading_spaces(line))
+        .min()
+        .unwrap_or(parent_indent + 1);
+
+    let stripped: Vec<String> = block_lines
+        .into_iter()
+        .map(|line| strip_indent(line, content_indent).to_string())
+        .collect();
+
+    if style == '|' {
+        return stripped.join("\n").trim().to_string();
+    }
+
+    fold_yaml_block_lines(&stripped).trim().to_string()
+}
+
+fn fold_yaml_block_lines(lines: &[String]) -> String {
+    let mut result = String::new();
+    for line in lines {
+        if line.trim().is_empty() {
+            if !result.ends_with('\n') {
+                result.push('\n');
+            }
+            result.push('\n');
+            continue;
+        }
+        if !result.is_empty() && !result.ends_with('\n') {
+            result.push(' ');
+        }
+        result.push_str(line.trim_end());
+    }
+    result
+}
+
+fn strip_indent(line: &str, indent: usize) -> &str {
+    let mut byte_index = 0;
+    for (count, (index, ch)) in line.char_indices().enumerate() {
+        if count >= indent || ch != ' ' {
+            byte_index = index;
+            break;
+        }
+        byte_index = index + ch.len_utf8();
+    }
+    if indent == 0 {
+        line
+    } else if byte_index >= line.len() {
+        ""
+    } else {
+        &line[byte_index..]
+    }
+}
+
+fn leading_spaces(line: &str) -> usize {
+    line.chars().take_while(|ch| *ch == ' ').count()
 }
 
 /// ResolveCollisionsWithDiagnostics resolves skill name collisions.
@@ -181,3 +281,52 @@ pub fn resolve_collisions(skills: Vec<Skill>) -> Vec<Skill> {
 }
 
 use std::collections::HashMap;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_folded_description_from_frontmatter() {
+        let content = r#"---
+name: future-deep-research
+version: 2.5.0
+description: >
+  Research across the web,
+  papers, and local documents.
+  Produce a cited report.
+metadata:
+  requires:
+    bins: ["future"]
+---
+
+# Body
+"#;
+
+        assert_eq!(
+            extract_frontmatter_field(content, "description").as_deref(),
+            Some("Research across the web, papers, and local documents. Produce a cited report.")
+        );
+        assert_eq!(
+            extract_frontmatter_field(content, "version").as_deref(),
+            Some("2.5.0")
+        );
+    }
+
+    #[test]
+    fn extracts_literal_block_description_from_frontmatter() {
+        let content = r#"---
+name: docs
+description: |
+  First line.
+  Second line.
+version: "1.0.0"
+---
+"#;
+
+        assert_eq!(
+            extract_frontmatter_field(content, "description").as_deref(),
+            Some("First line.\nSecond line.")
+        );
+    }
+}

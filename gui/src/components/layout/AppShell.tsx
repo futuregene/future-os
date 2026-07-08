@@ -152,6 +152,7 @@ export function AppShell() {
     () => workspaces.filter(workspace => workspace.kind === "user"),
     [workspaces],
   );
+  const hideRightPanel = centerMode === "new-chat" || section === "skill" || section === "remote";
 
   useEffect(() => onFutureEvent("open-research-resource", (detail) => {
     setSelectedResearchResourceId(detail.resourceId);
@@ -421,9 +422,9 @@ export function AppShell() {
                         />
                       )}
       </main>
-      {/* A new blank conversation has no thread context yet — hide the right
-          panel entirely (no expand affordance) until a thread exists. */}
-      {centerMode === "new-chat"
+      {/* Views without thread context hide the right panel entirely, including
+          the collapsed expand affordance. */}
+      {hideRightPanel
         ? null
         : (
             <ContextPanel
@@ -440,7 +441,7 @@ export function AppShell() {
           )}
       {/* While dragging the divider, a full-window overlay keeps the cursor and
           captures mouse events even over embedded iframes (PDF preview). */}
-      {rightPanelResizing
+      {rightPanelResizing && !hideRightPanel
         ? <div className="fixed inset-0 z-50 cursor-ew-resize select-none" />
         : null}
       <AppShellDialogs

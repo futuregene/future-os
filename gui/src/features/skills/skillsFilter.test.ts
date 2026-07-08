@@ -18,6 +18,8 @@ function available(overrides: Partial<AvailableSkill> = {}): AvailableSkill {
     id: "id",
     name: "Name",
     description: "Description",
+    nameZh: "中文名",
+    descriptionZh: "中文描述",
     category: "core",
     latestVersion: "1.0.0",
     ...overrides,
@@ -50,11 +52,11 @@ describe("uniqueSorted", () => {
 });
 
 describe("matchesInstalledSkill", () => {
-  it("filters by category and query, using the supplied category", () => {
+  it("filters by query only", () => {
     const skill = installed({ name: "Literature", id: "lit" });
-    expect(matchesInstalledSkill(skill, { category: allCategoriesValue, query: "lit" }, "research")).toBe(true);
-    expect(matchesInstalledSkill(skill, { category: "research", query: "" }, "research")).toBe(true);
-    expect(matchesInstalledSkill(skill, { category: "other", query: "" }, "research")).toBe(false);
+    expect(matchesInstalledSkill(skill, { category: allCategoriesValue, query: "lit" })).toBe(true);
+    expect(matchesInstalledSkill(skill, { category: "other", query: "" })).toBe(true);
+    expect(matchesInstalledSkill(skill, { category: allCategoriesValue, query: "missing" })).toBe(false);
   });
 });
 
@@ -64,5 +66,11 @@ describe("matchesAvailableSkill", () => {
     expect(matchesAvailableSkill(skill, { category: "core", query: "core" })).toBe(true);
     expect(matchesAvailableSkill(skill, { category: "rare", query: "" })).toBe(false);
     expect(matchesAvailableSkill(skill, { category: allCategoriesValue, query: "zzz" })).toBe(false);
+  });
+
+  it("matches localized catalogue fields", () => {
+    const skill = available({ nameZh: "深度研究", descriptionZh: "多源信息综合" });
+    expect(matchesAvailableSkill(skill, { category: allCategoriesValue, query: "深度" })).toBe(true);
+    expect(matchesAvailableSkill(skill, { category: allCategoriesValue, query: "综合" })).toBe(true);
   });
 });
