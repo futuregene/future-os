@@ -409,6 +409,7 @@ export function AppShell() {
                           onThinkingLevelChange={changeThinkingLevel}
                           pendingPrompt={pendingPrompt}
                           thread={activeThread}
+                          workspacePath={activeWorkspace?.path ?? null}
                           onApprovalDecision={handleApprovalDecision}
                           leftPanelExpanded={leftExpanded}
                           onRetryAgentConnection={() => void refreshAgentModels()}
