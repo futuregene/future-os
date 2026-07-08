@@ -73,7 +73,7 @@ export function PdfScrollPreview({
           canvas.height = viewport.height;
           canvas.style.width = `${cssWidth}px`;
           canvas.style.height = "auto";
-          canvas.className = "mx-auto block rounded-md bg-surface shadow-panel";
+          canvas.className = "mx-auto block rounded-md border border-line-soft";
           if (cancelled)
             return;
           container.appendChild(canvas);
