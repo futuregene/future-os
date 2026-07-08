@@ -1,8 +1,8 @@
 //! Workspace file search backing the composer's `@`-mention picker. Walks the
 //! workspace directory (respecting `.gitignore`, skipping hidden/VCS/`.future`
 //! and heavy vendor dirs) and fuzzy-ranks files against the query. A file the
-//! user picks becomes a `futureos://file/<relative-path>` reference, resolved
-//! back to a display path by [`super::markdown_refs`].
+//! user picks becomes a plain markdown path link (`[name](./relative-path)`),
+//! resolved back to a display path by [`super::markdown_refs`].
 
 use std::path::Path;
 use std::time::SystemTime;

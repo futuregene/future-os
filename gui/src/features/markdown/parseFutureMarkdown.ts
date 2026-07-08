@@ -31,6 +31,7 @@ import type {
 import remarkGfm from "remark-gfm";
 import remarkParse from "remark-parse";
 import { unified } from "unified";
+import { localFilePath } from "./localPath";
 
 const markdownProcessor = unified()
   .use(remarkParse)
@@ -105,7 +106,7 @@ function blockToFutureNode(node: RootContent, context: ParseContext): MarkdownNo
     case "table":
       return [tableToFutureNode(node, context)];
     case "text":
-      return [{ children: [{ text: node.value, type: "text" }], type: "paragraph" }];
+      return [{ children: textToInlineNodes(node), type: "paragraph" }];
     case "thematicBreak":
       return [{ type: "thematicBreak" }];
     case "yaml":
@@ -144,7 +145,7 @@ function phrasingNodeToInline(node: PhrasingContent, context: ParseContext): Inl
     case "strong":
       return [strongToInline(node, context)];
     case "text":
-      return [textToInline(node)];
+      return textToInlineNodes(node);
     default:
       return [];
   }
@@ -211,8 +212,36 @@ function strongToInline(node: Strong, context: ParseContext): InlineNode {
   return { children: phrasingToInline(node.children, context), type: "strong" };
 }
 
-function textToInline(node: Text): InlineNode {
-  return { text: node.value, type: "text" };
+/**
+ * A bare `[<local path>]` mention inside plain text (remark keeps it literal
+ * since there's no link definition). Only pure paths qualify — see
+ * `localFilePath` — so ordinary `[text]` in prose stays untouched.
+ */
+const BRACKET_PATH = /\[([^\]\n]+)\]/g;
+
+function textToInlineNodes(node: Text): InlineNode[] {
+  const value = node.value;
+  const nodes: InlineNode[] = [];
+  let last = 0;
+  BRACKET_PATH.lastIndex = 0;
+  for (let match = BRACKET_PATH.exec(value); match; match = BRACKET_PATH.exec(value)) {
+    const inner = match[1] ?? "";
+    const path = localFilePath(inner);
+    if (!path)
+      continue;
+    if (match.index > last)
+      nodes.push({ text: value.slice(last, match.index), type: "text" });
+    nodes.push({
+      reference: { label: inner, source: "inline", targetId: path, targetType: "file", view: "chip" },
+      type: "futureReference",
+    });
+    last = match.index + match[0].length;
+  }
+  if (nodes.length === 0)
+    return [{ text: value, type: "text" }];
+  if (last < value.length)
+    nodes.push({ text: value.slice(last), type: "text" });
+  return nodes;
 }
 
 function listToFutureNode(node: List, context: ParseContext): MarkdownNode {
@@ -299,16 +328,31 @@ function parseDirectiveFields(lines: string[]) {
 
 function parseFutureLink(label: string, href: string): FutureReference | null {
   const parsed = parseFutureUrl(href);
-  if (!parsed)
-    return null;
+  if (parsed) {
+    return {
+      label,
+      source: "inline",
+      targetId: parsed.targetId,
+      targetType: parsed.targetType,
+      view: parsed.view ?? "chip",
+    };
+  }
 
-  return {
-    label,
-    source: "inline",
-    targetId: parsed.targetId,
-    targetType: parsed.targetType,
-    view: parsed.view ?? "chip",
-  };
+  // A plain markdown link whose destination is a local path becomes a `file`
+  // reference — same display/menu pipeline as the old `futureos://file/…`, but
+  // the model just writes the path verbatim (no scheme, no percent-encoding).
+  const path = localFilePath(href);
+  if (path) {
+    return {
+      label,
+      source: "inline",
+      targetId: path,
+      targetType: "file",
+      view: "chip",
+    };
+  }
+
+  return null;
 }
 
 function parseFutureUrl(href: string) {
@@ -321,10 +365,9 @@ function parseFutureUrl(href: string) {
     if (!isFutureReferenceType(targetType))
       return null;
 
-    // Strip exactly ONE leading slash (the URL path separator), not all of them:
-    // an absolute file path arrives as `futureos://file//Users/x` → pathname
-    // `//Users/x`, and it must keep its own leading slash so the file opens. For
-    // id-based types the id never starts with a slash, so this is a no-op there.
+    // `futureos://` carries only id-based internal objects (artifact/run/tool/…);
+    // local files use plain markdown-path links instead. Ids never start with a
+    // slash, so stripping the single URL path separator is all that's needed.
     const targetId = safeDecodeURIComponent(url.pathname.replace(/^\//, ""));
     if (!targetId)
       return null;
@@ -350,9 +393,10 @@ function safeDecodeURIComponent(value: string) {
 }
 
 function isFutureReferenceType(value: string): value is FutureReferenceType {
+  // `file` is intentionally absent: local files arrive as plain path links, not
+  // via the `futureos://` scheme (only id-based objects use the scheme).
   return value === "approval"
     || value === "artifact"
-    || value === "file"
     || value === "research"
     || value === "review"
     || value === "run"

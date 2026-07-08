@@ -32,9 +32,9 @@ describe("parseFutureMarkdown", () => {
     ]);
   });
 
-  it("parses a percent-encoded futureos://file path back to its absolute path", () => {
+  it("turns a plain absolute-path link into a file reference", () => {
     const document = parseFutureMarkdown(
-      "Wrote [test.txt](futureos://file/%2FUsers%2Ftao%2Fapp%2Ftest.txt).",
+      "Wrote [test.txt](/Users/tao/app/test.txt).",
     );
 
     expect(document.references).toEqual([
@@ -48,20 +48,54 @@ describe("parseFutureMarkdown", () => {
     ]);
   });
 
-  it("keeps the leading slash of an unencoded absolute futureos://file path", () => {
+  it("turns an angle-bracketed path (spaces) into a file reference", () => {
     const document = parseFutureMarkdown(
-      "Made [note.txt](futureos://file//Users/tao/Desktop/note.txt).",
+      "Wrote [note.txt](</Users/tao/My Docs/note.txt>).",
     );
 
     expect(document.references).toEqual([
       {
         label: "note.txt",
         source: "inline",
-        targetId: "/Users/tao/Desktop/note.txt",
+        targetId: "/Users/tao/My Docs/note.txt",
         targetType: "file",
         view: "chip",
       },
     ]);
+  });
+
+  it("turns a ./relative path link into a file reference, stripping ./", () => {
+    const document = parseFutureMarkdown("Saved [poem.txt](./poem.txt).");
+
+    expect(document.references).toEqual([
+      {
+        label: "poem.txt",
+        source: "inline",
+        targetId: "poem.txt",
+        targetType: "file",
+        view: "chip",
+      },
+    ]);
+  });
+
+  it("turns a bare [/abs/path] shortcut into an abbreviated file reference", () => {
+    const document = parseFutureMarkdown("See [/Users/tao/Desktop/poem2.txt].");
+
+    expect(document.references).toEqual([
+      {
+        label: "/Users/tao/Desktop/poem2.txt",
+        source: "inline",
+        targetId: "/Users/tao/Desktop/poem2.txt",
+        targetType: "file",
+        view: "chip",
+      },
+    ]);
+  });
+
+  it("leaves a non-file link (https) as an ordinary link, not a reference", () => {
+    const document = parseFutureMarkdown("Docs at [site](https://example.com/page).");
+
+    expect(document.references).toEqual([]);
   });
 
   it("resolves reference-style links and images through markdown definitions", () => {
