@@ -33,7 +33,8 @@ interface AssistantRunProjection {
 type Slot
   = | { type: "text"; text: string }
     | { type: "thinking"; text: string }
-    | { type: "tool"; id: string };
+    | { type: "tool"; id: string }
+    | { type: "compaction"; tokensBefore: number };
 
 interface ToolActivity {
   id: string;
@@ -125,6 +126,22 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
     if (event.eventType === "thinking_end") {
       thinking = false;
       openThinking = null;
+      continue;
+    }
+
+    // Context compaction ran this turn (usually at the top, before any text).
+    // Pin a marker at this point so the reply shows where history was summarized.
+    // `compaction_end` carries the pre-compaction token count; the retry-path
+    // variant reports 0. An aborted compaction changed nothing — skip it.
+    if (event.eventType === "compaction_end") {
+      if (!isRecord(payload) || payload.aborted !== true) {
+        slots.push({
+          type: "compaction",
+          tokensBefore: numberFromPayload(payload, ["tokens_before", "tokensBefore"]),
+        });
+        openText = null;
+        openThinking = null;
+      }
       continue;
     }
 
@@ -281,6 +298,16 @@ function buildSegments(
       continue;
     }
 
+    if (slot.type === "compaction") {
+      segments.push({
+        kind: "compaction",
+        id: `compaction_${index}`,
+        tokensBefore: slot.tokensBefore > 0 ? slot.tokensBefore : undefined,
+      });
+      index += 1;
+      continue;
+    }
+
     // Gather a run of adjacent tool slots, hopping over whitespace-only text.
     const run: ToolActivity[] = [];
     let cursor = index;
@@ -295,6 +322,9 @@ function buildSegments(
         cursor += 1;
         continue;
       }
+      // A compaction marker breaks the tool run — it renders as its own divider.
+      if (current.type === "compaction")
+        break;
       if (!current.text.trim()) {
         cursor += 1;
         continue;
