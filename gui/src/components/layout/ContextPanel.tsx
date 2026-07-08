@@ -408,6 +408,7 @@ export function ContextPanel({
                   <RunsPanel
                     runs={runs}
                     toolsByRun={toolsByRun}
+                    workspacePath={activeWorkspace?.path ?? null}
                     onClearFinished={handleClearFinishedRuns}
                     onInspectTool={handleSelectTool}
                     onTerminateRun={handleTerminateRun}
