@@ -58,7 +58,7 @@ export function FilePreviewOverlay({
       />
       {kind === "image"
         ? (
-            <div className="relative z-10 flex max-h-full max-w-full items-center justify-center p-4">
+            <div className="relative z-10 flex max-h-full max-w-full items-center justify-center">
               <ImagePreview name={name} onError={handleError} path={path} />
             </div>
           )
