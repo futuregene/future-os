@@ -100,6 +100,28 @@ pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::AppError> {
     loaded(get_run(&id)?, "Created run")
 }
 
+/// Resolved agent session ids of every run that is not yet terminal — i.e. the
+/// conversations the user still sees as "generating". Each id is the thread's
+/// `agent_session_id` when set (trimmed, non-empty), else the thread id, mirroring
+/// the GUI's own session-id resolution (see `useAgentThreadState` /
+/// `cleanup::orphan_thread_ids`). Deduplicated. Powers the quit guard: whether to
+/// warn before exit, and which sessions to abort on force-quit. Within a live
+/// process this is a faithful "is anything running" signal — startup convergence
+/// (`cancel_stale_approval_requests`) has already cancelled every orphaned
+/// non-terminal run left by a previous process.
+pub fn active_run_sessions() -> Result<Vec<String>, crate::AppError> {
+    let conn = connect()?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT DISTINCT COALESCE(NULLIF(TRIM(t.agent_session_id), ''), t.id)
+             FROM runs r
+             JOIN threads t ON t.id = r.thread_id
+             WHERE r.status NOT IN ({TERMINAL_RUN_STATUSES_SQL})"
+    ))?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(crate::AppError::from)
+}
+
 pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::AppError> {
     let conn = connect()?;
     let mut stmt = conn.prepare(&format!(
@@ -422,6 +444,72 @@ mod tests {
             params![id, status],
         )
         .expect("insert run");
+    }
+
+    fn insert_thread(conn: &Connection, id: &str, agent_session_id: Option<&str>) {
+        conn.execute(
+            "INSERT INTO threads
+                 (id, workspace_id, mode, title, status, pinned, readonly,
+                  agent_session_id, created_at, updated_at)
+             VALUES (?1, 'ws', 'chat', 'T', 'active', 0, 0, ?2, 1, 1)",
+            params![id, agent_session_id],
+        )
+        .expect("insert thread");
+    }
+
+    fn insert_thread_run(conn: &Connection, run_id: &str, thread_id: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 1, 1)",
+            params![run_id, thread_id, status],
+        )
+        .expect("insert run");
+    }
+
+    /// `active_run_sessions` returns exactly the sessions of non-terminal runs,
+    /// deduplicated, resolving the session id to `agent_session_id` when set and
+    /// the thread id otherwise (blank/whitespace ids fall back to the thread id).
+    #[test]
+    fn active_run_sessions_resolves_and_filters() {
+        let conn = test_conn();
+
+        // Live run, thread has an agent session id -> resolves to that id.
+        insert_thread(&conn, "tA", Some("sessA"));
+        insert_thread_run(&conn, "rA", "tA", "running");
+
+        // Live run, no agent session id -> resolves to the thread id.
+        insert_thread(&conn, "tB", None);
+        insert_thread_run(&conn, "rB", "tB", "waiting_approval");
+
+        // Blank agent session id -> falls back to the thread id.
+        insert_thread(&conn, "tC", Some("   "));
+        insert_thread_run(&conn, "rC", "tC", "running");
+
+        // Two live runs on one thread -> a single deduplicated session id.
+        insert_thread(&conn, "tD", Some("sessD"));
+        insert_thread_run(&conn, "rD1", "tD", "running");
+        insert_thread_run(&conn, "rD2", "tD", "running");
+
+        // Terminal-only thread -> excluded entirely.
+        insert_thread(&conn, "tE", Some("sessE"));
+        insert_thread_run(&conn, "rE", "tE", "completed");
+
+        let mut sessions = {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT DISTINCT COALESCE(NULLIF(TRIM(t.agent_session_id), ''), t.id)
+                         FROM runs r
+                         JOIN threads t ON t.id = r.thread_id
+                         WHERE r.status NOT IN ({TERMINAL_RUN_STATUSES_SQL})"
+                ))
+                .unwrap();
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        sessions.sort();
+        assert_eq!(sessions, vec!["sessA", "sessD", "tB", "tC"]);
     }
 
     fn run_status(conn: &Connection, id: &str) -> String {
