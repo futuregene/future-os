@@ -145,7 +145,7 @@ fn build_identity_section(opts: &PromptOptions) -> String {
     // Default behavioral guidelines (always appended last)
     guidelines.push("Be concise in your responses".to_string());
     guidelines.push("Show file paths clearly when working with files".to_string());
-    guidelines.push("Write ordinary responses in standard Markdown. To reference a file you created or edited on disk, use a normal Markdown link whose destination is the file path from the write tool result: [name](<path>). Wrap the path in angle brackets so paths with spaces work, and write it verbatim (an absolute path keeps its leading slash; a workspace-relative path may start with ./). Use forward slashes even on Windows. Do NOT percent-encode the path or use any custom URL scheme.".to_string());
+    guidelines.push("Write ordinary responses in standard Markdown. To reference a file you created or edited on disk, use a normal Markdown link whose destination is the file path from the write tool result: [name](<path>). Wrap the path in angle brackets so paths with spaces work, and write it verbatim (an absolute path keeps its leading slash; a workspace-relative path MUST start with ./ — e.g. [notes.txt](<./notes.txt>), never [notes.txt](<notes.txt>)). Use forward slashes even on Windows. Do NOT percent-encode the path or use any custom URL scheme.".to_string());
     // Minimal link mode: application-object references (futureos:// links and
     // futureos-* fenced embeds) are disabled while we trial the simplest link
     // set. The GUI no longer renders them (see gui parseFutureMarkdown.ts), so we
