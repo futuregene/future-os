@@ -5,6 +5,8 @@ export interface InstalledSkill {
   id: string;
   name: string;
   description: string;
+  nameZh: string | null;
+  descriptionZh: string | null;
   version: string | null;
 }
 
