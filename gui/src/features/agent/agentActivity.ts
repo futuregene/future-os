@@ -205,6 +205,11 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
         id: toolId,
         status: hasToolError(payload) ? "failed" : "completed",
         order: existing?.order ?? tool.order,
+        // The end event carries the result, not the args, so `tool.target` is
+        // usually undefined here — keep the target/detail captured while the
+        // args streamed instead of letting the spread clobber them.
+        target: tool.target ?? existing?.target,
+        detail: tool.detail ?? existing?.detail,
       });
       // A result without a preceding start still deserves a slot.
       if (!slottedToolIds.has(toolId)) {
