@@ -96,9 +96,16 @@ impl Client {
                     // models using this format don't reason by default.
                 }
                 "reasoning-split" => {
-                    // MiniMax M3: reasoning_split only, no depth control.
-                    // Any non-off level → reasoning_split: true
-                    body["reasoning_split"] = serde_json::json!(reasoning_enabled);
+                    // MiniMax M3: reasoning_split controls *where* reasoning
+                    // appears, not *whether*.  reasoning_split=false puts
+                    // thinking inline in content (wrapped in <think> tags),
+                    // which is worse than the default.  When "off", emit
+                    // nothing and let the model default to its normal
+                    // behaviour (reasoning in reasoning_content, where the
+                    // agent can manage visibility).
+                    if reasoning_enabled {
+                        body["reasoning_split"] = serde_json::json!(true);
+                    }
                 }
                 _ => {}
             }
@@ -526,13 +533,26 @@ mod apply_thinking_params_tests {
     }
 
     #[test]
-    fn reasoning_split_off_emits_false() {
+    fn reasoning_split_off_emits_nothing() {
+        // reasoning_split controls *where* reasoning appears, not *whether*.
+        // Sending reasoning_split=false puts thinking inline in <think> tags,
+        // which is worse.  "off" emits nothing — model uses its default.
         let client = Client::new("https://api.minimax.io/v1", "k", None, None)
             .with_compat("reasoning-split", false, false)
             .with_thinking_level("off");
         let mut body = body();
         client.apply_thinking_params(&mut body);
-        assert_eq!(body.get("reasoning_split"), Some(&json!(false)));
+        assert_eq!(body.get("reasoning_split"), None);
+    }
+
+    #[test]
+    fn reasoning_split_high_emits_true() {
+        let client = Client::new("https://api.minimax.io/v1", "k", None, None)
+            .with_compat("reasoning-split", false, false)
+            .with_thinking_level("high");
+        let mut body = body();
+        client.apply_thinking_params(&mut body);
+        assert_eq!(body.get("reasoning_split"), Some(&json!(true)));
     }
 
     #[test]
