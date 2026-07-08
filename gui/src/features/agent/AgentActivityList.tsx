@@ -3,6 +3,7 @@ import { Brain, ChevronLeft, ChevronRight, FileText, Pencil, TerminalSquare } fr
 import { useState } from "react";
 import i18n from "../../i18n";
 import { cn } from "../../lib/cn";
+import { relativizeWorkspacePath } from "../../lib/workspacePath";
 
 interface AgentActivityListProps {
   items?: AgentActivityItem[];
@@ -85,21 +86,12 @@ export function AgentActivityLine({ item, workspacePath }: { item: AgentActivity
   );
 }
 
-/**
- * Files inside the active workspace show as a workspace-relative path; anything
- * outside keeps its absolute path so it stays unambiguous. Bash targets are the
- * command itself, never a path, so they're left untouched.
- */
+// Bash targets are the command itself, never a path, so they're left as-is;
+// file targets get the shared workspace-relative treatment.
 function relativizeTarget(kind: AgentActivityKind, target: string, workspacePath?: string | null) {
-  if (kind === "bash" || !workspacePath)
+  if (kind === "bash")
     return target;
-
-  const root = workspacePath.replace(/\/+$/, "");
-  if (target === root)
-    return target;
-  if (target.startsWith(`${root}/`))
-    return target.slice(root.length + 1);
-  return target;
+  return relativizeWorkspacePath(target, workspacePath);
 }
 
 function renderActivityIcon(kind: AgentActivityKind, running: boolean) {
