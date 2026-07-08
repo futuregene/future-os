@@ -2,6 +2,11 @@
 # (avoids drift like the rusqlite 0.40 / cfg_select! mismatch between an older
 # local rustc and CI's floating stable). Bump deliberately, in step with the
 # `dtolnay/rust-toolchain` pin in .github/workflows/build.yml.
+#
+# Use "stable" instead of a specific version so that mirrors which only serve
+# the channel manifest (e.g. Aliyun) work correctly. CI pins a specific version
+# via dtolnay/rust-toolchain@<version>, which downloads from static.rust-lang.org
+# and is not affected by local mirror configuration.
 [toolchain]
-channel = "1.96.0"
+channel = "stable"
 components = ["rustfmt", "clippy"]
