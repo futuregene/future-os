@@ -1,5 +1,6 @@
 import type { AgentActivityItem, AgentActivityKind } from "./agentThreadTypes";
-import { Brain, FileText, Pencil, TerminalSquare } from "lucide-react";
+import { Brain, ChevronLeft, ChevronRight, FileText, Pencil, TerminalSquare } from "lucide-react";
+import { useState } from "react";
 import i18n from "../../i18n";
 import { cn } from "../../lib/cn";
 
@@ -27,30 +28,45 @@ export function AgentActivityLine({ item, workspacePath }: { item: AgentActivity
   const failed = item.status === "failed";
   const running = item.status === "running";
   const displayTarget = item.target ? relativizeTarget(item.kind, item.target, workspacePath) : undefined;
+  // The path is hidden by default to keep the transcript quiet; clicking the
+  // icon+label toggles it. Chevron points right (expand) when collapsed, left
+  // (collapse) when open.
+  const [open, setOpen] = useState(false);
+  const Chevron = open ? ChevronLeft : ChevronRight;
 
   return (
     <div
       className={cn(
         // One uniform size for icon + label + target so the row reads as a
         // single line; `items-center` keeps the mono target vertically centred
-        // against the sans label. A NAMED group (`group/activity`) scopes the
-        // hover-reveal to this row — a plain `group` would also fire on the
-        // ancestor `group` wrapping the whole message scroll area (AgentThread),
-        // showing the path whenever the pointer is anywhere in the transcript.
-        "group/activity flex min-w-0 items-center gap-2 text-[13px] leading-6",
+        // against the sans label.
+        "flex min-w-0 items-center gap-2 text-[13px] leading-6",
         failed ? "text-danger" : "text-ink-muted",
       )}
     >
-      {renderActivityIcon(item.kind, running)}
-      <span className="shrink-0">{label}</span>
       {displayTarget
         ? (
-            // Hidden by default to keep the transcript quiet — the path only
-            // appears while the row is hovered. Display toggle (no transition)
-            // so WKWebView repaints the change reliably; the documented stuck-
-            // hover paint bug was tied to transition end-repaints, not this.
+            <button
+              type="button"
+              onClick={() => setOpen(value => !value)}
+              className="flex shrink-0 cursor-pointer items-center gap-2"
+              aria-expanded={open}
+            >
+              {renderActivityIcon(item.kind, running)}
+              <span>{label}</span>
+              <Chevron className="size-3 shrink-0" />
+            </button>
+          )
+        : (
+            <>
+              {renderActivityIcon(item.kind, running)}
+              <span className="shrink-0">{label}</span>
+            </>
+          )}
+      {displayTarget && open
+        ? (
             <span
-              className="hidden min-w-0 truncate font-mono group-hover/activity:block"
+              className="min-w-0 truncate font-mono"
               title={item.detail ?? item.target}
             >
               {displayTarget}
