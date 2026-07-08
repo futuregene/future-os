@@ -176,6 +176,8 @@
     "generating": "Generating",
     "thinking": "Thinking…",
     "stopped": "Stopped",
-    "tokens": "{{formattedCount}} tokens"
+    "tokens": "{{formattedCount}} tokens",
+    "compacted": "Context compacted",
+    "compactedTokens": "Context compacted · {{formattedCount}} tokens"
   }
 }

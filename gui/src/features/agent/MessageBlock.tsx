@@ -104,6 +104,9 @@ export function MessageBlock({
                           )
                         : null;
                     }
+                    if (segment.kind === "compaction") {
+                      return <CompactionDivider key={segment.id} tokensBefore={segment.tokensBefore} />;
+                    }
                     return <AgentActivityLine item={segment.item} key={segment.id} />;
                   })}
                 </div>
@@ -240,6 +243,28 @@ function UserMessageText({ content }: { content: string }) {
           : <span key={segment.key}>{segment.text}</span>,
       )}
     </p>
+  );
+}
+
+/**
+ * Inline divider marking where the agent auto-compacted the conversation
+ * (history summarized to fit the context window). A hairline rule with a small
+ * muted label — the only surfacing of compaction in the UI, since the agent
+ * otherwise continues silently. Shows the pre-compaction token count when known.
+ */
+function CompactionDivider({ tokensBefore }: { tokensBefore?: number }) {
+  const { t, i18n } = useTranslation("agent");
+  const label = tokensBefore && tokensBefore > 0
+    ? t("message.compactedTokens", {
+        formattedCount: new Intl.NumberFormat(i18n.language).format(tokensBefore),
+      })
+    : t("message.compacted");
+  return (
+    <div aria-label={label} className="flex select-none items-center gap-3 py-1" role="separator">
+      <span className="h-px flex-1 bg-line" />
+      <span className="whitespace-nowrap text-xs text-ink-muted">{label}</span>
+      <span className="h-px flex-1 bg-line" />
+    </div>
   );
 }
 

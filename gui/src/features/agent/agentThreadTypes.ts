@@ -21,7 +21,11 @@ export interface AgentActivityItem {
 export type MessageSegment
   = | { kind: "text"; id: string; text: string }
     | { kind: "thinking"; id: string; text: string }
-    | { kind: "activity"; id: string; item: AgentActivityItem };
+    | { kind: "activity"; id: string; item: AgentActivityItem }
+    // A context-compaction marker (history summarized mid-run). `tokensBefore` is
+    // the pre-compaction token count when the agent reported one (0/omitted for
+    // the retry-path compaction, which carries no count).
+    | { kind: "compaction"; id: string; tokensBefore?: number };
 
 export interface MessageAttachment {
   artifactId?: string | null;
