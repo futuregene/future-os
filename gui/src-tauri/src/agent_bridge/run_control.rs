@@ -21,6 +21,24 @@ pub(super) async fn abort_agent_thread(thread_id: &str) -> Result<(), crate::App
     Ok(())
 }
 
+/// Abort an in-flight run for an already-resolved agent session id. Unlike
+/// [`abort_agent_thread`] it takes the session id directly (the quit guard reads
+/// it from `store::active_run_sessions`, so there is no thread to reload) and
+/// does not touch the store — on force-quit we only need the agent to stop
+/// streaming before the process exits; startup convergence settles the run rows
+/// on the next launch. Best-effort at the call site: aborting a session that
+/// already finished is a harmless no-op on the agent side.
+pub(crate) async fn abort_session(session_id: &str) -> Result<(), crate::AppError> {
+    let mut client = connect_agent().await?;
+    client
+        .execute_command(base_command("abort", session_id.to_string()))
+        .await
+        .map_err(|error| format!("Unable to abort Future Agent session: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the abort request.")?;
+    Ok(())
+}
+
 /// Abort an in-flight agent run, then mark its store run cancelled. A missing
 /// agent (e.g. the backend is down) is tolerated — the run is still cancelled
 /// locally so the UI doesn't strand on a "running" row.
