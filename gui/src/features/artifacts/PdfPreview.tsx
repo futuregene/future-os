@@ -1,7 +1,18 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
+import * as pdfjs from "pdfjs-dist";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { PDF_WASM_URL, pdfjs } from "../filepreview/pdfjsSetup";
+
+// Configure PDF.js worker
+pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+  "pdfjs-dist/build/pdf.worker.min.mjs",
+  import.meta.url,
+).toString();
+
+// pdf.js v6 decodes JBIG2/JPEG2000/CCITT scanned images via WebAssembly loaded from
+// this base dir (served by the `pdfjsWasm` Vite plugin). Without it, image-only PDFs
+// render as a blank page. Absolute href so pdf.js's `new URL(name, wasmUrl)` resolves.
+const PDF_WASM_URL = new URL("pdfjs-wasm/", document.baseURI).href;
 
 interface PdfPreviewProps {
   path: string;
