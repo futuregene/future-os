@@ -265,10 +265,10 @@ function InstalledTab({
         const cat = catalogueByName.get(skill.id);
         const name = useChinese
           ? cat?.nameZh || skill.nameZh || skill.name
-          : skill.name;
+          : cat?.name || skill.name;
         const description = useChinese
           ? cat?.descriptionZh || skill.descriptionZh || skill.description
-          : skill.description;
+          : cat?.description || skill.description;
         return (
           <SkillRow
             key={skill.id}
