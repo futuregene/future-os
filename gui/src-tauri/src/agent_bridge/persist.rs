@@ -205,10 +205,16 @@ fn persist_tool_end(run_id: &str, value: &serde_json::Value, sequence: i64) {
     let error = value_string(value, &["error", "errorText"]);
     let output_content =
         value_string(value, &["text", "result"]).or_else(|| value.get("output").map(compact_json));
-    let status = if error.as_deref().unwrap_or_default().is_empty() {
-        "completed".to_string()
-    } else {
+    // A bash command that runs but exits non-zero is returned as a *successful*
+    // tool result (no error field) with the code baked into the output text as
+    // "[exit code: N]\n…". Treat a non-zero code as a failure so the Runs panel
+    // and inspector don't mark an errored command as completed.
+    let failed = !error.as_deref().unwrap_or_default().is_empty()
+        || output_has_nonzero_exit(output_content.as_deref());
+    let status = if failed {
         "failed".to_string()
+    } else {
+        "completed".to_string()
     };
     let output_kind = if status == "completed" {
         "text".to_string()
@@ -370,6 +376,19 @@ fn event_value(payload: &str) -> Option<serde_json::Value> {
     serde_json::from_str::<serde_json::Value>(payload).ok()
 }
 
+/// A bash result is formatted "[exit code: N]\n…" only when the command exited
+/// non-zero (see agent `tools::run_bash`). Detect that prefix so a command that
+/// ran but failed isn't recorded as completed.
+fn output_has_nonzero_exit(output: Option<&str>) -> bool {
+    let Some(rest) = output.and_then(|text| text.trim_start().strip_prefix("[exit code: ")) else {
+        return false;
+    };
+    let Some((code, _)) = rest.split_once(']') else {
+        return false;
+    };
+    code.trim().parse::<i64>().is_ok_and(|code| code != 0)
+}
+
 fn value_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|key| {
         value.get(*key).and_then(|field| {
@@ -383,4 +402,29 @@ fn value_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
 
 fn compact_json(value: &serde_json::Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::output_has_nonzero_exit;
+
+    #[test]
+    fn nonzero_exit_prefix_is_a_failure() {
+        assert!(output_has_nonzero_exit(Some(
+            "[exit code: 127]\nbash: future: command not found"
+        )));
+        assert!(output_has_nonzero_exit(Some("[exit code: 1]\n")));
+        assert!(output_has_nonzero_exit(Some("  [exit code: 2]\noops")));
+    }
+
+    #[test]
+    fn success_or_plain_output_is_not_a_failure() {
+        // exit 0 never carries the prefix (agent only prepends it when non-zero),
+        // but guard the literal case anyway.
+        assert!(!output_has_nonzero_exit(Some("[exit code: 0]\n")));
+        assert!(!output_has_nonzero_exit(Some("hello world")));
+        assert!(!output_has_nonzero_exit(Some("")));
+        assert!(!output_has_nonzero_exit(None));
+        assert!(!output_has_nonzero_exit(Some("[exit code: abc]\n")));
+    }
 }
