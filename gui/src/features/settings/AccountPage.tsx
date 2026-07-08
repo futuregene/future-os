@@ -1,8 +1,8 @@
-import type { ProvidersView } from "../../integrations/agent/providers";
+import type { FutureProfile, ProvidersView } from "../../integrations/agent/providers";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
-import { listAgentProviders, logoutFutureProvider } from "../../integrations/agent/providers";
+import { getFutureProfile, listAgentProviders, logoutFutureProvider, peekFutureProfile } from "../../integrations/agent/providers";
 import { openExternalUrl } from "../../integrations/storage/files";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { useAsyncResource } from "../../lib/useAsyncResource";
@@ -40,7 +40,20 @@ export function AccountPage() {
 
   const loggedIn = Boolean(providers?.builtin.find(provider => provider.id === "future")?.hasApiKey);
 
+  // Show the signed-in email (like `future account profile`) instead of a bare
+  // "signed in" label. Seeded synchronously from the session cache so reopening
+  // this page doesn't flash — the fetch only really runs the first time (or
+  // after a logout clears the cache). Falls back to the generic label until it
+  // resolves, or if the request fails.
+  const profile = useAsyncResource<FutureProfile | null>(
+    () => (loggedIn ? getFutureProfile() : Promise.resolve(null)),
+    [loggedIn],
+    peekFutureProfile(),
+  );
+  const signedInLabel = profile.data?.email ?? t("account.loggedIn");
+
   async function handleLogout() {
+    // logoutFutureProvider clears the profile cache internally.
     await logoutFutureProvider();
     setConfirmingLogout(false);
     reload();
@@ -63,7 +76,7 @@ export function AccountPage() {
         <SettingsList>
           <SettingsRow
             title={t("account.futureGene")}
-            description={loggedIn ? t("account.loggedIn") : t("account.loggedOut")}
+            description={loggedIn ? signedInLabel : t("account.loggedOut")}
           >
             {!loggedIn
               ? (
@@ -109,6 +122,8 @@ export function AccountPage() {
 
       <FutureLoginDialog
         onAuthorized={() => {
+          // pollFutureLogin already cleared the profile cache on "authorized",
+          // so the reload below refetches fresh once `loggedIn` flips true.
           setLoginOpen(false);
           reload();
         }}
