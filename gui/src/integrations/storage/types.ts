@@ -264,8 +264,9 @@ export interface StoredArtifact {
   deletedAt?: number | null;
 }
 
-/// A `futureos://file/<path>` reference, resolved to a display model by pure
-/// path arithmetic (no filesystem access). See `resolve.rs::ResolvedFile`.
+/// A local-file link (a plain markdown path link, e.g. `[name](/abs/path)`),
+/// resolved to a display model by pure path arithmetic (no filesystem access).
+/// See `resolve.rs::ResolvedFile`.
 export interface StoredFile {
   /** Absolute path, used for open / copy-path actions. */
   path: string;
