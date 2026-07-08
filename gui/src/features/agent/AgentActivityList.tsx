@@ -5,9 +5,10 @@ import { cn } from "../../lib/cn";
 
 interface AgentActivityListProps {
   items?: AgentActivityItem[];
+  workspacePath?: string | null;
 }
 
-export function AgentActivityList({ items }: AgentActivityListProps) {
+export function AgentActivityList({ items, workspacePath }: AgentActivityListProps) {
   const visibleItems = items?.filter(item => item.status === "running" || item.status === "completed" || item.status === "failed") ?? [];
   if (visibleItems.length === 0)
     return null;
@@ -15,16 +16,17 @@ export function AgentActivityList({ items }: AgentActivityListProps) {
   return (
     <div className="my-4 space-y-3">
       {visibleItems.map(item => (
-        <AgentActivityLine item={item} key={item.id} />
+        <AgentActivityLine item={item} key={item.id} workspacePath={workspacePath} />
       ))}
     </div>
   );
 }
 
-export function AgentActivityLine({ item }: { item: AgentActivityItem }) {
+export function AgentActivityLine({ item, workspacePath }: { item: AgentActivityItem; workspacePath?: string | null }) {
   const label = labelForActivity(item);
   const failed = item.status === "failed";
   const running = item.status === "running";
+  const displayTarget = item.target ? relativizeTarget(item.kind, item.target, workspacePath) : undefined;
 
   return (
     <div
@@ -35,16 +37,13 @@ export function AgentActivityLine({ item }: { item: AgentActivityItem }) {
     >
       {renderActivityIcon(item.kind, running)}
       <span className="shrink-0">{label}</span>
-      {item.target
+      {displayTarget
         ? (
             <span
-              className={cn(
-                "min-w-0 truncate font-mono text-[0.9em]",
-                !failed && "text-ink-soft",
-              )}
+              className="min-w-0 truncate font-mono text-[0.9em]"
               title={item.detail ?? item.target}
             >
-              {item.target}
+              {displayTarget}
             </span>
           )
         : null}
@@ -58,6 +57,23 @@ export function AgentActivityLine({ item }: { item: AgentActivityItem }) {
         : null}
     </div>
   );
+}
+
+/**
+ * Files inside the active workspace show as a workspace-relative path; anything
+ * outside keeps its absolute path so it stays unambiguous. Bash targets are the
+ * command itself, never a path, so they're left untouched.
+ */
+function relativizeTarget(kind: AgentActivityKind, target: string, workspacePath?: string | null) {
+  if (kind === "bash" || !workspacePath)
+    return target;
+
+  const root = workspacePath.replace(/\/+$/, "");
+  if (target === root)
+    return target;
+  if (target.startsWith(`${root}/`))
+    return target.slice(root.length + 1);
+  return target;
 }
 
 function renderActivityIcon(kind: AgentActivityKind, running: boolean) {
