@@ -37,8 +37,6 @@
   },
   "dialog": {
     "ariaLabel": "设置",
-    "appName": "FutureOS Desktop",
-    "version": "v{{version}}",
     "testBuild": "测试版",
     "nav": {
       "desktop": "桌面",
@@ -49,6 +47,7 @@
       "general": "通用",
       "account": "账号",
       "update": "检查更新",
+      "about": "About",
       "providers": "提供商",
       "models": "模型",
       "environment": "环境",
