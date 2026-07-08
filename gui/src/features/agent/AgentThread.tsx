@@ -20,6 +20,7 @@ import { useStickyAutoScroll } from "./useStickyAutoScroll";
 
 interface AgentThreadProps {
   thread: StoredThread | null;
+  workspacePath?: string | null;
   agentConnection: AgentConnectionState;
   leftPanelExpanded: boolean;
   loadingStore: boolean;
@@ -44,6 +45,7 @@ interface AgentThreadProps {
 
 export function AgentThread({
   thread,
+  workspacePath,
   agentConnection,
   leftPanelExpanded,
   loadingStore,
@@ -179,6 +181,7 @@ export function AgentThread({
                         messages={messages}
                         showThinking={showThinking}
                         workspaceId={thread?.workspaceId}
+                        workspacePath={workspacePath}
                         onContinue={handleContinueMessage}
                         onRetry={handleRetryMessage}
                       />
