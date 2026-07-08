@@ -7,7 +7,7 @@ import { emitFutureEvent } from "../../../lib/futureEvents";
 import { useDismissableLayer } from "../../../lib/useDismissableLayer";
 
 /**
- * A `futureos://file/<path>` reference rendered as an inline file link. Left
+ * A local-file link (from a plain markdown path link) rendered inline. Left
  * click opens the file with the OS default handler (directories land in the
  * file manager); right click opens a context menu with copy / open actions.
  * In-workspace files show their workspace-relative path, files written elsewhere

@@ -160,8 +160,8 @@ fn get_artifact_in_workspace(
     .map_err(crate::AppError::from)
 }
 
-/// A `futureos://file/<path>` reference, rendered by the frontend as a file
-/// link. Resolution is pure path arithmetic — no filesystem access — so it never
+/// A local-file link (a plain markdown path link), rendered by the frontend as
+/// a file link. Resolution is pure path arithmetic — no filesystem access — so it never
 /// probes whether the path exists (no existence oracle) and never fails: any
 /// non-empty path a message names becomes a link. `insideWorkspace` +
 /// `relativePath` let the UI show a workspace-relative path for in-workspace
@@ -179,7 +179,7 @@ struct ResolvedFile {
 }
 
 /// Turn a file reference into its display model. The path may be absolute (the
-/// model percent-encodes it, so the leading slash survives) or workspace-
+/// model writes it verbatim, so the leading slash is intact) or workspace-
 /// relative; anything not absolute is resolved against the workspace root.
 fn resolve_file_reference(
     conn: &Connection,
