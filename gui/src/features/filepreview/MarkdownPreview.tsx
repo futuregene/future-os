@@ -43,8 +43,10 @@ export function MarkdownPreview({
   if (content == null)
     return <PreviewNotice message={t("filePreview.loading")} />;
 
+  // The surface/rounded frame lives on the scroll container (in FilePreviewOverlay)
+  // so its rounded corners stay visible at top and bottom while the text scrolls.
   return (
-    <div className="my-2 rounded-lg bg-surface px-8 py-10 shadow-panel">
+    <div className="px-8 py-10">
       <MarkdownContent content={content} />
     </div>
   );
