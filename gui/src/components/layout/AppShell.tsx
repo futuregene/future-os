@@ -432,7 +432,6 @@ export function AppShell() {
               activeTab={contextTab}
               expanded={rightExpanded}
               width={rightPanelWidth}
-              resizing={rightPanelResizing}
               onResizeStart={startRightPanelResize}
               onResizeNudge={nudgeRightPanel}
               onTabChange={setContextTab}
