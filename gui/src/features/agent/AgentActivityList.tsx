@@ -31,7 +31,10 @@ export function AgentActivityLine({ item, workspacePath }: { item: AgentActivity
   return (
     <div
       className={cn(
-        "flex min-w-0 items-center gap-2 text-sm leading-6",
+        // One uniform size for icon + label + target so the row reads as a
+        // single line; `items-center` keeps the mono target vertically centred
+        // against the sans label.
+        "flex min-w-0 items-center gap-2 text-[13px] leading-6",
         failed ? "text-danger" : "text-ink-muted",
       )}
     >
@@ -40,7 +43,7 @@ export function AgentActivityLine({ item, workspacePath }: { item: AgentActivity
       {displayTarget
         ? (
             <span
-              className="min-w-0 truncate font-mono text-[0.9em]"
+              className="min-w-0 truncate font-mono"
               title={item.detail ?? item.target}
             >
               {displayTarget}
@@ -77,7 +80,7 @@ function relativizeTarget(kind: AgentActivityKind, target: string, workspacePath
 }
 
 function renderActivityIcon(kind: AgentActivityKind, running: boolean) {
-  const className = cn("size-4 shrink-0", running && kind === "thinking" && "animate-pulse");
+  const className = cn("size-3.5 shrink-0", running && kind === "thinking" && "animate-pulse");
   switch (kind) {
     case "bash":
       return <TerminalSquare className={className} />;
