@@ -40,11 +40,20 @@ fn best_effort_canonical(path: &Path) -> PathBuf {
 /// markdown/artifacts — without this guard an XSS could read `auth.json` or
 /// overwrite `approval_rule.json`, escalating to the very secrets the
 /// approval/sandbox system protects. User-chosen files elsewhere stay allowed.
+///
+/// Chat-workspace artifacts live *inside* this root
+/// (`~/.future/app/workspaces/chat/<thread>/…`) and must stay previewable, so
+/// that subtree is carved back out — EXCEPT any nested `.future/` segment, which
+/// is where each workspace keeps its own `approval_rule.json`. The carve-out
+/// therefore preserves the invariant "sensitive config lives in a `.future/`
+/// dir": a workspace's product files open, its `.future/*` secrets don't.
 fn ensure_path_allowed(path: &Path) -> Result<(), crate::AppError> {
     let resolved = best_effort_canonical(path);
     if let Some(home) = crate::home_dir() {
         if let Ok(future_dir) = PathBuf::from(home).join(".future").canonicalize() {
-            if resolved.starts_with(&future_dir) {
+            if resolved.starts_with(&future_dir)
+                && !is_allowed_workspace_artifact(&future_dir, &resolved)
+            {
                 return Err("Refusing to access a protected FutureOS directory."
                     .to_string()
                     .into());
@@ -52,6 +61,19 @@ fn ensure_path_allowed(path: &Path) -> Result<(), crate::AppError> {
         }
     }
     Ok(())
+}
+
+/// True when `resolved` (already canonical) is a chat-workspace product file:
+/// under `~/.future/app/workspaces/` and not traversing any `.future/` segment.
+fn is_allowed_workspace_artifact(future_dir: &Path, resolved: &Path) -> bool {
+    let workspaces_root = future_dir.join("app").join("workspaces");
+    let workspaces_root = workspaces_root.canonicalize().unwrap_or(workspaces_root);
+    match resolved.strip_prefix(&workspaces_root) {
+        Ok(tail) => !tail
+            .components()
+            .any(|component| component.as_os_str() == ".future"),
+        Err(_) => false,
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -305,4 +327,55 @@ pub fn save_pasted_image(
 /// would be interpreted — an injection vector, not just a broken open.
 fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
     open::that(path).map_err(|error| format!("Failed to open: {error}").into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Fresh, canonicalized fake `~/.future` root for one test.
+    fn future_root(name: &str) -> PathBuf {
+        let base =
+            std::env::temp_dir().join(format!("futureos_files_{}_{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        base.canonicalize().unwrap()
+    }
+
+    fn write_under(root: &Path, rel: &str) -> PathBuf {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"x").unwrap();
+        best_effort_canonical(&path)
+    }
+
+    #[test]
+    fn workspace_product_file_is_allowed() {
+        let future_dir = future_root("allow");
+        let artifact = write_under(&future_dir, "app/workspaces/chat/thread_x/长诗.md");
+        assert!(is_allowed_workspace_artifact(&future_dir, &artifact));
+    }
+
+    #[test]
+    fn nested_dot_future_secrets_stay_blocked() {
+        let future_dir = future_root("block_nested");
+        let rule = write_under(
+            &future_dir,
+            "app/workspaces/chat/thread_x/.future/approval_rule.json",
+        );
+        assert!(!is_allowed_workspace_artifact(&future_dir, &rule));
+    }
+
+    #[test]
+    fn config_roots_outside_workspaces_stay_blocked() {
+        let future_dir = future_root("block_roots");
+        for rel in ["agent/auth.json", "app/app.db", "app/images/pic.png"] {
+            let secret = write_under(&future_dir, rel);
+            assert!(
+                !is_allowed_workspace_artifact(&future_dir, &secret),
+                "{rel} must stay blocked"
+            );
+        }
+    }
 }
