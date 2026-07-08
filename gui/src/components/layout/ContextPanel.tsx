@@ -1,3 +1,4 @@
+import type { MouseEvent as ReactMouseEvent } from "react";
 import type { ReviewBase } from "../../features/review/ReviewPanel";
 import type { GitReview, StoredArtifact, StoredRun, StoredThread, StoredToolCall, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { WorkspaceReviewCapabilities } from "../../integrations/storage/types";
@@ -49,6 +50,13 @@ interface ContextPanelProps {
   activeWorkspace: StoredWorkspace | null;
   activeTab: ContextTab;
   expanded: boolean;
+  /** Current panel width in px (drag-resized, session-persisted). */
+  width: number;
+  /** True while the divider is being dragged — suppresses the handle transition. */
+  resizing: boolean;
+  onResizeStart: (event: ReactMouseEvent) => void;
+  /** Keyboard-driven resize (arrow keys on the divider), in px. */
+  onResizeNudge: (deltaPx: number) => void;
   onTabChange: (tab: ContextTab) => void;
   onToggleExpanded: () => void;
 }
@@ -58,6 +66,10 @@ export function ContextPanel({
   activeWorkspace,
   activeTab,
   expanded,
+  width,
+  resizing,
+  onResizeStart,
+  onResizeNudge,
   onTabChange,
   onToggleExpanded,
 }: ContextPanelProps) {
@@ -324,7 +336,34 @@ export function ContextPanel({
   }
 
   return (
-    <aside className="flex w-96 shrink-0 flex-col border-l border-line-soft bg-surface-subtle">
+    <aside
+      className="relative flex shrink-0 flex-col border-l border-line-soft bg-surface-subtle"
+      style={{ width }}
+    >
+      {/* Divider: drag to resize the center/right split. Sits astride the left
+          border with a wider invisible hit area; highlights on hover/drag. */}
+      <div
+        aria-label={t("contextPanel.resize")}
+        aria-orientation="vertical"
+        className="group absolute -left-1 top-0 z-20 h-full w-2 cursor-ew-resize"
+        onMouseDown={onResizeStart}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowLeft") {
+            event.preventDefault();
+            onResizeNudge(16);
+          }
+          else if (event.key === "ArrowRight") {
+            event.preventDefault();
+            onResizeNudge(-16);
+          }
+        }}
+        role="separator"
+        tabIndex={0}
+      >
+        <div
+          className={`absolute inset-y-0 left-1 w-px transition-colors group-hover:bg-accent group-focus-visible:bg-accent ${resizing ? "bg-accent" : "bg-transparent"}`}
+        />
+      </div>
       <header
         className="flex h-12 shrink-0 select-none items-center justify-between px-4"
         onMouseDown={startWindowDrag}
