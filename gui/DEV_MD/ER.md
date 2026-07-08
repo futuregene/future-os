@@ -488,7 +488,9 @@ Artifact 表示工作过程中产生的可复用产物。
 - 普通 Chat 产生的 Artifact 存在临时 Workspace 下。
 - 清理普通 Chat 时，用户可以下载 Artifact，或将 Artifact 转入 Research。
 - 转入 Research 后不保留原始对话引用。
-- 用户在普通 Chat 上传的图片附件会保存到临时工作目录并登记为 Artifact（`type = image`，`content_storage = file`），同时作为多模态输入传给模型。Workspace 对话上传的图片附件不落盘、不创建 Artifact，只传给模型，避免污染用户项目目录。
+- 用户在普通 Chat 上传的图片附件会保存到临时工作目录并登记为 Artifact（`type = image`，`content_storage = file`），同时作为多模态输入传给模型。Workspace 对话上传的图片附件不落盘到用户项目目录、不创建 Artifact，只传给模型，避免污染用户项目目录。
+- **图片持久化目录**（不属于 Artifact/SQLite，纯文件树）：`~/.future/app/images/<threadId>/` 下 `thumb/`（两种模式的缩略图）与 `origin/`（**仅 workspace** 模式的图片原图拷贝，供显示/重发）。放这里而非 `appCacheDir`——后者在 macOS = `~/Library/Caches`，属系统可回收空间会被静默清理，导致消息里的缩略图路径失效、图片渲染成空白框。附件元数据（`path` / `thumbnail`）存在 `messages.content` 的 mixed JSON 里,**无独立表、无 schema 变更**。
+- **回收**：`images/<tid>` 无逐删执行器,靠启动时 `reconcile_orphan_images` 孤儿清扫——`threads` 表中 `status='deleted'` 或无行的 tid 其目录被删（无软删撤销）；整库 reset 额外清 `images/` 整棵。覆盖 GUI 删、TUI/CLI 外部删 session、reset 三种来源。
 
 ### 4.12 Research Collection
 
