@@ -74,7 +74,7 @@ export function FilePreviewOverlay({
         : null}
       {kind === "markdown"
         ? (
-            <div className="relative z-10 max-h-full w-full max-w-3xl overflow-y-auto">
+            <div className="relative z-10 max-h-full w-full max-w-3xl overflow-y-auto rounded-lg bg-surface shadow-panel">
               <MarkdownPreview onError={handleError} path={path} />
             </div>
           )
