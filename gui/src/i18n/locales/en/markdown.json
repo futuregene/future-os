@@ -26,11 +26,17 @@
     "open": "Open"
   },
   "fileLink": {
+    "preview": "Preview",
     "copyPath": "Copy path",
     "copyRelativePath": "Copy relative path",
     "copyFilename": "Copy filename",
     "open": "Open",
     "notFound": "File not found: {{name}}"
+  },
+  "filePreview": {
+    "loading": "Loading preview…",
+    "close": "Close preview",
+    "unavailable": "Can't preview {{name}} — opening it with the default app instead."
   },
   "link": {
     "visit": "Visit",
