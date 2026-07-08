@@ -39,7 +39,7 @@ export function RunsPanel({ onClearFinished, onInspectTool, onTerminateRun, runs
   const [clearError, setClearError] = useState<string | null>(null);
 
   const entries = useMemo(() => buildToolEntries(runs, toolsByRun), [runs, toolsByRun]);
-  const { runningCount, finishedCount } = useMemo(() => countRuns(runs, toolsByRun), [runs, toolsByRun]);
+  const { runningCount, finishedCount } = useMemo(() => countEntries(entries), [entries]);
 
   if (entries.length === 0) {
     return <EmptyState title={t("runsPanel.emptyTitle")} detail={t("runsPanel.emptyDetail")} />;
@@ -269,14 +269,14 @@ function buildToolEntries(runs: StoredRun[], toolsByRun: Record<string, StoredTo
   return [...active, ...finished];
 }
 
-function countRuns(runs: StoredRun[], toolsByRun: Record<string, StoredToolCall[]>) {
+// Count the rendered command rows, not the runs — the list gives each command
+// its own row, so a header keyed off run count would undercount whenever a run
+// carries more than one command.
+function countEntries(entries: ToolEntry[]) {
   let runningCount = 0;
   let finishedCount = 0;
-  for (const run of runs) {
-    const hasVisible = (toolsByRun[run.id] ?? []).some(tool => DISPLAY_TOOLS.has(displayName(tool)));
-    if (!hasVisible)
-      continue;
-    if (isActiveRun(run))
+  for (const entry of entries) {
+    if (isActiveRun(entry.run))
       runningCount += 1;
     else
       finishedCount += 1;
