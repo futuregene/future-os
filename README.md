@@ -32,11 +32,30 @@ FutureOS gives you a unified AI agent experience across TUI, GUI, CLI, Feishu, a
 
 ### Prerequisites
 
-- **Rust** 1.80+
-- **Node.js** 22+ / **Bun** (TUI runtime)
-- macOS, Linux, or Windows
+Required for a full `make build` (agent + TUI + CLI + GUI):
 
-### Build & Run (60 seconds)
+- **Rust** 1.96+ (pinned via `rust-toolchain.toml`)
+- **Node.js** 24+ (see `.nvmrc`)
+- **Bun** — required, not optional: the TUI build and CLI/GUI packaging use `bun build`
+- **protoc** (Protocol Buffers compiler) — required by the GUI and channels proto codegen
+  - macOS: `brew install protobuf`
+  - Linux (Debian/Ubuntu): `sudo apt install protobuf-compiler`
+  - Windows: `choco install protoc` (or download from the protobuf releases)
+- **Tauri system dependencies** (for the GUI):
+  - macOS: `xcode-select --install`
+  - Linux (Debian/Ubuntu): `sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libssl-dev libayatana-appindicator3-dev patchelf`
+  - Windows: WebView2 Runtime (ships with Windows 10/11) + MSVC build tools
+- Optional: **Python 3** — only for `make generate-models`
+- Platform: macOS, Linux, or Windows
+
+> **Terminal-only build?** To skip the GUI/Tauri toolchain, build just the terminal stack:
+> `make build-agent && make build-tui && make build-cli`.
+>
+> **Note:** `make install` currently stages the GUI agent/CLI sidecars for Apple Silicon macOS only
+> (the target triple is hardcoded). On Linux or Intel macOS, build the pieces individually or adjust
+> the sidecar names to your host triple (`rustc -vV | grep host`).
+
+### Build & Run
 
 ```bash
 # Clone and build
@@ -129,6 +148,7 @@ All config under `~/.future/`:
 ## Development
 
 ```bash
+make build-channels  # channel bridge — NOT built by `make build`, build it separately
 make lint     # lint all (agent clippy + channels clippy + TUI tsc + CLI tsc + GUI eslint)
 make fmt      # cargo fmt (agent + channels)
 make test     # cargo test (agent)
