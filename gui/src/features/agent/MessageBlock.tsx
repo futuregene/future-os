@@ -25,6 +25,7 @@ interface MessageBlockProps {
   onLeave: (id: string) => void;
   onRetry?: (message: AgentMessage, source: AgentMessage) => void;
   workspaceId?: string | null;
+  workspacePath?: string | null;
 }
 
 export function MessageBlock({
@@ -38,6 +39,7 @@ export function MessageBlock({
   onLeave,
   onRetry,
   workspaceId,
+  workspacePath,
 }: MessageBlockProps) {
   const { i18n, t } = useTranslation("agent");
   const { copiedKey, copy } = useCopyState();
@@ -107,7 +109,7 @@ export function MessageBlock({
                     if (segment.kind === "compaction") {
                       return <CompactionDivider key={segment.id} tokensBefore={segment.tokensBefore} />;
                     }
-                    return <AgentActivityLine item={segment.item} key={segment.id} />;
+                    return <AgentActivityLine item={segment.item} key={segment.id} workspacePath={workspacePath} />;
                   })}
                 </div>
               )
@@ -125,7 +127,7 @@ export function MessageBlock({
                 </div>
               )
             : null}
-          {!isUser && !segments ? <AgentActivityList items={message.activityItems} /> : null}
+          {!isUser && !segments ? <AgentActivityList items={message.activityItems} workspacePath={workspacePath} /> : null}
           {canRecover
             ? (
                 <div className="mt-3 flex flex-wrap gap-2">

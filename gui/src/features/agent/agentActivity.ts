@@ -205,6 +205,11 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
         id: toolId,
         status: hasToolError(payload) ? "failed" : "completed",
         order: existing?.order ?? tool.order,
+        // The end event carries the result, not the args, so `tool.target` is
+        // usually undefined here — keep the target/detail captured while the
+        // args streamed instead of letting the spread clobber them.
+        target: tool.target ?? existing?.target,
+        detail: tool.detail ?? existing?.detail,
       });
       // A result without a preceding start still deserves a slot.
       if (!slottedToolIds.has(toolId)) {
@@ -431,7 +436,43 @@ function targetFromToolArgs(
   kind: Exclude<AgentActivityKind, "thinking">,
   argsText: string,
 ) {
-  return targetFromArgs(kind, normalizeArgs(argsText));
+  const parsed = targetFromArgs(kind, normalizeArgs(argsText));
+  if (parsed)
+    return parsed;
+
+  // Mid-stream the args JSON is still incomplete (e.g. write's `content` is
+  // half-emitted), so `JSON.parse` fails and we'd show no target until the tool
+  // finishes. The path/command sits at the front of the object and is usually
+  // complete already — pull it straight out of the partial text.
+  return partialTargetFromArgsText(kind, argsText);
+}
+
+function partialTargetFromArgsText(
+  kind: Exclude<AgentActivityKind, "thinking">,
+  argsText: string,
+) {
+  const keys = kind === "bash" ? ["command"] : ["path", "file_path", "filePath"];
+  for (const key of keys) {
+    const value = matchJsonStringField(argsText, key);
+    if (value)
+      return value;
+  }
+  return undefined;
+}
+
+function matchJsonStringField(text: string, key: string) {
+  // Match `"key": "<complete quoted value>"` — only fires once the value's
+  // closing quote has streamed in, so we never surface a truncated path.
+  const match = new RegExp(`"${key}"\\s*:\\s*("(?:[^"\\\\]|\\\\.)*")`).exec(text);
+  if (!match?.[1])
+    return undefined;
+  try {
+    const parsed = JSON.parse(match[1]) as unknown;
+    return typeof parsed === "string" ? parsed : undefined;
+  }
+  catch {
+    return undefined;
+  }
 }
 
 function targetFromArgs(
