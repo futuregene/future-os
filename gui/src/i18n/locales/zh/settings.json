@@ -57,7 +57,7 @@
   },
   "account": {
     "loading": "加载账号信息…",
-    "futureGene": "FutureGene 账号",
+    "futureGene": "FutureOS 账号",
     "loggedIn": "已登录",
     "loggedOut": "未登录",
     "login": "登录",
@@ -107,7 +107,7 @@
     "clearKey": "清除密钥",
     "keySaved": "已保存 {{provider}} 密钥。新会话即可生效。",
     "keyCleared": "已清除 {{provider}} 密钥。",
-    "connected": "已连接 FutureGene。新会话即可生效；如仍未生效，可运行 future agent restart。",
+    "connected": "已连接 FutureOS。新会话即可生效；如仍未生效，可运行 future agent restart。",
     "baseUrlLabel": "Base URL",
     "baseUrlRequired": "请填写 Base URL。",
     "baseUrlDialogDescription": "该提供商的 Base URL 是占位符，需替换为你的实际地址（如 Azure 的资源名）。",
@@ -159,7 +159,7 @@
     }
   },
   "futureLogin": {
-    "title": "连接 FutureGene",
+    "title": "连接 FutureOS",
     "description": "已为你打开浏览器中的授权页面；如果没有自动打开，可复制下面的链接手动访问。",
     "cancel": "取消",
     "retry": "重试",
