@@ -2,6 +2,7 @@ import type { ResolvedMarkdownReference } from "../../../integrations/storage/ma
 import type { FutureReference } from "../futureMarkdownTypes";
 import { AlertTriangle, Beaker, Box, FileDiff, Microscope, PlayCircle } from "lucide-react";
 import { MissingReference } from "./MissingReference";
+import { PendingReference } from "./PendingReference";
 
 export function ReferenceChip({
   reference,
@@ -10,8 +11,12 @@ export function ReferenceChip({
   reference: FutureReference;
   resolved?: ResolvedMarkdownReference;
 }) {
-  if (!resolved || resolved.status !== "resolved") {
-    return <MissingReference error={resolved?.error} reference={reference} />;
+  // Resolve IPC still in flight — neutral placeholder, not the red badge.
+  if (!resolved)
+    return <PendingReference reference={reference} />;
+
+  if (resolved.status !== "resolved") {
+    return <MissingReference error={resolved.error} reference={reference} />;
   }
 
   const label = reference.label ?? reference.targetId;

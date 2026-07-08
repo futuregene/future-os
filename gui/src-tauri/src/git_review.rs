@@ -294,7 +294,9 @@ fn git_output<const N: usize>(
     workspace_path: &Path,
     args: [&str; N],
 ) -> Result<String, crate::AppError> {
+    use crate::proc::NoWindow;
     let output = Command::new("git")
+        .no_window()
         .arg("-C")
         .arg(workspace_path)
         // Disable path quoting so non-ASCII filenames come back literal and line

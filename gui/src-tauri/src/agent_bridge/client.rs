@@ -10,9 +10,15 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use tonic::transport::Channel;
+use std::time::Duration;
+use tonic::transport::{Channel, Endpoint};
 
 use crate::agent_proto::{image_content, FutureAgentClient, ImageContent, RpcCommand, RpcResponse};
+
+/// Cap on how long a single connection attempt may take. Without it a hung agent
+/// can stall a caller indefinitely — e.g. the GUI's 10s model poll would pile up
+/// overlapping calls, and a late failure could clobber fresh state.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Bare `host:port` the GUI talks to (env override or the default). The single
 /// source of the default address, shared with the bundled-agent supervisor.
@@ -34,13 +40,18 @@ fn agent_endpoint() -> String {
 /// `abort_run` still cancels the run locally).
 pub(super) async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppError> {
     let endpoint = agent_endpoint();
-    FutureAgentClient::connect(endpoint.clone())
+    let unavailable = |error: tonic::transport::Error| {
+        crate::AppError::AgentUnavailable(format!(
+            "Unable to connect to Future Agent at {endpoint}: {error}"
+        ))
+    };
+    let channel = Endpoint::from_shared(endpoint.clone())
+        .map_err(unavailable)?
+        .connect_timeout(CONNECT_TIMEOUT)
+        .connect()
         .await
-        .map_err(|error| {
-            crate::AppError::AgentUnavailable(format!(
-                "Unable to connect to Future Agent at {endpoint}: {error}"
-            ))
-        })
+        .map_err(unavailable)?;
+    Ok(FutureAgentClient::new(channel))
 }
 
 /// Turn a gRPC `RpcResponse` into a `Result`, surfacing the agent's own error

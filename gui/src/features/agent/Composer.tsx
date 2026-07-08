@@ -1,20 +1,21 @@
-import type { ChangeEvent, ClipboardEvent, FormEvent, KeyboardEvent } from "react";
+import type { FormEvent } from "react";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
-import type { ReferenceTargetSearchResult } from "../../integrations/storage/threadStore";
 import type { MessageAttachment } from "./agentThreadTypes";
+import type { MentionEditorHandle } from "./MentionEditor";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { AlertTriangle, ArrowUp, Beaker, Box, ChevronDown, FileDiff, Microscope, Paperclip, PlayCircle, ShieldCheck, Square, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUp, ChevronDown, Paperclip, ShieldCheck, Square, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
 import { modelKey, modelLabel, modelOption, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
-import { savePastedImage, searchReferenceTargets } from "../../integrations/storage/threadStore";
+import { savePastedImage } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { isMacOS } from "../../lib/platform";
 import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, MAX_ATTACHMENTS_PER_TURN, pickerExtensions } from "./attachments";
+import { MentionEditor } from "./MentionEditor";
 
 /** Approval-tier order for the composer dropdown (sandbox is macOS-only). */
 const APPROVAL_TIERS: ApprovalTier[] = ["manual", "sandbox", "off"];
@@ -25,11 +26,20 @@ export interface ComposerSendPayload {
 }
 
 interface ComposerProps {
-  onSend: (payload: ComposerSendPayload) => void;
+  /**
+   * Sync send (thread path): the message renders as an optimistic bubble, so
+   * the composer clears immediately. Async send (new-conversation path): the
+   * message has nowhere to live until the thread exists, so the composer only
+   * clears after the promise resolves — a failed creation keeps the draft for
+   * retry (the caller surfaces the error itself, e.g. via toast).
+   */
+  onSend: (payload: ComposerSendPayload) => void | Promise<void>;
   className?: string;
   disabled?: boolean;
   modelId?: string;
   modelOptions: AgentModelOption[];
+  /** Why the picker list is empty, to tailor its empty-state copy. */
+  modelsEmptyReason?: "no_models" | "all_disabled";
   onModelChange?: (modelId: string) => void;
   thinkingLevel?: string;
   onThinkingLevelChange?: (thinkingLevel: string) => void;
@@ -50,6 +60,7 @@ export function Composer({
   disabled,
   modelId,
   modelOptions,
+  modelsEmptyReason,
   onModelChange,
   thinkingLevel,
   onThinkingLevelChange,
@@ -62,7 +73,6 @@ export function Composer({
   workspaceId,
 }: ComposerProps) {
   const { t } = useTranslation("agent");
-  const [value, setValue] = useState("");
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [dropActive, setDropActive] = useState(false);
@@ -70,58 +80,21 @@ export function Composer({
   const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
   const [approvalMenuOpen, setApprovalMenuOpen] = useState(false);
   const providerNames = useProviderNames();
-  const [caretPosition, setCaretPosition] = useState(0);
-  const [referenceResults, setReferenceResults] = useState<ReferenceTargetSearchResult[]>([]);
-  const [referenceSearchOpen, setReferenceSearchOpen] = useState(false);
-  const [selectedReferenceIndex, setSelectedReferenceIndex] = useState(0);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // The editor is non-controlled (see MentionEditor); we only mirror its empty
+  // state to enable/disable the send button.
+  const [inputEmpty, setInputEmpty] = useState(true);
+  // An async onSend is in flight (see ComposerProps.onSend) — block re-submits
+  // until it settles.
+  const [sendPending, setSendPending] = useState(false);
+  const editorRef = useRef<MentionEditorHandle | null>(null);
   const activeModelId = modelId || (modelOptions[0] ? modelKey(modelOptions[0]) : "");
   const activeModel = modelOption(activeModelId, modelOptions);
   // Only offer/accept images when the active model advertises image input.
   // Unknown model (not in the catalog yet) → allow, to avoid over-restricting.
   const allowImages = activeModel ? activeModel.supportsImages !== false : true;
   const activeThinkingLevel = normalizeThinkingLevel(thinkingLevel);
-  const activeMention = useMemo(() => findActiveMention(value, caretPosition), [caretPosition, value]);
-
-  useEffect(() => {
-    // Hand-rolled cancel guard (not useAsyncResource): this effect drives several
-    // states (results + open flag) with an early-return branch, which doesn't map
-    // onto the primitive's single-resource shape. See gui/CLAUDE.md §4.
-    let cancelled = false;
-
-    async function loadReferenceResults() {
-      if (!workspaceId || !activeMention || disabled) {
-        setReferenceResults([]);
-        setReferenceSearchOpen(false);
-        return;
-      }
-
-      try {
-        const results = await searchReferenceTargets({
-          limit: 8,
-          query: activeMention.query,
-          workspaceId,
-        });
-        if (!cancelled) {
-          setReferenceResults(results);
-          setReferenceSearchOpen(true);
-          setSelectedReferenceIndex(0);
-        }
-      }
-      catch {
-        if (!cancelled) {
-          setReferenceResults([]);
-          setReferenceSearchOpen(false);
-        }
-      }
-    }
-
-    void loadReferenceResults();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeMention, disabled, workspaceId]);
+  // Localized thinking-level label; unknown levels fall back to the raw value.
+  const thinkingLevelLabel = (level: string) => t(`composer.thinkingLevelLabels.${level}`, { defaultValue: level });
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -129,75 +102,26 @@ export function Composer({
   }
 
   function submitValue() {
-    const trimmed = value.trim();
-    if ((!trimmed && attachments.length === 0) || disabled)
+    const trimmed = (editorRef.current?.getContent() ?? "").trim();
+    if ((!trimmed && attachments.length === 0) || disabled || sendPending)
       return;
-    onSend({ attachments, content: trimmed });
-    setValue("");
-    setAttachments([]);
-    setAttachError(null);
-    setReferenceSearchOpen(false);
-  }
-
-  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (referenceSearchOpen && referenceResults.length > 0) {
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setSelectedReferenceIndex(index => (index + 1) % referenceResults.length);
-        return;
-      }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setSelectedReferenceIndex(index => (index - 1 + referenceResults.length) % referenceResults.length);
-        return;
-      }
-      if (event.key === "Enter" || event.key === "Tab") {
-        event.preventDefault();
-        const selected = referenceResults[selectedReferenceIndex];
-        if (selected)
-          insertReference(selected);
-        return;
-      }
-    }
-
-    if (event.key === "Escape" && referenceSearchOpen) {
-      event.preventDefault();
-      setReferenceSearchOpen(false);
+    const clearComposer = () => {
+      editorRef.current?.clear();
+      setAttachments([]);
+      setAttachError(null);
+    };
+    const result = onSend({ attachments, content: trimmed });
+    if (result) {
+      // Async send: clear only on success so a failure keeps the draft
+      // (rationale on ComposerProps.onSend). The caller reports the error.
+      setSendPending(true);
+      result
+        .then(clearComposer)
+        .catch(() => {})
+        .finally(() => setSendPending(false));
       return;
     }
-
-    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing)
-      return;
-
-    event.preventDefault();
-    submitValue();
-  }
-
-  function handleChange(event: ChangeEvent<HTMLTextAreaElement>) {
-    setValue(event.target.value);
-    setCaretPosition(event.target.selectionStart);
-  }
-
-  function updateCaret() {
-    setCaretPosition(textareaRef.current?.selectionStart ?? value.length);
-  }
-
-  function insertReference(reference: ReferenceTargetSearchResult) {
-    if (!activeMention)
-      return;
-
-    const label = escapeMarkdownLinkLabel(`${reference.targetType}:${reference.title}`);
-    const targetId = encodeFutureReferenceId(reference.targetId);
-    const markdown = `[${label}](futureos://${reference.targetType}/${targetId})`;
-    const nextValue = `${value.slice(0, activeMention.start)}${markdown}${value.slice(activeMention.end)}`;
-    const nextCaret = activeMention.start + markdown.length;
-    setValue(nextValue);
-    setCaretPosition(nextCaret);
-    setReferenceSearchOpen(false);
-    window.requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(nextCaret, nextCaret);
-    });
+    clearComposer();
   }
 
   const addAttachmentPaths = useCallback(async (paths: string[]) => {
@@ -230,6 +154,29 @@ export function Composer({
     setAttachError(rejected.length > 0 ? t("composer.attachIgnored", { items: rejected.join("，") }) : null);
   }, [allowImages, attachments, t]);
 
+  async function attachImageFiles(files: File[]) {
+    // Save every file first, then attach in ONE addAttachmentPaths call:
+    // calling it per file inside the loop reuses the same closure over the
+    // pre-paste `attachments`, so each iteration's setAttachments overwrites
+    // the previous one and only the last image survives.
+    const saved: string[] = [];
+    for (const file of files) {
+      try {
+        const buffer = await file.arrayBuffer();
+        const result = await savePastedImage({
+          bytes: Array.from(new Uint8Array(buffer)),
+          extension: imageExtensionFromMime(file.type) ?? "png",
+        });
+        saved.push(result.path);
+      }
+      catch {
+        // Ignore a single failed paste; other clipboard items still attach.
+      }
+    }
+    if (saved.length > 0)
+      await addAttachmentPaths(saved);
+  }
+
   async function handleAttachFiles() {
     if (disabled)
       return;
@@ -244,36 +191,6 @@ export function Composer({
       return;
 
     await addAttachmentPaths(paths);
-  }
-
-  async function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
-    if (disabled)
-      return;
-
-    const imageItems = Array.from(event.clipboardData?.items ?? []).filter(
-      item => item.kind === "file" && item.type.startsWith("image/"),
-    );
-    if (imageItems.length === 0)
-      return;
-
-    event.preventDefault();
-    for (const item of imageItems) {
-      const file = item.getAsFile();
-      if (!file)
-        continue;
-
-      try {
-        const buffer = await file.arrayBuffer();
-        const saved = await savePastedImage({
-          bytes: Array.from(new Uint8Array(buffer)),
-          extension: imageExtensionFromMime(file.type) ?? "png",
-        });
-        await addAttachmentPaths([saved.path]);
-      }
-      catch {
-        // Ignore a single failed paste; other clipboard items still attach.
-      }
-    }
   }
 
   function removeAttachment(path: string) {
@@ -322,15 +239,6 @@ export function Composer({
       )}
       onSubmit={handleSubmit}
     >
-      {referenceSearchOpen && activeMention
-        ? (
-            <ReferenceSearchMenu
-              results={referenceResults}
-              selectedIndex={selectedReferenceIndex}
-              onSelect={insertReference}
-            />
-          )
-        : null}
       {attachments.length > 0
         ? (
             <div className="flex flex-wrap gap-1.5 px-1 pb-2">
@@ -355,21 +263,15 @@ export function Composer({
             </div>
           )
         : null}
-      <textarea
-        ref={textareaRef}
-        className={cn(
-          "h-14 w-full resize-none border-0 bg-transparent px-2 py-1 text-sm leading-5 text-ink outline-none placeholder:text-ink-muted",
-          textareaClassName,
-        )}
-        placeholder={placeholder ?? t("composer.placeholder")}
-        value={value}
+      <MentionEditor
+        ref={editorRef}
+        className={textareaClassName}
+        workspaceId={workspaceId}
         disabled={disabled}
-        onKeyDown={handleKeyDown}
-        onChange={handleChange}
-        onPaste={handlePaste}
-        onClick={updateCaret}
-        onKeyUp={updateCaret}
-        onSelect={updateCaret}
+        placeholder={placeholder ?? t("composer.placeholder")}
+        onSubmit={submitValue}
+        onEmptyChange={setInputEmpty}
+        onPasteImages={files => void attachImageFiles(files)}
       />
       {attachError
         ? <div className="px-1 pb-1 text-xs text-warning">{attachError}</div>
@@ -442,14 +344,18 @@ export function Composer({
                 type="button"
                 title={t("composer.model")}
               >
-                <span className="truncate">{modelLabel(activeModelId, modelOptions)}</span>
+                <span className="truncate">{modelLabel(activeModelId, modelOptions) ?? t("common:modelFallback")}</span>
                 <ChevronDown className="size-3 shrink-0" />
               </button>
             )}
           >
             {modelOptions.length === 0
               ? (
-                  <div className="px-3 py-2 text-sm text-ink-muted">{t("composer.startAgentForModels")}</div>
+                  <div className="px-3 py-2 text-sm text-ink-muted">
+                    {modelsEmptyReason === "all_disabled"
+                      ? t("composer.allModelsDisabled")
+                      : t("composer.startAgentForModels")}
+                  </div>
                 )
               : null}
             {modelOptions.map(model => (
@@ -520,7 +426,7 @@ export function Composer({
             : (
                 <button
                   className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
-                  disabled={(!value.trim() && attachments.length === 0) || disabled}
+                  disabled={(inputEmpty && attachments.length === 0) || disabled || sendPending}
                   type="submit"
                   aria-label={t("composer.send")}
                   title={t("composer.send")}
@@ -532,112 +438,4 @@ export function Composer({
       </div>
     </form>
   );
-}
-
-function thinkingLevelLabel(level: string) {
-  switch (level) {
-    case "off":
-      return "Off";
-    case "minimal":
-      return "Minimal";
-    case "low":
-      return "Low";
-    case "medium":
-      return "Medium";
-    case "high":
-      return "High";
-    case "xhigh":
-      return "XHigh";
-    default:
-      return level;
-  }
-}
-
-function ReferenceSearchMenu({
-  onSelect,
-  results,
-  selectedIndex,
-}: {
-  onSelect: (reference: ReferenceTargetSearchResult) => void;
-  results: ReferenceTargetSearchResult[];
-  selectedIndex: number;
-}) {
-  const { t } = useTranslation("agent");
-  return (
-    <div className="absolute bottom-full left-2 z-30 mb-2 w-[min(30rem,calc(100%-1rem))] rounded-lg border border-line-soft bg-surface p-1 shadow-panel">
-      {results.length === 0
-        ? <div className="px-2 py-2 text-sm text-ink-muted">{t("composer.noReferences")}</div>
-        : null}
-      {results.map((result, index) => (
-        <button
-          className={cn(
-            "flex h-11 w-full items-center gap-2 rounded-md px-2 text-left transition-colors",
-            index === selectedIndex ? "bg-surface-subtle" : "hover:bg-surface-subtle",
-          )}
-          key={`${result.targetType}:${result.targetId}`}
-          onMouseDown={(event) => {
-            event.preventDefault();
-            onSelect(result);
-          }}
-          type="button"
-        >
-          {referenceIcon(result.targetType)}
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-medium text-ink">{result.title}</span>
-            <span className="block truncate text-xs text-ink-muted">
-              {result.targetType}
-              {result.subtitle ? ` · ${result.subtitle}` : ""}
-            </span>
-          </span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function referenceIcon(targetType: string) {
-  const className = "size-4 shrink-0 text-ink-soft";
-  switch (targetType) {
-    case "approval":
-      return <AlertTriangle className={className} />;
-    case "research":
-      return <Microscope className={className} />;
-    case "review":
-      return <FileDiff className={className} />;
-    case "run":
-      return <PlayCircle className={className} />;
-    case "tool":
-      return <Beaker className={className} />;
-    default:
-      return <Box className={className} />;
-  }
-}
-
-function findActiveMention(value: string, caretPosition: number) {
-  const beforeCaret = value.slice(0, caretPosition);
-  const match = beforeCaret.match(/(^|\s)@([^\s@]*)$/);
-  if (!match)
-    return null;
-
-  // Group 1 `(^|\s)` is a required capture — present whenever `match` is.
-  const markerOffset = match[1]!.length;
-  const start = caretPosition - match[0].length + markerOffset;
-  return {
-    end: caretPosition,
-    query: match[2],
-    start,
-  };
-}
-
-function escapeMarkdownLinkLabel(value: string) {
-  return value
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\\/g, "/")
-    .replace(/\[/g, "(")
-    .replace(/\]/g, ")");
-}
-
-function encodeFutureReferenceId(value: string) {
-  return encodeURIComponent(value).replace(/[!'()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
 }

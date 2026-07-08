@@ -84,6 +84,12 @@ export function pickerExtensions(allowImages: boolean): string[] {
 const INLINE_MAX_BYTES_PER_FILE = 30 * 1024;
 const INLINE_MAX_LINES_PER_FILE = 2000;
 const INLINE_MAX_TOTAL_BYTES = 60 * 1024;
+/**
+ * Upper bound on PDF pages scanned for text. A large scanned PDF yields empty
+ * text per page, so the byte cap never trips — without this it would walk every
+ * page (thousands) before giving up.
+ */
+const MAX_PDF_PAGES = 100;
 /** Per-file byte cap shared by attachments and artifact uploads. */
 export const READ_SOURCE_MAX_BYTES = 25 * 1024 * 1024;
 
@@ -166,6 +172,22 @@ function byteLength(text: string) {
   return new TextEncoder().encode(text).length;
 }
 
+/**
+ * Truncate `text` to at most `maxBytes` UTF-8 bytes **on a character boundary**,
+ * so a multibyte sequence (CJK, emoji) is never sliced mid-way — which would
+ * decode to a `U+FFFD` replacement char injected into the model prompt.
+ * Backs up from the byte limit past any UTF-8 continuation bytes (`0b10xxxxxx`).
+ */
+function truncateToBytes(text: string, maxBytes: number): { text: string; truncated: boolean } {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= maxBytes)
+    return { text, truncated: false };
+  let end = maxBytes;
+  while (end > 0 && ((bytes[end] ?? 0) & 0xC0) === 0x80)
+    end--;
+  return { text: new TextDecoder().decode(bytes.subarray(0, end)), truncated: true };
+}
+
 function capText(text: string): { text: string; truncated: boolean } {
   let truncated = false;
   let lines = text.split("\n");
@@ -173,12 +195,8 @@ function capText(text: string): { text: string; truncated: boolean } {
     lines = lines.slice(0, INLINE_MAX_LINES_PER_FILE);
     truncated = true;
   }
-  let out = lines.join("\n");
-  while (byteLength(out) > INLINE_MAX_BYTES_PER_FILE) {
-    out = out.slice(0, Math.floor(out.length * 0.95));
-    truncated = true;
-  }
-  return { text: out, truncated };
+  const capped = truncateToBytes(lines.join("\n"), INLINE_MAX_BYTES_PER_FILE);
+  return { text: capped.text, truncated: truncated || capped.truncated };
 }
 
 function base64ToBytes(base64: string) {
@@ -196,7 +214,8 @@ async function extractPdfText(path: string) {
     const pdf = await loadingTask.promise;
     const parts: string[] = [];
     let bytes = 0;
-    for (let page = 1; page <= pdf.numPages; page++) {
+    const lastPage = Math.min(pdf.numPages, MAX_PDF_PAGES);
+    for (let page = 1; page <= lastPage; page++) {
       const content = await pdf.getPage(page).then(p => p.getTextContent());
       const text = content.items
         .map(item => ("str" in item ? item.str : ""))
@@ -248,12 +267,11 @@ export async function buildInlineAttachmentContext(attachments: MessageAttachmen
         blocks.push(`${header(" (PDF)")}\n[该 PDF 无可提取文本，可能是扫描件，如需处理请读取上述文件路径]`);
         continue;
       }
-      let { text, truncated } = capText(raw);
+      const capped = capText(raw);
       const remaining = INLINE_MAX_TOTAL_BYTES - total;
-      if (byteLength(text) > remaining) {
-        text = new TextDecoder().decode(new TextEncoder().encode(text).slice(0, remaining));
-        truncated = true;
-      }
+      const fitted = truncateToBytes(capped.text, remaining);
+      const text = fitted.text;
+      const truncated = capped.truncated || fitted.truncated;
       total += byteLength(text);
       const tag = attachment.kind === "pdf" ? "PDF" : "文本";
       blocks.push(`${header(` (${tag}${truncated ? "，已截断" : ""})`)}\n${text}`);
@@ -277,11 +295,26 @@ function loadImage(src: string) {
   });
 }
 
-function thumbnailKey(path: string) {
-  let hash = 5381;
-  for (let i = 0; i < path.length; i++)
-    hash = ((hash << 5) + hash + path.charCodeAt(i)) >>> 0;
-  return `thumb-${hash.toString(36)}`;
+/**
+ * Cache-key for a path's thumbnail. Uses a SHA-256 prefix (128 bits) so distinct
+ * image paths don't collide and show each other's thumbnail — the prior
+ * 32-bit djb2 was collision-prone. Falls back to djb2 only if SubtleCrypto is
+ * unavailable (non-secure context).
+ */
+async function thumbnailKey(path: string): Promise<string> {
+  try {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(path));
+    const hex = Array.from(new Uint8Array(digest, 0, 16))
+      .map(byte => byte.toString(16).padStart(2, "0"))
+      .join("");
+    return `thumb-${hex}`;
+  }
+  catch {
+    let hash = 5381;
+    for (let i = 0; i < path.length; i++)
+      hash = ((hash << 5) + hash + path.charCodeAt(i)) >>> 0;
+    return `thumb-${hash.toString(36)}`;
+  }
 }
 
 /** Downscale an image to ~96px and persist a JPEG thumbnail in the app cache. */
@@ -305,7 +338,7 @@ export async function generateImageThumbnail(path: string): Promise<string | nul
     const jpeg = canvas.toDataURL("image/jpeg", 0.6).split(",")[1] ?? "";
     if (!jpeg)
       return null;
-    return await writeThumbnail({ base64Jpeg: jpeg, key: thumbnailKey(path) });
+    return await writeThumbnail({ base64Jpeg: jpeg, key: await thumbnailKey(path) });
   }
   catch {
     return null;

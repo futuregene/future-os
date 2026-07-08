@@ -29,11 +29,15 @@
     "pin": "Pin",
     "unpin": "Unpin",
     "delete": "Delete",
+    "revealInFinder": "Reveal in Finder",
+    "revealInExplorer": "Show in File Explorer",
+    "revealInFileManager": "Open in File Manager",
     "workspaceActions": "Workspace actions for {{name}}",
     "pinnedHeader": "Pinned"
   },
   "appShell": {
     "storeInitFailed": "FutureOS local storage failed to initialize: ",
+    "startConversationFailed": "Failed to start the conversation: {{error}}",
     "noWorkspaceSelected": "No workspace selected",
     "data": "Data",
     "skill": "Skill",

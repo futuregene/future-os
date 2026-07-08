@@ -219,7 +219,7 @@ Research / Data 暂不投入，左侧导航图标仍隐藏（`ActivityRail` 的 
 平台侧已提供账户接口，CLI 已接入 `account profile / balance / recharge`（`{platform}/client/v1/account/*`，见 `cli/src/commands/account.ts`）。GUI 目前无账户面板。
 
 - **暂缓**：本期不在 GUI 暴露账户/余额/充值入口。
-- **若做**：在 Settings 加「账户」页，复用已对齐的平台 URL 解析（`agent_providers::resolve_future_platform_url`）+ `future` API key，调 `/client/v1/account/profile`、`/balance`；充值下单 `/recharge/orders` 走外部浏览器，**GUI 不直接处理支付凭证**（遵守凭证边界）。
+- **若做**：在 Settings 加「账户」页，复用已对齐的平台 URL 解析（`future_platform::resolve_future_platform_url`）+ `future` API key，调 `/client/v1/account/profile`、`/balance`；充值下单 `/recharge/orders` 走外部浏览器，**GUI 不直接处理支付凭证**（遵守凭证边界）。
 - **前置**：FutureGene 登录已可用（见下方平台 URL 对齐说明）。
 
 ## Provider 配置现状（P10 基线）
@@ -227,7 +227,7 @@ Research / Data 暂不投入，左侧导航图标仍隐藏（`ActivityRail` 的 
 模型 Provider 配置落在 agent 的两个文件：`~/.future/agent/models.json`（providers + models，合并在内置 catalog 之上）与 `~/.future/agent/auth.json`（按 provider id 存 API key）。
 
 - **CLI**（`cli/src/commands/auth.ts`）：只有 `future auth login / status / logout`，对内置 **FutureGene** provider 做设备码 OAuth（`/v1/oauth/device/code` → 轮询 `/v1/oauth/device/token`），把 `api_key` 写进 `auth.json` 的 `future` 条目。**CLI 没有添加自定义 Provider 的命令，login 也不写 models.json。**
-- **GUI**（`agent_providers.rs` + `commands/providers.rs` + Settings ▸ Providers）：已具备**自定义 Provider 全量增删改**。
+- **GUI**（`agent_providers/` 模块 + `commands/providers.rs` + Settings ▸ Providers）：已具备**自定义 Provider 全量增删改**。（`agent_providers/` 拆为 `mod`（DTO + `list_agent_providers`）/ `catalog`（内置目录，`OnceLock` 缓存）/ `validate`（`validate_custom_provider` 字段校验）/ `write`（增删改）/ `tests`。）
   - `list_agent_providers`：内置 FutureGene（只读，base_url 取 `auth.json.future.base_url`）+ 自定义（读 `models.json.providers`）。
   - `upsert_custom_provider`：写 `models.json.providers.<id>`（name / api / baseUrl / models，保留 `compat` 等未管理字段）+ 可选 API key 写 `auth.json.<id>`。
   - `delete_custom_provider`：从两个文件移除。

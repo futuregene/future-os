@@ -292,11 +292,9 @@ export interface StoredResearchResource {
   updatedAt: number;
 }
 
-export interface ReferenceTargetSearchResult {
-  targetType: "approval" | "artifact" | "research" | "review" | "run" | "tool" | string;
-  targetId: string;
-  title: string;
-  subtitle?: string | null;
-  searchText?: string | null;
-  updatedAt: number;
+export interface WorkspaceFileResult {
+  /** Path relative to the workspace root (POSIX separators). */
+  path: string;
+  /** Last path component, for display emphasis. */
+  name: string;
 }

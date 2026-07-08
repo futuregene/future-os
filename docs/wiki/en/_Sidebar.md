@@ -11,7 +11,7 @@
 - [[Skills]]
 
 **Command line (advanced)**
-- [[CLI (future-cli)|CLI]]
+- [[CLI (future)|CLI]]
 
 **Integrations**
 - [[Feishu Integration|Feishu]]

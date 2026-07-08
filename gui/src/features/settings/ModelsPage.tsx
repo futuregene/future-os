@@ -2,12 +2,9 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TextInput } from "../../components/ui/TextInput";
+import { modelKey } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
-
-function modelKey(model: { id: string; provider: string }) {
-  return `${model.provider}/${model.id}`;
-}
 
 export function ModelsPage({
   hiddenModels,
@@ -45,7 +42,7 @@ export function ModelsPage({
     return [...byProvider.entries()].sort(([a], [b]) => label(a).localeCompare(label(b)));
   }, [modelOptions, query, providerNames]);
 
-  // Subtitle = optional model id + input modality ("文本" / "文本 图片").
+  // Subtitle = optional model id + input modality ("Text" / "Text Image").
   function modelSubtitle(model: AgentModelOption) {
     const modality = [
       t("models.modality.text"),
@@ -86,7 +83,7 @@ export function ModelsPage({
                 title={model.label}
                 // Subtitle: raw model id (dropped when it equals the label so it
                 // isn't shown twice) followed by the input modality, e.g.
-                // "文本" or "文本 图片".
+                // "Text" or "Text Image".
                 description={modelSubtitle(model)}
               >
                 <Switch

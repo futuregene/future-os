@@ -39,7 +39,7 @@ export function MessageBlock({
   onRetry,
   workspaceId,
 }: MessageBlockProps) {
-  const { t } = useTranslation("agent");
+  const { i18n, t } = useTranslation("agent");
   const { copiedKey, copy } = useCopyState();
   const isUser = message.role === "user";
   // While the reply streams, the footer is pinned open and shows a live activity
@@ -68,13 +68,13 @@ export function MessageBlock({
           <span className="text-sm font-semibold text-ink">
             {message.authorKey ? t(message.authorKey) : message.author}
           </span>
-          <span className="text-xs text-ink-muted">{formatTime(message.createdAt)}</span>
+          <span className="text-xs text-ink-muted">{formatTime(message.createdAt, i18n.language)}</span>
         </div>
         <div
           className={cn(
             "text-sm leading-6 text-ink",
             isUser
-              ? "ml-auto w-fit max-w-2xl wrap-break-word rounded-lg bg-surface-subtle px-4 py-3 text-right"
+              ? "ml-auto w-fit max-w-2xl wrap-break-word rounded-lg bg-surface-subtle px-4 py-3 text-left"
               : "w-full",
           )}
         >
@@ -110,7 +110,7 @@ export function MessageBlock({
               )
             : message.content
               ? isUser
-                ? <p className="whitespace-pre-wrap">{message.content}</p>
+                ? <UserMessageText content={message.content} />
                 : <MarkdownContent content={message.content} workspaceId={workspaceId} />
               : null}
           {message.attachments && message.attachments.length > 0
@@ -180,7 +180,20 @@ export function MessageBlock({
             ? <span className="select-none text-xs text-ink-muted">{t("message.thinking")}</span>
             : null}
           {!isUser && message.stopped
-            ? <span className="select-none text-xs text-ink-muted">{t("message.stopped")}</span>
+            ? (
+                <span
+                  // Reveal on hover like the copy button / MessageMeta — a settled
+                  // row stays clean until hovered. `will-change-[opacity]` keeps the
+                  // fade on the compositor (WKWebView drops in-flow repaints; see
+                  // CopyButton above for the full story).
+                  className={cn(
+                    "select-none text-xs text-ink-muted will-change-[opacity] transition-opacity duration-200",
+                    hovered ? "opacity-100" : "opacity-0",
+                  )}
+                >
+                  {t("message.stopped")}
+                </span>
+              )
             : null}
         </div>
       </div>
@@ -193,6 +206,43 @@ export function MessageBlock({
  * streams: a small amber dot with a pulsing ping halo (no brain icon — the
  * motion is the signal). `label` is exposed to assistive tech only.
  */
+/**
+ * A composer `@` mention serializes to `[name](./path)` (or `[name](<./path>)`
+ * when the path has spaces). Matches those file links so the user bubble can
+ * show the mention name in the accent color — matching the composer pill.
+ */
+const MENTION_LINK = /\[([^\]]+)\]\((?:<(\.\/[^>]+)>|(\.\/[^)\s]+))\)/g;
+
+/**
+ * User messages render as plain text (never markdown — the user's `*`/`#`/`1.`
+ * stay literal), except `@` file mentions, which show in the accent color like
+ * the composer pill. Everything else is verbatim.
+ */
+function UserMessageText({ content }: { content: string }) {
+  // `key` is the segment's character offset — stable and unique within the text.
+  const segments: { text: string; mention: boolean; key: number }[] = [];
+  let last = 0;
+  MENTION_LINK.lastIndex = 0;
+  for (let match = MENTION_LINK.exec(content); match; match = MENTION_LINK.exec(content)) {
+    if (match.index > last)
+      segments.push({ text: content.slice(last, match.index), mention: false, key: last });
+    segments.push({ text: match[1] ?? "", mention: true, key: match.index });
+    last = match.index + match[0].length;
+  }
+  if (last < content.length)
+    segments.push({ text: content.slice(last), mention: false, key: last });
+
+  return (
+    <p className="whitespace-pre-wrap">
+      {segments.map(segment =>
+        segment.mention
+          ? <span key={segment.key} className="font-medium text-accent">{segment.text}</span>
+          : <span key={segment.key}>{segment.text}</span>,
+      )}
+    </p>
+  );
+}
+
 function StreamingIndicator({ label }: { label: string }) {
   return (
     <div aria-label={label} className="flex items-center px-1 py-1.5" role="status">

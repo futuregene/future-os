@@ -30,9 +30,12 @@
   "thread": {
     "loading": "Loading FutureOS thread...",
     "noActiveThread": "No active thread.",
+    "jumpToLatest": "Jump to latest",
     "defaultTitle": "FutureOS",
     "agentDoneNoText": "Future Agent finished but returned no text.",
-    "messagesLoadFailed": "Failed to load FutureOS messages: {{message}}"
+    "messagesLoadFailed": "Failed to load FutureOS messages: {{message}}",
+    "alreadyRunning": "A response is already in progress for this conversation.",
+    "responseInterrupted": "The response was interrupted before it finished."
   },
   "failure": {
     "connect": "Future Agent connection failed: {{message}}\n\nMake sure the agent is running and FUTURE_AGENT_GRPC_ADDR points to 127.0.0.1:50051.",
@@ -61,6 +64,11 @@
       "title": "No models available",
       "detail": "A provider is configured, but the model list is empty. Check that models are enabled, or verify your account quota / permissions.",
       "action": "Model settings"
+    },
+    "allModelsDisabled": {
+      "title": "All models disabled",
+      "detail": "Models are loaded, but you've disabled all of them in Settings. Enable at least one.",
+      "action": "Model settings"
     }
   },
   "composer": {
@@ -76,10 +84,19 @@
     "attachRejectedReason": "{{name}} ({{reason}})",
     "model": "Model",
     "startAgentForModels": "Start Future Agent to load models.",
+    "allModelsDisabled": "Models are loaded but all disabled. Enable one in Settings.",
     "thinkingLevel": "Thinking level",
+    "thinkingLevelLabels": {
+      "off": "Off",
+      "minimal": "Minimal",
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "xhigh": "XHigh"
+    },
     "send": "Send",
     "stop": "Stop",
-    "noReferences": "No references found.",
+    "noFiles": "No matching files.",
     "approval": "Approval mode",
     "approvalTier": {
       "manual": "Manual",

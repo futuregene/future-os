@@ -1,7 +1,58 @@
 //! Local filesystem Tauri commands: opening paths in the OS, previewing text
 //! files, exporting artifacts, and persisting pasted images.
 
-use std::{fs::File, io::Read, process::Command};
+use std::{
+    ffi::OsString,
+    fs::File,
+    io::Read,
+    path::{Path, PathBuf},
+};
+
+/// Resolve `path` to an absolute, symlink/`..`-collapsed form even when the
+/// target doesn't exist yet (e.g. an export destination): canonicalize the
+/// nearest existing ancestor, then re-append the missing tail.
+fn best_effort_canonical(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+    let mut existing = path;
+    let mut tail: Vec<OsString> = Vec::new();
+    while !existing.exists() {
+        match (existing.file_name(), existing.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name.to_os_string());
+                existing = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+    let mut base = existing
+        .canonicalize()
+        .unwrap_or_else(|_| existing.to_path_buf());
+    for name in tail.into_iter().rev() {
+        base.push(name);
+    }
+    base
+}
+
+/// Reject file access to FutureOS's own config/credential root (`~/.future`).
+/// These commands are reachable from the webview, which renders agent-produced
+/// markdown/artifacts — without this guard an XSS could read `auth.json` or
+/// overwrite `approval_rule.json`, escalating to the very secrets the
+/// approval/sandbox system protects. User-chosen files elsewhere stay allowed.
+fn ensure_path_allowed(path: &Path) -> Result<(), crate::AppError> {
+    let resolved = best_effort_canonical(path);
+    if let Some(home) = crate::home_dir() {
+        if let Ok(future_dir) = PathBuf::from(home).join(".future").canonicalize() {
+            if resolved.starts_with(&future_dir) {
+                return Err("Refusing to access a protected FutureOS directory."
+                    .to_string()
+                    .into());
+            }
+        }
+    }
+    Ok(())
+}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +85,7 @@ pub fn inspect_attachment(path: String) -> Result<AttachmentInfo, crate::AppErro
     if trimmed.is_empty() {
         return Err("path cannot be empty.".to_string().into());
     }
+    ensure_path_allowed(Path::new(trimmed))?;
     let meta = std::fs::metadata(trimmed)?;
     if meta.is_dir() {
         return Ok(AttachmentInfo {
@@ -59,8 +111,13 @@ pub fn inspect_attachment(path: String) -> Result<AttachmentInfo, crate::AppErro
     })
 }
 
+/// Hard ceiling for [`read_file_base64`]: the whole file is buffered in memory
+/// (×1.33 as base64), so a caller-supplied limit must never be able to raise it.
+const READ_BASE64_MAX_BYTES: u64 = 25 * 1024 * 1024;
+
 /// Read a whole file as base64 (for client-side PDF text extraction). Errors if
-/// the file exceeds `max_bytes` (default 25MB) — extraction targets must be small.
+/// the file exceeds `max_bytes` (default and cap 25MB) — extraction targets must
+/// be small.
 #[tauri::command]
 pub fn read_file_base64(path: String, max_bytes: Option<u64>) -> Result<String, crate::AppError> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -68,8 +125,11 @@ pub fn read_file_base64(path: String, max_bytes: Option<u64>) -> Result<String, 
     if trimmed.is_empty() {
         return Err("path cannot be empty.".to_string().into());
     }
+    ensure_path_allowed(Path::new(trimmed))?;
     let meta = std::fs::metadata(trimmed)?;
-    let limit = max_bytes.unwrap_or(25 * 1024 * 1024);
+    let limit = max_bytes
+        .unwrap_or(READ_BASE64_MAX_BYTES)
+        .clamp(1, READ_BASE64_MAX_BYTES);
     if meta.len() > limit {
         return Err(format!("File too large ({} bytes; limit {}).", meta.len(), limit).into());
     }
@@ -133,6 +193,20 @@ pub fn open_path(path: String) -> Result<(), crate::AppError> {
         return Err("path cannot be empty.".to_string().into());
     }
 
+    ensure_path_allowed(Path::new(trimmed))?;
+    open_path_with_system(trimmed)
+}
+
+/// Open an http(s) URL in the user's default browser. The scheme is restricted
+/// to http/https so this can't be used to launch arbitrary local handlers
+/// (`file:`, custom app schemes, …) via a crafted url.
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), crate::AppError> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err("Only http(s) URLs can be opened.".to_string().into());
+    }
+
     open_path_with_system(trimmed)
 }
 
@@ -146,6 +220,7 @@ pub fn read_text_file_preview(
         return Err("path cannot be empty.".to_string().into());
     }
 
+    ensure_path_allowed(Path::new(trimmed))?;
     let limit = max_bytes.unwrap_or(200 * 1024).clamp(1, 1024 * 1024);
     let mut file = File::open(trimmed)?;
     let size = file.metadata()?.len();
@@ -171,6 +246,7 @@ pub fn export_artifact_file(
     if destination.is_empty() {
         return Err("destinationPath cannot be empty.".to_string().into());
     }
+    ensure_path_allowed(Path::new(destination))?;
 
     if let Some(content) = content {
         std::fs::write(destination, content)?;
@@ -182,6 +258,10 @@ pub fn export_artifact_file(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "sourcePath or content is required.".to_string())?;
+    // The source must pass the same `~/.future` guard as the destination —
+    // otherwise a copy-out defeats the guard (copy auth.json somewhere
+    // readable, then preview it).
+    ensure_path_allowed(Path::new(source))?;
     std::fs::copy(source, destination)?;
     Ok(())
 }
@@ -219,44 +299,10 @@ pub fn save_pasted_image(
     })
 }
 
-#[cfg(target_os = "macos")]
+/// Hand the path/URL to the OS default handler via the `open` crate
+/// (`open`/`xdg-open`/ShellExecuteW). Never route through `cmd /C start`:
+/// cmd re-parses the argument, so `&`/`^`/`%VAR%` in an agent-produced path
+/// would be interpreted — an injection vector, not just a broken open.
 fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
-    Command::new("open")
-        .arg(path)
-        .status()
-        .map_err(crate::AppError::from)
-        .and_then(|status| {
-            status
-                .success()
-                .then_some(())
-                .ok_or_else(|| format!("open exited with status {status}").into())
-        })
-}
-
-#[cfg(target_os = "windows")]
-fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
-    Command::new("cmd")
-        .args(["/C", "start", "", path])
-        .status()
-        .map_err(crate::AppError::from)
-        .and_then(|status| {
-            status
-                .success()
-                .then_some(())
-                .ok_or_else(|| format!("start exited with status {status}").into())
-        })
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
-    Command::new("xdg-open")
-        .arg(path)
-        .status()
-        .map_err(crate::AppError::from)
-        .and_then(|status| {
-            status
-                .success()
-                .then_some(())
-                .ok_or_else(|| format!("xdg-open exited with status {status}").into())
-        })
+    open::that(path).map_err(|error| format!("Failed to open: {error}").into())
 }

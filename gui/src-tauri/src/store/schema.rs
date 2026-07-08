@@ -229,46 +229,11 @@ CREATE TABLE IF NOT EXISTS research_resources (
     updated_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS data_sources (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    scope TEXT NOT NULL,
-    workspace_id TEXT REFERENCES workspaces(id),
-    config TEXT,
-    readonly INTEGER NOT NULL DEFAULT 1,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    deleted_at INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS data_credentials (
-    id TEXT PRIMARY KEY,
-    data_source_id TEXT NOT NULL REFERENCES data_sources(id),
-    credential_ref TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS skills (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    description TEXT,
-    kind TEXT NOT NULL,
-    version TEXT,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS skill_enablements (
-    id TEXT PRIMARY KEY,
-    skill_id TEXT NOT NULL REFERENCES skills(id),
-    scope TEXT NOT NULL,
-    workspace_id TEXT REFERENCES workspaces(id),
-    enabled INTEGER NOT NULL DEFAULT 1,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-);
+-- NOTE: `data_sources`, `data_credentials`, `skills`, and `skill_enablements`
+-- were removed on 2026-07-07. They were created by an early schema but never had
+-- any CRUD code: the Data feature was deferred and Skills went to a
+-- platform-catalogue + filesystem model (see `crate::skills`), not the DB.
+-- `apply_schema` drops them from pre-existing databases via `DROPPED_TABLES`.
 
 CREATE TABLE IF NOT EXISTS workspace_files (
     id TEXT PRIMARY KEY,
@@ -329,16 +294,28 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_workspace ON artifacts(workspace_id, de
 /// Columns added to pre-existing tables after their initial `CREATE`. SQLite's
 /// `CREATE TABLE IF NOT EXISTS` will not add columns to a table that already
 /// exists, so these `ALTER`s run idempotently (a duplicate-column error is
-/// swallowed). Every column here must be nullable or carry a `DEFAULT`.
+/// swallowed). Every column here must be nullable or carry a `DEFAULT`, and its
+/// definition must match `SCHEMA` exactly — including `REFERENCES` clauses
+/// (which `ALTER TABLE ADD COLUMN` supports), so migrated and fresh databases
+/// enforce the same constraints.
 pub(super) const ADDED_COLUMNS: &[(&str, &str)] = &[
     ("threads", "thinking_level TEXT"),
     (
         "review_changesets",
         "source_kind TEXT NOT NULL DEFAULT 'run_snapshot'",
     ),
-    ("review_changesets", "workspace_id TEXT"),
-    ("review_changesets", "before_snapshot_id TEXT"),
-    ("review_changesets", "after_snapshot_id TEXT"),
+    (
+        "review_changesets",
+        "workspace_id TEXT REFERENCES workspaces(id)",
+    ),
+    (
+        "review_changesets",
+        "before_snapshot_id TEXT REFERENCES review_snapshots(id)",
+    ),
+    (
+        "review_changesets",
+        "after_snapshot_id TEXT REFERENCES review_snapshots(id)",
+    ),
     (
         "review_changesets",
         "binary_files INTEGER NOT NULL DEFAULT 0",
@@ -388,3 +365,14 @@ pub(super) const RENAMED_COLUMNS: &[(&str, &str, &str)] = &[
 pub(super) const ADDED_INDEXES: &[&str] =
     &["CREATE INDEX IF NOT EXISTS idx_review_changesets_thread \
      ON review_changesets(thread_id, source_kind, created_at)"];
+
+/// Tables removed from the schema that must be dropped from pre-existing
+/// databases. All four were created but never used (zero CRUD), so dropping them
+/// can't lose data. Ordered so a table is dropped before the one it references,
+/// keeping the drop FK-safe.
+pub(super) const DROPPED_TABLES: &[&str] = &[
+    "data_credentials",
+    "data_sources",
+    "skill_enablements",
+    "skills",
+];

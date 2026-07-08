@@ -2,6 +2,7 @@ import type { StoredRunEvent, StoredToolCall, StoredToolOutput } from "../../int
 import type { AgentMessage } from "./agentThreadTypes";
 import { listRunEvents, listToolCalls, listToolOutputs } from "../../integrations/storage/threadStore";
 import { isRecord, truncate } from "../../lib/objects";
+import { unwrapNestedJson } from "./approvalPayload";
 
 /**
  * Prompt construction for the "continue / retry a run" recovery flows. Kept out
@@ -112,22 +113,14 @@ function toolCommand(input: string | null | undefined) {
   if (!input)
     return null;
 
-  let current: unknown = input;
-  for (let index = 0; index < 3; index += 1) {
-    if (isRecord(current)) {
-      const value = current.command;
-      return typeof value === "string" && value.trim() ? value : null;
-    }
-    if (typeof current !== "string")
-      return null;
-
-    try {
-      current = JSON.parse(current) as unknown;
-    }
-    catch {
-      return null;
-    }
+  let parsed: unknown;
+  try {
+    parsed = unwrapNestedJson(input);
   }
-
+  catch {
+    return null;
+  }
+  if (isRecord(parsed) && typeof parsed.command === "string" && parsed.command.trim())
+    return parsed.command;
   return null;
 }

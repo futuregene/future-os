@@ -2,8 +2,8 @@
 @config "../../tailwind.config.js";
 
 :root {
-  color: #172033;
-  background: #f6f7f9;
+  color: theme(colors.ink);
+  background: theme(colors.canvas);
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
@@ -30,7 +30,7 @@ body,
 body {
   min-width: 1024px;
   overflow: hidden;
-  background: #f6f7f9;
+  background: theme(colors.canvas);
 }
 
 @layer base {
@@ -58,14 +58,14 @@ body {
 }
 
 :not(.scrollbar-hover)::-webkit-scrollbar-thumb {
-  background: #c8ced9;
+  background: theme(colors.scrollbar);
   border: 3px solid transparent;
   border-radius: 999px;
   background-clip: padding-box;
 }
 
 :not(.scrollbar-hover)::-webkit-scrollbar-thumb:hover {
-  background: #aeb7c6;
+  background: theme(colors.scrollbar-hover);
   border: 3px solid transparent;
   background-clip: padding-box;
 }

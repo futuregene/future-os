@@ -7,8 +7,10 @@
   },
   "installed": {
     "emptyTitle": "No skills installed yet",
-    "emptyDetail": "Browse the skill marketplace under \"All\" and install one."
+    "emptyDetail": "Browse the skill marketplace under \"All\" and install one.",
+    "loadError": "Failed to load installed skills: "
   },
+  "actionFailed": "Action failed: {{message}}",
   "all": {
     "loadError": "Failed to load the skill marketplace: ",
     "retry": "Retry",

@@ -53,4 +53,4 @@ As always, if the skill's work involves a risky action, the agent pauses for you
 ## See also
 
 - [[Using FutureOS|Using-FutureOS]] — the approval mechanism.
-- [[CLI (future-cli)|CLI]] — manage skills from the command line.
+- [[CLI (future)|CLI]] — manage skills from the command line.

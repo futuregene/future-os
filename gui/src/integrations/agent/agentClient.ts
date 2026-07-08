@@ -1,4 +1,3 @@
-import i18n from "../../i18n";
 import { invokeCommand } from "../tauri/invoke";
 
 export const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
@@ -16,6 +15,13 @@ export interface AgentModelOption {
 
 interface AgentPromptResponse {
   content: string;
+  /**
+   * False when the agent stream ended before a clean `agent_end` — the content
+   *  is a truncated prefix and the caller should finalize the run as failed
+   *  rather than completed. Older backends omit it; treat missing as
+   *  complete so nothing regresses.
+   */
+  complete?: boolean;
 }
 
 export const defaultAgentModelId = "";
@@ -39,7 +45,7 @@ export async function sendPromptToFutureAgent(
     modelId: modelId ?? null,
     thinkingLevel: thinkingLevel ?? null,
   });
-  return response.content;
+  return { content: response.content, complete: response.complete !== false };
 }
 
 export async function loadAgentModelOptions() {
@@ -111,8 +117,13 @@ export function resolveInitialModelId(models: AgentModelOption[]): string {
   return models[0] ? modelKey(models[0]) : defaultAgentModelId;
 }
 
-export function modelLabel(modelId: string, models: AgentModelOption[]) {
-  return modelOption(modelId, models)?.label ?? (modelId || i18n.t("common:modelFallback"));
+/**
+ * Display label for a model id, or `undefined` when there's no match and no id
+ * to fall back on. The integration layer stays i18n-free: call sites supply a
+ * localized fallback (e.g. `modelLabel(...) ?? t("common:modelFallback")`).
+ */
+export function modelLabel(modelId: string, models: AgentModelOption[]): string | undefined {
+  return modelOption(modelId, models)?.label ?? (modelId || undefined);
 }
 
 export function modelThinkingLevel(modelId: string, models: AgentModelOption[]) {

@@ -81,103 +81,24 @@ pub struct ReviewSnapshotRecord {
     pub created_at: i64,
 }
 
-/// Column list for `review_changeset_from_row`, in struct order. Reuse this in
-/// every `SELECT` that maps into `ReviewChangesetRecord`.
-pub(super) const REVIEW_CHANGESET_COLUMNS: &str =
-    "id, thread_id, run_id, tool_call_id, title, summary, status, \
-     files_changed, additions, deletions, source_kind, workspace_id, \
-     before_snapshot_id, after_snapshot_id, binary_files, omitted_files, \
-     completeness, confidence, overlapped, error_message, created_at, updated_at";
+sql_record!(pub(super) REVIEW_CHANGESET_COLUMNS, review_changeset_from_row -> ReviewChangesetRecord {
+    id, thread_id, run_id, tool_call_id, title, summary, status,
+    files_changed, additions, deletions, source_kind, workspace_id,
+    before_snapshot_id, after_snapshot_id, binary_files, omitted_files,
+    completeness, confidence, overlapped, error_message, created_at, updated_at,
+});
 
-pub(super) fn review_changeset_from_row(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<ReviewChangesetRecord> {
-    Ok(ReviewChangesetRecord {
-        id: row.get(0)?,
-        thread_id: row.get(1)?,
-        run_id: row.get(2)?,
-        tool_call_id: row.get(3)?,
-        title: row.get(4)?,
-        summary: row.get(5)?,
-        status: row.get(6)?,
-        files_changed: row.get(7)?,
-        additions: row.get(8)?,
-        deletions: row.get(9)?,
-        source_kind: row.get(10)?,
-        workspace_id: row.get(11)?,
-        before_snapshot_id: row.get(12)?,
-        after_snapshot_id: row.get(13)?,
-        binary_files: row.get(14)?,
-        omitted_files: row.get(15)?,
-        completeness: row.get(16)?,
-        confidence: row.get(17)?,
-        overlapped: row.get(18)?,
-        error_message: row.get(19)?,
-        created_at: row.get(20)?,
-        updated_at: row.get(21)?,
-    })
-}
+sql_record!(pub(super) REVIEW_FILE_CHANGE_COLUMNS, review_file_change_from_row -> ReviewFileChangeRecord {
+    id, changeset_id, target_type, target_id, path, change_type,
+    before_ref, after_ref, diff, summary, additions, deletions,
+    previous_path, binary, before_size, after_size, mime, diff_truncated,
+    omission_reason, created_at, updated_at,
+});
 
-/// Column list for `review_file_change_from_row`, in struct order.
-pub(super) const REVIEW_FILE_CHANGE_COLUMNS: &str =
-    "id, changeset_id, target_type, target_id, path, change_type, \
-     before_ref, after_ref, diff, summary, additions, deletions, \
-     previous_path, binary, before_size, after_size, mime, diff_truncated, \
-     omission_reason, created_at, updated_at";
-
-pub(super) fn review_file_change_from_row(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<ReviewFileChangeRecord> {
-    Ok(ReviewFileChangeRecord {
-        id: row.get(0)?,
-        changeset_id: row.get(1)?,
-        target_type: row.get(2)?,
-        target_id: row.get(3)?,
-        path: row.get(4)?,
-        change_type: row.get(5)?,
-        before_ref: row.get(6)?,
-        after_ref: row.get(7)?,
-        diff: row.get(8)?,
-        summary: row.get(9)?,
-        additions: row.get(10)?,
-        deletions: row.get(11)?,
-        previous_path: row.get(12)?,
-        binary: row.get(13)?,
-        before_size: row.get(14)?,
-        after_size: row.get(15)?,
-        mime: row.get(16)?,
-        diff_truncated: row.get(17)?,
-        omission_reason: row.get(18)?,
-        created_at: row.get(19)?,
-        updated_at: row.get(20)?,
-    })
-}
-
-/// Column list for `review_snapshot_from_row`, in struct order.
-pub(super) const REVIEW_SNAPSHOT_COLUMNS: &str =
-    "id, workspace_id, thread_id, run_id, phase, commit_id, tree_id, status, \
-     file_count, total_bytes, ignored_count, omitted_count, error_message, created_at";
-
-pub(super) fn review_snapshot_from_row(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<ReviewSnapshotRecord> {
-    Ok(ReviewSnapshotRecord {
-        id: row.get(0)?,
-        workspace_id: row.get(1)?,
-        thread_id: row.get(2)?,
-        run_id: row.get(3)?,
-        phase: row.get(4)?,
-        commit_id: row.get(5)?,
-        tree_id: row.get(6)?,
-        status: row.get(7)?,
-        file_count: row.get(8)?,
-        total_bytes: row.get(9)?,
-        ignored_count: row.get(10)?,
-        omitted_count: row.get(11)?,
-        error_message: row.get(12)?,
-        created_at: row.get(13)?,
-    })
-}
+sql_record!(pub(super) REVIEW_SNAPSHOT_COLUMNS, review_snapshot_from_row -> ReviewSnapshotRecord {
+    id, workspace_id, thread_id, run_id, phase, commit_id, tree_id, status,
+    file_count, total_bytes, ignored_count, omitted_count, error_message, created_at,
+});
 
 /// `review_changesets.status` is `NOT NULL` and only meaningful for the legacy
 /// apply/discard flow. `run_snapshot` changesets do not use it, so they store
@@ -362,11 +283,7 @@ pub fn get_last_run_changeset(
 ) -> Result<Option<ReviewChangesetRecord>, crate::AppError> {
     // Columns qualified with `c.` because the JOIN onto `runs` makes several
     // names (id, thread_id, status, created_at, updated_at) ambiguous.
-    let cols = REVIEW_CHANGESET_COLUMNS
-        .split(", ")
-        .map(|c| format!("c.{}", c.trim()))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let cols = qualify_columns("c", REVIEW_CHANGESET_COLUMNS);
     let conn = connect()?;
     conn.query_row(
         &format!(
@@ -462,9 +379,15 @@ fn set_overlapped(conn: &rusqlite::Connection, run_id: &str, now: i64) -> rusqli
 // ── retention / recovery / consistency (Phase 2) ────────────────────────────
 
 /// Delete all review rows for a single Run (file changes, the `run_snapshot`
-/// changeset, and snapshots), in FK-safe order.
-pub fn delete_run_review(run_id: &str) -> Result<(), crate::AppError> {
-    let conn = connect()?;
+/// changeset, and snapshots), in FK-safe order. Transaction-injecting: the
+/// three DELETEs must land atomically — a partial delete either leaves a
+/// changeset with no file rows (renders as an empty review) or orphaned
+/// snapshots that `list_unmaterialized_runs` would misread as crash-recovery
+/// candidates and re-materialize against pruned shadow refs.
+pub(super) fn delete_run_review_in(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+) -> rusqlite::Result<()> {
     conn.execute(
         "DELETE FROM review_file_changes WHERE changeset_id IN (
              SELECT id FROM review_changesets WHERE run_id = ?1 AND source_kind = 'run_snapshot'
@@ -489,9 +412,13 @@ pub fn prune_thread_changesets(
     thread_id: &str,
     keep: usize,
 ) -> Result<Vec<(String, String)>, crate::AppError> {
+    // One transaction end-to-end: the ordering read and every per-run cascade
+    // see a single consistent snapshot, and an interrupted prune can't leave a
+    // half-deleted run behind.
+    let mut conn = connect()?;
+    let tx = conn.transaction()?;
     let ordered: Vec<(String, Option<String>)> = {
-        let conn = connect()?;
-        let mut stmt = conn.prepare(
+        let mut stmt = tx.prepare(
             "SELECT c.run_id, c.workspace_id
              FROM review_changesets c
              JOIN runs r ON r.id = c.run_id
@@ -506,11 +433,12 @@ pub fn prune_thread_changesets(
 
     let mut pruned = Vec::new();
     for (run_id, workspace_id) in ordered.into_iter().skip(keep) {
-        delete_run_review(&run_id)?;
+        delete_run_review_in(&tx, &run_id)?;
         if let Some(workspace_id) = workspace_id {
             pruned.push((workspace_id, run_id));
         }
     }
+    tx.commit()?;
     Ok(pruned)
 }
 

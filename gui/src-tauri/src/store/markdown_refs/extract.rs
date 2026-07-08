@@ -121,13 +121,20 @@ fn target_type_len(value: &str) -> usize {
 }
 
 fn percent_decode(value: &str) -> String {
+    // Decode on raw bytes only: an `&str` slice like `value[index+1..index+3]`
+    // panics when `%` is followed by a multi-byte character (non-char-boundary
+    // slice), and this input is agent-produced markdown — it must never unwind.
+    fn hex_digit(byte: u8) -> Option<u8> {
+        (byte as char).to_digit(16).map(|digit| digit as u8)
+    }
     let mut output = Vec::with_capacity(value.len());
     let bytes = value.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let Ok(hex) = u8::from_str_radix(&value[index + 1..index + 3], 16) {
-                output.push(hex);
+            if let (Some(hi), Some(lo)) = (hex_digit(bytes[index + 1]), hex_digit(bytes[index + 2]))
+            {
+                output.push((hi << 4) | lo);
                 index += 3;
                 continue;
             }
@@ -202,6 +209,15 @@ view: timeline
     fn percent_decodes_utf8_reference_ids() {
         assert_eq!(percent_decode("%E8%AF%97"), "诗");
         assert_eq!(percent_decode("%E0%A4%A"), "%E0%A4%A");
+    }
+
+    #[test]
+    fn percent_decode_survives_percent_before_multibyte_char() {
+        // Regression: `%` directly followed by a multi-byte character used to
+        // slice the &str off a char boundary and panic.
+        assert_eq!(percent_decode("%诗"), "%诗");
+        assert_eq!(percent_decode("%E8诗"), "%E8诗");
+        assert_eq!(percent_decode("诗%"), "诗%");
     }
 
     #[test]

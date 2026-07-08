@@ -6,12 +6,15 @@ mod approval_rules;
 mod auth_store;
 mod build_info;
 mod commands;
+mod config_io;
 mod error;
 mod future_login;
+mod future_platform;
 mod git_diff_parse;
 mod git_review;
 #[cfg(target_os = "macos")]
 mod menu;
+mod proc;
 mod remote;
 mod run_error;
 mod shadow_review;
@@ -130,11 +133,20 @@ pub fn run() {
             if let Err(error) = store::initialize_app_store() {
                 eprintln!("FutureOS store initialization failed: {error}");
             }
+            // Startup convergence for interrupted runs. Runs exactly once per
+            // *process*: its correctness argument ("a fresh process has no live
+            // event collector, so every non-terminal run is an orphan") does
+            // not hold for a webview reload, so it must not be reachable from
+            // the frontend — a reload-triggered call would cancel a live run
+            // whose collector survived in this process.
+            if let Err(error) = store::cancel_stale_approval_requests() {
+                eprintln!("FutureOS run convergence failed: {error}");
+            }
             // Pin the FutureGene environment for this build channel before the
             // agent starts: release builds are production-locked, dev builds
             // default to the test environment on first launch. The agent reads
             // base_url from auth.json once at startup, so this must run first.
-            if let Err(error) = apply_channel_environment_default() {
+            if let Err(error) = future_platform::apply_channel_environment_default() {
                 eprintln!("FutureOS environment policy failed: {error}");
             }
             // Start the bundled agent off the launch path — it does a blocking
@@ -154,6 +166,7 @@ pub fn run() {
             download_app_update,
             app_data_path,
             open_path,
+            open_external_url,
             read_text_file_preview,
             inspect_attachment,
             read_file_base64,
@@ -161,7 +174,6 @@ pub fn run() {
             delete_temp_attachment,
             export_artifact_file,
             initialize_app_store,
-            cancel_stale_approval_requests,
             get_app_settings,
             update_app_settings,
             clear_app_data,
@@ -218,7 +230,7 @@ pub fn run() {
             promote_artifact_to_research,
             list_research_resources,
             resolve_markdown_references,
-            search_reference_targets,
+            search_workspace_files,
             list_agent_models,
             agent_prompt,
             list_installed_skills,

@@ -26,11 +26,21 @@ async fn persist_run_event_off_thread(
     .await;
 }
 
+/// The assembled assistant text plus whether the stream reached a clean
+/// `agent_end`. `complete == false` means the stream ended (server closed it,
+/// agent restarted mid-reply) before signalling completion — the text is a
+/// prefix, not the whole answer, and the caller must mark the run `failed`
+/// rather than persist a silently truncated reply as `completed`.
+pub(super) struct AgentResponse {
+    pub content: String,
+    pub complete: bool,
+}
+
 pub(super) async fn collect_agent_response(
     stream: &mut tonic::Streaming<crate::agent_proto::StreamEvent>,
     run_id: Option<&str>,
     session_id: &str,
-) -> Result<String, crate::AppError> {
+) -> Result<AgentResponse, crate::AppError> {
     let mut content = String::new();
     let mut saw_agent_end = false;
     let mut waiting_for_approval = false;
@@ -112,7 +122,10 @@ pub(super) async fn collect_agent_response(
             .to_string()
             .into())
     } else {
-        Ok(content)
+        Ok(AgentResponse {
+            content,
+            complete: saw_agent_end,
+        })
     }
 }
 

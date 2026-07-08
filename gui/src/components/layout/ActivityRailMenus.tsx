@@ -1,0 +1,157 @@
+import type { ReactNode } from "react";
+import type { StoredWorkspace } from "../../integrations/storage/threadStore";
+import { Archive, FolderOpen, MoreHorizontal, Pencil, Pin, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { useTranslation } from "react-i18next";
+import { openPath } from "../../integrations/storage/files";
+import { cn } from "../../lib/cn";
+import { isMacOS, isWindows } from "../../lib/platform";
+import { useDismissableLayer } from "../../lib/useDismissableLayer";
+import { useDropUpMenu } from "./hooks/useDropUpMenu";
+
+/** Per-thread actions dropdown (rename / pin / delete, or restore when archived). */
+export function ThreadItemMenu({
+  archived,
+  pinned,
+  onClose,
+  onDelete,
+  onRename,
+  onRestore,
+  onTogglePin,
+}: {
+  archived?: boolean;
+  pinned: boolean;
+  onClose: () => void;
+  onDelete: () => void;
+  onRename: () => void;
+  onRestore: () => void;
+  onTogglePin: () => void;
+}) {
+  const { t } = useTranslation("layout");
+  const { menuRef, dropUp } = useDropUpMenu();
+
+  return (
+    <div
+      ref={menuRef}
+      className={cn(
+        "absolute right-1 z-40 w-36 rounded-lg border border-line-soft bg-surface p-1 shadow-panel",
+        dropUp ? "bottom-7" : "top-7",
+      )}
+    >
+      {archived
+        ? (
+            <ThreadMenuItem icon={<Archive className="size-3.5" />} onClick={onRestore} onClose={onClose}>
+              {t("activityRail.restore")}
+            </ThreadMenuItem>
+          )
+        : (
+            <>
+              <ThreadMenuItem icon={<Pencil className="size-3.5" />} onClick={onRename} onClose={onClose}>
+                {t("activityRail.rename")}
+              </ThreadMenuItem>
+              <ThreadMenuItem icon={<Pin className="size-3.5" />} onClick={onTogglePin} onClose={onClose}>
+                {pinned ? t("activityRail.unpin") : t("activityRail.pin")}
+              </ThreadMenuItem>
+            </>
+          )}
+      <ThreadMenuItem danger icon={<Trash2 className="size-3.5" />} onClick={onDelete} onClose={onClose}>
+        {t("activityRail.delete")}
+      </ThreadMenuItem>
+    </div>
+  );
+}
+
+/** Workspace-header actions dropdown (rename / reveal in file manager / delete). */
+export function WorkspaceHeaderMenu({
+  workspace,
+  onDelete,
+  onRename,
+}: {
+  workspace: StoredWorkspace;
+  onDelete: (workspace: StoredWorkspace) => void;
+  onRename: (workspace: StoredWorkspace) => void;
+}) {
+  const { t } = useTranslation("layout");
+  // Label follows OS convention: Finder (macOS) / File Explorer (Windows) /
+  // File Manager (Linux and other).
+  const revealLabel = isMacOS
+    ? t("activityRail.revealInFinder")
+    : isWindows
+      ? t("activityRail.revealInExplorer")
+      : t("activityRail.revealInFileManager");
+  const [open, setOpen] = useState(false);
+  const layerRef = useDismissableLayer<HTMLDivElement>({ enabled: open, onDismiss: () => setOpen(false) });
+  const { menuRef, dropUp } = useDropUpMenu(open);
+
+  return (
+    <div className="relative" ref={layerRef}>
+      <button
+        aria-label={t("activityRail.workspaceActions", { name: workspace.name })}
+        className={cn(
+          "inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-surface hover:text-ink-soft group-hover:opacity-100",
+          open && "opacity-100",
+        )}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen(value => !value);
+        }}
+        title={t("activityRail.workspaceActions", { name: workspace.name })}
+        type="button"
+      >
+        <MoreHorizontal className="size-3.5" />
+      </button>
+      {open
+        ? (
+            <div
+              ref={menuRef}
+              className={cn(
+                "absolute right-0 z-40 w-max min-w-36 rounded-lg border border-line-soft bg-surface p-1 shadow-panel",
+                dropUp ? "bottom-7" : "top-7",
+              )}
+            >
+              <ThreadMenuItem icon={<Pencil className="size-3.5" />} onClick={() => onRename(workspace)} onClose={() => setOpen(false)}>
+                {t("activityRail.rename")}
+              </ThreadMenuItem>
+              <ThreadMenuItem icon={<FolderOpen className="size-3.5" />} onClick={() => void openPath(workspace.path).catch(() => {})} onClose={() => setOpen(false)}>
+                {revealLabel}
+              </ThreadMenuItem>
+              <ThreadMenuItem danger icon={<Trash2 className="size-3.5" />} onClick={() => onDelete(workspace)} onClose={() => setOpen(false)}>
+                {t("activityRail.delete")}
+              </ThreadMenuItem>
+            </div>
+          )
+        : null}
+    </div>
+  );
+}
+
+function ThreadMenuItem({
+  children,
+  danger,
+  icon,
+  onClick,
+  onClose,
+}: {
+  children: string;
+  danger?: boolean;
+  icon: ReactNode;
+  onClick: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <button
+      className={cn(
+        "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm font-medium transition-colors",
+        danger ? "text-danger hover:bg-danger-soft" : "text-ink-soft hover:bg-surface-subtle hover:text-ink",
+      )}
+      onClick={() => {
+        onClose();
+        onClick();
+      }}
+      type="button"
+    >
+      {icon}
+      <span className="whitespace-nowrap">{children}</span>
+    </button>
+  );
+}

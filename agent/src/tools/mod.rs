@@ -595,9 +595,7 @@ async fn spawn_bash(
 ) -> Result<String> {
     let cwd = active_workspace()?;
     let mut child = sandbox.build_bash_command(command, escalated);
-    child
-        .current_dir(&cwd)
-        .env("PWD", &cwd);
+    child.current_dir(&cwd).env("PWD", &cwd);
     // Prepend the agent binary's directory to PATH so bundled tools in the same
     // directory are discoverable by shell commands.
     if let Ok(exe) = std::env::current_exe() {

@@ -1,5 +1,4 @@
 import type { StoredMessage, StoredThread, StoredWorkspace, ThreadCleanupSummary } from "./types";
-import i18n from "../../i18n";
 import { invokeCommand } from "../tauri/invoke";
 
 // ─── Workspaces ──────────────────────────────────────────────────────────
@@ -50,11 +49,13 @@ export async function listThreads() {
   return invokeCommand<StoredThread[]>("list_threads");
 }
 
-export async function createDefaultChatThread() {
+// `defaultTitle` is supplied by the UI-layer caller (localized there) so this
+// integration module stays free of an i18n dependency.
+export async function createDefaultChatThread(defaultTitle: string) {
   return invokeCommand<StoredThread>("create_thread", {
     input: {
       mode: "chat",
-      title: i18n.t("common:newChat"),
+      title: defaultTitle,
     },
   });
 }
@@ -66,8 +67,8 @@ export async function createDefaultChatThread() {
 // a later retry.
 let recentOrDefaultThreadPromise: Promise<StoredThread> | null = null;
 
-export function getRecentOrCreateDefaultThread() {
-  recentOrDefaultThreadPromise ??= (async () => (await getRecentThread()) ?? createDefaultChatThread())()
+export function getRecentOrCreateDefaultThread(defaultTitle: string) {
+  recentOrDefaultThreadPromise ??= (async () => (await getRecentThread()) ?? createDefaultChatThread(defaultTitle))()
     .catch((error) => {
       recentOrDefaultThreadPromise = null;
       throw error;

@@ -5,6 +5,8 @@ use rusqlite::{params, Connection};
 
 use super::db::connect;
 use super::records::ThreadCleanupSummary;
+use super::review_snapshots::delete_run_review_in;
+use super::runs::{cancel_children_of_runs, CancelScope};
 use super::status::TERMINAL_RUN_STATUSES_SQL;
 use super::util::{count_workspace_files, loaded, now_millis};
 use super::{delete_thread, get_thread, get_workspace};
@@ -130,46 +132,74 @@ pub fn get_thread_cleanup_summary(
     })
 }
 
+/// Startup convergence for interrupted runs. A freshly started process has no
+/// live event collector for any run, so *every* non-terminal run is an orphan —
+/// its `collect_agent_response` task died when the previous process exited and
+/// no event will ever settle it. Left alone, such a run strands the UI
+/// in a permanent "generating" state (composer disabled, polling spinning).
+///
+/// This cancels all of them in one transaction and cascades the cancellation to
+/// their still-open approvals and running tool calls, so a run and its children
+/// never end up in mismatched states. The previous, narrower version cancelled
+/// only runs that owned a pending approval; that logic is subsumed here. Returns
+/// the number of runs cancelled.
+///
+/// Called only from the backend's setup (`lib.rs`), once per process — it is
+/// deliberately NOT a Tauri command: a webview reload re-runs the frontend
+/// bootstrap while this process may still own live event collectors, and a
+/// reload-triggered call would cancel those live runs.
 pub fn cancel_stale_approval_requests() -> Result<usize, crate::AppError> {
     let now = now_millis();
     let mut conn = connect()?;
     let tx = conn.transaction()?;
-    // Cancel every non-terminal run that owns a pending approval — the same set
-    // the second UPDATE cancels — so a run and its approval never end up in
-    // mismatched states (e.g. a still-`running` run whose approval was cancelled).
-    tx.execute(
+    let cancelled_runs = converge_orphan_runs_tx(&tx, now)?;
+    tx.commit()?;
+    Ok(cancelled_runs)
+}
+
+/// Cancel every non-terminal run and cascade to its still-open approvals and
+/// running tool calls. Returns the number of runs cancelled. Factored out of
+/// [`cancel_stale_approval_requests`] so it can be exercised against an
+/// in-memory connection.
+fn converge_orphan_runs_tx(tx: &rusqlite::Transaction<'_>, now: i64) -> rusqlite::Result<usize> {
+    let cancelled_runs = tx.execute(
         &format!(
             "UPDATE runs
          SET status = 'cancelled',
-             error_message = 'Pending approval was cancelled because FutureOS restarted.',
+             error_message = COALESCE(error_message, 'Interrupted because FutureOS restarted.'),
+             error_type = COALESCE(error_type, 'interrupted'),
              ended_at = COALESCE(ended_at, ?1),
              updated_at = ?1
-         WHERE status NOT IN ({TERMINAL_RUN_STATUSES_SQL})
-           AND id IN (
-             SELECT run_id
-             FROM approval_requests
-             WHERE status = 'pending'
-               AND run_id IS NOT NULL
-           )"
+         WHERE status NOT IN ({TERMINAL_RUN_STATUSES_SQL})"
         ),
         params![now],
     )?;
-    let changed = tx.execute(
-        "UPDATE approval_requests
-             SET status = 'cancelled',
-                 decision_note = 'Cancelled because FutureOS restarted.',
-                 decided_at = ?1,
-                 updated_at = ?1
-             WHERE status = 'pending'",
-        params![now],
+    // Cascade: any pending approval or running tool call now belongs to a
+    // terminal run and must be settled too (shared with the single-run path).
+    cancel_children_of_runs(
+        tx,
+        CancelScope::TerminalRuns,
+        "Cancelled because FutureOS restarted.",
+        now,
     )?;
-    tx.commit()?;
-    Ok(changed)
+    Ok(cancelled_runs)
 }
 
 pub fn clear_finished_runs(thread_id: &str) -> Result<usize, crate::AppError> {
     let mut conn = connect()?;
     let tx = conn.transaction()?;
+    // Terminal runs of this Thread, read once up front so the per-run review
+    // cascade below can reuse `delete_run_review_in` (the FK-safe delete order is
+    // owned by review_snapshots, not restated here). Scoped so the statement is
+    // dropped before the transaction's own `execute` calls borrow it.
+    let terminal_run_ids: Vec<String> = {
+        let mut stmt = tx.prepare(&format!(
+            "SELECT id FROM runs
+             WHERE thread_id = ?1 AND status IN ({TERMINAL_RUN_STATUSES_SQL})"
+        ))?;
+        let rows = stmt.query_map(params![thread_id], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
     tx.execute(
         &format!(
             "UPDATE messages
@@ -232,44 +262,11 @@ pub fn clear_finished_runs(thread_id: &str) -> Result<usize, crate::AppError> {
         ),
         params![thread_id],
     )?;
-    tx.execute(
-        &format!(
-            "DELETE FROM review_file_changes
-         WHERE changeset_id IN (
-           SELECT c.id
-           FROM review_changesets c
-           JOIN runs r ON r.id = c.run_id
-           WHERE r.thread_id = ?1
-             AND r.status IN ({TERMINAL_RUN_STATUSES_SQL})
-         )"
-        ),
-        params![thread_id],
-    )?;
-    tx.execute(
-        &format!(
-            "DELETE FROM review_changesets
-         WHERE thread_id = ?1
-           AND run_id IN (
-             SELECT id FROM runs
-             WHERE thread_id = ?1
-               AND status IN ({TERMINAL_RUN_STATUSES_SQL})
-           )"
-        ),
-        params![thread_id],
-    )?;
-    // review_snapshots is referenced by review_changesets, so it is deleted
-    // after the changesets above to avoid orphan snapshot rows.
-    tx.execute(
-        &format!(
-            "DELETE FROM review_snapshots
-         WHERE run_id IN (
-           SELECT id FROM runs
-           WHERE thread_id = ?1
-             AND status IN ({TERMINAL_RUN_STATUSES_SQL})
-         )"
-        ),
-        params![thread_id],
-    )?;
+    // Review data (file changes → changeset → snapshots) for each terminal run,
+    // deleted in the FK-safe order encoded once by `delete_run_review_in`.
+    for run_id in &terminal_run_ids {
+        delete_run_review_in(&tx, run_id)?;
+    }
     tx.execute(
         &format!(
             "DELETE FROM tool_calls
@@ -385,5 +382,63 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
         assert_eq!(orphans, vec!["B".to_string(), "E".to_string()]);
+    }
+
+    fn run_status(conn: &Connection, id: &str) -> String {
+        conn.query_row("SELECT status FROM runs WHERE id = ?1", params![id], |r| {
+            r.get(0)
+        })
+        .expect("read run status")
+    }
+
+    #[test]
+    fn converge_orphan_runs_cancels_non_terminal_and_cascades() {
+        let mut conn = test_conn();
+        insert_thread(&conn, "T", None);
+        // Non-terminal orphans: a plain running run, plus one waiting on approval.
+        insert_run(&conn, "run_running", "T", "running");
+        insert_run(&conn, "run_waiting", "T", "waiting_approval");
+        // Terminal runs must be left untouched.
+        insert_run(&conn, "run_done", "T", "completed");
+        insert_run(&conn, "run_cancelled", "T", "cancelled");
+
+        conn.execute(
+            "INSERT INTO approval_requests (id, thread_id, run_id, kind, status, title, created_at, updated_at)
+             VALUES ('ap', 'T', 'run_waiting', 'bash', 'pending', 't', 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tool_calls (id, run_id, name, kind, status, created_at)
+             VALUES ('tc', 'run_running', 'bash', 'agent_tool', 'running', 1)",
+            [],
+        )
+        .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let cancelled = converge_orphan_runs_tx(&tx, 42).unwrap();
+        tx.commit().unwrap();
+
+        assert_eq!(cancelled, 2, "only the two non-terminal runs are cancelled");
+        assert_eq!(run_status(&conn, "run_running"), "cancelled");
+        assert_eq!(run_status(&conn, "run_waiting"), "cancelled");
+        // Terminal runs preserved.
+        assert_eq!(run_status(&conn, "run_done"), "completed");
+        assert_eq!(run_status(&conn, "run_cancelled"), "cancelled");
+        // Cascades fired.
+        let ap_status: String = conn
+            .query_row(
+                "SELECT status FROM approval_requests WHERE id = 'ap'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ap_status, "cancelled");
+        let tc_status: String = conn
+            .query_row("SELECT status FROM tool_calls WHERE id = 'tc'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(tc_status, "cancelled");
     }
 }

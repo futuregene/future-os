@@ -1,28 +1,13 @@
 import type { ReactNode } from "react";
-import type { ResolvedMarkdownReference } from "../../integrations/storage/markdownReferences";
-import type {
-  StoredApprovalRequest,
-  StoredArtifact,
-  StoredFile,
-  StoredResearchResource,
-  StoredReviewChangeset,
-  StoredRun,
-  StoredToolCall,
-} from "../../integrations/storage/types";
 import type { FutureReference, InlineNode, MarkdownNode } from "./futureMarkdownTypes";
-import { useMemo, useState } from "react";
-import { useTranslation } from "react-i18next";
-import { CopyButton } from "../../components/ui/CopyButton";
-import { useCopyState } from "../../components/ui/useCopyState";
+import { useMemo } from "react";
 import { useFutureReference, useFutureReferences } from "./futureReferenceStore";
 import { parseFutureMarkdown } from "./parseFutureMarkdown";
-import { ArtifactEmbed } from "./renderers/ArtifactEmbed";
-import { FileLink } from "./renderers/FileLink";
-import { MissingReference } from "./renderers/MissingReference";
-import { ApprovalEmbed, ResearchEmbed, ReviewEmbed, ToolEmbed } from "./renderers/ObjectEmbed";
+import { CodeBlock } from "./renderers/CodeBlock";
+import { renderFileReference } from "./renderers/fileReference";
+import { FutureEmbed } from "./renderers/FutureEmbed";
 import { ReferenceChip } from "./renderers/ReferenceChip";
-import { RunEmbed } from "./renderers/RunEmbed";
-import { useCodeHighlighter } from "./useCodeHighlighter";
+import { SafeImage, SafeLink } from "./renderers/SafeLink";
 
 interface MarkdownContentProps {
   content: string;
@@ -74,7 +59,7 @@ function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined,
       return <FutureEmbedView key={key} reference={node.reference} workspaceId={workspaceId} />;
     case "blockquote":
       return (
-        <blockquote className="border-l-2 border-line-strong pl-3 text-ink-soft" key={key}>
+        <blockquote className="border-l-2 border-line pl-3 text-ink-soft" key={key}>
           <div className="space-y-2">
             {node.children.map((child, ordinal) => renderBlock(child, workspaceId, `${key}:q${ordinal}`))}
           </div>
@@ -124,78 +109,6 @@ function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined,
         </p>
       );
   }
-}
-
-function CodeBlock({
-  code,
-  language,
-}: {
-  code: string;
-  language?: string;
-}) {
-  const { t } = useTranslation("markdown");
-  const { copiedKey, copy } = useCopyState();
-  const { highlight, isLoaded } = useCodeHighlighter();
-  const highlighted = useMemo(() => highlight(code, language), [highlight, code, language]);
-
-  // Fallback to plain text if highlighter not loaded or language not supported
-  if (!isLoaded || !highlighted) {
-    return (
-      <div className="relative">
-        <CopyButton
-          copied={copiedKey !== null}
-          label={t("codeBlock.copyCode")}
-          onCopy={() => void copy(code)}
-          variant="floating"
-        />
-        <pre className="overflow-auto rounded-lg bg-surface-subtle p-3 pr-11 text-xs leading-5 text-ink">
-          {language ? <div className="mb-2 text-[11px] text-ink-muted">{language}</div> : null}
-          <code>{code}</code>
-        </pre>
-      </div>
-    );
-  }
-
-  return (
-    <div className="relative">
-      <CopyButton
-        className="z-10"
-        copied={copiedKey !== null}
-        label={t("codeBlock.copyCode")}
-        onCopy={() => void copy(code)}
-        variant="floating"
-      />
-      <pre
-        className="overflow-auto rounded-lg p-3 pr-11 text-xs leading-5"
-        style={{ backgroundColor: highlighted.bgColor, color: highlighted.fgColor }}
-      >
-        {language ? <div className="mb-2 text-[11px] opacity-60">{language}</div> : null}
-        <code>
-          {highlighted.lines.map((line, lineIndex) => (
-            // eslint-disable-next-line react/no-array-index-key -- static positional render of highlighted code; lines never reorder
-            <div key={lineIndex} className="flex">
-              <span className="mr-4 inline-block w-8 select-none text-right opacity-40">
-                {lineIndex + 1}
-              </span>
-              <span className="flex-1">
-                {line.tokens.map((token, tokenIndex) => (
-                  <span
-                    key={tokenIndex} // eslint-disable-line react/no-array-index-key -- static positional render of highlighted tokens; index key is fine
-                    style={{
-                      color: token.color,
-                      fontStyle: token.fontStyle ? (token.fontStyle & 1 ? "italic" : "normal") : undefined,
-                    }}
-                  >
-                    {token.content}
-                  </span>
-                ))}
-              </span>
-            </div>
-          ))}
-        </code>
-      </pre>
-    </div>
-  );
 }
 
 function renderInline(nodes: InlineNode[], workspaceId: string | null | undefined, parentKey: string) {
@@ -300,217 +213,4 @@ function FutureEmbedView({
 }) {
   const resolved = useFutureReference(workspaceId, reference);
   return <FutureEmbed reference={reference} resolved={resolved} />;
-}
-
-function FutureEmbed({
-  reference,
-  resolved,
-}: {
-  reference: FutureReference;
-  resolved?: ResolvedMarkdownReference;
-}) {
-  const { t } = useTranslation("markdown");
-
-  // `file` renders as a link (never a "missing" badge) — resolution is pure path
-  // arithmetic, so a file reference always resolves. See resolve.rs::ResolvedFile.
-  const fileLink = renderFileReference(reference, resolved);
-  if (fileLink)
-    return fileLink;
-
-  if (!resolved || resolved.status !== "resolved") {
-    return <MissingReference error={resolved?.error} reference={reference} />;
-  }
-
-  if (reference.targetType === "artifact" && resolved.targetType === "artifact") {
-    if (isStoredArtifact(resolved.data)) {
-      return <ArtifactEmbed artifact={resolved.data} reference={reference} />;
-    }
-    return <MissingReference error={t("embed.artifactPayloadInvalid")} reference={reference} />;
-  }
-
-  if (reference.targetType === "run" && resolved.targetType === "run") {
-    if (isStoredRun(resolved.data)) {
-      return <RunEmbed reference={reference} run={resolved.data} />;
-    }
-    return <MissingReference error={t("embed.runPayloadInvalid")} reference={reference} />;
-  }
-
-  if (reference.targetType === "approval" && resolved.targetType === "approval") {
-    if (isStoredApproval(resolved.data)) {
-      return <ApprovalEmbed approval={resolved.data} reference={reference} />;
-    }
-    return <MissingReference error={t("embed.approvalPayloadInvalid")} reference={reference} />;
-  }
-
-  if (reference.targetType === "review" && resolved.targetType === "review") {
-    if (isStoredReview(resolved.data)) {
-      return <ReviewEmbed reference={reference} review={resolved.data} />;
-    }
-    return <MissingReference error={t("embed.reviewPayloadInvalid")} reference={reference} />;
-  }
-
-  if (reference.targetType === "research" && resolved.targetType === "research") {
-    if (isStoredResearch(resolved.data)) {
-      return <ResearchEmbed reference={reference} resource={resolved.data} />;
-    }
-    return <MissingReference error={t("embed.researchPayloadInvalid")} reference={reference} />;
-  }
-
-  if (reference.targetType === "tool" && resolved.targetType === "tool") {
-    if (isStoredTool(resolved.data)) {
-      return <ToolEmbed reference={reference} tool={resolved.data} />;
-    }
-    return <MissingReference error={t("embed.toolPayloadInvalid")} reference={reference} />;
-  }
-
-  return <MissingReference error={t("embed.typeMismatch")} reference={reference} />;
-}
-
-function SafeLink({
-  children,
-  href,
-}: {
-  children: ReactNode;
-  href: string;
-}) {
-  const safeHref = safeExternalUrl(href, ["http:", "https:", "mailto:"]);
-  if (!safeHref) {
-    return <span className="font-medium text-ink-soft" title={href}>{children}</span>;
-  }
-
-  return (
-    <a
-      className="font-medium text-accent underline-offset-2 hover:underline"
-      href={safeHref}
-      rel="noopener noreferrer"
-      target="_blank"
-      title={href}
-    >
-      {children}
-    </a>
-  );
-}
-
-function SafeImage({
-  alt,
-  src,
-  title,
-}: {
-  alt: string;
-  src: string;
-  title?: string;
-}) {
-  const { t } = useTranslation("markdown");
-  const [failed, setFailed] = useState(false);
-  const safeSrc = safeExternalUrl(src, ["http:", "https:"]);
-  if (!safeSrc || failed) {
-    return (
-      <span
-        className="inline-flex max-w-full items-center rounded-md border border-dashed border-line-soft bg-surface-subtle px-2 py-1 text-sm text-ink-muted"
-        title={src}
-      >
-        {alt || t("image.unavailable")}
-      </span>
-    );
-  }
-
-  return (
-    <img
-      alt={alt}
-      className="my-2 max-h-80 max-w-full rounded-md border border-line-soft object-contain"
-      onError={() => setFailed(true)}
-      src={safeSrc}
-      title={title}
-    />
-  );
-}
-
-function safeExternalUrl(value: string, allowedProtocols: string[]) {
-  try {
-    const url = new URL(value);
-    return allowedProtocols.includes(url.protocol) ? value : null;
-  }
-  catch {
-    return null;
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function isStoredArtifact(value: unknown): value is StoredArtifact {
-  return isRecord(value)
-    && typeof value.id === "string"
-    && typeof value.workspaceId === "string"
-    && typeof value.title === "string"
-    && typeof value.artifactType === "string"
-    && typeof value.createdAt === "number"
-    && typeof value.updatedAt === "number";
-}
-
-function isStoredFile(value: unknown): value is StoredFile {
-  return isRecord(value)
-    && typeof value.path === "string"
-    && typeof value.name === "string"
-    && typeof value.insideWorkspace === "boolean";
-}
-
-/**
- * File references render as a link for both inline and block forms, and never as
- * a red "missing" badge: resolution is pure path arithmetic so it always
- * succeeds. Returns null for non-file references (let the caller handle those);
- * while a file reference is still resolving, shows a neutral text placeholder.
- */
-function renderFileReference(reference: FutureReference, resolved?: ResolvedMarkdownReference) {
-  if (reference.targetType !== "file")
-    return null;
-  if (resolved?.status === "resolved" && resolved.targetType === "file" && isStoredFile(resolved.data))
-    return <FileLink file={resolved.data} />;
-  return <span className="text-ink-soft">{reference.label ?? reference.targetId}</span>;
-}
-
-function isStoredRun(value: unknown): value is StoredRun {
-  return isRecord(value)
-    && typeof value.id === "string"
-    && typeof value.threadId === "string"
-    && typeof value.status === "string"
-    && typeof value.createdAt === "number"
-    && typeof value.updatedAt === "number";
-}
-
-function isStoredApproval(value: unknown): value is StoredApprovalRequest {
-  return isRecord(value)
-    && typeof value.id === "string"
-    && typeof value.threadId === "string"
-    && typeof value.kind === "string"
-    && typeof value.status === "string"
-    && typeof value.title === "string";
-}
-
-function isStoredReview(value: unknown): value is StoredReviewChangeset {
-  return isRecord(value)
-    && typeof value.id === "string"
-    && typeof value.threadId === "string"
-    && typeof value.title === "string"
-    && typeof value.status === "string"
-    && typeof value.filesChanged === "number";
-}
-
-function isStoredResearch(value: unknown): value is StoredResearchResource {
-  return isRecord(value)
-    && typeof value.id === "string"
-    && typeof value.collectionId === "string"
-    && typeof value.workspaceId === "string"
-    && typeof value.title === "string"
-    && typeof value.resourceType === "string";
-}
-
-function isStoredTool(value: unknown): value is StoredToolCall {
-  return isRecord(value)
-    && typeof value.id === "string"
-    && typeof value.runId === "string"
-    && typeof value.name === "string"
-    && typeof value.kind === "string"
-    && typeof value.status === "string";
 }
