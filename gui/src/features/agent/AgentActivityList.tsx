@@ -1,13 +1,15 @@
 import type { AgentActivityItem, AgentActivityKind } from "./agentThreadTypes";
-import { Brain, FileText, Pencil, TerminalSquare } from "lucide-react";
+import { Brain, ChevronLeft, ChevronRight, FileText, Pencil, TerminalSquare } from "lucide-react";
+import { useState } from "react";
 import i18n from "../../i18n";
 import { cn } from "../../lib/cn";
 
 interface AgentActivityListProps {
   items?: AgentActivityItem[];
+  workspacePath?: string | null;
 }
 
-export function AgentActivityList({ items }: AgentActivityListProps) {
+export function AgentActivityList({ items, workspacePath }: AgentActivityListProps) {
   const visibleItems = items?.filter(item => item.status === "running" || item.status === "completed" || item.status === "failed") ?? [];
   if (visibleItems.length === 0)
     return null;
@@ -15,34 +17,60 @@ export function AgentActivityList({ items }: AgentActivityListProps) {
   return (
     <div className="my-4 space-y-3">
       {visibleItems.map(item => (
-        <AgentActivityLine item={item} key={item.id} />
+        <AgentActivityLine item={item} key={item.id} workspacePath={workspacePath} />
       ))}
     </div>
   );
 }
 
-export function AgentActivityLine({ item }: { item: AgentActivityItem }) {
+export function AgentActivityLine({ item, workspacePath }: { item: AgentActivityItem; workspacePath?: string | null }) {
   const label = labelForActivity(item);
   const failed = item.status === "failed";
   const running = item.status === "running";
+  const displayTarget = item.target ? relativizeTarget(item.kind, item.target, workspacePath) : undefined;
+  // The path is hidden by default to keep the transcript quiet; clicking the
+  // icon+label toggles it. Chevron points right (expand) when collapsed, left
+  // (collapse) when open.
+  const [open, setOpen] = useState(false);
+  const Chevron = open ? ChevronLeft : ChevronRight;
 
   return (
     <div
       className={cn(
-        "flex min-w-0 items-center gap-2 text-sm leading-6",
-        failed ? "text-danger" : running ? "text-ink-muted" : "text-ink-soft",
+        // One uniform size for icon + label + target so the row reads as a
+        // single line; `items-center` keeps the mono target vertically centred
+        // against the sans label.
+        "flex min-w-0 items-center gap-2 text-[13px] leading-6",
+        failed ? "text-danger" : "text-ink-muted",
       )}
     >
-      {renderActivityIcon(item.kind, running)}
-      <span className="shrink-0 font-medium">{label}</span>
-      {item.target
+      {displayTarget
         ? (
-            <code
-              className="min-w-0 truncate rounded-md bg-surface-subtle px-1.5 py-0.5 font-mono text-[0.9em] text-ink"
+            <button
+              type="button"
+              onClick={() => setOpen(value => !value)}
+              className="flex shrink-0 cursor-pointer items-center gap-2"
+              aria-expanded={open}
+            >
+              {renderActivityIcon(item.kind, running)}
+              <span>{label}</span>
+              <Chevron className="-ml-2 size-3 shrink-0" />
+            </button>
+          )
+        : (
+            <>
+              {renderActivityIcon(item.kind, running)}
+              <span className="shrink-0">{label}</span>
+            </>
+          )}
+      {displayTarget && open
+        ? (
+            <span
+              className="min-w-0 truncate font-mono"
               title={item.detail ?? item.target}
             >
-              {item.target}
-            </code>
+              {displayTarget}
+            </span>
           )
         : null}
       {typeof item.additions === "number" || typeof item.deletions === "number"
@@ -57,8 +85,25 @@ export function AgentActivityLine({ item }: { item: AgentActivityItem }) {
   );
 }
 
+/**
+ * Files inside the active workspace show as a workspace-relative path; anything
+ * outside keeps its absolute path so it stays unambiguous. Bash targets are the
+ * command itself, never a path, so they're left untouched.
+ */
+function relativizeTarget(kind: AgentActivityKind, target: string, workspacePath?: string | null) {
+  if (kind === "bash" || !workspacePath)
+    return target;
+
+  const root = workspacePath.replace(/\/+$/, "");
+  if (target === root)
+    return target;
+  if (target.startsWith(`${root}/`))
+    return target.slice(root.length + 1);
+  return target;
+}
+
 function renderActivityIcon(kind: AgentActivityKind, running: boolean) {
-  const className = cn("size-4 shrink-0", running && kind === "thinking" && "animate-pulse");
+  const className = cn("size-3.5 shrink-0", running && kind === "thinking" && "animate-pulse");
   switch (kind) {
     case "bash":
       return <TerminalSquare className={className} />;
