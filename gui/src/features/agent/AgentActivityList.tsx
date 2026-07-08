@@ -30,19 +30,22 @@ export function AgentActivityLine({ item }: { item: AgentActivityItem }) {
     <div
       className={cn(
         "flex min-w-0 items-center gap-2 text-sm leading-6",
-        failed ? "text-danger" : running ? "text-ink-muted" : "text-ink-soft",
+        failed ? "text-danger" : "text-ink-muted",
       )}
     >
       {renderActivityIcon(item.kind, running)}
-      <span className="shrink-0 font-medium">{label}</span>
+      <span className="shrink-0">{label}</span>
       {item.target
         ? (
-            <code
-              className="min-w-0 truncate rounded-md bg-surface-subtle px-1.5 py-0.5 font-mono text-[0.9em] text-ink"
+            <span
+              className={cn(
+                "min-w-0 truncate font-mono text-[0.9em]",
+                !failed && "text-ink-soft",
+              )}
               title={item.detail ?? item.target}
             >
               {item.target}
-            </code>
+            </span>
           )
         : null}
       {typeof item.additions === "number" || typeof item.deletions === "number"
