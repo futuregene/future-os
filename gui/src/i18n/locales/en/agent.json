@@ -57,7 +57,7 @@
     },
     "needsLogin": {
       "title": "Not signed in",
-      "detail": "Connected to Future Agent, but no models are available yet. Sign in with FutureGene, or add a custom provider.",
+      "detail": "Connected to Future Agent, but no models are available yet. Sign in with FutureOS, or add a custom provider.",
       "action": "Sign in"
     },
     "noModels": {

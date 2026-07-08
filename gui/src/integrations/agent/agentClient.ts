@@ -76,7 +76,7 @@ export function modelKey(model: Pick<AgentModelOption, "id" | "provider">) {
   return model.provider ? `${model.provider}/${model.id}` : model.id;
 }
 
-/** Built-in FutureGene provider id (display name "FutureGene"). */
+/** Built-in Future provider id (display name "Future"). */
 const FUTURE_PROVIDER_ID = "future";
 /** localStorage key holding the last user-picked model, as `provider/id`. */
 const LAST_USED_MODEL_STORAGE_KEY = "futureos:last-used-model";

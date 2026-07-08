@@ -54,7 +54,7 @@
     },
     "needsLogin": {
       "title": "尚未登录",
-      "detail": "已连接 Future Agent，但还没有可用模型。请连接 FutureGene 登录，或添加自定义提供商。",
+      "detail": "已连接 Future Agent，但还没有可用模型。请连接 FutureOS 登录，或添加自定义提供商。",
       "action": "前往登录"
     },
     "noModels": {

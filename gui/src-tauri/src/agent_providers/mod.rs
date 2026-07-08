@@ -35,9 +35,9 @@ pub use write::{
 use catalog::{builtin_catalog_providers, future_model_count, models_json_path};
 use write::{is_override_only, provider_base_url_override};
 
-/// Display name of the built-in FutureGene provider. Shared with `write` so the
+/// Display name of the built-in Future provider. Shared with `write` so the
 /// custom-provider name check can reject collisions with it.
-pub(super) const FUTURE_PROVIDER_NAME: &str = "FutureGene";
+pub(super) const FUTURE_PROVIDER_NAME: &str = "Future";
 
 /// Magic token in a built-in provider's catalog base URL marking it as a
 /// placeholder the user must fill in (e.g. Azure's
