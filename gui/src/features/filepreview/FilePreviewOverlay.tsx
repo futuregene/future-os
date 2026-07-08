@@ -65,7 +65,7 @@ export function FilePreviewOverlay({
         : null}
       {kind === "pdf"
         ? (
-            <div className="relative z-10 max-h-full w-full max-w-[900px] overflow-y-auto px-6 py-6">
+            <div className="relative z-10 max-h-full w-full max-w-[900px] overflow-y-auto rounded-lg bg-surface px-6 py-6 shadow-panel">
               <Suspense fallback={<PreviewNotice message={t("filePreview.loading")} />}>
                 <PdfScrollPreview onError={handleError} path={path} />
               </Suspense>
