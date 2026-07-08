@@ -15,6 +15,7 @@ interface MessageListProps {
   onContinue?: (message: AgentMessage) => void;
   onRetry?: (message: AgentMessage, source: AgentMessage) => void;
   workspaceId?: string | null;
+  workspacePath?: string | null;
 }
 
 /**
@@ -25,7 +26,7 @@ interface MessageListProps {
  * shows its controls: a lost `pointerleave` is corrected by the next row's
  * `pointerover`, and leaving the list clears it outright.
  */
-export function MessageList({ messages, showThinking, onContinue, onRetry, workspaceId }: MessageListProps) {
+export function MessageList({ messages, showThinking, onContinue, onRetry, workspaceId, workspacePath }: MessageListProps) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const hideTimerRef = useRef<number | null>(null);
 
@@ -72,6 +73,7 @@ export function MessageList({ messages, showThinking, onContinue, onRetry, works
           recoverySource={previousUserMessage(messages, index)}
           showThinking={showThinking}
           workspaceId={workspaceId}
+          workspacePath={workspacePath}
           onContinue={onContinue}
           onHover={handleHover}
           onLeave={handleLeave}
