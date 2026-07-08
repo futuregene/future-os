@@ -57,7 +57,7 @@
   },
   "account": {
     "loading": "Loading account…",
-    "futureGene": "FutureGene account",
+    "futureGene": "FutureOS account",
     "loggedIn": "Signed in",
     "loggedOut": "Not signed in",
     "login": "Sign in",
@@ -109,7 +109,7 @@
     "clearKey": "Clear key",
     "keySaved": "Saved the {{provider}} key. Takes effect in new sessions.",
     "keyCleared": "Cleared the {{provider}} key.",
-    "connected": "Connected to FutureGene. Takes effect in new sessions; if it doesn't, run future agent restart.",
+    "connected": "Connected to FutureOS. Takes effect in new sessions; if it doesn't, run future agent restart.",
     "baseUrlLabel": "Base URL",
     "baseUrlRequired": "Please enter a Base URL.",
     "baseUrlDialogDescription": "This provider's Base URL is a placeholder — replace it with your own (e.g. your Azure resource name).",
@@ -161,7 +161,7 @@
     }
   },
   "futureLogin": {
-    "title": "Connect FutureGene",
+    "title": "Connect FutureOS",
     "description": "The authorization page should have opened in your browser. If it didn't, copy the link below to open it manually.",
     "cancel": "Cancel",
     "retry": "Retry",
