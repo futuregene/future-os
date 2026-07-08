@@ -67,6 +67,8 @@ GUI 的颜色全部走 [`tailwind.config.js`](tailwind.config.js) 里定义的**
 |---|---|
 | `shadow-panel` | 面板 / 卡片浮起 |
 | `shadow-dialog` | 对话框 / 弹层 |
+| `shadow-sidebar-divider` | 左侧栏分割线内侧柔和阴影 |
+| `shadow-sidebar-floating` | 左侧栏浮动预览阴影 |
 
 ## 选色速查
 

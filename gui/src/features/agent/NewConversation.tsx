@@ -161,7 +161,7 @@ export function NewConversation({
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
       <header
-        className="flex h-12 shrink-0 select-none items-center justify-between border-b border-line-soft px-4"
+        className="flex h-12 shrink-0 select-none items-center justify-between border-b border-line-soft/40 px-4"
         onMouseDown={startWindowDrag}
       >
         <div className="flex min-w-0 flex-1 items-center" data-tauri-drag-region>
