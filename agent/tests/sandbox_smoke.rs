@@ -105,8 +105,12 @@ fn credential_paths_are_unreadable() {
         "~/.ssh listing should be denied: {}",
         String::from_utf8_lossy(&out.stdout)
     );
-    let out = run_sandboxed(&default_sandbox(&ws), "cat ~/.future/agent/auth.json");
-    assert!(!out.status.success(), "auth.json read should be denied");
+    // auth.json read is TEMPORARILY allowed alongside the layer-0 override in
+    // sandbox/rules.rs (builtin_overrides): the hard-deny blocks the official
+    // `future` CLI that skills shell out to. Re-enable both together once the
+    // trusted-CLI credential channel is designed. See rules.rs for background.
+    // let out = run_sandboxed(&default_sandbox(&ws), "cat ~/.future/agent/auth.json");
+    // assert!(!out.status.success(), "auth.json read should be denied");
     let out = run_sandboxed(&default_sandbox(&ws), "cat ~/.future/agent/models.json");
     assert!(!out.status.success(), "models.json read should be denied");
 

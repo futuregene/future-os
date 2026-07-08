@@ -259,6 +259,9 @@ pub fn load_rule_file(path: &Path, workspace: &Path) -> Result<Vec<PathRule>, St
 ///   escalate) but readable.
 /// - The app's own credential/config files: READ+WRITE denied — the agent has
 ///   no legitimate reason to touch its own API keys / provider configs.
+///   (auth.json is TEMPORARILY allowed for testing — see the block below;
+///   the hard-deny blocks the official `future` CLI used by skills.
+///   models.json stays denied.)
 pub fn builtin_overrides(workspace: &Path, home: Option<&Path>) -> Vec<PathRule> {
     let mut rules = vec![PathRule::new(
         &workspace
@@ -273,10 +276,31 @@ pub fn builtin_overrides(workspace: &Path, home: Option<&Path>) -> Vec<PathRule>
             Access::Write,
             Decision::Deny,
         ));
+        // NOTE: auth.json is TEMPORARILY allowed (omitted from the deny list
+        // below). Re-add it once the trusted-CLI credential-access story is
+        // designed.
+        //
+        // Background: skills sometimes shell out to our official `future` CLI,
+        // which legitimately reads `~/.future/agent/auth.json`. With a hard-deny
+        // in place, `future` is blocked inside the Seatbelt sandbox (this
+        // override is layer-0, unoverridable by any user approval rule), so
+        // those skill flows fail during testing.
+        //
+        // We WANT to trust `future` specifically without opening auth.json to
+        // arbitrary bash commands — but a shared sandbox can't distinguish
+        // `future` from a sibling `cat` in the same command, so per-binary
+        // trust isn't expressible here. The proper fix is a dedicated
+        // credential channel (agent injects a short-lived scoped token via env,
+        // or `future` reverse-requests the key from the agent over a socket
+        // with peer-credential verification), not a path allow-hole. That's a
+        // larger, cross-platform effort — deferred.
+        //
+        // NOTE: while auth.json is allowed, any bash command can read/write it
+        // — acceptable for local testing only. models.json stays denied.
         for cred in [
-            ".future/agent/auth.json",
+            // ".future/agent/auth.json",      // TEMPORARILY allowed — see above
             ".future/agent/models.json",
-            ".future/agent-app/auth.json",
+            // ".future/agent-app/auth.json",  // TEMPORARILY allowed — see above
             ".future/agent-app/models.json",
         ] {
             rules.push(PathRule::new(
