@@ -203,7 +203,7 @@ export function buildAssistantRunProjection(events: StoredRunEvent[]): Assistant
         ...existing,
         ...tool,
         id: toolId,
-        status: hasToolError(payload) ? "failed" : "completed",
+        status: hasToolError(payload, existing?.detail ?? tool.detail) ? "failed" : "completed",
         order: existing?.order ?? tool.order,
         // The end event carries the result, not the args, so `tool.target` is
         // usually undefined here — keep the target/detail captured while the
@@ -533,7 +533,11 @@ function textFromPayload(payload: unknown) {
     ?? "";
 }
 
-function hasToolError(payload: unknown) {
+// Bare grep/diff/cmp/test exiting 1 is a normal "no match / differs / false"
+// signal, not an error — exempt only that exact case so it isn't shown failed.
+const SOFT_FAIL_COMMANDS = new Set(["grep", "egrep", "fgrep", "rg", "diff", "cmp", "test", "["]);
+
+function hasToolError(payload: unknown, command: string | undefined) {
   if (!isRecord(payload))
     return false;
   const error = stringValue(payload.error) ?? stringValue(payload.errorText);
@@ -542,15 +546,31 @@ function hasToolError(payload: unknown) {
   // A bash command that runs but exits non-zero comes back as a *successful*
   // tool result (no error field) with the code baked into the output text as
   // "[exit code: N]\n…". Treat a non-zero code as a failure so the row isn't
-  // shown as completed.
-  return hasNonZeroExit(stringValue(payload.text) ?? stringValue(payload.result));
+  // shown as completed, except for the soft-fail exemption below.
+  const exitCode = nonZeroExitCode(stringValue(payload.text) ?? stringValue(payload.result));
+  if (exitCode === null)
+    return false;
+  return !isSoftExit(exitCode, command);
 }
 
-function hasNonZeroExit(output: string | undefined) {
+/** The non-zero code from a "[exit code: N]" bash prefix, or null (exit 0 / not bash). */
+function nonZeroExitCode(output: string | undefined) {
   if (!output)
-    return false;
+    return null;
   const match = /^\[exit code: (-?\d+)\]/.exec(output.trimStart());
-  return match ? Number(match[1]) !== 0 : false;
+  if (!match)
+    return null;
+  const code = Number(match[1]);
+  return code === 0 ? null : code;
+}
+
+function isSoftExit(exitCode: number, command: string | undefined) {
+  // Only exit 1 from a *bare* soft-fail command is exempt. Any shell operator
+  // makes the exit code ambiguous (pipeline/list), so those stay failures.
+  if (exitCode !== 1 || !command || /[|&;\n`<>]|\$\(/.test(command))
+    return false;
+  const program = command.trim().split(/\s+/)[0]?.split("/").pop();
+  return program ? SOFT_FAIL_COMMANDS.has(program) : false;
 }
 
 function stringValue(value: unknown) {
