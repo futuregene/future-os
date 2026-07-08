@@ -407,7 +407,7 @@ export function ActivityRail({
               </>
             )}
       </div>
-      <div className={cn("p-2", expanded ? "w-full" : "")}>
+      <div className={cn("border-t border-line-soft/40 p-2", expanded ? "w-full" : "")}>
         {expanded
           ? (
               <button
