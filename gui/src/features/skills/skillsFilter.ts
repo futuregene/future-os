@@ -8,7 +8,10 @@ export interface SkillFilters {
   query: string;
 }
 
-export function matchesInstalledSkill(skill: InstalledSkill, filters: SkillFilters) {
+export function matchesInstalledSkill(skill: InstalledSkill, filters: SkillFilters, category?: string) {
+  if (!matchesCategory(category, filters.category))
+    return false;
+
   return matchesQuery(filters.query, [
     skill.id,
     skill.name,

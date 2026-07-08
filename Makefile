@@ -27,6 +27,16 @@ install-cli: install-cli-deps build-tui
 install-gui:
 	cd gui && npm install
 	@mkdir -p gui/src-tauri/binaries
+	cd agent && cargo build
+	cp agent/target/debug/future-agent gui/src-tauri/binaries/future-agent-aarch64-apple-darwin
+	cd cli && npm run build && bun build --compile dist/index.js --outfile dist/future --external chromium-bidi
+	cp cli/dist/future gui/src-tauri/binaries/future-aarch64-apple-darwin
+
+# Release builds of agent + CLI sidecars (for packaging). Separate from
+# install-gui so run-gui doesn't pay the release compile cost.
+install-gui-release:
+	cd gui && npm install
+	@mkdir -p gui/src-tauri/binaries
 	cd agent && cargo build --release
 	cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-aarch64-apple-darwin
 	cd cli && npm run build && bun build --compile dist/index.js --outfile dist/future --external chromium-bidi
@@ -107,7 +117,7 @@ run-cli: install-cli
 run-gui: install-gui
 	cd gui && npm run tauri:dev
 
-package-gui:
+package-gui: install-gui-release
 	node scripts/version.mjs --set-bundle
 	cd gui && npm run tauri:build
 

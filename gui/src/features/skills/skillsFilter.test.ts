@@ -10,7 +10,7 @@ import {
 } from "./skillsFilter";
 
 function installed(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
-  return { id: "id", name: "Name", description: "Description", version: "1.0.0", ...overrides };
+  return { id: "id", name: "Name", description: "Description", nameZh: null, descriptionZh: null, version: "1.0.0", ...overrides };
 }
 
 function available(overrides: Partial<AvailableSkill> = {}): AvailableSkill {
@@ -52,11 +52,17 @@ describe("uniqueSorted", () => {
 });
 
 describe("matchesInstalledSkill", () => {
-  it("filters by query only", () => {
+  it("filters by query and category", () => {
     const skill = installed({ name: "Literature", id: "lit" });
+    // No category filter (allCategoriesValue) — matches by query.
     expect(matchesInstalledSkill(skill, { category: allCategoriesValue, query: "lit" })).toBe(true);
-    expect(matchesInstalledSkill(skill, { category: "other", query: "" })).toBe(true);
     expect(matchesInstalledSkill(skill, { category: allCategoriesValue, query: "missing" })).toBe(false);
+    // Uncategorized skill filtered out when a specific category is selected.
+    expect(matchesInstalledSkill(skill, { category: "other", query: "" })).toBe(false);
+    // Matching category with no query filter.
+    expect(matchesInstalledSkill(skill, { category: "core", query: "" }, "core")).toBe(true);
+    // Mismatched category.
+    expect(matchesInstalledSkill(skill, { category: "other", query: "" }, "core")).toBe(false);
   });
 });
 
