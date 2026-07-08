@@ -535,7 +535,9 @@ function textFromPayload(payload: unknown) {
 
 // Bare grep/diff/cmp/test exiting 1 is a normal "no match / differs / false"
 // signal, not an error — exempt only that exact case so it isn't shown failed.
-const SOFT_FAIL_COMMANDS = new Set(["grep", "egrep", "fgrep", "rg", "diff", "cmp", "test", "["]);
+// `findstr` is the Windows grep (bash tool runs via `cmd /c` there); `find` is
+// deliberately absent — it means different things on Windows vs Unix.
+const SOFT_FAIL_COMMANDS = new Set(["grep", "egrep", "fgrep", "rg", "findstr", "diff", "cmp", "test", "["]);
 
 function hasToolError(payload: unknown, command: string | undefined) {
   if (!isRecord(payload))
@@ -569,7 +571,9 @@ function isSoftExit(exitCode: number, command: string | undefined) {
   // makes the exit code ambiguous (pipeline/list), so those stay failures.
   if (exitCode !== 1 || !command || /[|&;\n`<>]|\$\(/.test(command))
     return false;
-  const program = command.trim().split(/\s+/)[0]?.split("/").pop();
+  // Basename of the program, tolerant of Windows paths (`\`), a `.exe` suffix,
+  // and case (Windows resolves names case-insensitively).
+  const program = command.trim().split(/\s+/)[0]?.split(/[/\\]/).pop()?.toLowerCase().replace(/\.exe$/, "");
   return program ? SOFT_FAIL_COMMANDS.has(program) : false;
 }
 

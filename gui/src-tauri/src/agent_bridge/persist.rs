@@ -399,7 +399,9 @@ fn nonzero_exit_code(output: Option<&str>) -> Option<i64> {
 
 /// A bare grep/diff/cmp/test command exiting 1 is a normal signal, not an error.
 /// Any shell operator makes the exit code ambiguous (pipeline/list), so those
-/// stay failures.
+/// stay failures. `findstr` is the Windows grep (bash tool runs via `cmd /c`
+/// there); `find` is deliberately absent — it means different things on Windows
+/// vs Unix.
 fn is_soft_fail_command(command: Option<&str>) -> bool {
     let Some(command) = command else {
         return false;
@@ -407,13 +409,20 @@ fn is_soft_fail_command(command: Option<&str>) -> bool {
     if command.contains(['|', '&', ';', '\n', '`', '<', '>']) || command.contains("$(") {
         return false;
     }
-    let Some(program) = command.split_whitespace().next() else {
+    let Some(first) = command.split_whitespace().next() else {
         return false;
     };
-    let program = program.rsplit('/').next().unwrap_or(program);
+    // Basename of the program, tolerant of Windows paths (`\`), a `.exe` suffix,
+    // and case (Windows resolves names case-insensitively).
+    let base = first
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(first)
+        .to_ascii_lowercase();
+    let program = base.strip_suffix(".exe").unwrap_or(base.as_str());
     matches!(
         program,
-        "grep" | "egrep" | "fgrep" | "rg" | "diff" | "cmp" | "test" | "["
+        "grep" | "egrep" | "fgrep" | "rg" | "findstr" | "diff" | "cmp" | "test" | "["
     )
 }
 
@@ -481,6 +490,14 @@ mod tests {
         assert!(is_soft_fail_command(Some("test -f missing")));
         assert!(is_soft_fail_command(Some("[ -f missing ]")));
         assert!(is_soft_fail_command(Some("/usr/bin/grep foo")));
+    }
+
+    #[test]
+    fn windows_forms_are_exempt() {
+        assert!(is_soft_fail_command(Some("findstr foo file.txt")));
+        assert!(is_soft_fail_command(Some("grep.exe foo")));
+        assert!(is_soft_fail_command(Some("GREP.EXE foo")));
+        assert!(is_soft_fail_command(Some(r"C:\tools\grep.exe foo")));
     }
 
     #[test]
