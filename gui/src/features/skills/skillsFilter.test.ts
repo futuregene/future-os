@@ -10,7 +10,7 @@ import {
 } from "./skillsFilter";
 
 function installed(overrides: Partial<InstalledSkill> = {}): InstalledSkill {
-  return { id: "id", name: "Name", description: "Description", version: "1.0.0", ...overrides };
+  return { id: "id", name: "Name", description: "Description", nameZh: null, descriptionZh: null, version: "1.0.0", ...overrides };
 }
 
 function available(overrides: Partial<AvailableSkill> = {}): AvailableSkill {

@@ -16,6 +16,8 @@ pub struct InstalledSkill {
     pub id: String,
     pub name: String,
     pub description: String,
+    pub name_zh: Option<String>,
+    pub description_zh: Option<String>,
     pub version: Option<String>,
 }
 
@@ -32,6 +34,10 @@ pub async fn list_installed_skills() -> Result<Vec<InstalledSkill>, crate::AppEr
         name: String,
         #[serde(default)]
         description: String,
+        #[serde(default, alias = "nameZh")]
+        name_zh: Option<String>,
+        #[serde(default, alias = "descriptionZh")]
+        description_zh: Option<String>,
         #[serde(default)]
         source: String,
     }
@@ -58,6 +64,8 @@ pub async fn list_installed_skills() -> Result<Vec<InstalledSkill>, crate::AppEr
                 id: command.name.clone(),
                 name: command.name,
                 description: command.description,
+                name_zh: command.name_zh,
+                description_zh: command.description_zh,
                 version,
             }
         })

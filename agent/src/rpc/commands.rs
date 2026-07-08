@@ -558,6 +558,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     serde_json::json!({
                         "name": s.name,
                         "description": s.description,
+                        "nameZh": s.name_zh,
+                        "descriptionZh": s.description_zh,
                         "source": "skill"
                     })
                 })
