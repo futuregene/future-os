@@ -1,4 +1,6 @@
+import type { LucideIcon } from "lucide-react";
 import type { StoredRun } from "../../integrations/storage/threadStore";
+import { Bot, CircleHelp, CircleStop, Clock, TriangleAlert, Unplug } from "lucide-react";
 import i18n from "../../i18n";
 
 export function formatRunStatus(status: StoredRun["status"]) {
@@ -54,17 +56,17 @@ export function shortId(id: string) {
 
 export type RunErrorType = NonNullable<StoredRun["errorType"]>;
 
-export function formatErrorType(errorType?: RunErrorType | null): { label: string; icon: string; color: string } | null {
+export function formatErrorType(errorType?: RunErrorType | null): { label: string; Icon: LucideIcon; color: string } | null {
   if (!errorType)
     return null;
 
   const errorTypes = {
-    stream_disconnected: { label: i18n.t("runs:errorType.streamDisconnected"), icon: "🔌", color: "text-orange-600" },
-    command_failed: { label: i18n.t("runs:errorType.commandFailed"), icon: "⚠️", color: "text-red-600" },
-    model_failed: { label: i18n.t("runs:errorType.modelFailed"), icon: "🤖", color: "text-purple-600" },
-    abort_requested: { label: i18n.t("runs:errorType.abortRequested"), icon: "⏹️", color: "text-gray-600" },
-    timeout: { label: i18n.t("runs:errorType.timeout"), icon: "⏰", color: "text-yellow-600" },
-    unknown: { label: i18n.t("runs:errorType.unknown"), icon: "❓", color: "text-gray-600" },
+    stream_disconnected: { label: i18n.t("runs:errorType.streamDisconnected"), Icon: Unplug, color: "text-orange-600" },
+    command_failed: { label: i18n.t("runs:errorType.commandFailed"), Icon: TriangleAlert, color: "text-red-600" },
+    model_failed: { label: i18n.t("runs:errorType.modelFailed"), Icon: Bot, color: "text-purple-600" },
+    abort_requested: { label: i18n.t("runs:errorType.abortRequested"), Icon: CircleStop, color: "text-gray-600" },
+    timeout: { label: i18n.t("runs:errorType.timeout"), Icon: Clock, color: "text-yellow-600" },
+    unknown: { label: i18n.t("runs:errorType.unknown"), Icon: CircleHelp, color: "text-gray-600" },
   };
 
   return errorTypes[errorType as keyof typeof errorTypes] || null;
