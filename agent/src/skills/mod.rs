@@ -9,6 +9,8 @@ use walkdir::WalkDir;
 pub struct Skill {
     pub name: String,
     pub description: String,
+    pub name_zh: Option<String>,
+    pub description_zh: Option<String>,
     pub version: Option<String>,
     pub location: String,
     #[serde(rename = "disableModelInvocation", default)]
@@ -56,6 +58,8 @@ fn parse_skill(skill_md: &Path) -> Result<Option<Skill>> {
     let content = std::fs::read_to_string(skill_md)?;
     let name = extract_name(&content, skill_md)?;
     let description = extract_description(&content);
+    let name_zh = extract_frontmatter_field(&content, "name_zh");
+    let description_zh = extract_frontmatter_field(&content, "description_zh");
     let version = extract_frontmatter_field(&content, "version");
     let location = skill_md.to_string_lossy().to_string();
     let disable =
@@ -64,6 +68,8 @@ fn parse_skill(skill_md: &Path) -> Result<Option<Skill>> {
     Ok(Some(Skill {
         name,
         description,
+        name_zh,
+        description_zh,
         version,
         location,
         disable_model_invocation: disable,
@@ -71,41 +77,10 @@ fn parse_skill(skill_md: &Path) -> Result<Option<Skill>> {
 }
 
 fn extract_name(content: &str, path: &Path) -> Result<String> {
-    // Parse YAML frontmatter between --- markers (matching Go parseFrontmatter)
-    let trimmed = content.trim_start_matches(['\r', '\n']);
-    if !trimmed.starts_with("---") {
-        // No frontmatter, use filename
-        return Ok(path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string());
+    // Delegate to extract_frontmatter_field which handles block scalars (>, |).
+    if let Some(name) = extract_frontmatter_field(content, "name") {
+        return Ok(name);
     }
-
-    let rest = &trimmed[3..]; // skip opening ---
-    let end_idx = rest.find("\n---").or_else(|| rest.find("---"));
-    if end_idx.is_none() {
-        return Ok(path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string());
-    }
-
-    let frontmatter = &rest[..end_idx.unwrap()];
-
-    for line in frontmatter.lines() {
-        let trimmed_line = line.trim();
-        if trimmed_line.is_empty() || trimmed_line.starts_with('#') {
-            continue;
-        }
-
-        // Match "name: value" pattern
-        if let Some(val) = extract_yaml_value(trimmed_line, "name") {
-            return Ok(val);
-        }
-    }
-
     // Fallback to filename
     Ok(path
         .file_stem()
