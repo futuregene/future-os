@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { parseFutureMarkdown } from "./parseFutureMarkdown";
 
 describe("parseFutureMarkdown", () => {
-  it("collects FutureOS inline references and fenced embeds", () => {
+  it("does not treat futureos app-object links or fences as references (minimal link mode)", () => {
     const document = parseFutureMarkdown([
       "See [run:build](futureos://run/run_123?view=timeline).",
       "",
@@ -14,22 +14,19 @@ describe("parseFutureMarkdown", () => {
       "```",
     ].join("\n"));
 
-    expect(document.references).toEqual([
-      {
-        label: "run:build",
-        source: "inline",
-        targetId: "run_123",
-        targetType: "run",
-        view: "timeline",
-      },
-      {
-        label: "Build Report",
-        source: "block",
-        targetId: "artifact_456",
-        targetType: "artifact",
-        view: "card",
-      },
-    ]);
+    // App objects are disabled: nothing is collected as a future reference.
+    expect(document.references).toEqual([]);
+
+    // The inline link degrades to a plain link node...
+    const paragraph = document.nodes[0];
+    const link = paragraph?.type === "paragraph"
+      ? paragraph.children.find(node => node.type === "link")
+      : undefined;
+    expect(link).toMatchObject({ href: "futureos://run/run_123?view=timeline", type: "link" });
+
+    // ...and the fenced embed degrades to a plain code block.
+    const code = findBlock(document.nodes, "code");
+    expect(code?.type === "code" ? code.language : null).toBe("futureos-artifact");
   });
 
   it("turns a plain absolute-path link into a file reference", () => {
@@ -112,19 +109,20 @@ describe("parseFutureMarkdown", () => {
     const paragraph = document.nodes[0];
     expect(paragraph?.type).toBe("paragraph");
     const paragraphChildren = paragraph?.type === "paragraph" ? paragraph.children : [];
-    const link = paragraphChildren.find(node => node.type === "link");
-    const futureReference = paragraphChildren.find(node => node.type === "futureReference");
+    const links = paragraphChildren.filter(node => node.type === "link");
 
-    expect(link).toMatchObject({
+    expect(links[0]).toMatchObject({
       href: "https://example.com/docs",
       type: "link",
     });
-    expect(link?.type === "link" ? link.children[0] : null).toMatchObject({ type: "strong" });
-    expect(futureReference?.type === "futureReference" ? futureReference.reference : null).toMatchObject({
-      label: "artifact",
-      targetId: "artifact_ref",
-      targetType: "artifact",
-      view: "summary",
+    expect(links[0]?.type === "link" ? links[0].children[0] : null).toMatchObject({ type: "strong" });
+
+    // Minimal link mode: the futureos:// reference-style link is no longer a
+    // futureReference — it degrades to a plain link.
+    expect(paragraphChildren.some(node => node.type === "futureReference")).toBe(false);
+    expect(links[1]).toMatchObject({
+      href: "futureos://artifact/artifact_ref?view=summary",
+      type: "link",
     });
 
     const imageParagraph = document.nodes[1];
@@ -152,8 +150,9 @@ describe("parseFutureMarkdown", () => {
     expect(table?.type === "table" ? table.alignments : null).toEqual(["left", "right"]);
     const deletedCell = table?.type === "table" ? table.rows[0]?.[0]?.[0] : null;
     expect(deletedCell).toMatchObject({ type: "delete" });
-    const tableReference = table?.type === "table" ? table.rows[0]?.[1]?.[0] : null;
-    expect(tableReference?.type === "futureReference" ? tableReference.reference.targetType : null).toBe("tool");
+    // Minimal link mode: the futureos:// tool link degrades to a plain link.
+    const tableCell = table?.type === "table" ? table.rows[0]?.[1]?.[0] : null;
+    expect(tableCell).toMatchObject({ href: "futureos://tool/tool_1", type: "link" });
 
     const list = findBlock(document.nodes, "list");
     expect(list?.type).toBe("list");

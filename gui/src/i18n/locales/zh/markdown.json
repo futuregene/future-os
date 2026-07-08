@@ -32,6 +32,10 @@
     "open": "打开",
     "notFound": "文件找不到了：{{name}}"
   },
+  "link": {
+    "visit": "访问",
+    "copyLink": "复制链接"
+  },
   "runEmbed": {
     "model": "模型",
     "run": "Run",

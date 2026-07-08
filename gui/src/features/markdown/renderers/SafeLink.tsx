@@ -1,11 +1,18 @@
 import type { ReactNode } from "react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { copyText } from "../../../lib/clipboard";
+import { LinkContextMenu } from "./LinkContextMenu";
+import { useLinkContextMenu } from "./useLinkContextMenu";
 
 /**
  * URL-sanitization layer for markdown links/images. Only protocols on the
  * allowlist survive `safeExternalUrl`; anything else (`javascript:`, `data:`, …)
  * degrades to inert text. External anchors keep `rel="noopener noreferrer"`.
+ *
+ * Left click follows the anchor (opens in the system browser); right click
+ * opens a custom menu (visit / copy link) instead of the webview's native one,
+ * matching the local-file link's menu affordance.
  */
 
 export function SafeLink({
@@ -15,21 +22,35 @@ export function SafeLink({
   children: ReactNode;
   href: string;
 }) {
+  const { t } = useTranslation("markdown");
+  const anchorRef = useRef<HTMLAnchorElement>(null);
+  const menu = useLinkContextMenu();
   const safeHref = safeExternalUrl(href, ["http:", "https:", "mailto:"]);
   if (!safeHref) {
     return <span className="font-medium text-ink-soft" title={href}>{children}</span>;
   }
 
   return (
-    <a
-      className="font-medium text-accent underline-offset-2 hover:underline"
-      href={safeHref}
-      rel="noopener noreferrer"
-      target="_blank"
-      title={href}
-    >
-      {children}
-    </a>
+    <>
+      <a
+        className="font-medium text-accent underline-offset-2 hover:underline"
+        href={safeHref}
+        onContextMenu={menu.open}
+        ref={anchorRef}
+        rel="noopener noreferrer"
+        target="_blank"
+        title={href}
+      >
+        {children}
+      </a>
+      <LinkContextMenu
+        controller={menu}
+        items={[
+          { label: t("link.visit"), onSelect: () => anchorRef.current?.click() },
+          { label: t("link.copyLink"), onSelect: () => void copyText(safeHref) },
+        ]}
+      />
+    </>
   );
 }
 

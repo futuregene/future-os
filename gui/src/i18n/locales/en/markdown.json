@@ -32,6 +32,10 @@
     "open": "Open",
     "notFound": "File not found: {{name}}"
   },
+  "link": {
+    "visit": "Visit",
+    "copyLink": "Copy link"
+  },
   "runEmbed": {
     "model": "Model",
     "run": "Run",
