@@ -11,11 +11,15 @@
  *  - Windows drive absolute               → `C:/x`, `C:\x`
  *  - Windows UNC                          → `\\server\share`
  *  - Explicit relative                    → `./x`, `../x` (and backslash forms)
+ *  - Bare relative that clearly names a file (models often drop the `./`):
+ *      · has a path separator, first segment not a domain → `docs/readme.md`
+ *      · single token with a known file extension         → `长诗.md`, `main.rs`
  *
  * NOT local (→ `null`): any other URL scheme (`http:`, `https:`, `mailto:`,
- * `futureos:`, …) and bare scheme-less tokens without an explicit `./`/`../`
- * prefix — those are ambiguous with bare domains (`example.com/page`), so we
- * leave them to `SafeLink`.
+ * `futureos:`, …) and bare tokens that look like a web host (`example.com`,
+ * `github.com/user/repo`) or carry no file-ish signal — those stay with
+ * `SafeLink`. The domain/extension checks keep the widened bare-path handling
+ * from swallowing genuine remote links.
  *
  * The model writes the path from the write-tool result verbatim (wrapped in
  * angle brackets when it contains spaces, which remark strips before we see
@@ -62,5 +66,53 @@ export function localFilePath(href: string): string | null {
   if (/^\.\.?[\\/]/.test(raw))
     return raw.replace(/^\.\//, "");
 
+  // Bare relative path without a `./` prefix — models frequently drop it. These
+  // overlap with scheme-less domains, so accept only clear-file shapes.
+  const separator = raw.search(/[\\/]/);
+  if (separator >= 0) {
+    // Has a path separator: treat as a relative path unless the first segment
+    // is a bare domain (`example.com/page`, `github.com/user/repo`).
+    if (looksLikeDomain(raw.slice(0, separator)))
+      return null;
+    return raw;
+  }
+
+  // Single token, no separator: accept only when it carries a known file
+  // extension (`长诗.md`, `config.json`); a bare `example.com` stays remote.
+  if (hasKnownFileExtension(raw))
+    return raw;
+
   return null;
+}
+
+/**
+ * `host.tld` / `sub.host.tld` (optional port). The final label must be an
+ * alphabetic TLD of 2+ chars so a path segment like `a.b` isn't mistaken for a
+ * domain.
+ */
+function looksLikeDomain(segment: string): boolean {
+  return /^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?::\d+)?$/i.test(segment);
+}
+
+/**
+ * Common source/doc/data/media extensions the assistant actually emits. An
+ * allowlist (rather than a TLD denylist) keeps a bare `example.com` from being
+ * read as a file — a missed file link is harmless, a domain opened as a path
+ * is not. Extend as needed.
+ */
+const FILE_EXTENSIONS = new Set(
+  (
+    "md markdown mdx txt text rst adoc org tex "
+    + "rs ts tsx js jsx mjs cjs py pyi go java kt kts scala c h cc cpp cxx hpp hh cs rb "
+    + "php swift mm sh bash zsh fish ps1 bat lua pl pm jl dart ex exs erl hs elm clj cljs sql vim "
+    + "html htm css scss sass less vue svelte astro "
+    + "json json5 jsonc yaml yml toml ini cfg conf env xml csv tsv properties proto graphql prisma "
+    + "png jpg jpeg gif svg webp ico bmp tiff pdf "
+    + "lock log gitignore dockerignore mk gradle"
+  ).split(" "),
+);
+
+function hasKnownFileExtension(token: string): boolean {
+  const ext = token.match(/\.([a-z0-9]+)$/i)?.[1];
+  return ext ? FILE_EXTENSIONS.has(ext.toLowerCase()) : false;
 }
