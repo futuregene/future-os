@@ -71,3 +71,8 @@ export function numberOrStringField(record: Record<string, unknown> | null, keys
 export function toolCommand(input: string | null | undefined): string | null {
   return stringField(recordOf(input), "command");
 }
+
+/** Extract the target file path from a (possibly double-encoded) tool input. */
+export function toolTarget(input: string | null | undefined): string | null {
+  return stringField(recordOf(input), ["path", "filePath", "file_path", "targetPath", "target_path", "target"]);
+}

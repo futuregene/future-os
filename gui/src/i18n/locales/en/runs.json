@@ -23,6 +23,9 @@
     "command": "Command",
     "target": "Target",
     "input": "Input",
+    "content": "Content",
+    "output": "Output",
+    "outputError": "Error",
     "noInput": "No input",
     "expand": "Expand",
     "collapse": "Collapse"
@@ -36,6 +39,7 @@
     "commands_one": "{{count}} command",
     "commands_other": "{{count}} commands",
     "inspectRun": "Inspect run",
+    "inspectTool": "View details",
     "confirmTerminate": "Terminate this program?",
     "cancel": "Cancel",
     "stopping": "Stopping",
