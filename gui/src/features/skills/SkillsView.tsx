@@ -139,6 +139,7 @@ export function SkillsView() {
                   totalCount={installed.length}
                   error={installedError}
                   busy={busy}
+                  catalogue={available}
                   onUninstall={id => void runAction(id, () => uninstallSkill(id))}
                   onRetry={() => void refresh()}
                 />
@@ -183,6 +184,7 @@ function TabButton({ active, label, onClick }: { active: boolean; label: string;
 
 function InstalledTab({
   busy,
+  catalogue,
   error,
   filters,
   loading,
@@ -194,6 +196,7 @@ function InstalledTab({
   totalCount,
 }: {
   busy: Record<string, boolean>;
+  catalogue: AvailableSkill[];
   error: string | null;
   filters: SkillFilters;
   loading: boolean;
@@ -206,6 +209,13 @@ function InstalledTab({
 }) {
   const { i18n, t } = useTranslation("skills");
   const useChinese = i18n.language !== "en";
+  const catalogueByName = useMemo(() => {
+    const map = new Map<string, AvailableSkill>();
+    for (const s of catalogue) {
+      if (!map.has(s.id)) map.set(s.id, s);
+    }
+    return map;
+  }, [catalogue]);
   if (loading && totalCount === 0)
     return <LoadingRow />;
   if (error) {
@@ -238,8 +248,13 @@ function InstalledTab({
         ? <EmptyState title={t("filter.emptyTitle")} detail={t("filter.emptyDetail")} />
         : null}
       {skills.map((skill) => {
-        const name = useChinese ? skill.nameZh || skill.name : skill.name;
-        const description = useChinese ? skill.descriptionZh || skill.description : skill.description;
+        const cat = catalogueByName.get(skill.id);
+        const name = useChinese
+          ? cat?.nameZh || skill.nameZh || skill.name
+          : skill.name;
+        const description = useChinese
+          ? cat?.descriptionZh || skill.descriptionZh || skill.description
+          : skill.description;
         return (
           <SkillRow
             key={skill.id}
