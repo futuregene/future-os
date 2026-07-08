@@ -54,7 +54,7 @@ export function AgentActivityLine({ item, workspacePath }: { item: AgentActivity
             >
               {renderActivityIcon(item.kind, running)}
               <span>{label}</span>
-              <Chevron className="size-3 shrink-0" />
+              <Chevron className="-ml-1 size-3 shrink-0" />
             </button>
           )
         : (
