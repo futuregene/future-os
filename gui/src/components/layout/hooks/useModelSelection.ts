@@ -2,7 +2,7 @@ import type { AgentModelOption } from "../../../integrations/agent/agentClient";
 import type { StoredThread } from "../../../integrations/storage/threadStore";
 import { useEffect, useRef, useState } from "react";
 import i18n from "../../../i18n";
-import { defaultThinkingLevel, modelOption, modelThinkingLevel, normalizeThinkingLevel, rememberLastUsedModel, resolveInitialModelId } from "../../../integrations/agent/agentClient";
+import { defaultThinkingLevel, modelOption, modelThinkingLevel, normalizeThinkingLevel, rememberLastUsedModel, rememberLastUsedThinkingLevel, resolveInitialModelId, resolveInitialThinkingLevel } from "../../../integrations/agent/agentClient";
 import { updateThreadModel, updateThreadThinkingLevel } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
 import { emitFutureEvent } from "../../../lib/futureEvents";
@@ -83,7 +83,10 @@ export function useModelSelection({
       return;
 
     draftThinkingModelRef.current = selectedModelId;
-    setSelectedThinkingLevel(thinkingLevelForModel(selectedModelId, visibleModelOptions));
+    // Restore the last user-picked level on the initial draft resolution; an
+    // explicit model switch (changeDraftModel) sets the ref first, so this
+    // effect early-returns there and the new model's default wins instead.
+    setSelectedThinkingLevel(resolveInitialThinkingLevel(selectedModelId, visibleModelOptions));
   }, [activeThread, selectedModelId, visibleModelOptions]);
 
   async function changeModel(modelId: string) {
@@ -123,6 +126,7 @@ export function useModelSelection({
   async function changeThinkingLevel(thinkingLevel: string) {
     const nextLevel = normalizeThinkingLevel(thinkingLevel);
     setSelectedThinkingLevel(nextLevel);
+    rememberLastUsedThinkingLevel(nextLevel);
     if (!activeThread)
       return;
 
