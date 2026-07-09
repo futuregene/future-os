@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { FutureReference, InlineNode, MarkdownNode } from "./futureMarkdownTypes";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { useFutureReference, useFutureReferences } from "./futureReferenceStore";
 import { parseFutureMarkdown } from "./parseFutureMarkdown";
 import { CodeBlock } from "./renderers/CodeBlock";
@@ -11,15 +11,72 @@ import { SafeImage, SafeLink } from "./renderers/SafeLink";
 
 interface MarkdownContentProps {
   content: string;
+  /**
+   * The text is still streaming in char-by-char (typewriter pacing). When set,
+   * only the live tail (the currently-incomplete block) is re-parsed each frame
+   * while completed blocks are memoized — so a long reply doesn't re-parse its
+   * whole markdown ~40×/s. `memo` on the component additionally skips segments
+   * whose text hasn't changed. Off (default): the whole string is parsed once.
+   */
+  streaming?: boolean;
   workspaceId?: string | null;
 }
 
-export function MarkdownContent({ content, workspaceId }: MarkdownContentProps) {
-  const document = useMemo(() => parseFutureMarkdown(content), [content]);
-  useFutureReferences(workspaceId, document.references);
-
-  return <div className="space-y-3">{document.nodes.map((node, index) => renderBlock(node, workspaceId, `b${index}`))}</div>;
+/**
+ * Count fenced-code openers/closers, so we never split the stable prefix inside
+ * an unclosed ``` / ~~~ fence (which would render the half-open code as prose).
+ */
+function countFences(text: string): number {
+  const matches = text.match(/^ {0,3}(?:```|~~~)/gm);
+  return matches ? matches.length : 0;
 }
+
+/**
+ * The largest index at a blank-line block boundary whose prefix is a complete,
+ * self-contained markdown chunk (balanced code fences). Everything before it is
+ * "stable" (memoized); everything after is the "live tail" re-parsed per frame.
+ * Returns 0 when no safe split exists (e.g. one growing paragraph or an open
+ * code block) — then the whole string is the tail, which is correct if pricier.
+ */
+function safeSplitIndex(content: string): number {
+  let searchEnd = content.length;
+  for (;;) {
+    const idx = content.lastIndexOf("\n\n", searchEnd);
+    if (idx <= 0)
+      return 0;
+    if (countFences(content.slice(0, idx)) % 2 === 0)
+      return idx;
+    searchEnd = idx - 1;
+  }
+}
+
+export const MarkdownContent = memo(({ content, streaming, workspaceId }: MarkdownContentProps) => {
+  // Split completed blocks (stable, memoized) from the live tail (re-parsed each
+  // frame). Non-streaming keeps the whole string as the "stable" half, so this
+  // reduces to the original single memoized parse. A link-reference definition
+  // straddling the split can briefly render inert mid-stream; the final settled
+  // render parses the whole string, so it resolves correctly once complete.
+  const splitIndex = useMemo(() => (streaming ? safeSplitIndex(content) : content.length), [content, streaming]);
+  const stable = content.slice(0, splitIndex);
+  const tail = content.slice(splitIndex);
+  const stableDoc = useMemo(() => parseFutureMarkdown(stable), [stable]);
+  const tailDoc = useMemo(() => parseFutureMarkdown(tail), [tail]);
+
+  const references = useMemo<FutureReference[]>(
+    () => [...stableDoc.references, ...tailDoc.references],
+    [stableDoc, tailDoc],
+  );
+  useFutureReferences(workspaceId, references);
+
+  return (
+    <div className="space-y-3">
+      {stableDoc.nodes.map((node, index) => renderBlock(node, workspaceId, `s${index}`))}
+      {tailDoc.nodes.map((node, index) => renderBlock(node, workspaceId, `t${index}`))}
+    </div>
+  );
+});
+
+MarkdownContent.displayName = "MarkdownContent";
 
 function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined, key: string) {
   switch (node.type) {
