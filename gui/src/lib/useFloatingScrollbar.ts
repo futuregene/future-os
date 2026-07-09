@@ -91,8 +91,26 @@ export function useFloatingScrollbar() {
   }, [updateFloatingScrollbar]);
 
   useEffect(() => {
+    const container = scrollRef.current;
     updateFloatingScrollbar(false);
+
+    // Recompute thumb geometry (silently — don't force the thumb visible) when
+    // the viewport changes without a scroll: window resize, left-panel drag
+    // (container box changes), or content grow/shrink (list add/remove changes
+    // scrollHeight without resizing the fixed-height container, so also watch
+    // its content wrapper). Otherwise a hover reveals a stale-sized thumb.
+    const recompute = () => updateFloatingScrollbar(false);
+    const observer = new ResizeObserver(recompute);
+    if (container) {
+      observer.observe(container);
+      if (container.firstElementChild)
+        observer.observe(container.firstElementChild);
+    }
+    window.addEventListener("resize", recompute);
+
     return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", recompute);
       if (hideTimerRef.current)
         clearTimeout(hideTimerRef.current);
     };

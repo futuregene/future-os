@@ -41,6 +41,9 @@ export function SkillsView() {
   // Skill ids with an install/uninstall in flight (disables their buttons).
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const hasResolvedInitialTabRef = useRef(false);
+  // Bumped per refresh so an earlier in-flight load (rapid install/uninstall
+  // clicks, or unmount) can't overwrite a newer refresh's results.
+  const refreshEpochRef = useRef(0);
 
   const installedIds = useMemo(
     () => new Set(installed.map(skill => skill.id)),
@@ -86,6 +89,7 @@ export function SkillsView() {
   );
 
   const refresh = useCallback(async () => {
+    const epoch = ++refreshEpochRef.current;
     setLoading(true);
     // Installed comes from the agent; the catalogue needs the platform reachable
     // and may fail independently — keep the installed tab usable either way.
@@ -93,6 +97,9 @@ export function SkillsView() {
       listInstalledSkills(),
       listAvailableSkills(),
     ]);
+    // A newer refresh started while this one was in flight — drop these results.
+    if (epoch !== refreshEpochRef.current)
+      return;
     if (installedResult.status === "fulfilled") {
       setInstalled(installedResult.value);
       setInstalledError(null);
