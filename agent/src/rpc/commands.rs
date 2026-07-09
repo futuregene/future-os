@@ -13,6 +13,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         return list_models_response(id);
     }
 
+    // Credential refresh operates on every session, not one — handle it before
+    // resolving a target session (which would needlessly create/load one).
+    if cmd_type == "reload_auth" {
+        state.reload_all_credentials();
+        return RpcResponse::ok(id, "reload_auth", serde_json::json!({}));
+    }
+
     // Get the target session based on session_id, or use default
     let session = state.get_session(&cmd.session_id);
 
