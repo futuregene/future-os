@@ -11,6 +11,13 @@ export interface AgentActivityItem {
   count?: number;
   additions?: number;
   deletions?: number;
+  /**
+   * The individual tool calls a collapsed summary row stands for (e.g. the 4
+   * commands behind "Ran 4 commands"). Present only on grouped items; each child
+   * is a leaf item carrying its own target/detail. Drives the row's inline
+   * preview and its expandable sub-list.
+   */
+  children?: AgentActivityItem[];
 }
 
 /**

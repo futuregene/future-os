@@ -24,7 +24,15 @@ export function AgentActivityList({ items, workspacePath }: AgentActivityListPro
   );
 }
 
+// Pure dispatcher (no hooks) so the leaf and group branches can each own their
+// expand state without breaking the rules-of-hooks.
 export function AgentActivityLine({ item, workspacePath }: { item: AgentActivityItem; workspacePath?: string | null }) {
+  if ((item.children?.length ?? 0) > 0)
+    return <AgentActivityGroupLine item={item} workspacePath={workspacePath} />;
+  return <AgentActivitySingleLine item={item} workspacePath={workspacePath} />;
+}
+
+function AgentActivitySingleLine({ item, workspacePath }: { item: AgentActivityItem; workspacePath?: string | null }) {
   const label = labelForActivity(item);
   const failed = item.status === "failed";
   const running = item.status === "running";
@@ -86,6 +94,49 @@ export function AgentActivityLine({ item, workspacePath }: { item: AgentActivity
   );
 }
 
+// A collapsed burst ("Ran 4 commands"). Collapsed, it's just the summary label —
+// no inline preview, since a truncated command reads as noise. Clicking expands
+// it into every child call as an indented, selectable sub-line. Grouping only
+// happens for completed bursts, so a group is never running or failed.
+function AgentActivityGroupLine({ item, workspacePath }: { item: AgentActivityItem; workspacePath?: string | null }) {
+  const label = labelForActivity(item);
+  const children = item.children ?? [];
+  const [open, setOpen] = useState(false);
+  const Chevron = open ? ChevronLeft : ChevronRight;
+
+  return (
+    <div className="flex min-w-0 flex-col gap-1 text-[13px] leading-6 text-ink-muted">
+      <button
+        type="button"
+        onClick={() => setOpen(value => !value)}
+        className="flex min-w-0 cursor-pointer items-center gap-2 text-left"
+        aria-expanded={open}
+      >
+        {renderActivityIcon(item.kind, false)}
+        <span className="shrink-0">{label}</span>
+        <Chevron className="-ml-1 size-3 shrink-0" />
+      </button>
+      {open
+        ? (
+            <div className="flex flex-col gap-1 pl-6">
+              {children.map(child => (
+                <div className="flex min-w-0 items-center gap-2" key={child.id}>
+                  {renderActivityIcon(child.kind, false)}
+                  <span
+                    className="min-w-0 select-text truncate font-mono"
+                    title={child.detail ?? child.target}
+                  >
+                    {child.target ? relativizeTarget(child.kind, child.target, workspacePath) : ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )
+        : null}
+    </div>
+  );
+}
+
 // Bash targets are the command itself, never a path, so they're left as-is;
 // file targets get the shared workspace-relative treatment.
 function relativizeTarget(kind: AgentActivityKind, target: string, workspacePath?: string | null) {
@@ -123,6 +174,8 @@ function labelForActivity(item: AgentActivityItem) {
       return i18n.t("agent:activity.runCommands", { prefix, count });
     if (item.kind === "write")
       return i18n.t("agent:activity.writeFiles", { prefix, count });
+    if (item.kind === "read")
+      return i18n.t("agent:activity.readFiles", { prefix, count });
     return i18n.t("agent:activity.editFiles", { prefix, count });
   }
 

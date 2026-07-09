@@ -365,7 +365,7 @@ function collapseToolActivities(tools: ToolActivity[]): AgentActivityItem[] {
     if (!current)
       break;
 
-    if (current.status === "completed" && (current.kind === "bash" || current.kind === "edit" || current.kind === "write")) {
+    if (current.status === "completed" && COLLAPSIBLE_KINDS.has(current.kind)) {
       const group = [current];
       let cursor = index + 1;
       while (cursor < tools.length) {
@@ -377,11 +377,17 @@ function collapseToolActivities(tools: ToolActivity[]): AgentActivityItem[] {
       }
 
       if (group.length > 1) {
+        // Bash counts every call (each command stands on its own); file tools
+        // count distinct files so "Edited 3 files" matches the expanded list
+        // even when the same file was touched several times in the burst. The
+        // kept children back both the collapsed preview and the expanded rows.
+        const childTools = current.kind === "bash" ? group : dedupeByTarget(group);
         items.push({
           id: `${current.kind}_${current.order}_group`,
           kind: current.kind,
           status: "completed",
-          count: current.kind === "bash" ? group.length : uniqueTargets(group).length || group.length,
+          count: childTools.length,
+          children: childTools.map(toActivityItem),
         });
         index = cursor;
         continue;
@@ -395,8 +401,20 @@ function collapseToolActivities(tools: ToolActivity[]): AgentActivityItem[] {
   return items;
 }
 
-function uniqueTargets(group: ToolActivity[]) {
-  return [...new Set(group.map(item => item.target).filter(Boolean))];
+// bash/edit/write/read collapse into a single summary row when they run in an
+// uninterrupted, same-kind, all-completed burst of more than one.
+const COLLAPSIBLE_KINDS = new Set<ToolActivity["kind"]>(["bash", "edit", "write", "read"]);
+
+// Keep the first call per target, preserving order. Falls back to id for the
+// rare targetless call so it isn't silently merged away.
+function dedupeByTarget(group: ToolActivity[]): ToolActivity[] {
+  const seen = new Map<string, ToolActivity>();
+  for (const tool of group) {
+    const key = tool.target ?? tool.id;
+    if (!seen.has(key))
+      seen.set(key, tool);
+  }
+  return [...seen.values()];
 }
 
 function toActivityItem(tool: ToolActivity): AgentActivityItem {

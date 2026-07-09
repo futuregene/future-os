@@ -16,6 +16,8 @@
     "writeFiles_other": "{{prefix}}{{count}} files written",
     "editFiles_one": "{{prefix}}{{count}} file edited",
     "editFiles_other": "{{prefix}}{{count}} files edited",
+    "readFiles_one": "{{prefix}}{{count}} file read",
+    "readFiles_other": "{{prefix}}{{count}} files read",
     "read": "{{prefix}}read",
     "run": "{{prefix}}run",
     "write": "{{prefix}}write",
