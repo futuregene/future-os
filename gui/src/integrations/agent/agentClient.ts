@@ -106,16 +106,19 @@ function readLastUsedModel(): string | null {
 
 /**
  * Pick the model to select when there is no valid in-session choice yet.
- * Priority: the last user-picked model (if it still exists) → the first
- * FutureGene model → the first model in the catalog.
+ * Priority: the last user-picked model (if it still exists) → Future's
+ * deepseek-v4-pro → the first Future model → the first model in the catalog.
  */
 export function resolveInitialModelId(models: AgentModelOption[]): string {
   const lastUsed = readLastUsedModel();
   if (lastUsed && modelOption(lastUsed, models))
     return lastUsed;
-  const future = models.find(model => model.provider === FUTURE_PROVIDER_ID);
-  if (future)
-    return modelKey(future);
+  const futureModels = models.filter(model => model.provider === FUTURE_PROVIDER_ID);
+  const dsv4 = futureModels.find(model => model.id === "deepseek-v4-pro");
+  if (dsv4)
+    return modelKey(dsv4);
+  if (futureModels.length > 0)
+    return modelKey(futureModels[0]!);
   return models[0] ? modelKey(models[0]) : defaultAgentModelId;
 }
 
@@ -161,7 +164,13 @@ export function modelLabel(modelId: string, models: AgentModelOption[]): string 
 }
 
 export function modelThinkingLevel(modelId: string, models: AgentModelOption[]) {
-  return modelOption(modelId, models)?.thinkingLevel ?? undefined;
+  const level = modelOption(modelId, models)?.thinkingLevel;
+  if (level)
+    return level;
+  // Fallback defaults for well-known models when the registry doesn't specify.
+  if (modelId === "deepseek-v4-pro" || modelId.endsWith("/deepseek-v4-pro"))
+    return "xhigh";
+  return undefined;
 }
 
 export function normalizeThinkingLevel(level?: string | null): ThinkingLevel {
