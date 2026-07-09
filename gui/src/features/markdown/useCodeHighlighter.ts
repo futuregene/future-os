@@ -1,5 +1,5 @@
 import type { BundledLanguage, BundledTheme, HighlighterGeneric } from "shiki";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { createHighlighter } from "shiki";
 
 type CodeHighlighter = HighlighterGeneric<BundledLanguage, BundledTheme>;
@@ -27,14 +27,31 @@ let cachedHighlighter: CodeHighlighter | null = null;
 // Languages whose grammar is currently being fetched, so concurrent code blocks
 // asking for the same language don't each kick off a load.
 const inFlightLanguages = new Set<BundledLanguage>();
-// Hooks re-render through these when a grammar finishes loading, so a code block
-// that fell back to plain text re-highlights once its language is ready.
-const languageLoadListeners = new Set<() => void>();
 
-function notifyLanguageLoaded() {
-  for (const listener of languageLoadListeners) {
+// External store backing `useSyncExternalStore`: `storeVersion` bumps whenever
+// the shared highlighter becomes ready or a grammar finishes loading. Subscribing
+// components re-read the snapshot right after subscribing, so a load that
+// completes between a block's first render and its subscription is never missed
+// (the bug the old one-shot broadcast had).
+let storeVersion = 0;
+const storeListeners = new Set<() => void>();
+
+function emitChange() {
+  storeVersion++;
+  for (const listener of storeListeners) {
     listener();
   }
+}
+
+function subscribe(listener: () => void): () => void {
+  storeListeners.add(listener);
+  return () => {
+    storeListeners.delete(listener);
+  };
+}
+
+function getSnapshot(): number {
+  return storeVersion;
 }
 
 function getHighlighter(): Promise<CodeHighlighter> {
@@ -51,6 +68,7 @@ function getHighlighter(): Promise<CodeHighlighter> {
       langs: [],
     }).then((highlighter) => {
       cachedHighlighter = highlighter;
+      emitChange();
       return highlighter;
     }) as Promise<CodeHighlighter>;
   }
@@ -67,7 +85,7 @@ function ensureLanguageLoaded(highlighter: CodeHighlighter, lang: BundledLanguag
     .loadLanguage(lang)
     .then(() => {
       inFlightLanguages.delete(lang);
-      notifyLanguageLoaded();
+      emitChange();
     })
     .catch(() => {
       // Grammar failed to load — leave it unloaded so the block stays plain text.
@@ -132,38 +150,23 @@ function normalizeLanguage(language: string | undefined): BundledLanguage | null
 }
 
 export function useCodeHighlighter() {
-  const [highlighter, setHighlighter] = useState<CodeHighlighter | null>(cachedHighlighter);
-  // Bumped when any grammar finishes loading so `highlight` gets a new identity
-  // and consumers (which memoize on it) re-run against the now-loaded language.
-  const [loadVersion, setLoadVersion] = useState(0);
-  const mountedRef = useRef(true);
+  // `version` bumps when the highlighter becomes ready or a grammar loads.
+  // useSyncExternalStore re-reads the snapshot immediately after subscribing, so
+  // a load that finishes between this block's first render and its subscription
+  // still triggers a re-render — no missed notification.
+  const version = useSyncExternalStore(subscribe, getSnapshot);
 
   useEffect(() => {
-    mountedRef.current = true;
-
-    if (!highlighter) {
-      getHighlighter().then((loaded) => {
-        if (mountedRef.current) {
-          setHighlighter(loaded);
-        }
-      });
+    // Kick off the shared highlighter lazily on first mount; getHighlighter is
+    // idempotent and emits a store change once it resolves.
+    if (!cachedHighlighter) {
+      void getHighlighter();
     }
-
-    return () => {
-      mountedRef.current = false;
-    };
-  }, [highlighter]);
-
-  useEffect(() => {
-    const listener = () => setLoadVersion(version => version + 1);
-    languageLoadListeners.add(listener);
-    return () => {
-      languageLoadListeners.delete(listener);
-    };
   }, []);
 
   const highlight = useCallback(
     (code: string, language: string | undefined): HighlightResult | null => {
+      const highlighter = cachedHighlighter;
       if (!highlighter) {
         return null;
       }
@@ -177,7 +180,7 @@ export function useCodeHighlighter() {
         const loadedLanguages = highlighter.getLoadedLanguages();
         if (!loadedLanguages.includes(normalizedLang)) {
           // Not loaded yet — start the on-demand load and fall back to plain
-          // text; the load listener re-arms `highlight` once the grammar lands.
+          // text; the store change re-arms `highlight` once the grammar lands.
           ensureLanguageLoaded(highlighter, normalizedLang);
           return null;
         }
@@ -205,12 +208,12 @@ export function useCodeHighlighter() {
         return null;
       }
     },
-    // loadVersion isn't read in the body but is an intentional dep: bumping it
-    // when a grammar loads gives `highlight` a new identity so memoized
-    // consumers re-run against the now-loaded language.
+    // `version` isn't read in the body but is an intentional dep: bumping it when
+    // the highlighter/grammar loads gives `highlight` a new identity so memoized
+    // consumers re-run against the now-ready highlighter or language.
     // eslint-disable-next-line react/exhaustive-deps
-    [highlighter, loadVersion],
+    [version],
   );
 
-  return { highlight, isLoaded: highlighter !== null };
+  return { highlight, isLoaded: cachedHighlighter !== null };
 }
