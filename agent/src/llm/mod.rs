@@ -681,6 +681,10 @@ impl crate::types::LLMProvider for Client {
         *self.api_key.write().unwrap() = api_key.to_string();
     }
 
+    fn set_api_key(&self, api_key: &str) {
+        *self.api_key.write().unwrap() = api_key.to_string();
+    }
+
     fn update_thinking(&self, level: &str, budget: i32) {
         *self.thinking_level.write().unwrap() = level.to_string();
         *self.thinking_budget.write().unwrap() = budget;

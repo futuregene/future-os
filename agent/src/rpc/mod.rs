@@ -148,6 +148,20 @@ impl AppState {
     pub fn get_active_session_id(&self) -> String {
         self.active_session_id.read().unwrap().clone()
     }
+
+    /// Refresh the in-memory API key of every live session from auth.json.
+    /// Invoked (via the `reload_auth` command) when the GUI changes credentials
+    /// out-of-band — FutureGene login/logout, custom-provider key edits — so no
+    /// running session keeps using a stale key. Sessions actively streaming are
+    /// skipped by `reload_credentials` and pick up the new key on their next
+    /// `set_model`.
+    pub fn reload_all_credentials(&self) {
+        self.session.read().unwrap().reload_credentials();
+        let sessions = self.sessions.read().unwrap();
+        for sess in sessions.values() {
+            sess.read().unwrap().reload_credentials();
+        }
+    }
 }
 
 fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {

@@ -372,6 +372,54 @@ impl ServerSession {
         Ok(())
     }
 
+    /// Re-resolve the API key for this session's current model from disk
+    /// (auth.json) and push it into the live provider. Called when credentials
+    /// change out-of-band — FutureGene login/logout, custom-provider key edits —
+    /// so the session doesn't keep serving prompts with the stale in-memory key
+    /// until the next `set_model` (the prompt path never re-reads auth.json).
+    ///
+    /// Unlike `set_model` this stays correct even when the model no longer
+    /// resolves: after logout the Future models drop out of the registry, so a
+    /// `resolve` miss must NOT leave the old key in place. We derive the provider
+    /// from the canonical `provider/id` model id and, resolving no key, clear the
+    /// credential so the stale one can't keep being used. The key-resolution
+    /// order mirrors `set_model` for parity.
+    ///
+    /// A session actively streaming holds the loop write lock; `try_read` then
+    /// fails and we skip it — it picks up the refreshed key on its next
+    /// `set_model` (mid-run the in-flight request has already sent its header).
+    pub fn reload_credentials(&self) {
+        if self.model.is_empty() {
+            return;
+        }
+        let registry = crate::models::Registry::new();
+        let resolved = registry.resolve(&self.model);
+        let provider = resolved
+            .as_ref()
+            .map(|m| m.provider.clone())
+            .unwrap_or_else(|| self.model.split('/').next().unwrap_or("").to_string());
+
+        let auth = crate::AuthStore::load();
+        let api_key = auth
+            .get(&self.model)
+            .or_else(|| auth.get(&provider))
+            .or_else(|| {
+                resolved.as_ref().and_then(|m| {
+                    if m.api_key.is_empty() {
+                        None
+                    } else {
+                        Some(m.api_key.clone())
+                    }
+                })
+            })
+            .or_else(|| auth.default_key())
+            .unwrap_or_default();
+
+        if let Ok(loop_) = self.agent_loop.try_read() {
+            loop_.provider.set_api_key(&api_key);
+        }
+    }
+
     fn strip_image_content_from_messages(&self) {
         if let Ok(mut messages) = self.messages.write() {
             for message in messages.iter_mut() {
