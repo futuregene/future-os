@@ -1,6 +1,6 @@
 import type { StoredArtifact } from "../../integrations/storage/threadStore";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Eye, FileText, Trash2, Upload } from "lucide-react";
+import { BookText, FileArchive, FileBraces, FileCode, FileDown, FileImage, FileTerminal, FileText, Info, Trash2, Upload } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
@@ -12,7 +12,7 @@ import {
   inspectAttachment,
   storedTimeToIso,
 } from "../../integrations/storage/threadStore";
-import { formatTime } from "../../lib/date";
+import { formatDateTime } from "../../lib/date";
 import { errorMessage } from "../../lib/errors";
 import { formatBytes } from "../../lib/format";
 import { emitFutureEvent } from "../../lib/futureEvents";
@@ -140,12 +140,12 @@ function ArtifactCard({
   return (
     <div className="rounded-md border border-line-soft bg-surface p-3">
       <div className="flex items-start gap-2">
-        <FileText className="mt-0.5 size-4 shrink-0 text-accent" />
+        {artifactIcon(artifact)}
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold text-ink">{artifact.title}</div>
-              <div className="mt-1 text-xs text-ink-muted">{formatTime(storedTimeToIso(artifact.createdAt), i18n.language)}</div>
+              <div className="mt-1 text-xs text-ink-muted">{formatDateTime(storedTimeToIso(artifact.createdAt), i18n.language)}</div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
               <button
@@ -155,7 +155,7 @@ function ArtifactCard({
                 title={t("card.viewDetails")}
                 type="button"
               >
-                <Eye className="size-3.5" />
+                <Info className="size-3.5" />
               </button>
               <button
                 aria-label={t("card.deleteArtifact", { title: artifact.title })}
@@ -168,13 +168,6 @@ function ArtifactCard({
               </button>
             </div>
           </div>
-          {artifact.path
-            ? (
-                <div className="mt-2 truncate rounded-md bg-surface-subtle px-2 py-1.5 text-xs text-ink-muted" title={artifact.path}>
-                  {artifact.path}
-                </div>
-              )
-            : null}
           {!artifact.path && artifact.content
             ? (
                 <pre className="mt-2 max-h-32 overflow-auto rounded-md bg-surface-subtle p-2 text-[11px] leading-4 text-ink-soft">
@@ -186,4 +179,29 @@ function ArtifactCard({
       </div>
     </div>
   );
+}
+
+/**
+ * Left-badge icon by artifact kind, detected from `artifactType` + extension.
+ * Ordered most-specific first: PDF / Markdown / HTML are matched before the
+ * generic code / document fallbacks so each gets its own glyph.
+ */
+function artifactIcon(artifact: StoredArtifact) {
+  const path = artifact.path ?? "";
+  const className = "mt-0.5 size-4 shrink-0 text-accent";
+  if (artifact.artifactType === "image" || /\.(?:avif|bmp|gif|ico|jpe?g|png|svg|tiff?|webp)$/i.test(path))
+    return <FileImage className={className} />;
+  if (artifact.artifactType === "pdf" || /\.pdf$/i.test(path))
+    return <BookText className={className} />;
+  if (/\.(?:markdown|md)$/i.test(path))
+    return <FileDown className={className} />;
+  if (/\.(?:htm|html|xhtml)$/i.test(path))
+    return <FileCode className={className} />;
+  if (/\.(?:7z|bz2|gz|rar|tar|tgz|xz|zip)$/i.test(path))
+    return <FileArchive className={className} />;
+  if (/\.(?:bash|bat|cmd|fish|ps1|sh|zsh)$/i.test(path))
+    return <FileTerminal className={className} />;
+  if (artifact.artifactType === "code" || /\.(?:c|cc|cpp|cs|css|go|h|hpp|java|js|json|jsonl|jsx|kt|php|py|rb|rs|scss|swift|toml|ts|tsx|xml|ya?ml)$/i.test(path))
+    return <FileBraces className={className} />;
+  return <FileText className={className} />;
 }
