@@ -24,6 +24,13 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
   const [loadingThread, setLoadingThread] = useState(true);
   const [recentRun, setRecentRun] = useState<StoredRun | null>(null);
 
+  // Tracks the thread this view currently shows. Since AgentThread is not keyed
+  // by threadId (it stays mounted across thread switches), an async write from a
+  // background reload must verify its target is still active before touching
+  // state — otherwise a slow load for thread A can overwrite thread B's view.
+  const activeThreadIdRef = useRef(threadId);
+  activeThreadIdRef.current = threadId;
+
   // Guard against overlapping refreshes (poll tick, send, thread switch) where a
   // slow response lands after a newer one and writes stale run state — e.g. a
   // previous thread's run after switching. Newest call wins.
@@ -58,6 +65,11 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
       const storedMessages = await listMessages(targetThreadId);
       const agentMessages = storedMessages.map(toAgentMessage);
       const restoredMessages = await restoreMessageActivities(agentMessages, targetThreadId);
+      // Drop the result if the user switched threads while this was in flight —
+      // writing it now would paint the old thread's messages into the new view.
+      if (targetThreadId !== activeThreadIdRef.current) {
+        return;
+      }
       setMessages(restoredMessages);
     }
     catch {
@@ -116,8 +128,14 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     };
   }, [refreshRecentRun, workspaceId, threadId]);
 
+  // Stable flag so the poll effect keys on "is a run active", not on the
+  // recentRun object identity — refreshRecentRun replaces recentRun with a fresh
+  // object every tick, which would otherwise tear down and rebuild the interval
+  // (and re-render) each 1.5s.
+  const isRunActive = Boolean(recentRun && !matchesSettledRun(recentRun.status));
+
   useEffect(() => {
-    if (!threadId || !recentRun || matchesSettledRun(recentRun.status))
+    if (!threadId || !isRunActive)
       return;
 
     const timer = window.setInterval(() => {
@@ -125,7 +143,7 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     }, 1500);
 
     return () => window.clearInterval(timer);
-  }, [recentRun, refreshRecentRun, workspaceId, threadId]);
+  }, [isRunActive, refreshRecentRun, workspaceId, threadId]);
 
   return {
     loadingThread,

@@ -162,6 +162,8 @@ fn candidate_paths(repo: &ShadowRepo, index: &Path) -> Result<Vec<String>, AppEr
 }
 
 /// Stage only the given candidate paths (`--all` so deletions are recorded).
+/// Paths that no longer exist and aren't tracked in the index are silently
+/// skipped so stale shadow index entries don't break the snapshot.
 fn stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<(), AppError> {
     if paths.is_empty() {
         return Ok(());
@@ -178,11 +180,17 @@ fn stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<(), AppErr
         Some(&stdin),
     )?;
     if !output.status.success() {
-        return Err(format!(
-            "shadow git add failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )
-        .into());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // A pathspec that matches nothing (deleted file no longer tracked)
+        // shouldn't fail the whole snapshot — skip it with a warning.
+        if stderr.contains("pathspec") && stderr.contains("did not match") {
+            eprintln!(
+                "FutureOS shadow review: skipped {} paths that no longer exist",
+                paths.len()
+            );
+            return Ok(());
+        }
+        return Err(format!("shadow git add failed: {}", stderr.trim()).into());
     }
     Ok(())
 }

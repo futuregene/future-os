@@ -48,7 +48,9 @@ export function AppShell() {
   const [leftExpanded, setLeftExpanded] = useState(true);
   const [leftOverlayOpen, setLeftOverlayOpen] = useState(false);
   const [rightExpanded, setRightExpanded] = useState(false);
-  const [contextTab, setContextTab] = useState<ContextTab>("runs");
+  // Panels open on the content tab (Review/Artifacts), not Runs; ContextPanel
+  // seeds the exact tab per thread. Artifacts is the common chat-thread default.
+  const [contextTab, setContextTab] = useState<ContextTab>("artifacts");
   const [newChatWorkspaceId, setNewChatWorkspaceId] = useState<string | null>(null);
   const [newConversationMode, setNewConversationMode] = useState<"workspace" | "chat">("chat");
   const [newWorkspaceForm, setNewWorkspaceForm] = useState<"open" | null>(null);
@@ -211,8 +213,8 @@ export function AppShell() {
     setSettingsOpen(true);
   }
 
-  function handleOpenProviders() {
-    setSettingsTab("providers");
+  function handleOpenAccount() {
+    setSettingsTab("account");
     setSettingsOpen(true);
   }
 
@@ -413,7 +415,7 @@ export function AppShell() {
                           onApprovalDecision={handleApprovalDecision}
                           leftPanelExpanded={leftExpanded}
                           onRetryAgentConnection={() => void refreshAgentModels()}
-                          onOpenProviders={handleOpenProviders}
+                          onOpenAccount={handleOpenAccount}
                           onOpenModels={handleOpenModels}
                           onToggleLeftPanel={handleToggleLeftPanel}
                           onPromptConsumed={consumePendingPrompt}

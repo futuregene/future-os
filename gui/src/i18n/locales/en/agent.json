@@ -105,6 +105,11 @@
       "sandbox": "Sandboxed",
       "off": "Unrestricted"
     },
+    "approvalTierDesc": {
+      "manual": "Asks before each action",
+      "sandbox": "Asks when needed",
+      "off": "<em>ANY</em> command, no approval"
+    },
     "attachRejectedNoImage": "{{name}} (current model doesn't support images)",
     "attachFilesHintNoImage": "Attach files (PDF, text)",
     "attachDialogFilterNoImage": "Supported (PDF, text)"

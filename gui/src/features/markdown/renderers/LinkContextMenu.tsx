@@ -1,5 +1,6 @@
 import type { RefObject } from "react";
 import { Fragment } from "react";
+import { MenuPanel } from "../../../components/ui/MenuPanel";
 
 export interface LinkMenuItem {
   /** Draw a separator line above this item. */
@@ -30,8 +31,8 @@ export function LinkContextMenu({
     return null;
 
   return (
-    <div
-      className="fixed z-50 min-w-44 overflow-hidden rounded-lg border border-line-soft bg-surface py-1 shadow-panel"
+    <MenuPanel
+      className="fixed z-50 min-w-44 overflow-hidden py-1"
       ref={layerRef}
       style={{ left: position.x, top: position.y }}
     >
@@ -50,6 +51,6 @@ export function LinkContextMenu({
           </button>
         </Fragment>
       ))}
-    </div>
+    </MenuPanel>
   );
 }

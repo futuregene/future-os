@@ -19,7 +19,7 @@ import { formatDuration, formatTime } from "../../lib/date";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { isRecord } from "../../lib/objects";
 import { useAsyncResource } from "../../lib/useAsyncResource";
-import { formatRunStatus, runTone, shortId } from "./runDisplayFormatters";
+import { formatRunStatus, runTone, shortId, toolStatusLabel } from "./runDisplayFormatters";
 import { RunError } from "./RunError";
 import { numberOrStringField, parseJsonish, recordOf, stringField } from "./toolInput";
 
@@ -223,7 +223,7 @@ function ToolCallDetail({
           <span className="truncate text-xs font-medium text-ink">{tool.name || t("runInspect.toolFallback")}</span>
         </div>
         <Badge tone={tool.status === "completed" ? "success" : tool.status === "failed" ? "danger" : "neutral"}>
-          {toolStatusText(tool.status, t)}
+          {toolStatusLabel(tool.status)}
         </Badge>
       </div>
       <ToolDetailFields details={details} tool={tool} />
@@ -384,22 +384,6 @@ function outputKindLabel(kind: string, t: (key: string) => string) {
   if (kind === "error")
     return t("runInspect.outputError");
   return kind;
-}
-
-/** Localized label for a tool call's status, matching the panel's badges. */
-function toolStatusText(status: string, t: (key: string) => string) {
-  switch (status) {
-    case "completed":
-      return t("toolStatus.completed");
-    case "failed":
-      return t("toolStatus.failed");
-    case "cancelled":
-      return t("toolStatus.cancelled");
-    case "running":
-      return t("toolStatus.running");
-    default:
-      return status || t("toolStatus.unknown");
-  }
 }
 
 function toolDetails(tool: StoredToolCall, outputs: StoredToolOutput[]): ToolDetails {

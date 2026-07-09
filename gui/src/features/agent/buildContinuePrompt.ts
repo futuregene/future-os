@@ -2,6 +2,7 @@ import type { StoredRunEvent, StoredToolCall, StoredToolOutput } from "../../int
 import type { AgentMessage } from "./agentThreadTypes";
 import { listRunEvents, listToolCalls, listToolOutputs } from "../../integrations/storage/threadStore";
 import { isRecord, truncate } from "../../lib/objects";
+import { previousUserMessageBefore } from "./agentMessageFormatters";
 import { unwrapNestedJson } from "./approvalPayload";
 
 /**
@@ -64,13 +65,7 @@ export async function loadRunResumeSummary(runId: string) {
 export function previousUserForRun(messages: AgentMessage[], runId: string) {
   const runMessageIndex = messages.findIndex(message => message.runId === runId && message.role === "assistant");
   const startIndex = runMessageIndex >= 0 ? runMessageIndex - 1 : messages.length - 1;
-  for (let index = startIndex; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role === "user") {
-      return message;
-    }
-  }
-  return null;
+  return previousUserMessageBefore(messages, startIndex);
 }
 
 function summarizeRunForPrompt(
