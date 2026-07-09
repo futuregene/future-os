@@ -4,9 +4,18 @@ export async function openPath(path: string) {
   return invokeCommand<void>("open_path", { path });
 }
 
-/** Open an http(s) URL in the system default browser (backend restricts scheme). */
+/** Open an http(s) / mailto URL in the system default handler (backend restricts scheme). */
 export async function openExternalUrl(url: string) {
   return invokeCommand<void>("open_external_url", { url });
+}
+
+/**
+ * Resolve a markdown link target found while previewing a local file into an
+ * absolute path. Relative targets resolve against `baseFile`'s directory; used
+ * by the file-preview renderer, which has no workspace root to anchor against.
+ */
+export async function resolvePreviewLinkPath(baseFile: string, target: string) {
+  return invokeCommand<{ path: string; name: string }>("resolve_preview_link_path", { baseFile, target });
 }
 
 export async function readTextFilePreview(input: {

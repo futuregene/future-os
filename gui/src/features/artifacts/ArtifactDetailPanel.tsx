@@ -215,7 +215,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
                 {isMarkdown
                   ? (
                       <div className="max-h-96 overflow-auto rounded-md bg-surface-subtle p-3 pr-16">
-                        <MarkdownContent content={filePreview.content} workspaceId={artifact.workspaceId} />
+                        <MarkdownContent basePath={artifact.path ?? undefined} content={filePreview.content} workspaceId={artifact.workspaceId} />
                       </div>
                     )
                   : (
