@@ -7,6 +7,7 @@ import { openPath } from "../../integrations/storage/files";
 import { cn } from "../../lib/cn";
 import { isMacOS, isWindows } from "../../lib/platform";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
+import { MenuPanel } from "../ui/MenuPanel";
 import { useDropUpMenu } from "./hooks/useDropUpMenu";
 
 /** Per-thread actions dropdown (rename / pin / delete, or restore when archived). */
@@ -31,10 +32,10 @@ export function ThreadItemMenu({
   const { menuRef, dropUp } = useDropUpMenu();
 
   return (
-    <div
+    <MenuPanel
       ref={menuRef}
       className={cn(
-        "absolute right-1 z-40 w-36 rounded-lg border border-line-soft bg-surface p-1 shadow-panel",
+        "absolute right-1 z-40 w-36 p-1",
         dropUp ? "bottom-7" : "top-7",
       )}
     >
@@ -57,7 +58,7 @@ export function ThreadItemMenu({
       <ThreadMenuItem danger icon={<Trash2 className="size-3.5" />} onClick={onDelete} onClose={onClose}>
         {t("activityRail.delete")}
       </ThreadMenuItem>
-    </div>
+    </MenuPanel>
   );
 }
 
@@ -102,10 +103,10 @@ export function WorkspaceHeaderMenu({
       </button>
       {open
         ? (
-            <div
+            <MenuPanel
               ref={menuRef}
               className={cn(
-                "absolute right-0 z-40 w-max min-w-36 rounded-lg border border-line-soft bg-surface p-1 shadow-panel",
+                "absolute right-0 z-40 w-max min-w-36 p-1",
                 dropUp ? "bottom-7" : "top-7",
               )}
             >
@@ -118,7 +119,7 @@ export function WorkspaceHeaderMenu({
               <ThreadMenuItem danger icon={<Trash2 className="size-3.5" />} onClick={() => onDelete(workspace)} onClose={() => setOpen(false)}>
                 {t("activityRail.delete")}
               </ThreadMenuItem>
-            </div>
+            </MenuPanel>
           )
         : null}
     </div>

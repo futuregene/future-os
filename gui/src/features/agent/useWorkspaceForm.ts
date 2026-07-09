@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { errorMessage } from "../../lib/errors";
+import { pathBasename } from "../../lib/workspacePath";
 
 export type WorkspaceFormMode = "open" | null;
 
@@ -155,10 +156,7 @@ export function useWorkspaceForm({
 }
 
 function lastPathSegment(path: string) {
-  // Split on both separators so Windows paths (C:\Users\project) work too,
-  // mirroring fileNameFromPath in attachments.ts.
-  const parts = path.split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] ?? "Workspace";
+  return pathBasename(path) || "Workspace";
 }
 
 /**

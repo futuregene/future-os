@@ -1,5 +1,6 @@
 import type { AgentMessage } from "./agentThreadTypes";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { previousUserMessageBefore } from "./agentMessageFormatters";
 import { MessageBlock } from "./MessageBlock";
 
 /**
@@ -70,7 +71,7 @@ export function MessageList({ messages, showThinking, onContinue, onRetry, works
           message={message}
           hovered={hoveredId === message.id}
           isLast={index === messages.length - 1}
-          recoverySource={previousUserMessage(messages, index)}
+          recoverySource={previousUserMessageBefore(messages, index - 1)}
           showThinking={showThinking}
           workspaceId={workspaceId}
           workspacePath={workspacePath}
@@ -82,14 +83,4 @@ export function MessageList({ messages, showThinking, onContinue, onRetry, works
       ))}
     </div>
   );
-}
-
-function previousUserMessage(messages: AgentMessage[], index: number) {
-  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-    const message = messages[cursor];
-    if (message?.role === "user") {
-      return message;
-    }
-  }
-  return null;
 }

@@ -3,6 +3,7 @@ import type { StoredWorkspace } from "../../../integrations/storage/threadStore"
 import { useState } from "react";
 import i18n from "../../../i18n";
 import { deleteWorkspace, renameWorkspace } from "../../../integrations/storage/threadStore";
+import { errorMessage } from "../../../lib/errors";
 
 export interface WorkspaceRenameDialogState {
   workspace: StoredWorkspace;
@@ -67,7 +68,7 @@ export function useWorkspaceDialogs({
     }
     catch (error) {
       setRenameDialog(current =>
-        current ? { ...current, error: error instanceof Error ? error.message : String(error), submitting: false } : current,
+        current ? { ...current, error: errorMessage(error), submitting: false } : current,
       );
     }
   }
@@ -88,7 +89,7 @@ export function useWorkspaceDialogs({
     }
     catch (error) {
       setDeleteDialog(current =>
-        current ? { ...current, error: error instanceof Error ? error.message : String(error), submitting: false } : current,
+        current ? { ...current, error: errorMessage(error), submitting: false } : current,
       );
     }
   }

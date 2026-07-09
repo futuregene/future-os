@@ -1,5 +1,5 @@
 import type { AppSettings } from "../../../integrations/storage/appSettings";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { DEFAULT_APP_SETTINGS, getAppSettings, updateAppSettings } from "../../../integrations/storage/appSettings";
 import { useAsyncResource } from "../../../lib/useAsyncResource";
 
@@ -20,12 +20,19 @@ export function useAppSettings(): UseAppSettingsResult {
     DEFAULT_APP_SETTINGS,
   );
   const [appSettings, setAppSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
+  // Once the user has edited a setting, the initial async load's snapshot is
+  // stale — applying it would clobber the optimistic value (the backend already
+  // holds the new one). Stop mirroring the load after the first change.
+  const dirtyRef = useRef(false);
 
   useEffect(() => {
+    if (dirtyRef.current)
+      return;
     setAppSettings(loadedAppSettings);
   }, [loadedAppSettings]);
 
   async function changeSettings(patch: Partial<AppSettings>) {
+    dirtyRef.current = true;
     setAppSettings(current => ({ ...current, ...patch }));
     try {
       const next = await updateAppSettings(patch);

@@ -27,6 +27,10 @@ export function useDismissableLayer<T extends HTMLElement>({
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
+        // Stop the Escape here (capture phase, before it bubbles to window) so a
+        // parent Overlay's own Escape-to-close doesn't ALSO fire — otherwise one
+        // press would dismiss both this layer and the modal containing it.
+        event.stopPropagation();
         onDismiss();
       }
     }

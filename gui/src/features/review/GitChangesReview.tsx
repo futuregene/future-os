@@ -6,7 +6,7 @@ import { DiffView } from "../../components/ui/DiffView";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
-import { CollapsibleFileDiff } from "./CollapsibleFileDiff";
+import { CollapsibleFileDiff, ExpandCollapseAll } from "./CollapsibleFileDiff";
 import { useExpandableFiles } from "./useExpandableFiles";
 
 export function WorkingTreeReview({ files }: { files: GitReviewFile[] }) {
@@ -32,17 +32,6 @@ export function WorkingTreeReview({ files }: { files: GitReviewFile[] }) {
             ))}
       </div>
     </>
-  );
-}
-
-function ExpandCollapseAll({ allOpen, onToggle }: { allOpen: boolean; onToggle: () => void }) {
-  const { t } = useTranslation("review");
-  return (
-    <div className="flex items-center justify-end">
-      <button className="text-xs text-ink-muted transition-colors hover:text-ink" onClick={onToggle} type="button">
-        {allOpen ? t("collapseAll") : t("expandAll")}
-      </button>
-    </div>
   );
 }
 

@@ -80,20 +80,47 @@ export function upsertFutureReferenceEntries(
   if (!workspaceId)
     return;
 
+  let changed = false;
   for (const entry of entries) {
     const key = storeKey(workspaceId, entry.targetType, entry.targetId);
+    const existing = records.get(key);
     // Delete-then-set so `set` moves the key to the end — Map preserves
     // insertion order and does not refresh it on overwrite; keeps prune LRU.
     records.delete(key);
+    if (existing?.status === "resolved" && sameReferenceData(existing.data, entry.data)) {
+      // Data is byte-identical to what's already resolved (the common case on
+      // ContextPanel's 1.5s poll). Re-store the SAME record object so the LRU
+      // position refreshes but the snapshot reference stays stable — otherwise a
+      // fresh object would make every subscribed reference chip re-render each
+      // tick even though nothing changed.
+      records.set(key, existing);
+      continue;
+    }
     records.set(key, {
       data: entry.data,
       status: "resolved",
       targetId: entry.targetId,
       targetType: entry.targetType,
     });
+    changed = true;
   }
   pruneReferenceRecords();
-  notifyFutureReferenceSubscribers();
+  // Only wake subscribers when a record actually changed; a no-op poll must not
+  // churn every chip.
+  if (changed) {
+    notifyFutureReferenceSubscribers();
+  }
+}
+
+function sameReferenceData(a: ReferenceData, b: ReferenceData): boolean {
+  if (a === b)
+    return true;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  catch {
+    return false;
+  }
 }
 
 function getFutureReferenceSnapshot(

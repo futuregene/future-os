@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { ChevronDown, ChevronRight, FileDiff } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 /**
  * Collapsible file row shared by the working-tree (git) and last-run (shadow)
@@ -52,5 +53,20 @@ export function CollapsibleFileDiff({
       </button>
       {open ? <div className="border-t border-line-soft">{children}</div> : null}
     </section>
+  );
+}
+
+/**
+ * "Expand all / Collapse all" toggle shown above a file-diff list. Shared by the
+ * working-tree (git) and last-run (shadow) review views.
+ */
+export function ExpandCollapseAll({ allOpen, onToggle }: { allOpen: boolean; onToggle: () => void }) {
+  const { t } = useTranslation("review");
+  return (
+    <div className="flex items-center justify-end">
+      <button className="text-xs text-ink-muted transition-colors hover:text-ink" onClick={onToggle} type="button">
+        {allOpen ? t("collapseAll") : t("expandAll")}
+      </button>
+    </div>
   );
 }

@@ -7,7 +7,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { storedTimeToIso } from "../../integrations/storage/threadStore";
 import { formatTime } from "../../lib/date";
 import { formatBytes } from "../../lib/format";
-import { CollapsibleFileDiff } from "./CollapsibleFileDiff";
+import { CollapsibleFileDiff, ExpandCollapseAll } from "./CollapsibleFileDiff";
 import { useExpandableFiles } from "./useExpandableFiles";
 
 export function LastRunReview({
@@ -73,17 +73,6 @@ export function LastRunReview({
               />
             ))}
       </div>
-    </div>
-  );
-}
-
-function ExpandCollapseAll({ allOpen, onToggle }: { allOpen: boolean; onToggle: () => void }) {
-  const { t } = useTranslation("review");
-  return (
-    <div className="flex items-center justify-end">
-      <button className="text-xs text-ink-muted transition-colors hover:text-ink" onClick={onToggle} type="button">
-        {allOpen ? t("collapseAll") : t("expandAll")}
-      </button>
     </div>
   );
 }
