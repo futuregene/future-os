@@ -95,16 +95,13 @@ export function ProvidersPage({
     provider: BuiltinProvider,
     payload: { apiKey?: string | null; baseUrl?: string },
   ) {
-    // Base URL first, then key; each returns the fresh view, so keep the last.
-    let view = null;
+    // Base URL first, then key; apply each step's fresh view as it lands so a
+    // failure in the second step can't leave a persisted first step invisible.
     if (payload.baseUrl !== undefined) {
-      view = await setBuiltinProviderBaseUrl({ baseUrl: payload.baseUrl, id: provider.id });
+      setProviders(await setBuiltinProviderBaseUrl({ baseUrl: payload.baseUrl, id: provider.id }));
     }
     if (payload.apiKey !== undefined) {
-      view = await updateBuiltinProviderKey({ apiKey: payload.apiKey, id: provider.id });
-    }
-    if (view) {
-      setProviders(view);
+      setProviders(await updateBuiltinProviderKey({ apiKey: payload.apiKey, id: provider.id }));
     }
     setEditingBuiltinKey(null);
     const cleared = payload.apiKey === null;

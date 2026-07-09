@@ -1,19 +1,14 @@
+import type { FutureEnvironment } from "../../integrations/agent/providers";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
+import { getFutureEnvironment } from "../../integrations/agent/providers";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { SettingsSection } from "./SettingsPrimitives";
 
 type EnvironmentId = "production" | "test";
-
-interface FutureEnvironment {
-  /** `production` | `test` | `custom`. */
-  environment: string;
-  /** Resolved platform root currently in effect (no `/api`). */
-  platformUrl: string;
-}
 
 // The platform URL for each environment is owned by the Tauri backend
 // (`set_future_environment`); the frontend only sends the id.
@@ -30,7 +25,7 @@ const ENVIRONMENTS: { id: EnvironmentId; labelKey: string }[] = [
 export function EnvironmentPage() {
   const { t } = useTranslation("settings");
   const current = useAsyncResource<FutureEnvironment | null>(
-    () => invokeCommand<FutureEnvironment>("get_future_environment"),
+    getFutureEnvironment,
     [],
     null,
   );

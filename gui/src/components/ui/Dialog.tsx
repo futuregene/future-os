@@ -1,4 +1,5 @@
 import type { PropsWithChildren, ReactNode } from "react";
+import { useId } from "react";
 import { cn } from "../../lib/cn";
 import { Overlay } from "./Overlay";
 
@@ -21,10 +22,13 @@ export function Dialog({
   open,
   title,
 }: PropsWithChildren<DialogProps>) {
+  // Unique per instance so two open dialogs never collide on a shared DOM id or
+  // cross-wire their aria-labelledby.
+  const titleId = useId();
   return (
     <Overlay onClose={onClose} open={open}>
       <section
-        aria-labelledby="dialog-title"
+        aria-labelledby={titleId}
         aria-modal="true"
         className={cn(
           "relative z-10 w-full max-w-md rounded-xl border border-line-soft bg-surface p-5 shadow-dialog",
@@ -33,7 +37,7 @@ export function Dialog({
         role="dialog"
       >
         <div className="space-y-1">
-          <h2 id="dialog-title" className="text-lg font-semibold text-ink">
+          <h2 id={titleId} className="text-lg font-semibold text-ink">
             {title}
           </h2>
           {description ? <div className="text-sm leading-5 text-ink-soft">{description}</div> : null}

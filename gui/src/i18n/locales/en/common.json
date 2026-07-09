@@ -1,6 +1,7 @@
 {
   "copy": "Copy",
   "copied": "Copied",
+  "copyFailed": "Couldn't copy to clipboard",
   "close": "Close",
   "save": "Save",
   "cancel": "Cancel",

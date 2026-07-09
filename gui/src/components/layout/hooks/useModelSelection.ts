@@ -1,8 +1,11 @@
 import type { AgentModelOption } from "../../../integrations/agent/agentClient";
 import type { StoredThread } from "../../../integrations/storage/threadStore";
 import { useEffect, useRef, useState } from "react";
+import i18n from "../../../i18n";
 import { defaultThinkingLevel, modelOption, modelThinkingLevel, normalizeThinkingLevel, rememberLastUsedModel, resolveInitialModelId } from "../../../integrations/agent/agentClient";
 import { updateThreadModel, updateThreadThinkingLevel } from "../../../integrations/storage/threadStore";
+import { errorMessage } from "../../../lib/errors";
+import { emitFutureEvent } from "../../../lib/futureEvents";
 
 interface UseModelSelectionParams {
   activeThread: StoredThread | null;
@@ -94,15 +97,20 @@ export function useModelSelection({
     if (!activeThread)
       return;
 
-    await updateThreadModel({
-      threadId: activeThread.id,
-      modelId,
-    });
-    await updateThreadThinkingLevel({
-      threadId: activeThread.id,
-      thinkingLevel: nextLevel,
-    });
-    await refreshStore(activeThread.id);
+    try {
+      await updateThreadModel({
+        threadId: activeThread.id,
+        modelId,
+      });
+      await updateThreadThinkingLevel({
+        threadId: activeThread.id,
+        thinkingLevel: nextLevel,
+      });
+      await refreshStore(activeThread.id);
+    }
+    catch (error) {
+      await reconcileAfterFailure(error, activeThread.id);
+    }
   }
 
   function changeDraftModel(modelId: string) {
@@ -118,11 +126,27 @@ export function useModelSelection({
     if (!activeThread)
       return;
 
-    await updateThreadThinkingLevel({
-      threadId: activeThread.id,
-      thinkingLevel: nextLevel,
+    try {
+      await updateThreadThinkingLevel({
+        threadId: activeThread.id,
+        thinkingLevel: nextLevel,
+      });
+      await refreshStore(activeThread.id);
+    }
+    catch (error) {
+      await reconcileAfterFailure(error, activeThread.id);
+    }
+  }
+
+  // A persist failed after the optimistic local update: toast, then reload the
+  // store so the derived active-thread model/level revert to the stored value
+  // (and so the rejection never bubbles up as an unhandled promise rejection).
+  async function reconcileAfterFailure(error: unknown, threadId: string) {
+    emitFutureEvent("toast", {
+      message: i18n.t("layout:model.updateFailed", { message: errorMessage(error) }),
+      tone: "error",
     });
-    await refreshStore(activeThread.id);
+    await refreshStore(threadId).catch(() => {});
   }
 
   function syncSelection(modelId: string, thinkingLevel: string) {
