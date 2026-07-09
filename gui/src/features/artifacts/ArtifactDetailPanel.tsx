@@ -19,6 +19,7 @@ import { cn } from "../../lib/cn";
 import { formatDateTime } from "../../lib/date";
 import { errorMessage } from "../../lib/errors";
 import { useAsyncResource } from "../../lib/useAsyncResource";
+import { pathBasename } from "../../lib/workspacePath";
 import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
 import { previewKindForPath } from "../filepreview/previewKind";
 import { MarkdownContent } from "../markdown/MarkdownContent";
@@ -361,7 +362,7 @@ function PreviewFallback({
 
 function artifactFileName(artifact: StoredArtifact) {
   if (artifact.path) {
-    return artifact.path.split(/[/\\]/).filter(Boolean).pop() ?? sanitizeFileName(artifact.title);
+    return pathBasename(artifact.path) || sanitizeFileName(artifact.title);
   }
   const extension = artifact.artifactType === "data" ? "json" : "txt";
   return `${sanitizeFileName(artifact.title || "artifact")}.${extension}`;

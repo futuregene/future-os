@@ -36,3 +36,15 @@ export function pathBasename(path: string): string {
   const segments = path.split(/[\\/]/).filter(Boolean);
   return segments[segments.length - 1] ?? "";
 }
+
+/**
+ * Lowercase extension (without the dot) of a path's last segment, or "" when
+ * there's none. Derived from `pathBasename` so a dot in a parent directory
+ * never leaks into the result, and a leading-dot name (`.bashrc`) has no
+ * extension.
+ */
+export function pathExtension(path: string): string {
+  const base = pathBasename(path);
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
+}
