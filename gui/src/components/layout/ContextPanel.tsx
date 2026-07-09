@@ -86,6 +86,9 @@ export function ContextPanel({
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const refreshGenerationRef = useRef(0);
+  // Tracks the last thread we seeded a default tab for, so the seed runs once
+  // per thread and never fights a later manual tab choice.
+  const appliedDefaultThreadRef = useRef<string | null>(null);
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadMode = activeThread?.mode ?? null;
   const activeWorkspaceId = activeWorkspace?.id ?? activeThread?.workspaceId ?? null;
@@ -285,6 +288,21 @@ export function ContextPanel({
     setSelectedRunId(null);
     setSelectedToolId(null);
   }, [activeThreadId]);
+
+  // Default the panel to the content tab (Review for workspace threads,
+  // Artifacts for chat) rather than Runs when a thread opens. Applied once per
+  // thread and only after the workspace kind resolves, so we land on the real
+  // tab (not the runs-only pending set) and never override a manual choice.
+  useEffect(() => {
+    if (activeThreadId === null || workspaceKindPending)
+      return;
+    if (appliedDefaultThreadRef.current === activeThreadId)
+      return;
+    appliedDefaultThreadRef.current = activeThreadId;
+    const preferred: ContextTab = isWorkspaceThread ? "review" : "artifacts";
+    if (activeTab !== preferred)
+      onTabChange(preferred);
+  }, [activeThreadId, isWorkspaceThread, workspaceKindPending, activeTab, onTabChange]);
 
   useEffect(() => {
     const unsubscribers = [

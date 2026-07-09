@@ -12,6 +12,20 @@ export function formatTime(value: string, locale?: string) {
 }
 
 /**
+ * Full date + time label ("2026/07/09 22:51"). Like `formatTime`, `locale` is
+ * threaded through to `Intl` so a zh UI gets a localized year-month-day order.
+ */
+export function formatDateTime(value: string, locale?: string) {
+  return new Intl.DateTimeFormat(locale, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+/**
  * Compact elapsed-time label: "12s", "1m 4s" (integer seconds). Pass
  * `subSecond` for finer resolution below a minute ("640ms", "1.5s"), used by
  * the run inspector where tool durations are often sub-second.

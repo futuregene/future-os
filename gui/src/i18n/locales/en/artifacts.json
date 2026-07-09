@@ -13,7 +13,7 @@
   },
   "card": {
     "viewArtifact": "View artifact {{title}}",
-    "viewDetails": "View details",
+    "viewDetails": "Details",
     "deleteArtifact": "Delete artifact {{title}}",
     "delete": "Delete artifact",
     "deleteFailed": "Failed to delete artifact: {{message}}"
@@ -23,9 +23,12 @@
     "copyPath": "Copy path",
     "copyContent": "Copy content",
     "copyPreview": "Copy preview",
+    "enlarge": "Enlarge preview",
     "exportTitle": "Export artifact",
     "imagePreviewUnavailableTitle": "Image preview unavailable",
     "imagePreviewUnavailableDetail": "The image could not be loaded. You can still open or export the original file.",
+    "fileMissingTitle": "File deleted or moved",
+    "fileMissingDetail": "The original file is no longer at its location, so it can't be previewed. This isn't a system error — the file was likely deleted or moved.",
     "previewUnavailableTitle": "Preview unavailable",
     "previewUnavailableDetail": "This file type does not have an inline preview yet. Use Open or Export to inspect the original file.",
     "sizeBytes": "{{size}} bytes",
