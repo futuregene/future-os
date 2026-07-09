@@ -552,10 +552,7 @@ fn prepare_session_tool_call(
     };
 
     match tool_name {
-        "read" | "write" | "edit" | "ls" => {
-            rewrite_path_field(cwd, &mut normalized, "path");
-        }
-        "grep" => {
+        "read" | "write" | "edit" => {
             rewrite_path_field(cwd, &mut normalized, "path");
         }
         _ => {}
