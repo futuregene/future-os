@@ -1,3 +1,5 @@
+import { pathExtension } from "../../lib/workspacePath";
+
 /**
  * File-type detection for the local-file preview overlay. Detection is purely by
  * extension — the same signal `FileLink` has (a `StoredFile` never touches the
@@ -30,6 +32,5 @@ const IMAGE_MIME: Record<string, string> = {
 
 /** MIME type for a data-URL `<img src>`, keyed off the extension. */
 export function imageMimeForPath(path: string): string {
-  const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  return IMAGE_MIME[ext] ?? "application/octet-stream";
+  return IMAGE_MIME[pathExtension(path)] ?? "application/octet-stream";
 }

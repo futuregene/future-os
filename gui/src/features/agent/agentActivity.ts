@@ -1,6 +1,7 @@
 import type { StoredRunEvent } from "../../integrations/storage/threadStore";
 import type { AgentActivityItem, AgentActivityKind, MessageSegment } from "./agentThreadTypes";
 import { isRecord, singleLine } from "../../lib/objects";
+import { pathBasename } from "../../lib/workspacePath";
 
 interface AssistantRunProjection {
   activityItems: AgentActivityItem[];
@@ -591,7 +592,8 @@ function isSoftExit(exitCode: number, command: string | undefined) {
     return false;
   // Basename of the program, tolerant of Windows paths (`\`), a `.exe` suffix,
   // and case (Windows resolves names case-insensitively).
-  const program = command.trim().split(/\s+/)[0]?.split(/[/\\]/).pop()?.toLowerCase().replace(/\.exe$/, "");
+  const token = command.trim().split(/\s+/)[0] ?? "";
+  const program = pathBasename(token).toLowerCase().replace(/\.exe$/, "");
   return program ? SOFT_FAIL_COMMANDS.has(program) : false;
 }
 
