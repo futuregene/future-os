@@ -54,6 +54,13 @@ function getSnapshot(): number {
   return storeVersion;
 }
 
+// Server-rendered output never has the async highlighter available, so it must
+// render the un-highlighted fallback. Return a stable version (0) so
+// useSyncExternalStore doesn't throw under renderToStaticMarkup / SSR.
+function getServerSnapshot(): number {
+  return 0;
+}
+
 function getHighlighter(): Promise<CodeHighlighter> {
   if (cachedHighlighter) {
     return Promise.resolve(cachedHighlighter);
@@ -154,7 +161,7 @@ export function useCodeHighlighter() {
   // useSyncExternalStore re-reads the snapshot immediately after subscribing, so
   // a load that finishes between this block's first render and its subscription
   // still triggers a re-render — no missed notification.
-  const version = useSyncExternalStore(subscribe, getSnapshot);
+  const version = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
   useEffect(() => {
     // Kick off the shared highlighter lazily on first mount; getHighlighter is
