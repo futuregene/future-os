@@ -128,8 +128,14 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     };
   }, [refreshRecentRun, workspaceId, threadId]);
 
+  // Stable flag so the poll effect keys on "is a run active", not on the
+  // recentRun object identity — refreshRecentRun replaces recentRun with a fresh
+  // object every tick, which would otherwise tear down and rebuild the interval
+  // (and re-render) each 1.5s.
+  const isRunActive = Boolean(recentRun && !matchesSettledRun(recentRun.status));
+
   useEffect(() => {
-    if (!threadId || !recentRun || matchesSettledRun(recentRun.status))
+    if (!threadId || !isRunActive)
       return;
 
     const timer = window.setInterval(() => {
@@ -137,7 +143,7 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     }, 1500);
 
     return () => window.clearInterval(timer);
-  }, [recentRun, refreshRecentRun, workspaceId, threadId]);
+  }, [isRunActive, refreshRecentRun, workspaceId, threadId]);
 
   return {
     loadingThread,

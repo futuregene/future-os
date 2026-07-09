@@ -1,8 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredThread, ThreadCleanupSummary } from "../../integrations/storage/threadStore";
 import { useTranslation } from "react-i18next";
-import { Button } from "../ui/Button";
-import { Dialog } from "../ui/Dialog";
+import { ConfirmDeleteDialog, RenameDialog } from "./EntityDialogs";
 
 export interface DeleteDialogState {
   cleanupSummary: ThreadCleanupSummary | null;
@@ -39,76 +38,26 @@ export function AppShellDialogs({
   const { t } = useTranslation("layout");
   return (
     <>
-      <Dialog
+      <RenameDialog
         description={t("appShellDialogs.renameDescription")}
-        footer={(
-          <>
-            <Button
-              disabled={renameDialog?.submitting}
-              onClick={() => setRenameDialog(null)}
-              type="button"
-              variant="ghost"
-            >
-              {t("common:cancel")}
-            </Button>
-            <Button
-              disabled={renameDialog?.submitting}
-              onClick={() => onConfirmRenameThread()}
-              type="button"
-              variant="primary"
-            >
-              {renameDialog?.submitting ? t("appShellDialogs.saving") : t("common:save")}
-            </Button>
-          </>
-        )}
+        error={renameDialog?.error ?? null}
+        label={t("appShellDialogs.nameLabel")}
+        onChange={value =>
+          setRenameDialog(current => current ? { ...current, error: null, value } : current)}
         onClose={() => setRenameDialog(null)}
+        onConfirm={onConfirmRenameThread}
         open={Boolean(renameDialog)}
+        submitting={renameDialog?.submitting ?? false}
         title={t("appShellDialogs.renameTitle")}
-      >
-        <label className="block text-sm font-medium text-ink-soft" htmlFor="thread-title">
-          {t("appShellDialogs.nameLabel")}
-        </label>
-        <input
-          autoFocus
-          className="mt-2 h-10 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none transition focus:border-focus focus:ring-2 focus:ring-focus"
-          disabled={renameDialog?.submitting}
-          id="thread-title"
-          onChange={event =>
-            setRenameDialog(current => current ? { ...current, error: null, value: event.target.value } : current)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              onConfirmRenameThread();
-            }
-          }}
-          value={renameDialog?.value ?? ""}
-        />
-        {renameDialog?.error ? <div className="mt-2 text-xs leading-5 text-danger">{renameDialog.error}</div> : null}
-      </Dialog>
-      <Dialog
+        value={renameDialog?.value ?? ""}
+      />
+      <ConfirmDeleteDialog
         description={deleteDialog ? deleteThreadDescription(deleteDialog.thread, t) : undefined}
-        footer={(
-          <>
-            <Button
-              disabled={deleteDialog?.submitting}
-              onClick={() => setDeleteDialog(null)}
-              type="button"
-              variant="ghost"
-            >
-              {t("common:cancel")}
-            </Button>
-            <Button
-              disabled={deleteDialog?.submitting}
-              onClick={() => onConfirmDeleteThread()}
-              type="button"
-              variant="danger"
-            >
-              {deleteDialog?.submitting ? t("appShellDialogs.deleting") : t("common:delete")}
-            </Button>
-          </>
-        )}
+        error={deleteDialog?.error ?? null}
         onClose={() => setDeleteDialog(null)}
+        onConfirm={onConfirmDeleteThread}
         open={Boolean(deleteDialog)}
+        submitting={deleteDialog?.submitting ?? false}
         title={t("appShellDialogs.deleteTitle")}
       >
         <div className="space-y-3">
@@ -121,8 +70,7 @@ export function AppShellDialogs({
               )
             : null}
         </div>
-        {deleteDialog?.error ? <div className="mt-2 text-xs leading-5 text-danger">{deleteDialog.error}</div> : null}
-      </Dialog>
+      </ConfirmDeleteDialog>
     </>
   );
 }
