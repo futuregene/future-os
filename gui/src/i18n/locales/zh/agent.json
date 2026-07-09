@@ -69,7 +69,7 @@
     }
   },
   "composer": {
-    "placeholder": "让 未来助手 帮你规划、研究、分析、编辑或准备一个工作流…",
+    "placeholder": "让未来助手帮你规划、研究、分析、编辑或准备一个工作流…",
     "attachFiles": "添加附件",
     "attachFilesHint": "添加附件（图片、PDF、文本）",
     "attachLimitReached": "已达到附件上限（每轮 4 个）",
