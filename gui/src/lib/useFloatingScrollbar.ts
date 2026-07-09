@@ -29,6 +29,10 @@ const HIDE_DELAY_MS = 1200;
 export function useFloatingScrollbar() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Detach for an in-progress thumb drag, so unmounting mid-drag (e.g. switching
+  // threads while dragging) removes the document listeners instead of leaking
+  // them and calling setState on the unmounted hook.
+  const dragCleanupRef = useRef<(() => void) | null>(null);
   const [scrollbar, setScrollbar] = useState<FloatingScrollbarState>({ height: 0, top: 0, visible: false });
 
   const updateFloatingScrollbar = useCallback((visible: boolean) => {
@@ -79,18 +83,41 @@ export function useFloatingScrollbar() {
     const onUp = () => {
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerup", onUp);
+      dragCleanupRef.current = null;
     };
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onUp);
+    dragCleanupRef.current = onUp;
   }, [updateFloatingScrollbar]);
 
   useEffect(() => {
+    const container = scrollRef.current;
     updateFloatingScrollbar(false);
+
+    // Recompute thumb geometry (silently — don't force the thumb visible) when
+    // the viewport changes without a scroll: window resize, left-panel drag
+    // (container box changes), or content grow/shrink (list add/remove changes
+    // scrollHeight without resizing the fixed-height container, so also watch
+    // its content wrapper). Otherwise a hover reveals a stale-sized thumb.
+    const recompute = () => updateFloatingScrollbar(false);
+    const observer = new ResizeObserver(recompute);
+    if (container) {
+      observer.observe(container);
+      if (container.firstElementChild)
+        observer.observe(container.firstElementChild);
+    }
+    window.addEventListener("resize", recompute);
+
     return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", recompute);
       if (hideTimerRef.current)
         clearTimeout(hideTimerRef.current);
     };
   }, [updateFloatingScrollbar]);
+
+  // Detach any in-progress drag on unmount (the normal path detaches on pointerup).
+  useEffect(() => () => dragCleanupRef.current?.(), []);
 
   return { scrollRef, scrollbar, updateFloatingScrollbar, handleScroll, handleThumbPointerDown };
 }

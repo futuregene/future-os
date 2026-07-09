@@ -7,6 +7,7 @@ import { TextInput } from "../../components/ui/TextInput";
 import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
 import { useAsyncResource } from "../../lib/useAsyncResource";
+import { usePolling } from "../../lib/usePolling";
 import { getRemoteStatus, startRemote, stopRemote } from "./remoteClient";
 
 interface RemoteViewProps {
@@ -32,6 +33,18 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
   }, [loadedStatus]);
 
   const running = status?.running ?? false;
+
+  // While running, poll so a dropped connection (or a stop from elsewhere) is
+  // reflected instead of staying stuck on "running". Best-effort: a failed poll
+  // keeps the last known status rather than flashing an error (see CLAUDE.md §4).
+  usePolling(async () => {
+    try {
+      setStatus(await getRemoteStatus());
+    }
+    catch {
+      // Keep the last known status on a failed poll.
+    }
+  }, 5000, { enabled: running && !busy });
 
   async function handleStart() {
     setBusy(true);

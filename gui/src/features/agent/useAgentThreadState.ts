@@ -1,4 +1,4 @@
-import type { StoredThread } from "../../integrations/storage/threadStore";
+import type { StoredRun, StoredThread } from "../../integrations/storage/threadStore";
 import type { MessageAttachment } from "./agentThreadTypes";
 import { useCallback, useEffect, useRef } from "react";
 import { abortRun } from "../../integrations/storage/threadStore";
@@ -15,6 +15,15 @@ interface UseAgentThreadStateInput {
   pendingPrompt: { attachments?: MessageAttachment[]; id: string; content: string; targetThreadId: string } | null;
   onPromptConsumed: (id: string) => void;
   onThreadActivity: () => void;
+}
+
+// The run this thread is actively executing, or null. Guards on `threadId`
+// because `recentRun` lags a thread switch by one poll — a stale run from the
+// previous thread must not read as active here.
+function activeRunIdOf(recentRun: StoredRun | null, threadId: string | null): string | null {
+  return recentRun && recentRun.threadId === threadId && !matchesSettledRun(recentRun.status)
+    ? recentRun.id
+    : null;
 }
 
 export function useAgentThreadState({
@@ -52,10 +61,7 @@ export function useAgentThreadState({
   // foreground. Guarded on `threadId` because `recentRun` lags a thread switch by
   // one poll, and a stale run from the previous thread must not leak into this
   // one. Null once the run settles.
-  const activeRunId
-    = recentRun && recentRun.threadId === threadId && !matchesSettledRun(recentRun.status)
-      ? recentRun.id
-      : null;
+  const activeRunId = activeRunIdOf(recentRun, threadId);
   // Epoch-ms anchor for the live elapsed timer of a re-attached run. Stable while
   // the run stays active (derived from persisted run times), so it doesn't churn
   // the resume effect the way the `recentRun` object identity would.
@@ -94,9 +100,8 @@ export function useAgentThreadState({
     if (!threadId)
       return;
     const runId
-      = recentRun && recentRun.threadId === threadId && !matchesSettledRun(recentRun.status)
-        ? recentRun.id
-        : messages.find(message => message.role === "assistant" && message.status === "streaming")?.runId ?? null;
+      = activeRunIdOf(recentRun, threadId)
+        ?? messages.find(message => message.role === "assistant" && message.status === "streaming")?.runId ?? null;
     if (!runId)
       return;
     try {

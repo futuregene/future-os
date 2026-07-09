@@ -6,7 +6,7 @@ import type {
   StoredRun,
   StoredToolCall,
 } from "../../integrations/storage/types";
-import { isRecord, singleLine } from "../../lib/objects";
+import { isRecord, truncate } from "../../lib/objects";
 import { referenceKey } from "../markdown/futureMarkdownTypes";
 import { parseFutureMarkdown } from "../markdown/parseFutureMarkdown";
 import { resolveFutureReferences } from "../markdown/resolveFutureReferences";
@@ -190,15 +190,9 @@ function field(name: string, value?: string | null, maxLength = 240) {
   if (!value)
     return null;
 
-  return `${name}=${quote(truncate(singleLine(value), maxLength))}`;
+  return `${name}=${quote(truncate(value, maxLength))}`;
 }
 
 function quote(value: string) {
   return JSON.stringify(value);
-}
-
-function truncate(value: string, maxLength: number) {
-  if (value.length <= maxLength)
-    return value;
-  return `${value.slice(0, maxLength - 1)}...`;
 }

@@ -10,6 +10,16 @@ import { LinkContextMenu } from "./LinkContextMenu";
 import { useLinkContextMenu } from "./useLinkContextMenu";
 
 /**
+ * A `file://` URL for the drag/hover affordance. POSIX absolute paths already
+ * form a valid URL; Windows paths (`C:\a`, backslashes, no leading slash) need
+ * the separators flipped and a leading slash so `file://C:\a` doesn't malform.
+ */
+function toFileUrl(path: string): string {
+  const normalized = path.replace(/\\/g, "/");
+  return normalized.startsWith("/") ? `file://${normalized}` : `file:///${normalized}`;
+}
+
+/**
  * A local-file link (from a plain markdown path link) rendered inline as an
  * anchor. For previewable types (image / PDF / markdown) left click opens a
  * fullscreen in-app preview; every other type opens with the OS default handler
@@ -66,7 +76,7 @@ export function FileLink({ file }: { file: StoredFile }) {
     <>
       <a
         className="max-w-full break-all align-baseline font-medium text-accent underline-offset-2 hover:underline"
-        href={`file://${file.path}`}
+        href={toFileUrl(file.path)}
         onClick={(event) => {
           event.preventDefault();
           activate();

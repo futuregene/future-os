@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import i18n from "../../i18n";
 import { copyText } from "../../lib/clipboard";
+import { emitFutureEvent } from "../../lib/futureEvents";
 
 /**
  * Copy text to the clipboard and flash a transient "copied" flag. The flag is
@@ -19,7 +21,14 @@ export function useCopyState<K extends string = "default">(resetMs = 1400) {
   }, []);
 
   const copy = useCallback(async (text: string, key: K = "default" as K) => {
-    await copyText(text);
+    try {
+      await copyText(text);
+    }
+    catch {
+      // Don't flash "copied" when the clipboard write failed; toast instead.
+      emitFutureEvent("toast", { message: i18n.t("common:copyFailed"), tone: "error" });
+      return;
+    }
     setCopiedKey(key);
     clearTimer();
     timerRef.current = window.setTimeout(setCopiedKey, resetMs, null);

@@ -37,6 +37,18 @@ export interface ProvidersView {
   custom: CustomProvider[];
 }
 
+export interface FutureEnvironment {
+  /** `production` | `test` | `custom`. */
+  environment: string;
+  /** Resolved platform root currently in effect (no `/api`). */
+  platformUrl: string;
+}
+
+/** The platform environment currently in effect (owned by the Tauri backend). */
+export function getFutureEnvironment() {
+  return invokeCommand<FutureEnvironment>("get_future_environment");
+}
+
 export async function listAgentProviders() {
   return invokeCommand<ProvidersView>("list_agent_providers");
 }

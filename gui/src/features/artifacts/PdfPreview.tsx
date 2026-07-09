@@ -78,6 +78,7 @@ export function PdfPreview({ path }: PdfPreviewProps) {
       return;
 
     let cancelled = false;
+    let renderTask: { cancel: () => void } | null = null;
 
     async function renderPage() {
       try {
@@ -102,13 +103,17 @@ export function PdfPreview({ path }: PdfPreviewProps) {
         container.innerHTML = "";
         container.appendChild(canvas);
 
-        await page.render({ canvas, viewport }).promise;
+        const task = page.render({ canvas, viewport });
+        renderTask = task;
+        await task.promise;
 
         if (!cancelled) {
           page.cleanup();
         }
       }
       catch (err) {
+        // A cancelled render (superseded page/document) rejects here; the
+        // `cancelled` guard keeps it from surfacing as a render error.
         if (!cancelled) {
           setError(err instanceof Error ? err.message : t("pdfPreview.failedToRender"));
         }
@@ -119,6 +124,9 @@ export function PdfPreview({ path }: PdfPreviewProps) {
 
     return () => {
       cancelled = true;
+      // Stop an in-flight render so rapid page flips don't leave superseded
+      // renders burning CPU on a detached canvas.
+      renderTask?.cancel();
     };
   }, [currentPage, pdfDoc, t]);
 

@@ -2,6 +2,7 @@ import type { MessageAttachment } from "./agentThreadTypes";
 import * as pdfjs from "pdfjs-dist";
 import i18n from "../../i18n";
 import { inspectAttachment, readFileBase64, readTextFilePreview, writeThumbnail } from "../../integrations/storage/files";
+import { pathBasename } from "../../lib/workspacePath";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
@@ -126,8 +127,7 @@ interface StoredMixedMessage {
 }
 
 export function fileNameFromPath(path: string) {
-  const segments = path.split(/[\\/]/).filter(Boolean);
-  return segments[segments.length - 1] ?? path;
+  return pathBasename(path) || path;
 }
 
 function extOf(path: string) {
