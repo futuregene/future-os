@@ -11,7 +11,6 @@ import { MarkdownContent } from "../markdown/MarkdownContent";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
 import { MessageMeta } from "./MessageMeta";
 import { ThinkingBlock } from "./ThinkingBlock";
-import { usePacedReveal } from "./usePacedReveal";
 
 interface MessageBlockProps {
   message: AgentMessage;
@@ -67,12 +66,6 @@ function MessageBlockImpl({
   const copyableText = (segments
     ? segments.flatMap(segment => (segment.kind === "text" ? [segment.text] : [])).join("\n\n")
     : message.content ?? "").trim();
-  // Reveal the streaming reply char-by-char within each polling batch so it
-  // reads as a smooth typewriter instead of landing in ~220ms chunks. Copy /
-  // activity / recovery below keep using the FULL segments/content above; only
-  // the rendered body uses the paced view. Settled and historical messages are
-  // passed straight through (no animation).
-  const paced = usePacedReveal(segments, message.content ?? "", streaming);
 
   return (
     <article className="flex justify-center">
@@ -98,13 +91,12 @@ function MessageBlockImpl({
           {segments
             ? (
                 <div className="space-y-3">
-                  {(paced.segments ?? segments).map((segment) => {
+                  {segments.map((segment) => {
                     if (segment.kind === "text") {
                       return (
                         <MarkdownContent
                           content={segment.text}
                           key={segment.id}
-                          streaming={streaming}
                           workspaceId={workspaceId}
                         />
                       );
@@ -132,7 +124,7 @@ function MessageBlockImpl({
             : message.content
               ? isUser
                 ? <UserMessageText content={message.content} />
-                : <MarkdownContent content={paced.content} streaming={streaming} workspaceId={workspaceId} />
+                : <MarkdownContent content={message.content} workspaceId={workspaceId} />
               : null}
           {message.attachments && message.attachments.length > 0
             ? (
