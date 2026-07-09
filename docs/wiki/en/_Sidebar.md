@@ -10,9 +10,6 @@
 - [[Settings]]
 - [[Skills]]
 
-**Console**
-- [[Console Overview|Console]]
-
 **Command line (advanced)**
 - [[CLI (future)|CLI]]
 

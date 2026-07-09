@@ -356,6 +356,10 @@ function latestRunningToolId(
   return latestRunning[0]?.id;
 }
 
+// bash/edit/write/read collapse into a single summary row when they run in an
+// uninterrupted, same-kind, all-completed burst of more than one.
+const COLLAPSIBLE_KINDS = new Set<ToolActivity["kind"]>(["bash", "edit", "write", "read"]);
+
 function collapseToolActivities(tools: ToolActivity[]): AgentActivityItem[] {
   const items: AgentActivityItem[] = [];
   let index = 0;
@@ -400,10 +404,6 @@ function collapseToolActivities(tools: ToolActivity[]): AgentActivityItem[] {
 
   return items;
 }
-
-// bash/edit/write/read collapse into a single summary row when they run in an
-// uninterrupted, same-kind, all-completed burst of more than one.
-const COLLAPSIBLE_KINDS = new Set<ToolActivity["kind"]>(["bash", "edit", "write", "read"]);
 
 // Keep the first call per target, preserving order. Falls back to id for the
 // rare targetless call so it isn't silently merged away.
