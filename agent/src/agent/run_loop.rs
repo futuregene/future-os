@@ -160,16 +160,30 @@ impl Loop {
                 );
             }
 
-            // Stream chat
-            let stream_result = self
-                .provider
-                .stream_chat(
-                    self.model.clone(),
-                    llm_messages,
-                    tool_defs.clone(),
-                    self.system_prompt.clone(),
+            // Stream chat — interruptible so a stop during connect / TLS /
+            // time-to-first-byte takes effect immediately instead of blocking
+            // on the request to return (especially noticeable on Windows where
+            // flaky connections make this phase slow).
+            let stream_result = match self
+                .await_or_interrupt(
+                    self.provider.stream_chat(
+                        self.model.clone(),
+                        llm_messages,
+                        tool_defs.clone(),
+                        self.system_prompt.clone(),
+                    ),
+                    interrupt_rx.as_mut(),
                 )
-                .await;
+                .await
+            {
+                Some(r) => r,
+                None => {
+                    if let Some(ref bus) = self.event_bus {
+                        bus.emit(agent_end("interrupted", None));
+                    }
+                    return Ok((String::new(), messages));
+                }
+            };
 
             let mut rx = match stream_result {
                 Ok(rx) => rx,
@@ -209,6 +223,14 @@ impl Loop {
                                 bus.emit(events::compaction_end(0, "", false, "auto"));
                             }
                         }
+                        // Don't burn a retry (and its backoff) if the user
+                        // already asked to stop.
+                        if self.is_interrupted() {
+                            if let Some(ref bus) = self.event_bus {
+                                bus.emit(agent_end("interrupted", None));
+                            }
+                            return Ok((String::new(), messages));
+                        }
                         retry_attempt += 1;
                         let delay_ms = 2000 * (1 << (retry_attempt - 1));
                         if let Some(ref bus) = self.event_bus {
@@ -218,7 +240,21 @@ impl Loop {
                                 delay_ms,
                             ));
                         }
-                        sleep(Duration::from_millis(delay_ms as u64)).await;
+                        // Interruptible backoff: wake up immediately when the
+                        // user hits stop instead of sleeping out the full delay
+                        // (2s + 4s + 8s = up to 14s of unresponsiveness).
+                        if self
+                            .sleep_or_interrupt(
+                                Duration::from_millis(delay_ms as u64),
+                                interrupt_rx.as_mut(),
+                            )
+                            .await
+                        {
+                            if let Some(ref bus) = self.event_bus {
+                                bus.emit(agent_end("interrupted", None));
+                            }
+                            return Ok((String::new(), messages));
+                        }
                         continue;
                     }
                     if let Some(ref bus) = self.event_bus {
@@ -652,6 +688,77 @@ impl Loop {
 
             last_error = None;
             turn += 1;
+        }
+    }
+
+    /// Sleep for `dur`, returning early with `true` if an interrupt arrives —
+    /// either signalled on `interrupt_rx` or via the shared interrupt flag.
+    /// Returns `false` if the full duration elapsed without interruption.
+    ///
+    /// The flag is polled every 50ms (matching the bash tool) so an `abort()`
+    /// that only sets the flag — without a channel send — is still caught
+    /// promptly.
+    async fn sleep_or_interrupt(
+        &self,
+        dur: Duration,
+        mut interrupt_rx: Option<&mut tokio::sync::mpsc::Receiver<()>>,
+    ) -> bool {
+        let deadline = tokio::time::Instant::now() + dur;
+        let poll = Duration::from_millis(50);
+        loop {
+            if self.is_interrupted() {
+                return true;
+            }
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let step = poll.min(deadline - now);
+            match interrupt_rx {
+                Some(ref mut rx) => {
+                    tokio::select! {
+                        _ = sleep(step) => {}
+                        _ = rx.recv() => return true,
+                    }
+                }
+                None => sleep(step).await,
+            }
+        }
+    }
+
+    /// Await `fut`, bailing out early with `None` if an interrupt arrives on
+    /// `interrupt_rx` or via the shared interrupt flag; returns `Some(output)`
+    /// if the future completed first. The flag is polled every 50ms as a
+    /// fallback for aborts that only set the flag without a channel send.
+    async fn await_or_interrupt<F, T>(
+        &self,
+        fut: F,
+        mut interrupt_rx: Option<&mut tokio::sync::mpsc::Receiver<()>>,
+    ) -> Option<T>
+    where
+        F: std::future::Future<Output = T>,
+    {
+        tokio::pin!(fut);
+        let poll = Duration::from_millis(50);
+        loop {
+            if self.is_interrupted() {
+                return None;
+            }
+            match interrupt_rx {
+                Some(ref mut rx) => {
+                    tokio::select! {
+                        out = &mut fut => return Some(out),
+                        _ = rx.recv() => return None,
+                        _ = sleep(poll) => {}
+                    }
+                }
+                None => {
+                    tokio::select! {
+                        out = &mut fut => return Some(out),
+                        _ = sleep(poll) => {}
+                    }
+                }
+            }
         }
     }
 }
