@@ -1,24 +1,38 @@
 import type { ReactNode } from "react";
+import type { StoredFile } from "../../integrations/storage/types";
 import type { FutureReference, InlineNode, MarkdownNode } from "./futureMarkdownTypes";
 import { useMemo } from "react";
 import { useFutureReference, useFutureReferences } from "./futureReferenceStore";
 import { parseFutureMarkdown } from "./parseFutureMarkdown";
+import { PreviewMarkdownContext, usePreviewMarkdown } from "./PreviewMarkdownContext";
 import { CodeBlock } from "./renderers/CodeBlock";
+import { FileLink } from "./renderers/FileLink";
 import { renderFileReference } from "./renderers/fileReference";
 import { FutureEmbed } from "./renderers/FutureEmbed";
+import { PendingReference } from "./renderers/PendingReference";
 import { ReferenceChip } from "./renderers/ReferenceChip";
 import { SafeImage, SafeLink } from "./renderers/SafeLink";
+import { usePreviewLinkPath } from "./usePreviewLinkPath";
 
 interface MarkdownContentProps {
   content: string;
   workspaceId?: string | null;
+  /**
+   * When set, renders in file-preview mode (see `PreviewMarkdownContext`): this
+   * is the absolute path of the previewed file, used to resolve relative links.
+   * The chat stream omits it, keeping its link behavior unchanged.
+   */
+  basePath?: string;
 }
 
-export function MarkdownContent({ content, workspaceId }: MarkdownContentProps) {
+export function MarkdownContent({ content, workspaceId, basePath }: MarkdownContentProps) {
   const document = useMemo(() => parseFutureMarkdown(content), [content]);
   useFutureReferences(workspaceId, document.references);
 
-  return <div className="space-y-3">{document.nodes.map((node, index) => renderBlock(node, workspaceId, `b${index}`))}</div>;
+  const body = <div className="space-y-3">{document.nodes.map((node, index) => renderBlock(node, workspaceId, `b${index}`))}</div>;
+  if (basePath)
+    return <PreviewMarkdownContext value={{ basePath }}>{body}</PreviewMarkdownContext>;
+  return body;
 }
 
 function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined, key: string) {
@@ -197,11 +211,45 @@ function FutureReferenceChip({
   reference: FutureReference;
   workspaceId: string | null | undefined;
 }) {
+  const preview = usePreviewMarkdown();
+  // In preview mode a file link resolves against the previewed file's directory
+  // (there is no workspace root), bypassing the workspace-scoped reference store.
+  if (preview && reference.targetType === "file")
+    return <PreviewFileReference basePath={preview.basePath} reference={reference} />;
+  return <WorkspaceFutureReference reference={reference} workspaceId={workspaceId} />;
+}
+
+function WorkspaceFutureReference({
+  reference,
+  workspaceId,
+}: {
+  reference: FutureReference;
+  workspaceId: string | null | undefined;
+}) {
   const resolved = useFutureReference(workspaceId, reference);
   const fileLink = renderFileReference(reference, resolved);
   if (fileLink)
     return fileLink;
   return <ReferenceChip reference={reference} resolved={resolved} />;
+}
+
+function PreviewFileReference({
+  basePath,
+  reference,
+}: {
+  basePath: string;
+  reference: FutureReference;
+}) {
+  const resolved = usePreviewLinkPath(basePath, reference.targetId);
+  if (!resolved)
+    return <PendingReference reference={reference} />;
+  const file: StoredFile = {
+    path: resolved.path,
+    name: resolved.name,
+    insideWorkspace: false,
+    relativePath: null,
+  };
+  return <FileLink file={file} />;
 }
 
 function FutureEmbedView({

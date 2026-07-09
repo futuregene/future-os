@@ -6,23 +6,26 @@ import { copyText } from "../../../lib/clipboard";
 import { emitFutureEvent } from "../../../lib/futureEvents";
 import { FilePreviewOverlay } from "../../filepreview/FilePreviewOverlay";
 import { previewKindForPath } from "../../filepreview/previewKind";
+import { usePreviewMarkdown } from "../PreviewMarkdownContext";
 import { LinkContextMenu } from "./LinkContextMenu";
 import { useLinkContextMenu } from "./useLinkContextMenu";
 
 /**
  * A local-file link (from a plain markdown path link) rendered inline as an
- * anchor. For previewable types (image / PDF / markdown) left click opens a
- * fullscreen in-app preview; every other type opens with the OS default handler
- * (directories land in the file manager). Right click opens a context menu with
- * a preview action (when applicable) plus copy / open actions. The `file://`
- * href is only a hover/drag affordance — navigation is prevented so the click
- * always routes through our handlers. In-workspace files show their
- * workspace-relative path, files written elsewhere (e.g. `~/Desktop`) show the
- * full path.
+ * anchor. In the chat stream, previewable types (image / markdown) left-click
+ * into a fullscreen in-app preview and every other type opens with the OS
+ * default handler; right click opens a context menu (preview / copy / open).
+ * In preview mode (see `PreviewMarkdownContext`) there is no nested in-app
+ * preview and no custom menu — every target opens with the OS default handler.
+ * The `file://` href is only a hover/drag affordance — navigation is prevented
+ * so the click always routes through our handlers. In-workspace files show
+ * their workspace-relative path, files written elsewhere (e.g. `~/Desktop`)
+ * show the full path.
  */
 export function FileLink({ file }: { file: StoredFile }) {
   const { t } = useTranslation("markdown");
   const menu = useLinkContextMenu();
+  const preview = usePreviewMarkdown();
   const [previewing, setPreviewing] = useState(false);
 
   const display = file.insideWorkspace && file.relativePath ? file.relativePath : file.path;
@@ -44,7 +47,10 @@ export function FileLink({ file }: { file: StoredFile }) {
   const openPreview = useCallback(() => setPreviewing(true), []);
 
   function activate() {
-    if (previewKind)
+    // Preview mode: no nested in-app preview — hand every target to the OS.
+    if (preview)
+      openExternal();
+    else if (previewKind)
       openPreview();
     else
       openExternal();
@@ -71,13 +77,13 @@ export function FileLink({ file }: { file: StoredFile }) {
           event.preventDefault();
           activate();
         }}
-        onContextMenu={menu.open}
+        onContextMenu={preview ? event => event.preventDefault() : menu.open}
         title={file.path}
       >
         {display}
       </a>
-      <LinkContextMenu controller={menu} items={items} />
-      {previewKind
+      {preview ? null : <LinkContextMenu controller={menu} items={items} />}
+      {!preview && previewKind
         ? (
             <FilePreviewOverlay
               kind={previewKind}
