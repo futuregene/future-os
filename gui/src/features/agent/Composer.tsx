@@ -5,9 +5,9 @@ import type { MessageAttachment } from "./agentThreadTypes";
 import type { MentionEditorHandle } from "./MentionEditor";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ArrowUp, ChevronDown, Paperclip, ShieldCheck, Square, X } from "lucide-react";
+import { ArrowUp, ChevronDown, Paperclip, ShieldCheck, ShieldOff, ShieldQuestion, Square, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
 import { modelKey, modelLabel, modelOption, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
@@ -19,6 +19,19 @@ import { MentionEditor } from "./MentionEditor";
 
 /** Approval-tier order for the composer dropdown (sandbox is macOS-only). */
 const APPROVAL_TIERS: ApprovalTier[] = ["manual", "sandbox", "off"];
+
+/**
+ * Icon per approval tier, shared between the dropdown rows and the trigger so
+ * the button always mirrors the selected tier. Shield family: question (asks
+ * you) → check (sandboxed) → off (unrestricted).
+ */
+function tierIcon(tier: ApprovalTier, className: string) {
+  if (tier === "sandbox")
+    return <ShieldCheck className={className} />;
+  if (tier === "off")
+    return <ShieldOff className={className} />;
+  return <ShieldQuestion className={className} />;
+}
 
 export interface ComposerSendPayload {
   attachments: MessageAttachment[];
@@ -293,7 +306,7 @@ export function Composer({
                 <SelectMenu
                   open={approvalMenuOpen}
                   onDismiss={() => setApprovalMenuOpen(false)}
-                  panelClassName="w-44 overflow-hidden"
+                  panelClassName="w-64 overflow-hidden"
                   trigger={(
                     <button
                       className="inline-flex h-7 max-w-40 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
@@ -305,7 +318,7 @@ export function Composer({
                       type="button"
                       title={t("composer.approval")}
                     >
-                      <ShieldCheck className="size-3 shrink-0" />
+                      {tierIcon(approvalTier ?? "manual", "size-3 shrink-0")}
                       <span className="truncate">{t(`composer.approvalTier.${approvalTier ?? "manual"}`)}</span>
                       <ChevronDown className="size-3 shrink-0" />
                     </button>
@@ -313,6 +326,7 @@ export function Composer({
                 >
                   {APPROVAL_TIERS.filter(tier => tier !== "sandbox" || isMacOS).map(tier => (
                     <SelectMenuItem
+                      className="py-1.5"
                       key={tier}
                       selected={(approvalTier ?? "manual") === tier}
                       onSelect={() => {
@@ -320,7 +334,15 @@ export function Composer({
                         setApprovalMenuOpen(false);
                       }}
                     >
-                      <span className="min-w-0 flex-1 truncate font-medium text-ink">{t(`composer.approvalTier.${tier}`)}</span>
+                      {tierIcon(tier, "size-4 shrink-0 text-ink-soft")}
+                      <span className="min-w-0 flex-1 space-y-0.5">
+                        <span className="block truncate font-medium leading-tight text-ink">{t(`composer.approvalTier.${tier}`)}</span>
+                        <span className="block text-xs leading-tight text-ink-muted">
+                          {tier === "off"
+                            ? <Trans t={t} i18nKey="composer.approvalTierDesc.off" components={{ em: <span className="font-semibold" /> }} />
+                            : t(`composer.approvalTierDesc.${tier}`)}
+                        </span>
+                      </span>
                     </SelectMenuItem>
                   ))}
                 </SelectMenu>
