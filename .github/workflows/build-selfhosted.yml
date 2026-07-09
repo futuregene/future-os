@@ -87,10 +87,18 @@ jobs:
         shell: bash
         run: |
           have() { command -v "$1" >/dev/null 2>&1 && echo true || echo false; }
+          # This shell is `bash --noprofile --norc`, so ~/.cargo/env is never
+          # sourced and ~/.cargo/bin is off PATH — `command -v cargo` would report
+          # false on a runner that already has rustup. Probe the binary directly.
+          if command -v cargo >/dev/null 2>&1 || [ -x "$HOME/.cargo/bin/cargo" ]; then
+            cargo=true
+          else
+            cargo=false
+          fi
           {
             echo "node=$(have node)"
             echo "bun=$(have bun)"
-            echo "cargo=$(have cargo)"
+            echo "cargo=$cargo"
             echo "protoc=$(have protoc)"
           } >> "$GITHUB_OUTPUT"
 
@@ -127,7 +135,17 @@ jobs:
         shell: bash
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # Run whether or not the install step fired: later steps also use
+      # `--noprofile`, so ~/.cargo/bin must be put on PATH explicitly here for a
+      # pre-provisioned runner where the install step was (correctly) skipped.
+      - name: Add cargo to PATH (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [ -d "$HOME/.cargo/bin" ]; then
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
 
       - name: Install Rust (Windows)
         if: steps.detect_win.outputs.cargo == 'false' && runner.os == 'Windows'
