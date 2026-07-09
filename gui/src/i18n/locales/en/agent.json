@@ -181,6 +181,7 @@
     "retry": "Retry",
     "continue": "Continue",
     "generating": "Generating",
+    "justNow": "just now",
     "thinking": "Thinking…",
     "stopped": "Stopped",
     "tokens": "{{formattedCount}} tokens",

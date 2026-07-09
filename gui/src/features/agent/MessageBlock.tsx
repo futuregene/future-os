@@ -6,7 +6,8 @@ import { useTranslation } from "react-i18next";
 import { CopyButton } from "../../components/ui/CopyButton";
 import { useCopyState } from "../../components/ui/useCopyState";
 import { cn } from "../../lib/cn";
-import { formatTime } from "../../lib/date";
+import { formatDateTime, formatMessageTimestamp } from "../../lib/date";
+import { useNow } from "../../lib/useNow";
 import { MarkdownContent } from "../markdown/MarkdownContent";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
 import { MessageMeta } from "./MessageMeta";
@@ -50,6 +51,9 @@ function MessageBlockImpl({
   workspacePath,
 }: MessageBlockProps) {
   const { i18n, t } = useTranslation("agent");
+  // Re-render on a minute cadence so the relative timestamp ("3 minutes ago")
+  // stays accurate as it ages, instead of freezing at its first-render value.
+  const now = useNow();
   const { copiedKey, copy } = useCopyState();
   const isUser = message.role === "user";
   // While the reply streams, the footer is pinned open and shows a live activity
@@ -78,7 +82,12 @@ function MessageBlockImpl({
           <span className="text-sm font-semibold text-ink">
             {message.authorKey ? t(message.authorKey) : message.author}
           </span>
-          <span className="text-xs text-ink-muted">{formatTime(message.createdAt, i18n.language)}</span>
+          <span className="text-xs text-ink-muted" title={formatDateTime(message.createdAt, i18n.language)}>
+            {formatMessageTimestamp(message.createdAt, i18n.language, {
+              now,
+              justNowLabel: t("message.justNow"),
+            })}
+          </span>
         </div>
         <div
           className={cn(
