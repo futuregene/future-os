@@ -37,7 +37,7 @@ interface AgentThreadProps {
   onApprovalDecision: (approval: StoredApprovalRequest, status: "approved" | "rejected") => Promise<void>;
   onPromptConsumed: (id: string) => void;
   onRetryAgentConnection: () => void;
-  onOpenProviders: () => void;
+  onOpenAccount: () => void;
   onOpenModels: () => void;
   onThreadActivity: () => void;
   onToggleLeftPanel: () => void;
@@ -62,7 +62,7 @@ export function AgentThread({
   onApprovalDecision,
   onPromptConsumed,
   onRetryAgentConnection,
-  onOpenProviders,
+  onOpenAccount,
   onOpenModels,
   onThreadActivity,
   onToggleLeftPanel,
@@ -207,7 +207,7 @@ export function AgentThread({
                   <AgentConnectionNotice
                     connection={agentConnection}
                     onOpenModels={onOpenModels}
-                    onOpenProviders={onOpenProviders}
+                    onOpenAccount={onOpenAccount}
                     onRetry={onRetryAgentConnection}
                   />
                 )
@@ -265,16 +265,16 @@ interface AgentNotice {
 function AgentConnectionNotice({
   connection,
   onRetry,
-  onOpenProviders,
+  onOpenAccount,
   onOpenModels,
 }: {
   connection: AgentConnectionState;
   onRetry: () => void;
-  onOpenProviders: () => void;
+  onOpenAccount: () => void;
   onOpenModels: () => void;
 }) {
   const { t } = useTranslation("agent");
-  const notice = agentNotice(connection, { onOpenModels, onOpenProviders, onRetry }, t);
+  const notice = agentNotice(connection, { onOpenModels, onOpenAccount, onRetry }, t);
   return (
     <div className="pointer-events-auto mx-auto w-full max-w-3xl rounded-md border border-warning-line bg-warning-soft px-3 py-2 text-xs leading-5 text-warning shadow-xs">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -294,7 +294,7 @@ function AgentConnectionNotice({
 
 function agentNotice(
   connection: AgentConnectionState,
-  actions: { onRetry: () => void; onOpenProviders: () => void; onOpenModels: () => void },
+  actions: { onRetry: () => void; onOpenAccount: () => void; onOpenModels: () => void },
   t: (key: string) => string,
 ): AgentNotice {
   const retry = { label: t("notice.retry"), onClick: actions.onRetry };
@@ -327,7 +327,7 @@ function agentNotice(
     return {
       title: t("notice.needsLogin.title"),
       detail: t("notice.needsLogin.detail"),
-      action: { label: t("notice.needsLogin.action"), onClick: actions.onOpenProviders },
+      action: { label: t("notice.needsLogin.action"), onClick: actions.onOpenAccount },
     };
   }
   // Models loaded, but the user disabled every one — steer them to re-enable.
