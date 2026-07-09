@@ -78,6 +78,31 @@ pub async fn get_events_since(
     }
 }
 
+/// Tell the running agent to re-read `auth.json` and refresh every live
+/// session's in-memory API key. Call after the GUI mutates credentials
+/// (FutureGene login/logout, custom-provider key edits): the agent caches the
+/// resolved key inside each session's provider and the prompt path never
+/// re-reads `auth.json`, so without this a session keeps serving prompts with a
+/// stale key (e.g. still answering after logout) while the model list — which
+/// does re-read disk — already shows logged-out.
+///
+/// Best-effort: if the agent isn't running there's no in-memory state to
+/// refresh, so an unavailable agent is treated as success.
+pub async fn reload_agent_credentials() -> Result<(), crate::AppError> {
+    let mut client = match connect_agent().await {
+        Ok(client) => client,
+        Err(crate::AppError::AgentUnavailable(_)) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    client
+        .execute_command(base_command("reload_auth", String::new()))
+        .await
+        .map_err(|error| format!("Unable to refresh Future Agent credentials: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the credential refresh.")?;
+    Ok(())
+}
+
 pub async fn agent_prompt(
     message: String,
     image_paths: Option<Vec<String>>,
