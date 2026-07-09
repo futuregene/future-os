@@ -22,6 +22,7 @@ export async function mcpPost(
   apiKey: string,
   sessionId?: string,
   id?: number,
+  timeoutMs?: number,
 ): Promise<McpResponse> {
   const body: Record<string, unknown> = {
     jsonrpc: "2.0",
@@ -38,7 +39,7 @@ export async function mcpPost(
   if (sessionId) headers["Mcp-Session-Id"] = sessionId;
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60_000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs ?? 60_000);
 
   try {
     const response = await fetch(url, {

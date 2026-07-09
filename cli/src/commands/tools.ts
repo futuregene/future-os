@@ -150,12 +150,12 @@ interface CallToolResponse {
   structuredContent: Record<string, unknown> | null;
 }
 
-async function callRemoteTool(apiKey: string, name: string, args: Record<string, unknown>): Promise<CallToolResponse> {
+async function callRemoteTool(apiKey: string, name: string, args: Record<string, unknown>, timeoutMs?: number): Promise<CallToolResponse> {
   const sessionId = await initializeSession(apiKey);
   const { body } = await mcpPost(await mcpUrl(), "tools/call", {
     name,
     arguments: args,
-  }, apiKey, sessionId, 2);
+  }, apiKey, sessionId, 2, timeoutMs);
 
   if (body.error) throw new Error(`tools/call failed: ${JSON.stringify(body.error)}`);
 
@@ -260,7 +260,7 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
   if (command === "call") {
     const toolName = args[0];
     if (!toolName) {
-      console.error("Usage: future tools call <tool_name> [--args '<json>' | --stdin] [--output <path>]");
+      console.error("Usage: future tools call <tool_name> [--args '<json>' | --stdin] [--output <path>] [--timeout <seconds>]");
       process.exitCode = 1;
       return;
     }
@@ -272,6 +272,11 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     const outputPath = outputIdx !== -1 && outputIdx + 1 < args.length
       ? args[outputIdx + 1]
       : null;
+    const timeoutIdx = args.indexOf("--timeout");
+    const timeoutSec = timeoutIdx !== -1 && timeoutIdx + 1 < args.length
+      ? parseInt(args[timeoutIdx + 1], 10) || 0
+      : 0;
+    const timeoutMs = timeoutSec > 0 ? timeoutSec * 1000 : undefined;
 
     if (stdinFlag) {
       // Read from stdin
@@ -302,7 +307,7 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     }
 
     const apiKey = await loadApiKey();
-    const result = await callRemoteTool(apiKey, toolName, toolArgs);
+    const result = await callRemoteTool(apiKey, toolName, toolArgs, timeoutMs);
 
     // Output structured content as JSON when available (primary data for agent consumption).
     // Fall back to text content otherwise.

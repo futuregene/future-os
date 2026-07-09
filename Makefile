@@ -106,7 +106,7 @@ fmt:
 # ─── Run ────────────────────────────────────────────────────────────────────
 
 run-agent:
-	cd agent && cargo run
+	cd agent && cargo run -- --verbose
 
 run-tui: install-tui
 	cd tui && npm run dev
