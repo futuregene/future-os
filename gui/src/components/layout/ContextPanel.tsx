@@ -212,6 +212,15 @@ export function ContextPanel({
     }
   }, [activeTab, activeThreadId, activeThreadMode, activeWorkspaceId, reviewBase, debouncedReviewCustomBase]);
 
+  // Poll the latest refreshContext through a ref so the interval never restarts
+  // when the callback's identity changes. refreshContext depends on
+  // activeTab/reviewBase/debouncedReviewCustomBase, so keying the poll on it
+  // would restart (immediate tick + reset) on every tab/base change — firing a
+  // second fetch on top of the parameter-driven effect below. usePolling always
+  // invokes the latest callback, so the ref keeps the tick current for free.
+  const refreshContextRef = useRef(refreshContext);
+  refreshContextRef.current = refreshContext;
+
   useEffect(() => {
     if (!tabs.some(tab => tab.value === activeTab)) {
       const first = tabs[0];
@@ -331,9 +340,11 @@ export function ContextPanel({
     return () => unsubscribers.forEach(unsubscribe => unsubscribe());
   }, [expanded, handleSelectArtifact, handleSelectRun, onTabChange, onToggleExpanded]);
 
-  usePolling(() => refreshContext(), 1500, {
+  usePolling(() => refreshContextRef.current(), 1500, {
     enabled: Boolean(activeThreadId) && expanded,
-    deps: [refreshContext],
+    // Intentionally no refreshContext dep: the parameter-driven effect above
+    // owns param-change fetches; the poll only needs to tick periodically.
+    deps: [],
   });
 
   if (!expanded) {

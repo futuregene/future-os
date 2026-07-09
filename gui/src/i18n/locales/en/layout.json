@@ -1,4 +1,7 @@
 {
+  "model": {
+    "updateFailed": "Couldn't update the model: {{message}}"
+  },
   "activityRail": {
     "settings": "Settings",
     "newChat": "New Chat",

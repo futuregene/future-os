@@ -38,6 +38,22 @@ export function runStatusLabel(status: StoredRun["status"]) {
   }
 }
 
+/** Localized label for a tool call's own status (not the enclosing run's). */
+export function toolStatusLabel(status: string) {
+  switch (status) {
+    case "completed":
+      return i18n.t("runs:toolStatus.completed");
+    case "failed":
+      return i18n.t("runs:toolStatus.failed");
+    case "cancelled":
+      return i18n.t("runs:toolStatus.cancelled");
+    case "running":
+      return i18n.t("runs:toolStatus.running");
+    default:
+      return status || i18n.t("runs:toolStatus.unknown");
+  }
+}
+
 export function runTone(status: StoredRun["status"]) {
   if (status === "completed")
     return "success";
