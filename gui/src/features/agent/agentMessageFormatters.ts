@@ -11,6 +11,19 @@ export function matchesSettledRun(status: StoredRun["status"]) {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
+/**
+ * Nearest user message at or before `beforeIndex`, scanning backward. Used to
+ * find the turn that produced a given assistant reply (retry/continue recovery).
+ */
+export function previousUserMessageBefore(messages: AgentMessage[], beforeIndex: number): AgentMessage | null {
+  for (let index = beforeIndex; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "user")
+      return message;
+  }
+  return null;
+}
+
 export function toAgentMessage(message: StoredMessage): AgentMessage {
   const content = parseMessageContent(message.content, message.contentType);
 

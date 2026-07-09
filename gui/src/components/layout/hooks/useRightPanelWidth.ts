@@ -52,6 +52,10 @@ export function useRightPanelWidth(centerRef: RefObject<HTMLElement | null>) {
   const [width, setWidth] = useState<number>(readStoredWidth);
   const [resizing, setResizing] = useState(false);
   const centerLeftRef = useRef(0);
+  // Detach for an in-progress resize drag, so unmounting mid-drag removes the
+  // window listeners instead of leaking them and setting state on an unmounted
+  // hook.
+  const dragCleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     try {
@@ -91,10 +95,15 @@ export function useRightPanelWidth(centerRef: RefObject<HTMLElement | null>) {
       setResizing(false);
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      dragCleanupRef.current = null;
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+    dragCleanupRef.current = onUp;
   }, [centerRef]);
+
+  // Detach any in-progress resize drag on unmount (the normal path detaches on mouseup).
+  useEffect(() => () => dragCleanupRef.current?.(), []);
 
   const nudge = useCallback((deltaPx: number) => {
     const centerLeft = centerRef.current?.getBoundingClientRect().left ?? 0;

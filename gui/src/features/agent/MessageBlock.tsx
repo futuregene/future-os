@@ -1,7 +1,7 @@
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { FileText, Paperclip, RotateCcw, StepForward } from "lucide-react";
-import { useState } from "react";
+import { memo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CopyButton } from "../../components/ui/CopyButton";
 import { useCopyState } from "../../components/ui/useCopyState";
@@ -29,7 +29,14 @@ interface MessageBlockProps {
   workspacePath?: string | null;
 }
 
-export function MessageBlock({
+// Memoized: the streaming poll re-renders MessageList every ~220ms and any hover
+// change re-renders it too, but each row's props (message reference kept stable
+// by patchMessage, stable callbacks) are unchanged for all but the affected rows,
+// so a shallow-prop comparison skips re-rendering — and re-running their nested
+// MarkdownContent — for every settled message.
+export const MessageBlock = memo(MessageBlockImpl);
+
+function MessageBlockImpl({
   message,
   hovered,
   isLast,

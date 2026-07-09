@@ -1,20 +1,12 @@
-import type { FutureProfile, ProvidersView } from "../../integrations/agent/providers";
+import type { FutureEnvironment, FutureProfile, ProvidersView } from "../../integrations/agent/providers";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
-import { getFutureProfile, listAgentProviders, logoutFutureProvider, peekFutureProfile } from "../../integrations/agent/providers";
+import { getFutureEnvironment, getFutureProfile, listAgentProviders, logoutFutureProvider, peekFutureProfile } from "../../integrations/agent/providers";
 import { openExternalUrl } from "../../integrations/storage/files";
-import { invokeCommand } from "../../integrations/tauri/invoke";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { FutureLoginDialog } from "./FutureLoginDialog";
 import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
-
-interface FutureEnvironment {
-  /** `production` | `test` | `custom`. */
-  environment: string;
-  /** Resolved platform root currently in effect (no `/api`). */
-  platformUrl: string;
-}
 
 /**
  * Account page. Login state is FutureGene provider login — the same signal the
@@ -31,7 +23,7 @@ export function AccountPage() {
   );
   // The platform host follows the active environment (test vs production).
   const environment = useAsyncResource<FutureEnvironment | null>(
-    () => invokeCommand<FutureEnvironment>("get_future_environment"),
+    getFutureEnvironment,
     [],
     null,
   );

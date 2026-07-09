@@ -4,6 +4,7 @@ import type { DeleteDialogState, RenameDialogState } from "../AppShellDialogs";
 import { useState } from "react";
 import i18n from "../../../i18n";
 import { deleteThread, getThreadCleanupSummary, renameThread } from "../../../integrations/storage/threadStore";
+import { errorMessage } from "../../../lib/errors";
 
 interface UseThreadDialogsParams {
   activeThreadId: string | null;
@@ -64,7 +65,7 @@ export function useThreadDialogs({ activeThreadId, refreshStore }: UseThreadDial
         current
           ? {
               ...current,
-              error: error instanceof Error ? error.message : String(error),
+              error: errorMessage(error),
               submitting: false,
             }
           : current,
@@ -115,7 +116,7 @@ export function useThreadDialogs({ activeThreadId, refreshStore }: UseThreadDial
         current
           ? {
               ...current,
-              error: error instanceof Error ? error.message : String(error),
+              error: errorMessage(error),
               submitting: false,
             }
           : current,

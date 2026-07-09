@@ -8,6 +8,7 @@ import i18n from "../../i18n";
 import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
 import { relativizeWorkspacePath } from "../../lib/workspacePath";
+import { toolStatusLabel } from "./runDisplayFormatters";
 import { toolCommand, toolTarget } from "./toolInput";
 
 // Only these tool calls are worth a row of their own; `read`/`grep`/`ls` are
@@ -298,19 +299,4 @@ function toolLabel(tool: StoredToolCall) {
     return i18n.t("runs:runInspect.toolFallback");
 
   return name.slice(0, 1).toUpperCase() + name.slice(1);
-}
-
-function toolStatusLabel(status: string) {
-  switch (status) {
-    case "completed":
-      return i18n.t("runs:toolStatus.completed");
-    case "failed":
-      return i18n.t("runs:toolStatus.failed");
-    case "cancelled":
-      return i18n.t("runs:toolStatus.cancelled");
-    case "running":
-      return i18n.t("runs:toolStatus.running");
-    default:
-      return status || i18n.t("runs:toolStatus.unknown");
-  }
 }

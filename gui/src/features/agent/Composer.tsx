@@ -210,6 +210,11 @@ export function Composer({
     setAttachments(current => current.filter(attachment => attachment.path !== path));
   }
 
+  // Held in a ref so the webview drag listener below doesn't re-subscribe on
+  // every attachment change (addAttachmentPaths closes over `attachments`).
+  const addAttachmentPathsRef = useRef(addAttachmentPaths);
+  addAttachmentPathsRef.current = addAttachmentPaths;
+
   useEffect(() => {
     if (disabled)
       return;
@@ -226,7 +231,7 @@ export function Composer({
         }
         else if (event.payload.type === "drop") {
           setDropActive(false);
-          void addAttachmentPaths(event.payload.paths);
+          void addAttachmentPathsRef.current(event.payload.paths);
         }
       })
       .then((unlisten) => {
@@ -241,7 +246,7 @@ export function Composer({
       dispose?.();
       setDropActive(false);
     };
-  }, [addAttachmentPaths, disabled]);
+  }, [disabled]);
 
   return (
     <form
