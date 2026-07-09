@@ -436,7 +436,7 @@ pub struct Usage {
 
 /// StreamEvent matches Go's types.StreamEvent exactly.
 /// JSON field names are camelCase as specified in Go struct tags.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StreamEvent {
     #[serde(rename = "type")]
     pub event_type: String,
@@ -462,6 +462,15 @@ pub struct StreamEvent {
         skip_serializing_if = "String::is_empty"
     )]
     pub error_text: String,
+    /// Tool-call array index from the streaming SSE delta chunk.  Used to route
+    /// `toolcall_delta` events to the correct tool-call accumulator when the
+    /// model streams multiple tool calls in parallel.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub tc_index: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 // ─── ToolDef / AgentTool ──────────────────────────────────────────────────

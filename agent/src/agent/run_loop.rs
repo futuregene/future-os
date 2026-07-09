@@ -47,13 +47,7 @@ impl Loop {
         }
         on_event(StreamEvent {
             event_type: "agent_start".to_string(),
-            text: String::new(),
-            tool_call: None,
-            tool_name: String::new(),
-            tool_id: String::new(),
-            usage: None,
-            stop_reason: String::new(),
-            error_text: String::new(),
+            ..Default::default()
         });
 
         let tool_defs: Vec<_> = self.tools.iter().map(|t| t.def.clone()).collect();
@@ -249,15 +243,14 @@ impl Loop {
             let mut reasoning_text = String::new();
             let mut tool_calls: Vec<ToolCall> = vec![];
             let mut total_usage: Option<crate::types::Usage> = None;
-            let mut current_tc: Option<AgentToolCall> = None;
+            let mut current_tool_calls: Vec<Option<AgentToolCall>> = vec![];
             let mut output_started = false;
             let mut stream_error = None;
 
             loop {
-                let event_idle_timeout = if current_tc
-                    .as_ref()
-                    .map(tool_call_args_complete)
-                    .unwrap_or(false)
+                let event_idle_timeout = if current_tool_calls
+                    .iter()
+                    .any(|tc| tc.as_ref().map(tool_call_args_complete).unwrap_or(false))
                 {
                     COMPLETE_TOOL_CALL_IDLE_TIMEOUT
                 } else {
@@ -346,77 +339,73 @@ impl Loop {
                     "toolcall_start" => {
                         // Some providers (e.g. GLM/Z.AI without tool_stream) send
                         // id+name in every argument chunk instead of just the first.
-                        // When the tool ID matches the current tool call, treat it
-                        // as a delta (append args) rather than starting a new call.
+                        // When the tool ID matches an existing tool call at this
+                        // index, treat it as a delta (append args) rather than
+                        // starting a new call.
                         //
                         // Always prefer the longer string — it's more complete.
                         // Some gateways (e.g. Aliyun MaaS) may send chunks out of
                         // prefix order, or send a trailing fragment that is shorter
                         // than the accumulated args. Overwriting longer data with
                         // shorter data is the primary cause of argument loss.
-                        if let Some(ref mut existing) = current_tc {
-                            if existing.id == event.tool_id {
-                                if let Some(ref tc) = event.tool_call {
-                                    if let serde_json::Value::String(ref new_args) =
-                                        tc.function.arguments
-                                    {
-                                        let mut updated = false;
-                                        if let serde_json::Value::String(ref mut s) = existing.args
+                        let idx = event.tc_index;
+                        if idx < current_tool_calls.len() {
+                            if let Some(ref mut existing) = current_tool_calls[idx] {
+                                if existing.id == event.tool_id {
+                                    // Same tool call at same index — append args
+                                    if let Some(ref tc) = event.tool_call {
+                                        if let serde_json::Value::String(ref new_args) =
+                                            tc.function.arguments
                                         {
-                                            if new_args.len() > s.len() {
-                                                if new_args.starts_with(s.as_str()) {
-                                                    // Incremental: new is a superset of old
-                                                    s.push_str(&new_args[s.len()..]);
-                                                } else {
-                                                    // Replacement: new is longer (more complete)
-                                                    *s = new_args.clone();
+                                            let mut updated = false;
+                                            if let serde_json::Value::String(ref mut s) =
+                                                existing.args
+                                            {
+                                                if new_args.len() > s.len() {
+                                                    if new_args.starts_with(s.as_str()) {
+                                                        s.push_str(&new_args[s.len()..]);
+                                                    } else {
+                                                        *s = new_args.clone();
+                                                    }
                                                 }
+                                                updated = true;
                                             }
-                                            // If new_args is shorter or equal length:
-                                            // keep existing — don't overwrite better data
-                                            updated = true;
-                                        }
-                                        if !updated {
-                                            existing.args =
-                                                serde_json::Value::String(new_args.clone());
+                                            if !updated {
+                                                existing.args =
+                                                    serde_json::Value::String(new_args.clone());
+                                            }
                                         }
                                     }
-                                }
-                                // Emit toolcall_delta so the TUI can stream arg display
-                                if let Some(ref bus) = self.event_bus {
-                                    bus.emit(toolcall_delta(
-                                        event
-                                            .tool_call
-                                            .as_ref()
-                                            .and_then(|tc| {
-                                                if let serde_json::Value::String(ref s) =
-                                                    tc.function.arguments
-                                                {
-                                                    Some(s.as_str())
-                                                } else {
-                                                    None
-                                                }
-                                            })
-                                            .unwrap_or(""),
-                                    ));
-                                }
-                                // Check if args are now complete
-                                if tool_call_args_complete(existing) {
-                                    if let Some(tc) = current_tc.take() {
-                                        tool_calls.push(finalize_agent_tool_call(tc));
-                                        if let Some(ref bus) = self.event_bus {
-                                            bus.emit(toolcall_end());
-                                        }
-                                        break;
+                                    // Emit toolcall_delta so the TUI can stream arg display
+                                    if let Some(ref bus) = self.event_bus {
+                                        bus.emit(toolcall_delta(
+                                            event
+                                                .tool_call
+                                                .as_ref()
+                                                .and_then(|tc| {
+                                                    if let serde_json::Value::String(ref s) =
+                                                        tc.function.arguments
+                                                    {
+                                                        Some(s.as_str())
+                                                    } else {
+                                                        None
+                                                    }
+                                                })
+                                                .unwrap_or(""),
+                                        ));
                                     }
+                                    continue;
                                 }
-                                // continue to next event (don't create a new tool call)
-                                continue;
                             }
                         }
 
-                        // Different tool call or first one — finalize previous and start new
-                        if let Some(tc) = current_tc.take() {
+                        // Expand vec to accommodate this index if needed
+                        if idx >= current_tool_calls.len() {
+                            current_tool_calls.resize(idx + 1, None);
+                        }
+
+                        // Finalize any existing tool call at this index (different id)
+                        if let Some(tc) = current_tool_calls[idx].take() {
                             tool_calls.push(finalize_agent_tool_call(tc));
                             if let Some(ref bus) = self.event_bus {
                                 bus.emit(toolcall_end());
@@ -428,7 +417,7 @@ impl Loop {
                             .as_ref()
                             .map(|tc| tc.function.arguments.clone())
                             .unwrap_or(serde_json::Value::Null);
-                        current_tc = Some(AgentToolCall {
+                        current_tool_calls[idx] = Some(AgentToolCall {
                             id: event.tool_id.clone(),
                             name: event.tool_name.clone(),
                             args,
@@ -438,34 +427,35 @@ impl Loop {
                         }
                     }
                     "toolcall_delta" => {
-                        let should_finalize_tool_call = if let Some(ref mut tc) = current_tc {
-                            if let serde_json::Value::String(ref mut s) = tc.args {
+                        let idx = event.tc_index;
+                        if idx >= current_tool_calls.len() {
+                            current_tool_calls.resize(idx + 1, None);
+                        }
+                        if let Some(tc_ref) = &mut current_tool_calls[idx] {
+                            if let serde_json::Value::String(ref mut s) = tc_ref.args {
                                 s.push_str(&event.text);
                             } else {
-                                tc.args = serde_json::Value::String(event.text.clone());
+                                tc_ref.args = serde_json::Value::String(event.text.clone());
                             }
-                            tool_call_args_complete(tc)
                         } else {
-                            false
-                        };
+                            // Delta arrived before start — create placeholder
+                            current_tool_calls[idx] = Some(AgentToolCall {
+                                id: String::new(),
+                                name: String::new(),
+                                args: serde_json::Value::String(event.text.clone()),
+                            });
+                        }
                         if let Some(ref bus) = self.event_bus {
                             bus.emit(toolcall_delta(&event.text));
                         }
-                        if should_finalize_tool_call {
-                            if let Some(tc) = current_tc.take() {
+                    }
+                    "tool_call" | "toolcall_end" => {
+                        for tc_opt in current_tool_calls.iter_mut() {
+                            if let Some(tc) = tc_opt.take() {
                                 tool_calls.push(finalize_agent_tool_call(tc));
                                 if let Some(ref bus) = self.event_bus {
                                     bus.emit(toolcall_end());
                                 }
-                                break;
-                            }
-                        }
-                    }
-                    "tool_call" | "toolcall_end" => {
-                        if let Some(tc) = current_tc.take() {
-                            tool_calls.push(finalize_agent_tool_call(tc));
-                            if let Some(ref bus) = self.event_bus {
-                                bus.emit(toolcall_end());
                             }
                         }
                     }
@@ -509,10 +499,12 @@ impl Loop {
                         }
                     }
                     "stop" => {
-                        if let Some(tc) = current_tc.take() {
-                            tool_calls.push(finalize_agent_tool_call(tc));
-                            if let Some(ref bus) = self.event_bus {
-                                bus.emit(toolcall_end());
+                        for tc_opt in current_tool_calls.iter_mut() {
+                            if let Some(tc) = tc_opt.take() {
+                                tool_calls.push(finalize_agent_tool_call(tc));
+                                if let Some(ref bus) = self.event_bus {
+                                    bus.emit(toolcall_end());
+                                }
                             }
                         }
                     }
@@ -526,10 +518,12 @@ impl Loop {
                 }
             }
 
-            if let Some(tc) = current_tc.take() {
-                tool_calls.push(finalize_agent_tool_call(tc));
-                if let Some(ref bus) = self.event_bus {
-                    bus.emit(toolcall_end());
+            for tc_opt in current_tool_calls.iter_mut() {
+                if let Some(tc) = tc_opt.take() {
+                    tool_calls.push(finalize_agent_tool_call(tc));
+                    if let Some(ref bus) = self.event_bus {
+                        bus.emit(toolcall_end());
+                    }
                 }
             }
 
@@ -616,13 +610,7 @@ impl Loop {
                     // for the follow-up response (under the follow-up user message).
                     on_event(StreamEvent {
                         event_type: "agent_start".to_string(),
-                        text: String::new(),
-                        tool_call: None,
-                        tool_name: String::new(),
-                        tool_id: String::new(),
-                        usage: None,
-                        stop_reason: String::new(),
-                        error_text: String::new(),
+                        ..Default::default()
                     });
                     continue;
                 }
