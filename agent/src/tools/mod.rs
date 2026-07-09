@@ -6,7 +6,6 @@ use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tokio::process::Command;
 
 use crate::sandbox::{EscalationDecision, EscalationRequest, EscalationRequester, ResolvedSandbox};
 
@@ -361,88 +360,6 @@ pub fn edit_tool() -> AgentTool {
     )
 }
 
-// ─── Grep Tool ─────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GrepParams {
-    pattern: String,
-    path: Option<String>,
-    glob: Option<String>,
-    ignore_case: Option<bool>,
-    literal: Option<bool>,
-    context: Option<usize>,
-    limit: Option<usize>,
-}
-
-fn grep_schema() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "pattern": { "type": "string" },
-            "path": { "type": "string" },
-            "glob": { "type": "string" },
-            "ignore_case": { "type": "boolean" },
-            "literal": { "type": "boolean" },
-            "context": { "type": "integer" },
-            "limit": { "type": "integer" }
-        },
-        "required": ["pattern"]
-    })
-}
-
-fn grep_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
-    Box::pin(async move {
-        let params: GrepParams = serde_json::from_value(args)?;
-        run_grep(&params).await
-    })
-}
-
-pub fn grep_tool() -> AgentTool {
-    make_tool(
-        "grep",
-        "Search for a pattern in files.",
-        grep_schema(),
-        grep_handler,
-        vec![],
-    )
-}
-
-// ─── Ls Tool ────────────────────────────────────────────────────────────────
-
-fn ls_schema() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "path": { "type": "string" },
-            "limit": { "type": "integer" }
-        }
-    })
-}
-
-fn ls_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
-    Box::pin(async move {
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct LsParams {
-            path: Option<String>,
-            limit: Option<usize>,
-        }
-        let params: LsParams = serde_json::from_value(args)?;
-        run_ls(params.path.as_deref(), params.limit.unwrap_or(500)).await
-    })
-}
-
-pub fn ls_tool() -> AgentTool {
-    make_tool(
-        "ls",
-        "List directory contents.",
-        ls_schema(),
-        ls_handler,
-        vec![],
-    )
-}
-
 // ─── Tool sets ─────────────────────────────────────────────────────────────
 
 /// Core coding tools (default set): read, write, edit, bash
@@ -450,21 +367,9 @@ pub fn coding_tools() -> Vec<AgentTool> {
     vec![read_tool(), write_tool(), edit_tool(), bash_tool()]
 }
 
-/// Read-only tools: read, grep, ls
-pub fn readonly_tools() -> Vec<AgentTool> {
-    vec![read_tool(), grep_tool(), ls_tool()]
-}
-
-/// All built-in tools: read, write, edit, bash, grep, ls
+/// All built-in tools
 pub fn all_tools() -> Vec<AgentTool> {
-    vec![
-        read_tool(),
-        write_tool(),
-        edit_tool(),
-        bash_tool(),
-        grep_tool(),
-        ls_tool(),
-    ]
+    vec![read_tool(), write_tool(), edit_tool(), bash_tool()]
 }
 
 // ─── Tool runners (async, using tokio) ─────────────────────────────────────
@@ -785,74 +690,6 @@ async fn run_edit(
 struct EditOp {
     old_text: String,
     new_text: String,
-}
-
-async fn run_grep(params: &GrepParams) -> Result<String> {
-    let cwd = active_workspace()?;
-    let mut args: Vec<String> = vec![];
-    if params.ignore_case.unwrap_or(false) {
-        args.push("-i".to_string());
-    }
-    if params.literal.unwrap_or(false) {
-        args.push("-F".to_string());
-    }
-    if let Some(c) = params.context {
-        args.push(format!("-{}", c));
-    }
-    args.push("-n".to_string());
-    args.push(params.pattern.clone());
-
-    let output = if let Some(ref p) = params.path {
-        let path = workspace_path(p)?;
-        let path = path.to_string_lossy().to_string();
-        if let Some(ref g) = params.glob {
-            let include_pat = format!("--include={}", g);
-            Command::new("grep")
-                .args(["-r", &include_pat, &params.pattern, &path])
-                .current_dir(&cwd)
-                .output()
-                .await
-        } else {
-            args.push(path);
-            Command::new("grep")
-                .args(&args)
-                .current_dir(&cwd)
-                .output()
-                .await
-        }
-    } else {
-        Command::new("grep")
-            .args(&args)
-            .current_dir(&cwd)
-            .output()
-            .await
-    }
-    .map_err(|e| anyhow!("Failed to run grep: {}", e))?;
-
-    let result = String::from_utf8_lossy(&output.stdout).to_string();
-
-    let limit = params.limit.unwrap_or(100);
-    let lines: Vec<&str> = result.lines().take(limit).collect();
-    Ok(lines.join("\n"))
-}
-
-async fn run_ls(path: Option<&str>, limit: usize) -> Result<String> {
-    let path = path.unwrap_or(".");
-    let path = workspace_path(path)?;
-    let mut entries = tokio::fs::read_dir(path).await?;
-    let mut result = Vec::new();
-    let mut count = 0;
-    while let Some(entry) = entries.next_entry().await? {
-        if count >= limit {
-            break;
-        }
-        let name = entry.file_name().to_string_lossy().to_string();
-        let is_dir = entry.file_type().await?.is_dir();
-        let suffix = if is_dir { "/" } else { "" };
-        result.push(format!("{}{}", name, suffix));
-        count += 1;
-    }
-    Ok(result.join("\n"))
 }
 
 fn workspace_path(path: &str) -> Result<PathBuf> {

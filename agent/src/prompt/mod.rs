@@ -165,20 +165,12 @@ fn build_identity_section(opts: &PromptOptions) -> String {
 
 fn build_dynamic_tool_guidelines(tool_names: &[&str]) -> Vec<String> {
     let has_bash = tool_names.contains(&"bash");
-    let has_grep = tool_names.contains(&"grep");
-    let has_find = tool_names.contains(&"find");
-    let has_ls = tool_names.contains(&"ls");
 
     let mut guidelines = vec![];
 
-    if has_bash && !has_grep && !has_find && !has_ls {
+    if has_bash {
         guidelines.push(
             "Use bash for command-line exploration such as ls, rg, and find; prefer write/edit tools for ordinary file writes."
-                .to_string(),
-        );
-    } else if has_bash && (has_grep || has_find || has_ls) {
-        guidelines.push(
-            "Prefer grep/find/ls tools over bash for file exploration (faster, respects .gitignore)"
                 .to_string(),
         );
     }
