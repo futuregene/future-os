@@ -175,13 +175,10 @@ impl Loop {
             if let Some(ref cb) = self.tool_event_callback {
                 cb(StreamEvent {
                     event_type: "tool_start".to_string(),
-                    text: String::new(),
                     tool_call: Some(tc.clone()),
                     tool_name: tc.function.name.clone(),
                     tool_id: tc.id.clone(),
-                    usage: None,
-                    stop_reason: String::new(),
-                    error_text: String::new(),
+                    ..Default::default()
                 });
             }
 
@@ -215,12 +212,10 @@ impl Loop {
                 cb(StreamEvent {
                     event_type: "tool_end".to_string(),
                     text: result.clone(),
-                    tool_call: None,
                     tool_name: tool_name.clone(),
                     tool_id: tc.id.clone(),
-                    usage: None,
-                    stop_reason: String::new(),
                     error_text: err_str.clone().unwrap_or_default(),
+                    ..Default::default()
                 });
             }
 

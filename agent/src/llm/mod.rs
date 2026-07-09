@@ -422,13 +422,7 @@ impl crate::types::LLMProvider for Client {
                         let _ = tx
                             .send(StreamEvent {
                                 event_type: "toolcall_end".to_string(),
-                                text: String::new(),
-                                tool_call: None,
-                                tool_name: String::new(),
-                                tool_id: String::new(),
-                                usage: None,
-                                stop_reason: String::new(),
-                                error_text: String::new(),
+                                ..Default::default()
                             })
                             .await;
                         *in_tool_call = false;
@@ -437,13 +431,7 @@ impl crate::types::LLMProvider for Client {
                         let _ = tx
                             .send(StreamEvent {
                                 event_type: "thinking_end".to_string(),
-                                text: String::new(),
-                                tool_call: None,
-                                tool_name: String::new(),
-                                tool_id: String::new(),
-                                usage: None,
-                                stop_reason: String::new(),
-                                error_text: String::new(),
+                                ..Default::default()
                             })
                             .await;
                         *in_thinking = false;
@@ -451,13 +439,7 @@ impl crate::types::LLMProvider for Client {
                     let _ = tx
                         .send(StreamEvent {
                             event_type: "stop".to_string(),
-                            text: String::new(),
-                            tool_call: None,
-                            tool_name: String::new(),
-                            tool_id: String::new(),
-                            usage: None,
-                            stop_reason: String::new(),
-                            error_text: String::new(),
+                            ..Default::default()
                         })
                         .await;
                     return false; // signal done
@@ -478,13 +460,7 @@ impl crate::types::LLMProvider for Client {
                             let _ = tx
                                 .send(StreamEvent {
                                     event_type: "thinking_start".to_string(),
-                                    text: String::new(),
-                                    tool_call: None,
-                                    tool_name: String::new(),
-                                    tool_id: String::new(),
-                                    usage: None,
-                                    stop_reason: String::new(),
-                                    error_text: String::new(),
+                                    ..Default::default()
                                 })
                                 .await;
                         }
@@ -496,13 +472,7 @@ impl crate::types::LLMProvider for Client {
                         let _ = tx
                             .send(StreamEvent {
                                 event_type: "thinking_end".to_string(),
-                                text: String::new(),
-                                tool_call: None,
-                                tool_name: String::new(),
-                                tool_id: String::new(),
-                                usage: None,
-                                stop_reason: String::new(),
-                                error_text: String::new(),
+                                ..Default::default()
                             })
                             .await;
                     }
@@ -519,13 +489,8 @@ impl crate::types::LLMProvider for Client {
                         let _ = tx
                             .send(StreamEvent {
                                 event_type: "toolcall_end".to_string(),
-                                text: String::new(),
-                                tool_call: None,
-                                tool_name: String::new(),
-                                tool_id: String::new(),
-                                usage: None,
                                 stop_reason: "tool_calls".to_string(),
-                                error_text: String::new(),
+                                ..Default::default()
                             })
                             .await;
                         *in_tool_call = false;
@@ -535,13 +500,7 @@ impl crate::types::LLMProvider for Client {
                         let _ = tx
                             .send(StreamEvent {
                                 event_type: "thinking_end".to_string(),
-                                text: String::new(),
-                                tool_call: None,
-                                tool_name: String::new(),
-                                tool_id: String::new(),
-                                usage: None,
-                                stop_reason: String::new(),
-                                error_text: String::new(),
+                                ..Default::default()
                             })
                             .await;
                         *in_thinking = false;
@@ -551,13 +510,8 @@ impl crate::types::LLMProvider for Client {
                         let _ = tx
                             .send(StreamEvent {
                                 event_type: "stop".to_string(),
-                                text: String::new(),
-                                tool_call: None,
-                                tool_name: String::new(),
-                                tool_id: String::new(),
-                                usage: None,
                                 stop_reason,
-                                error_text: String::new(),
+                                ..Default::default()
                             })
                             .await;
                         // Do NOT stop reading here. Per the OpenAI streaming spec the
@@ -645,25 +599,15 @@ impl crate::types::LLMProvider for Client {
                             let _ = tx
                                 .send(StreamEvent {
                                     event_type: "toolcall_end".to_string(),
-                                    text: String::new(),
-                                    tool_call: None,
-                                    tool_name: String::new(),
-                                    tool_id: String::new(),
-                                    usage: None,
                                     stop_reason: "tool_calls".to_string(),
-                                    error_text: String::new(),
+                                    ..Default::default()
                                 })
                                 .await;
                             let _ = tx
                                 .send(StreamEvent {
                                     event_type: "stop".to_string(),
-                                    text: String::new(),
-                                    tool_call: None,
-                                    tool_name: String::new(),
-                                    tool_id: String::new(),
-                                    usage: None,
                                     stop_reason: "tool_calls".to_string(),
-                                    error_text: String::new(),
+                                    ..Default::default()
                                 })
                                 .await;
                             return Ok::<_, ()>(());
@@ -673,13 +617,8 @@ impl crate::types::LLMProvider for Client {
                         let _ = tx
                             .send(StreamEvent {
                                 event_type: "error".to_string(),
-                                text: String::new(),
-                                tool_call: None,
-                                tool_name: String::new(),
-                                tool_id: String::new(),
-                                usage: None,
-                                stop_reason: String::new(),
                                 error_text: e.to_string(),
+                                ..Default::default()
                             })
                             .await;
                     }
@@ -691,13 +630,7 @@ impl crate::types::LLMProvider for Client {
                 let _ = tx
                     .send(StreamEvent {
                         event_type: "toolcall_end".to_string(),
-                        text: String::new(),
-                        tool_call: None,
-                        tool_name: String::new(),
-                        tool_id: String::new(),
-                        usage: None,
-                        stop_reason: String::new(),
-                        error_text: String::new(),
+                        ..Default::default()
                     })
                     .await;
             }
@@ -705,13 +638,7 @@ impl crate::types::LLMProvider for Client {
                 let _ = tx
                     .send(StreamEvent {
                         event_type: "thinking_end".to_string(),
-                        text: String::new(),
-                        tool_call: None,
-                        tool_name: String::new(),
-                        tool_id: String::new(),
-                        usage: None,
-                        stop_reason: String::new(),
-                        error_text: String::new(),
+                        ..Default::default()
                     })
                     .await;
             }
@@ -719,13 +646,7 @@ impl crate::types::LLMProvider for Client {
             let _ = tx
                 .send(StreamEvent {
                     event_type: "stop".to_string(),
-                    text: String::new(),
-                    tool_call: None,
-                    tool_name: String::new(),
-                    tool_id: String::new(),
-                    usage: None,
-                    stop_reason: String::new(),
-                    error_text: String::new(),
+                    ..Default::default()
                 })
                 .await;
 

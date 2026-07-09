@@ -232,14 +232,8 @@ impl Client {
             .unwrap_or("");
 
         let mut event = StreamEvent {
-            event_type: String::new(),
-            text: String::new(),
-            tool_call: None,
-            tool_name: String::new(),
-            tool_id: String::new(),
-            usage: None,
             stop_reason: finish_reason.to_string(),
-            error_text: String::new(),
+            ..Default::default()
         };
 
         // Usage — check BEFORE text/tool/stop checks, because some providers
@@ -298,7 +292,8 @@ impl Client {
         // Tool calls
         if let Some(tcs) = delta.get("tool_calls").and_then(|tc| tc.as_array()) {
             for tc in tcs {
-                let _idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                event.tc_index = idx;
                 let has_id = tc.get("id").and_then(|v| v.as_str());
                 let has_name = tc
                     .get("function")

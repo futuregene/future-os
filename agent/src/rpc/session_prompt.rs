@@ -387,6 +387,12 @@ impl ServerSession {
                                             tc.function.arguments.clone(),
                                         );
                                     }
+                                    if event.tc_index > 0 {
+                                        data.insert(
+                                            "tc_index".to_string(),
+                                            serde_json::json!(event.tc_index),
+                                        );
+                                    }
                                     be.broadcast(crate::rpc::SseEvent {
                                         event_type: event.event_type.clone(),
                                         data: serde_json::to_string(&data).unwrap_or_default(),
@@ -669,13 +675,7 @@ mod tests {
     fn simple_event(event_type: &str) -> StreamEvent {
         StreamEvent {
             event_type: event_type.to_string(),
-            text: String::new(),
-            tool_call: None,
-            tool_name: String::new(),
-            tool_id: String::new(),
-            usage: None,
-            stop_reason: String::new(),
-            error_text: String::new(),
+            ..Default::default()
         }
     }
 
@@ -683,7 +683,7 @@ mod tests {
         StreamEvent {
             event_type: "text_delta".to_string(),
             text: text.to_string(),
-            ..simple_event("text_delta")
+            ..Default::default()
         }
     }
 
@@ -705,7 +705,7 @@ mod tests {
                     arguments,
                 },
             }),
-            ..simple_event(event_type)
+            ..Default::default()
         }
     }
 
