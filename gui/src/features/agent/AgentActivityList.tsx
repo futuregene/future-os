@@ -1,5 +1,5 @@
 import type { AgentActivityItem, AgentActivityKind } from "./agentThreadTypes";
-import { Brain, ChevronLeft, ChevronRight, FileText, Pencil, TerminalSquare } from "lucide-react";
+import { Brain, ChevronLeft, ChevronRight, FileText, Pencil, TerminalSquare, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import i18n from "../../i18n";
 import { cn } from "../../lib/cn";
@@ -49,8 +49,7 @@ function AgentActivitySingleLine({ item, workspacePath }: { item: AgentActivityI
         // One uniform size for icon + label + target so the row reads as a
         // single line; `items-center` keeps the mono target vertically centred
         // against the sans label.
-        "flex min-w-0 items-center gap-2 text-[13px] leading-6",
-        failed ? "text-danger" : "text-ink-muted",
+        "flex min-w-0 items-center gap-2 text-[13px] leading-6 text-ink-muted",
       )}
     >
       {displayTarget
@@ -61,14 +60,14 @@ function AgentActivitySingleLine({ item, workspacePath }: { item: AgentActivityI
               className="flex shrink-0 cursor-pointer items-center gap-2"
               aria-expanded={open}
             >
-              {renderActivityIcon(item.kind, running)}
+              {renderActivityIcon(item.kind, running, failed)}
               <span>{label}</span>
               <Chevron className="-ml-2 size-3 shrink-0" />
             </button>
           )
         : (
             <>
-              {renderActivityIcon(item.kind, running)}
+              {renderActivityIcon(item.kind, running, failed)}
               <span className="shrink-0">{label}</span>
             </>
           )}
@@ -145,8 +144,11 @@ function relativizeTarget(kind: AgentActivityKind, target: string, workspacePath
   return relativizeWorkspacePath(target, workspacePath);
 }
 
-function renderActivityIcon(kind: AgentActivityKind, running: boolean) {
+function renderActivityIcon(kind: AgentActivityKind, running: boolean, failed = false) {
   const className = cn("size-3.5 shrink-0", running && kind === "thinking" && "animate-pulse");
+  // A failed call always gets the alert glyph, regardless of tool kind.
+  if (failed)
+    return <TriangleAlert className={className} />;
   switch (kind) {
     case "bash":
       return <TerminalSquare className={className} />;
