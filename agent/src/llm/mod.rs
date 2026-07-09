@@ -531,15 +531,21 @@ impl crate::types::LLMProvider for Client {
                 } else {
                     STREAM_IDLE_TIMEOUT_SECS
                 };
-                let chunk_result = match tokio::time::timeout(
-                    std::time::Duration::from_secs(idle_timeout_secs),
-                    stream.next(),
-                )
-                .await
-                {
-                    Ok(Some(chunk_result)) => chunk_result,
-                    Ok(None) => break,
-                    Err(_) => break,
+                let chunk_result = tokio::select! {
+                    // The consumer dropped the receiver — e.g. the user hit stop
+                    // and the run loop abandoned this stream. Stop reading right
+                    // away instead of draining the HTTP body until the idle
+                    // timeout, which leaked a live connection for up to 45s on
+                    // every interrupt.
+                    _ = tx.closed() => break,
+                    res = tokio::time::timeout(
+                        std::time::Duration::from_secs(idle_timeout_secs),
+                        stream.next(),
+                    ) => match res {
+                        Ok(Some(chunk_result)) => chunk_result,
+                        Ok(None) => break,
+                        Err(_) => break,
+                    },
                 };
 
                 match chunk_result {
