@@ -47,7 +47,7 @@ export function MarkdownPreview({
   // so its rounded corners stay visible at top and bottom while the text scrolls.
   return (
     <div className="px-8 py-10">
-      <MarkdownContent content={content} />
+      <MarkdownContent basePath={path} content={content} />
     </div>
   );
 }

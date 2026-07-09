@@ -93,6 +93,15 @@ pub struct SavedAttachment {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ResolvedPreviewLink {
+    /// Absolute path the link resolves to, used for the OS-open action.
+    path: String,
+    /// File name (last path component).
+    name: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AttachmentInfo {
     is_dir: bool,
     size: u64,
@@ -276,17 +285,61 @@ pub fn open_path(path: String) -> Result<(), crate::AppError> {
     open_path_with_system(trimmed)
 }
 
-/// Open an http(s) URL in the user's default browser. The scheme is restricted
-/// to http/https so this can't be used to launch arbitrary local handlers
-/// (`file:`, custom app schemes, …) via a crafted url.
+/// Open an http(s) or mailto URL in the user's default handler. The scheme is
+/// restricted to http/https/mailto so this can't be used to launch arbitrary
+/// local handlers (`file:`, custom app schemes, …) via a crafted url.
 #[tauri::command]
 pub fn open_external_url(url: String) -> Result<(), crate::AppError> {
     let trimmed = url.trim();
-    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
-        return Err("Only http(s) URLs can be opened.".to_string().into());
+    if !(trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("mailto:"))
+    {
+        return Err("Only http(s) or mailto URLs can be opened."
+            .to_string()
+            .into());
     }
 
     open_path_with_system(trimmed)
+}
+
+/// Resolve a markdown link target encountered while previewing a local file into
+/// an absolute path. `base_file` is the absolute path of the file being
+/// previewed; a relative `target` resolves against that file's parent directory,
+/// an absolute `target` is returned as-is. Pure path arithmetic — no filesystem
+/// access — mirroring `resolve_file_reference` but anchored to the previewed
+/// file's directory instead of a workspace root, so relative links in a previewed
+/// document point at siblings on disk rather than at the workspace root.
+#[tauri::command]
+pub fn resolve_preview_link_path(
+    base_file: String,
+    target: String,
+) -> Result<ResolvedPreviewLink, crate::AppError> {
+    let target = target.trim();
+    if target.is_empty() {
+        return Err("target cannot be empty.".to_string().into());
+    }
+
+    let target_path = Path::new(target);
+    let absolute = if target_path.is_absolute() {
+        target_path.to_path_buf()
+    } else {
+        let base = Path::new(base_file.trim());
+        base.parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join(target_path)
+    };
+
+    let name = absolute
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_string();
+
+    Ok(ResolvedPreviewLink {
+        path: absolute.to_string_lossy().into_owned(),
+        name,
+    })
 }
 
 #[tauri::command]
@@ -434,5 +487,28 @@ mod tests {
                 "{rel} must stay blocked"
             );
         }
+    }
+
+    #[test]
+    fn preview_link_resolves_relative_against_base_file_dir() {
+        let resolved =
+            resolve_preview_link_path("/docs/guide/index.md".into(), "../assets/logo.png".into())
+                .unwrap();
+        assert_eq!(resolved.path, "/docs/guide/../assets/logo.png");
+        assert_eq!(resolved.name, "logo.png");
+    }
+
+    #[test]
+    fn preview_link_keeps_absolute_target() {
+        let resolved =
+            resolve_preview_link_path("/docs/guide/index.md".into(), "/etc/notes.md".into())
+                .unwrap();
+        assert_eq!(resolved.path, "/etc/notes.md");
+        assert_eq!(resolved.name, "notes.md");
+    }
+
+    #[test]
+    fn preview_link_rejects_empty_target() {
+        assert!(resolve_preview_link_path("/docs/index.md".into(), "  ".into()).is_err());
     }
 }
