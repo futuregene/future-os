@@ -100,6 +100,11 @@
       "sandbox": "沙箱保护",
       "off": "完全放开"
     },
+    "approvalTierDesc": {
+      "manual": "每步操作前询问",
+      "sandbox": "在沙箱中运行，必要时询问",
+      "off": "不经过审批，执行<em>任何</em>命令"
+    },
     "attachRejectedNoImage": "{{name}}（当前模型不支持图片）",
     "attachFilesHintNoImage": "添加附件（PDF、文本）",
     "attachDialogFilterNoImage": "支持的文件（PDF、文本）"
