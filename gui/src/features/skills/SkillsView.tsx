@@ -58,7 +58,8 @@ export function SkillsView() {
   const installedCategoryMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const a of available) {
-      if (a.category) map.set(a.id, a.category);
+      if (a.category)
+        map.set(a.id, a.category);
     }
     return map;
   }, [available]);
@@ -68,7 +69,8 @@ export function SkillsView() {
     const catSet = new Set<string>();
     for (const s of installed) {
       const cat = installedCategoryMap.get(s.id);
-      if (cat) catSet.add(cat);
+      if (cat)
+        catSet.add(cat);
     }
     return [...catSet].sort();
   }, [installed, installedCategoryMap]);
