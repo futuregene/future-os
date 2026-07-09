@@ -13,7 +13,7 @@
   },
   "card": {
     "viewArtifact": "查看工作成果 {{title}}",
-    "viewDetails": "查看详情",
+    "viewDetails": "详情",
     "deleteArtifact": "删除工作成果 {{title}}",
     "delete": "删除工作成果",
     "deleteFailed": "删除工作成果失败：{{message}}"
@@ -23,9 +23,12 @@
     "copyPath": "复制路径",
     "copyContent": "复制内容",
     "copyPreview": "复制预览",
+    "enlarge": "放大预览",
     "exportTitle": "导出工作成果",
     "imagePreviewUnavailableTitle": "无法预览图片",
     "imagePreviewUnavailableDetail": "无法加载该图片。你仍可打开或导出原始文件。",
+    "fileMissingTitle": "文件已删除或移动",
+    "fileMissingDetail": "原始文件已不在原位置，无法预览。这不是系统故障，可能是文件被删除或移动了。",
     "previewUnavailableTitle": "暂无预览",
     "previewUnavailableDetail": "该文件类型暂不支持内联预览。请使用「打开」或「导出」查看原始文件。",
     "sizeBytes": "{{size}} 字节",

@@ -1,8 +1,8 @@
 import type { StoredArtifact } from "../../integrations/storage/threadStore";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
-import { ArrowLeft, Download, ExternalLink, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { ArrowLeft, Download, ExternalLink, Maximize2, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { CopyButton } from "../../components/ui/CopyButton";
@@ -10,13 +10,18 @@ import { useCopyState } from "../../components/ui/useCopyState";
 import {
   deleteArtifact,
   exportArtifactFile,
+  inspectAttachment,
   openPath,
   readTextFilePreview,
   storedTimeToIso,
 } from "../../integrations/storage/threadStore";
-import { formatTime } from "../../lib/date";
+import { cn } from "../../lib/cn";
+import { formatDateTime } from "../../lib/date";
 import { errorMessage } from "../../lib/errors";
 import { useAsyncResource } from "../../lib/useAsyncResource";
+import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
+import { previewKindForPath } from "../filepreview/previewKind";
+import { MarkdownContent } from "../markdown/MarkdownContent";
 import { PdfPreview } from "./PdfPreview";
 
 interface ArtifactDetailPanelProps {
@@ -31,12 +36,34 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
   const [busyAction, setBusyAction] = useState<"delete" | "export" | "open" | null>(null);
   const { copiedKey, copy } = useCopyState<"content" | "path">();
   const [imageFailed, setImageFailed] = useState(false);
+  const [enlarged, setEnlarged] = useState(false);
   const imageSrc = useMemo(
     () => artifact.path && isImageArtifact(artifact) ? convertFileSrc(artifact.path) : null,
     [artifact],
   );
-  const shouldLoadTextPreview = Boolean(artifact.path && !artifact.content && isTextPreviewArtifact(artifact));
+  // Kind used by the fullscreen overlay + Markdown rendering — extension-based,
+  // the same detection the middle-panel file preview uses (image / markdown).
+  const previewKind = artifact.path ? previewKindForPath(artifact.path) : null;
+  const isMarkdown = previewKind === "markdown";
+  const openExternal = useCallback(() => {
+    if (artifact.path)
+      void openPath(artifact.path);
+  }, [artifact.path]);
+  // File-backed previews take priority over inline `content`; the stored
+  // content is only a fallback (see the render order below). Load the text
+  // preview whenever the path is a text/markdown file, regardless of content.
+  const shouldLoadTextPreview = Boolean(artifact.path && isTextPreviewArtifact(artifact));
   const shouldShowPdfPreview = Boolean(artifact.path && isPdfArtifact(artifact));
+
+  // Detect a missing file (deleted / moved) so we can say so explicitly instead
+  // of falling back to a stale preview or a generic error the user reads as a
+  // system bug. `inspect_attachment` rejects when the path can't be stat'd.
+  const { error: statError, loading: statLoading } = useAsyncResource<{ isDir: boolean; size: number; isBinary: boolean } | null>(
+    () => (artifact.path ? inspectAttachment(artifact.path) : Promise.resolve(null)),
+    [artifact.path],
+    null,
+  );
+  const fileMissing = Boolean(artifact.path) && !statLoading && statError !== null;
 
   const { data: filePreview, error: previewError, loading: previewLoading } = useAsyncResource<{ content: string; size: number; truncated: boolean } | null>(
     () => (shouldLoadTextPreview && artifact.path
@@ -46,8 +73,18 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
     null,
   );
 
+  // Inline content is the fallback shown only when no file-backed preview
+  // (image / PDF / text-file) applies — e.g. a pathless inline artifact, or a
+  // file type we can't preview inline but that carries stored content.
+  const showInlineContent = !fileMissing
+    && Boolean(artifact.content)
+    && !imageSrc
+    && !shouldShowPdfPreview
+    && !shouldLoadTextPreview;
+
   const showUnsupportedPreview = Boolean(
     artifact.path
+    && !fileMissing
     && !artifact.content
     && !filePreview
     // Don't flash "Preview unavailable" while the text preview is still loading.
@@ -112,7 +149,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
       <section className="rounded-md border border-line-soft bg-surface p-3">
         <div className="min-w-0">
           <h3 className="wrap-break-word text-sm font-semibold leading-5 text-ink">{artifact.title}</h3>
-          <div className="mt-2 text-xs text-ink-muted">{formatTime(storedTimeToIso(artifact.createdAt), i18n.language)}</div>
+          <div className="mt-2 text-xs text-ink-muted">{formatDateTime(storedTimeToIso(artifact.createdAt), i18n.language)}</div>
         </div>
 
         {artifact.path
@@ -129,7 +166,79 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
               </div>
             )
           : null}
-        {artifact.content
+        {fileMissing
+          ? (
+              <div className="mt-3 rounded-md bg-warning-soft p-3">
+                <div className="text-sm font-medium text-warning">{t("detail.fileMissingTitle")}</div>
+                <p className="mt-1 text-xs leading-5 text-warning">{t("detail.fileMissingDetail")}</p>
+              </div>
+            )
+          : null}
+        {!fileMissing && imageSrc
+          ? (
+              <div className="relative mt-3 overflow-hidden rounded-md border border-line-soft bg-surface-subtle">
+                {imageFailed
+                  ? (
+                      <PreviewFallback
+                        detail={t("detail.imagePreviewUnavailableDetail")}
+                        title={t("detail.imagePreviewUnavailableTitle")}
+                      />
+                    )
+                  : (
+                      <>
+                        {previewKind === "image"
+                          ? <EnlargeButton className="right-1.5 top-1.5" label={t("detail.enlarge")} onClick={() => setEnlarged(true)} />
+                          : null}
+                        <img
+                          alt={artifact.title}
+                          className="max-h-80 w-full object-contain"
+                          onError={() => setImageFailed(true)}
+                          src={imageSrc}
+                        />
+                      </>
+                    )}
+              </div>
+            )
+          : null}
+        {!fileMissing && filePreview
+          ? (
+              <div className="relative mt-3">
+                {isMarkdown
+                  ? <EnlargeButton className="right-9 top-1.5" label={t("detail.enlarge")} onClick={() => setEnlarged(true)} />
+                  : null}
+                <CopyButton
+                  copied={copiedKey === "content"}
+                  label={t("detail.copyPreview")}
+                  onCopy={() => void copy(filePreview.content, "content")}
+                  variant="floating"
+                />
+                {isMarkdown
+                  ? (
+                      <div className="max-h-96 overflow-auto rounded-md bg-surface-subtle p-3 pr-16">
+                        <MarkdownContent content={filePreview.content} workspaceId={artifact.workspaceId} />
+                      </div>
+                    )
+                  : (
+                      <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-surface-subtle p-2 pr-9 text-[11px] leading-4 text-ink-soft">
+                        <code>{filePreview.content}</code>
+                      </pre>
+                    )}
+                <div className="mt-1 text-[11px] text-ink-muted">
+                  {filePreview.truncated
+                    ? t("detail.sizeBytesTruncated", { size: filePreview.size.toLocaleString() })
+                    : t("detail.sizeBytes", { size: filePreview.size.toLocaleString() })}
+                </div>
+              </div>
+            )
+          : null}
+        {!fileMissing && shouldShowPdfPreview
+          ? (
+              <div className="mt-3">
+                <PdfPreview path={artifact.path!} />
+              </div>
+            )
+          : null}
+        {showInlineContent
           ? (
               <div className="relative mt-3">
                 <CopyButton
@@ -144,54 +253,6 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
               </div>
             )
           : null}
-        {!artifact.content && imageSrc
-          ? (
-              <div className="mt-3 overflow-hidden rounded-md border border-line-soft bg-surface-subtle">
-                {imageFailed
-                  ? (
-                      <PreviewFallback
-                        detail={t("detail.imagePreviewUnavailableDetail")}
-                        title={t("detail.imagePreviewUnavailableTitle")}
-                      />
-                    )
-                  : (
-                      <img
-                        alt={artifact.title}
-                        className="max-h-80 w-full object-contain"
-                        onError={() => setImageFailed(true)}
-                        src={imageSrc}
-                      />
-                    )}
-              </div>
-            )
-          : null}
-        {!artifact.content && filePreview
-          ? (
-              <div className="relative mt-3">
-                <CopyButton
-                  copied={copiedKey === "content"}
-                  label={t("detail.copyPreview")}
-                  onCopy={() => void copy(filePreview.content, "content")}
-                  variant="floating"
-                />
-                <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-surface-subtle p-2 pr-9 text-[11px] leading-4 text-ink-soft">
-                  <code>{filePreview.content}</code>
-                </pre>
-                <div className="mt-1 text-[11px] text-ink-muted">
-                  {filePreview.truncated
-                    ? t("detail.sizeBytesTruncated", { size: filePreview.size.toLocaleString() })
-                    : t("detail.sizeBytes", { size: filePreview.size.toLocaleString() })}
-                </div>
-              </div>
-            )
-          : null}
-        {shouldShowPdfPreview
-          ? (
-              <div className="mt-3">
-                <PdfPreview path={artifact.path!} />
-              </div>
-            )
-          : null}
         {showUnsupportedPreview
           ? (
               <div className="mt-3">
@@ -202,7 +263,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
               </div>
             )
           : null}
-        {previewError ? <div className="mt-3 rounded-md bg-warning-soft p-2 text-xs leading-5 text-warning">{previewError}</div> : null}
+        {!fileMissing && previewError ? <div className="mt-3 rounded-md bg-warning-soft p-2 text-xs leading-5 text-warning">{previewError}</div> : null}
         {error ? <div className="mt-3 rounded-md bg-danger-soft p-2 text-xs leading-5 text-danger">{error}</div> : null}
       </section>
 
@@ -241,7 +302,45 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
           {busyAction === "delete" ? t("detail.deleting") : t("detail.deleteAction")}
         </Button>
       </div>
+
+      {previewKind && artifact.path
+        ? (
+            <FilePreviewOverlay
+              kind={previewKind}
+              name={artifact.title}
+              onClose={() => setEnlarged(false)}
+              onOpenExternal={openExternal}
+              open={enlarged}
+              path={artifact.path}
+            />
+          )
+        : null}
     </div>
+  );
+}
+
+function EnlargeButton({
+  className,
+  label,
+  onClick,
+}: {
+  className?: string;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      aria-label={label}
+      className={cn(
+        "absolute inline-flex size-6 items-center justify-center rounded-md bg-surface/90 text-ink-muted shadow-xs ring-1 ring-line-soft transition-colors hover:text-ink",
+        className,
+      )}
+      onClick={onClick}
+      title={label}
+      type="button"
+    >
+      <Maximize2 className="size-3.5" />
+    </button>
   );
 }
 
