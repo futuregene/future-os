@@ -621,6 +621,12 @@ pub trait LLMProvider: Send + Sync {
     /// Update the endpoint (base_url + api_key) at runtime for model switching.
     fn update_endpoint(&self, _base_url: &str, _api_key: &str) {}
 
+    /// Refresh only the API key at runtime, after an out-of-band credential
+    /// change (FutureGene login/logout, custom-provider key edits). Unlike
+    /// `update_endpoint` this leaves the base_url untouched — a login/logout
+    /// changes the key, not the model's endpoint.
+    fn set_api_key(&self, _api_key: &str) {}
+
     /// Update thinking level and budget at runtime (after set_thinking_level / cycle_thinking_level).
     fn update_thinking(&self, _level: &str, _budget: i32) {}
 
