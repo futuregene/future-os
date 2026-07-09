@@ -213,8 +213,8 @@ export function AppShell() {
     setSettingsOpen(true);
   }
 
-  function handleOpenProviders() {
-    setSettingsTab("providers");
+  function handleOpenAccount() {
+    setSettingsTab("account");
     setSettingsOpen(true);
   }
 
@@ -415,7 +415,7 @@ export function AppShell() {
                           onApprovalDecision={handleApprovalDecision}
                           leftPanelExpanded={leftExpanded}
                           onRetryAgentConnection={() => void refreshAgentModels()}
-                          onOpenProviders={handleOpenProviders}
+                          onOpenAccount={handleOpenAccount}
                           onOpenModels={handleOpenModels}
                           onToggleLeftPanel={handleToggleLeftPanel}
                           onPromptConsumed={consumePendingPrompt}
