@@ -80,6 +80,8 @@ export function modelKey(model: Pick<AgentModelOption, "id" | "provider">) {
 const FUTURE_PROVIDER_ID = "future";
 /** localStorage key holding the last user-picked model, as `provider/id`. */
 const LAST_USED_MODEL_STORAGE_KEY = "futureos:last-used-model";
+/** localStorage key holding the last user-picked thinking level. */
+const LAST_USED_THINKING_LEVEL_STORAGE_KEY = "futureos:last-used-thinking-level";
 
 /** Persist the last model the user picked in the composer, for the next launch. */
 export function rememberLastUsedModel(modelId: string): void {
@@ -115,6 +117,38 @@ export function resolveInitialModelId(models: AgentModelOption[]): string {
   if (future)
     return modelKey(future);
   return models[0] ? modelKey(models[0]) : defaultAgentModelId;
+}
+
+/** Persist the last thinking level the user picked in the composer. */
+export function rememberLastUsedThinkingLevel(level: string): void {
+  if (!level)
+    return;
+  try {
+    window.localStorage.setItem(LAST_USED_THINKING_LEVEL_STORAGE_KEY, level);
+  }
+  catch {
+    // localStorage may be unavailable (private mode / disabled) — best effort.
+  }
+}
+
+function readLastUsedThinkingLevel(): string | null {
+  try {
+    return window.localStorage.getItem(LAST_USED_THINKING_LEVEL_STORAGE_KEY);
+  }
+  catch {
+    return null;
+  }
+}
+
+/**
+ * Pick the thinking level for a fresh draft. Priority: the last user-picked
+ * level (if still a valid level) → the model's own default thinking level.
+ */
+export function resolveInitialThinkingLevel(modelId: string, models: AgentModelOption[]): ThinkingLevel {
+  const lastUsed = readLastUsedThinkingLevel();
+  if (lastUsed && thinkingLevels.includes(lastUsed as ThinkingLevel))
+    return lastUsed as ThinkingLevel;
+  return normalizeThinkingLevel(modelThinkingLevel(modelId, models));
 }
 
 /**
