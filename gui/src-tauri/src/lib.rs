@@ -184,6 +184,7 @@ pub fn run() {
             app_data_path,
             open_path,
             open_external_url,
+            resolve_preview_link_path,
             read_text_file_preview,
             inspect_attachment,
             read_file_base64,

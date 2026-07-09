@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { openExternalUrl } from "../../../integrations/storage/files";
 import { copyText } from "../../../lib/clipboard";
+import { usePreviewMarkdown } from "../PreviewMarkdownContext";
 import { LinkContextMenu } from "./LinkContextMenu";
 import { useLinkContextMenu } from "./useLinkContextMenu";
 
@@ -10,9 +12,10 @@ import { useLinkContextMenu } from "./useLinkContextMenu";
  * allowlist survive `safeExternalUrl`; anything else (`javascript:`, `data:`, …)
  * degrades to inert text. External anchors keep `rel="noopener noreferrer"`.
  *
- * Left click follows the anchor (opens in the system browser); right click
- * opens a custom menu (visit / copy link) instead of the webview's native one,
- * matching the local-file link's menu affordance.
+ * Left click opens the target in the system default handler via the backend —
+ * a plain `target="_blank"` does nothing inside the Tauri webview. In the chat
+ * stream a right click opens a custom menu (visit / copy link); in preview mode
+ * there is no custom menu (see `PreviewMarkdownContext`).
  */
 
 export function SafeLink({
@@ -23,33 +26,41 @@ export function SafeLink({
   href: string;
 }) {
   const { t } = useTranslation("markdown");
-  const anchorRef = useRef<HTMLAnchorElement>(null);
   const menu = useLinkContextMenu();
+  const preview = usePreviewMarkdown();
   const safeHref = safeExternalUrl(href, ["http:", "https:", "mailto:"]);
   if (!safeHref) {
     return <span className="font-medium text-ink-soft" title={href}>{children}</span>;
   }
+
+  const open = () => void openExternalUrl(safeHref).catch(() => {});
 
   return (
     <>
       <a
         className="font-medium text-accent underline-offset-2 hover:underline"
         href={safeHref}
-        onContextMenu={menu.open}
-        ref={anchorRef}
+        onClick={(event) => {
+          event.preventDefault();
+          open();
+        }}
+        onContextMenu={preview ? event => event.preventDefault() : menu.open}
         rel="noopener noreferrer"
-        target="_blank"
         title={href}
       >
         {children}
       </a>
-      <LinkContextMenu
-        controller={menu}
-        items={[
-          { label: t("link.visit"), onSelect: () => anchorRef.current?.click() },
-          { label: t("link.copyLink"), onSelect: () => void copyText(safeHref) },
-        ]}
-      />
+      {preview
+        ? null
+        : (
+            <LinkContextMenu
+              controller={menu}
+              items={[
+                { label: t("link.visit"), onSelect: open },
+                { label: t("link.copyLink"), onSelect: () => void copyText(safeHref) },
+              ]}
+            />
+          )}
     </>
   );
 }
