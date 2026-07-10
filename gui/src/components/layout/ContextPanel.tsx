@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArtifactDetailPanel } from "../../features/artifacts/ArtifactDetailPanel";
 import { ArtifactsPanel } from "../../features/artifacts/ArtifactsPanel";
+import { FileTreePanel } from "../../features/filetree/FileTreePanel";
 import { upsertFutureReferenceEntries } from "../../features/markdown/futureReferenceStore";
 import { ReviewPanel } from "../../features/review/ReviewPanel";
 import { RunInspectPanel } from "../../features/runs/RunInspectPanel";
@@ -28,20 +29,26 @@ import { EmptyState } from "../ui/EmptyState";
 import { IconButton } from "../ui/IconButton";
 import { Select } from "../ui/Select";
 
-export type ContextTab = "runs" | "review" | "artifacts";
+export type ContextTab = "runs" | "review" | "artifacts" | "files";
 export type { ReviewBase };
 
+// The Files tab appears for every thread — its root is the thread's workspace
+// path (chat threads use their temporary workspace), which is available
+// immediately, independent of the git/review capability probe.
 const gitTabs = [
-  { value: "runs", labelKey: "contextPanel.runs" },
   { value: "review", labelKey: "contextPanel.review" },
+  { value: "files", labelKey: "contextPanel.files" },
+  { value: "runs", labelKey: "contextPanel.runs" },
 ] satisfies Array<{ value: ContextTab; labelKey: string }>;
 
 const fileTabs = [
-  { value: "runs", labelKey: "contextPanel.runs" },
   { value: "artifacts", labelKey: "contextPanel.artifacts" },
+  { value: "files", labelKey: "contextPanel.files" },
+  { value: "runs", labelKey: "contextPanel.runs" },
 ] satisfies Array<{ value: ContextTab; labelKey: string }>;
 
 const pendingTabs = [
+  { value: "files", labelKey: "contextPanel.files" },
   { value: "runs", labelKey: "contextPanel.runs" },
 ] satisfies Array<{ value: ContextTab; labelKey: string }>;
 
@@ -521,6 +528,9 @@ export function ContextPanel({
                   onSelectArtifact={handleSelectArtifact}
                 />
               )
+          : null}
+        {!showInitialLoading && activeThread && activeTab === "files"
+          ? <FileTreePanel isWorkspace={isWorkspaceThread} rootPath={activeWorkspace?.path ?? null} />
           : null}
       </div>
     </aside>

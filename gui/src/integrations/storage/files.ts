@@ -1,7 +1,28 @@
 import { invokeCommand } from "../tauri/invoke";
 
+/** One entry in a directory listing from {@link listDirectory}. */
+export interface DirEntry {
+  /** Last path component (display name). */
+  name: string;
+  /** Absolute path to this entry. */
+  path: string;
+  isDir: boolean;
+  /** Byte size for files; 0 for directories. */
+  size: number;
+  /** Last-modified time as Unix epoch millis, or null if unavailable. */
+  modified: number | null;
+}
+
 export async function openPath(path: string) {
   return invokeCommand<void>("open_path", { path });
+}
+
+/**
+ * List a single directory level (no recursion), sorted directories-first then
+ * by name. Backs the file-tree panel's lazy per-level loading.
+ */
+export async function listDirectory(path: string) {
+  return invokeCommand<DirEntry[]>("list_directory", { path });
 }
 
 /** Open an http(s) / mailto URL in the system default handler (backend restricts scheme). */
