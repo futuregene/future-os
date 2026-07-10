@@ -71,8 +71,16 @@ pub fn restore_thread(thread_id: String) -> Result<store::ThreadRecord, crate::A
 }
 
 #[tauri::command]
-pub fn delete_thread(thread_id: String) -> Result<store::ThreadRecord, crate::AppError> {
-    store::delete_thread(&thread_id)
+pub async fn delete_thread(thread_id: String) -> Result<store::ThreadRecord, crate::AppError> {
+    let thread = store::delete_thread(&thread_id)?;
+    // Also delete the agent session file on disk.
+    if let Some(ref session_id) = thread.agent_session_id {
+        if let Ok(mut client) = crate::agent_bridge::connect_agent().await {
+            let cmd = crate::agent_bridge::delete_session_command(session_id.clone());
+            let _ = client.execute_command(cmd).await;
+        }
+    }
+    Ok(thread)
 }
 
 #[tauri::command]
