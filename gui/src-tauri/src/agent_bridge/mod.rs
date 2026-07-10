@@ -191,20 +191,22 @@ async fn agent_prompt_inner(
     model_id: Option<String>,
     thinking_level: Option<String>,
 ) -> Result<AgentPromptResponse, crate::AppError> {
-    let session_id = session_id
+    let stored_session_id = session_id
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| thread_id.clone());
+        .unwrap_or_default();
     // The session guard is held by the outer `agent_prompt` so it also covers
     // after-snapshot finalization (§6.1).
     let cwd = workspace_path_for_thread(&thread_id)?;
     let mut command_client = connect_agent().await?;
-    // Never force-reset: forked threads may already have a populated agent
-    // session even when the GUI store only has a few imported messages.
-    // ensure_agent_session checks get_state first and only creates a new
-    // session when one doesn't exist or the cwd differs.
-    ensure_agent_session(&mut command_client, &session_id, &cwd, false).await?;
+    let session_id = ensure_agent_session(&mut command_client, &stored_session_id, &cwd).await?;
     set_agent_permission_level(&mut command_client, &session_id, "workspace").await?;
     set_agent_sandbox_policy(&mut command_client, &session_id, &thread_id).await?;
+
+    // If the agent generated a new session id (different from what was stored),
+    // persist it on the thread for future use.
+    if session_id != stored_session_id {
+        let _ = crate::store::update_thread_session_id(&thread_id, &session_id);
+    }
 
     let mut event_client = connect_agent().await?;
     let mut event_stream = event_client
