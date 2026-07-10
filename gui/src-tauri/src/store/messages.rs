@@ -1,8 +1,5 @@
-use rusqlite::params;
 use serde::Serialize;
 
-use super::db::*;
-use super::markdown_refs::sync_message_markdown_references;
 use super::records::*;
 use super::util::*;
 
@@ -19,10 +16,6 @@ pub struct MessageRecord {
     pub created_at: i64,
     pub updated_at: i64,
 }
-
-sql_record!(pub(super) MESSAGE_COLUMNS, message_from_row -> MessageRecord {
-    id, thread_id, run_id, role, content_type, content, status, created_at, updated_at,
-});
 
 pub fn list_messages(_thread_id: &str) -> Result<Vec<MessageRecord>, crate::AppError> {
     // Messages now read from agent (get_session_entries RPC).
