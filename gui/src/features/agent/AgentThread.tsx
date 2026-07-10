@@ -1,6 +1,7 @@
 import type { AgentConnectionState } from "../../components/layout/AppShell";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
+import { forkThread, createThread } from "../../integrations/storage/threadStore";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { ArrowDown } from "lucide-react";
@@ -39,6 +40,7 @@ interface AgentThreadProps {
   onRetryAgentConnection: () => void;
   onOpenAccount: () => void;
   onOpenModels: () => void;
+  onForked: (threadId: string) => void;
   onThreadActivity: () => void;
   onToggleLeftPanel: () => void;
 }
@@ -64,6 +66,7 @@ export function AgentThread({
   onRetryAgentConnection,
   onOpenAccount,
   onOpenModels,
+  onForked,
   onThreadActivity,
   onToggleLeftPanel,
 }: AgentThreadProps) {
@@ -150,6 +153,41 @@ export function AgentThread({
     void handleContinueRun(detail.runId);
   }), [handleContinueRun, handleRetryRun]);
 
+  const handleFork = useCallback(async (aiMessage: AgentMessage) => {
+    if (!thread || !messages.length) return;
+    // Find the user message that triggered this AI response.
+    const aiIndex = messages.indexOf(aiMessage);
+    let userMessageIndex = -1;
+    for (let i = aiIndex - 1; i >= 0; i--) {
+      if (messages[i]!.role === "user") {
+        userMessageIndex = i;
+        break;
+      }
+    }
+    if (userMessageIndex < 0) return;
+    // Count how many user messages precede it (0-based index among user messages).
+    let count = 0;
+    for (let i = 0; i < userMessageIndex; i++) {
+      if (messages[i]!.role === "user") count++;
+    }
+    try {
+      const newSessionId = await forkThread(thread.id, count);
+      // Create a new GUI thread pointing at the forked agent session.
+      const newThread = await createThread({
+        mode: thread.mode ?? "chat",
+        title: thread.title ? `${thread.title} (fork)` : "Fork",
+        workspaceId: thread.workspaceId,
+        modelId: thread.modelId,
+        thinkingLevel: thread.thinkingLevel,
+        agentSessionId: newSessionId,
+      });
+      onForked(newThread.id);
+    }
+    catch {
+      // Fork failed silently.
+    }
+  }, [thread, messages, onForked]);
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
       <ThreadHeader
@@ -183,6 +221,7 @@ export function AgentThread({
                         workspaceId={thread?.workspaceId}
                         workspacePath={workspacePath}
                         onContinue={handleContinueMessage}
+                        onFork={handleFork}
                         onRetry={handleRetryMessage}
                       />
                     )}
