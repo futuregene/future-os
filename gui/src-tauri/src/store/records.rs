@@ -157,6 +157,8 @@ pub struct CreateThreadInput {
     pub model_provider: Option<String>,
     pub model_id: Option<String>,
     pub thinking_level: Option<String>,
+    #[serde(default)]
+    pub agent_session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
