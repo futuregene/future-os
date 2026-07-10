@@ -466,7 +466,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "fork", serde_json::json!({"sessionId": forked_id}))
         }
         "get_fork_messages" => {
-            // Load session from disk to get entry IDs (needed for fork)
+            // Load session from disk to get entry IDs (needed for fork).
             let (session_manager, session_id) = {
                 let sess = session.read().unwrap();
                 (sess.session_manager.clone(), sess.session_id.clone())
@@ -505,6 +505,48 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 id,
                 "get_fork_messages",
                 serde_json::json!({"messages": user_entries}),
+            )
+        }
+        "get_session_entries" => {
+            // Return ALL entries from a session (including assistant/tool).
+            // Used to import history into a forked GUI thread.
+            let (session_manager, session_id) = {
+                let sess = session.read().unwrap();
+                (sess.session_manager.clone(), sess.session_id.clone())
+            };
+            let entries: Vec<serde_json::Value> =
+                session_manager
+                    .load(&session_id)
+                    .map(|s| {
+                        s.entries
+                        .iter()
+                        .filter(|e| e.entry_type == "user" || e.entry_type == "assistant")
+                        .map(|e| {
+                            let content_text = e.content.as_ref()
+                                .map(|c| {
+                                    if let Some(arr) = c.as_array() {
+                                        arr.iter()
+                                            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                                            .collect::<Vec<_>>()
+                                            .join(" ")
+                                    } else {
+                                        c.as_str().unwrap_or("").to_string()
+                                    }
+                                })
+                                .unwrap_or_default();
+                            serde_json::json!({
+                                "id": e.id,
+                                "role": e.role,
+                                "content": content_text,
+                            })
+                        })
+                        .collect()
+                    })
+                    .unwrap_or_default();
+            RpcResponse::ok(
+                id,
+                "get_session_entries",
+                serde_json::json!({"entries": entries}),
             )
         }
         "get_last_assistant_text" => {
