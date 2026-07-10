@@ -21,8 +21,6 @@ install-cli-deps:
 
 install-cli: install-cli-deps build-tui
 	cd cli && npm run build && chmod +x dist/index.js && npm link
-	@echo "  installing builtin skills..."
-	@future skills install-builtin
 
 install-gui:
 	cd gui && npm install
