@@ -95,6 +95,14 @@ pub fn initialize_app_store() -> Result<(), crate::AppError> {
     if let Err(error) = cleanup::reconcile_orphan_images() {
         eprintln!("reconcile_orphan_images failed: {error}");
     }
+    // Reclaim per-thread temp chat-workspace scratch dirs whose thread is gone.
+    if let Err(error) = cleanup::reconcile_orphan_chat_workspaces() {
+        eprintln!("reconcile_orphan_chat_workspaces failed: {error}");
+    }
+    // Reclaim per-workspace shadow-review repos whose workspace is gone/deleted.
+    if let Err(error) = cleanup::reconcile_orphan_review_repos() {
+        eprintln!("reconcile_orphan_review_repos failed: {error}");
+    }
     Ok(())
 }
 
