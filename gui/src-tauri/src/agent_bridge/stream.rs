@@ -6,7 +6,6 @@
 use tokio::time::{timeout, Duration};
 
 use super::persist::persist_run_event;
-use crate::store;
 
 const AGENT_EVENT_STREAM_TIMEOUT_SECS: u64 = 600;
 

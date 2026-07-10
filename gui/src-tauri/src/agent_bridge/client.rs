@@ -96,11 +96,13 @@ pub fn get_session_entries_command(session_id: String) -> RpcCommand {
     base_command("get_session_entries", session_id)
 }
 
-pub(super) fn new_session_command(
+pub fn new_session_command(
     session_id: String,
     cwd: String,
     created_by: &str,
     source_meta: serde_json::Value,
+    model_id: Option<String>,
+    thinking_level: Option<String>,
 ) -> RpcCommand {
     let custom_instructions = serde_json::json!({
         "createdBy": created_by,
@@ -110,21 +112,30 @@ pub(super) fn new_session_command(
     RpcCommand {
         cwd,
         custom_instructions,
+        model_id: model_id.unwrap_or_default(),
+        level: thinking_level.unwrap_or_default(),
         ..base_command("new_session", session_id)
     }
 }
 
-pub(super) fn set_model_command(model_id: String, session_id: String) -> RpcCommand {
+pub fn set_model_command(model_id: String, session_id: String) -> RpcCommand {
     RpcCommand {
         model_id,
         ..base_command("set_model", session_id)
     }
 }
 
-pub(super) fn set_thinking_level_command(level: String, session_id: String) -> RpcCommand {
+pub fn set_thinking_level_command(level: String, session_id: String) -> RpcCommand {
     RpcCommand {
         level,
         ..base_command("set_thinking_level", session_id)
+    }
+}
+
+pub fn set_session_name_command(name: String, session_id: String) -> RpcCommand {
+    RpcCommand {
+        name,
+        ..base_command("set_session_name", session_id)
     }
 }
 

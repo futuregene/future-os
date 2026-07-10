@@ -43,7 +43,6 @@ export function entriesToMessages(entries: SessionEntry[]): AgentMessage[] {
     messages.push({
       id: segId(),
       role: "assistant",
-      author: "Future Copilot",
       authorKey: "author.researchCopilot",
       content: acc.finalText || textSegments.map(s => s.text).join("\n"),
       segments: acc.segments.length > 0 ? acc.segments : undefined,
@@ -60,7 +59,6 @@ export function entriesToMessages(entries: SessionEntry[]): AgentMessage[] {
       acc.userMessage = {
         id: segId(),
         role: "user",
-        author: "You",
         authorKey: "author.you",
         content: entry.content,
         status: "complete",

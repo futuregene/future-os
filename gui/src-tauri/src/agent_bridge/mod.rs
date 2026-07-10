@@ -12,7 +12,7 @@ mod stream;
 pub use self::approval::{decide_approval, inject_session_rule};
 pub use self::client::{
     connect_agent, delete_session_command, get_session_entries_command, get_state_command,
-    RpcResponseExt,
+    set_model_command, set_session_name_command, set_thinking_level_command, RpcResponseExt,
 };
 pub(crate) use self::client::raw_agent_addr;
 pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, PreparedPrompt};
@@ -30,7 +30,7 @@ use std::{
 };
 
 use self::client::{
-    base_command, prompt_command, set_model_command, set_thinking_level_command,
+    base_command, prompt_command,
 };
 use self::run_control::{mark_run_failed_if_active, wait_for_agent_idle};
 use self::session::{
@@ -201,7 +201,14 @@ async fn agent_prompt_inner(
     // after-snapshot finalization (§6.1).
     let cwd = workspace_path_for_thread(&thread_id)?;
     let mut command_client = connect_agent().await?;
-    let session_id = ensure_agent_session(&mut command_client, &stored_session_id, &cwd).await?;
+    let session_id = ensure_agent_session(
+        &mut command_client,
+        &stored_session_id,
+        &cwd,
+        model_id.as_deref(),
+        thinking_level.as_deref(),
+    )
+    .await?;
     set_agent_permission_level(&mut command_client, &session_id, "workspace").await?;
     set_agent_sandbox_policy(&mut command_client, &session_id, &thread_id).await?;
 
@@ -328,15 +335,31 @@ fn auto_name_thread(thread_id: &str, first_message: &str) {
     }
     // Truncate to ~40 chars visible width (same as the TUI's truncate_visible).
     let title: String = trimmed.chars().take(40).collect();
+    let title = if title.len() < trimmed.len() {
+        format!("{}…", title)
+    } else {
+        title
+    };
     let input = crate::store::RenameThreadInput {
         thread_id: thread_id.to_string(),
-        title: if title.len() < trimmed.len() {
-            format!("{}…", title)
-        } else {
-            title
-        },
+        title: title.clone(),
     };
     let _ = crate::store::rename_thread(input);
+
+    // Propagate to the agent as well (best-effort, fire-and-forget).
+    let session_id = thread
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or(&thread.id)
+        .to_string();
+    tokio::spawn(async move {
+        if let Ok(mut client) = crate::agent_bridge::connect_agent().await {
+            let cmd = crate::agent_bridge::set_session_name_command(title, session_id);
+            let _ = client.execute_command(cmd).await;
+        }
+    });
 }
 
 impl Drop for PromptSessionGuard {

@@ -132,6 +132,7 @@ export function useModelSelection({
     if (!activeThread)
       return;
 
+    updateCachedAgentState(activeThread.id, { thinkingLevel: nextLevel });
     try {
       await updateThreadThinkingLevel({
         threadId: activeThread.id,

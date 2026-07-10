@@ -227,6 +227,17 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     }
                 }
             }
+            // Apply model and thinking level from the command if provided
+            // (client sends these during session creation so the session
+            // starts with the user's selection, without needing a separate
+            // set_model/set_thinking_level RPC).
+            if !cmd.model_id.is_empty() {
+                new_sess.model = cmd.model_id.clone();
+                *new_sess.compaction_model.write().unwrap() = cmd.model_id.clone();
+            }
+            if !cmd.level.is_empty() {
+                new_sess.thinking_level = cmd.level.clone();
+            }
 
             // Restore entries from a pre-existing session (forked or persisted).
             if let Some((entries, disk_model)) = existing_entries {
