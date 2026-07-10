@@ -1,6 +1,6 @@
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { FileText, Paperclip, RotateCcw, StepForward } from "lucide-react";
+import { FileText, GitFork, Paperclip, RotateCcw, StepForward } from "lucide-react";
 import { memo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CopyButton } from "../../components/ui/CopyButton";
@@ -23,6 +23,7 @@ interface MessageBlockProps {
   /** Show the model's reasoning block (driven by the "show thinking" setting). */
   showThinking?: boolean;
   onContinue?: (message: AgentMessage) => void;
+  onFork?: (message: AgentMessage) => void;
   onHover: (id: string) => void;
   onLeave: (id: string) => void;
   onRetry?: (message: AgentMessage, source: AgentMessage) => void;
@@ -44,6 +45,7 @@ function MessageBlockImpl({
   recoverySource,
   showThinking,
   onContinue,
+  onFork,
   onHover,
   onLeave,
   onRetry,
@@ -197,6 +199,22 @@ function MessageBlockImpl({
                   />
                 )
               : null}
+          {!streaming && onFork
+            ? (
+                <button
+                  className={cn(
+                    "flex items-center gap-1 rounded px-2 py-1 text-xs text-ink-muted hover:text-ink will-change-[opacity] transition-opacity duration-200",
+                    hovered ? "opacity-100" : "pointer-events-none opacity-0",
+                  )}
+                  onClick={() => onFork(message)}
+                  title="Fork"
+                  type="button"
+                >
+                  <GitFork className="size-3.5" />
+                  Fork
+                </button>
+              )
+            : null}
           {!isUser ? <MessageMeta message={message} visible={hovered} /> : null}
           {streaming && !isUser && !showThinking && message.thinkingActive
             ? <span className="select-none text-xs text-ink-muted">{t("message.thinking")}</span>
