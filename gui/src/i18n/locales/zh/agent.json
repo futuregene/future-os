@@ -182,6 +182,7 @@
     "stopped": "已停止",
     "tokens": "{{formattedCount}} tokens",
     "fork": "分叉",
+    "forkFailed": "分叉失败：{{message}}",
     "compacted": "上下文已压缩",
     "compactedTokens": "上下文已压缩 · {{formattedCount}} tokens"
   }
