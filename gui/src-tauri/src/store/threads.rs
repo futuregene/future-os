@@ -391,12 +391,6 @@ pub fn purge_soft_deleted_threads() -> Result<usize, crate::AppError> {
     Ok(ids.len())
 }
 
-fn normalize_optional_thinking_level(level: Option<String>) -> Option<String> {
-    level.and_then(|value| {
-        let trimmed = value.trim().to_string();
-        (!trimmed.is_empty()).then_some(trimmed)
-    })
-}
 
 #[cfg(test)]
 mod tests {
