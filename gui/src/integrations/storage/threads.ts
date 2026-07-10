@@ -155,3 +155,8 @@ export async function appendMessage(input: {
 export function forkThread(threadId: string, userMessageContent: string) {
   return invokeCommand<string>("fork_thread", { threadId, userMessageContent });
 }
+
+/** Fetch session entries from the agent (primary message source). */
+export async function getSessionEntries(threadId: string) {
+  return invokeCommand<{ entries: Record<string, unknown>[] }>("get_session_entries", { threadId });
+}
