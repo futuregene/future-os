@@ -154,17 +154,19 @@ pub async fn fork_agent_session(
         })
         .ok_or_else(|| "No matching user message found in agent session.".to_string())?;
 
-    // Walk forward past tool entries after the matched user message to
-    // include the full assistant response in the preserved history.
+    // Walk forward past all entries of this turn (assistant + tool) until
+    // the next user message to include the full response in the preserved
+    // history. A single user turn may produce many assistant→tool→assistant
+    // cycles before the final text response.
     let mut fork_idx = match_idx;
     for i in (match_idx + 1)..entries.len() {
         let role = entries[i].get("role").and_then(|r| r.as_str()).unwrap_or("");
-        if role == "assistant" || role == "user" {
-            fork_idx = i;
+        fork_idx = i;
+        // Stop when we hit the next user message — fork just before it.
+        if role == "user" {
+            fork_idx = i - 1;
             break;
         }
-        // Keep walking past tool entries; fall through to the last entry.
-        fork_idx = i;
     }
     let entry_id = entries[fork_idx]
         .get("id")
