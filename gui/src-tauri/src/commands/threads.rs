@@ -91,6 +91,40 @@ pub async fn delete_thread(thread_id: String) -> Result<store::ThreadRecord, cra
     Ok(thread)
 }
 
+/// Fetch a thread's session state from the agent (model, thinking, name, cwd).
+/// Falls back to the stored DB values when the agent is unreachable.
+#[tauri::command]
+pub async fn get_thread_agent_state(
+    thread_id: String,
+) -> Result<serde_json::Value, crate::AppError> {
+    let thread = store::get_thread(&thread_id)?
+        .ok_or_else(|| "Thread not found.".to_string())?;
+    let session_id = thread.agent_session_id.as_deref().unwrap_or(&thread.id);
+
+    if let Ok(mut client) = crate::agent_bridge::connect_agent().await {
+        let cmd = crate::agent_bridge::get_state_command(session_id.to_string());
+        if let Ok(resp) = client.execute_command(cmd).await {
+            let inner = resp.into_inner();
+            if inner.success {
+                if let Ok(data) =
+                    serde_json::from_str::<serde_json::Value>(&inner.data)
+                {
+                    return Ok(data);
+                }
+            }
+        }
+    }
+
+    // Fallback to stored DB values.
+    Ok(serde_json::json!({
+        "model": thread.model_id,
+        "thinkingLevel": thread.thinking_level,
+        "sessionName": thread.title,
+        "cwd": null,
+        "parentSessionId": null,
+    }))
+}
+
 #[tauri::command]
 pub fn clear_finished_runs(thread_id: String) -> Result<usize, crate::AppError> {
     store::clear_finished_runs(&thread_id)

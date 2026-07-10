@@ -228,6 +228,7 @@ pub fn run() {
             restore_thread,
             delete_thread,
             fork_thread,
+            get_thread_agent_state,
             get_thread_cleanup_summary,
             list_messages,
             append_message,
