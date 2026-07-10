@@ -4,7 +4,7 @@ import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { ArrowDown } from "lucide-react";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { cn } from "../../lib/cn";
@@ -103,10 +103,23 @@ export function AgentThread({
     onContentSettled: () => updateFloatingScrollbar(false),
   });
 
+  // Track whether the user has manually scrolled away from the initial bottom
+  // position. We skip saving scrollTop during auto-scroll so the cached
+  // position reflects the user's actual reading spot, not the sticky bottom.
+  const didUserScrollRef = useRef(false);
+  useEffect(() => {
+    didUserScrollRef.current = false;
+  }, [thread?.id]);
+
   // Compose scroll handler: track position for cache + delegate to sticky logic.
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
-    if (el && thread?.id) saveScrollPosition(thread.id, el.scrollTop);
+    if (el && thread?.id) {
+      // Only save position after the user has scrolled away from the bottom.
+      const atBottom = el.scrollHeight - el.clientHeight - el.scrollTop < 48;
+      if (!atBottom) didUserScrollRef.current = true;
+      if (didUserScrollRef.current) saveScrollPosition(thread.id, el.scrollTop);
+    }
     handleStickyScroll();
   }, [saveScrollPosition, handleStickyScroll, scrollRef, thread?.id]);
 
@@ -126,9 +139,11 @@ export function AgentThread({
     return () => clearTimeout(timer);
   }, [consumeRestoredScrollTop, scrollRef]);
 
-  // Save scroll position when leaving this thread.
+  // Save scroll position when leaving this thread. Only saves if the user
+  // actually scrolled — otherwise the initial bottom position gets cached.
   useEffect(() => {
     return () => {
+      if (!didUserScrollRef.current) return;
       const el = scrollRef.current;
       if (el && thread?.id) saveScrollPosition(thread.id, el.scrollTop);
     };
