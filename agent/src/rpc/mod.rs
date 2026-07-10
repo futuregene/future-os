@@ -224,6 +224,12 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
         0.0
     };
 
+    let parent_session_id = sess
+        .session_manager
+        .load(&session_id)
+        .map(|s| s.parent_session_id)
+        .unwrap_or_default();
+
     serde_json::json!({
         "model": sess.model,
         "imageSupport": image_support,
@@ -234,7 +240,7 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
         "followUpMode": sess.follow_up_mode,
         "sessionFile": if session_id.is_empty() { serde_json::Value::Null } else { serde_json::Value::String("".to_string()) },
         "sessionId": if session_id.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(session_id) },
-        "sessionName": serde_json::Value::Null,
+        "sessionName": if sess.session_name.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(sess.session_name.clone()) },
         "explicitSession": state.explicit_session,
         "autoCompactionEnabled": sess.auto_compaction,
         "queryCount": query_count,
@@ -253,6 +259,7 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
         "tokensCacheW": cache_w,
         "totalCost": total_cost,
         "permissionLevel": sess.permission_level.clone(),
+        "parentSessionId": if parent_session_id.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(parent_session_id) },
         "createdBy": sess.created_by.clone(),
         "sourceMeta": sess.source_meta.clone(),
     })
