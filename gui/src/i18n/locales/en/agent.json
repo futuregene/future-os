@@ -186,6 +186,7 @@
     "thinking": "Thinking…",
     "stopped": "Stopped",
     "tokens": "{{formattedCount}} tokens",
+    "fork": "Fork",
     "compacted": "Context compacted",
     "compactedTokens": "Context compacted · {{formattedCount}} tokens"
   }
