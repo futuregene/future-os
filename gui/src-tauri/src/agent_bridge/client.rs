@@ -56,7 +56,7 @@ pub async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppErr
 
 /// Turn a gRPC `RpcResponse` into a `Result`, surfacing the agent's own error
 /// message, or `fallback` when the agent reported failure without one.
-pub(super) trait RpcResponseExt {
+pub trait RpcResponseExt {
     fn ok_or_rpc_error(self, fallback: &str) -> Result<RpcResponse, crate::AppError>;
 }
 
@@ -72,7 +72,7 @@ impl RpcResponseExt for RpcResponse {
     }
 }
 
-pub(super) fn get_state_command(session_id: String) -> RpcCommand {
+pub fn get_state_command(session_id: String) -> RpcCommand {
     base_command("get_state", session_id)
 }
 

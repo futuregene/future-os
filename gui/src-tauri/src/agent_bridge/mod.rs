@@ -10,7 +10,7 @@ mod skills;
 mod stream;
 
 pub use self::approval::{decide_approval, inject_session_rule};
-pub use self::client::{connect_agent, delete_session_command};
+pub use self::client::{connect_agent, delete_session_command, get_state_command, RpcResponseExt};
 pub(crate) use self::client::raw_agent_addr;
 pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, PreparedPrompt};
 pub use self::models::{list_agent_models, AgentModelOption};
@@ -27,7 +27,7 @@ use std::{
 };
 
 use self::client::{
-    base_command, prompt_command, set_model_command, set_thinking_level_command, RpcResponseExt,
+    base_command, prompt_command, set_model_command, set_thinking_level_command,
 };
 use self::run_control::{mark_run_failed_if_active, wait_for_agent_idle};
 use self::session::{
