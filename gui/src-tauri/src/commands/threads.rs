@@ -115,10 +115,10 @@ pub async fn get_thread_agent_state(
         }
     }
 
-    // Fallback to stored DB values.
+    // Fallback: agent unreachable — return null for model/thinking.
     Ok(serde_json::json!({
-        "model": thread.model_id,
-        "thinkingLevel": thread.thinking_level,
+        "model": null,
+        "thinkingLevel": null,
         "sessionName": thread.title,
         "cwd": null,
         "parentSessionId": null,

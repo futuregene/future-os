@@ -154,9 +154,7 @@ pub struct CreateThreadInput {
     pub workspace_id: Option<String>,
     pub workspace_path: Option<String>,
     pub workspace_name: Option<String>,
-    pub model_provider: Option<String>,
-    pub model_id: Option<String>,
-    pub thinking_level: Option<String>,
+    // model_provider, model_id, thinking_level removed — now read from agent
     #[serde(default)]
     pub agent_session_id: Option<String>,
 }

@@ -177,9 +177,6 @@ fn new_chat_thread_input() -> crate::store::CreateThreadInput {
         workspace_id: None,
         workspace_path: None,
         workspace_name: None,
-        model_provider: None,
-        model_id: None,
-        thinking_level: None,
         agent_session_id: None,
     }
 }

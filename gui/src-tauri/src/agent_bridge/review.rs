@@ -315,17 +315,12 @@ mod tests {
             workspace_id: Some(workspace.id.clone()),
             workspace_path: None,
             workspace_name: None,
-            model_provider: None,
-            model_id: None,
-            thinking_level: None,
             agent_session_id: None,
         })
         .unwrap();
         let run = store::create_run(CreateRunInput {
             thread_id: thread.id.clone(),
             trigger_message_id: None,
-            model_provider: None,
-            model_id: None,
         })
         .unwrap();
 
@@ -396,8 +391,6 @@ mod tests {
             let extra = store::create_run(CreateRunInput {
                 thread_id: thread.id.clone(),
                 trigger_message_id: None,
-                model_provider: None,
-                model_id: None,
             })
             .unwrap();
             store::upsert_run_changeset(store::UpsertRunChangesetInput {

@@ -222,9 +222,6 @@ pub async fn fork_agent_session(
         workspace_id: Some(thread.workspace_id.clone()),
         workspace_path: None,
         workspace_name: None,
-        model_provider: thread.model_provider.clone(),
-        model_id: thread.model_id.clone(),
-        thinking_level: thread.thinking_level.clone(),
         agent_session_id: Some(new_session_id.clone()),
     })?;
 
