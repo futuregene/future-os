@@ -199,7 +199,7 @@ function MessageBlockImpl({
                   />
                 )
               : null}
-          {!streaming && onFork
+          {!streaming && !isUser && onFork
             ? (
                 <button
                   className={cn(
