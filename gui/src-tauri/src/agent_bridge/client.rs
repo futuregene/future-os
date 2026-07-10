@@ -76,6 +76,22 @@ pub(super) fn get_state_command(session_id: String) -> RpcCommand {
     base_command("get_state", session_id)
 }
 
+pub(super) fn fork_command(
+    session_id: String,
+    entry_id: String,
+    parent_session: String,
+) -> RpcCommand {
+    RpcCommand {
+        entry_id,
+        parent_session,
+        ..base_command("fork", session_id)
+    }
+}
+
+pub(super) fn get_session_entries_command(session_id: String) -> RpcCommand {
+    base_command("get_session_entries", session_id)
+}
+
 pub(super) fn new_session_command(session_id: String, cwd: String) -> RpcCommand {
     RpcCommand {
         cwd,

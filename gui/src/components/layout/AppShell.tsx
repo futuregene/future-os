@@ -420,6 +420,9 @@ export function AppShell() {
                           onOpenModels={handleOpenModels}
                           onToggleLeftPanel={handleToggleLeftPanel}
                           onPromptConsumed={consumePendingPrompt}
+                          onForked={(forkedThreadId: string) => {
+                            void refreshStore(forkedThreadId);
+                          }}
                           onThreadActivity={() => {
                             void refreshStore(activeThread?.id ?? undefined);
                           }}

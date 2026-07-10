@@ -90,7 +90,10 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
     let mode = normalize_mode(&input.mode)?;
     let now = now_millis();
     let thread_id = create_id("thread");
-    let agent_session_id = create_id("agent_session");
+    let agent_session_id = input
+        .agent_session_id
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| create_id("agent_session"));
     let title = input.title.unwrap_or_else(|| {
         if mode == "chat" {
             "New Chat".to_string()

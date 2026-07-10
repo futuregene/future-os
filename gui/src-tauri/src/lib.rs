@@ -227,6 +227,7 @@ pub fn run() {
             archive_thread,
             restore_thread,
             delete_thread,
+            fork_thread,
             get_thread_cleanup_summary,
             list_messages,
             append_message,

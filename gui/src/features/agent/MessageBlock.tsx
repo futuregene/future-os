@@ -1,6 +1,6 @@
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { FileText, Paperclip, RotateCcw, StepForward } from "lucide-react";
+import { FileText, GitBranch, Paperclip, RotateCcw, StepForward } from "lucide-react";
 import { memo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CopyButton } from "../../components/ui/CopyButton";
@@ -10,6 +10,7 @@ import { formatDateTime, formatMessageTimestamp } from "../../lib/date";
 import { useNow } from "../../lib/useNow";
 import { MarkdownContent } from "../markdown/MarkdownContent";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
+import { parseMentionSegments } from "./mentionMarkdown";
 import { MessageMeta } from "./MessageMeta";
 import { ThinkingBlock } from "./ThinkingBlock";
 
@@ -23,6 +24,7 @@ interface MessageBlockProps {
   /** Show the model's reasoning block (driven by the "show thinking" setting). */
   showThinking?: boolean;
   onContinue?: (message: AgentMessage) => void;
+  onFork?: (message: AgentMessage) => void;
   onHover: (id: string) => void;
   onLeave: (id: string) => void;
   onRetry?: (message: AgentMessage, source: AgentMessage) => void;
@@ -44,6 +46,7 @@ function MessageBlockImpl({
   recoverySource,
   showThinking,
   onContinue,
+  onFork,
   onHover,
   onLeave,
   onRetry,
@@ -197,6 +200,21 @@ function MessageBlockImpl({
                   />
                 )
               : null}
+          {!streaming && !isUser && onFork
+            ? (
+                <button
+                  className={cn(
+                    "rounded p-1 text-ink-muted hover:text-ink will-change-[opacity] transition-opacity duration-200",
+                    hovered ? "opacity-100" : "pointer-events-none opacity-0",
+                  )}
+                  onClick={() => onFork(message)}
+                  title={t("message.fork")}
+                  type="button"
+                >
+                  <GitBranch className="size-3.5" />
+                </button>
+              )
+            : null}
           {!isUser ? <MessageMeta message={message} visible={hovered} /> : null}
           {streaming && !isUser && !showThinking && message.thinkingActive
             ? <span className="select-none text-xs text-ink-muted">{t("message.thinking")}</span>
@@ -229,30 +247,12 @@ function MessageBlockImpl({
  * motion is the signal). `label` is exposed to assistive tech only.
  */
 /**
- * A composer `@` mention serializes to `[name](./path)` (or `[name](<./path>)`
- * when the path has spaces). Matches those file links so the user bubble can
- * show the mention name in the accent color — matching the composer pill.
- */
-const MENTION_LINK = /\[([^\]]+)\]\((?:<(\.\/[^>]+)>|(\.\/[^)\s]+))\)/g;
-
-/**
  * User messages render as plain text (never markdown — the user's `*`/`#`/`1.`
  * stay literal), except `@` file mentions, which show in the accent color like
  * the composer pill. Everything else is verbatim.
  */
 function UserMessageText({ content }: { content: string }) {
-  // `key` is the segment's character offset — stable and unique within the text.
-  const segments: { text: string; mention: boolean; key: number }[] = [];
-  let last = 0;
-  MENTION_LINK.lastIndex = 0;
-  for (let match = MENTION_LINK.exec(content); match; match = MENTION_LINK.exec(content)) {
-    if (match.index > last)
-      segments.push({ text: content.slice(last, match.index), mention: false, key: last });
-    segments.push({ text: match[1] ?? "", mention: true, key: match.index });
-    last = match.index + match[0].length;
-  }
-  if (last < content.length)
-    segments.push({ text: content.slice(last), mention: false, key: last });
+  const segments = parseMentionSegments(content);
 
   return (
     <p className="whitespace-pre-wrap">

@@ -14,9 +14,17 @@
   "card": {
     "viewArtifact": "View artifact {{title}}",
     "viewDetails": "Details",
+    "artifactActions": "Artifact actions {{title}}",
     "deleteArtifact": "Delete artifact {{title}}",
     "delete": "Delete artifact",
     "deleteFailed": "Failed to delete artifact: {{message}}"
+  },
+  "menu": {
+    "viewDetails": "View details",
+    "attach": "Attach to context",
+    "open": "Open",
+    "preview": "Preview",
+    "delete": "Delete"
   },
   "detail": {
     "back": "Artifacts",

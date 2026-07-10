@@ -1,6 +1,14 @@
 //! Thread lifecycle Tauri commands plus thread-scoped cleanup queries.
 
-use crate::store;
+use crate::{agent_bridge, store};
+
+#[tauri::command]
+pub async fn fork_thread(
+    thread_id: String,
+    user_message_content: String,
+) -> Result<String, crate::AppError> {
+    agent_bridge::fork_agent_session(&thread_id, &user_message_content).await
+}
 
 #[tauri::command]
 pub fn list_threads() -> Result<Vec<store::ThreadRecord>, crate::AppError> {

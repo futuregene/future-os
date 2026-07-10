@@ -1,6 +1,9 @@
 import type { AgentConnectionState } from "../../components/layout/AppShell";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
+import { forkThread } from "../../integrations/storage/threadStore";
+import { errorMessage } from "../../lib/errors";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { ArrowDown } from "lucide-react";
@@ -39,6 +42,7 @@ interface AgentThreadProps {
   onRetryAgentConnection: () => void;
   onOpenAccount: () => void;
   onOpenModels: () => void;
+  onForked: (threadId: string) => void;
   onThreadActivity: () => void;
   onToggleLeftPanel: () => void;
 }
@@ -64,6 +68,7 @@ export function AgentThread({
   onRetryAgentConnection,
   onOpenAccount,
   onOpenModels,
+  onForked,
   onThreadActivity,
   onToggleLeftPanel,
 }: AgentThreadProps) {
@@ -150,6 +155,27 @@ export function AgentThread({
     void handleContinueRun(detail.runId);
   }), [handleContinueRun, handleRetryRun]);
 
+  const handleFork = useCallback(async (aiMessage: AgentMessage) => {
+    if (!thread || !messages.length) return;
+    // Find the user message that triggered this AI response.
+    const aiIndex = messages.indexOf(aiMessage);
+    let userMessage: AgentMessage | undefined;
+    for (let i = aiIndex - 1; i >= 0; i--) {
+      if (messages[i]!.role === "user") {
+        userMessage = messages[i]!;
+        break;
+      }
+    }
+    if (!userMessage) return;
+    try {
+      const newThreadId = await forkThread(thread.id, userMessage.content);
+      onForked(newThreadId);
+    }
+    catch (error) {
+      emitFutureEvent("toast", { message: t("message.forkFailed", { message: errorMessage(error) }), tone: "error" });
+    }
+  }, [thread, messages, onForked]);
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
       <ThreadHeader
@@ -183,6 +209,7 @@ export function AgentThread({
                         workspaceId={thread?.workspaceId}
                         workspacePath={workspacePath}
                         onContinue={handleContinueMessage}
+                        onFork={handleFork}
                         onRetry={handleRetryMessage}
                       />
                     )}
@@ -241,6 +268,7 @@ export function AgentThread({
               onAbort={() => void handleAbort()}
               onSend={payload => void handleSend(payload)}
               workspaceId={thread?.workspaceId}
+              draftKey={thread?.id}
             />
           </div>
         </div>
