@@ -8,7 +8,6 @@ use std::{fs, path::PathBuf};
 use super::approvals::{
     approval_request_from_row, ApprovalRequestRecord, APPROVAL_REQUEST_COLUMNS,
 };
-use super::messages::{message_from_row, MessageRecord, MESSAGE_COLUMNS};
 use super::runs::{
     run_event_from_row, run_from_row, RunEventRecord, RunRecord, RUN_COLUMNS, RUN_EVENT_COLUMNS,
 };
@@ -138,11 +137,6 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, c
         |row| row.get(0),
     )?;
     Ok(count > 0)
-}
-
-pub(super) fn get_message(_id: &str) -> Result<Option<MessageRecord>, crate::AppError> {
-    // Messages table dropped — now from agent JSONL.
-    Ok(None)
 }
 
 pub fn get_run(id: &str) -> Result<Option<RunRecord>, crate::AppError> {
