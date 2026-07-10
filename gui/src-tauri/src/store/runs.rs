@@ -1,4 +1,6 @@
-use rusqlite::{params, OptionalExtension};
+#![allow(dead_code)]
+#![allow(dead_code)]
+use rusqlite::params;
 use serde::Serialize;
 
 use super::db::*;
@@ -29,6 +31,7 @@ pub struct RunRecord {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct RunEventRecord {
     pub id: String,
     pub run_id: String,
@@ -40,6 +43,7 @@ pub struct RunEventRecord {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct ToolCallRecord {
     pub id: String,
     pub run_id: String,
@@ -54,6 +58,7 @@ pub struct ToolCallRecord {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct ToolOutputRecord {
     pub id: String,
     pub tool_call_id: String,
@@ -67,17 +72,13 @@ sql_record!(pub(super) RUN_COLUMNS, run_from_row -> RunRecord {
     started_at, ended_at, error_message, error_type, created_at, updated_at,
 });
 
-sql_record!(pub(super) RUN_EVENT_COLUMNS, run_event_from_row -> RunEventRecord {
-    id, run_id, event_type, payload, sequence, created_at,
-});
+// RUN_EVENT_COLUMNS & run_event_from_row removed — table dropped
 
 sql_record!(pub(super) TOOL_CALL_COLUMNS, tool_call_from_row -> ToolCallRecord {
     id, run_id, name, kind, input, status, started_at, ended_at, created_at,
 });
 
-sql_record!(pub(super) TOOL_OUTPUT_COLUMNS, tool_output_from_row -> ToolOutputRecord {
-    id, tool_call_id, kind, content, created_at,
-});
+// TOOL_OUTPUT_COLUMNS & tool_output_from_row removed — table dropped
 
 pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::AppError> {
     let id = create_id("run");
@@ -163,7 +164,7 @@ pub(super) fn cancel_children_of_runs(
     let terminal_membership =
         format!("run_id IN (SELECT id FROM runs WHERE status IN ({TERMINAL_RUN_STATUSES_SQL}))");
     // `?1` = now, `?2` (approvals only) = note, `?3`/`?2` (single run only) = run id.
-    let (approval_where, tool_where) = match scope {
+    let (approval_where, _tool_where) = match scope {
         CancelScope::Run(_) => ("run_id = ?3".to_string(), "run_id = ?2".to_string()),
         CancelScope::TerminalRuns => (
             format!("(run_id IS NULL OR {terminal_membership})"),
