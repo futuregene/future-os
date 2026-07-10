@@ -197,33 +197,65 @@ export function isToolsCommand(command: string): command is ToolsCommand {
   return command === "list" || command === "call";
 }
 
-function parseToolArgs(raw: string): Record<string, unknown> {
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    value = parseWithFallbacks(raw);
+export function parseToolArgs(raw: string): Record<string, unknown> {
+  const candidates = toolArgCandidates(raw);
+  let lastError: unknown;
+
+  for (const candidate of candidates) {
+    try {
+      let value: unknown = JSON.parse(candidate);
+      // Windows process creation can preserve an extra encoded JSON layer.
+      if (typeof value === "string") value = JSON.parse(value);
+      if (isRecord(value)) return value;
+    } catch (error) {
+      lastError = error;
+    }
   }
-  // On Windows, doubled quoting can make JSON.parse yield the inner JSON as a
-  // plain string (a valid JSON string literal). Parse once more in that case.
-  if (typeof value === "string") {
-    value = JSON.parse(value);
-  }
-  if (!isRecord(value)) {
-    throw new Error("--args must be a JSON object, e.g. '{\"prompt\":\"...\"}'");
-  }
-  return value;
+
+  // cmd.exe can consume every double quote before Node receives argv, leaving
+  // `{prompt:puppy,size:1024x1024}`. Recover this common flat-object form.
+  const relaxed = parseCmdObject(stripOuterQuotes(raw));
+  if (relaxed) return relaxed;
+
+  throw new Error(
+    `--args must be a JSON object, e.g. '{"prompt":"..."}' (${lastError instanceof Error ? lastError.message : "invalid JSON"})`,
+  );
 }
 
-/** Handle mangled quoting from cmd.exe / PowerShell: strip stray outer quotes,
- *  and as a last resort unescape literal backslash-quote sequences. */
-function parseWithFallbacks(raw: string): unknown {
+/** Produce conservative variants for quoting changed by cmd.exe, PowerShell,
+ * or a parent process using Windows command-line escaping. */
+function toolArgCandidates(raw: string): string[] {
   const stripped = stripOuterQuotes(raw);
-  try {
-    return JSON.parse(stripped);
-  } catch {
-    return JSON.parse(stripped.replace(/\\"/g, '"').replace(/\\'/g, "'"));
+  return [...new Set([
+    raw.trim(),
+    stripped,
+    stripped.replace(/\\"/g, '"').replace(/\\'/g, "'"),
+  ])];
+}
+
+/** Parse the simple key/value object produced when cmd.exe strips JSON quotes.
+ * Values stay strings unless they are unambiguously JSON primitives. */
+function parseCmdObject(raw: string): Record<string, unknown> | null {
+  const text = raw.trim();
+  if (!text.startsWith("{") || !text.endsWith("}")) return null;
+
+  const result: Record<string, unknown> = {};
+  const body = text.slice(1, -1).trim();
+  if (!body) return result;
+
+  for (const field of body.split(",")) {
+    const colon = field.indexOf(":");
+    if (colon <= 0) return null;
+    const key = field.slice(0, colon).trim().replace(/^['"]|['"]$/g, "");
+    const rawValue = field.slice(colon + 1).trim().replace(/^['"]|['"]$/g, "");
+    if (!key) return null;
+    if (rawValue === "true") result[key] = true;
+    else if (rawValue === "false") result[key] = false;
+    else if (rawValue === "null") result[key] = null;
+    else if (/^-?\d+(?:\.\d+)?$/.test(rawValue)) result[key] = Number(rawValue);
+    else result[key] = rawValue;
   }
+  return result;
 }
 
 function stripOuterQuotes(input: string): string {
