@@ -22,6 +22,7 @@ import { errorMessage } from "../../lib/errors";
 import { fileKind } from "../../lib/fileType";
 import { formatBytes } from "../../lib/format";
 import { emitFutureEvent } from "../../lib/futureEvents";
+import { pathBasename, relativizeWorkspacePath } from "../../lib/workspacePath";
 import { READ_SOURCE_MAX_BYTES } from "../agent/attachments";
 import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
 import { previewKindForPath } from "../filepreview/previewKind";
@@ -31,11 +32,13 @@ import { useLinkContextMenu } from "../markdown/renderers/useLinkContextMenu";
 export function ArtifactsPanel({
   artifacts,
   threadId,
+  workspacePath,
   onChanged,
   onSelectArtifact,
 }: {
   artifacts: StoredArtifact[];
   threadId: string;
+  workspacePath: string | null;
   onChanged: () => void;
   onSelectArtifact: (artifactId: string) => void;
 }) {
@@ -117,6 +120,7 @@ export function ArtifactsPanel({
                     key={artifact.id}
                     onChanged={onChanged}
                     onSelectArtifact={onSelectArtifact}
+                    workspacePath={workspacePath}
                   />
                 ))}
               </div>
@@ -129,18 +133,20 @@ export function ArtifactsPanel({
 
 function ArtifactCard({
   artifact,
+  workspacePath,
   onChanged,
   onSelectArtifact,
 }: {
   artifact: StoredArtifact;
+  workspacePath: string | null;
   onChanged: () => void;
   onSelectArtifact: (artifactId: string) => void;
 }) {
   const { i18n, t } = useTranslation("artifacts");
   const menu = useLinkContextMenu();
   const [previewOpen, setPreviewOpen] = useState(false);
-  // Only file-backed artifacts can be opened in the OS; only image/markdown
-  // ones can preview inline — the same distinctions the file manager draws.
+  // Only file-backed artifacts can be attached/opened; only image/markdown ones
+  // can preview inline — the same distinctions the file manager draws.
   const previewKind = artifact.path ? previewKindForPath(artifact.path) : null;
 
   async function handleDelete() {
@@ -153,8 +159,21 @@ function ArtifactCard({
     }
   }
 
+  // Attach the artifact's file as an `@`-mention pill in the active composer.
+  // The pill wants a workspace-relative, POSIX-separated path (same as the file
+  // manager); a path outside the workspace keeps its absolute form.
+  function handleAttach() {
+    if (!artifact.path)
+      return;
+    const relative = relativizeWorkspacePath(artifact.path, workspacePath).replace(/\\/g, "/");
+    emitFutureEvent("attach-file-to-context", { name: pathBasename(artifact.path) || artifact.title, path: relative });
+  }
+
   const menuItems: LinkMenuItem[] = [
     { label: t("menu.viewDetails"), onSelect: () => onSelectArtifact(artifact.id) },
+    ...(artifact.path
+      ? [{ label: t("menu.attach"), onSelect: () => handleAttach() }]
+      : []),
     ...(artifact.path && previewKind
       ? [{ label: t("menu.preview"), onSelect: () => setPreviewOpen(true) }]
       : []),

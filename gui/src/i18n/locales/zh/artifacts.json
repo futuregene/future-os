@@ -20,6 +20,7 @@
   },
   "menu": {
     "viewDetails": "查看详情",
+    "attach": "附加到上下文",
     "open": "打开",
     "preview": "预览",
     "delete": "删除"
