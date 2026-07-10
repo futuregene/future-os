@@ -24,7 +24,23 @@ pub(super) fn db_path() -> Result<PathBuf, crate::AppError> {
 }
 
 pub(super) fn chat_workspace_path(thread_id: &str) -> Result<PathBuf, crate::AppError> {
-    Ok(app_dir()?.join("workspaces").join("chat").join(thread_id))
+    Ok(chat_workspaces_root()?.join(thread_id))
+}
+
+/// Root of the per-thread temporary chat workspaces (`~/.future/app/workspaces/
+/// chat`). Each `<thread_id>` subdir is scratch space for one chat conversation;
+/// reclaimed by `reconcile_orphan_chat_workspaces` and by `clear_all_data`.
+/// User workspaces live at their own user-chosen paths (never under here), so
+/// this reclamation can never touch them.
+pub(super) fn chat_workspaces_root() -> Result<PathBuf, crate::AppError> {
+    Ok(app_dir()?.join("workspaces").join("chat"))
+}
+
+/// Root of the per-workspace shadow-review git repos (`~/.future/app/review`).
+/// Each `<workspace_id>` subdir is the shadow repo shared by that workspace's
+/// runs; reclaimed by `reconcile_orphan_review_repos` and by `clear_all_data`.
+pub(super) fn review_repos_root() -> Result<PathBuf, crate::AppError> {
+    Ok(app_dir()?.join("review"))
 }
 
 /// Root of the per-thread image tree (`~/.future/app/images`). Holds attachment
