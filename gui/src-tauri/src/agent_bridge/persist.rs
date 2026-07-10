@@ -17,6 +17,15 @@ pub(super) fn persist_run_event(
         return;
     };
 
+    // `text_delta` is the agent's per-token twin of the consolidated `text_chunk`
+    // stream. The GUI's run projection renders from `text_chunk` (and the final
+    // answer lives in `messages.content`); nothing reads `text_delta`, so storing
+    // it only bloats `run_events`. Skip it. Live remote streaming is unaffected —
+    // that taps the event stream in `stream.rs`, before persistence.
+    if event_type == "text_delta" {
+        return;
+    }
+
     if let Err(error) = store::append_run_event(store::AppendRunEventInput {
         run_id: run_id.to_string(),
         event_type: event_type.to_string(),

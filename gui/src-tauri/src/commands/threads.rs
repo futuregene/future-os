@@ -73,12 +73,20 @@ pub fn restore_thread(thread_id: String) -> Result<store::ThreadRecord, crate::A
 #[tauri::command]
 pub async fn delete_thread(thread_id: String) -> Result<store::ThreadRecord, crate::AppError> {
     let thread = store::delete_thread(&thread_id)?;
-    // Also delete the agent session file on disk.
-    if let Some(ref session_id) = thread.agent_session_id {
-        if let Ok(mut client) = crate::agent_bridge::connect_agent().await {
-            let cmd = crate::agent_bridge::delete_session_command(session_id.clone());
-            let _ = client.execute_command(cmd).await;
-        }
+    // Also delete the agent session JSONL (the source of truth) so the mirror and
+    // the agent stay consistent. The session id mirrors the GUI's own resolution:
+    // agent_session_id when set, else the thread id. Best-effort — a failure here
+    // must not fail the local delete.
+    let session_id = thread
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or(&thread.id)
+        .to_string();
+    if let Ok(mut client) = crate::agent_bridge::connect_agent().await {
+        let cmd = crate::agent_bridge::delete_session_command(session_id);
+        let _ = client.execute_command(cmd).await;
     }
     Ok(thread)
 }

@@ -11,7 +11,7 @@ use super::status::TERMINAL_RUN_STATUSES_SQL;
 use super::util::{count_workspace_files, loaded, now_millis};
 use super::{delete_thread, get_thread, get_workspace};
 
-/// Startup reconciliation: soft-delete active threads whose agent base data
+/// Startup reconciliation: delete active threads whose agent base data
 /// (the session JSONL the agent writes under `~/.future/agent/sessions/`) has
 /// been removed out from under the GUI — e.g. via the TUI/CLI `delete_session`
 /// or a manual delete.
@@ -20,7 +20,7 @@ use super::{delete_thread, get_thread, get_workspace};
 /// context and reloads it on a cold start; the GUI keeps only a rendered mirror
 /// (text + events), which cannot losslessly rebuild the agent's native message
 /// structure (tool calls, tool results, thinking). So when the base file is gone
-/// there is no faithful recovery — we delete-to-match, soft-deleting the GUI
+/// there is no faithful recovery — we delete-to-match, hard-deleting the GUI
 /// thread so the two sides stay consistent instead of the model silently
 /// "forgetting" a conversation the UI still shows.
 ///
@@ -30,8 +30,7 @@ use super::{delete_thread, get_thread, get_workspace};
 /// missing file then means external deletion, not a conversation that simply
 /// hasn't produced base data yet (which must never be deleted). Runs once at
 /// startup — mid-session the agent still holds the context in memory, so drift
-/// only surfaces on the next cold start. Returns the number of threads
-/// soft-deleted.
+/// only surfaces on the next cold start. Returns the number of threads deleted.
 pub fn reconcile_orphan_sessions() -> Result<usize, crate::AppError> {
     let Some(home) = crate::home_dir() else {
         return Ok(0);
@@ -51,7 +50,9 @@ pub fn reconcile_orphan_sessions() -> Result<usize, crate::AppError> {
         orphan_thread_ids(&conn, &sessions_dir)?
     };
     for thread_id in &orphans {
-        // Soft delete (recoverable): also marks temp chat workspaces for cleanup.
+        // Hard delete: the JSONL (source of truth) is already gone, so purge the
+        // GUI mirror and its child rows too. Also marks temp chat workspaces for
+        // cleanup.
         delete_thread(thread_id)?;
     }
     Ok(orphans.len())
