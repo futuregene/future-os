@@ -90,10 +90,10 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
     let mode = normalize_mode(&input.mode)?;
     let now = now_millis();
     let thread_id = create_id("thread");
-    let agent_session_id = input
-        .agent_session_id
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| create_id("agent_session"));
+    // Only use a pre-existing agent session ID (e.g. from fork). For normal
+    // threads leave it empty — the agent generates the ID on first prompt
+    // and it's persisted back via update_thread_session_id.
+    let agent_session_id = input.agent_session_id.filter(|id| !id.is_empty());
     let title = input.title.unwrap_or_else(|| {
         if mode == "chat" {
             "New Chat".to_string()
@@ -222,6 +222,21 @@ pub fn update_thread_thinking_level(
     )?;
 
     loaded(get_thread(&input.thread_id)?, "Thread")
+}
+
+/// Persist the agent-generated session id after the first prompt creates it.
+pub fn update_thread_session_id(
+    thread_id: &str,
+    session_id: &str,
+) -> Result<(), crate::AppError> {
+    let now = now_millis();
+    let conn = connect()?;
+    conn.execute(
+        "UPDATE threads SET agent_session_id = ?1, updated_at = ?2
+         WHERE id = ?3 AND status != 'deleted'",
+        params![session_id, now, thread_id],
+    )?;
+    Ok(())
 }
 
 pub fn pin_thread(input: PinThreadInput) -> Result<ThreadRecord, crate::AppError> {

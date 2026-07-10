@@ -10,54 +10,53 @@ use super::client::{
 };
 use crate::{agent_proto::FutureAgentClient, store};
 
+/// Ensure an agent session exists for the given thread. Returns the session
+/// id (the existing one, or the newly-created one if the agent generated it).
 pub(super) async fn ensure_agent_session(
     client: &mut FutureAgentClient<Channel>,
     session_id: &str,
     cwd: &str,
-    force_reset: bool,
-) -> Result<(), crate::AppError> {
-    if force_reset {
-        return create_agent_session(client, session_id, cwd).await;
-    }
+) -> Result<String, crate::AppError> {
+    // If the thread already has a stored session id, check if it's still valid.
+    if !session_id.is_empty() {
+        let response = client
+            .execute_command(get_state_command(session_id.to_string()))
+            .await
+            .map_err(|error| format!("Unable to inspect Future Agent session: {error}"))?
+            .into_inner();
 
-    let response = client
-        .execute_command(get_state_command(session_id.to_string()))
-        .await
-        .map_err(|error| format!("Unable to inspect Future Agent session: {error}"))?
-        .into_inner();
-
-    if response.success {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&response.data) {
-            let active_session_id = value
-                .get("sessionId")
-                .and_then(|session_id| session_id.as_str())
-                .unwrap_or_default();
-            let active_cwd = value
-                .get("cwd")
-                .and_then(|cwd| cwd.as_str())
-                .unwrap_or_default();
-
-            if active_session_id == session_id && active_cwd == cwd {
-                return Ok(());
+        if response.success {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&response.data) {
+                let active_id = value
+                    .get("sessionId")
+                    .and_then(|id| id.as_str())
+                    .unwrap_or_default();
+                let active_cwd = value
+                    .get("cwd")
+                    .and_then(|cwd| cwd.as_str())
+                    .unwrap_or_default();
+                if active_id == session_id && active_cwd == cwd {
+                    return Ok(session_id.to_string());
+                }
             }
         }
     }
 
-    create_agent_session(client, session_id, cwd).await
-}
-
-async fn create_agent_session(
-    client: &mut FutureAgentClient<Channel>,
-    session_id: &str,
-    cwd: &str,
-) -> Result<(), crate::AppError> {
-    client
-        .execute_command(new_session_command(session_id.to_string(), cwd.to_string()))
+    // Create a new session. Pass empty session_id to let the agent generate it.
+    let resp = client
+        .execute_command(new_session_command(String::new(), cwd.to_string()))
         .await
         .map_err(|error| format!("Unable to create Future Agent session: {error}"))?
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the session initialization.")?;
-    Ok(())
+
+    let new_id = serde_json::from_str::<serde_json::Value>(&resp.data)
+        .ok()
+        .and_then(|v| v.get("sessionId").cloned())
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+
+    Ok(new_id)
 }
 
 pub(super) async fn set_agent_permission_level(

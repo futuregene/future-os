@@ -54,7 +54,8 @@ pub use runs::{
 };
 pub use threads::{
     archive_thread, create_thread, delete_thread, find_thread_by_agent_session, get_recent_thread,
-    get_thread, list_threads, pin_thread, rename_thread, restore_thread, update_thread_model,
+    get_thread, list_threads, pin_thread, rename_thread, restore_thread,
+    update_thread_model, update_thread_session_id,
     update_thread_thinking_level, ThreadRecord,
 };
 pub use workspace_files::{search_workspace_files, WorkspaceFileResult, WorkspaceFileSearchInput};
