@@ -204,9 +204,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             *new_sess.compaction_model.write().unwrap() = inherit_model;
             new_sess.thinking_level = inherit_thinking;
 
+            // Default created_by to "tui" for sessions created without
+            // explicit source info (e.g. TUI, channels). GUI passes
+            // custom_instructions with createdBy: "gui".
+            new_sess.created_by = "tui".to_string();
+
             // Parse source metadata from custom_instructions (JSON).
-            // Client passes {"createdBy":"gui","sourceMeta":{...}} or
-            // {"source":"tui","meta":{...}}.
+            // Client passes {"createdBy":"gui","sourceMeta":{...}}.
             if !cmd.custom_instructions.is_empty() {
                 if let Ok(meta) =
                     serde_json::from_str::<serde_json::Value>(&cmd.custom_instructions)
