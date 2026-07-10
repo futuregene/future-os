@@ -42,6 +42,21 @@ install-gui-release:
 	cd cli && npm run build && bun build --compile dist/index.js --outfile dist/future --external chromium-bidi
 	cp cli/dist/future gui/src-tauri/binaries/future-aarch64-apple-darwin
 
+# Symlink the built-in skill bundles into the agent's app-skills directory
+# so the agent discovers them on startup.  Changes in the repo are picked up
+# immediately — no re-install needed.
+install-skills:
+	@mkdir -p "$${HOME}/.future/agent/skills"
+	@for skill_dir in skills/builtin/*/; do \
+		name=$$(basename "$$skill_dir"); \
+		link="$${HOME}/.future/agent/skills/$$name"; \
+		abs=$$(cd "$$skill_dir" && pwd); \
+		rm -rf "$$link"; \
+		ln -s "$$abs" "$$link"; \
+		echo "  ✓ $$name"; \
+	done
+	@echo "Linked built-in skills to ~/.future/agent/skills/"
+
 # ─── Build ──────────────────────────────────────────────────────────────────
 
 build: build-agent build-tui build-cli build-gui
