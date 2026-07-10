@@ -9,6 +9,7 @@ import {
   listThreads,
   listWorkspaces,
 } from "../../../integrations/storage/threadStore";
+import { prefetchAgentState } from "../../../integrations/agent/agentStateCache";
 import { errorMessage } from "../../../lib/errors";
 import { usePolling } from "../../../lib/usePolling";
 
@@ -190,6 +191,14 @@ export function useThreadStore(): ThreadStore {
       setThreadRunStatuses({});
     }
   }, [activeThreads.length]);
+
+  // Pre-fetch agent state for the active thread so model/thinking/title
+  // are available from cache without a network delay on first render.
+  useEffect(() => {
+    if (activeThreadId) {
+      prefetchAgentState(activeThreadId);
+    }
+  }, [activeThreadId]);
 
   return {
     activeThread,

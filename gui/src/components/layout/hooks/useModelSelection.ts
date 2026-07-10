@@ -3,6 +3,7 @@ import type { StoredThread } from "../../../integrations/storage/threadStore";
 import { useEffect, useRef, useState } from "react";
 import i18n from "../../../i18n";
 import { defaultThinkingLevel, modelOption, modelThinkingLevel, normalizeThinkingLevel, rememberLastUsedModel, rememberLastUsedThinkingLevel, resolveInitialModelId, resolveInitialThinkingLevel } from "../../../integrations/agent/agentClient";
+import { getCachedAgentState, updateCachedAgentState } from "../../../integrations/agent/agentStateCache";
 import { updateThreadModel, updateThreadThinkingLevel } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
 import { emitFutureEvent } from "../../../lib/futureEvents";
@@ -66,16 +67,14 @@ export function useModelSelection({
       : modelOptions.length > 0
         ? "all_disabled"
         : "no_models";
-  // The active thread's persisted model may have since been deleted from the
-  // catalog or disabled in Settings. Fall back to the default pick (same rule as
-  // the draft selection) so the composer never shows / sends an unavailable model
-  // — resolves to "" when everything is disabled, which surfaces the empty state.
-  const rawThreadModelId = activeThread?.modelId ?? selectedModelId;
+  // Agent state is authoritative for model/thinking; DB values are fallback.
+  const agentState = getCachedAgentState(activeThread?.id);
+  const rawThreadModelId = agentState?.model ?? activeThread?.modelId ?? selectedModelId;
   const activeThreadModelId = modelOption(rawThreadModelId, visibleModelOptions)
     ? rawThreadModelId
     : resolveInitialModelId(visibleModelOptions);
   const activeThinkingLevel = activeThread
-    ? normalizeThinkingLevel(activeThread.thinkingLevel ?? modelThinkingLevel(activeThreadModelId, visibleModelOptions))
+    ? normalizeThinkingLevel(agentState?.thinkingLevel ?? activeThread.thinkingLevel ?? modelThinkingLevel(activeThreadModelId, visibleModelOptions))
     : selectedThinkingLevel;
 
   useEffect(() => {
@@ -109,6 +108,7 @@ export function useModelSelection({
         threadId: activeThread.id,
         thinkingLevel: nextLevel,
       });
+      updateCachedAgentState(activeThread.id, { model: modelId, thinkingLevel: nextLevel });
       await refreshStore(activeThread.id);
     }
     catch (error) {
