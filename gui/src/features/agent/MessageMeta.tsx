@@ -1,8 +1,8 @@
 import type { AgentMessage } from "./agentThreadTypes";
-import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
 import { formatDuration } from "../../lib/date";
+import { useNow } from "../../lib/useNow";
 
 interface MessageMetaProps {
   message: AgentMessage;
@@ -21,18 +21,12 @@ interface MessageMetaProps {
  * usage, which only lands when the run ends.
  */
 export function MessageMeta({ message, visible }: MessageMetaProps) {
-  const { t } = useTranslation("agent");
+  const { t, i18n } = useTranslation("agent");
   const streaming = message.status === "streaming";
 
-  // Tick `now` once a second so the live elapsed time advances while streaming.
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!streaming)
-      return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [streaming]);
+  // Tick `now` once a second so the live elapsed time advances while streaming;
+  // frozen (no re-renders) once the run settles.
+  const now = useNow(1000, streaming);
 
   const elapsedMs = streaming
     ? (typeof message.runStartedAt === "number" ? now - message.runStartedAt : null)
@@ -41,7 +35,7 @@ export function MessageMeta({ message, visible }: MessageMetaProps) {
   const tokens = message.outputTokens ?? 0;
   const parts = [
     elapsedMs != null ? formatDuration(elapsedMs) : null,
-    tokens > 0 ? t("message.tokens", { count: tokens, formattedCount: tokens.toLocaleString("en") }) : null,
+    tokens > 0 ? t("message.tokens", { count: tokens, formattedCount: new Intl.NumberFormat(i18n.language).format(tokens) }) : null,
   ].filter((part): part is string => !!part);
 
   if (parts.length === 0)

@@ -5,7 +5,7 @@ import {
   storedTimeToIso,
   updateRunStatus,
 } from "../../integrations/storage/threadStore";
-import { parseMessageContent } from "./attachments";
+import { parseMessageContent } from "./messageContent";
 
 export function matchesSettledRun(status: StoredRun["status"]) {
   return status === "completed" || status === "failed" || status === "cancelled";
@@ -31,7 +31,6 @@ export function toAgentMessage(message: StoredMessage): AgentMessage {
     id: message.id,
     runId: message.runId,
     role: message.role === "user" ? "user" : "assistant",
-    author: message.role === "user" ? i18n.t("agent:author.you") : i18n.t("agent:author.researchCopilot"),
     authorKey: message.role === "user" ? "author.you" : "author.researchCopilot",
     content: content.text,
     status: message.status,

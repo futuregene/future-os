@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import i18n from "../../i18n";
 import { listMessages, listRuns } from "../../integrations/storage/threadStore";
 import { errorMessage } from "../../lib/errors";
+import { usePolling } from "../../lib/usePolling";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
 import { matchesSettledRun, toAgentMessage } from "./agentMessageFormatters";
 import { restoreMessageActivities } from "./threadRunProjection";
@@ -158,7 +159,6 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
             {
               id: "store_error",
               role: "assistant",
-              author: i18n.t("agent:author.system"),
               authorKey: "author.system",
               content: i18n.t("agent:thread.messagesLoadFailed", { message }),
               createdAt: new Date().toISOString(),
@@ -185,16 +185,17 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
 
   const isRunActive = Boolean(recentRun && !matchesSettledRun(recentRun.status));
 
-  useEffect(() => {
-    if (!threadId || !isRunActive)
-      return;
-
-    const timer = window.setInterval(() => {
-      void refreshRecentRun(threadId, workspaceId);
-    }, 1500);
-
-    return () => window.clearInterval(timer);
-  }, [isRunActive, refreshRecentRun, workspaceId, threadId]);
+  // Poll the run's status while it's in flight so a background settle is picked
+  // up. `refreshRecentRun` guards its own state (generation + active-thread ref),
+  // so the immediate tick and any thread-switch overlap are race-safe.
+  usePolling(
+    () => {
+      if (threadId)
+        void refreshRecentRun(threadId, workspaceId);
+    },
+    1500,
+    { enabled: Boolean(threadId) && isRunActive, deps: [threadId, workspaceId, refreshRecentRun] },
+  );
 
   return {
     loadingThread,

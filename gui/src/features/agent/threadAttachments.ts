@@ -1,7 +1,7 @@
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { MessageAttachment } from "./agentThreadTypes";
 import { importAttachmentArtifact, importWorkspaceImage } from "../../integrations/storage/threadStore";
-import { generateImageThumbnail } from "./attachments";
+import { generateImageThumbnail } from "./attachmentThumbnail";
 
 /**
  * Copy a chat thread's pasted attachments into the artifact store so they get a
