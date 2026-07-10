@@ -463,7 +463,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             );
             state.create_session(new_sess);
 
-            RpcResponse::ok(id, "fork", serde_json::json!({"cancelled": false}))
+            RpcResponse::ok(id, "fork", serde_json::json!({"sessionId": forked_id}))
         }
         "get_fork_messages" => {
             // Load session from disk to get entry IDs (needed for fork)
