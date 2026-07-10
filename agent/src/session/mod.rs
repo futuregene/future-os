@@ -517,6 +517,7 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
     // Prepend session_info with parent_session_id so tree relationships survive save/load
     let info = serde_json::json!({
         "cwd": parent.cwd,
+        "session_name": parent.name,
         "parent_session_id": parent.id,
         "created_by": parent_created_by,
     });
@@ -552,7 +553,7 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
         cwd: parent.cwd.clone(),
         model: parent.model.clone(),
         base_url: parent.base_url.clone(),
-        name: String::new(),
+        name: parent.name.clone(),
         parent_session_id: parent.id.clone(),
         leaf_id: String::new(),
         entries,
