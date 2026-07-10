@@ -5,9 +5,9 @@ use crate::{agent_bridge, store};
 #[tauri::command]
 pub async fn fork_thread(
     thread_id: String,
-    user_message_index: usize,
+    user_message_content: String,
 ) -> Result<String, crate::AppError> {
-    agent_bridge::fork_agent_session(&thread_id, user_message_index).await
+    agent_bridge::fork_agent_session(&thread_id, &user_message_content).await
 }
 
 #[tauri::command]

@@ -1,7 +1,7 @@
 import type { AgentConnectionState } from "../../components/layout/AppShell";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
-import { forkThread, createThread } from "../../integrations/storage/threadStore";
+import { forkThread } from "../../integrations/storage/threadStore";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
@@ -159,31 +159,17 @@ export function AgentThread({
     if (!thread || !messages.length) return;
     // Find the user message that triggered this AI response.
     const aiIndex = messages.indexOf(aiMessage);
-    let userMessageIndex = -1;
+    let userMessage: AgentMessage | undefined;
     for (let i = aiIndex - 1; i >= 0; i--) {
       if (messages[i]!.role === "user") {
-        userMessageIndex = i;
+        userMessage = messages[i]!;
         break;
       }
     }
-    if (userMessageIndex < 0) return;
-    // Count how many user messages precede it (0-based index among user messages).
-    let count = 0;
-    for (let i = 0; i < userMessageIndex; i++) {
-      if (messages[i]!.role === "user") count++;
-    }
+    if (!userMessage) return;
     try {
-      const newSessionId = await forkThread(thread.id, count);
-      // Create a new GUI thread pointing at the forked agent session.
-      const newThread = await createThread({
-        mode: thread.mode ?? "chat",
-        title: thread.title ? `${thread.title} (fork)` : "Fork",
-        workspaceId: thread.workspaceId,
-        modelId: thread.modelId,
-        thinkingLevel: thread.thinkingLevel,
-        agentSessionId: newSessionId,
-      });
-      onForked(newThread.id);
+      const newThreadId = await forkThread(thread.id, userMessage.content);
+      onForked(newThreadId);
     }
     catch (error) {
       emitFutureEvent("toast", { message: t("message.forkFailed", { message: errorMessage(error) }), tone: "error" });
