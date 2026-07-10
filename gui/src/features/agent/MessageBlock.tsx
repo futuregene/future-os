@@ -1,6 +1,6 @@
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { FileText, GitFork, Paperclip, RotateCcw, StepForward } from "lucide-react";
+import { FileText, GitBranch, Paperclip, RotateCcw, StepForward } from "lucide-react";
 import { memo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CopyButton } from "../../components/ui/CopyButton";
@@ -207,10 +207,10 @@ function MessageBlockImpl({
                     hovered ? "opacity-100" : "pointer-events-none opacity-0",
                   )}
                   onClick={() => onFork(message)}
-                  title="Fork"
+                  title={t("message.fork")}
                   type="button"
                 >
-                  <GitFork className="size-3.5" />
+                  <GitBranch className="size-3.5" />
                 </button>
               )
             : null}
