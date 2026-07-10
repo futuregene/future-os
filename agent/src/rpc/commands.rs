@@ -539,21 +539,55 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                                     }
                                 })
                                 .unwrap_or_default();
-                            // Prepend thinking content (if any) for assistant entries.
-                            let full_content = if e.thinking.is_empty() {
-                                content_text
+                            // Build the full display content for this entry.
+                            let mut full_content = String::new();
+
+                            // Tool entries: show name + args + result.
+                            if e.entry_type == "tool" {
+                                if !e.name.is_empty() {
+                                    let args_display = if e.tool_args.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(" {}", e.tool_args)
+                                    };
+                                    full_content.push_str(&format!(
+                                        "**{}**{}\n\n", e.name, args_display
+                                    ));
+                                }
+                                if !content_text.is_empty() {
+                                    full_content.push_str(&format!("```\n{}\n```", content_text));
+                                }
+                            } else if e.entry_type == "assistant" {
+                                // Thinking content.
+                                if !e.thinking.is_empty() {
+                                    let thinking_text = e.thinking.trim();
+                                    full_content.push_str(&format!(
+                                        "> 💭 Thinking\n>\n> {}\n\n",
+                                        thinking_text.replace('\n', "\n> ")
+                                    ));
+                                }
+                                // Tool calls made during this turn.
+                                for tc in &e.tool_calls {
+                                    let args_str = serde_json::to_string(&tc.function.arguments)
+                                        .unwrap_or_default();
+                                    full_content.push_str(&format!(
+                                        "🔧 `{}` {}\n\n", tc.function.name, args_str
+                                    ));
+                                }
+                                // Main text content.
+                                if !content_text.is_empty() {
+                                    full_content.push_str(&content_text);
+                                }
                             } else {
-                                let thinking_text = e.thinking.trim();
-                                format!(
-                                    "> 💭 Thinking\n>\n> {}\n\n{}",
-                                    thinking_text.replace('\n', "\n> "),
-                                    content_text
-                                )
-                            };
+                                // User entries or other: plain content.
+                                full_content.push_str(&content_text);
+                            }
+
                             serde_json::json!({
                                 "id": e.id,
                                 "role": e.role,
                                 "content": full_content,
+                                "timestamp": e.timestamp.to_rfc3339(),
                             })
                         })
                         .collect()
