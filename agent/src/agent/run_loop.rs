@@ -789,6 +789,13 @@ fn repair_partial_tool_args(args: &mut serde_json::Value) {
     let serde_json::Value::String(raw) = args else {
         return;
     };
+    // Empty string is never valid tool-call arguments — treat as empty object
+    // so the tool handler gets a proper "missing field" error instead of
+    // "invalid type: string \"\", expected struct BashParams".
+    if raw.is_empty() {
+        *raw = String::from("{}");
+        return;
+    }
     if serde_json::from_str::<serde_json::Value>(raw).is_ok() {
         return;
     }
