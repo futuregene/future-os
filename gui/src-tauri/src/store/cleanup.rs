@@ -110,13 +110,79 @@ fn orphan_thread_ids(
 /// soft-delete undo, so a deleted thread's images are safe to drop. Runs once at
 /// startup, best-effort. Returns the number of directories removed.
 pub fn reconcile_orphan_images() -> Result<usize, crate::AppError> {
-    let root = crate::store::app_images_root()?;
+    reclaim_orphan_subdirs(crate::store::app_images_root()?, live_thread_ids)
+}
+
+/// Reclaim per-thread temporary chat-workspace directories
+/// (`~/.future/app/workspaces/chat/<tid>`) whose thread no longer lives in the
+/// DB. Deleting a thread only flags its temp workspace `pending_cleanup`; there
+/// is no per-delete physical executor, so without this sweep the scratch dirs
+/// leak forever. Symmetric to `reconcile_orphan_images`. User workspaces live at
+/// their own user-chosen paths (never under this root), so this can never touch
+/// them. Runs once at startup, best-effort. Returns the number removed.
+pub fn reconcile_orphan_chat_workspaces() -> Result<usize, crate::AppError> {
+    reclaim_orphan_subdirs(crate::store::chat_workspaces_root()?, live_thread_ids)
+}
+
+/// Reclaim per-workspace shadow-review repos (`~/.future/app/review/<wsid>`)
+/// whose workspace is gone or soft-deleted. Keyed by workspace (the repo is
+/// shared across a workspace's runs), so a live workspace's repo is always
+/// kept — only absent/`deleted_at` workspaces are reclaimed. Runs once at
+/// startup, best-effort. Returns the number removed.
+pub fn reconcile_orphan_review_repos() -> Result<usize, crate::AppError> {
+    reclaim_orphan_subdirs(crate::store::review_repos_root()?, live_workspace_ids)
+}
+
+/// Live (non-deleted) thread ids — the owners of `images/<tid>` and
+/// `workspaces/chat/<tid>` directories.
+fn live_thread_ids(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM threads WHERE status != 'deleted'")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    rows.collect()
+}
+
+/// Live (non-deleted) workspace ids — the owners of `review/<wsid>` repos. Uses
+/// `deleted_at IS NULL` so a soft-deleted workspace's repo becomes reclaimable
+/// while every live user workspace is kept.
+fn live_workspace_ids(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM workspaces WHERE deleted_at IS NULL")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    rows.collect()
+}
+
+/// Subdirectories of `root` whose name is not in `live`. Shared by the image /
+/// chat-workspace / review reclaimers so they scan identically. Split out so the
+/// rule can be unit-tested against an in-memory DB and a temp dir.
+fn orphan_subdirs(root: &Path, live: &HashSet<String>) -> Result<Vec<PathBuf>, crate::AppError> {
+    let mut orphans = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !live.contains(&name) {
+            orphans.push(entry.path());
+        }
+    }
+    Ok(orphans)
+}
+
+/// Remove every subdir of `root` whose name has no live owner id (resolved by
+/// `live_ids`). A missing root is 0; each removal is best-effort. Returns the
+/// number of directories removed.
+fn reclaim_orphan_subdirs(
+    root: PathBuf,
+    live_ids: fn(&Connection) -> rusqlite::Result<HashSet<String>>,
+) -> Result<usize, crate::AppError> {
     if !root.exists() {
         return Ok(0);
     }
     let orphans = {
         let conn = connect()?;
-        orphan_image_dirs(&conn, &root)?
+        orphan_subdirs(&root, &live_ids(&conn)?)?
     };
     for dir in &orphans {
         let _ = std::fs::remove_dir_all(dir);
@@ -124,30 +190,10 @@ pub fn reconcile_orphan_images() -> Result<usize, crate::AppError> {
     Ok(orphans.len())
 }
 
-/// Decide which `images/<tid>` directories have no live thread. Split out from
-/// the deletion so the rule can be unit-tested against an in-memory DB and a
-/// temp images dir.
+/// Test shim preserving the original `orphan_image_dirs` name/signature.
+#[cfg(test)]
 fn orphan_image_dirs(conn: &Connection, root: &Path) -> Result<Vec<PathBuf>, crate::AppError> {
-    let live: HashSet<String> = {
-        let mut stmt = conn.prepare("SELECT id FROM threads WHERE status != 'deleted'")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        rows.collect::<rusqlite::Result<_>>()?
-    };
-
-    let mut orphans = Vec::new();
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        let Some(thread_id) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if !live.contains(&thread_id) {
-            orphans.push(entry.path());
-        }
-    }
-    Ok(orphans)
+    orphan_subdirs(root, &live_thread_ids(conn)?)
 }
 
 pub fn get_thread_cleanup_summary(
@@ -526,5 +572,49 @@ mod tests {
 
         std::fs::remove_dir_all(&root).ok();
         assert_eq!(names, vec!["dead".to_string(), "ghost".to_string()]);
+    }
+
+    fn insert_workspace(conn: &Connection, id: &str, kind: &str, deleted: bool) {
+        conn.execute(
+            "INSERT INTO workspaces
+                 (id, name, kind, path, cleanup_status, created_at, updated_at, deleted_at)
+             VALUES (?1, 'W', ?2, '/tmp/ws', 'active', 1, 1, ?3)",
+            params![id, kind, if deleted { Some(1_i64) } else { None }],
+        )
+        .expect("insert workspace");
+    }
+
+    /// review/<wsid> reclamation keeps every live workspace's repo — a user
+    /// workspace is NEVER swept (item 3) — and reclaims only absent or
+    /// soft-deleted workspaces.
+    #[test]
+    fn orphan_review_repos_keeps_live_workspaces() {
+        let conn = test_conn();
+        // Live user workspace -> kept no matter what.
+        insert_workspace(&conn, "user_ws", "user", false);
+        // Live temporary workspace -> kept.
+        insert_workspace(&conn, "temp_ws", "temporary", false);
+        // Soft-deleted workspace -> reclaimable.
+        insert_workspace(&conn, "dead_ws", "user", true);
+        // "ghost_ws" has no row at all -> reclaimable.
+
+        let root = temp_sessions_dir();
+        for wsid in ["user_ws", "temp_ws", "dead_ws", "ghost_ws"] {
+            std::fs::create_dir_all(root.join(wsid).join(".git")).expect("create review repo");
+        }
+
+        let mut names: Vec<String> = orphan_subdirs(&root, &live_workspace_ids(&conn).unwrap())
+            .expect("sweep")
+            .into_iter()
+            .filter_map(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        names.sort();
+
+        std::fs::remove_dir_all(&root).ok();
+        assert_eq!(names, vec!["dead_ws".to_string(), "ghost_ws".to_string()]);
     }
 }
