@@ -197,6 +197,79 @@ export function isToolsCommand(command: string): command is ToolsCommand {
   return command === "list" || command === "call";
 }
 
+export function parseToolArgs(raw: string): Record<string, unknown> {
+  const candidates = toolArgCandidates(raw);
+  let lastError: unknown;
+
+  for (const candidate of candidates) {
+    try {
+      let value: unknown = JSON.parse(candidate);
+      // Windows process creation can preserve an extra encoded JSON layer.
+      if (typeof value === "string") value = JSON.parse(value);
+      if (isRecord(value)) return value;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  // cmd.exe can consume every double quote before Node receives argv, leaving
+  // `{prompt:puppy,size:1024x1024}`. Recover this common flat-object form.
+  const relaxed = parseCmdObject(stripOuterQuotes(raw));
+  if (relaxed) return relaxed;
+
+  throw new Error(
+    `--args must be a JSON object, e.g. '{"prompt":"..."}' (${lastError instanceof Error ? lastError.message : "invalid JSON"})`,
+  );
+}
+
+/** Produce conservative variants for quoting changed by cmd.exe, PowerShell,
+ * or a parent process using Windows command-line escaping. */
+function toolArgCandidates(raw: string): string[] {
+  const stripped = stripOuterQuotes(raw);
+  return [...new Set([
+    raw.trim(),
+    stripped,
+    stripped.replace(/\\"/g, '"').replace(/\\'/g, "'"),
+  ])];
+}
+
+/** Parse the simple key/value object produced when cmd.exe strips JSON quotes.
+ * Values stay strings unless they are unambiguously JSON primitives. */
+function parseCmdObject(raw: string): Record<string, unknown> | null {
+  const text = raw.trim();
+  if (!text.startsWith("{") || !text.endsWith("}")) return null;
+
+  const result: Record<string, unknown> = {};
+  const body = text.slice(1, -1).trim();
+  if (!body) return result;
+
+  for (const field of body.split(",")) {
+    const colon = field.indexOf(":");
+    if (colon <= 0) return null;
+    const key = field.slice(0, colon).trim().replace(/^['"]|['"]$/g, "");
+    const rawValue = field.slice(colon + 1).trim().replace(/^['"]|['"]$/g, "");
+    if (!key) return null;
+    if (rawValue === "true") result[key] = true;
+    else if (rawValue === "false") result[key] = false;
+    else if (rawValue === "null") result[key] = null;
+    else if (/^-?\d+(?:\.\d+)?$/.test(rawValue)) result[key] = Number(rawValue);
+    else result[key] = rawValue;
+  }
+  return result;
+}
+
+function stripOuterQuotes(input: string): string {
+  const trimmed = input.trim();
+  if (trimmed.length >= 2) {
+    const first = trimmed[0];
+    const last = trimmed[trimmed.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return trimmed.slice(1, -1);
+    }
+  }
+  return trimmed;
+}
+
 // ── Path-to-base64 resolution ──────────────────────────────────────────────
 
 /** Resolve image_path / doc_path fields to base64 before sending to API.
@@ -284,9 +357,9 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
       for await (const chunk of process.stdin) {
         chunks.push(chunk as Buffer);
       }
-      toolArgs = JSON.parse(Buffer.concat(chunks).toString());
+      toolArgs = parseToolArgs(Buffer.concat(chunks).toString());
     } else if (argsIdx !== -1 && argsIdx + 1 < args.length) {
-      toolArgs = JSON.parse(args[argsIdx + 1]);
+      toolArgs = parseToolArgs(args[argsIdx + 1]);
     }
 
     // Resolve image_path / doc_path → base64 before sending to API

@@ -346,6 +346,15 @@ fn derive_thinking_compat(
     }
     // else: no thinking parameters → empty compat (model doesn't support thinking)
 
+    // Models that declare max_completion_tokens (e.g. o1/o3/gpt-5 reasoning models)
+    // must use it instead of max_tokens
+    if has("max_completion_tokens") {
+        compat.insert(
+            "maxTokensField".into(),
+            serde_json::json!("max_completion_tokens"),
+        );
+    }
+
     (compat, tlm)
 }
 
@@ -606,6 +615,12 @@ fn load_user_models_with_overrides(
             if let Some(ref compat) = provider.compat {
                 m.compat = compat.clone();
             }
+            // Model-level compat overrides provider-level compat on a per-key basis
+            if let Some(ref model_compat) = model.compat {
+                for (k, v) in model_compat {
+                    m.compat.insert(k.clone(), v.clone());
+                }
+            }
             if let Some(ref tlm) = provider.thinking_level_map {
                 m.thinking_level_map = tlm.clone();
             }
@@ -674,6 +689,9 @@ struct ModelConfig {
     /// If true, the model is hidden from model lists but still callable.
     #[serde(default)]
     hide: bool,
+    /// Model-level compat overrides (e.g. maxTokensField for reasoning models).
+    #[serde(rename = "compat", default)]
+    compat: Option<HashMap<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -701,6 +719,37 @@ struct ModelCost {
 struct ProviderOverride {
     base_url: Option<String>,
     api_key: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive_thinking_compat;
+
+    #[test]
+    fn derives_max_completion_tokens_field_from_supported_parameters() {
+        let supported = vec![
+            "max_tokens".to_string(),
+            "max_completion_tokens".to_string(),
+        ];
+
+        let (compat, _) = derive_thinking_compat(&supported, Some("GPT"));
+
+        assert_eq!(
+            compat
+                .get("maxTokensField")
+                .and_then(|value| value.as_str()),
+            Some("max_completion_tokens")
+        );
+    }
+
+    #[test]
+    fn keeps_default_max_tokens_field_when_not_advertised() {
+        let supported = vec!["max_tokens".to_string()];
+
+        let (compat, _) = derive_thinking_compat(&supported, None);
+
+        assert!(!compat.contains_key("maxTokensField"));
+    }
 }
 
 /// Registry provides model resolution.
