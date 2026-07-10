@@ -17,8 +17,9 @@ import {
   matchesSettledRun,
   updateRunStatusSafe,
 } from "./agentMessageFormatters";
-import { buildInlineAttachmentContext, imageAttachmentPaths, stringifyMessageContent } from "./attachments";
+import { buildInlineAttachmentContext } from "./attachmentContext";
 import { buildReferencePrompt } from "./buildReferencePrompt";
+import { imageAttachmentPaths, stringifyMessageContent } from "./messageContent";
 import { importChatAttachments, importWorkspaceImages, withImageThumbnails } from "./threadAttachments";
 import {
   clientId,
@@ -72,7 +73,6 @@ export async function runSendPipeline(
   const optimisticUserMessage: AgentMessage = {
     id: optimisticUserId,
     role: "user",
-    author: i18n.t("agent:author.you"),
     authorKey: "author.you",
     content,
     status: "complete",
@@ -82,7 +82,6 @@ export async function runSendPipeline(
   const assistantMessage: AgentMessage = {
     id: pendingId,
     role: "assistant",
-    author: i18n.t("agent:author.researchCopilot"),
     authorKey: "author.researchCopilot",
     content: "",
     status: "streaming",

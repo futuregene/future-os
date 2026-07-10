@@ -83,7 +83,7 @@ function MessageBlockImpl({
       >
         <div className={cn("mb-1 flex items-center gap-2", isUser && "justify-end")}>
           <span className="text-sm font-semibold text-ink">
-            {message.authorKey ? t(message.authorKey) : message.author}
+            {t(message.authorKey)}
           </span>
           <span className="text-xs text-ink-muted" title={formatDateTime(message.createdAt, i18n.language)}>
             {formatMessageTimestamp(message.createdAt, i18n.language, {
