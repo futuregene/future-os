@@ -245,6 +245,9 @@ async fn agent_prompt_inner(
         review::capture_before(&thread_id, run_id);
     }
 
+    // Save the message for auto-naming after the prompt completes.
+    let user_message = message.clone();
+
     command_client
         .execute_command(prompt_command(
             message,
@@ -257,10 +260,15 @@ async fn agent_prompt_inner(
         .ok_or_rpc_error("Future Agent rejected the prompt.")?;
 
     match collect_agent_response(&mut event_stream, run_id.as_deref(), &session_id).await {
-        Ok(response) => Ok(AgentPromptResponse {
-            content: response.content,
-            complete: response.complete,
-        }),
+        Ok(response) => {
+            // Auto-name the thread from the first user message if it still has
+            // the default title (matching the TUI's first_message fallback).
+            auto_name_thread(&thread_id, &user_message);
+            Ok(AgentPromptResponse {
+                content: response.content,
+                complete: response.complete,
+            })
+        },
         Err(error) => {
             // The prompt was already accepted, so the Agent keeps running
             // server-side with no consumer once we drop the stream — and there is
@@ -298,6 +306,34 @@ impl PromptSessionGuard {
             session_id: session_id.to_string(),
         })
     }
+}
+
+/// Derive a thread title from the first user message, matching the TUI's
+/// `first_message` behavior. Only updates the title when it's still a default
+/// ("New Chat" or empty), so user-set names are never overwritten.
+fn auto_name_thread(thread_id: &str, first_message: &str) {
+    let Ok(Some(thread)) = crate::store::get_thread(thread_id) else {
+        return;
+    };
+    // Only auto-name default-titled threads.
+    if !thread.title.is_empty() && thread.title != "New Chat" && thread.title != "新对话" {
+        return;
+    }
+    let trimmed = first_message.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    // Truncate to ~40 chars visible width (same as the TUI's truncate_visible).
+    let title: String = trimmed.chars().take(40).collect();
+    let input = crate::store::RenameThreadInput {
+        thread_id: thread_id.to_string(),
+        title: if title.len() < trimmed.len() {
+            format!("{}…", title)
+        } else {
+            title
+        },
+    };
+    let _ = crate::store::rename_thread(input);
 }
 
 impl Drop for PromptSessionGuard {
