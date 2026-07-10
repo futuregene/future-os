@@ -100,15 +100,6 @@ pub(super) async fn set_agent_sandbox_policy(
     Ok(())
 }
 
-pub(super) fn prior_user_message_count(thread_id: &str) -> Result<usize, crate::AppError> {
-    let messages = store::list_messages(thread_id)?;
-    let user_message_count = messages
-        .iter()
-        .filter(|message| message.role == "user")
-        .count();
-    Ok(user_message_count.saturating_sub(1))
-}
-
 pub(super) fn workspace_path_for_thread(thread_id: &str) -> Result<String, crate::AppError> {
     let thread =
         store::get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
