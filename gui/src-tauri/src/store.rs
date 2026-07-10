@@ -48,15 +48,15 @@ pub use review_snapshots::{
 };
 pub use runs::{
     active_run_sessions, append_run_event, complete_tool_call, create_run, fail_run_if_active,
-    get_tool_call_input, list_run_events, list_run_events_bulk, list_runs, list_tool_calls, list_tool_outputs,
-    update_run_status_if_active, upsert_tool_call, RunEventRecord, RunRecord, ToolCallRecord,
-    ToolOutputRecord,
+    get_tool_call_input, list_run_events, list_run_events_bulk, list_runs, list_tool_calls,
+    list_tool_outputs, update_run_status_if_active, upsert_tool_call, RunEventRecord, RunRecord,
+    ToolCallRecord, ToolOutputRecord,
 };
 pub use threads::{
     archive_thread, create_thread, delete_thread, find_thread_by_agent_session, get_recent_thread,
-    get_thread, list_threads, pin_thread, rename_thread, restore_thread,
-    update_thread_model, update_thread_session_id,
-    update_thread_thinking_level, ThreadRecord,
+    get_thread, list_threads, pin_thread, purge_soft_deleted_threads, rename_thread,
+    restore_thread, update_thread_model, update_thread_session_id, update_thread_thinking_level,
+    ThreadRecord,
 };
 pub use workspace_files::{search_workspace_files, WorkspaceFileResult, WorkspaceFileSearchInput};
 pub use workspaces::{
@@ -82,6 +82,14 @@ pub fn initialize_app_store() -> Result<(), crate::AppError> {
     // — a reconcile failure must never block app startup.
     if let Err(error) = cleanup::reconcile_orphan_sessions() {
         eprintln!("reconcile_orphan_sessions failed: {error}");
+    }
+    // Hard-delete any threads left in the legacy soft-deleted state (and their
+    // orphaned child rows). delete_thread now hard-deletes, so this only clears
+    // pre-existing rows. Best-effort — never block startup.
+    match purge_soft_deleted_threads() {
+        Ok(0) => {}
+        Ok(count) => eprintln!("purged {count} soft-deleted thread(s)"),
+        Err(error) => eprintln!("purge_soft_deleted_threads failed: {error}"),
     }
     // Reclaim per-thread image dirs (thumbnails + workspace-mode originals) whose
     // thread is gone — including threads deleted out-of-band via the TUI/CLI.

@@ -92,6 +92,9 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
 
   const rootEntries = tree.rootEntries;
   const previewKind = previewTarget ? previewKindForPath(previewTarget.path) : null;
+  // While the shared cursor-anchored menu is open, keep its target row's `...`
+  // trigger visible instead of fading out with hover.
+  const activeMenuPath = menu.position ? menuTarget?.path ?? null : null;
 
   // Anti-flicker (mirrors ContextPanel's delayed spinner): while the root has no
   // entries yet, hold the "loading" line back for a beat. A cache-warm switch
@@ -160,6 +163,7 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
                 <ul>
                   {rootEntries.map(entry => (
                     <FileTreeNode
+                      activePath={activeMenuPath}
                       depth={0}
                       entry={entry}
                       key={entry.path}
