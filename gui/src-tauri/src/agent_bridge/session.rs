@@ -224,7 +224,10 @@ pub async fn fork_agent_session(
         agent_session_id: Some(new_session_id.clone()),
     })?;
 
-    // Import agent entries as GUI messages.
+    // Import agent entries as GUI messages. Only import entries with
+    // visible text content — intermediate assistant entries that only
+    // contain thinking and tool calls (no user-visible text) are skipped,
+    // matching how the original session stores only final replies.
     for entry in &fork_entries {
         let content = entry
             .get("content")
@@ -234,7 +237,8 @@ pub async fn fork_agent_session(
             .get("role")
             .and_then(|r| r.as_str())
             .unwrap_or("user");
-        if content.is_empty() {
+        // Skip entries with no visible text.
+        if content.trim().is_empty() {
             continue;
         }
         let _ = store::append_message(store::AppendMessageInput {
