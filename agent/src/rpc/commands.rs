@@ -543,8 +543,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                             let full_content = if e.thinking.is_empty() {
                                 content_text
                             } else {
-                                format!("> 💭\n>\n> {}\n\n---\n\n{}",
-                                    e.thinking.replace('\n', "\n> "),
+                                let thinking_text = e.thinking.trim();
+                                format!(
+                                    "> 💭 Thinking\n>\n> {}\n\n{}",
+                                    thinking_text.replace('\n', "\n> "),
                                     content_text
                                 )
                             };
