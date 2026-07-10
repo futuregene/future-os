@@ -279,67 +279,15 @@ pub fn fail_run_if_active(
     Ok(affected > 0)
 }
 
-pub fn list_run_events(run_id: &str) -> Result<Vec<RunEventRecord>, crate::AppError> {
-    let conn = connect()?;
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {RUN_EVENT_COLUMNS}
-             FROM run_events
-             WHERE run_id = ?1
-             ORDER BY sequence ASC, created_at ASC"
-    ))?;
-    let rows = stmt.query_map(params![run_id], run_event_from_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
+pub fn list_run_events(_run_id: &str) -> Result<Vec<RunEventRecord>, crate::AppError> {
+    // run_events table dropped — events now read from agent session entries.
+    Ok(vec![])
 }
 
-/// Fetch run events for multiple runs in a single query. Returns a Vec of
-/// (run_id, events) pairs so the frontend can distribute them to the right
-/// messages without N+1 IPC roundtrips.
 pub fn list_run_events_bulk(
-    run_ids: &[String],
+    _run_ids: &[String],
 ) -> Result<Vec<(String, Vec<RunEventRecord>)>, crate::AppError> {
-    if run_ids.is_empty() {
-        return Ok(vec![]);
-    }
-    let conn = connect()?;
-    let placeholders: Vec<String> = (1..=run_ids.len()).map(|i| format!("?{i}")).collect();
-    let sql = format!(
-        "SELECT {RUN_EVENT_COLUMNS}, run_id
-         FROM run_events
-         WHERE run_id IN ({})
-         ORDER BY run_id, sequence ASC, created_at ASC",
-        placeholders.join(", ")
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::types::ToSql> = run_ids
-        .iter()
-        .map(|id| id as &dyn rusqlite::types::ToSql)
-        .collect();
-    let rows = stmt
-        .query_map(params.as_slice(), |row| {
-            let record = run_event_from_row(row)?;
-            let rid: String = row.get("run_id")?;
-            Ok((rid, record))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-
-    let mut grouped: Vec<(String, Vec<RunEventRecord>)> = Vec::new();
-    let mut current: Option<(String, Vec<RunEventRecord>)> = None;
-    for (run_id, event) in rows {
-        match &mut current {
-            Some((rid, events)) if *rid == run_id => events.push(event),
-            _ => {
-                if let Some(prev) = current.take() {
-                    grouped.push(prev);
-                }
-                current = Some((run_id.clone(), vec![event]));
-            }
-        }
-    }
-    if let Some(prev) = current.take() {
-        grouped.push(prev);
-    }
-    Ok(grouped)
+    Ok(vec![])
 }
 
 pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, crate::AppError> {
