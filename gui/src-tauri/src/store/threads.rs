@@ -288,7 +288,10 @@ pub fn restore_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> 
 /// `runs.trigger_message_id` before deleting messages. Artifacts are workspace
 /// assets, not conversation data — they are detached (`thread_id`/`run_id`
 /// nulled), never destroyed with the thread.
-fn delete_thread_children_in(conn: &Connection, thread_id: &str) -> rusqlite::Result<()> {
+pub(super) fn delete_thread_children_in(
+    conn: &Connection,
+    thread_id: &str,
+) -> rusqlite::Result<()> {
     // Review data: file changes → changesets → snapshots (all source kinds).
     conn.execute(
         "DELETE FROM review_file_changes WHERE changeset_id IN (
