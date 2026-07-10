@@ -224,33 +224,126 @@ pub async fn fork_agent_session(
         agent_session_id: Some(new_session_id.clone()),
     })?;
 
-    // Import agent entries as GUI messages. Only import entries with
-    // visible text content — intermediate assistant entries that only
-    // contain thinking and tool calls (no user-visible text) are skipped,
-    // matching how the original session stores only final replies.
+    // Import entries grouped by user turn. Each turn produces one user
+    // message and one assistant message (merging tool calls inline), so the
+    // forked thread looks like the original session.
+    let mut turn_user: Option<&serde_json::Value> = None;
+    let mut turn_tools: Vec<String> = Vec::new();
+    let mut turn_final_text = String::new();
+
     for entry in &fork_entries {
+        let role = entry
+            .get("role")
+            .and_then(|r| r.as_str())
+            .unwrap_or("");
         let content = entry
             .get("content")
             .and_then(|c| c.as_str())
             .unwrap_or("");
-        let role = entry
-            .get("role")
-            .and_then(|r| r.as_str())
-            .unwrap_or("user");
-        // Only import user and assistant text. Tool entries and intermediate
-        // assistant entries (thinking-only, no text) are skipped — original
-        // sessions store only final replies, not individual tool results.
-        if content.trim().is_empty() || role == "tool" {
-            continue;
+
+        if role == "user" {
+            // Flush the previous turn.
+            if let Some(user) = turn_user {
+                let user_text = user
+                    .get("content")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("");
+                if !user_text.trim().is_empty() {
+                    let _ = store::append_message(store::AppendMessageInput {
+                        thread_id: new_thread.id.clone(),
+                        run_id: None,
+                        role: "user".to_string(),
+                        content_type: Some("markdown".to_string()),
+                        content: user_text.trim().to_string(),
+                        status: Some("complete".to_string()),
+                    });
+                }
+                if !turn_final_text.trim().is_empty() || !turn_tools.is_empty() {
+                    let mut merged = turn_final_text.trim().to_string();
+                    if !turn_tools.is_empty() {
+                        if !merged.is_empty() {
+                            merged.push_str("\n\n");
+                        }
+                        merged.push_str(&format!(
+                            "<details><summary>🔧 tool calls</summary>\n\n{}\n</details>",
+                            turn_tools.join("\n")
+                        ));
+                    }
+                    if !merged.trim().is_empty() {
+                        let _ = store::append_message(store::AppendMessageInput {
+                            thread_id: new_thread.id.clone(),
+                            run_id: None,
+                            role: "assistant".to_string(),
+                            content_type: Some("markdown".to_string()),
+                            content: merged,
+                            status: Some("complete".to_string()),
+                        });
+                    }
+                }
+            }
+            turn_user = Some(entry);
+            turn_tools.clear();
+            turn_final_text.clear();
+        } else if role == "tool" {
+            let name = entry
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("tool");
+            let args = entry
+                .get("tool_args")
+                .and_then(|a| a.as_str())
+                .unwrap_or("");
+            let result_preview = if content.len() > 200 {
+                format!("{}…", &content[..200])
+            } else {
+                content.to_string()
+            };
+            turn_tools.push(format!("- `{}` {} → {}", name, args, result_preview));
+        } else if role == "assistant" {
+            if !content.trim().is_empty() {
+                turn_final_text = content.to_string();
+            }
         }
-        let _ = store::append_message(store::AppendMessageInput {
-            thread_id: new_thread.id.clone(),
-            run_id: None,
-            role: role.to_string(),
-            content_type: Some("markdown".to_string()),
-            content: content.to_string(),
-            status: Some("complete".to_string()),
-        });
+    }
+
+    // Flush the last turn.
+    if let Some(user) = turn_user {
+        let user_text = user
+            .get("content")
+            .and_then(|c| c.as_str())
+            .unwrap_or("");
+        if !user_text.trim().is_empty() {
+            let _ = store::append_message(store::AppendMessageInput {
+                thread_id: new_thread.id.clone(),
+                run_id: None,
+                role: "user".to_string(),
+                content_type: Some("markdown".to_string()),
+                content: user_text.trim().to_string(),
+                status: Some("complete".to_string()),
+            });
+        }
+        if !turn_final_text.trim().is_empty() || !turn_tools.is_empty() {
+            let mut merged = turn_final_text.trim().to_string();
+            if !turn_tools.is_empty() {
+                if !merged.is_empty() {
+                    merged.push_str("\n\n");
+                }
+                merged.push_str(&format!(
+                    "<details><summary>🔧 tool calls</summary>\n\n{}\n</details>",
+                    turn_tools.join("\n")
+                ));
+            }
+            if !merged.trim().is_empty() {
+                let _ = store::append_message(store::AppendMessageInput {
+                    thread_id: new_thread.id.clone(),
+                    run_id: None,
+                    role: "assistant".to_string(),
+                    content_type: Some("markdown".to_string()),
+                    content: merged,
+                    status: Some("complete".to_string()),
+                });
+            }
+        }
     }
 
     Ok(new_thread.id)
