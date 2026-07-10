@@ -121,7 +121,10 @@ pub fn reconcile_orphan_images() -> Result<usize, crate::AppError> {
 /// their own user-chosen paths (never under this root), so this can never touch
 /// them. Runs once at startup, best-effort. Returns the number removed.
 pub fn reconcile_orphan_chat_workspaces() -> Result<usize, crate::AppError> {
-    reclaim_orphan_subdirs(crate::store::chat_workspaces_root()?, live_thread_ids)
+    reclaim_orphan_subdirs(
+        crate::store::chat_workspaces_root()?,
+        live_chat_workspace_dir_ids,
+    )
 }
 
 /// Reclaim per-workspace shadow-review repos (`~/.future/app/review/<wsid>`)
@@ -133,10 +136,26 @@ pub fn reconcile_orphan_review_repos() -> Result<usize, crate::AppError> {
     reclaim_orphan_subdirs(crate::store::review_repos_root()?, live_workspace_ids)
 }
 
-/// Live (non-deleted) thread ids — the owners of `images/<tid>` and
-/// `workspaces/chat/<tid>` directories.
+/// Live (non-deleted) thread ids — the owners of `images/<tid>` directories.
 fn live_thread_ids(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
     let mut stmt = conn.prepare("SELECT id FROM threads WHERE status != 'deleted'")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    rows.collect()
+}
+
+/// Live chat workspace directory names: both thread ids (legacy) and agent
+/// session ids (current).  Directories under `~/.future/workspaces/chat/` are
+/// now named after the session id, but older ones may still use the thread id.
+fn live_chat_workspace_dir_ids(
+    conn: &Connection,
+) -> rusqlite::Result<HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM threads WHERE status != 'deleted'
+         UNION
+         SELECT agent_session_id FROM threads
+         WHERE agent_session_id IS NOT NULL AND agent_session_id != ''
+           AND status != 'deleted'",
+    )?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     rows.collect()
 }

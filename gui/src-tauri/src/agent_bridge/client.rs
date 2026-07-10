@@ -129,6 +129,13 @@ pub fn set_model_command(model_id: String, session_id: String) -> RpcCommand {
     }
 }
 
+pub fn set_cwd_command(cwd: String, session_id: String) -> RpcCommand {
+    RpcCommand {
+        cwd,
+        ..base_command("set_cwd", session_id)
+    }
+}
+
 pub fn set_thinking_level_command(level: String, session_id: String) -> RpcCommand {
     RpcCommand {
         level,

@@ -6,6 +6,7 @@
   "empty": "此目录为空",
   "loading": "正在加载…",
   "loadFailed": "无法读取该目录",
+  "openFailed": "无法打开该文件",
   "retry": "重试",
   "actions": "{{name}} 的操作",
   "menu": {

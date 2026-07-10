@@ -64,9 +64,9 @@ fn ensure_path_allowed(path: &Path) -> Result<(), crate::AppError> {
 }
 
 /// True when `resolved` (already canonical) is a chat-workspace product file:
-/// under `~/.future/app/workspaces/` and not traversing any `.future/` segment.
+/// under `~/.future/workspaces/` and not traversing any `.future/` segment.
 fn is_allowed_workspace_artifact(future_dir: &Path, resolved: &Path) -> bool {
-    let workspaces_root = future_dir.join("app").join("workspaces");
+    let workspaces_root = future_dir.join("workspaces");
     let workspaces_root = workspaces_root.canonicalize().unwrap_or(workspaces_root);
     match resolved.strip_prefix(&workspaces_root) {
         Ok(tail) => !tail
@@ -491,7 +491,26 @@ pub fn save_pasted_image(
 /// cmd re-parses the argument, so `&`/`^`/`%VAR%` in an agent-produced path
 /// would be interpreted — an injection vector, not just a broken open.
 fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
-    open::that(path).map_err(|error| format!("Failed to open: {error}").into())
+    open::that(path).or_else(|_| {
+        // macOS may not have a default handler for extensionless / dotfiles
+        // (e.g. `.env`).  Fall back to `open -t` which forces the default
+        // text editor.
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open")
+                .arg("-t")
+                .arg(path)
+                .status()
+                .map(|s| {
+                    if !s.success() {
+                        eprintln!("open -t {} failed with status {s}", path);
+                    }
+                })
+                .map_err(|e| format!("Failed to open: {e}").into())
+        }
+        #[cfg(not(target_os = "macos"))]
+        Err(format!("Failed to open: {path}").into())
+    })
 }
 
 #[cfg(test)]

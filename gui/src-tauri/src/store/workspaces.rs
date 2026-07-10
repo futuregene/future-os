@@ -121,6 +121,26 @@ pub fn get_or_create_chat_workspace(
     get_or_create_chat_workspace_in(&conn, thread_id, title)
 }
 
+/// Update a chat workspace record's path (e.g. from the initial thread-id
+/// name to the session-id name after the agent session is created).
+pub fn update_chat_workspace_path(thread_id: &str, new_path: &str) -> Result<(), crate::AppError> {
+    let conn = connect()?;
+    let old_path = chat_workspace_path(thread_id)?.display().to_string();
+    if old_path == new_path {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE workspaces SET path = ?1, updated_at = ?2
+         WHERE path = ?3 AND kind = 'temporary'",
+        rusqlite::params![
+            new_path,
+            super::util::now_millis(),
+            old_path,
+        ],
+    )?;
+    Ok(())
+}
+
 /// Connection-injecting variant so a composite write (e.g. `create_thread`) can
 /// resolve/create the workspace and insert its own row in one transaction.
 pub(super) fn get_or_create_chat_workspace_in(
@@ -146,7 +166,9 @@ pub(super) fn get_or_create_chat_workspace_in(
     }
 
     let path = chat_workspace_path(thread_id)?;
-    fs::create_dir_all(&path)?;
+    // Directory creation is deferred — we don't know the session id yet.
+    // The real directory (named after the session id) is created when the
+    // first prompt runs and the workspace path is updated.
     let now = now_millis();
     let workspace_id = create_id("ws");
     let name = format!(

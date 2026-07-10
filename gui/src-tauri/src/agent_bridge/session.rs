@@ -99,7 +99,7 @@ pub(super) async fn set_agent_sandbox_policy(
 ) -> Result<(), crate::AppError> {
     let tier = store::get_app_settings()
         .map(|settings| settings.approval_tier)
-        .unwrap_or_else(|_| "manual".to_string());
+        .unwrap_or_else(|_| "off".to_string());
     let policy = crate::agent_proto::SandboxPolicy { tier };
     client
         .execute_command(set_sandbox_policy_command(policy, session_id.to_string()))
@@ -116,6 +116,15 @@ pub(super) fn workspace_path_for_thread(thread_id: &str) -> Result<String, crate
     let workspace = store::get_workspace(&thread.workspace_id)?
         .ok_or_else(|| "Thread workspace could not be loaded.".to_string())?;
     Ok(workspace.path)
+}
+
+/// Returns `true` when the thread is a chat-mode thread (not workspace-bound).
+pub(super) fn is_chat_thread(thread_id: &str) -> bool {
+    store::get_thread(thread_id)
+        .ok()
+        .flatten()
+        .map(|t| t.mode == "chat")
+        .unwrap_or(true)
 }
 
 /// Fork a session at the given user message. Returns the new agent session id.

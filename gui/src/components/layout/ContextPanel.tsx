@@ -29,9 +29,9 @@ export type { ReviewBase };
 // path (chat threads use their temporary workspace), which is available
 // immediately, independent of the git/review capability probe.
 const gitTabs = [
-  { value: "review", labelKey: "contextPanel.review" },
   { value: "files", labelKey: "contextPanel.files" },
   { value: "runs", labelKey: "contextPanel.runs" },
+  { value: "review", labelKey: "contextPanel.review" },
 ] satisfies Array<{ value: ContextTab; labelKey: string }>;
 
 const fileTabs = [
@@ -196,7 +196,7 @@ export function ContextPanel({
     if (activeThreadId === null || workspaceKindPending || seededForOpenRef.current)
       return;
     seededForOpenRef.current = true;
-    const preferred: ContextTab = isWorkspaceThread ? "review" : "artifacts";
+    const preferred: ContextTab = isWorkspaceThread ? "files" : "artifacts";
     if (activeTab !== preferred)
       onTabChange(preferred);
   }, [expanded, activeThreadId, isWorkspaceThread, workspaceKindPending, activeTab, onTabChange]);

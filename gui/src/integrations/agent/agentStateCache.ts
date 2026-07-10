@@ -71,7 +71,10 @@ export function updateCachedAgentState(threadId: string, patch: Partial<AgentSes
   const cached = cache.get(threadId);
   cache.set(threadId, {
     state: cached ? { ...cached.state, ...patch } : (patch as AgentSessionState),
-    fetchedAt: cached?.fetchedAt ?? Date.now(),
+    // Always use the current time — an optimistic update from the user's
+    // explicit action must not inherit a stale fetchedAt that would make
+    // getCachedAgentState treat it as expired immediately.
+    fetchedAt: Date.now(),
   });
   notify();
 }

@@ -36,7 +36,7 @@ pub use cleanup::{
     cancel_stale_approval_requests, clear_finished_runs, get_thread_cleanup_summary,
     reconcile_orphan_chat_workspaces, reconcile_orphan_images, reconcile_orphan_review_repos,
 };
-pub use db::{app_images_root, get_approval_request, get_run, thread_images_dir};
+pub use db::{app_images_root, chat_workspace_path, future_dir, get_approval_request, get_run, thread_images_dir};
 pub use markdown_refs::resolve_markdown_references;
 pub use messages::{append_message, list_messages, MessageRecord};
 pub use records::*;
@@ -62,8 +62,8 @@ pub use threads::{
 pub use workspace_files::{search_workspace_files, WorkspaceFileResult, WorkspaceFileSearchInput};
 pub use workspaces::{
     create_workspace, delete_workspace, get_or_create_chat_workspace, get_workspace,
-    list_workspaces, purge_soft_deleted_workspaces, rename_workspace, workspace_agent_session_ids,
-    WorkspaceRecord,
+    list_workspaces, purge_soft_deleted_workspaces, rename_workspace,
+    update_chat_workspace_path, workspace_agent_session_ids, WorkspaceRecord,
 };
 
 pub fn app_data_path() -> Result<AppDataPath, crate::AppError> {
@@ -148,5 +148,7 @@ pub fn clear_all_data() -> Result<(), crate::AppError> {
     let _ = std::fs::remove_dir_all(app.join("workspaces"));
     let _ = std::fs::remove_dir_all(app.join("review"));
     let _ = std::fs::remove_dir_all(app.join("images"));
+    // New chat workspace root (~/.future/workspaces/chat/), outside app_dir.
+    let _ = std::fs::remove_dir_all(future_dir()?.join("workspaces").join("chat"));
     Ok(())
 }

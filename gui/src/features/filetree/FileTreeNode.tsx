@@ -27,16 +27,18 @@ export interface FileTreeNodeProps {
    * the same as a context-menu event.
    */
   onContextMenu?: (entry: DirEntry, event: ReactMouseEvent<HTMLElement>) => void;
+  /** Left-click on a file: preview if possible, otherwise open with the OS. */
+  onOpenFile?: (entry: DirEntry) => void;
 }
 
 /**
  * One row in the file tree, plus its expanded children rendered recursively.
- * Directories toggle on click and lazy-load; files do nothing on left-click —
- * open/preview/attach are reached through the right-click menu. Directories are
- * marked by the expand chevron alone (no folder glyph); files show their
- * {@link FileTypeIcon} in the same chevron-sized slot so names stay aligned.
+ * Directories toggle on click and lazy-load; files preview or open with the OS
+ * via {@link onOpenFile}. Directories are marked by the expand chevron alone
+ * (no folder glyph); files show their {@link FileTypeIcon} in the same
+ * chevron-sized slot so names stay aligned.
  */
-export function FileTreeNode({ entry, depth, tree, activePath, onContextMenu }: FileTreeNodeProps) {
+export function FileTreeNode({ entry, depth, tree, activePath, onContextMenu, onOpenFile }: FileTreeNodeProps) {
   const { t } = useTranslation("filetree");
   const expanded = entry.isDir && tree.isExpanded(entry.path);
   const children = tree.childrenOf(entry.path);
@@ -45,8 +47,11 @@ export function FileTreeNode({ entry, depth, tree, activePath, onContextMenu }: 
   const menuActive = activePath === entry.path;
 
   function handleClick() {
-    if (entry.isDir)
+    if (entry.isDir) {
       tree.toggle(entry.path);
+    } else {
+      onOpenFile?.(entry);
+    }
   }
 
   return (
@@ -129,6 +134,7 @@ export function FileTreeNode({ entry, depth, tree, activePath, onContextMenu }: 
                           entry={child}
                           key={child.path}
                           onContextMenu={onContextMenu}
+                          onOpenFile={onOpenFile}
                           tree={tree}
                         />
                       ))}

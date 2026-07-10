@@ -53,7 +53,7 @@ pub(super) fn workspace_name_from_path(path: &Path) -> String {
         .to_string()
 }
 
-pub(super) fn create_id(prefix: &str) -> String {
+pub fn create_id(prefix: &str) -> String {
     static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
