@@ -581,6 +581,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                                 "id": e.id,
                                 "role": e.role,
                                 "content": full_content,
+                                "name": e.name,
+                                "tool_args": e.tool_args,
                                 "timestamp": e.timestamp.to_rfc3339(),
                             })
                         })
