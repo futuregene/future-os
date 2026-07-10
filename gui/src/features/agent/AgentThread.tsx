@@ -129,19 +129,25 @@ export function AgentThread({
     if (el && thread?.id) {
       // Only save position after the user has scrolled away from the bottom.
       const atBottom = el.scrollHeight - el.clientHeight - el.scrollTop < 48;
-      if (!atBottom) didUserScrollRef.current = true;
-      if (didUserScrollRef.current) saveScrollPosition(thread.id, el.scrollTop);
+      if (!atBottom)
+        didUserScrollRef.current = true;
+      if (didUserScrollRef.current)
+        saveScrollPosition(thread.id, el.scrollTop);
     }
     handleStickyScroll();
   }, [saveScrollPosition, handleStickyScroll, scrollRef, thread?.id]);
 
   // Save scroll position when leaving this thread. Only saves if the user
   // actually scrolled — otherwise the initial bottom position gets cached.
+  // Capture the scroll node at setup (it's stable for the thread's lifetime) so
+  // the cleanup reads its live scrollTop without touching a possibly-nulled ref.
   useEffect(() => {
+    const el = scrollRef.current;
     return () => {
-      if (!didUserScrollRef.current) return;
-      const el = scrollRef.current;
-      if (el && thread?.id) saveScrollPosition(thread.id, el.scrollTop);
+      if (!didUserScrollRef.current)
+        return;
+      if (el && thread?.id)
+        saveScrollPosition(thread.id, el.scrollTop);
     };
   }, [saveScrollPosition, scrollRef, thread?.id]);
 
