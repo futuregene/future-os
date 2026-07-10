@@ -197,6 +197,47 @@ export function isToolsCommand(command: string): command is ToolsCommand {
   return command === "list" || command === "call";
 }
 
+function parseToolArgs(raw: string): Record<string, unknown> {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    value = parseWithFallbacks(raw);
+  }
+  // On Windows, doubled quoting can make JSON.parse yield the inner JSON as a
+  // plain string (a valid JSON string literal). Parse once more in that case.
+  if (typeof value === "string") {
+    value = JSON.parse(value);
+  }
+  if (!isRecord(value)) {
+    throw new Error("--args must be a JSON object, e.g. '{\"prompt\":\"...\"}'");
+  }
+  return value;
+}
+
+/** Handle mangled quoting from cmd.exe / PowerShell: strip stray outer quotes,
+ *  and as a last resort unescape literal backslash-quote sequences. */
+function parseWithFallbacks(raw: string): unknown {
+  const stripped = stripOuterQuotes(raw);
+  try {
+    return JSON.parse(stripped);
+  } catch {
+    return JSON.parse(stripped.replace(/\\"/g, '"').replace(/\\'/g, "'"));
+  }
+}
+
+function stripOuterQuotes(input: string): string {
+  const trimmed = input.trim();
+  if (trimmed.length >= 2) {
+    const first = trimmed[0];
+    const last = trimmed[trimmed.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return trimmed.slice(1, -1);
+    }
+  }
+  return trimmed;
+}
+
 // ── Path-to-base64 resolution ──────────────────────────────────────────────
 
 /** Resolve image_path / doc_path fields to base64 before sending to API.
@@ -284,9 +325,9 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
       for await (const chunk of process.stdin) {
         chunks.push(chunk as Buffer);
       }
-      toolArgs = JSON.parse(Buffer.concat(chunks).toString());
+      toolArgs = parseToolArgs(Buffer.concat(chunks).toString());
     } else if (argsIdx !== -1 && argsIdx + 1 < args.length) {
-      toolArgs = JSON.parse(args[argsIdx + 1]);
+      toolArgs = parseToolArgs(args[argsIdx + 1]);
     }
 
     // Resolve image_path / doc_path → base64 before sending to API
