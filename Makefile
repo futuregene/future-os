@@ -43,9 +43,10 @@ install-gui-release:
 	cp cli/dist/future gui/src-tauri/binaries/future-aarch64-apple-darwin
 
 # Symlink the built-in skill bundles into the agent's app-skills directory
-# so the agent discovers them on startup.  Changes in the repo are picked up
-# immediately — no re-install needed.
+# so the agent discovers them on startup.  Pulls the latest from the skills
+# submodule first, then links each skill.
 install-skills:
+	git submodule update --init --remote skills
 	@mkdir -p "$${HOME}/.future/agent/skills"
 	@for skill_dir in skills/builtin/*/; do \
 		name=$$(basename "$$skill_dir"); \
