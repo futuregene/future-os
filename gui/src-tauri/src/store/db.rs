@@ -22,17 +22,24 @@ pub(super) fn db_path() -> Result<PathBuf, crate::AppError> {
     Ok(app_dir()?.join("app.db"))
 }
 
-pub(super) fn chat_workspace_path(thread_id: &str) -> Result<PathBuf, crate::AppError> {
-    Ok(chat_workspaces_root()?.join(thread_id))
+pub(super) fn chat_workspace_path(id: &str) -> Result<PathBuf, crate::AppError> {
+    Ok(chat_workspaces_root()?.join(id))
 }
 
-/// Root of the per-thread temporary chat workspaces (`~/.future/app/workspaces/
-/// chat`). Each `<thread_id>` subdir is scratch space for one chat conversation;
-/// reclaimed by `reconcile_orphan_chat_workspaces` and by `clear_all_data`.
-/// User workspaces live at their own user-chosen paths (never under here), so
-/// this reclamation can never touch them.
+/// Root of the per-thread temporary chat workspaces
+/// (`~/.future/workspaces/chat`).  Each subdir is named after the agent
+/// session id (when known, e.g. from import) or the thread id (new GUI
+/// threads).  Reclaimed by `reconcile_orphan_chat_workspaces` and by
+/// `clear_all_data`.  User workspaces live at their own user-chosen paths
+/// (never under here), so this reclamation can never touch them.
 pub(super) fn chat_workspaces_root() -> Result<PathBuf, crate::AppError> {
-    Ok(app_dir()?.join("workspaces").join("chat"))
+    Ok(future_dir()?.join("workspaces").join("chat"))
+}
+
+/// `$HOME/.future/` — the FutureOS root on disk.
+fn future_dir() -> Result<PathBuf, crate::AppError> {
+    let home = crate::home_dir().ok_or("HOME/USERPROFILE environment variable is not set.")?;
+    Ok(PathBuf::from(home).join(".future"))
 }
 
 /// Root of the per-workspace shadow-review git repos (`~/.future/app/review`).
@@ -57,7 +64,7 @@ pub fn thread_images_dir(thread_id: &str) -> Result<PathBuf, crate::AppError> {
 }
 
 pub(super) fn ensure_app_dirs() -> Result<(), crate::AppError> {
-    fs::create_dir_all(app_dir()?.join("workspaces").join("chat")).map_err(crate::AppError::from)
+    fs::create_dir_all(chat_workspaces_root()?).map_err(crate::AppError::from)
 }
 
 pub(super) fn connect() -> Result<Connection, crate::AppError> {

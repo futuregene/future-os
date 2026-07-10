@@ -135,7 +135,15 @@ export function NewConversation({
     setMode("workspace");
   }, [initialWorkspaceId, workspaceOptions]);
 
+  // Block sending while the model catalog is still loading — a send with an
+  // empty modelId falls back to the agent default (v4-flash) instead of the
+  // reconciled default (v4-pro). Once models load, reconciliation sets
+  // modelId and this guard becomes inactive.
+  const catalogLoading = !modelId && modelsEmptyReason === "no_models";
+
   function handleSend({ attachments, content }: ComposerSendPayload) {
+    if (catalogLoading)
+      return;
     // Return onStart's promise so the composer clears only after the thread is
     // actually created (see ComposerProps.onSend).
     if (mode === "workspace" && activeWorkspace) {
@@ -192,6 +200,7 @@ export function NewConversation({
               approvalTier={approvalTier}
               onChangeApprovalTier={onChangeApprovalTier}
               onSend={handleSend}
+              disabled={catalogLoading}
               placeholder={t("newConversation.placeholder")}
               textareaClassName="h-16 text-base leading-6"
               workspaceId={mode === "workspace" ? activeWorkspace?.id : null}

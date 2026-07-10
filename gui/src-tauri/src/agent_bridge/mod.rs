@@ -1,6 +1,7 @@
 mod approval;
 mod client;
 mod headless;
+mod import;
 mod models;
 mod persist;
 mod review;
@@ -9,6 +10,7 @@ mod session;
 mod skills;
 mod stream;
 
+pub(crate) use self::import::import_missing_sessions;
 pub use self::approval::{decide_approval, inject_session_rule};
 pub use self::client::{
     connect_agent, delete_session_command, get_session_entries_command, get_state_command,

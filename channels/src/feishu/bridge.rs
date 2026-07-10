@@ -52,7 +52,7 @@ impl Bridge {
         );
         let agent = AgentClient::connect(&agent_cfg.grpc_addr).await?;
         let policy = PolicyEngine::new(feishu_cfg.policy.clone());
-        let sessions_dir = dirs_next_path().join("channel").join("feishu");
+        let sessions_dir = dirs_next_path().join("channels").join("feishu");
         let sessions = SessionStore::new(sessions_dir.join("sessions.json"));
 
         // Fetch bot's own open_id to enable @mention detection in group chats
@@ -1463,10 +1463,10 @@ fn dirs_next_path() -> std::path::PathBuf {
         .join(".future")
 }
 
-/// Save a downloaded file to ~/.future/channel/files/{filename}.
+/// Save a downloaded file to ~/.future/channels/feishu/files/{filename}.
 /// Returns the absolute path on success.
 fn save_received_file(data: &[u8], filename: &str) -> std::path::PathBuf {
-    let dir = dirs_next_path().join("channel").join("files");
+    let dir = dirs_next_path().join("channels").join("feishu").join("files");
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(filename);
     let _ = std::fs::write(&path, data);

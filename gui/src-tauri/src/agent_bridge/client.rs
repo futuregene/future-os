@@ -92,6 +92,10 @@ pub fn delete_session_command(session_id: String) -> RpcCommand {
     base_command("delete_session", session_id)
 }
 
+pub fn list_sessions_command() -> RpcCommand {
+    base_command("list_sessions", String::new())
+}
+
 pub fn get_session_entries_command(session_id: String) -> RpcCommand {
     base_command("get_session_entries", session_id)
 }

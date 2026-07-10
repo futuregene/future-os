@@ -533,7 +533,7 @@ impl ServerSession {
                             cwd: session_cwd.clone(),
                             model: session_model.clone(),
                             base_url: String::new(),
-                            name: String::new(),
+                            name: session_name.clone(),
                             parent_session_id,
                             leaf_id: String::new(),
                             entries,
