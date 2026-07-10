@@ -266,20 +266,100 @@ pub fn restore_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> 
     update_thread_status(thread_id, "active")
 }
 
+/// FK-safe hard delete of every child row belonging to `thread_id` (the
+/// `threads` row itself is left to the caller). `PRAGMA foreign_keys = ON` is
+/// enforced, so the order matters: children before parents, and the
+/// `runs.trigger_message_id` ↔ `messages.run_id` cycle is broken by nulling
+/// `runs.trigger_message_id` before deleting messages. Artifacts are workspace
+/// assets, not conversation data — they are detached (`thread_id`/`run_id`
+/// nulled), never destroyed with the thread.
+fn delete_thread_children_in(conn: &Connection, thread_id: &str) -> rusqlite::Result<()> {
+    // Review data: file changes → changesets → snapshots (all source kinds).
+    conn.execute(
+        "DELETE FROM review_file_changes WHERE changeset_id IN (
+             SELECT id FROM review_changesets WHERE thread_id = ?1
+         )",
+        params![thread_id],
+    )?;
+    conn.execute(
+        "DELETE FROM review_changesets WHERE thread_id = ?1",
+        params![thread_id],
+    )?;
+    conn.execute(
+        "DELETE FROM review_snapshots WHERE thread_id = ?1",
+        params![thread_id],
+    )?;
+    // Denormalized markdown references originating from this thread's messages.
+    conn.execute(
+        "DELETE FROM object_references
+         WHERE source_type = 'message'
+           AND source_id IN (SELECT id FROM messages WHERE thread_id = ?1)",
+        params![thread_id],
+    )?;
+    // Approvals reference threads/runs/tool_calls — clear before tool_calls.
+    conn.execute(
+        "DELETE FROM approval_requests WHERE thread_id = ?1",
+        params![thread_id],
+    )?;
+    // Tool outputs → tool calls (scoped through the thread's runs).
+    conn.execute(
+        "DELETE FROM tool_outputs WHERE tool_call_id IN (
+             SELECT tc.id FROM tool_calls tc
+             JOIN runs r ON r.id = tc.run_id
+             WHERE r.thread_id = ?1
+         )",
+        params![thread_id],
+    )?;
+    conn.execute(
+        "DELETE FROM run_events WHERE run_id IN (
+             SELECT id FROM runs WHERE thread_id = ?1
+         )",
+        params![thread_id],
+    )?;
+    conn.execute(
+        "DELETE FROM tool_calls WHERE run_id IN (
+             SELECT id FROM runs WHERE thread_id = ?1
+         )",
+        params![thread_id],
+    )?;
+    // Detach workspace-level artifacts from the thread/run being removed.
+    conn.execute(
+        "UPDATE artifacts SET run_id = NULL
+         WHERE run_id IN (SELECT id FROM runs WHERE thread_id = ?1)",
+        params![thread_id],
+    )?;
+    conn.execute(
+        "UPDATE artifacts SET thread_id = NULL WHERE thread_id = ?1",
+        params![thread_id],
+    )?;
+    // Break the runs ↔ messages FK cycle, then delete both.
+    conn.execute(
+        "UPDATE runs SET trigger_message_id = NULL WHERE thread_id = ?1",
+        params![thread_id],
+    )?;
+    conn.execute(
+        "DELETE FROM messages WHERE thread_id = ?1",
+        params![thread_id],
+    )?;
+    conn.execute("DELETE FROM runs WHERE thread_id = ?1", params![thread_id])?;
+    Ok(())
+}
+
+/// Hard delete a thread and every row that hangs off it. The conversation
+/// content the GUI stores is only a rendered mirror of the agent's JSONL (the
+/// source of truth); the caller deletes that JSONL separately (see
+/// `commands::delete_thread`). Returns the pre-delete record so callers that
+/// expected the old soft-delete return value keep working. Temp chat workspaces
+/// are flagged for cleanup exactly as before.
 pub fn delete_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> {
     let now = now_millis();
     let mut conn = connect()?;
     let thread = loaded(get_thread(thread_id)?, "Thread")?;
-    // One transaction: the soft-delete and the temp-workspace cleanup flag must
-    // land together — the flag is never retried later, so a crash in between
-    // would leak the chat workspace directory forever (mirrors delete_workspace).
+    // One transaction: the child cascade, the temp-workspace cleanup flag, and
+    // the thread delete must land together — a crash between them would leak the
+    // chat workspace directory forever (mirrors delete_workspace).
     let tx = conn.transaction()?;
-    tx.execute(
-        "UPDATE threads
-         SET status = 'deleted', deleted_at = ?1, updated_at = ?1
-         WHERE id = ?2 AND status != 'deleted'",
-        params![now, thread_id],
-    )?;
+    delete_thread_children_in(&tx, thread_id)?;
 
     if thread.mode == "chat" {
         tx.execute(
@@ -293,9 +373,34 @@ pub fn delete_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> {
             params![now, thread.workspace_id],
         )?;
     }
+    tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
     tx.commit()?;
 
-    loaded(get_thread(thread_id)?, "Thread")
+    Ok(thread)
+}
+
+/// Defensive / one-time sweep: hard-delete any threads still parked in the
+/// legacy `status = 'deleted'` soft-delete state, along with all their orphaned
+/// child rows. `delete_thread` now hard-deletes, so no new such rows are
+/// created; this reclaims pre-existing ones (their temp workspaces were already
+/// flagged at soft-delete time). Runs once at startup. Returns the count purged.
+pub fn purge_soft_deleted_threads() -> Result<usize, crate::AppError> {
+    let mut conn = connect()?;
+    let ids: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT id FROM threads WHERE status = 'deleted'")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.transaction()?;
+    for id in &ids {
+        delete_thread_children_in(&tx, id)?;
+        tx.execute("DELETE FROM threads WHERE id = ?1", params![id])?;
+    }
+    tx.commit()?;
+    Ok(ids.len())
 }
 
 fn normalize_optional_thinking_level(level: Option<String>) -> Option<String> {
@@ -354,6 +459,82 @@ mod tests {
 
         assert_eq!(thread.workspace_id, workspace.id);
         assert!(get_workspace_in(&conn, &workspace.id).unwrap().is_some());
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |row| row.get(0)).expect("count")
+    }
+
+    /// The hard-delete cascade removes every child row of a thread in an
+    /// FK-safe order (foreign keys ON here, so a wrong order would error),
+    /// breaks the runs↔messages cycle, and detaches — never deletes —
+    /// workspace-level artifacts.
+    #[test]
+    fn delete_thread_children_hard_deletes_and_detaches_artifacts() {
+        let conn = test_conn();
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable fk");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws', 'W', 'user', '/tmp/ws', 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, status, pinned,
+                 readonly, created_at, updated_at)
+                 VALUES ('t1', 'ws', 'workspace', 'T', 'active', 0, 0, 1, 1);
+             INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+                 VALUES ('r1', 't1', 'completed', 1, 1);
+             INSERT INTO messages (id, thread_id, run_id, role, content_type,
+                 content, status, created_at, updated_at)
+                 VALUES ('m1', 't1', 'r1', 'assistant', 'markdown', 'hi',
+                         'complete', 1, 1);
+             -- Close the runs↔messages FK cycle.
+             UPDATE runs SET trigger_message_id = 'm1' WHERE id = 'r1';
+             INSERT INTO run_events (id, run_id, event_type, sequence, created_at)
+                 VALUES ('e1', 'r1', 'text_chunk', 0, 1);
+             INSERT INTO tool_calls (id, run_id, name, kind, status, created_at)
+                 VALUES ('tc1', 'r1', 'bash', 'agent_tool', 'completed', 1);
+             INSERT INTO tool_outputs (id, tool_call_id, kind, created_at)
+                 VALUES ('to1', 'tc1', 'text', 1);
+             INSERT INTO approval_requests (id, thread_id, run_id, tool_call_id,
+                 kind, status, title, created_at, updated_at)
+                 VALUES ('ap1', 't1', 'r1', 'tc1', 'tool', 'pending', 'A', 1, 1);
+             INSERT INTO review_snapshots (id, workspace_id, thread_id, run_id,
+                 phase, status, created_at)
+                 VALUES ('rs1', 'ws', 't1', 'r1', 'before', 'ready', 1);
+             INSERT INTO review_changesets (id, thread_id, run_id, title, status,
+                 created_at, updated_at)
+                 VALUES ('rc1', 't1', 'r1', 'C', 'ready', 1, 1);
+             INSERT INTO review_file_changes (id, changeset_id, target_type,
+                 change_type, created_at, updated_at)
+                 VALUES ('rf1', 'rc1', 'file', 'modified', 1, 1);
+             INSERT INTO artifacts (id, workspace_id, thread_id, run_id, title,
+                 artifact_type, created_at, updated_at)
+                 VALUES ('a1', 'ws', 't1', 'r1', 'Art', 'markdown', 1, 1);",
+        )
+        .expect("seed thread graph");
+
+        super::delete_thread_children_in(&conn, "t1").expect("cascade delete");
+
+        // Every conversation child row is gone.
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM messages"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM runs"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM run_events"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tool_calls"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tool_outputs"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM approval_requests"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM review_snapshots"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM review_changesets"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM review_file_changes"), 0);
+        // The thread row itself is left to the caller.
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM threads WHERE id = 't1'"), 1);
+        // The artifact survives, detached from the thread and run.
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM artifacts
+                 WHERE id = 'a1' AND thread_id IS NULL AND run_id IS NULL"
+            ),
+            1
+        );
     }
 
     /// Regression for B-11: a crash between the workspace write and the thread
