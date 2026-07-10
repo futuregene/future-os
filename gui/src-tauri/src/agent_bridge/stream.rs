@@ -6,6 +6,7 @@
 use tokio::time::{timeout, Duration};
 
 use super::persist::persist_run_event;
+use crate::store;
 
 const AGENT_EVENT_STREAM_TIMEOUT_SECS: u64 = 600;
 
@@ -106,6 +107,9 @@ pub(super) async fn collect_agent_response(
             }
             "agent_end" => {
                 saw_agent_end = true;
+                if let Some(rid) = run_id {
+                    store::clear_run_event_buffer(rid);
+                }
                 break;
             }
             "error" => {
