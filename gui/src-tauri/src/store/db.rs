@@ -12,7 +12,9 @@ use super::messages::{message_from_row, MessageRecord, MESSAGE_COLUMNS};
 use super::runs::{
     run_event_from_row, run_from_row, RunEventRecord, RunRecord, RUN_COLUMNS, RUN_EVENT_COLUMNS,
 };
-use super::schema::{ADDED_COLUMNS, ADDED_INDEXES, DROPPED_TABLES, RENAMED_COLUMNS, SCHEMA};
+use super::schema::{
+    ADDED_COLUMNS, ADDED_INDEXES, DROPPED_COLUMNS, DROPPED_TABLES, RENAMED_COLUMNS, SCHEMA,
+};
 
 pub(super) fn app_dir() -> Result<PathBuf, crate::AppError> {
     let home = crate::home_dir().ok_or("HOME/USERPROFILE environment variable is not set.")?;
@@ -105,6 +107,17 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
     // Drop tables removed from the schema (never used; see DROPPED_TABLES).
     for table in DROPPED_TABLES {
         conn.execute(&format!("DROP TABLE IF EXISTS {table}"), [])?;
+    }
+    // Drop columns removed from the schema (see DROPPED_COLUMNS).
+    for (table, column) in DROPPED_COLUMNS {
+        if column_exists(conn, table, column)? {
+            let sql = format!("ALTER TABLE {table} DROP COLUMN {column}");
+            if let Err(error) = conn.execute(&sql, []) {
+                // DROP COLUMN can fail if the column is referenced by an index
+                // or is the last column — log and continue.
+                eprintln!("FutureOS migration: failed to drop {table}.{column}: {error}");
+            }
+        }
     }
     Ok(())
 }

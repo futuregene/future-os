@@ -45,8 +45,8 @@ pub fn prepare_prompt_persisted(
     let run = store::create_run(store::CreateRunInput {
         thread_id: thread.id.clone(),
         trigger_message_id: Some(user_msg.id),
-        model_provider: thread.model_provider.clone(),
-        model_id: thread.model_id.clone(),
+        model_provider: None,
+        model_id: None,
     })?;
 
     Ok(PreparedPrompt {
@@ -54,8 +54,8 @@ pub fn prepare_prompt_persisted(
         session_id,
         run_id: run.id,
         message,
-        model_id: thread.model_id.clone(),
-        thinking_level: thread.thinking_level.clone(),
+        model_id: None,
+        thinking_level: None,
     })
 }
 
