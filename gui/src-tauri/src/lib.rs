@@ -234,6 +234,7 @@ pub fn run() {
             update_run_status,
             abort_run,
             list_run_events,
+            list_run_events_bulk,
             list_tool_calls,
             list_tool_outputs,
             list_approval_requests,

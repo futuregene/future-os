@@ -2,7 +2,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageSegment } from "./agentThreadTypes";
 import i18n from "../../i18n";
-import { listRunEvents, listRuns } from "../../integrations/storage/threadStore";
+import { listRunEvents, listRunEventsBulk, listRuns } from "../../integrations/storage/threadStore";
 import { buildAssistantRunProjection } from "./agentActivity";
 
 /** Apply a patch to the single message with `id`, leaving the rest untouched. */
@@ -202,20 +202,32 @@ export async function loadCurrentRun(threadId: string, runId: string) {
 export async function restoreMessageActivities(messages: AgentMessage[], threadId: string) {
   const runs = await listRuns(threadId).catch(() => [] as StoredRun[]);
   const runById = new Map(runs.map(run => [run.id, run] as const));
-  const projectionEntries = await Promise.all(
-    messages.map(async (message) => {
+  // Fetch events for all assistant runs in a single IPC call.
+  const runIds = messages
+    .filter(m => m.role === "assistant" && m.runId)
+    .map(m => m.runId!);
+  const eventsByRunId = new Map<string, StoredRunEvent[]>();
+  if (runIds.length > 0) {
+    try {
+      const bulk = await listRunEventsBulk(runIds);
+      for (const [rid, events] of bulk) {
+        eventsByRunId.set(rid, events);
+      }
+    }
+    catch {
+      // Best-effort: keep empty projections on failure.
+    }
+  }
+
+  const projectionByMessageId = new Map(
+    messages.map((message) => {
       if (message.role !== "assistant" || !message.runId)
         return [message.id, null] as const;
-
-      try {
-        return [message.id, buildAssistantRunProjection(await listRunEvents(message.runId))] as const;
-      }
-      catch {
-        return [message.id, null] as const;
-      }
+      const events = eventsByRunId.get(message.runId);
+      const projection = events ? buildAssistantRunProjection(events) : null;
+      return [message.id, projection] as const;
     }),
   );
-  const projectionByMessageId = new Map(projectionEntries);
 
   return messages.map((message) => {
     const projection = projectionByMessageId.get(message.id);

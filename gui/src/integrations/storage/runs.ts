@@ -42,6 +42,11 @@ export async function listRunEvents(runId: string) {
   return invokeCommand<StoredRunEvent[]>("list_run_events", { runId });
 }
 
+/** Fetch run events for multiple runs in a single IPC call. */
+export async function listRunEventsBulk(runIds: string[]) {
+  return invokeCommand<[string, StoredRunEvent[]][]>("list_run_events_bulk", { runIds });
+}
+
 export async function listToolCalls(runId: string) {
   return invokeCommand<StoredToolCall[]>("list_tool_calls", { runId });
 }
