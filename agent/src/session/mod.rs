@@ -542,22 +542,17 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
 }
 
 fn for_each_entry<'a>(entries: &'a [SessionEntry], from_id: &str) -> Vec<&'a SessionEntry> {
-    // Build an id→entry map for O(1) parent lookups.
-    let by_id: std::collections::HashMap<&str, &SessionEntry> =
-        entries.iter().map(|e| (e.id.as_str(), e)).collect();
-
-    // Walk from the target entry up to the root via parent_id.
-    let mut chain = vec![];
-    let mut current = by_id.get(from_id).copied();
-    while let Some(entry) = current {
-        chain.push(entry);
-        if entry.parent_id.is_empty() {
+    // Include all entries from the beginning up to and including from_id.
+    // This preserves the full conversation history (user + assistant + tool)
+    // before the fork point.
+    let mut result = vec![];
+    for e in entries.iter() {
+        result.push(e);
+        if e.id == from_id {
             break;
         }
-        current = by_id.get(entry.parent_id.as_str()).copied();
     }
-    chain.reverse();
-    chain
+    result
 }
 
 /// Convert SessionEntry to AgentMessage for TUI display

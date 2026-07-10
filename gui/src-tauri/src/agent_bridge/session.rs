@@ -5,8 +5,8 @@
 use tonic::transport::Channel;
 
 use super::client::{
-    fork_command, get_fork_messages_command, get_state_command, new_session_command,
-    set_permission_level_command, set_sandbox_policy_command, RpcResponseExt,
+    fork_command, get_fork_messages_command, get_session_entries_command, get_state_command,
+    new_session_command, set_permission_level_command, set_sandbox_policy_command, RpcResponseExt,
 };
 use crate::{agent_proto::FutureAgentClient, store};
 
@@ -185,17 +185,17 @@ pub async fn fork_agent_session(
 
     // Read the forked session's entries and import them as GUI messages
     // so the new thread shows the preserved conversation immediately.
-    let fork_messages_response = client
-        .execute_command(get_fork_messages_command(new_session_id.clone()))
+    let entries_response = client
+        .execute_command(get_session_entries_command(new_session_id.clone()))
         .await
-        .map_err(|error| format!("Unable to list fork session messages: {error}"))?
+        .map_err(|error| format!("Unable to list fork session entries: {error}"))?
         .into_inner()
-        .ok_or_rpc_error("Future Agent rejected the fork-session messages request.")?;
+        .ok_or_rpc_error("Future Agent rejected the fork-session entries request.")?;
 
     let fork_entries: Vec<serde_json::Value> =
-        serde_json::from_str::<serde_json::Value>(&fork_messages_response.data)
+        serde_json::from_str::<serde_json::Value>(&entries_response.data)
             .ok()
-            .and_then(|v| v.get("messages").cloned())
+            .and_then(|v| v.get("entries").cloned())
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
 
