@@ -13,6 +13,7 @@ import { modelKey, modelLabel, modelOption, normalizeThinkingLevel, thinkingLeve
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { savePastedImage } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
+import { onFutureEvent } from "../../lib/futureEvents";
 import { isMacOS } from "../../lib/platform";
 import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, isDraggableAttachment, MAX_ATTACHMENTS_PER_TURN, pickerExtensions } from "./attachments";
 import { MentionEditor } from "./MentionEditor";
@@ -111,6 +112,12 @@ export function Composer({
   const activeThinkingLevel = normalizeThinkingLevel(thinkingLevel);
   // Localized thinking-level label; unknown levels fall back to the raw value.
   const thinkingLevelLabel = (level: string) => t(`composer.thinkingLevelLabels.${level}`, { defaultValue: level });
+
+  // The file tree's "attach to context" action inserts a mention pill into the
+  // active thread's composer. editorRef is stable, so subscribe once.
+  useEffect(() => onFutureEvent("attach-file-to-context", (detail) => {
+    editorRef.current?.insertMention(detail);
+  }), []);
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();

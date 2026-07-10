@@ -63,6 +63,7 @@
     "runs": "Runs",
     "review": "Review",
     "artifacts": "Artifacts",
+    "files": "Files",
     "panelView": "Context panel view",
     "collapse": "Collapse context panel",
     "expand": "Expand context panel",
