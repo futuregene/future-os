@@ -8,9 +8,7 @@ use std::{fs, path::PathBuf};
 use super::approvals::{
     approval_request_from_row, ApprovalRequestRecord, APPROVAL_REQUEST_COLUMNS,
 };
-use super::runs::{
-    run_event_from_row, run_from_row, RunEventRecord, RunRecord, RUN_COLUMNS, RUN_EVENT_COLUMNS,
-};
+use super::runs::{run_from_row, RunRecord, RUN_COLUMNS};
 use super::schema::{
     ADDED_COLUMNS, ADDED_INDEXES, DROPPED_COLUMNS, DROPPED_TABLES, RENAMED_COLUMNS, SCHEMA,
 };
@@ -157,16 +155,7 @@ pub fn get_run(id: &str) -> Result<Option<RunRecord>, crate::AppError> {
     .map_err(crate::AppError::from)
 }
 
-pub(super) fn get_run_event(id: &str) -> Result<Option<RunEventRecord>, crate::AppError> {
-    let conn = connect()?;
-    conn.query_row(
-        &format!("SELECT {RUN_EVENT_COLUMNS} FROM run_events WHERE id = ?1"),
-        params![id],
-        run_event_from_row,
-    )
-    .optional()
-    .map_err(crate::AppError::from)
-}
+// get_run_event removed — run_events table dropped
 
 pub(super) fn run_thread_id(conn: &Connection, run_id: &str) -> Result<String, crate::AppError> {
     conn.query_row(

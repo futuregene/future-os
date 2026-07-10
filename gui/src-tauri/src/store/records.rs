@@ -51,6 +51,7 @@ pub struct ResolvedMarkdownReference {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct UpsertToolCallInput {
     pub run_id: String,
     pub tool_call_id: String,
@@ -61,6 +62,7 @@ pub struct UpsertToolCallInput {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct CompleteToolCallInput {
     pub run_id: String,
     pub tool_call_id: String,
