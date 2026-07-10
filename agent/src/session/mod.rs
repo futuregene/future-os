@@ -538,7 +538,7 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
     );
     let now = Local::now();
     Session {
-        id: format!("agent_session_{}", generate_id()),
+        id: generate_id(),
         version: CURRENT_SESSION_VERSION,
         cwd: parent.cwd.clone(),
         model: parent.model.clone(),
