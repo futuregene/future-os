@@ -4,7 +4,7 @@ import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { ArrowDown } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect } from "react";
+import { useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { cn } from "../../lib/cn";
@@ -110,16 +110,20 @@ export function AgentThread({
     handleStickyScroll();
   }, [saveScrollPosition, handleStickyScroll, scrollRef, thread?.id]);
 
-  // Restore scroll position from cache after messages render (before paint).
-  useLayoutEffect(() => {
+  // Restore scroll position from cache after messages render. Must fire after
+  // useStickyAutoScroll's useEffect which sets scrollTop → scrollHeight on
+  // resetKey change. setTimeout(0) runs after all effects flush.
+  useEffect(() => {
     const top = consumeRestoredScrollTop();
+    if (top === null || top <= 0)
+      return;
     const el = scrollRef.current;
-    if (top !== null && top > 0 && el) {
-      // Use requestAnimationFrame so the DOM layout is settled.
-      requestAnimationFrame(() => {
-        el.scrollTop = top;
-      });
-    }
+    if (!el)
+      return;
+    const timer = setTimeout(() => {
+      el.scrollTop = top;
+    }, 0);
+    return () => clearTimeout(timer);
   }, [consumeRestoredScrollTop, scrollRef]);
 
   // Save scroll position when leaving this thread.
