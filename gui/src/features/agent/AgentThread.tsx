@@ -268,6 +268,7 @@ export function AgentThread({
               onAbort={() => void handleAbort()}
               onSend={payload => void handleSend(payload)}
               workspaceId={thread?.workspaceId}
+              draftKey={thread?.id}
             />
           </div>
         </div>

@@ -5,6 +5,7 @@ import { useEffect, useImperativeHandle, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { searchWorkspaceFiles } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
+import { parseMentionSegments } from "./mentionMarkdown";
 
 export interface MentionEditorHandle {
   /** Serialize to markdown: text verbatim, each file pill → `[name](./path)`. */
@@ -18,6 +19,12 @@ export interface MentionEditorHandle {
    * the caret when it's inside the editor, otherwise appended at the end.
    */
   insertMention: (file: { path: string; name: string }) => void;
+  /**
+   * Rebuild the editor from a `getContent()` markdown string (text + mention
+   * pills); empty string clears it. Inverse of `getContent()`; does not fire
+   * `onChange`. Used to restore a persisted draft.
+   */
+  restore: (content: string) => void;
 }
 
 interface MentionEditorProps {
@@ -29,6 +36,11 @@ interface MentionEditorProps {
   onSubmit: () => void;
   /** Fires when the editor transitions between empty and non-empty. */
   onEmptyChange?: (empty: boolean) => void;
+  /**
+   * Fires after any user-driven content edit (typing, mention insert, newline,
+   * paste) so the parent can persist a draft. NOT fired by `restore()`.
+   */
+  onChange?: () => void;
   /** Pasted image files, handed to the parent to attach. */
   onPasteImages?: (files: File[]) => void;
   ref?: Ref<MentionEditorHandle>;
@@ -53,6 +65,7 @@ export function MentionEditor({
   className,
   onSubmit,
   onEmptyChange,
+  onChange,
   onPasteImages,
   ref,
 }: MentionEditorProps) {
@@ -76,6 +89,23 @@ export function MentionEditor({
     },
     focus: () => editorRef.current?.focus(),
     insertMention,
+    // Rebuild the DOM from markdown: verbatim text becomes text nodes, each
+    // `[name](./path)` mention becomes an atomic pill (same builder as a live
+    // pick), so the editor never re-hydrates raw markup.
+    restore: (content: string) => {
+      const editor = editorRef.current;
+      if (editor) {
+        editor.innerHTML = "";
+        for (const segment of content ? parseMentionSegments(content) : []) {
+          if (segment.mention && segment.path)
+            editor.appendChild(buildPill({ name: segment.text, path: segment.path.replace(/^\.\//, "") }));
+          else if (segment.text)
+            editor.appendChild(document.createTextNode(segment.text));
+        }
+      }
+      closeMenu();
+      syncEmpty();
+    },
   }));
 
   function closeMenu() {
@@ -158,6 +188,7 @@ export function MentionEditor({
     closeMenu();
     editorRef.current?.focus();
     syncEmpty();
+    onChange?.();
   }
 
   function insertFile(file: WorkspaceFileResult) {
@@ -217,6 +248,7 @@ export function MentionEditor({
     selection.removeAllRanges();
     selection.addRange(range);
     syncEmpty();
+    onChange?.();
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
@@ -290,6 +322,7 @@ export function MentionEditor({
     selection.addRange(range);
     updateMention();
     syncEmpty();
+    onChange?.();
   }
 
   return (
@@ -326,6 +359,7 @@ export function MentionEditor({
           syncEmpty();
           if (!isComposingRef.current)
             updateMention();
+          onChange?.();
         }}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
@@ -337,6 +371,7 @@ export function MentionEditor({
             if (!isComposingRef.current) {
               updateMention();
               syncEmpty();
+              onChange?.();
             }
           });
         }}
