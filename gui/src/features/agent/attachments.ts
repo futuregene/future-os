@@ -82,6 +82,20 @@ export function pickerExtensions(allowImages: boolean): string[] {
   return allowImages ? PICKER_EXTENSIONS : ["pdf", ...TEXT_EXTENSIONS];
 }
 
+/**
+ * Fast, path-only check used during drag-over to decide accept vs. reject
+ * before the file is dropped — the OS drag flow only hands us paths, not
+ * content. Extension-based only (mirrors the picker filter, images gated by
+ * `allowImages`); a text-extension file that later proves binary is still
+ * caught by `classifyAttachment` on drop.
+ */
+export function isDraggableAttachment(path: string, allowImages: boolean): boolean {
+  const ext = extOf(path);
+  if (ext === "pdf" || TEXT_EXTENSIONS.has(ext) || TEXT_BASENAMES.has(fileNameFromPath(path)))
+    return true;
+  return allowImages && IMAGE_EXTENSIONS.includes(ext as (typeof IMAGE_EXTENSIONS)[number]);
+}
+
 const INLINE_MAX_BYTES_PER_FILE = 30 * 1024;
 const INLINE_MAX_LINES_PER_FILE = 2000;
 const INLINE_MAX_TOTAL_BYTES = 60 * 1024;

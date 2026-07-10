@@ -14,7 +14,7 @@ import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { savePastedImage } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { isMacOS } from "../../lib/platform";
-import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, MAX_ATTACHMENTS_PER_TURN, pickerExtensions } from "./attachments";
+import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, isDraggableAttachment, MAX_ATTACHMENTS_PER_TURN, pickerExtensions } from "./attachments";
 import { MentionEditor } from "./MentionEditor";
 
 /** Approval-tier order for the composer dropdown (sandbox is macOS-only). */
@@ -88,7 +88,10 @@ export function Composer({
   const { t } = useTranslation("agent");
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
-  const [dropActive, setDropActive] = useState(false);
+  // Drag-over verdict: null (no drag), "accept" (droppable), "reject"
+  // (unsupported type — pre-validated on `enter` so the drop zone shows the
+  // rejection before release, and the drop is silently ignored).
+  const [dragState, setDragState] = useState<"accept" | "reject" | null>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
   const [approvalMenuOpen, setApprovalMenuOpen] = useState(false);
@@ -214,6 +217,10 @@ export function Composer({
   // every attachment change (addAttachmentPaths closes over `attachments`).
   const addAttachmentPathsRef = useRef(addAttachmentPaths);
   addAttachmentPathsRef.current = addAttachmentPaths;
+  // Same reason: the drag listener reads the live image-allowance without
+  // re-subscribing when the active model (hence `allowImages`) changes.
+  const allowImagesRef = useRef(allowImages);
+  allowImagesRef.current = allowImages;
 
   useEffect(() => {
     if (disabled)
@@ -223,15 +230,27 @@ export function Composer({
     let dispose: (() => void) | undefined;
     void getCurrentWebview()
       .onDragDropEvent((event) => {
-        if (event.payload.type === "enter" || event.payload.type === "over") {
-          setDropActive(true);
+        if (event.payload.type === "enter") {
+          // `enter` carries the paths — pre-validate by extension so the drop
+          // zone shows accept vs. reject before the user releases.
+          const droppable = event.payload.paths.some(path => isDraggableAttachment(path, allowImagesRef.current));
+          setDragState(droppable ? "accept" : "reject");
+        }
+        else if (event.payload.type === "over") {
+          // `over` has no paths; keep the verdict decided on `enter`.
+          setDragState(prev => prev ?? "accept");
         }
         else if (event.payload.type === "leave") {
-          setDropActive(false);
+          setDragState(null);
         }
         else if (event.payload.type === "drop") {
-          setDropActive(false);
-          void addAttachmentPathsRef.current(event.payload.paths);
+          setDragState(null);
+          // Forward only extension-acceptable files; unsupported ones (e.g.
+          // .xlsx) are silently ignored — no "已忽略" toast for a file the drop
+          // zone already flagged as rejected.
+          const accepted = event.payload.paths.filter(path => isDraggableAttachment(path, allowImagesRef.current));
+          if (accepted.length > 0)
+            void addAttachmentPathsRef.current(accepted);
         }
       })
       .then((unlisten) => {
@@ -244,7 +263,7 @@ export function Composer({
     return () => {
       active = false;
       dispose?.();
-      setDropActive(false);
+      setDragState(null);
     };
   }, [disabled]);
 
@@ -252,11 +271,21 @@ export function Composer({
     <form
       className={cn(
         "relative rounded-lg border border-line bg-surface/95 p-2 shadow-panel backdrop-blur",
-        dropActive && "ring-2 ring-focus",
+        dragState === "accept" && "ring-2 ring-focus",
+        dragState === "reject" && "ring-2 ring-danger-line",
         className,
       )}
       onSubmit={handleSubmit}
     >
+      {dragState === "reject"
+        ? (
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-danger-soft">
+              <span className="rounded-md border border-danger-line bg-surface px-2.5 py-1 text-xs font-medium text-danger">
+                {t("composer.dropReject")}
+              </span>
+            </div>
+          )
+        : null}
       {attachments.length > 0
         ? (
             <div className="flex flex-wrap gap-1.5 px-1 pb-2">

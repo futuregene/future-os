@@ -112,7 +112,8 @@
     },
     "attachRejectedNoImage": "{{name}} (current model doesn't support images)",
     "attachFilesHintNoImage": "Attach files (PDF, text)",
-    "attachDialogFilterNoImage": "Supported (PDF, text)"
+    "attachDialogFilterNoImage": "Supported (PDF, text)",
+    "dropReject": "Unsupported file type"
   },
   "attachment": {
     "readFailed": "Unable to read",
