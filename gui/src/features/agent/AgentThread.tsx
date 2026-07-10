@@ -73,8 +73,9 @@ export function AgentThread({
     handleSend,
     loadingThread,
     messages,
+    restoredScrollTop,
     saveScrollPosition,
-    consumeRestoredScrollTop,
+    setRestoredScrollTop,
   } = useAgentThreadState({
     thread,
     loadingStore,
@@ -95,13 +96,24 @@ export function AgentThread({
 
   // Sticky auto-scroll: follow streaming output only while pinned near the
   // bottom; re-pins on thread switch and follows the growing message list.
+  // When restoredScrollTop is set (cache hit), skip the initial stick and
+  // restore the saved position instead.
   const { handleScroll: handleStickyScroll, scrollToLatest, showJumpToLatest } = useStickyAutoScroll({
     scrollRef,
     resetKey: thread?.id ?? null,
     contentKey: messages,
+    restoreScrollTop: restoredScrollTop,
     onScroll: handleScrollbarVisibility,
     onContentSettled: () => updateFloatingScrollbar(false),
   });
+
+  // Clear restoredScrollTop after useStickyAutoScroll has applied it, so it
+  // doesn't re-apply on subsequent content changes (e.g. background refresh).
+  useEffect(() => {
+    if (restoredScrollTop != null && restoredScrollTop > 0) {
+      setRestoredScrollTop(null);
+    }
+  }, [restoredScrollTop, setRestoredScrollTop]);
 
   // Track whether the user has manually scrolled away from the initial bottom
   // position. We skip saving scrollTop during auto-scroll so the cached
@@ -122,22 +134,6 @@ export function AgentThread({
     }
     handleStickyScroll();
   }, [saveScrollPosition, handleStickyScroll, scrollRef, thread?.id]);
-
-  // Restore scroll position from cache after messages render. Must fire after
-  // useStickyAutoScroll's useEffect which sets scrollTop → scrollHeight on
-  // resetKey change. setTimeout(0) runs after all effects flush.
-  useEffect(() => {
-    const top = consumeRestoredScrollTop();
-    if (top === null || top <= 0)
-      return;
-    const el = scrollRef.current;
-    if (!el)
-      return;
-    const timer = setTimeout(() => {
-      el.scrollTop = top;
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [consumeRestoredScrollTop, scrollRef]);
 
   // Save scroll position when leaving this thread. Only saves if the user
   // actually scrolled — otherwise the initial bottom position gets cached.

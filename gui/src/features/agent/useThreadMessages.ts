@@ -31,15 +31,15 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [loadingThread, setLoadingThread] = useState(true);
   const [recentRun, setRecentRun] = useState<StoredRun | null>(null);
+  // Scroll position restored from cache on switch-back. Sticky auto-scroll reads
+  // this as a prop and resets to null after applying.
+  const [restoredScrollTop, setRestoredScrollTop] = useState<number | null>(null);
 
   // In-memory cache of recently loaded threads. Switching back to a cached
   // thread restores messages instantly and then refreshes in the background.
   const cacheRef = useRef(new Map<string, ThreadCacheEntry>());
   // LRU order: most recently accessed threadId first.
   const lruRef = useRef<string[]>([]);
-  // Scroll position restored from cache on switch-back — the caller reads this
-  // once and then we clear it so it doesn't re-apply on a content refresh.
-  const restoredScrollTopRef = useRef<number | null>(null);
 
   function cachePut(tid: string, entry: ThreadCacheEntry) {
     const cache = cacheRef.current;
@@ -74,13 +74,6 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
       entry.scrollTop = scrollTop;
     }
   }, []);
-
-  /** The scroll position restored from the last cache hit, or null. */
-  function consumeRestoredScrollTop(): number | null {
-    const top = restoredScrollTopRef.current;
-    restoredScrollTopRef.current = null;
-    return top;
-  }
 
   // Tracks the thread this view currently shows. Since AgentThread is not keyed
   // by threadId (it stays mounted across thread switches), an async write from a
@@ -158,7 +151,7 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
       // Check cache first — restore instantly if available, then refresh.
       const cached = cacheGet(threadId);
       if (cached) {
-        restoredScrollTopRef.current = cached.scrollTop;
+        if (cached.scrollTop > 0) setRestoredScrollTop(cached.scrollTop);
         setMessages(cached.messages);
         setRecentRun(cached.recentRun);
         setLoadingThread(false);
@@ -176,6 +169,7 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
         return;
       }
 
+      setRestoredScrollTop(null);
       setLoadingThread(true);
       try {
         const restoredMessages = await loadFromStore(threadId, workspaceId);
@@ -238,7 +232,8 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     refreshRecentRun,
     setMessages,
     setRecentRun,
+    restoredScrollTop,
+    setRestoredScrollTop,
     saveScrollPosition,
-    consumeRestoredScrollTop,
   };
 }
