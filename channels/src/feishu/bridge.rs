@@ -355,14 +355,14 @@ impl Bridge {
                 sid
             } else {
                 let mut agent = self.agent.write().await;
-                let sid = agent.new_session(&self.agent_cfg.cwd).await?;
+                let sid = agent.new_session(&self.agent_cfg.cwd, "feishu").await?;
                 self.sessions.set_session_id(chat_id, thread_id, &sid);
                 drop(agent);
                 sid
             }
         } else {
             let mut agent = self.agent.write().await;
-            let sid = agent.new_session(&self.agent_cfg.cwd).await?;
+            let sid = agent.new_session(&self.agent_cfg.cwd, "feishu").await?;
             self.sessions.set_session_id(chat_id, thread_id, &sid);
             drop(agent);
             sid

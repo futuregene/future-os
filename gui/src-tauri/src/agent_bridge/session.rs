@@ -269,7 +269,7 @@ pub async fn fork_agent_session(
                             merged.push_str("\n\n");
                         }
                         merged.push_str(&format!(
-                            "<details><summary>🔧 tool calls</summary>\n\n{}\n</details>",
+                            "---\n\n**Tools used:**  \n{}",
                             turn_tools.join("\n")
                         ));
                     }

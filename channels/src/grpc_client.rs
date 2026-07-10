@@ -108,13 +108,15 @@ impl AgentClient {
     }
 
     /// Create a new agent session. Returns the session_id.
-    pub async fn new_session(&mut self, cwd: &str) -> Result<String> {
+    pub async fn new_session(&mut self, cwd: &str, created_by: &str) -> Result<String> {
+        let meta = serde_json::json!({ "createdBy": created_by });
         let resp = self
             .call(
                 "new_session",
                 "",
                 RpcCommand {
                     cwd: cwd.to_string(),
+                    custom_instructions: meta.to_string(),
                     ..Default::default()
                 },
             )

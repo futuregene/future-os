@@ -586,7 +586,10 @@ export class GrpcClient {
   // ─── Session Management RPC Methods ──────────────────────────────────
 
   async newSession(): Promise<{ sessionId?: string; cancelled: boolean }> {
-    const result = await this.call("new_session", { cwd: process.cwd() }) as any;
+    const result = await this.call("new_session", {
+      cwd: process.cwd(),
+      customInstructions: JSON.stringify({ createdBy: "tui" }),
+    }) as any;
     if (result?.sessionId) {
       this.currentSessionId = result.sessionId;
       this.connectEvents();

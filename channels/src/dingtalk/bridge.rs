@@ -135,7 +135,7 @@ impl DingtalkBridge {
                 if let Some(ref sid) = old_sid {
                     let _ = agent.abort(sid).await;
                 }
-                match agent.new_session(&self.agent_cfg.cwd).await {
+                match agent.new_session(&self.agent_cfg.cwd, "dingtalk").await {
                     Ok(sid) => {
                         *self.session_id.write().await = Some(sid.clone());
                         reply_md("New Session", &format!("**Session:** `{}`", sid));
@@ -256,7 +256,7 @@ impl DingtalkBridge {
             return Ok(sid.clone());
         }
         let mut agent = self.agent.write().await;
-        let sid = agent.new_session(&self.agent_cfg.cwd).await?;
+        let sid = agent.new_session(&self.agent_cfg.cwd, "dingtalk").await?;
         // Apply channel defaults for slash-command sessions.
         if !self.agent_cfg.model.is_empty() {
             let _ = agent.set_model(&sid, &self.agent_cfg.model).await;
@@ -273,7 +273,7 @@ impl DingtalkBridge {
     async fn process_prompt(&self, text: &str, webhook: Option<String>) -> Result<()> {
         let session_id = {
             let mut agent = self.agent.write().await;
-            let sid = agent.new_session(&self.agent_cfg.cwd).await?;
+            let sid = agent.new_session(&self.agent_cfg.cwd, "dingtalk").await?;
             // Apply channel defaults
             if !self.agent_cfg.model.is_empty() {
                 match agent.set_model(&sid, &self.agent_cfg.model).await {
