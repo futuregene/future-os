@@ -717,7 +717,7 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
 
 /// Truncate a string to max_vis visible columns. CJK characters count as 2,
 /// everything else as 1. Matches approximate terminal rendering width.
-fn truncate_visible(s: &str, max_vis: usize) -> String {
+pub fn truncate_visible(s: &str, max_vis: usize) -> String {
     let mut vis: usize = 0;
     let mut result = String::with_capacity(s.len());
     for ch in s.chars() {
