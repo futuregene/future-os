@@ -17,6 +17,10 @@ export interface FutureEventMap {
     triggerMessageId?: string | null;
   };
   "toast": { message: string; tone?: "error" | "info" };
+  // Attach a workspace file to the composer as an `@`-mention pill. `path` is
+  // workspace-relative (the form the mention pill stores); emitted by the file
+  // tree, consumed by the active thread's Composer.
+  "attach-file-to-context": { path: string; name: string };
 }
 
 type FutureEventName = keyof FutureEventMap;

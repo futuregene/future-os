@@ -1,0 +1,15 @@
+{
+  "refresh": "Refresh",
+  "refreshing": "Refreshing…",
+  "openWorkspace": "Open",
+  "showHidden": "Hidden files",
+  "empty": "This folder is empty",
+  "loading": "Loading…",
+  "loadFailed": "Couldn't read this folder",
+  "retry": "Retry",
+  "menu": {
+    "attach": "Attach to context",
+    "open": "Open",
+    "preview": "Preview"
+  }
+}

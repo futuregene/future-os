@@ -183,6 +183,7 @@ pub fn run() {
             download_app_update,
             app_data_path,
             open_path,
+            list_directory,
             open_external_url,
             resolve_preview_link_path,
             read_text_file_preview,
