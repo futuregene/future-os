@@ -1,5 +1,5 @@
 import type { RefObject } from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /** Within this many px of the bottom, auto-follow streaming output. */
 const STICK_THRESHOLD_PX = 48;
@@ -12,8 +12,6 @@ interface UseStickyAutoScrollInput {
   resetKey: unknown;
   /** Changing this (e.g. the message list) re-runs the follow effect. */
   contentKey: unknown;
-  /** When non-null, restore to this scrollTop instead of sticking to bottom. Consumed once. */
-  restoreScrollTop?: number | null;
   /** Extra work to run on every scroll event (e.g. floating-scrollbar visibility). */
   onScroll?: () => void;
   /** Run after a content-driven follow settles (e.g. update floating scrollbar). */
@@ -30,7 +28,6 @@ export function useStickyAutoScroll({
   scrollRef,
   resetKey,
   contentKey,
-  restoreScrollTop,
   onScroll,
   onContentSettled,
 }: UseStickyAutoScrollInput) {
@@ -66,46 +63,34 @@ export function useStickyAutoScroll({
       return;
     stickToBottomRef.current = true;
     setShowJumpToLatest(false);
-    scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: "smooth" });
+    scrollContainer.scrollTop = scrollContainer.scrollHeight;
   }, [scrollRef]);
 
-  // Opening/switching a thread starts pinned to the latest message, UNLESS
-  // we're restoring a cached scroll position.
+  // Opening/switching a thread starts pinned to the latest message.
   useEffect(() => {
-    if (restoreScrollTop != null && restoreScrollTop > 0) {
-      stickToBottomRef.current = false;
-    } else {
-      stickToBottomRef.current = true;
-    }
+    stickToBottomRef.current = true;
     setShowJumpToLatest(false);
-  }, [resetKey, restoreScrollTop]);
+  }, [resetKey]);
 
-  useEffect(() => {
+  // useLayoutEffect so the scroll-to-bottom happens before the browser paints,
+  // avoiding a visible "flash at top → jump to bottom" when switching threads.
+  useLayoutEffect(() => {
     const scrollContainer = scrollRef.current;
     if (!scrollContainer)
       return;
-
-    // When restoring a cached position, set it directly instead of following.
-    if (restoreScrollTop != null && restoreScrollTop > 0) {
-      scrollContainer.scrollTop = restoreScrollTop;
-      return;
-    }
 
     // Only follow new/streamed content while pinned to the bottom; if the user
     // scrolled up, leave their position but surface the jump button once the
     // still-growing content pushes them far enough from the bottom.
     if (stickToBottomRef.current) {
-      scrollContainer.scrollTo({
-        top: scrollContainer.scrollHeight,
-        behavior: "auto",
-      });
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
     }
     else {
       const distance = scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
       setShowJumpToLatest(distance > JUMP_BUTTON_THRESHOLD_PX);
     }
     onContentSettledRef.current?.();
-  }, [contentKey, scrollRef, restoreScrollTop]);
+  }, [contentKey, scrollRef]);
 
   return { handleScroll, scrollToLatest, showJumpToLatest };
 }

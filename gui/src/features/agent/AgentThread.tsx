@@ -1,10 +1,11 @@
 import type { AgentConnectionState } from "../../components/layout/AppShell";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
+import { forkThread, createThread } from "../../integrations/storage/threadStore";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { ArrowDown } from "lucide-react";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { cn } from "../../lib/cn";
@@ -39,6 +40,7 @@ interface AgentThreadProps {
   onRetryAgentConnection: () => void;
   onOpenAccount: () => void;
   onOpenModels: () => void;
+  onForked: (threadId: string) => void;
   onThreadActivity: () => void;
   onToggleLeftPanel: () => void;
 }
@@ -64,6 +66,7 @@ export function AgentThread({
   onRetryAgentConnection,
   onOpenAccount,
   onOpenModels,
+  onForked,
   onThreadActivity,
   onToggleLeftPanel,
 }: AgentThreadProps) {
@@ -73,9 +76,6 @@ export function AgentThread({
     handleSend,
     loadingThread,
     messages,
-    restoredScrollTop,
-    saveScrollPosition,
-    setRestoredScrollTop,
   } = useAgentThreadState({
     thread,
     loadingStore,
@@ -96,54 +96,13 @@ export function AgentThread({
 
   // Sticky auto-scroll: follow streaming output only while pinned near the
   // bottom; re-pins on thread switch and follows the growing message list.
-  // When restoredScrollTop is set (cache hit), skip the initial stick and
-  // restore the saved position instead.
-  const { handleScroll: handleStickyScroll, scrollToLatest, showJumpToLatest } = useStickyAutoScroll({
+  const { handleScroll, scrollToLatest, showJumpToLatest } = useStickyAutoScroll({
     scrollRef,
     resetKey: thread?.id ?? null,
     contentKey: messages,
-    restoreScrollTop: restoredScrollTop,
     onScroll: handleScrollbarVisibility,
     onContentSettled: () => updateFloatingScrollbar(false),
   });
-
-  // Clear restoredScrollTop after useStickyAutoScroll has applied it, so it
-  // doesn't re-apply on subsequent content changes (e.g. background refresh).
-  useEffect(() => {
-    if (restoredScrollTop != null && restoredScrollTop > 0) {
-      setRestoredScrollTop(null);
-    }
-  }, [restoredScrollTop, setRestoredScrollTop]);
-
-  // Track whether the user has manually scrolled away from the initial bottom
-  // position. We skip saving scrollTop during auto-scroll so the cached
-  // position reflects the user's actual reading spot, not the sticky bottom.
-  const didUserScrollRef = useRef(false);
-  useEffect(() => {
-    didUserScrollRef.current = false;
-  }, [thread?.id]);
-
-  // Compose scroll handler: track position for cache + delegate to sticky logic.
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (el && thread?.id) {
-      // Only save position after the user has scrolled away from the bottom.
-      const atBottom = el.scrollHeight - el.clientHeight - el.scrollTop < 48;
-      if (!atBottom) didUserScrollRef.current = true;
-      if (didUserScrollRef.current) saveScrollPosition(thread.id, el.scrollTop);
-    }
-    handleStickyScroll();
-  }, [saveScrollPosition, handleStickyScroll, scrollRef, thread?.id]);
-
-  // Save scroll position when leaving this thread. Only saves if the user
-  // actually scrolled — otherwise the initial bottom position gets cached.
-  useEffect(() => {
-    return () => {
-      if (!didUserScrollRef.current) return;
-      const el = scrollRef.current;
-      if (el && thread?.id) saveScrollPosition(thread.id, el.scrollTop);
-    };
-  }, [saveScrollPosition, scrollRef, thread?.id]);
 
   // A run is in flight while its assistant bubble is still streaming; the agent
   // rejects a concurrent prompt, so the composer is disabled until it settles.
@@ -194,6 +153,41 @@ export function AgentThread({
     void handleContinueRun(detail.runId);
   }), [handleContinueRun, handleRetryRun]);
 
+  const handleFork = useCallback(async (aiMessage: AgentMessage) => {
+    if (!thread || !messages.length) return;
+    // Find the user message that triggered this AI response.
+    const aiIndex = messages.indexOf(aiMessage);
+    let userMessageIndex = -1;
+    for (let i = aiIndex - 1; i >= 0; i--) {
+      if (messages[i]!.role === "user") {
+        userMessageIndex = i;
+        break;
+      }
+    }
+    if (userMessageIndex < 0) return;
+    // Count how many user messages precede it (0-based index among user messages).
+    let count = 0;
+    for (let i = 0; i < userMessageIndex; i++) {
+      if (messages[i]!.role === "user") count++;
+    }
+    try {
+      const newSessionId = await forkThread(thread.id, count);
+      // Create a new GUI thread pointing at the forked agent session.
+      const newThread = await createThread({
+        mode: thread.mode ?? "chat",
+        title: thread.title ? `${thread.title} (fork)` : "Fork",
+        workspaceId: thread.workspaceId,
+        modelId: thread.modelId,
+        thinkingLevel: thread.thinkingLevel,
+        agentSessionId: newSessionId,
+      });
+      onForked(newThread.id);
+    }
+    catch {
+      // Fork failed silently.
+    }
+  }, [thread, messages, onForked]);
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
       <ThreadHeader
@@ -227,6 +221,7 @@ export function AgentThread({
                         workspaceId={thread?.workspaceId}
                         workspacePath={workspacePath}
                         onContinue={handleContinueMessage}
+                        onFork={handleFork}
                         onRetry={handleRetryMessage}
                       />
                     )}

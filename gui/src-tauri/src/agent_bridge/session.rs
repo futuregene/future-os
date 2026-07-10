@@ -5,8 +5,8 @@
 use tonic::transport::Channel;
 
 use super::client::{
-    get_state_command, new_session_command, set_permission_level_command,
-    set_sandbox_policy_command, RpcResponseExt,
+    fork_command, get_fork_messages_command, get_state_command, new_session_command,
+    set_permission_level_command, set_sandbox_policy_command, RpcResponseExt,
 };
 use crate::{agent_proto::FutureAgentClient, store};
 
@@ -115,4 +115,64 @@ pub(super) fn workspace_path_for_thread(thread_id: &str) -> Result<String, crate
     let workspace = store::get_workspace(&thread.workspace_id)?
         .ok_or_else(|| "Thread workspace could not be loaded.".to_string())?;
     Ok(workspace.path)
+}
+
+/// Fork a session at the given user message. Returns the new agent session id.
+/// `user_message_index` is the 0-based index of the user message in the thread.
+pub async fn fork_agent_session(
+    thread_id: &str,
+    user_message_index: usize,
+) -> Result<String, crate::AppError> {
+    let thread = store::get_thread(thread_id)?
+        .ok_or_else(|| "Thread could not be loaded.".to_string())?;
+    let session_id = thread
+        .agent_session_id
+        .ok_or_else(|| "No agent session for this thread.".to_string())?;
+
+    let mut client = super::client::connect_agent().await?;
+
+    // Get forkable user messages from the agent to find the matching entry_id.
+    let response = client
+        .execute_command(get_fork_messages_command(session_id.clone()))
+        .await
+        .map_err(|error| format!("Unable to list fork messages: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the fork-messages request.")?;
+
+    let messages: Vec<serde_json::Value> =
+        serde_json::from_str::<serde_json::Value>(&response.data)
+            .ok()
+            .and_then(|v| v.get("messages").cloned())
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+
+    let entry_id = messages
+        .get(user_message_index)
+        .and_then(|m| m.get("id"))
+        .and_then(|id| id.as_str())
+        .ok_or_else(|| format!("No user message at index {user_message_index}"))?;
+
+    // Fork the session at that entry.
+    let fork_response = client
+        .execute_command(fork_command(
+            session_id.clone(),
+            entry_id.to_string(),
+            session_id.clone(),
+        ))
+        .await
+        .map_err(|error| format!("Unable to fork session: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the fork request.")?;
+
+    let new_session_id = serde_json::from_str::<serde_json::Value>(&fork_response.data)
+        .ok()
+        .and_then(|v| v.get("sessionId").cloned())
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| String::new());
+
+    if new_session_id.is_empty() {
+        return Err("Fork did not return a session.".into());
+    }
+
+    Ok(new_session_id)
 }

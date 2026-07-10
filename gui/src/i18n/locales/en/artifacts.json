@@ -14,6 +14,7 @@
   "card": {
     "viewArtifact": "View artifact {{title}}",
     "viewDetails": "Details",
+    "artifactActions": "Artifact actions {{title}}",
     "deleteArtifact": "Delete artifact {{title}}",
     "delete": "Delete artifact",
     "deleteFailed": "Failed to delete artifact: {{message}}"
