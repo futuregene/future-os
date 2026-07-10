@@ -7,6 +7,7 @@
   "loading": "正在加载…",
   "loadFailed": "无法读取该目录",
   "retry": "重试",
+  "actions": "{{name}} 的操作",
   "menu": {
     "attach": "附加到上下文",
     "open": "打开",
