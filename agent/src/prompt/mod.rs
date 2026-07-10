@@ -80,6 +80,10 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
         sections.push(info.join("\n"));
     }
 
+    // 7. Host platform — always included so the model generates
+    //    platform-appropriate shell commands and paths.
+    sections.push(os_hint());
+
     sections.join("\n\n")
 }
 
@@ -240,6 +244,21 @@ fn dedup(items: Vec<String>) -> Vec<String> {
         }
     }
     result
+}
+
+/// Returns an OS platform hint so the model generates platform-appropriate
+/// shell commands (e.g. `dir` vs `ls`, path separators, package managers).
+fn os_hint() -> String {
+    match std::env::consts::OS {
+        "macos" => "Host platform: macOS. Use macOS/zsh shell commands. "
+            .to_string(),
+        "windows" => "Host platform: Windows. Use Windows shell commands: "
+            .to_string()
+            + "dir (not ls), type (not cat), path separators \\ (not /). "
+            + "PowerShell or cmd syntax is acceptable.",
+        "linux" => "Host platform: Linux.".to_string(),
+        other => format!("Host platform: {other}."),
+    }
 }
 
 #[cfg(test)]
