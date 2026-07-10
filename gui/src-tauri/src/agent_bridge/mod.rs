@@ -53,6 +53,9 @@ pub struct AgentPromptResponse {
     /// content is a truncated prefix (stream closed mid-reply) and the caller
     /// should finalize the run as failed rather than completed.
     pub complete: bool,
+    /// The agent session id (newly-created or existing). The frontend persists
+    /// this on the thread so subsequent prompts reuse the same session.
+    pub session_id: String,
 }
 
 /// Fetch the agent's buffered events for a session's current run (P1c backfill).
@@ -197,8 +200,19 @@ async fn agent_prompt_inner(
     model_id: Option<String>,
     thinking_level: Option<String>,
 ) -> Result<AgentPromptResponse, crate::AppError> {
+    // The frontend may pass None when it doesn't know the session id yet
+    // (e.g. first prompt after the thread was created).  Fall back to the
+    // thread's persisted agent_session_id so we don't create a new session
+    // on every prompt.
     let stored_session_id = session_id
         .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            crate::store::get_thread(&thread_id)
+                .ok()
+                .flatten()
+                .and_then(|t| t.agent_session_id)
+                .filter(|id| !id.trim().is_empty())
+        })
         .unwrap_or_default();
     let mut command_client = connect_agent().await?;
 
@@ -295,6 +309,7 @@ async fn agent_prompt_inner(
             Ok(AgentPromptResponse {
                 content: response.content,
                 complete: response.complete,
+                session_id,
             })
         },
         Err(error) => {
