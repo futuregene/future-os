@@ -24,59 +24,24 @@ sql_record!(pub(super) MESSAGE_COLUMNS, message_from_row -> MessageRecord {
     id, thread_id, run_id, role, content_type, content, status, created_at, updated_at,
 });
 
-pub fn list_messages(thread_id: &str) -> Result<Vec<MessageRecord>, crate::AppError> {
-    let conn = connect()?;
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {MESSAGE_COLUMNS}
-             FROM messages
-             WHERE thread_id = ?1
-             ORDER BY created_at ASC"
-    ))?;
-    let rows = stmt.query_map(params![thread_id], message_from_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
+pub fn list_messages(_thread_id: &str) -> Result<Vec<MessageRecord>, crate::AppError> {
+    // Messages now read from agent (get_session_entries RPC).
+    Ok(vec![])
 }
 
 pub fn append_message(input: AppendMessageInput) -> Result<MessageRecord, crate::AppError> {
-    let id = create_id("msg");
+    // Messages are now persisted by the agent (session JSONL).
+    // Return a dummy record so callers don't crash.
     let now = now_millis();
-    let content_type = input.content_type.unwrap_or_else(|| "markdown".to_string());
-    let status = input.status.unwrap_or_else(|| "complete".to_string());
-    let mut conn = connect()?;
-    // The message insert and the thread bump are one logical write — commit them
-    // atomically so a crash can't leave a message without its `last_message_at`.
-    let tx = conn.transaction()?;
-    tx.execute(
-        "INSERT INTO messages (
-             id, thread_id, run_id, role, content_type, content, status, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
-        params![
-            id,
-            input.thread_id,
-            input.run_id,
-            input.role,
-            content_type,
-            input.content,
-            status,
-            now
-        ],
-    )?;
-    tx.execute(
-        "UPDATE threads
-         SET last_message_at = ?1, last_opened_at = ?1, updated_at = ?1
-         WHERE id = ?2",
-        params![now, input.thread_id],
-    )?;
-    tx.commit()?;
-
-    // The reference index is best-effort: a failure must not lose the message,
-    // but log it (search / `futureos://` resolution can lag until the next edit)
-    // rather than dropping it silently.
-    if let Err(error) =
-        sync_message_markdown_references(&conn, &id, &input.thread_id, &input.content)
-    {
-        eprintln!("FutureOS message reference sync failed for {id}: {error}");
-    }
-
-    loaded(get_message(&id)?, "Created message")
+    Ok(MessageRecord {
+        id: format!("msg_{now}"),
+        thread_id: input.thread_id,
+        run_id: input.run_id,
+        role: input.role,
+        content_type: input.content_type.unwrap_or_else(|| "markdown".to_string()),
+        content: input.content,
+        status: input.status.unwrap_or_else(|| "complete".to_string()),
+        created_at: now,
+        updated_at: now,
+    })
 }

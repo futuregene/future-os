@@ -104,10 +104,13 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
     for statement in ADDED_INDEXES {
         conn.execute(statement, [])?;
     }
-    // Drop tables removed from the schema (never used; see DROPPED_TABLES).
+    // Drop tables removed from the schema (see DROPPED_TABLES).
+    // Disable FK enforcement to allow dropping tables referenced by other tables.
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
     for table in DROPPED_TABLES {
         conn.execute(&format!("DROP TABLE IF EXISTS {table}"), [])?;
     }
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     // Drop columns removed from the schema (see DROPPED_COLUMNS).
     for (table, column) in DROPPED_COLUMNS {
         if column_exists(conn, table, column)? {
@@ -137,15 +140,9 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, c
     Ok(count > 0)
 }
 
-pub(super) fn get_message(id: &str) -> Result<Option<MessageRecord>, crate::AppError> {
-    let conn = connect()?;
-    conn.query_row(
-        &format!("SELECT {MESSAGE_COLUMNS} FROM messages WHERE id = ?1"),
-        params![id],
-        message_from_row,
-    )
-    .optional()
-    .map_err(crate::AppError::from)
+pub(super) fn get_message(_id: &str) -> Result<Option<MessageRecord>, crate::AppError> {
+    // Messages table dropped — now from agent JSONL.
+    Ok(None)
 }
 
 pub fn get_run(id: &str) -> Result<Option<RunRecord>, crate::AppError> {
