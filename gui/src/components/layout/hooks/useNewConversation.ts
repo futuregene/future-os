@@ -6,6 +6,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import i18n from "../../../i18n";
 import { createThread } from "../../../integrations/storage/threadStore";
+import { updateCachedAgentState } from "../../../integrations/agent/agentStateCache";
 import { errorMessage } from "../../../lib/errors";
 import { emitFutureEvent } from "../../../lib/futureEvents";
 
@@ -63,6 +64,14 @@ export function useNewConversation({
         thinkingLevel: input.thinkingLevel,
       });
       syncSelection(input.modelId, input.thinkingLevel);
+      // Prime the agent state cache with the user's explicit selections so
+      // AgentThread's activeThinkingLevel picks them up instead of falling
+      // back to the model's (possibly absent) default before the first
+      // prompt creates the agent session.
+      updateCachedAgentState(thread.id, {
+        model: input.modelId,
+        thinkingLevel: input.thinkingLevel,
+      });
       await refreshStore(thread.id);
       setSection(thread.mode === "workspace" ? "workspace" : "chat");
       setCenterMode("thread");

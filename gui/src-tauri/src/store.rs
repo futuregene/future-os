@@ -48,7 +48,7 @@ pub use review_snapshots::{
     ReviewFileChangeRecord, ReviewSnapshotRecord,
 };
 pub use runs::{
-    active_run_sessions, append_run_event, clear_run_event_buffer, complete_tool_call, create_run, fail_run_if_active,
+    active_run_sessions, append_run_event, complete_tool_call, create_run, fail_run_if_active,
     get_tool_call_input, list_run_events, list_run_events_bulk, list_runs, list_tool_calls,
     list_tool_outputs, update_run_status_if_active, upsert_tool_call, RunEventRecord, RunRecord,
     ToolCallRecord, ToolOutputRecord,

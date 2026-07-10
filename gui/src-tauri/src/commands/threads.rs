@@ -35,24 +35,77 @@ pub fn create_thread(
 }
 
 #[tauri::command]
-pub fn rename_thread(
+pub async fn rename_thread(
     input: store::RenameThreadInput,
 ) -> Result<store::ThreadRecord, crate::AppError> {
-    store::rename_thread(input)
+    let title = input.title.clone();
+    let thread = store::rename_thread(input)?;
+    // Propagate to the agent immediately so the session name stays in sync
+    // (best-effort — a failure here must not fail the local rename).
+    let session_id = thread
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or(&thread.id)
+        .to_string();
+    if let Ok(mut client) = crate::agent_bridge::connect_agent().await {
+        let cmd = crate::agent_bridge::set_session_name_command(title, session_id);
+        let _ = client.execute_command(cmd).await;
+    }
+    Ok(thread)
 }
 
 #[tauri::command]
-pub fn update_thread_model(
+pub async fn update_thread_model(
     input: store::UpdateThreadModelInput,
 ) -> Result<store::ThreadRecord, crate::AppError> {
-    store::update_thread_model(input)
+    let model_id = input.model_id.clone();
+    let thread = store::update_thread_model(input)?;
+    // Propagate to the agent immediately so the change takes effect before the
+    // next prompt (best-effort — a failure here must not fail the local update).
+    if let (Some(model_id), Ok(mut client)) =
+        (model_id, crate::agent_bridge::connect_agent().await)
+    {
+        if !model_id.trim().is_empty() {
+            let session_id = thread
+                .agent_session_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .unwrap_or(&thread.id)
+                .to_string();
+            let cmd = crate::agent_bridge::set_model_command(model_id, session_id);
+            let _ = client.execute_command(cmd).await;
+        }
+    }
+    Ok(thread)
 }
 
 #[tauri::command]
-pub fn update_thread_thinking_level(
+pub async fn update_thread_thinking_level(
     input: store::UpdateThreadThinkingLevelInput,
 ) -> Result<store::ThreadRecord, crate::AppError> {
-    store::update_thread_thinking_level(input)
+    let thinking_level = input.thinking_level.clone();
+    let thread = store::update_thread_thinking_level(input)?;
+    // Propagate to the agent immediately (best-effort).
+    if let (Some(thinking_level), Ok(mut client)) =
+        (thinking_level, crate::agent_bridge::connect_agent().await)
+    {
+        if !thinking_level.trim().is_empty() {
+            let session_id = thread
+                .agent_session_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .unwrap_or(&thread.id)
+                .to_string();
+            let cmd =
+                crate::agent_bridge::set_thinking_level_command(thinking_level, session_id);
+            let _ = client.execute_command(cmd).await;
+        }
+    }
+    Ok(thread)
 }
 
 #[tauri::command]

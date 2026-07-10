@@ -12,10 +12,14 @@ use crate::{agent_proto::FutureAgentClient, store};
 
 /// Ensure an agent session exists for the given thread. Returns the session
 /// id (the existing one, or the newly-created one if the agent generated it).
+/// `model_id` and `thinking_level` are applied to newly-created sessions so
+/// the agent starts with the user's selection immediately.
 pub(super) async fn ensure_agent_session(
     client: &mut FutureAgentClient<Channel>,
     session_id: &str,
     cwd: &str,
+    model_id: Option<&str>,
+    thinking_level: Option<&str>,
 ) -> Result<String, crate::AppError> {
     // If the thread already has a stored session id, check if it's still valid.
     if !session_id.is_empty() {
@@ -49,6 +53,8 @@ pub(super) async fn ensure_agent_session(
             cwd.to_string(),
             "gui",
             serde_json::Value::Null,
+            model_id.map(str::to_string),
+            thinking_level.map(str::to_string),
         ))
         .await
         .map_err(|error| format!("Unable to create Future Agent session: {error}"))?

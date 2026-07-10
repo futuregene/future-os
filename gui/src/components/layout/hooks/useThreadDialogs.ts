@@ -4,6 +4,7 @@ import type { DeleteDialogState, RenameDialogState } from "../AppShellDialogs";
 import { useState } from "react";
 import i18n from "../../../i18n";
 import { deleteThread, getThreadCleanupSummary, renameThread } from "../../../integrations/storage/threadStore";
+import { invalidateAgentState, prefetchAgentState } from "../../../integrations/agent/agentStateCache";
 import { errorMessage } from "../../../lib/errors";
 
 interface UseThreadDialogsParams {
@@ -57,6 +58,8 @@ export function useThreadDialogs({ activeThreadId, refreshStore }: UseThreadDial
     setRenameDialog(current => current ? { ...current, error: null, submitting: true } : current);
     try {
       await renameThread({ threadId: renameDialog.thread.id, title: nextTitle });
+      invalidateAgentState(renameDialog.thread.id);
+      prefetchAgentState(renameDialog.thread.id);
       await refreshStore(renameDialog.thread.id);
       setRenameDialog(null);
     }
