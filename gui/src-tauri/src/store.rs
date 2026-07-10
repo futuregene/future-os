@@ -34,6 +34,7 @@ pub use artifacts::{
 };
 pub use cleanup::{
     cancel_stale_approval_requests, clear_finished_runs, get_thread_cleanup_summary,
+    reconcile_orphan_chat_workspaces, reconcile_orphan_images, reconcile_orphan_review_repos,
 };
 pub use db::{app_images_root, get_approval_request, get_run, thread_images_dir};
 pub use markdown_refs::resolve_markdown_references;
@@ -61,7 +62,8 @@ pub use threads::{
 pub use workspace_files::{search_workspace_files, WorkspaceFileResult, WorkspaceFileSearchInput};
 pub use workspaces::{
     create_workspace, delete_workspace, get_or_create_chat_workspace, get_workspace,
-    list_workspaces, rename_workspace, WorkspaceRecord,
+    list_workspaces, purge_soft_deleted_workspaces, rename_workspace, workspace_agent_session_ids,
+    WorkspaceRecord,
 };
 
 pub fn app_data_path() -> Result<AppDataPath, crate::AppError> {
@@ -90,6 +92,14 @@ pub fn initialize_app_store() -> Result<(), crate::AppError> {
         Ok(0) => {}
         Ok(count) => eprintln!("purged {count} soft-deleted thread(s)"),
         Err(error) => eprintln!("purge_soft_deleted_threads failed: {error}"),
+    }
+    // Likewise hard-delete any legacy soft-deleted workspaces (and their scoped
+    // rows). Runs after the thread purge so both are converged before the dir
+    // reconcilers below reclaim the now-orphaned review/image/chat dirs.
+    match purge_soft_deleted_workspaces() {
+        Ok(0) => {}
+        Ok(count) => eprintln!("purged {count} soft-deleted workspace(s)"),
+        Err(error) => eprintln!("purge_soft_deleted_workspaces failed: {error}"),
     }
     // Reclaim per-thread image dirs (thumbnails + workspace-mode originals) whose
     // thread is gone — including threads deleted out-of-band via the TUI/CLI.
