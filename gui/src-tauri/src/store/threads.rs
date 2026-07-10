@@ -18,9 +18,7 @@ pub struct ThreadRecord {
     pub status: String,
     pub pinned: bool,
     pub readonly: bool,
-    pub model_provider: Option<String>,
-    pub model_id: Option<String>,
-    pub thinking_level: Option<String>,
+    // model_provider, model_id, thinking_level — dropped, now from agent
     pub agent_session_id: Option<String>,
     pub last_message_at: Option<i64>,
     pub last_opened_at: Option<i64>,
@@ -33,8 +31,8 @@ pub struct ThreadRecord {
 // `pinned`/`readonly` are `bool` fields; rusqlite's `FromSql for bool` maps the
 // stored 0/1 integers (same as the prior explicit `i64 != 0`).
 sql_record!(pub(super) THREAD_COLUMNS, thread_from_row -> ThreadRecord {
-    id, workspace_id, mode, title, status, pinned, readonly, model_provider,
-    model_id, thinking_level, agent_session_id, last_message_at, last_opened_at,
+    id, workspace_id, mode, title, status, pinned, readonly,
+    agent_session_id, last_message_at, last_opened_at,
     created_at, updated_at, archived_at, deleted_at,
 });
 

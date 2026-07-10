@@ -27,9 +27,7 @@ CREATE TABLE IF NOT EXISTS threads (
     status TEXT NOT NULL DEFAULT 'active',
     pinned INTEGER NOT NULL DEFAULT 0,
     readonly INTEGER NOT NULL DEFAULT 0,
-    model_provider TEXT,
-    model_id TEXT,
-    thinking_level TEXT,
+    -- model_provider, model_id, thinking_level removed — now from agent get_state
     agent_session_id TEXT,
     last_message_at INTEGER,
     last_opened_at INTEGER,
@@ -375,4 +373,11 @@ pub(super) const DROPPED_TABLES: &[&str] = &[
     "data_sources",
     "skill_enablements",
     "skills",
+];
+
+/// Columns to drop from existing tables (now read from agent).
+pub(super) const DROPPED_COLUMNS: &[(&str, &str)] = &[
+    ("threads", "model_provider"),
+    ("threads", "model_id"),
+    ("threads", "thinking_level"),
 ];
