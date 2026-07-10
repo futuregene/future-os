@@ -280,12 +280,14 @@ function buildToolEntries(runs: StoredRun[], toolsByRun: Record<string, StoredTo
 
 // Count the rendered command rows, not the runs — the list gives each command
 // its own row, so a header keyed off run count would undercount whenever a run
-// carries more than one command.
+// carries more than one command. Bucket each row by the tool's own effective
+// status (matching the card), not the enclosing run's activity: a finished tool
+// inside a still-running run is "已结束", not "运行中".
 function countEntries(entries: ToolEntry[]) {
   let runningCount = 0;
   let finishedCount = 0;
   for (const entry of entries) {
-    if (isActiveRun(entry.run))
+    if (entry.tool.status === "running" && isActiveRun(entry.run))
       runningCount += 1;
     else
       finishedCount += 1;
