@@ -135,11 +135,9 @@ export function NewConversation({
     setMode("workspace");
   }, [initialWorkspaceId, workspaceOptions]);
 
-  // Block sending while the model catalog is still loading — a send with an
-  // empty modelId falls back to the agent default (v4-flash) instead of the
-  // reconciled default (v4-pro). Once models load, reconciliation sets
-  // modelId and this guard becomes inactive.
-  const catalogLoading = !modelId && modelsEmptyReason === "no_models";
+  // Block sending until the model catalog actually loads — the initial
+  // modelId is empty and would fall back to the agent default (v4-flash).
+  const catalogLoading = modelOptions.length === 0;
 
   function handleSend({ attachments, content }: ComposerSendPayload) {
     if (catalogLoading)

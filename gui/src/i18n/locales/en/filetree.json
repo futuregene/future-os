@@ -6,6 +6,7 @@
   "empty": "This folder is empty",
   "loading": "Loading…",
   "loadFailed": "Couldn't read this folder",
+  "openFailed": "Couldn't open this file",
   "retry": "Retry",
   "actions": "Actions for {{name}}",
   "menu": {

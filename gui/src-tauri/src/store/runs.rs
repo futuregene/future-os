@@ -330,9 +330,95 @@ pub fn clear_run_event_buffer(run_id: &str) {
     }
 }
 
-pub fn list_tool_calls(_run_id: &str) -> Result<Vec<ToolCallRecord>, crate::AppError> { Ok(vec![]) }
+pub fn list_tool_calls(run_id: &str) -> Result<Vec<ToolCallRecord>, crate::AppError> {
+    // Read from the in-memory event buffer (tool_calls table was dropped).
+    // Each tool call is reconstructed from tool_start / tool_end events.
+    let buf = match RUN_EVENT_BUFFER.lock() {
+        Ok(buf) => buf,
+        Err(_) => return Ok(vec![]),
+    };
+    let events = match buf.get(run_id) {
+        Some(events) => events.clone(),
+        None => return Ok(vec![]),
+    };
 
-pub fn get_tool_call_input(_run_id: &str, _tool_call_id: &str) -> Result<Option<String>, crate::AppError> { Ok(None) }
+    let mut tools: Vec<ToolCallRecord> = Vec::new();
+    let mut current: Option<ToolCallRecord> = None;
+
+    for event in &events {
+        match event.event_type.as_str() {
+            "tool_start" => {
+                if let Some(tool) = current.take() {
+                    tools.push(tool);
+                }
+                let (name, kind, input) = parse_tool_start_payload(event.payload.as_deref());
+                current = Some(ToolCallRecord {
+                    id: event.id.clone(),
+                    run_id: event.run_id.clone(),
+                    name,
+                    kind,
+                    input,
+                    status: "running".to_string(),
+                    started_at: Some(event.created_at),
+                    ended_at: None,
+                    created_at: event.created_at,
+                });
+            }
+            "tool_end" => {
+                if let Some(mut tool) = current.take() {
+                    tool.status = parse_tool_end_status(event.payload.as_deref());
+                    tool.ended_at = Some(event.created_at);
+                    tools.push(tool);
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(tool) = current.take() {
+        tools.push(tool);
+    }
+    Ok(tools)
+}
+
+fn parse_tool_start_payload(payload: Option<&str>) -> (String, String, Option<String>) {
+    let default = (String::new(), String::new(), None);
+    let Some(payload) = payload else { return default; };
+    let Ok(v): Result<serde_json::Value, _> = serde_json::from_str(payload) else { return default; };
+    let name = v.get("tool_name").and_then(|s| s.as_str()).unwrap_or("").to_string();
+    let kind = name.clone(); // tool_name doubles as kind (bash, write, edit, read)
+    let input = v.get("tool_args").or(v.get("input")).and_then(|s| s.as_str()).map(|s| s.to_string());
+    (name, kind, input)
+}
+
+fn parse_tool_end_status(payload: Option<&str>) -> String {
+    let Some(payload) = payload else { return "completed".to_string() };
+    let Ok(v): Result<serde_json::Value, _> = serde_json::from_str(payload) else { return "completed".to_string() };
+    v.get("error").map_or("completed".to_string(), |_| "failed".to_string())
+}
+
+pub fn get_tool_call_input(run_id: &str, tool_call_id: &str) -> Result<Option<String>, crate::AppError> {
+    // Read from the in-memory event buffer — look for a tool_start event
+    // whose id matches the tool_call_id and return its input/args.
+    let buf = match RUN_EVENT_BUFFER.lock() {
+        Ok(buf) => buf,
+        Err(_) => return Ok(None),
+    };
+    let events = match buf.get(run_id) {
+        Some(events) => events,
+        None => return Ok(None),
+    };
+    for event in events.iter().rev() {
+        if event.event_type == "tool_start" && event.id == tool_call_id {
+            if let Some(ref payload) = event.payload {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) {
+                    return Ok(v.get("tool_args").or(v.get("input")).and_then(|s| s.as_str()).map(|s| s.to_string()));
+                }
+            }
+            return Ok(None);
+        }
+    }
+    Ok(None)
+}
 
 pub fn list_tool_outputs(_tool_call_id: &str) -> Result<Vec<ToolOutputRecord>, crate::AppError> { Ok(vec![]) }
 

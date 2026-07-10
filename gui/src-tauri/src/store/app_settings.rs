@@ -9,8 +9,8 @@ use super::util::*;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
-    /// Approval tier: `"manual"` (ask, default), `"sandbox"` (macOS Seatbelt
-    /// wraps bash; tools ask), or `"off"` (fully open, no approval).
+    /// Approval tier: `"off"` (fully open, default), `"manual"` (ask), or
+    /// `"sandbox"` (macOS Seatbelt wraps bash; tools ask).
     pub approval_tier: String,
     /// Model identifiers (`provider/id`) hidden from the model picker.
     pub hidden_models: Vec<String>,
@@ -22,7 +22,7 @@ pub struct AppSettings {
     /// (e.g. `nats://localhost:4222` locally, or the online relay later). Not
     /// the browser ws:// port.
     pub remote_nats_url: String,
-    /// Show the model's thinking/reasoning content in the chat. Off by default.
+    /// Show the model's thinking/reasoning content in the chat. On by default.
     pub show_thinking: bool,
 }
 
@@ -96,7 +96,7 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
 fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> {
     let approval_tier = read_value(conn, KEY_APPROVAL_TIER)?
         .map(|value| normalize_tier(&value))
-        .unwrap_or_else(|| "manual".to_string());
+        .unwrap_or_else(|| "off".to_string());
     let hidden_models = read_value(conn, KEY_HIDDEN_MODELS)?
         .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
         .unwrap_or_default();
@@ -111,7 +111,7 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
         .unwrap_or_else(|| DEFAULT_REMOTE_NATS_URL.to_string());
     let show_thinking = read_value(conn, KEY_SHOW_THINKING)?
         .map(|value| value == "true")
-        .unwrap_or(false);
+        .unwrap_or(true);
     Ok(AppSettings {
         approval_tier,
         hidden_models,
@@ -123,11 +123,11 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
 }
 
 /// Clamp a tier string to the known set; anything unknown falls back to the
-/// default `"manual"`.
+/// default `"off"`.
 fn normalize_tier(value: &str) -> String {
     match value {
         "off" | "sandbox" | "manual" => value.to_string(),
-        _ => "manual".to_string(),
+        _ => "off".to_string(),
     }
 }
 

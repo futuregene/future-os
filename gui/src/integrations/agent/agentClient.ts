@@ -173,13 +173,11 @@ export function modelLabel(modelId: string, models: AgentModelOption[]): string 
 }
 
 export function modelThinkingLevel(modelId: string, models: AgentModelOption[]) {
-  const level = modelOption(modelId, models)?.thinkingLevel;
-  if (level)
-    return level;
-  // Fallback defaults for well-known models when the registry doesn't specify.
+  // Well-known models get their preferred default, overriding whatever
+  // the agent's list_models returns (which currently hardcodes "high").
   if (modelId === "deepseek-v4-pro" || modelId.endsWith("/deepseek-v4-pro"))
     return "xhigh";
-  return undefined;
+  return modelOption(modelId, models)?.thinkingLevel ?? undefined;
 }
 
 export function normalizeThinkingLevel(level?: string | null): ThinkingLevel {

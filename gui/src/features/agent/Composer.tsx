@@ -419,8 +419,8 @@ export function Composer({
                       type="button"
                       title={t("composer.approval")}
                     >
-                      {tierIcon(approvalTier ?? "manual", "size-3 shrink-0")}
-                      <span className="truncate">{t(`composer.approvalTier.${approvalTier ?? "manual"}`)}</span>
+                      {tierIcon(approvalTier ?? "off", "size-3 shrink-0")}
+                      <span className="truncate">{t(`composer.approvalTier.${approvalTier ?? "off"}`)}</span>
                       <ChevronDown className="size-3 shrink-0" />
                     </button>
                   )}
@@ -429,7 +429,7 @@ export function Composer({
                     <SelectMenuItem
                       className="py-1.5"
                       key={tier}
-                      selected={(approvalTier ?? "manual") === tier}
+                      selected={(approvalTier ?? "off") === tier}
                       onSelect={() => {
                         onChangeApprovalTier(tier);
                         setApprovalMenuOpen(false);

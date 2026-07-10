@@ -14,7 +14,8 @@ pub(crate) use self::import::import_missing_sessions;
 pub use self::approval::{decide_approval, inject_session_rule};
 pub use self::client::{
     connect_agent, delete_session_command, get_session_entries_command, get_state_command,
-    set_model_command, set_session_name_command, set_thinking_level_command, RpcResponseExt,
+    set_cwd_command, set_model_command, set_session_name_command, set_thinking_level_command,
+    RpcResponseExt,
 };
 pub(crate) use self::client::raw_agent_addr;
 pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, PreparedPrompt};
@@ -36,7 +37,7 @@ use self::client::{
 };
 use self::run_control::{mark_run_failed_if_active, wait_for_agent_idle};
 use self::session::{
-    ensure_agent_session, set_agent_permission_level,
+    ensure_agent_session, is_chat_thread, set_agent_permission_level,
     set_agent_sandbox_policy, workspace_path_for_thread,
 };
 use self::stream::collect_agent_response;
@@ -199,14 +200,17 @@ async fn agent_prompt_inner(
     let stored_session_id = session_id
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_default();
-    // The session guard is held by the outer `agent_prompt` so it also covers
-    // after-snapshot finalization (§6.1).
-    let cwd = workspace_path_for_thread(&thread_id)?;
     let mut command_client = connect_agent().await?;
+
+    // Create (or reuse) the agent session.  For brand-new threads the session
+    // is created with whatever cwd the workspace already has; we'll fix it up
+    // once we know the agent-generated session id so the directory can be named
+    // after it.
+    let existing_cwd = workspace_path_for_thread(&thread_id)?;
     let session_id = ensure_agent_session(
         &mut command_client,
         &stored_session_id,
-        &cwd,
+        &existing_cwd,
         model_id.as_deref(),
         thinking_level.as_deref(),
     )
@@ -214,10 +218,22 @@ async fn agent_prompt_inner(
     set_agent_permission_level(&mut command_client, &session_id, "workspace").await?;
     set_agent_sandbox_policy(&mut command_client, &session_id, &thread_id).await?;
 
-    // If the agent generated a new session id (different from what was stored),
-    // persist it on the thread for future use.
+    // For a new chat-thread session, rename the workspace directory to match
+    // the agent-generated session id.  Workspace threads already have the
+    // correct cwd (the user's project directory).
     if session_id != stored_session_id {
         let _ = crate::store::update_thread_session_id(&thread_id, &session_id);
+        if is_chat_thread(&thread_id) {
+            let new_cwd = crate::store::chat_workspace_path(&session_id)
+                .map(|p| p.display().to_string())?;
+            if new_cwd != existing_cwd {
+                std::fs::create_dir_all(&new_cwd)?;
+                let _ = crate::store::update_chat_workspace_path(&thread_id, &new_cwd);
+                let _ = command_client
+                    .execute_command(set_cwd_command(new_cwd, session_id.clone()))
+                    .await;
+            }
+        }
     }
 
     let mut event_client = connect_agent().await?;

@@ -22,7 +22,7 @@ pub(super) fn db_path() -> Result<PathBuf, crate::AppError> {
     Ok(app_dir()?.join("app.db"))
 }
 
-pub(super) fn chat_workspace_path(id: &str) -> Result<PathBuf, crate::AppError> {
+pub fn chat_workspace_path(id: &str) -> Result<PathBuf, crate::AppError> {
     Ok(chat_workspaces_root()?.join(id))
 }
 
@@ -37,7 +37,7 @@ pub(super) fn chat_workspaces_root() -> Result<PathBuf, crate::AppError> {
 }
 
 /// `$HOME/.future/` — the FutureOS root on disk.
-fn future_dir() -> Result<PathBuf, crate::AppError> {
+pub fn future_dir() -> Result<PathBuf, crate::AppError> {
     let home = crate::home_dir().ok_or("HOME/USERPROFILE environment variable is not set.")?;
     Ok(PathBuf::from(home).join(".future"))
 }

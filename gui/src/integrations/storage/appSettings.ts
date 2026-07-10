@@ -1,7 +1,7 @@
 import { invokeCommand } from "../tauri/invoke";
 
-/** Approval tier: ask everything (default), sandbox-protect (macOS only), or fully open. */
-export type ApprovalTier = "manual" | "sandbox" | "off";
+/** Approval tier: fully open (default), ask everything, or sandbox-protect (macOS only). */
+export type ApprovalTier = "off" | "manual" | "sandbox";
 
 export interface AppSettings {
   approvalTier: ApprovalTier;
@@ -12,18 +12,18 @@ export interface AppSettings {
   remotePairId: string;
   /** Remote control: NATS client-port URL the GUI backend connects to. */
   remoteNatsUrl: string;
-  /** Show the model's thinking/reasoning content in the chat. Off by default. */
+  /** Show the model's thinking/reasoning content in the chat. On by default. */
   showThinking: boolean;
 }
 
 /** Fallback used before the persisted settings load. */
 export const DEFAULT_APP_SETTINGS: AppSettings = {
-  approvalTier: "manual",
+  approvalTier: "off",
   hiddenModels: [],
   remoteEnabled: false,
   remotePairId: "DEVPAIR",
   remoteNatsUrl: "nats://localhost:4222",
-  showThinking: false,
+  showThinking: true,
 };
 
 export async function getAppSettings() {

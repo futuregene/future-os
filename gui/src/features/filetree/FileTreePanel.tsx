@@ -51,9 +51,19 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
       await openPath(entry.path);
     }
     catch {
-      emitFutureEvent("toast", { message: t("loadFailed"), tone: "error" });
+      emitFutureEvent("toast", { message: t("openFailed"), tone: "error" });
     }
   }, [t]);
+
+  const handleOpenFile = useCallback((entry: DirEntry) => {
+    if (entry.isDir)
+      return;
+    if (previewKindForPath(entry.path)) {
+      setPreviewTarget(entry);
+    } else {
+      void openEntry(entry);
+    }
+  }, [openEntry]);
 
   // Attach a file as an `@`-mention pill in the active composer. The pill wants
   // a workspace-relative, POSIX-separated path (the same form the mention picker
@@ -168,6 +178,7 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
                       entry={entry}
                       key={entry.path}
                       onContextMenu={handleContextMenu}
+                      onOpenFile={handleOpenFile}
                       tree={tree}
                     />
                   ))}
