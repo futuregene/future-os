@@ -38,7 +38,7 @@ fn agent_endpoint() -> String {
 /// Resolve the agent endpoint and open a gRPC client. A connection failure maps
 /// to `AppError::AgentUnavailable` so callers can tolerate a down agent (e.g.
 /// `abort_run` still cancels the run locally).
-pub(super) async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppError> {
+pub async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppError> {
     let endpoint = agent_endpoint();
     let unavailable = |error: tonic::transport::Error| {
         crate::AppError::AgentUnavailable(format!(
@@ -86,6 +86,10 @@ pub(super) fn fork_command(
         parent_session,
         ..base_command("fork", session_id)
     }
+}
+
+pub fn delete_session_command(session_id: String) -> RpcCommand {
+    base_command("delete_session", session_id)
 }
 
 pub(super) fn get_session_entries_command(session_id: String) -> RpcCommand {
