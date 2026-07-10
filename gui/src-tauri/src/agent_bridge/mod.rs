@@ -31,7 +31,7 @@ use self::client::{
 };
 use self::run_control::{mark_run_failed_if_active, wait_for_agent_idle};
 use self::session::{
-    ensure_agent_session, prior_user_message_count, set_agent_permission_level,
+    ensure_agent_session, set_agent_permission_level,
     set_agent_sandbox_policy, workspace_path_for_thread,
 };
 use self::stream::collect_agent_response;
@@ -197,11 +197,12 @@ async fn agent_prompt_inner(
     // The session guard is held by the outer `agent_prompt` so it also covers
     // after-snapshot finalization (§6.1).
     let cwd = workspace_path_for_thread(&thread_id)?;
-    let prior_user_message_count = prior_user_message_count(&thread_id)?;
-    let force_reset_session = prior_user_message_count == 0;
-
     let mut command_client = connect_agent().await?;
-    ensure_agent_session(&mut command_client, &session_id, &cwd, force_reset_session).await?;
+    // Never force-reset: forked threads may already have a populated agent
+    // session even when the GUI store only has a few imported messages.
+    // ensure_agent_session checks get_state first and only creates a new
+    // session when one doesn't exist or the cwd differs.
+    ensure_agent_session(&mut command_client, &session_id, &cwd, false).await?;
     set_agent_permission_level(&mut command_client, &session_id, "workspace").await?;
     set_agent_sandbox_policy(&mut command_client, &session_id, &thread_id).await?;
 
