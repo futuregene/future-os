@@ -178,20 +178,13 @@ pub(super) fn cancel_children_of_runs(
                  updated_at = ?1
              WHERE status = 'pending' AND {approval_where}"
     );
-    let tool_sql = format!(
-        "UPDATE tool_calls
-             SET status = 'cancelled',
-                 ended_at = COALESCE(ended_at, ?1)
-             WHERE status = 'running' AND {tool_where}"
-    );
+    // tool_calls table dropped — only cancel approvals.
     match scope {
         CancelScope::Run(run_id) => {
             tx.execute(&approval_sql, params![now, note, run_id])?;
-            tx.execute(&tool_sql, params![now, run_id])?;
         }
         CancelScope::TerminalRuns => {
             tx.execute(&approval_sql, params![now, note])?;
-            tx.execute(&tool_sql, params![now])?;
         }
     }
     Ok(())
@@ -291,132 +284,29 @@ pub fn list_run_events_bulk(
 }
 
 pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, crate::AppError> {
-    let id = create_id("event");
+    // run_events table dropped — events now handled via agent session entries.
     let now = now_millis();
-    let conn = connect()?;
-    conn.execute(
-        "INSERT INTO run_events (id, run_id, event_type, payload, sequence, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-            id,
-            input.run_id,
-            input.event_type,
-            input.payload,
-            input.sequence,
-            now
-        ],
-    )?;
-
-    loaded(get_run_event(&id)?, "Created run event")
+    Ok(RunEventRecord {
+        id: format!("event_{now}"),
+        run_id: input.run_id,
+        event_type: input.event_type,
+        payload: input.payload,
+        sequence: input.sequence,
+        created_at: now,
+    })
 }
 
-pub fn list_tool_calls(run_id: &str) -> Result<Vec<ToolCallRecord>, crate::AppError> {
-    let conn = connect()?;
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {TOOL_CALL_COLUMNS}
-             FROM tool_calls
-             WHERE run_id = ?1
-             ORDER BY COALESCE(started_at, created_at) ASC"
-    ))?;
-    let rows = stmt.query_map(params![run_id], tool_call_from_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
-}
+pub fn list_tool_calls(_run_id: &str) -> Result<Vec<ToolCallRecord>, crate::AppError> { Ok(vec![]) }
 
-/// The structured `input` persisted at tool_start (the agent's `tool_args`
-/// JSON). Used by the write-artifact projection, which prefers the structured
-/// path over parsing the tool's human-readable output.
-pub fn get_tool_call_input(
-    run_id: &str,
-    tool_call_id: &str,
-) -> Result<Option<String>, crate::AppError> {
-    let conn = connect()?;
-    conn.query_row(
-        "SELECT input FROM tool_calls WHERE run_id = ?1 AND id = ?2",
-        params![run_id, tool_call_id],
-        |row| row.get::<_, Option<String>>(0),
-    )
-    .optional()
-    .map(Option::flatten)
-    .map_err(crate::AppError::from)
-}
+pub fn get_tool_call_input(_run_id: &str, _tool_call_id: &str) -> Result<Option<String>, crate::AppError> { Ok(None) }
 
-pub fn list_tool_outputs(tool_call_id: &str) -> Result<Vec<ToolOutputRecord>, crate::AppError> {
-    let conn = connect()?;
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {TOOL_OUTPUT_COLUMNS}
-             FROM tool_outputs
-             WHERE tool_call_id = ?1
-             ORDER BY created_at ASC"
-    ))?;
-    let rows = stmt.query_map(params![tool_call_id], tool_output_from_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
-}
+pub fn list_tool_outputs(_tool_call_id: &str) -> Result<Vec<ToolOutputRecord>, crate::AppError> { Ok(vec![]) }
 
-pub fn upsert_tool_call(input: UpsertToolCallInput) -> Result<(), crate::AppError> {
-    let now = now_millis();
-    let conn = connect()?;
-    conn.execute(
-        "INSERT INTO tool_calls (
-             id, run_id, name, kind, input, status, started_at, created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
-         ON CONFLICT(id) DO UPDATE SET
-             name = excluded.name,
-             kind = excluded.kind,
-             input = COALESCE(excluded.input, tool_calls.input),
-             status = excluded.status,
-             started_at = COALESCE(tool_calls.started_at, excluded.started_at)",
-        params![
-            input.tool_call_id,
-            input.run_id,
-            input.name,
-            input.kind,
-            input.input,
-            input.status,
-            now
-        ],
-    )?;
-    Ok(())
-}
+#[allow(dead_code)]
+pub fn upsert_tool_call(_input: UpsertToolCallInput) -> Result<(), crate::AppError> { Ok(()) }
 
-pub fn complete_tool_call(input: CompleteToolCallInput) -> Result<(), crate::AppError> {
-    let now = now_millis();
-    let mut conn = connect()?;
-    // The tool-call row and its output row are one logical write — commit them
-    // atomically so a crash can't leave a tool call without its output.
-    let tx = conn.transaction()?;
-    tx.execute(
-        "INSERT INTO tool_calls (
-             id, run_id, name, kind, status, started_at, ended_at, created_at
-         ) VALUES (?1, ?2, ?3, 'agent_tool', ?4, ?5, ?5, ?5)
-         ON CONFLICT(id) DO UPDATE SET
-             name = excluded.name,
-             status = excluded.status,
-             ended_at = excluded.ended_at",
-        params![
-            input.tool_call_id,
-            input.run_id,
-            input.name,
-            input.status,
-            now
-        ],
-    )?;
-
-    tx.execute(
-        "INSERT INTO tool_outputs (id, tool_call_id, kind, content, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            create_id("toolout"),
-            input.tool_call_id,
-            input.output_kind,
-            input.output_content,
-            now
-        ],
-    )?;
-    tx.commit()?;
-    Ok(())
-}
+#[allow(dead_code)]
+pub fn complete_tool_call(_input: CompleteToolCallInput) -> Result<(), crate::AppError> { Ok(()) }
 
 #[cfg(test)]
 mod tests {
