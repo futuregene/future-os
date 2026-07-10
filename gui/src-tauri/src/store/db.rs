@@ -105,11 +105,18 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
     }
     // Drop tables removed from the schema (see DROPPED_TABLES).
     // Disable FK enforcement to allow dropping tables referenced by other tables.
-    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
-    for table in DROPPED_TABLES {
-        conn.execute(&format!("DROP TABLE IF EXISTS {table}"), [])?;
+    // Best-effort: a missing table (fresh DB) or FK conflict (stale DB) shouldn't block startup.
+    if let Err(e) = conn.execute_batch("PRAGMA foreign_keys = OFF;") {
+        eprintln!("FutureOS migration: PRAGMA foreign_keys=OFF failed: {e}");
     }
-    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    for table in DROPPED_TABLES {
+        if let Err(e) = conn.execute(&format!("DROP TABLE IF EXISTS {table}"), []) {
+            eprintln!("FutureOS migration: DROP TABLE {table} failed: {e}");
+        }
+    }
+    if let Err(e) = conn.execute_batch("PRAGMA foreign_keys = ON;") {
+        eprintln!("FutureOS migration: PRAGMA foreign_keys=ON failed: {e}");
+    }
     // Drop columns removed from the schema (see DROPPED_COLUMNS).
     for (table, column) in DROPPED_COLUMNS {
         if column_exists(conn, table, column)? {
