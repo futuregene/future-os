@@ -163,9 +163,18 @@ pub async fn fork_agent_session(
         })
         .ok_or_else(|| "No matching user message found in agent session.".to_string())?;
 
-    // Fork from the entry after the matched user message (or the matched
-    // entry itself if it's the last one — includes the AI response).
-    let fork_idx = (match_idx + 1).min(entries.len() - 1);
+    // Walk forward past tool entries after the matched user message to
+    // include the full assistant response in the preserved history.
+    let mut fork_idx = match_idx;
+    for i in (match_idx + 1)..entries.len() {
+        let role = entries[i].get("role").and_then(|r| r.as_str()).unwrap_or("");
+        if role == "assistant" || role == "user" {
+            fork_idx = i;
+            break;
+        }
+        // Keep walking past tool entries; fall through to the last entry.
+        fork_idx = i;
+    }
     let entry_id = entries[fork_idx]
         .get("id")
         .and_then(|id| id.as_str())
