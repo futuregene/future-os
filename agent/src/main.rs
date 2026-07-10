@@ -268,7 +268,7 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
         Arc::new(future_agent::rpc::SseBroadcaster::new());
     let approval_gate = future_agent::rpc::ApprovalGate::default();
     let mut server_session = ServerSession::new(
-        future_agent::utils::generate_id(),
+        format!("agent_session_{}", future_agent::utils::generate_id()),
         Arc::new(tokio::sync::RwLock::new(engine.agent_loop)),
         manager,
         &cwd,
