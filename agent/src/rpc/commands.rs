@@ -204,6 +204,26 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             *new_sess.compaction_model.write().unwrap() = inherit_model;
             new_sess.thinking_level = inherit_thinking;
 
+            // Parse source metadata from custom_instructions (JSON).
+            // Client passes {"createdBy":"gui","sourceMeta":{...}} or
+            // {"source":"tui","meta":{...}}.
+            if !cmd.custom_instructions.is_empty() {
+                if let Ok(meta) =
+                    serde_json::from_str::<serde_json::Value>(&cmd.custom_instructions)
+                {
+                    if let Some(src) = meta
+                        .get("createdBy")
+                        .or_else(|| meta.get("source"))
+                        .and_then(|v| v.as_str())
+                    {
+                        new_sess.created_by = src.to_string();
+                    }
+                    if let Some(m) = meta.get("sourceMeta").or_else(|| meta.get("meta")) {
+                        new_sess.source_meta = m.clone();
+                    }
+                }
+            }
+
             // Restore entries from a pre-existing session (forked or persisted).
             if let Some((entries, disk_model)) = existing_entries {
                 let mut msgs = new_sess.messages.write().unwrap();

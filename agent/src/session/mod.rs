@@ -510,6 +510,7 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
         "model": parent.model,
         "thinking_level": parent_thinking_level,
         "parent_session_id": parent.id,
+        "created_by": "fork",
     });
     entries.insert(
         0,

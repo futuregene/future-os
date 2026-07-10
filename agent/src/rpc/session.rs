@@ -29,6 +29,10 @@ pub struct ServerSession {
     pub cwd: String,
     pub is_streaming: Arc<std::sync::atomic::AtomicBool>,
     pub session_name: String,
+    /// Source that created this session: "gui", "tui", "fork", "feishu", "dingtalk", etc.
+    pub created_by: String,
+    /// Arbitrary metadata from the source side (JSON). Free-form.
+    pub source_meta: serde_json::Value,
     pub event_bus: Arc<EventBus>,
     pub broadcaster: Arc<SseBroadcaster>,
     pub ephemeral: bool,
@@ -124,6 +128,8 @@ impl ServerSession {
             cwd: cwd.to_string(),
             is_streaming: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             session_name: String::new(),
+            created_by: String::new(),
+            source_meta: serde_json::Value::Null,
             event_bus,
             broadcaster,
             ephemeral: false,
@@ -178,6 +184,8 @@ impl ServerSession {
             cwd: cwd.to_string(),
             is_streaming: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             session_name: String::new(),
+            created_by: String::new(),
+            source_meta: serde_json::Value::Null,
             event_bus,
             broadcaster,
             ephemeral: false,

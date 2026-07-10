@@ -44,7 +44,12 @@ pub(super) async fn ensure_agent_session(
 
     // Create a new session. Pass empty session_id to let the agent generate it.
     let resp = client
-        .execute_command(new_session_command(String::new(), cwd.to_string()))
+        .execute_command(new_session_command(
+            String::new(),
+            cwd.to_string(),
+            "gui",
+            serde_json::Value::Null,
+        ))
         .await
         .map_err(|error| format!("Unable to create Future Agent session: {error}"))?
         .into_inner()

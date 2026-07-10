@@ -158,6 +158,8 @@ impl ServerSession {
         let tokens_cache_w = self.tokens_cache_w.clone();
         let last_prompt = self.last_prompt_tokens.clone();
         let session_name = self.session_name.clone();
+        let created_by = self.created_by.clone();
+        let source_meta = self.source_meta.clone();
         let auto_compaction = self.auto_compaction;
         let approval_gate = self.approval_gate.clone();
 
@@ -455,7 +457,7 @@ impl ServerSession {
                             .load(&session_id)
                             .map(|s| s.parent_session_id)
                             .unwrap_or_default();
-                        let info = serde_json::json!({
+                        let mut info = serde_json::json!({
                             "cwd": session_cwd,
                             "model": session_model,
                             "thinking_level": session_thinking,
@@ -468,6 +470,12 @@ impl ServerSession {
                             "auto_compaction": auto_compaction,
                             "parent_session_id": parent_session_id,
                         });
+                        if !created_by.is_empty() {
+                            info["created_by"] = serde_json::Value::String(created_by);
+                        }
+                        if !source_meta.is_null() {
+                            info["source_meta"] = source_meta;
+                        }
                         let info_entry = crate::session::SessionEntry {
                             id: crate::utils::generate_entry_id(),
                             parent_id: String::new(),
