@@ -594,7 +594,7 @@ fn load_user_models_with_overrides(
                 max_tokens: model
                     .max_tokens
                     .or_else(|| model.limit.as_ref().and_then(|l| l.output))
-                    .unwrap_or(4096),
+                    .unwrap_or(0),
                 cost: Cost {
                     input: model.cost.as_ref().and_then(|c| c.input).unwrap_or(0.0),
                     output: model.cost.as_ref().and_then(|c| c.output).unwrap_or(0.0),

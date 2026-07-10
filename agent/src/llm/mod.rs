@@ -17,7 +17,7 @@ use tracing::{info, warn};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
 const STREAM_IDLE_TIMEOUT_SECS: u64 = 45;
-const STREAM_TOOL_CALL_IDLE_TIMEOUT_SECS: u64 = 2;
+const STREAM_TOOL_CALL_IDLE_TIMEOUT_SECS: u64 = 15;
 
 // ─── LLM Client ────────────────────────────────────────────────────────────
 
