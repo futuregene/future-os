@@ -148,25 +148,12 @@ fn session_title(summary: &AgentSessionSummary) -> String {
         .to_string()
 }
 
-/// Split a provider/model string like "deepseek/deepseek-v4-pro" into
-/// (Some(provider), model_id).
-fn split_model(model: &str) -> (Option<String>, Option<String>) {
-    if model.is_empty() {
-        return (None, None);
-    }
-    if let Some((provider, id)) = model.split_once('/') {
-        (Some(provider.to_string()), Some(id.to_string()))
-    } else {
-        (None, Some(model.to_string()))
-    }
-}
-
 /// Create a completed run record for one assistant turn in an imported session.
 fn create_historical_run(
     thread_id: &str,
     model: &str,
 ) -> Result<store::RunRecord, crate::AppError> {
-    let (provider, model_id) = split_model(model);
+    let (provider, model_id) = super::session::split_model(model);
     let run = store::create_run(store::CreateRunInput {
         thread_id: thread_id.to_string(),
         trigger_message_id: None,

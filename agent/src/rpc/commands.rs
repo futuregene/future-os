@@ -564,8 +564,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             )
         }
         "get_session_entries" => {
-            // Return all displayable entries from a session (user, assistant,
-            // tool). Used to import history into a forked GUI thread.
+            // Return displayable entries from a session plus the session_info
+            // metadata entry (model, thinking_level, session_name, cwd).
             let (session_manager, session_id) = {
                 let sess = session.read().unwrap();
                 (sess.session_manager.clone(), sess.session_id.clone())
@@ -579,7 +579,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                         .filter(|e| {
                             matches!(
                                 e.entry_type.as_str(),
-                                "user" | "assistant" | "tool"
+                                "user" | "assistant" | "tool" | "session_info"
                             )
                         })
                         .map(|e| {
@@ -627,6 +627,21 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                             }
                             if !e.tool_calls.is_empty() {
                                 entry["tool_calls"] = serde_json::to_value(&e.tool_calls).unwrap_or(serde_json::Value::Null);
+                            }
+                            // For session_info entries, include the original content
+                            // JSON (session_name, cwd, parent_session_id, …) and the
+                            // model / thinking_level struct fields so callers can
+                            // read fork metadata without a second RPC.
+                            if e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO {
+                                if let Some(ref content) = e.content {
+                                    entry["content"] = content.clone();
+                                }
+                                if !e.model.is_empty() {
+                                    entry["model"] = serde_json::Value::String(e.model.clone());
+                                }
+                                if !e.thinking_level.is_empty() {
+                                    entry["thinking_level"] = serde_json::Value::String(e.thinking_level.clone());
+                                }
                             }
                             entry
                         })
@@ -957,8 +972,25 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             )
         }
         "set_cwd" => {
-            let mut sess = session.write().unwrap();
-            sess.set_cwd(&cmd.cwd);
+            let (session_manager, session_id) = {
+                let mut sess = session.write().unwrap();
+                sess.set_cwd(&cmd.cwd);
+                (sess.session_manager.clone(), sess.session_id.clone())
+            };
+            // Persist to session JSONL so the cwd survives restarts.
+            if let Ok(mut s) = session_manager.load(&session_id) {
+                // Update the session_info entry's cwd in the content JSON.
+                if let Some(info) = s
+                    .entries
+                    .iter_mut()
+                    .find(|e| e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
+                    .and_then(|e| e.content.as_mut())
+                {
+                    info["cwd"] = serde_json::Value::String(cmd.cwd.clone());
+                }
+                s.cwd = cmd.cwd.clone();
+                let _ = session_manager.save(&s);
+            }
             RpcResponse::ok(id, "set_cwd", serde_json::json!({"cwd": cmd.cwd}))
         }
         "add_session_rule" => {

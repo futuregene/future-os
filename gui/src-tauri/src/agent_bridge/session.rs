@@ -6,7 +6,7 @@ use tonic::transport::Channel;
 
 use super::client::{
     fork_command, get_session_entries_command, get_state_command, new_session_command,
-    set_permission_level_command, set_sandbox_policy_command, RpcResponseExt,
+    set_cwd_command, set_permission_level_command, set_sandbox_policy_command, RpcResponseExt,
 };
 use crate::{agent_proto::FutureAgentClient, store};
 
@@ -127,10 +127,12 @@ pub(super) fn is_chat_thread(thread_id: &str) -> bool {
         .unwrap_or(true)
 }
 
-/// Fork a session at the given user message. Returns the new agent session id.
-/// Also imports the forked session history as GUI messages so the new thread
-/// displays the preserved conversation immediately.
-/// The user message is matched by content text against agent entries.
+/// Fork a session at the given user message. Returns the new GUI thread id.
+///
+/// Creates a dedicated chat workspace named after the forked session id, copies
+/// thread metadata from the parent, and creates per-turn completed run records
+/// so the right panel is populated immediately.  Messages are served from the
+/// agent JSONL (no SQLite `messages` table), so no message import is needed.
 pub async fn fork_agent_session(
     thread_id: &str,
     user_message_content: &str,
@@ -143,9 +145,8 @@ pub async fn fork_agent_session(
 
     let mut client = super::client::connect_agent().await?;
 
-    // Get all session entries to find the entry matching the user message
-    // and determine the fork point (the entry right after the matched one,
-    // so the AI response is included in the preserved history).
+    // ── find the fork point ────────────────────────────────────────────
+
     let response = client
         .execute_command(get_session_entries_command(session_id.clone()))
         .await
@@ -160,9 +161,6 @@ pub async fn fork_agent_session(
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
 
-    // Find the user message entry matching the content, then fork from the
-    // *next* entry after it (so the AI response following this user message
-    // is included in the forked history).
     let match_idx = entries
         .iter()
         .position(|e| {
@@ -173,15 +171,10 @@ pub async fn fork_agent_session(
         })
         .ok_or_else(|| "No matching user message found in agent session.".to_string())?;
 
-    // Walk forward past all entries of this turn (assistant + tool) until
-    // the next user message to include the full response in the preserved
-    // history. A single user turn may produce many assistant→tool→assistant
-    // cycles before the final text response.
     let mut fork_idx = match_idx;
     for i in (match_idx + 1)..entries.len() {
         let role = entries[i].get("role").and_then(|r| r.as_str()).unwrap_or("");
         fork_idx = i;
-        // Stop when we hit the next user message — fork just before it.
         if role == "user" {
             fork_idx = i - 1;
             break;
@@ -192,7 +185,8 @@ pub async fn fork_agent_session(
         .and_then(|id| id.as_str())
         .ok_or_else(|| "No fork entry found.".to_string())?;
 
-    // Fork the session at that entry.
+    // ── call agent fork RPC ────────────────────────────────────────────
+
     let fork_response = client
         .execute_command(fork_command(
             session_id.clone(),
@@ -208,14 +202,14 @@ pub async fn fork_agent_session(
         .ok()
         .and_then(|v| v.get("sessionId").cloned())
         .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_else(|| String::new());
+        .unwrap_or_default();
 
     if new_session_id.is_empty() {
         return Err("Fork did not return a session.".into());
     }
 
-    // Read the forked session's entries and import them as GUI messages
-    // so the new thread shows the preserved conversation immediately.
+    // ── read forked entries for metadata ───────────────────────────────
+
     let entries_response = client
         .execute_command(get_session_entries_command(new_session_id.clone()))
         .await
@@ -230,137 +224,85 @@ pub async fn fork_agent_session(
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
 
-    // Create the GUI thread bound to the forked agent session.
+    // The agent's fork_session sets these in the session_info entry.
+    // The agent's fork_session writes metadata into a session_info entry
+    // (role = "system").  Find it — get_session_entries now includes it.
+    let session_info = fork_entries
+        .iter()
+        .find(|e| e.get("role").and_then(|r| r.as_str()) == Some("system"));
+    let session_name = session_info
+        .and_then(|e| e.get("content"))
+        .and_then(|c| c.get("session_name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("(fork)")
+        .to_string();
+    let session_model = session_info
+        .and_then(|e| e.get("model"))
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let assistant_count = fork_entries
+        .iter()
+        .filter(|e| e.get("role").and_then(|r| r.as_str()) == Some("assistant"))
+        .count();
+
+    // ── create workspace + thread ──────────────────────────────────────
+
+    let (workspace_id, _cwd) = if thread.mode == "chat" {
+        let ws = store::get_or_create_chat_workspace(&new_session_id, Some(session_name.clone()))?;
+        let dir = store::chat_workspace_path(&new_session_id)
+            .map(|p| p.display().to_string())?;
+        std::fs::create_dir_all(&dir)?;
+        // Tell the agent the correct cwd (the forked session inherited the
+        // parent's cwd from its session_info).
+        if let Err(e) = client
+            .execute_command(set_cwd_command(dir.clone(), new_session_id.clone()))
+            .await
+        {
+            eprintln!("FutureOS: fork set_cwd failed: {e}");
+        }
+        (Some(ws.id), dir)
+    } else {
+        // Workspace thread — keep the parent's project directory as cwd.
+        (Some(thread.workspace_id.clone()), String::new())
+    };
+
     let new_thread = store::create_thread(store::CreateThreadInput {
         mode: thread.mode.clone(),
-        title: Some(format!("{} (fork)", thread.title)),
-        workspace_id: Some(thread.workspace_id.clone()),
+        title: Some(session_name),
+        workspace_id,
         workspace_path: None,
         workspace_name: None,
         agent_session_id: Some(new_session_id.clone()),
     })?;
 
-    // Import entries grouped by user turn. Each turn produces one user
-    // message and one assistant message (merging tool calls inline), so the
-    // forked thread looks like the original session.
-    let mut turn_user: Option<&serde_json::Value> = None;
-    let mut turn_tools: Vec<String> = Vec::new();
-    let mut turn_final_text = String::new();
-
-    for entry in &fork_entries {
-        let role = entry
-            .get("role")
-            .and_then(|r| r.as_str())
-            .unwrap_or("");
-        let content = entry
-            .get("content")
-            .and_then(|c| c.as_str())
-            .unwrap_or("");
-
-        if role == "user" {
-            // Flush the previous turn.
-            if let Some(user) = turn_user {
-                let user_text = user
-                    .get("content")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or("");
-                if !user_text.trim().is_empty() {
-                    let _ = store::append_message(store::AppendMessageInput {
-                        thread_id: new_thread.id.clone(),
-                        run_id: None,
-                        role: "user".to_string(),
-                        content_type: Some("markdown".to_string()),
-                        content: user_text.trim().to_string(),
-                        status: Some("complete".to_string()),
-                    });
-                }
-                if !turn_final_text.trim().is_empty() || !turn_tools.is_empty() {
-                    let mut merged = turn_final_text.trim().to_string();
-                    if !turn_tools.is_empty() {
-                        if !merged.is_empty() {
-                            merged.push_str("\n\n");
-                        }
-                        merged.push_str(&format!(
-                            "---\n\n**Tools used:**  \n{}",
-                            turn_tools.join("\n")
-                        ));
-                    }
-                    if !merged.trim().is_empty() {
-                        let _ = store::append_message(store::AppendMessageInput {
-                            thread_id: new_thread.id.clone(),
-                            run_id: None,
-                            role: "assistant".to_string(),
-                            content_type: Some("markdown".to_string()),
-                            content: merged,
-                            status: Some("complete".to_string()),
-                        });
-                    }
-                }
-            }
-            turn_user = Some(entry);
-            turn_tools.clear();
-            turn_final_text.clear();
-        } else if role == "tool" {
-            let name = entry
-                .get("name")
-                .and_then(|n| n.as_str())
-                .unwrap_or("tool");
-            let args = entry
-                .get("tool_args")
-                .and_then(|a| a.as_str())
-                .unwrap_or("");
-            let result_preview = if content.len() > 200 {
-                format!("{}…", &content[..200])
-            } else {
-                content.to_string()
-            };
-            turn_tools.push(format!("- `{}` {} → {}", name, args, result_preview));
-        } else if role == "assistant" {
-            if !content.trim().is_empty() {
-                turn_final_text = content.to_string();
-            }
-        }
-    }
-
-    // Flush the last turn.
-    if let Some(user) = turn_user {
-        let user_text = user
-            .get("content")
-            .and_then(|c| c.as_str())
-            .unwrap_or("");
-        if !user_text.trim().is_empty() {
-            let _ = store::append_message(store::AppendMessageInput {
-                thread_id: new_thread.id.clone(),
-                run_id: None,
-                role: "user".to_string(),
-                content_type: Some("markdown".to_string()),
-                content: user_text.trim().to_string(),
-                status: Some("complete".to_string()),
-            });
-        }
-        if !turn_final_text.trim().is_empty() || !turn_tools.is_empty() {
-            let mut merged = turn_final_text.trim().to_string();
-            if !turn_tools.is_empty() {
-                if !merged.is_empty() {
-                    merged.push_str("\n\n");
-                }
-                merged.push_str(&format!(
-                    "<details><summary>🔧 tool calls</summary>\n\n{}\n</details>",
-                    turn_tools.join("\n")
-                ));
-            }
-            if !merged.trim().is_empty() {
-                let _ = store::append_message(store::AppendMessageInput {
-                    thread_id: new_thread.id.clone(),
-                    run_id: None,
-                    role: "assistant".to_string(),
-                    content_type: Some("markdown".to_string()),
-                    content: merged,
-                    status: Some("complete".to_string()),
-                });
-            }
-        }
+    let (provider, model_id) = split_model(&session_model);
+    for _ in 0..assistant_count.max(1) {
+        let run = store::create_run(store::CreateRunInput {
+            thread_id: new_thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: provider.clone(),
+            model_id: model_id.clone(),
+        })?;
+        let _ = store::update_run_status_if_active(store::UpdateRunStatusInput {
+            run_id: run.id,
+            status: "completed".to_string(),
+            error_message: None,
+            error_type: None,
+        });
     }
 
     Ok(new_thread.id)
+}
+
+pub(super) fn split_model(model: &str) -> (Option<String>, Option<String>) {
+    if model.is_empty() {
+        return (None, None);
+    }
+    if let Some((provider, id)) = model.split_once('/') {
+        (Some(provider.to_string()), Some(id.to_string()))
+    } else {
+        (None, Some(model.to_string()))
+    }
 }
