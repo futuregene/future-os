@@ -96,9 +96,20 @@ pub(super) fn get_session_entries_command(session_id: String) -> RpcCommand {
     base_command("get_session_entries", session_id)
 }
 
-pub(super) fn new_session_command(session_id: String, cwd: String) -> RpcCommand {
+pub(super) fn new_session_command(
+    session_id: String,
+    cwd: String,
+    created_by: &str,
+    source_meta: serde_json::Value,
+) -> RpcCommand {
+    let custom_instructions = serde_json::json!({
+        "createdBy": created_by,
+        "sourceMeta": source_meta,
+    })
+    .to_string();
     RpcCommand {
         cwd,
+        custom_instructions,
         ..base_command("new_session", session_id)
     }
 }
