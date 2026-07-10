@@ -337,13 +337,25 @@ impl Manager {
             .iter()
             .rev()
             .find_map(|e| {
-                if (e.entry_type == ENTRY_TYPE_MODEL_CHANGE || e.entry_type == ENTRY_TYPE_ASSISTANT)
-                    && !e.model.is_empty()
-                {
+                if e.entry_type == ENTRY_TYPE_MODEL_CHANGE && !e.model.is_empty() {
                     Some(e.model.clone())
                 } else {
                     None
                 }
+            })
+            .or_else(|| {
+                // ASSISTANT entries never carry model (agent_message_to_entry
+                // always sets it to ""), so fall back to the session_info entry.
+                entries
+                    .iter()
+                    .find(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
+                    .and_then(|e| {
+                        if !e.model.is_empty() {
+                            Some(e.model.clone())
+                        } else {
+                            None
+                        }
+                    })
             })
             .unwrap_or_default();
         let name = entries
@@ -351,6 +363,19 @@ impl Manager {
             .rev()
             .find(|e| e.entry_type == ENTRY_TYPE_LABEL && !e.label.is_empty())
             .map(|e| e.label.clone())
+            .or_else(|| {
+                // Fall back to session_info.session_name when no LABEL entry
+                // exists (e.g. sessions that were auto-named but never
+                // explicitly renamed).
+                entries
+                    .iter()
+                    .find(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
+                    .and_then(|e| e.content.as_ref())
+                    .and_then(|c| c.get("session_name"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            })
             .unwrap_or_default();
         let parent_session_id = entries
             .iter()
@@ -507,32 +532,58 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
     for e in &mut entries {
         e.id = generate_entry_id();
     }
-    // Extract parent's thinking_level from its original session_info.
-    let parent_thinking_level = parent
+    // Read parent metadata from the session_info entry.  The values live on
+    // the SessionEntry struct fields (model, thinking_level) and also inside
+    // the content JSON (created_by, session_name).
+    let parent_info = parent
         .entries
         .first()
-        .filter(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
-        .and_then(|e| e.content.as_ref())
-        .and_then(|c| c.get("thinking_level"))
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
+        .filter(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO);
 
-    // Extract parent's created_by from its original session_info.
-    let parent_created_by = parent
-        .entries
-        .first()
-        .filter(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
+    let parent_thinking_level = parent_info
+        .map(|e| e.thinking_level.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("high");
+
+    let parent_model = parent_info
+        .and_then(|e| {
+            if !e.model.is_empty() {
+                Some(e.model.as_str())
+            } else {
+                None
+            }
+        })
+        .unwrap_or(&parent.model)
+        .to_string();
+
+    let parent_created_by = parent_info
         .and_then(|e| e.content.as_ref())
         .and_then(|c| c.get("created_by"))
         .and_then(|v| v.as_str())
         .unwrap_or("tui");
 
-    // Prepend session_info with parent_session_id so tree relationships survive save/load
+    // Derive fork name: read from session_info content first, then LABEL.
+    let parent_name = parent_info
+        .and_then(|e| e.content.as_ref())
+        .and_then(|c| c.get("session_name"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&parent.name);
+    let fork_name = if parent_name.is_empty() {
+        "(fork)".to_string()
+    } else {
+        format!("{} (fork)", parent_name)
+    };
+
+    // Prepend session_info with metadata so the forked session carries
+    // model, thinking level, parent id, and the fork name.
     let info = serde_json::json!({
         "cwd": parent.cwd,
-        "session_name": parent.name,
+        "session_name": fork_name,
         "parent_session_id": parent.id,
         "created_by": parent_created_by,
+        "model": parent_model,
+        "thinking_level": parent_thinking_level,
     });
     entries.insert(
         0,
@@ -545,7 +596,7 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
             tool_calls: vec![],
             timestamp: Local::now(),
             summary: String::new(),
-            model: parent.model.clone(),
+            model: parent_model.clone(),
             label: String::new(),
             thinking_level: parent_thinking_level.to_string(),
             branch_summary: None,
@@ -564,9 +615,9 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
         id: generate_id(),
         version: CURRENT_SESSION_VERSION,
         cwd: parent.cwd.clone(),
-        model: parent.model.clone(),
+        model: parent_model.clone(),
         base_url: parent.base_url.clone(),
-        name: parent.name.clone(),
+        name: fork_name,
         parent_session_id: parent.id.clone(),
         leaf_id: String::new(),
         entries,
