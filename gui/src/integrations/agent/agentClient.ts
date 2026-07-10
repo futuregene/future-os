@@ -15,13 +15,10 @@ export interface AgentModelOption {
 
 interface AgentPromptResponse {
   content: string;
-  /**
-   * False when the agent stream ended before a clean `agent_end` — the content
-   *  is a truncated prefix and the caller should finalize the run as failed
-   *  rather than completed. Older backends omit it; treat missing as
-   *  complete so nothing regresses.
-   */
+  /** False when the agent stream ended before a clean `agent_end`. */
   complete?: boolean;
+  /** The agent session id — persisted on the thread for subsequent prompts. */
+  sessionId?: string;
 }
 
 export const defaultAgentModelId = "";
@@ -45,7 +42,11 @@ export async function sendPromptToFutureAgent(
     modelId: modelId ?? null,
     thinkingLevel: thinkingLevel ?? null,
   });
-  return { content: response.content, complete: response.complete !== false };
+  return {
+    content: response.content,
+    complete: response.complete !== false,
+    sessionId: response.sessionId,
+  };
 }
 
 export async function loadAgentModelOptions() {

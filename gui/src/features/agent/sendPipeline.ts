@@ -156,7 +156,7 @@ export async function runSendPipeline(
       }, 220);
     }
 
-    const agentSessionId = thread.agentSessionId?.trim() || thread.id;
+    const agentSessionId = thread.agentSessionId?.trim() || null;
     const reply = await sendPromptToFutureAgent(
       promptContent,
       thread.id,
