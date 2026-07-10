@@ -504,13 +504,21 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
         .and_then(|v| v.as_str())
         .unwrap_or_default();
 
+    // Extract parent's created_by from its original session_info.
+    let parent_created_by = parent
+        .entries
+        .first()
+        .filter(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
+        .and_then(|e| e.content.as_ref())
+        .and_then(|c| c.get("created_by"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("tui");
+
     // Prepend session_info with parent_session_id so tree relationships survive save/load
     let info = serde_json::json!({
         "cwd": parent.cwd,
-        "model": parent.model,
-        "thinking_level": parent_thinking_level,
         "parent_session_id": parent.id,
-        "created_by": "fork",
+        "created_by": parent_created_by,
     });
     entries.insert(
         0,

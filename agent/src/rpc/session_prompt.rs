@@ -459,8 +459,6 @@ impl ServerSession {
                             .unwrap_or_default();
                         let mut info = serde_json::json!({
                             "cwd": session_cwd,
-                            "model": session_model,
-                            "thinking_level": session_thinking,
                             "tokens_in": tokens_in.load(Ordering::Relaxed),
                             "tokens_out": tokens_out.load(Ordering::Relaxed),
                             "tokens_cache_r": tokens_cache_r.load(Ordering::Relaxed),
