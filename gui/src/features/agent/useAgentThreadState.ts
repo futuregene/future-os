@@ -49,11 +49,8 @@ export function useAgentThreadState({
     recentRun,
     reloadMessagesQuiet,
     refreshRecentRun,
-    restoredScrollTop,
     setMessages,
     setRecentRun,
-    saveScrollPosition,
-    setRestoredScrollTop,
   } = useThreadMessages({ threadId, workspaceId });
 
   // The run this thread is currently executing, if any. Runs stream server-side
@@ -141,8 +138,5 @@ export function useAgentThreadState({
     loadingThread,
     messages,
     recentRun,
-    restoredScrollTop,
-    saveScrollPosition,
-    setRestoredScrollTop,
   };
 }

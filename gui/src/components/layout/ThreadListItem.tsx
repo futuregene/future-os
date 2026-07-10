@@ -52,6 +52,12 @@ export function ThreadListItem({
         compact ? "h-7 pl-7" : "h-8 gap-2 pl-2",
         active && "bg-surface-subtle text-ink",
       )}
+      // Right-click anywhere on the row opens the same actions menu as the
+      // `...` button.
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onMenuOpenChange(true);
+      }}
     >
       {/* Full-row click target so the whole (highlighted) row selects the
           thread. Content below sits on top but is pointer-events-none so clicks

@@ -90,6 +90,7 @@ export async function createThread(input: {
   modelProvider?: string | null;
   modelId?: string | null;
   thinkingLevel?: string | null;
+  agentSessionId?: string | null;
 }) {
   return invokeCommand<StoredThread>("create_thread", { input });
 }
@@ -148,4 +149,9 @@ export async function appendMessage(input: {
   status?: StoredMessage["status"];
 }) {
   return invokeCommand<StoredMessage>("append_message", { input });
+}
+
+/** Fork the agent session at the given user message, returning the new session id. */
+export function forkThread(threadId: string, userMessageIndex: number) {
+  return invokeCommand<string>("fork_thread", { threadId, userMessageIndex });
 }
