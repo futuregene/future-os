@@ -2,6 +2,8 @@ import type { AgentConnectionState } from "../../components/layout/AppShell";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import { forkThread, createThread } from "../../integrations/storage/threadStore";
+import { errorMessage } from "../../lib/errors";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { ArrowDown } from "lucide-react";
@@ -183,8 +185,8 @@ export function AgentThread({
       });
       onForked(newThread.id);
     }
-    catch {
-      // Fork failed silently.
+    catch (error) {
+      emitFutureEvent("toast", { message: t("message.forkFailed", { message: errorMessage(error) }), tone: "error" });
     }
   }, [thread, messages, onForked]);
 

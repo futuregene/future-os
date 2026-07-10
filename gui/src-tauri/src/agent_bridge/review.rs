@@ -318,6 +318,7 @@ mod tests {
             model_provider: None,
             model_id: None,
             thinking_level: None,
+            agent_session_id: None,
         })
         .unwrap();
         let run = store::create_run(CreateRunInput {
