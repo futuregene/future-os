@@ -118,6 +118,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 event_bus,
                 broadcaster,
                 approval_gate,
+                session_manager,
             ) = {
                 let sess = session.read().unwrap();
                 (
@@ -127,6 +128,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     sess.event_bus.clone(),
                     sess.broadcaster.clone(),
                     sess.approval_gate.clone(),
+                    sess.session_manager.clone(),
                 )
             };
 
@@ -179,8 +181,17 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             } else {
                 cmd.session_id.clone()
             };
+
+            // If this session ID already exists on disk (e.g. a forked session),
+            // load the existing entries and restore them after creating the session.
+            let existing_entries = session_manager
+                .load(&new_session_id)
+                .ok()
+                .filter(|s| !s.entries.is_empty())
+                .map(|s| (s.entries, s.model.clone()));
+
             let mut new_sess = ServerSession::new_with_shared_loop(
-                new_session_id,
+                new_session_id.clone(),
                 Arc::new(tokio::sync::RwLock::new(fresh_loop)),
                 Arc::new(crate::session::Manager::default_for(&session_cwd)),
                 &session_cwd,
@@ -192,6 +203,16 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             new_sess.model = inherit_model.clone();
             *new_sess.compaction_model.write().unwrap() = inherit_model;
             new_sess.thinking_level = inherit_thinking;
+
+            // Restore entries from a pre-existing session (forked or persisted).
+            if let Some((entries, disk_model)) = existing_entries {
+                let mut msgs = new_sess.messages.write().unwrap();
+                *msgs = crate::session::entries_to_agent_messages(&entries);
+                if !disk_model.is_empty() {
+                    new_sess.model = disk_model.clone();
+                    *new_sess.compaction_model.write().unwrap() = disk_model;
+                }
+            }
 
             // Add to sessions map
             let new_id = state.create_session(new_sess);
