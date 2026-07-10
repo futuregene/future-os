@@ -457,6 +457,35 @@ impl ServerSession {
                             .load(&session_id)
                             .map(|s| s.parent_session_id)
                             .unwrap_or_default();
+
+                        // Auto-generate session_name from the first user message
+                        // if not explicitly set (matches first_message in list_sessions).
+                        let session_name = if session_name.is_empty() {
+                            entries
+                                .iter()
+                                .find(|e| e.role == "user")
+                                .and_then(|e| e.content.as_ref())
+                                .map(|c| {
+                                    if let Some(arr) = c.as_array() {
+                                        arr.iter()
+                                            .filter_map(|b| {
+                                                b.get("text").and_then(|t| t.as_str())
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .join(" ")
+                                    } else {
+                                        c.as_str().unwrap_or("").to_string()
+                                    }
+                                })
+                                .map(|s| {
+                                    let trimmed = s.trim();
+                                    crate::session::truncate_visible(trimmed, 40)
+                                })
+                                .unwrap_or_default()
+                        } else {
+                            session_name
+                        };
+
                         let mut info = serde_json::json!({
                             "cwd": session_cwd,
                             "tokens_in": tokens_in.load(Ordering::Relaxed),
