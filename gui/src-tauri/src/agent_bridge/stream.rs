@@ -107,9 +107,6 @@ pub(super) async fn collect_agent_response(
             }
             "agent_end" => {
                 saw_agent_end = true;
-                if let Some(rid) = run_id {
-                    store::clear_run_event_buffer(rid);
-                }
                 break;
             }
             "error" => {
