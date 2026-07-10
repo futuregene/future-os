@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 #![allow(dead_code)]
+use std::collections::HashMap;
+
 use rusqlite::params;
 use serde::Serialize;
 
@@ -29,7 +31,7 @@ pub struct RunRecord {
     pub updated_at: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub struct RunEventRecord {
@@ -72,7 +74,9 @@ sql_record!(pub(super) RUN_COLUMNS, run_from_row -> RunRecord {
     started_at, ended_at, error_message, error_type, created_at, updated_at,
 });
 
-// RUN_EVENT_COLUMNS & run_event_from_row removed — table dropped
+sql_record!(pub(super) RUN_EVENT_COLUMNS, run_event_from_row -> RunEventRecord {
+    id, run_id, event_type, payload, sequence, created_at,
+});
 
 sql_record!(pub(super) TOOL_CALL_COLUMNS, tool_call_from_row -> ToolCallRecord {
     id, run_id, name, kind, input, status, started_at, ended_at, created_at,
@@ -273,28 +277,57 @@ pub fn fail_run_if_active(
     Ok(affected > 0)
 }
 
-pub fn list_run_events(_run_id: &str) -> Result<Vec<RunEventRecord>, crate::AppError> {
-    // run_events table dropped — events now read from agent session entries.
+pub fn list_run_events(run_id: &str) -> Result<Vec<RunEventRecord>, crate::AppError> {
+    if let Ok(buf) = RUN_EVENT_BUFFER.lock() {
+        if let Some(events) = buf.get(run_id) {
+            return Ok(events.clone());
+        }
+    }
     Ok(vec![])
 }
 
 pub fn list_run_events_bulk(
-    _run_ids: &[String],
+    run_ids: &[String],
 ) -> Result<Vec<(String, Vec<RunEventRecord>)>, crate::AppError> {
+    if let Ok(buf) = RUN_EVENT_BUFFER.lock() {
+        let mut result = Vec::new();
+        for rid in run_ids {
+            if let Some(events) = buf.get(rid) {
+                result.push((rid.clone(), events.clone()));
+            }
+        }
+        return Ok(result);
+    }
     Ok(vec![])
 }
 
+/// In-memory buffer for streaming run events (replaces SQLite run_events table).
+/// Keyed by run_id; cleared when the run settles (agent_end received).
+static RUN_EVENT_BUFFER: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Vec<RunEventRecord>>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
 pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, crate::AppError> {
-    // run_events table dropped — events now handled via agent session entries.
+    let id = create_id("event");
     let now = now_millis();
-    Ok(RunEventRecord {
-        id: format!("event_{now}"),
-        run_id: input.run_id,
+    let record = RunEventRecord {
+        id,
+        run_id: input.run_id.clone(),
         event_type: input.event_type,
         payload: input.payload,
         sequence: input.sequence,
         created_at: now,
-    })
+    };
+    if let Ok(mut buf) = RUN_EVENT_BUFFER.lock() {
+        buf.entry(input.run_id.clone()).or_default().push(record.clone());
+    }
+    Ok(record)
+}
+
+/// Clear buffered events for a settled run (called when agent_end is received).
+pub fn clear_run_event_buffer(run_id: &str) {
+    if let Ok(mut buf) = RUN_EVENT_BUFFER.lock() {
+        buf.remove(run_id);
+    }
 }
 
 pub fn list_tool_calls(_run_id: &str) -> Result<Vec<ToolCallRecord>, crate::AppError> { Ok(vec![]) }
