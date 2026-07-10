@@ -542,12 +542,13 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
 }
 
 fn for_each_entry<'a>(entries: &'a [SessionEntry], from_id: &str) -> Vec<&'a SessionEntry> {
-    // Include all entries from the beginning up to and including from_id.
-    // This preserves the full conversation history (user + assistant + tool)
-    // before the fork point.
+    // Include all entries from the beginning up to and including from_id,
+    // skipping the original session_info (fork_session prepends its own).
     let mut result = vec![];
     for e in entries.iter() {
-        result.push(e);
+        if e.entry_type != ENTRY_TYPE_SESSION_INFO {
+            result.push(e);
+        }
         if e.id == from_id {
             break;
         }
