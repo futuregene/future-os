@@ -540,7 +540,10 @@ mod tests {
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM review_changesets"), 0);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM review_file_changes"), 0);
         // The thread row itself is left to the caller.
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM threads WHERE id = 't1'"), 1);
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM threads WHERE id = 't1'"),
+            1
+        );
         // The artifact survives, detached from the thread and run.
         assert_eq!(
             count(
