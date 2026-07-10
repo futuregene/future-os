@@ -49,7 +49,8 @@ export function AppShell() {
   const [leftOverlayOpen, setLeftOverlayOpen] = useState(false);
   const [rightExpanded, setRightExpanded] = useState(false);
   // Panels open on the content tab (Review/Artifacts), not Runs; ContextPanel
-  // seeds the exact tab per thread. Artifacts is the common chat-thread default.
+  // seeds the exact tab each time the panel opens (not per thread — a mid-open
+  // thread switch keeps the current tab). Artifacts is the common chat default.
   const [contextTab, setContextTab] = useState<ContextTab>("artifacts");
   const [newChatWorkspaceId, setNewChatWorkspaceId] = useState<string | null>(null);
   const [newConversationMode, setNewConversationMode] = useState<"workspace" | "chat">("chat");
