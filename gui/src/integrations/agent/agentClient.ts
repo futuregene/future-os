@@ -95,7 +95,7 @@ export function rememberLastUsedModel(modelId: string): void {
   }
 }
 
-function readLastUsedModel(): string | null {
+export function readLastUsedModel(): string | null {
   try {
     return window.localStorage.getItem(LAST_USED_MODEL_STORAGE_KEY);
   }
@@ -106,13 +106,22 @@ function readLastUsedModel(): string | null {
 
 /**
  * Pick the model to select when there is no valid in-session choice yet.
- * Priority: the last user-picked model (if it still exists) → Future's
- * deepseek-v4-pro → the first Future model → the first model in the catalog.
+ * Priority: the last user-picked model → Future's deepseek-v4-pro → the
+ * first Future model → the first model in the catalog.
+ *
+ * When the catalog is empty (models haven't loaded yet), returns the
+ * last-used model or the empty fallback — harmless because reconciliation
+ * will correct it once the catalog arrives.
  */
 export function resolveInitialModelId(models: AgentModelOption[]): string {
   const lastUsed = readLastUsedModel();
+  // Last-used model is valid in the current catalog? Use it.
   if (lastUsed && modelOption(lastUsed, models))
     return lastUsed;
+  // Catalog not loaded yet — return last-used as best-effort seed (if any).
+  if (models.length === 0)
+    return lastUsed || defaultAgentModelId;
+  // Full catalog available — apply provider-aware priority.
   const futureModels = models.filter(model => model.provider === FUTURE_PROVIDER_ID);
   const dsv4 = futureModels.find(model => model.id === "deepseek-v4-pro");
   if (dsv4)
@@ -134,7 +143,7 @@ export function rememberLastUsedThinkingLevel(level: string): void {
   }
 }
 
-function readLastUsedThinkingLevel(): string | null {
+export function readLastUsedThinkingLevel(): string | null {
   try {
     return window.localStorage.getItem(LAST_USED_THINKING_LEVEL_STORAGE_KEY);
   }

@@ -2,7 +2,7 @@ import type { AgentModelOption } from "../../../integrations/agent/agentClient";
 import type { StoredThread } from "../../../integrations/storage/threadStore";
 import { useEffect, useRef, useState } from "react";
 import i18n from "../../../i18n";
-import { defaultThinkingLevel, modelOption, modelThinkingLevel, normalizeThinkingLevel, rememberLastUsedModel, rememberLastUsedThinkingLevel, resolveInitialModelId, resolveInitialThinkingLevel } from "../../../integrations/agent/agentClient";
+import { defaultThinkingLevel, modelOption, modelThinkingLevel, normalizeThinkingLevel, readLastUsedThinkingLevel, rememberLastUsedModel, rememberLastUsedThinkingLevel, resolveInitialModelId, resolveInitialThinkingLevel } from "../../../integrations/agent/agentClient";
 import { updateCachedAgentState, useCachedAgentState } from "../../../integrations/agent/agentStateCache";
 import { updateThreadModel, updateThreadThinkingLevel } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
@@ -56,7 +56,7 @@ export function useModelSelection({
   visibleModelOptions,
   refreshStore,
 }: UseModelSelectionParams): ModelSelection {
-  const [selectedThinkingLevel, setSelectedThinkingLevel] = useState(defaultThinkingLevel);
+  const [selectedThinkingLevel, setSelectedThinkingLevel] = useState(() => readLastUsedThinkingLevel() ?? defaultThinkingLevel);
   const draftThinkingModelRef = useRef("");
 
   // Why the composer's model picker is empty: nothing loaded vs. everything the

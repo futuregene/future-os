@@ -42,7 +42,7 @@ fn best_effort_canonical(path: &Path) -> PathBuf {
 /// approval/sandbox system protects. User-chosen files elsewhere stay allowed.
 ///
 /// Chat-workspace artifacts live *inside* this root
-/// (`~/.future/app/workspaces/chat/<thread>/…`) and must stay previewable, so
+/// (`~/.future/workspaces/chat/<id>/…`) and must stay previewable, so
 /// that subtree is carved back out — EXCEPT any nested `.future/` segment, which
 /// is where each workspace keeps its own `approval_rule.json`. The carve-out
 /// therefore preserves the invariant "sensitive config lives in a `.future/`

@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { AgentModelOption } from "../../../integrations/agent/agentClient";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { defaultAgentModelId, loadAgentModelOptions, modelKey, modelOption, resolveInitialModelId } from "../../../integrations/agent/agentClient";
+import { loadAgentModelOptions, modelKey, modelOption, resolveInitialModelId } from "../../../integrations/agent/agentClient";
 import { listAgentProviders } from "../../../integrations/agent/providers";
 import { errorMessage } from "../../../lib/errors";
 import { usePolling } from "../../../lib/usePolling";
@@ -56,7 +56,9 @@ function classifyAgentConnectionError(message: string): AgentConnectionState["ki
 export function useAgentConnection(hiddenModels: string[]): UseAgentConnectionResult {
   const [agentConnection, setAgentConnection] = useState<AgentConnectionState>({ status: "checking" });
   const [modelOptions, setModelOptions] = useState<AgentModelOption[]>([]);
-  const [selectedModelId, setSelectedModelId] = useState(defaultAgentModelId);
+  // Use the same resolver as "New Chat" so the initial view and the button
+  // converge on the identical default regardless of catalog readiness.
+  const [selectedModelId, setSelectedModelId] = useState(() => resolveInitialModelId([]));
   // Generation guard: the 10s poll doesn't cancel an in-flight call (see
   // usePolling), and a connect with no timeout can hang across a tick. Without
   // this, a slow tick that fails *after* a newer tick already succeeded would

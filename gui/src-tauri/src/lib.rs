@@ -159,6 +159,17 @@ pub fn run() {
             if let Err(error) = store::cancel_stale_approval_requests() {
                 eprintln!("FutureOS run convergence failed: {error}");
             }
+            // Import sessions created outside the GUI (TUI, channels, another
+            // machine). Runs off the launch path — failures are logged but the
+            // UI renders immediately. The store must be initialized first.
+            std::thread::spawn(|| {
+                let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+                rt.block_on(async {
+                    if let Err(error) = agent_bridge::import_missing_sessions().await {
+                        eprintln!("FutureOS session import failed: {error}");
+                    }
+                });
+            });
             // Pin the FutureGene environment for this build channel before the
             // agent starts: release builds are production-locked, dev builds
             // default to the test environment on first launch. The agent reads

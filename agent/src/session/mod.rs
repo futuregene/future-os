@@ -425,9 +425,13 @@ impl Manager {
         }
         let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
         if let Ok(sess) = self.load_path(path, id) {
-            // Scan entries for user messages: first user message and total count
+            // Scan entries for user messages: first user message and total count.
+            // Also read session_name from the session_info entry as a fallback
+            // for the name when the Session-level name field is empty (older
+            // sessions saved before the name was plumbed through).
             let mut first_message: Option<String> = None;
             let mut query_count: usize = 0;
+            let mut session_info_name: Option<String> = None;
             for entry in &sess.entries {
                 if entry.role == "user" {
                     query_count += 1;
@@ -451,6 +455,15 @@ impl Manager {
                             }
                         }
                     }
+                } else if entry.entry_type == ENTRY_TYPE_SESSION_INFO && session_info_name.is_none() {
+                    if let Some(ref content_val) = entry.content {
+                        if let Some(n) = content_val.get("session_name").and_then(|v| v.as_str()) {
+                            let trimmed = n.trim();
+                            if !trimmed.is_empty() {
+                                session_info_name = Some(trimmed.to_string());
+                            }
+                        }
+                    }
                 }
             }
             summaries.push(SessionSummary {
@@ -458,10 +471,10 @@ impl Manager {
                 cwd: sess.cwd,
                 updated_at: sess.updated_at,
                 model: sess.model,
-                name: if sess.name.is_empty() {
-                    None
-                } else {
+                name: if !sess.name.is_empty() {
                     Some(sess.name)
+                } else {
+                    session_info_name.clone()
                 },
                 parent_session_id: sess.parent_session_id.clone(),
                 first_message,
