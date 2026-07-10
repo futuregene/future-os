@@ -236,15 +236,15 @@ CREATE TABLE IF NOT EXISTS app_settings (
 
 CREATE INDEX IF NOT EXISTS idx_threads_workspace ON threads(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_threads_recent ON threads(status, pinned, last_message_at, updated_at);
-CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, created_at);
+-- idx_messages_thread removed with messages table
 CREATE INDEX IF NOT EXISTS idx_runs_thread ON runs(thread_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_reference_targets_scope ON reference_targets(scope, workspace_id, target_type);
 CREATE INDEX IF NOT EXISTS idx_review_snapshots_run ON review_snapshots(run_id, phase);
 CREATE INDEX IF NOT EXISTS idx_review_snapshots_workspace ON review_snapshots(workspace_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_review_changesets_run ON review_changesets(run_id);
 -- FK columns used by hot list/join/cleanup queries (B-12).
-CREATE INDEX IF NOT EXISTS idx_tool_calls_run ON tool_calls(run_id);
-CREATE INDEX IF NOT EXISTS idx_tool_outputs_call ON tool_outputs(tool_call_id);
+-- idx_tool_calls_run removed with tool_calls table
+-- idx_tool_outputs_call removed with tool_outputs table
 CREATE INDEX IF NOT EXISTS idx_review_file_changes_changeset ON review_file_changes(changeset_id);
 CREATE INDEX IF NOT EXISTS idx_approval_requests_thread ON approval_requests(thread_id);
 CREATE INDEX IF NOT EXISTS idx_approval_requests_run_status ON approval_requests(run_id, status);
@@ -314,7 +314,7 @@ pub(super) const ADDED_COLUMNS: &[(&str, &str)] = &[
 /// idempotently: only when the old name still exists and the new one does not.
 /// `(table, old, new)`.
 pub(super) const RENAMED_COLUMNS: &[(&str, &str, &str)] = &[
-    ("run_events", "type", "event_type"),
+    // // ("run_events", "type", "event_type"), -- table dropped -- table dropped
     ("artifacts", "type", "artifact_type"),
     ("research_resources", "type", "resource_type"),
 ];
