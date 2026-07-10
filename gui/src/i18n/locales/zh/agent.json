@@ -107,7 +107,8 @@
     },
     "attachRejectedNoImage": "{{name}}（当前模型不支持图片）",
     "attachFilesHintNoImage": "添加附件（PDF、文本）",
-    "attachDialogFilterNoImage": "支持的文件（PDF、文本）"
+    "attachDialogFilterNoImage": "支持的文件（PDF、文本）",
+    "dropReject": "不支持此文件类型"
   },
   "attachment": {
     "readFailed": "无法读取",
