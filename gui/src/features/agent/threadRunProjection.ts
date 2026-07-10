@@ -1,7 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageSegment } from "./agentThreadTypes";
-import i18n from "../../i18n";
 import { listRunEvents, listRunEventsBulk, listRuns } from "../../integrations/storage/threadStore";
 import { buildAssistantRunProjection } from "./agentActivity";
 
@@ -56,7 +55,6 @@ export async function upsertStreamingPreview(
         const bubble: AgentMessage = {
           id: bubbleId,
           role: "assistant",
-          author: i18n.t("agent:author.researchCopilot"),
           authorKey: "author.researchCopilot",
           content,
           status: "streaming",

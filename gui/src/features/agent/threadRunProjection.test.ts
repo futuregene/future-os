@@ -7,7 +7,6 @@ function message(id: string, patch: Partial<AgentMessage> = {}): AgentMessage {
   return {
     id,
     role: "assistant",
-    author: "A",
     authorKey: "author.researchCopilot",
     content: "",
     createdAt: "2026-01-01T00:00:00.000Z",

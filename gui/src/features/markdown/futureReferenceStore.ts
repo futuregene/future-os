@@ -4,6 +4,17 @@ import { useEffect, useSyncExternalStore } from "react";
 import { resolveMarkdownReferences } from "../../integrations/storage/markdownReferences";
 import { errorMessage } from "../../lib/errors";
 
+// Opportunistic write-through cache for markdown reference chips (run/tool/
+// artifact embeds). ONE consumer — chips subscribe via `useFutureReference` —
+// and intentionally MANY producers: any layer that already fetched an object
+// for its own purpose warms this cache with `upsertFutureReference*` so chips
+// resolve without extra IPC. Current producers: the context panel's data hook
+// (`useContextData`, bulk on poll), the send pipeline (the freshly-created run),
+// and thread-message loading (the latest run). This is deliberate — there is no
+// single "owner" effect, because forcing one would either duplicate those
+// fetches or route every fetch through this store. `useFutureReferences`
+// back-fills anything a producer never supplied (unresolved identities only).
+
 interface ReferenceIdentity {
   targetId: string;
   targetType: FutureReference["targetType"];
@@ -46,8 +57,8 @@ function loadFutureReferences(workspaceId: string, references: ReferenceIdentity
   for (const reference of references) {
     // The parsed `references` array gets a fresh identity on every streaming
     // delta, so this fires per keystroke. Already-resolved records stay hot via
-    // ContextPanel's poll (upsertFutureReferenceEntries), so re-resolving them
-    // is wasted IPC — only fetch unresolved/unknown identities.
+    // the context panel's data hook (upsertFutureReferenceEntries), so
+    // re-resolving them is wasted IPC — only fetch unresolved/unknown identities.
     if (records.get(storeKey(workspaceId, reference.targetType, reference.targetId))?.status === "resolved")
       continue;
     workspaceLoads.set(referenceIdentityKey(reference), reference);
@@ -89,7 +100,7 @@ export function upsertFutureReferenceEntries(
     records.delete(key);
     if (existing?.status === "resolved" && sameReferenceData(existing.data, entry.data)) {
       // Data is byte-identical to what's already resolved (the common case on
-      // ContextPanel's 1.5s poll). Re-store the SAME record object so the LRU
+      // the context panel's 1.5s data poll). Re-store the SAME record object so the LRU
       // position refreshes but the snapshot reference stays stable — otherwise a
       // fresh object would make every subscribed reference chip re-render each
       // tick even though nothing changed.

@@ -1,9 +1,9 @@
 import type { StoredRunEvent, StoredToolCall, StoredToolOutput } from "../../integrations/storage/threadStore";
 import type { AgentMessage } from "./agentThreadTypes";
 import { listRunEvents, listToolCalls, listToolOutputs } from "../../integrations/storage/threadStore";
-import { isRecord, truncate } from "../../lib/objects";
+import { truncate } from "../../lib/objects";
+import { toolCommand } from "../runs/toolInput";
 import { previousUserMessageBefore } from "./agentMessageFormatters";
-import { unwrapNestedJson } from "./approvalPayload";
 
 /**
  * Prompt construction for the "continue / retry a run" recovery flows. Kept out
@@ -102,20 +102,4 @@ function summarizeRunForPrompt(
   }
 
   return lines.join("\n");
-}
-
-function toolCommand(input: string | null | undefined) {
-  if (!input)
-    return null;
-
-  let parsed: unknown;
-  try {
-    parsed = unwrapNestedJson(input);
-  }
-  catch {
-    return null;
-  }
-  if (isRecord(parsed) && typeof parsed.command === "string" && parsed.command.trim())
-    return parsed.command;
-  return null;
 }
