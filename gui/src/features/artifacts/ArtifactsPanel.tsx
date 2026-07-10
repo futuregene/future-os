@@ -215,7 +215,7 @@ function ArtifactCard({
           <button
             aria-label={t("card.artifactActions", { title: artifact.title })}
             className={cn(
-              "pointer-events-auto relative z-10 inline-flex size-6 shrink-0 items-center justify-center rounded-md text-ink-muted opacity-0 transition-colors hover:bg-surface hover:text-ink group-hover:opacity-100",
+              "pointer-events-auto relative z-10 inline-flex size-6 shrink-0 items-center justify-center self-center rounded-md text-ink-muted opacity-0 transition-colors hover:bg-surface hover:text-ink group-hover:opacity-100",
               menu.position && "opacity-100",
             )}
             onClick={(event) => {
