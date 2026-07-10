@@ -7,6 +7,7 @@
   "loading": "Loading…",
   "loadFailed": "Couldn't read this folder",
   "retry": "Retry",
+  "actions": "Actions for {{name}}",
   "menu": {
     "attach": "Attach to context",
     "open": "Open",
