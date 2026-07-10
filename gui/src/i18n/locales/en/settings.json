@@ -193,5 +193,13 @@
     "clearing": "Clearing…",
     "confirmClearButton": "Confirm clear",
     "cancel": "Cancel"
+  },
+  "about": {
+    "license": "License",
+    "licenseValue": "MIT License",
+    "website": "Website",
+    "websiteLabel": "www.future-os.cn",
+    "openSource": "Open source",
+    "builtWith": "Built with open-source software, including {{projects}}"
   }
 }

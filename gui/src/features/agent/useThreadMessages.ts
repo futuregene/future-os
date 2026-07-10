@@ -13,16 +13,48 @@ interface UseThreadMessagesInput {
   workspaceId?: string | null;
 }
 
+interface ThreadCacheEntry {
+  messages: AgentMessage[];
+  recentRun: StoredRun | null;
+}
+
+/** Max cached threads before evicting the oldest. */
+const CACHE_MAX = 20;
+
 /**
  * Owns a thread's message list + recent-run status: loads/restores messages on
- * thread switch, keeps a live run polling while one is active, and exposes the
- * quiet reload used to swap a synthetic streaming bubble for the persisted
- * assistant message once a background run settles.
+ * thread switch, keeps a live run polling while one is active, and caches
+ * recently-visited threads so switching back is instant.
  */
 export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesInput) {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [loadingThread, setLoadingThread] = useState(true);
   const [recentRun, setRecentRun] = useState<StoredRun | null>(null);
+
+  // In-memory cache of recently loaded threads. Switching back to a cached
+  // thread restores messages instantly and then refreshes in the background.
+  const cacheRef = useRef(new Map<string, ThreadCacheEntry>());
+  // LRU order: most recently accessed threadId first.
+  const lruRef = useRef<string[]>([]);
+
+  function cachePut(tid: string, entry: ThreadCacheEntry) {
+    const cache = cacheRef.current;
+    if (!cache.has(tid) && cache.size >= CACHE_MAX) {
+      const oldest = lruRef.current.pop();
+      if (oldest)
+        cache.delete(oldest);
+    }
+    cache.set(tid, entry);
+    lruRef.current = [tid, ...lruRef.current.filter(id => id !== tid)];
+  }
+
+  function cacheGet(tid: string): ThreadCacheEntry | undefined {
+    const entry = cacheRef.current.get(tid);
+    if (entry) {
+      lruRef.current = [tid, ...lruRef.current.filter(id => id !== tid)];
+    }
+    return entry;
+  }
 
   // Tracks the thread this view currently shows. Since AgentThread is not keyed
   // by threadId (it stays mounted across thread switches), an async write from a
@@ -43,17 +75,15 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
         return;
       }
       const latestRun = runs[0] ?? null;
-      setRecentRun(latestRun);
+      if (targetThreadId === activeThreadIdRef.current) {
+        setRecentRun(latestRun);
+      }
       if (latestRun) {
         upsertFutureReferenceData(targetWorkspaceId, "run", latestRun.id, latestRun);
       }
     }
     catch {
-      // Run-status refresh is best-effort: a failure here must not blank the
-      // thread (it runs alongside listMessages in loadThreadMessages via
-      // Promise.all) or abort an in-flight send. Keep the previous recentRun
-      // until the next poll. The waiting-approval prompt is rendered separately
-      // by AgentThread from `activeApproval`, so no message rewrite is needed.
+      // Run-status refresh is best-effort.
     }
   }, []);
 
@@ -65,22 +95,25 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
       const storedMessages = await listMessages(targetThreadId);
       const agentMessages = storedMessages.map(toAgentMessage);
       const restoredMessages = await restoreMessageActivities(agentMessages, targetThreadId);
-      // Drop the result if the user switched threads while this was in flight —
-      // writing it now would paint the old thread's messages into the new view.
       if (targetThreadId !== activeThreadIdRef.current) {
         return;
       }
       setMessages(restoredMessages);
+      cachePut(targetThreadId, { messages: restoredMessages, recentRun: null });
     }
     catch {
       // Best-effort refresh: keep the current messages on failure.
     }
   }, []);
 
+  async function loadFromStore(tid: string, wid?: string | null) {
+    const [storedMessages] = await Promise.all([listMessages(tid), refreshRecentRun(tid, wid)]);
+    const agentMessages = storedMessages.map(toAgentMessage);
+    const restoredMessages = await restoreMessageActivities(agentMessages, tid);
+    return restoredMessages;
+  }
+
   useEffect(() => {
-    // Hand-rolled cancel guard (not useAsyncResource): loads messages, refreshes
-    // the recent run, and restores activities into several states at once, which
-    // doesn't map onto the primitive's single-resource shape. See gui/CLAUDE.md §4.
     let cancelled = false;
 
     async function loadThreadMessages() {
@@ -90,13 +123,32 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
         return;
       }
 
+      // Check cache first — restore instantly if available, then refresh.
+      const cached = cacheGet(threadId);
+      if (cached) {
+        setMessages(cached.messages);
+        setRecentRun(cached.recentRun);
+        setLoadingThread(false);
+        // Background refresh to pick up new messages / run changes.
+        try {
+          const restored = await loadFromStore(threadId, workspaceId);
+          if (!cancelled && threadId === activeThreadIdRef.current) {
+            setMessages(restored);
+            cachePut(threadId, { messages: restored, recentRun: null });
+          }
+        }
+        catch {
+          // Best-effort: keep the cached version on refresh failure.
+        }
+        return;
+      }
+
       setLoadingThread(true);
       try {
-        const [storedMessages] = await Promise.all([listMessages(threadId), refreshRecentRun(threadId, workspaceId)]);
-        const agentMessages = storedMessages.map(toAgentMessage);
-        const restoredMessages = await restoreMessageActivities(agentMessages, threadId);
+        const restoredMessages = await loadFromStore(threadId, workspaceId);
         if (!cancelled) {
           setMessages(restoredMessages);
+          cachePut(threadId, { messages: restoredMessages, recentRun: null });
         }
       }
       catch (error) {
@@ -128,10 +180,6 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     };
   }, [refreshRecentRun, workspaceId, threadId]);
 
-  // Stable flag so the poll effect keys on "is a run active", not on the
-  // recentRun object identity — refreshRecentRun replaces recentRun with a fresh
-  // object every tick, which would otherwise tear down and rebuild the interval
-  // (and re-render) each 1.5s.
   const isRunActive = Boolean(recentRun && !matchesSettledRun(recentRun.status));
 
   useEffect(() => {

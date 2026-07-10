@@ -191,5 +191,13 @@
     "clearing": "清空中…",
     "confirmClearButton": "确认清空",
     "cancel": "取消"
+  },
+  "about": {
+    "license": "许可证",
+    "licenseValue": "MIT 许可证",
+    "website": "官网",
+    "websiteLabel": "www.future-os.cn",
+    "openSource": "开源软件",
+    "builtWith": "基于以下开源软件构建：{{projects}}"
   }
 }

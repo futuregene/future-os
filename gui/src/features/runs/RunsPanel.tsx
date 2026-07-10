@@ -176,8 +176,8 @@ function ToolRow({
           <div className="flex items-start justify-between gap-2">
             <div
               className={cn(
-                "min-w-0 flex-1 wrap-break-word text-sm font-normal leading-5 text-ink",
-                isBash ? "whitespace-pre-wrap" : "truncate font-mono text-[0.85rem]",
+                "min-w-0 flex-1 wrap-break-word text-xs font-normal leading-5 text-ink",
+                isBash ? "whitespace-pre-wrap" : "truncate font-mono",
               )}
               title={rawPrimary}
             >

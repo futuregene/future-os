@@ -285,6 +285,61 @@ pub fn open_path(path: String) -> Result<(), crate::AppError> {
     open_path_with_system(trimmed)
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirEntry {
+    /// Last path component (display name).
+    name: String,
+    /// Absolute path to this entry.
+    path: String,
+    is_dir: bool,
+    /// Byte size for files; 0 for directories.
+    size: u64,
+    /// Last-modified time as Unix epoch millis, or None if unavailable.
+    modified: Option<u64>,
+}
+
+/// List a single directory level (no recursion) for the file-tree panel. The
+/// tree lazy-loads each level by calling this on expand. Entries are sorted
+/// directories-first, then case-insensitively by name. An individual entry that
+/// can't be stat'd is skipped rather than failing the whole listing, and
+/// symlinks are reported by their own metadata (not followed) so a symlink cycle
+/// can't turn one directory read into an unbounded walk. `~/.future` internals
+/// stay blocked via `ensure_path_allowed`.
+#[tauri::command]
+pub fn list_directory(path: String) -> Result<Vec<DirEntry>, crate::AppError> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("path cannot be empty.".to_string().into());
+    }
+    ensure_path_allowed(Path::new(trimmed))?;
+
+    let mut entries: Vec<DirEntry> = Vec::new();
+    for entry in std::fs::read_dir(trimmed)? {
+        let Ok(entry) = entry else { continue };
+        let Ok(meta) = entry.metadata() else { continue };
+        let is_dir = meta.is_dir();
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|elapsed| elapsed.as_millis() as u64);
+        entries.push(DirEntry {
+            name: entry.file_name().to_string_lossy().to_string(),
+            path: entry.path().to_string_lossy().to_string(),
+            is_dir,
+            size: if is_dir { 0 } else { meta.len() },
+            modified,
+        });
+    }
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(entries)
+}
+
 /// Open an http(s) or mailto URL in the user's default handler. The scheme is
 /// restricted to http/https/mailto so this can't be used to launch arbitrary
 /// local handlers (`file:`, custom app schemes, …) via a crafted url.

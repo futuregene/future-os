@@ -1,0 +1,15 @@
+{
+  "refresh": "刷新",
+  "refreshing": "正在刷新…",
+  "openWorkspace": "打开工作区",
+  "showHidden": "显示隐藏文件",
+  "empty": "此目录为空",
+  "loading": "正在加载…",
+  "loadFailed": "无法读取该目录",
+  "retry": "重试",
+  "menu": {
+    "attach": "附加到上下文",
+    "open": "打开",
+    "preview": "预览"
+  }
+}
