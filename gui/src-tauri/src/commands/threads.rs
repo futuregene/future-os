@@ -125,6 +125,28 @@ pub async fn get_thread_agent_state(
     }))
 }
 
+/// Fetch session entries from the agent (user, assistant, tool messages).
+/// Used as the primary message source — SQLite messages are a fallback.
+#[tauri::command]
+pub async fn get_session_entries(
+    thread_id: String,
+) -> Result<serde_json::Value, crate::AppError> {
+    let thread = store::get_thread(&thread_id)?
+        .ok_or_else(|| "Thread not found.".to_string())?;
+    let session_id = thread.agent_session_id.as_deref().unwrap_or(&thread.id);
+
+    let mut client = crate::agent_bridge::connect_agent().await
+        .map_err(|e| format!("Agent unavailable: {e}"))?;
+    let cmd = crate::agent_bridge::get_session_entries_command(session_id.to_string());
+    let resp = client.execute_command(cmd).await
+        .map_err(|e| format!("get_session_entries failed: {e}"))?
+        .into_inner();
+    if !resp.success {
+        return Err(resp.error.into());
+    }
+    serde_json::from_str(&resp.data).map_err(|e| format!("Parse error: {e}").into())
+}
+
 #[tauri::command]
 pub fn clear_finished_runs(thread_id: String) -> Result<usize, crate::AppError> {
     store::clear_finished_runs(&thread_id)

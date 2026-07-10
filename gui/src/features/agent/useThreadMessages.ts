@@ -2,11 +2,12 @@ import type { StoredRun } from "../../integrations/storage/threadStore";
 import type { AgentMessage } from "./agentThreadTypes";
 import { useCallback, useEffect, useRef, useState } from "react";
 import i18n from "../../i18n";
-import { listMessages, listRuns } from "../../integrations/storage/threadStore";
+import { getSessionEntries, listMessages, listRuns } from "../../integrations/storage/threadStore";
 import { errorMessage } from "../../lib/errors";
 import { usePolling } from "../../lib/usePolling";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
 import { matchesSettledRun, toAgentMessage } from "./agentMessageFormatters";
+import { entriesToMessages } from "./entryProjection";
 import { restoreMessageActivities } from "./threadRunProjection";
 
 interface UseThreadMessagesInput {
@@ -114,6 +115,20 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     return restoredMessages;
   }
 
+  // Try loading messages from the agent session first; fall back to SQLite.
+  async function loadFromAgent(tid: string, wid?: string | null) {
+    try {
+      const result = await getSessionEntries(tid);
+      if (!result?.entries?.length) return null;
+      const messages = entriesToMessages(result.entries as unknown as import("./entryProjection").SessionEntry[]);
+      if (!messages.length) return null;
+      await refreshRecentRun(tid, wid).catch(() => {});
+      return messages;
+    } catch {
+      return null;
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
 
@@ -130,9 +145,10 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
         setMessages(cached.messages);
         setRecentRun(cached.recentRun);
         setLoadingThread(false);
-        // Background refresh to pick up new messages / run changes.
+        // Background refresh: try agent first, fall back to store.
         try {
-          const restored = await loadFromStore(threadId, workspaceId);
+          const restored = await loadFromAgent(threadId, workspaceId)
+            ?? await loadFromStore(threadId, workspaceId);
           if (!cancelled && threadId === activeThreadIdRef.current) {
             setMessages(restored);
             cachePut(threadId, { messages: restored, recentRun: null });
@@ -146,7 +162,8 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
 
       setLoadingThread(true);
       try {
-        const restoredMessages = await loadFromStore(threadId, workspaceId);
+        const restoredMessages = await loadFromAgent(threadId, workspaceId)
+          ?? await loadFromStore(threadId, workspaceId);
         if (!cancelled) {
           setMessages(restoredMessages);
           cachePut(threadId, { messages: restoredMessages, recentRun: null });
