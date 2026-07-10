@@ -4,7 +4,7 @@ import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { ArrowDown } from "lucide-react";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { cn } from "../../lib/cn";
@@ -73,6 +73,8 @@ export function AgentThread({
     handleSend,
     loadingThread,
     messages,
+    saveScrollPosition,
+    consumeRestoredScrollTop,
   } = useAgentThreadState({
     thread,
     loadingStore,
@@ -93,13 +95,43 @@ export function AgentThread({
 
   // Sticky auto-scroll: follow streaming output only while pinned near the
   // bottom; re-pins on thread switch and follows the growing message list.
-  const { handleScroll, scrollToLatest, showJumpToLatest } = useStickyAutoScroll({
+  // When switching back to a cached thread, skip the initial scroll-to-bottom.
+  const restoredScrollRef = useRef(false);
+  const { handleScroll: handleStickyScroll, scrollToLatest, showJumpToLatest } = useStickyAutoScroll({
     scrollRef,
     resetKey: thread?.id ?? null,
     contentKey: messages,
     onScroll: handleScrollbarVisibility,
     onContentSettled: () => updateFloatingScrollbar(false),
   });
+
+  // Compose scroll handler: track position for cache + delegate to sticky logic.
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (el) saveScrollPosition(el.scrollTop);
+    handleStickyScroll();
+  }, [saveScrollPosition, handleStickyScroll, scrollRef]);
+
+  // Restore scroll position from cache after messages render (before paint).
+  useLayoutEffect(() => {
+    const top = consumeRestoredScrollTop();
+    const el = scrollRef.current;
+    if (top !== null && top > 0 && el) {
+      restoredScrollRef.current = true;
+      // Use requestAnimationFrame so the DOM layout is settled.
+      requestAnimationFrame(() => {
+        el.scrollTop = top;
+      });
+    }
+  }, [consumeRestoredScrollTop, scrollRef]);
+
+  // Save scroll position when leaving this thread.
+  useEffect(() => {
+    return () => {
+      const el = scrollRef.current;
+      if (el) saveScrollPosition(el.scrollTop);
+    };
+  }, [saveScrollPosition, scrollRef, thread?.id]);
 
   // A run is in flight while its assistant bubble is still streaming; the agent
   // rejects a concurrent prompt, so the composer is disabled until it settles.

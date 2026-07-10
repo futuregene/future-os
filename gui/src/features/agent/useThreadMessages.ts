@@ -16,6 +16,7 @@ interface UseThreadMessagesInput {
 interface ThreadCacheEntry {
   messages: AgentMessage[];
   recentRun: StoredRun | null;
+  scrollTop: number;
 }
 
 /** Max cached threads before evicting the oldest. */
@@ -36,6 +37,12 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
   const cacheRef = useRef(new Map<string, ThreadCacheEntry>());
   // LRU order: most recently accessed threadId first.
   const lruRef = useRef<string[]>([]);
+  // Saved scroll position for the currently-active thread (updated on scroll,
+  // written to cache on thread switch). Null = not yet saved.
+  const pendingScrollTopRef = useRef<number | null>(null);
+  // Scroll position restored from cache on switch-back — the caller reads this
+  // once and then we clear it so it doesn't re-apply on a content refresh.
+  const restoredScrollTopRef = useRef<number | null>(null);
 
   function cachePut(tid: string, entry: ThreadCacheEntry) {
     const cache = cacheRef.current;
@@ -45,6 +52,8 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
       if (oldest)
         cache.delete(oldest);
     }
+    // Carry forward any pending scroll position for the thread being replaced.
+    entry.scrollTop = pendingScrollTopRef.current ?? 0;
     cache.set(tid, entry);
     lruRef.current = [tid, ...lruRef.current.filter(id => id !== tid)];
   }
@@ -56,6 +65,18 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
       lruRef.current = [tid, ...lruRef.current.filter(id => id !== tid)];
     }
     return entry;
+  }
+
+  /** Save the current active thread's scroll position before switching away. */
+  const saveScrollPosition = useCallback((scrollTop: number) => {
+    pendingScrollTopRef.current = scrollTop;
+  }, []);
+
+  /** The scroll position restored from the last cache hit, or null. */
+  function consumeRestoredScrollTop(): number | null {
+    const top = restoredScrollTopRef.current;
+    restoredScrollTopRef.current = null;
+    return top;
   }
 
   // Tracks the thread this view currently shows. Since AgentThread is not keyed
@@ -107,7 +128,7 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
         return;
       }
       setMessages(restoredMessages);
-      cachePut(targetThreadId, { messages: restoredMessages, recentRun: null });
+      cachePut(targetThreadId, { messages: restoredMessages, recentRun: null, scrollTop: 0 });
     }
     catch {
       // Best-effort refresh: keep the current messages on failure.
@@ -134,6 +155,7 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
       // Check cache first — restore instantly if available, then refresh.
       const cached = cacheGet(threadId);
       if (cached) {
+        restoredScrollTopRef.current = cached.scrollTop;
         setMessages(cached.messages);
         setRecentRun(cached.recentRun);
         setLoadingThread(false);
@@ -142,7 +164,7 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
           const restored = await loadFromStore(threadId, workspaceId);
           if (!cancelled && threadId === activeThreadIdRef.current) {
             setMessages(restored);
-            cachePut(threadId, { messages: restored, recentRun: null });
+            cachePut(threadId, { messages: restored, recentRun: null, scrollTop: 0 });
           }
         }
         catch {
@@ -156,7 +178,7 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
         const restoredMessages = await loadFromStore(threadId, workspaceId);
         if (!cancelled) {
           setMessages(restoredMessages);
-          cachePut(threadId, { messages: restoredMessages, recentRun: null });
+          cachePut(threadId, { messages: restoredMessages, recentRun: null, scrollTop: 0 });
         }
       }
       catch (error) {
@@ -213,5 +235,7 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     refreshRecentRun,
     setMessages,
     setRecentRun,
+    saveScrollPosition,
+    consumeRestoredScrollTop,
   };
 }
