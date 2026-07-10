@@ -2,6 +2,7 @@ import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
 import { MoreHorizontal } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { getCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { ThreadItemMenu } from "./ActivityRailMenus";
@@ -42,6 +43,9 @@ export function ThreadListItem({
     onDismiss: () => onMenuOpenChange(false),
   });
 
+  // Agent session_name is authoritative; DB title is fallback.
+  const displayTitle = getCachedAgentState(thread.id)?.sessionName || thread.title;
+
   return (
     <div
       ref={menuRef}
@@ -64,10 +68,10 @@ export function ThreadListItem({
           fall through to this button; the actions trigger and menu keep a higher
           stacking (z-10 / z-40) so they stay clickable and never mis-fire. */}
       <button
-        aria-label={thread.title}
+        aria-label={displayTitle}
         className="absolute inset-0 rounded-md"
         onClick={() => onSelectThread(thread)}
-        title={thread.title}
+        title={displayTitle}
         type="button"
       />
       {/* Spacer keeps the non-compact title indent after dropping the (uniform,
@@ -79,14 +83,14 @@ export function ThreadListItem({
           archived ? "text-ink-muted" : "text-ink-soft",
         )}
       >
-        {thread.title}
+        {displayTitle}
       </span>
       {archived ? <span className="pointer-events-none shrink-0 text-[11px] text-ink-muted group-hover/thread:hidden">{t("activityRail.archived")}</span> : null}
       <span className="pointer-events-none flex shrink-0">
         <ThreadRunIndicator status={runStatus?.status} unread={unread} />
       </span>
       <button
-        aria-label={t("activityRail.threadActions", { title: thread.title })}
+        aria-label={t("activityRail.threadActions", { title: displayTitle })}
         className={cn(
           "relative z-10 hidden size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft group-hover/thread:inline-flex",
           menuOpen && "inline-flex",
@@ -95,7 +99,7 @@ export function ThreadListItem({
           event.stopPropagation();
           onMenuOpenChange(!menuOpen);
         }}
-        title={t("activityRail.threadActions", { title: thread.title })}
+        title={t("activityRail.threadActions", { title: displayTitle })}
         type="button"
       >
         <MoreHorizontal className="size-3.5" />
