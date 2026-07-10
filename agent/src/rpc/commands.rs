@@ -118,6 +118,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 event_bus,
                 broadcaster,
                 approval_gate,
+                session_manager,
             ) = {
                 let sess = session.read().unwrap();
                 (
@@ -127,6 +128,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     sess.event_bus.clone(),
                     sess.broadcaster.clone(),
                     sess.approval_gate.clone(),
+                    sess.session_manager.clone(),
                 )
             };
 
@@ -179,8 +181,17 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             } else {
                 cmd.session_id.clone()
             };
+
+            // If this session ID already exists on disk (e.g. a forked session),
+            // load the existing entries and restore them after creating the session.
+            let existing_entries = session_manager
+                .load(&new_session_id)
+                .ok()
+                .filter(|s| !s.entries.is_empty())
+                .map(|s| (s.entries, s.model.clone()));
+
             let mut new_sess = ServerSession::new_with_shared_loop(
-                new_session_id,
+                new_session_id.clone(),
                 Arc::new(tokio::sync::RwLock::new(fresh_loop)),
                 Arc::new(crate::session::Manager::default_for(&session_cwd)),
                 &session_cwd,
@@ -192,6 +203,16 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             new_sess.model = inherit_model.clone();
             *new_sess.compaction_model.write().unwrap() = inherit_model;
             new_sess.thinking_level = inherit_thinking;
+
+            // Restore entries from a pre-existing session (forked or persisted).
+            if let Some((entries, disk_model)) = existing_entries {
+                let mut msgs = new_sess.messages.write().unwrap();
+                *msgs = crate::session::entries_to_agent_messages(&entries);
+                if !disk_model.is_empty() {
+                    new_sess.model = disk_model.clone();
+                    *new_sess.compaction_model.write().unwrap() = disk_model;
+                }
+            }
 
             // Add to sessions map
             let new_id = state.create_session(new_sess);
@@ -463,10 +484,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             );
             state.create_session(new_sess);
 
-            RpcResponse::ok(id, "fork", serde_json::json!({"cancelled": false}))
+            RpcResponse::ok(id, "fork", serde_json::json!({"sessionId": forked_id}))
         }
         "get_fork_messages" => {
-            // Load session from disk to get entry IDs (needed for fork)
+            // Load session from disk to get entry IDs (needed for fork).
             let (session_manager, session_id) = {
                 let sess = session.read().unwrap();
                 (sess.session_manager.clone(), sess.session_id.clone())
@@ -505,6 +526,73 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 id,
                 "get_fork_messages",
                 serde_json::json!({"messages": user_entries}),
+            )
+        }
+        "get_session_entries" => {
+            // Return all displayable entries from a session (user, assistant,
+            // tool). Used to import history into a forked GUI thread.
+            let (session_manager, session_id) = {
+                let sess = session.read().unwrap();
+                (sess.session_manager.clone(), sess.session_id.clone())
+            };
+            let entries: Vec<serde_json::Value> =
+                session_manager
+                    .load(&session_id)
+                    .map(|s| {
+                        s.entries
+                        .iter()
+                        .filter(|e| {
+                            matches!(
+                                e.entry_type.as_str(),
+                                "user" | "assistant" | "tool"
+                            )
+                        })
+                        .map(|e| {
+                            let content_text = e.content.as_ref()
+                                .map(|c| {
+                                    if let Some(arr) = c.as_array() {
+                                        arr.iter()
+                                            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                                            .collect::<Vec<_>>()
+                                            .join(" ")
+                                    } else {
+                                        c.as_str().unwrap_or("").to_string()
+                                    }
+                                })
+                                .unwrap_or_default();
+                            // Build the display content for this entry. Only include the
+                            // actual visible text — no thinking or tool formatting.
+                            // The forked session's messages should look identical to
+                            // original GUI messages (which store thinking/tools in
+                            // run events, not in the message content).
+                            let full_content = if e.entry_type == "tool" {
+                                // Tool entries: show the result text, or a placeholder.
+                                if content_text.is_empty() {
+                                    String::new()
+                                } else {
+                                    content_text
+                                }
+                            } else {
+                                // User and assistant entries: just the text content.
+                                content_text
+                            };
+
+                            serde_json::json!({
+                                "id": e.id,
+                                "role": e.role,
+                                "content": full_content,
+                                "name": e.name,
+                                "tool_args": e.tool_args,
+                                "timestamp": e.timestamp.to_rfc3339(),
+                            })
+                        })
+                        .collect()
+                    })
+                    .unwrap_or_default();
+            RpcResponse::ok(
+                id,
+                "get_session_entries",
+                serde_json::json!({"entries": entries}),
             )
         }
         "get_last_assistant_text" => {

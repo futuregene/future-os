@@ -494,10 +494,21 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
     for e in &mut entries {
         e.id = generate_entry_id();
     }
+    // Extract parent's thinking_level from its original session_info.
+    let parent_thinking_level = parent
+        .entries
+        .first()
+        .filter(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
+        .and_then(|e| e.content.as_ref())
+        .and_then(|c| c.get("thinking_level"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+
     // Prepend session_info with parent_session_id so tree relationships survive save/load
     let info = serde_json::json!({
         "cwd": parent.cwd,
         "model": parent.model,
+        "thinking_level": parent_thinking_level,
         "parent_session_id": parent.id,
     });
     entries.insert(
@@ -513,7 +524,7 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
             summary: String::new(),
             model: parent.model.clone(),
             label: String::new(),
-            thinking_level: String::new(),
+            thinking_level: parent_thinking_level.to_string(),
             branch_summary: None,
             custom_type: String::new(),
             custom_data: None,
@@ -542,22 +553,18 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
 }
 
 fn for_each_entry<'a>(entries: &'a [SessionEntry], from_id: &str) -> Vec<&'a SessionEntry> {
-    // Build an id→entry map for O(1) parent lookups.
-    let by_id: std::collections::HashMap<&str, &SessionEntry> =
-        entries.iter().map(|e| (e.id.as_str(), e)).collect();
-
-    // Walk from the target entry up to the root via parent_id.
-    let mut chain = vec![];
-    let mut current = by_id.get(from_id).copied();
-    while let Some(entry) = current {
-        chain.push(entry);
-        if entry.parent_id.is_empty() {
+    // Include all entries from the beginning up to and including from_id,
+    // skipping the original session_info (fork_session prepends its own).
+    let mut result = vec![];
+    for e in entries.iter() {
+        if e.entry_type != ENTRY_TYPE_SESSION_INFO {
+            result.push(e);
+        }
+        if e.id == from_id {
             break;
         }
-        current = by_id.get(entry.parent_id.as_str()).copied();
     }
-    chain.reverse();
-    chain
+    result
 }
 
 /// Convert SessionEntry to AgentMessage for TUI display

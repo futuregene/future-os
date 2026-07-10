@@ -102,6 +102,7 @@ export function ActivityRail({
   const isFullscreen = useIsFullscreen();
   const reserveTrafficLights = isMacOS && !isFullscreen;
   const [openThreadMenuId, setOpenThreadMenuId] = useState<string | null>(null);
+  const [openWorkspaceMenuId, setOpenWorkspaceMenuId] = useState<string | null>(null);
   const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Set<string>>(() => new Set());
 
   function toggleWorkspaceCollapsed(workspaceId: string) {
@@ -253,8 +254,16 @@ export function ActivityRail({
                         const collapsed = collapsedWorkspaces.has(workspace.id);
                         return (
                           <div key={workspace.id} className="space-y-0.5">
-                            {/* Group header: hover only, no selected state (req 4). */}
-                            <div className="group flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle">
+                            {/* Group header: hover only, no selected state (req 4).
+                                Right-click anywhere on the row opens the same
+                                actions menu as the `...` button. */}
+                            <div
+                              className="group flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle"
+                              onContextMenu={(event) => {
+                                event.preventDefault();
+                                setOpenWorkspaceMenuId(workspace.id);
+                              }}
+                            >
                               <button
                                 aria-label={collapsed ? t("activityRail.expandWorkspace") : t("activityRail.collapseWorkspace")}
                                 className="inline-flex size-4 shrink-0 items-center justify-center text-ink-muted transition-colors hover:text-ink-soft"
@@ -274,8 +283,10 @@ export function ActivityRail({
                                 </span>
                               </button>
                               <WorkspaceHeaderMenu
+                                open={openWorkspaceMenuId === workspace.id}
                                 workspace={workspace}
                                 onDelete={onDeleteWorkspace}
+                                onOpenChange={open => setOpenWorkspaceMenuId(open ? workspace.id : null)}
                                 onRename={onRenameWorkspace}
                               />
                               <button

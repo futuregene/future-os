@@ -180,6 +180,7 @@ fn new_chat_thread_input() -> crate::store::CreateThreadInput {
         model_provider: None,
         model_id: None,
         thinking_level: None,
+        agent_session_id: None,
     }
 }
 

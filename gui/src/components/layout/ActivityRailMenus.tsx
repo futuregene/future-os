@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import type { StoredWorkspace } from "../../integrations/storage/threadStore";
 import { Archive, FolderOpen, MoreHorizontal, Pencil, Pin, Trash2 } from "lucide-react";
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { openPath } from "../../integrations/storage/files";
 import { cn } from "../../lib/cn";
@@ -62,14 +61,22 @@ export function ThreadItemMenu({
   );
 }
 
-/** Workspace-header actions dropdown (rename / reveal in file manager / delete). */
+/**
+ * Workspace-header actions dropdown (rename / reveal in file manager / delete).
+ * Open state is controlled by the caller so the same menu can be triggered from
+ * either the `...` button or a right-click on the workspace row.
+ */
 export function WorkspaceHeaderMenu({
   workspace,
+  open,
   onDelete,
+  onOpenChange,
   onRename,
 }: {
   workspace: StoredWorkspace;
+  open: boolean;
   onDelete: (workspace: StoredWorkspace) => void;
+  onOpenChange: (open: boolean) => void;
   onRename: (workspace: StoredWorkspace) => void;
 }) {
   const { t } = useTranslation("layout");
@@ -80,8 +87,7 @@ export function WorkspaceHeaderMenu({
     : isWindows
       ? t("activityRail.revealInExplorer")
       : t("activityRail.revealInFileManager");
-  const [open, setOpen] = useState(false);
-  const layerRef = useDismissableLayer<HTMLDivElement>({ enabled: open, onDismiss: () => setOpen(false) });
+  const layerRef = useDismissableLayer<HTMLDivElement>({ enabled: open, onDismiss: () => onOpenChange(false) });
   const { menuRef, dropUp } = useDropUpMenu(open);
 
   return (
@@ -94,7 +100,7 @@ export function WorkspaceHeaderMenu({
         )}
         onClick={(event) => {
           event.stopPropagation();
-          setOpen(value => !value);
+          onOpenChange(!open);
         }}
         title={t("activityRail.workspaceActions", { name: workspace.name })}
         type="button"
@@ -110,13 +116,13 @@ export function WorkspaceHeaderMenu({
                 dropUp ? "bottom-7" : "top-7",
               )}
             >
-              <ThreadMenuItem icon={<Pencil className="size-3.5" />} onClick={() => onRename(workspace)} onClose={() => setOpen(false)}>
+              <ThreadMenuItem icon={<Pencil className="size-3.5" />} onClick={() => onRename(workspace)} onClose={() => onOpenChange(false)}>
                 {t("activityRail.rename")}
               </ThreadMenuItem>
-              <ThreadMenuItem icon={<FolderOpen className="size-3.5" />} onClick={() => void openPath(workspace.path).catch(() => {})} onClose={() => setOpen(false)}>
+              <ThreadMenuItem icon={<FolderOpen className="size-3.5" />} onClick={() => void openPath(workspace.path).catch(() => {})} onClose={() => onOpenChange(false)}>
                 {revealLabel}
               </ThreadMenuItem>
-              <ThreadMenuItem danger icon={<Trash2 className="size-3.5" />} onClick={() => onDelete(workspace)} onClose={() => setOpen(false)}>
+              <ThreadMenuItem danger icon={<Trash2 className="size-3.5" />} onClick={() => onDelete(workspace)} onClose={() => onOpenChange(false)}>
                 {t("activityRail.delete")}
               </ThreadMenuItem>
             </MenuPanel>
