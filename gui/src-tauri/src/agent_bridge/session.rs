@@ -118,10 +118,12 @@ pub(super) fn workspace_path_for_thread(thread_id: &str) -> Result<String, crate
 }
 
 /// Fork a session at the given user message. Returns the new agent session id.
-/// `user_message_index` is the 0-based index of the user message in the thread.
+/// Also imports the forked session history as GUI messages so the new thread
+/// displays the preserved conversation immediately.
+/// The user message is matched by content text against agent entries.
 pub async fn fork_agent_session(
     thread_id: &str,
-    user_message_index: usize,
+    user_message_content: &str,
 ) -> Result<String, crate::AppError> {
     let thread = store::get_thread(thread_id)?
         .ok_or_else(|| "Thread could not be loaded.".to_string())?;
@@ -146,11 +148,18 @@ pub async fn fork_agent_session(
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
 
+    // Match by content — find the agent entry whose content matches.
     let entry_id = messages
-        .get(user_message_index)
+        .iter()
+        .rev() // search from newest to oldest
+        .find(|m| {
+            m.get("content")
+                .and_then(|c| c.as_str())
+                .is_some_and(|c| c.trim() == user_message_content.trim())
+        })
         .and_then(|m| m.get("id"))
         .and_then(|id| id.as_str())
-        .ok_or_else(|| format!("No user message at index {user_message_index}"))?;
+        .ok_or_else(|| "No matching user message found in agent session.".to_string())?;
 
     // Fork the session at that entry.
     let fork_response = client
@@ -174,5 +183,57 @@ pub async fn fork_agent_session(
         return Err("Fork did not return a session.".into());
     }
 
-    Ok(new_session_id)
+    // Read the forked session's entries and import them as GUI messages
+    // so the new thread shows the preserved conversation immediately.
+    let fork_messages_response = client
+        .execute_command(get_fork_messages_command(new_session_id.clone()))
+        .await
+        .map_err(|error| format!("Unable to list fork session messages: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the fork-session messages request.")?;
+
+    let fork_entries: Vec<serde_json::Value> =
+        serde_json::from_str::<serde_json::Value>(&fork_messages_response.data)
+            .ok()
+            .and_then(|v| v.get("messages").cloned())
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+
+    // Create the GUI thread bound to the forked agent session.
+    let new_thread = store::create_thread(store::CreateThreadInput {
+        mode: thread.mode.clone(),
+        title: Some(format!("{} (fork)", thread.title)),
+        workspace_id: Some(thread.workspace_id.clone()),
+        workspace_path: None,
+        workspace_name: None,
+        model_provider: thread.model_provider.clone(),
+        model_id: thread.model_id.clone(),
+        thinking_level: thread.thinking_level.clone(),
+        agent_session_id: Some(new_session_id.clone()),
+    })?;
+
+    // Import agent entries as GUI messages.
+    for entry in &fork_entries {
+        let content = entry
+            .get("content")
+            .and_then(|c| c.as_str())
+            .unwrap_or("");
+        let role = entry
+            .get("role")
+            .and_then(|r| r.as_str())
+            .unwrap_or("user");
+        if content.is_empty() {
+            continue;
+        }
+        let _ = store::append_message(store::AppendMessageInput {
+            thread_id: new_thread.id.clone(),
+            run_id: None,
+            role: role.to_string(),
+            content_type: Some("markdown".to_string()),
+            content: content.to_string(),
+            status: Some("complete".to_string()),
+        });
+    }
+
+    Ok(new_thread.id)
 }

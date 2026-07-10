@@ -152,6 +152,6 @@ export async function appendMessage(input: {
 }
 
 /** Fork the agent session at the given user message, returning the new session id. */
-export function forkThread(threadId: string, userMessageIndex: number) {
-  return invokeCommand<string>("fork_thread", { threadId, userMessageIndex });
+export function forkThread(threadId: string, userMessageContent: string) {
+  return invokeCommand<string>("fork_thread", { threadId, userMessageContent });
 }
