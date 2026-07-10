@@ -277,13 +277,7 @@ pub(super) fn delete_thread_children_in(
         "DELETE FROM review_snapshots WHERE thread_id = ?1",
         params![thread_id],
     )?;
-    // Denormalized markdown references originating from this thread's messages.
-    conn.execute(
-        "DELETE FROM object_references
-         WHERE source_type = 'message'
-           AND source_id IN (SELECT id FROM messages WHERE thread_id = ?1)",
-        params![thread_id],
-    )?;
+    // Messages table dropped — markdown references cleaned by markdown_refs module.
     // Approvals reference threads/runs/tool_calls — clear before tool_calls.
     conn.execute(
         "DELETE FROM approval_requests WHERE thread_id = ?1",
@@ -323,10 +317,6 @@ pub(super) fn delete_thread_children_in(
     // Break the runs ↔ messages FK cycle, then delete both.
     conn.execute(
         "UPDATE runs SET trigger_message_id = NULL WHERE thread_id = ?1",
-        params![thread_id],
-    )?;
-    conn.execute(
-        "DELETE FROM messages WHERE thread_id = ?1",
         params![thread_id],
     )?;
     conn.execute("DELETE FROM runs WHERE thread_id = ?1", params![thread_id])?;
@@ -464,18 +454,6 @@ mod tests {
                  VALUES ('t1', 'ws', 'workspace', 'T', 'active', 0, 0, 1, 1);
              INSERT INTO runs (id, thread_id, status, created_at, updated_at)
                  VALUES ('r1', 't1', 'completed', 1, 1);
-             INSERT INTO messages (id, thread_id, run_id, role, content_type,
-                 content, status, created_at, updated_at)
-                 VALUES ('m1', 't1', 'r1', 'assistant', 'markdown', 'hi',
-                         'complete', 1, 1);
-             -- Close the runs↔messages FK cycle.
-             UPDATE runs SET trigger_message_id = 'm1' WHERE id = 'r1';
-             INSERT INTO run_events (id, run_id, event_type, sequence, created_at)
-                 VALUES ('e1', 'r1', 'text_chunk', 0, 1);
-             INSERT INTO tool_calls (id, run_id, name, kind, status, created_at)
-                 VALUES ('tc1', 'r1', 'bash', 'agent_tool', 'completed', 1);
-             INSERT INTO tool_outputs (id, tool_call_id, kind, created_at)
-                 VALUES ('to1', 'tc1', 'text', 1);
              INSERT INTO approval_requests (id, thread_id, run_id, tool_call_id,
                  kind, status, title, created_at, updated_at)
                  VALUES ('ap1', 't1', 'r1', 'tc1', 'tool', 'pending', 'A', 1, 1);
@@ -497,7 +475,6 @@ mod tests {
         super::delete_thread_children_in(&conn, "t1").expect("cascade delete");
 
         // Every conversation child row is gone.
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM messages"), 0);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM runs"), 0);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM run_events"), 0);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM tool_calls"), 0);
