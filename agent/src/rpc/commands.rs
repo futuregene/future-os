@@ -508,8 +508,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             )
         }
         "get_session_entries" => {
-            // Return ALL entries from a session (including assistant/tool).
-            // Used to import history into a forked GUI thread.
+            // Return all displayable entries from a session (user, assistant,
+            // tool). Used to import history into a forked GUI thread.
             let (session_manager, session_id) = {
                 let sess = session.read().unwrap();
                 (sess.session_manager.clone(), sess.session_id.clone())
@@ -520,7 +520,12 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     .map(|s| {
                         s.entries
                         .iter()
-                        .filter(|e| e.entry_type == "user" || e.entry_type == "assistant")
+                        .filter(|e| {
+                            matches!(
+                                e.entry_type.as_str(),
+                                "user" | "assistant" | "tool"
+                            )
+                        })
                         .map(|e| {
                             let content_text = e.content.as_ref()
                                 .map(|c| {
@@ -534,10 +539,19 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                                     }
                                 })
                                 .unwrap_or_default();
+                            // Prepend thinking content (if any) for assistant entries.
+                            let full_content = if e.thinking.is_empty() {
+                                content_text
+                            } else {
+                                format!("> 💭\n>\n> {}\n\n---\n\n{}",
+                                    e.thinking.replace('\n', "\n> "),
+                                    content_text
+                                )
+                            };
                             serde_json::json!({
                                 "id": e.id,
                                 "role": e.role,
-                                "content": content_text,
+                                "content": full_content,
                             })
                         })
                         .collect()

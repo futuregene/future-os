@@ -5,8 +5,8 @@
 use tonic::transport::Channel;
 
 use super::client::{
-    fork_command, get_fork_messages_command, get_session_entries_command, get_state_command,
-    new_session_command, set_permission_level_command, set_sandbox_policy_command, RpcResponseExt,
+    fork_command, get_session_entries_command, get_state_command, new_session_command,
+    set_permission_level_command, set_sandbox_policy_command, RpcResponseExt,
 };
 use crate::{agent_proto::FutureAgentClient, store};
 
@@ -133,33 +133,43 @@ pub async fn fork_agent_session(
 
     let mut client = super::client::connect_agent().await?;
 
-    // Get forkable user messages from the agent to find the matching entry_id.
+    // Get all session entries to find the entry matching the user message
+    // and determine the fork point (the entry right after the matched one,
+    // so the AI response is included in the preserved history).
     let response = client
-        .execute_command(get_fork_messages_command(session_id.clone()))
+        .execute_command(get_session_entries_command(session_id.clone()))
         .await
-        .map_err(|error| format!("Unable to list fork messages: {error}"))?
+        .map_err(|error| format!("Unable to list session entries: {error}"))?
         .into_inner()
-        .ok_or_rpc_error("Future Agent rejected the fork-messages request.")?;
+        .ok_or_rpc_error("Future Agent rejected the session-entries request.")?;
 
-    let messages: Vec<serde_json::Value> =
+    let entries: Vec<serde_json::Value> =
         serde_json::from_str::<serde_json::Value>(&response.data)
             .ok()
-            .and_then(|v| v.get("messages").cloned())
+            .and_then(|v| v.get("entries").cloned())
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
 
-    // Match by content — find the agent entry whose content matches.
-    let entry_id = messages
+    // Find the user message entry matching the content, then fork from the
+    // *next* entry after it (so the AI response following this user message
+    // is included in the forked history).
+    let match_idx = entries
         .iter()
-        .rev() // search from newest to oldest
-        .find(|m| {
-            m.get("content")
+        .position(|e| {
+            e.get("content")
                 .and_then(|c| c.as_str())
                 .is_some_and(|c| c.trim() == user_message_content.trim())
+                && e.get("role").and_then(|r| r.as_str()) == Some("user")
         })
-        .and_then(|m| m.get("id"))
-        .and_then(|id| id.as_str())
         .ok_or_else(|| "No matching user message found in agent session.".to_string())?;
+
+    // Fork from the entry after the matched user message (or the matched
+    // entry itself if it's the last one — includes the AI response).
+    let fork_idx = (match_idx + 1).min(entries.len() - 1);
+    let entry_id = entries[fork_idx]
+        .get("id")
+        .and_then(|id| id.as_str())
+        .ok_or_else(|| "No fork entry found.".to_string())?;
 
     // Fork the session at that entry.
     let fork_response = client
