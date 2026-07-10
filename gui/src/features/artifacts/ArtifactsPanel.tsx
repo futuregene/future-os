@@ -1,10 +1,12 @@
 import type { StoredArtifact } from "../../integrations/storage/threadStore";
+import type { FileKind } from "../../lib/fileType";
 import { open } from "@tauri-apps/plugin-dialog";
-import { BookText, FileArchive, FileBraces, FileCode, FileDown, FileImage, FileTerminal, FileText, Info, Trash2, Upload } from "lucide-react";
+import { Info, Trash2, Upload } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { FileTypeIcon } from "../../components/ui/FileTypeIcon";
 import { TextInput } from "../../components/ui/TextInput";
 import {
   deleteArtifact,
@@ -14,6 +16,7 @@ import {
 } from "../../integrations/storage/threadStore";
 import { formatDateTime } from "../../lib/date";
 import { errorMessage } from "../../lib/errors";
+import { fileKind } from "../../lib/fileType";
 import { formatBytes } from "../../lib/format";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { READ_SOURCE_MAX_BYTES } from "../agent/attachments";
@@ -181,27 +184,24 @@ function ArtifactCard({
   );
 }
 
-/**
- * Left-badge icon by artifact kind, detected from `artifactType` + extension.
- * Ordered most-specific first: PDF / Markdown / HTML are matched before the
- * generic code / document fallbacks so each gets its own glyph.
- */
+/** Left-badge icon by artifact kind, from the `artifactType` hint + extension. */
 function artifactIcon(artifact: StoredArtifact) {
-  const path = artifact.path ?? "";
-  const className = "mt-0.5 size-4 shrink-0 text-accent";
-  if (artifact.artifactType === "image" || /\.(?:avif|bmp|gif|ico|jpe?g|png|svg|tiff?|webp)$/i.test(path))
-    return <FileImage className={className} />;
-  if (artifact.artifactType === "pdf" || /\.pdf$/i.test(path))
-    return <BookText className={className} />;
-  if (/\.(?:markdown|md)$/i.test(path))
-    return <FileDown className={className} />;
-  if (/\.(?:htm|html|xhtml)$/i.test(path))
-    return <FileCode className={className} />;
-  if (/\.(?:7z|bz2|gz|rar|tar|tgz|xz|zip)$/i.test(path))
-    return <FileArchive className={className} />;
-  if (/\.(?:bash|bat|cmd|fish|ps1|sh|zsh)$/i.test(path))
-    return <FileTerminal className={className} />;
-  if (artifact.artifactType === "code" || /\.(?:c|cc|cpp|cs|css|go|h|hpp|java|js|json|jsonl|jsx|kt|php|py|rb|rs|scss|swift|toml|ts|tsx|xml|ya?ml)$/i.test(path))
-    return <FileBraces className={className} />;
-  return <FileText className={className} />;
+  return <FileTypeIcon className="mt-0.5 size-4 shrink-0 text-accent" kind={artifactKind(artifact)} />;
+}
+
+/**
+ * Map an artifact to a {@link FileKind}. The stored `artifactType` hint wins for
+ * image/pdf (an image artifact may lack a file extension); everything else is
+ * classified from the path, with `code` as the fallback when the type hint says
+ * code but the extension is unknown.
+ */
+function artifactKind(artifact: StoredArtifact): FileKind {
+  if (artifact.artifactType === "image")
+    return "image";
+  if (artifact.artifactType === "pdf")
+    return "pdf";
+  const byPath = fileKind(artifact.path ?? "");
+  if (byPath !== "text")
+    return byPath;
+  return artifact.artifactType === "code" ? "code" : "text";
 }

@@ -12,6 +12,12 @@ export interface MentionEditorHandle {
   /** Empty the editor. */
   clear: () => void;
   focus: () => void;
+  /**
+   * Insert a file mention pill programmatically (e.g. from the file tree),
+   * without an active `@` query. `path` is workspace-relative; the pill lands at
+   * the caret when it's inside the editor, otherwise appended at the end.
+   */
+  insertMention: (file: { path: string; name: string }) => void;
 }
 
 interface MentionEditorProps {
@@ -69,6 +75,7 @@ export function MentionEditor({
       syncEmpty();
     },
     focus: () => editorRef.current?.focus(),
+    insertMention,
   }));
 
   function closeMenu() {
@@ -121,28 +128,22 @@ export function MentionEditor({
     };
   }, [query, workspaceId, disabled]);
 
-  function insertFile(file: WorkspaceFileResult) {
-    const editor = editorRef.current;
-    const selection = window.getSelection();
-    const context = mentionContext(editor);
-    if (!editor || !selection || !context)
-      return;
-
-    // Replace the typed `@query` with the pill.
-    const range = document.createRange();
-    range.setStart(context.textNode, context.atOffset);
-    range.setEnd(context.textNode, context.caretOffset);
-    range.deleteContents();
-
+  // Build the atomic (contenteditable=false) pill span for a file mention. Its
+  // `data-path` holds the `./relative` target that serialize() reads back.
+  function buildPill(file: { path: string; name: string }): HTMLSpanElement {
     const pill = document.createElement("span");
     pill.setAttribute(PILL_ATTR, "file");
     pill.setAttribute("data-path", `./${file.path}`);
     pill.setAttribute("contenteditable", "false");
     pill.className = "text-accent";
     pill.textContent = file.name;
+    return pill;
+  }
 
-    // Insert a trailing space first, then the pill before it, so the caret can
-    // rest after the (editable) space rather than inside the atomic pill.
+  // Drop a pill (followed by an editable space) at `range`, then place the caret
+  // after the space so it rests outside the atomic pill.
+  function placePill(range: Range, file: { path: string; name: string }) {
+    const pill = buildPill(file);
     const gap = document.createTextNode(" ");
     range.insertNode(gap);
     range.insertNode(pill);
@@ -150,12 +151,57 @@ export function MentionEditor({
     const after = document.createRange();
     after.setStartAfter(gap);
     after.collapse(true);
-    selection.removeAllRanges();
-    selection.addRange(after);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(after);
 
     closeMenu();
-    editor.focus();
+    editorRef.current?.focus();
     syncEmpty();
+  }
+
+  function insertFile(file: WorkspaceFileResult) {
+    const editor = editorRef.current;
+    const context = mentionContext(editor);
+    if (!editor || !context)
+      return;
+
+    // Replace the typed `@query` with the pill.
+    const range = document.createRange();
+    range.setStart(context.textNode, context.atOffset);
+    range.setEnd(context.textNode, context.caretOffset);
+    range.deleteContents();
+    placePill(range, file);
+  }
+
+  function insertMention(file: { path: string; name: string }) {
+    const editor = editorRef.current;
+    if (!editor)
+      return;
+    editor.focus();
+
+    const selection = window.getSelection();
+    const caret = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+    let range: Range;
+    if (caret && editor.contains(caret.commonAncestorContainer)) {
+      // Caret is inside the editor — insert there.
+      range = caret;
+      range.deleteContents();
+    }
+    else {
+      // No caret in the editor — append at the end, with a leading space so the
+      // pill doesn't butt against existing text.
+      range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      if (!isEditorEmpty(editor)) {
+        const lead = document.createTextNode(" ");
+        range.insertNode(lead);
+        range.setStartAfter(lead);
+        range.collapse(true);
+      }
+    }
+    placePill(range, file);
   }
 
   function insertNewline() {
