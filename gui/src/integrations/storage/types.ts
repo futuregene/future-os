@@ -6,9 +6,7 @@ export interface StoredThread {
   status: "active" | "archived" | "deleted";
   pinned: boolean;
   readonly: boolean;
-  modelProvider?: string | null;
-  modelId?: string | null;
-  thinkingLevel?: string | null;
+  // modelProvider, modelId, thinkingLevel removed — now from agent state cache
   agentSessionId?: string | null;
   lastMessageAt?: number | null;
   lastOpenedAt?: number | null;

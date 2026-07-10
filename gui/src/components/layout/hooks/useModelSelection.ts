@@ -69,12 +69,12 @@ export function useModelSelection({
         : "no_models";
   // Agent state is authoritative for model/thinking; DB values are fallback.
   const agentState = getCachedAgentState(activeThread?.id);
-  const rawThreadModelId = agentState?.model ?? activeThread?.modelId ?? selectedModelId;
+  const rawThreadModelId = agentState?.model ?? selectedModelId;
   const activeThreadModelId = modelOption(rawThreadModelId, visibleModelOptions)
     ? rawThreadModelId
     : resolveInitialModelId(visibleModelOptions);
   const activeThinkingLevel = activeThread
-    ? normalizeThinkingLevel(agentState?.thinkingLevel ?? activeThread.thinkingLevel ?? modelThinkingLevel(activeThreadModelId, visibleModelOptions))
+    ? normalizeThinkingLevel(agentState?.thinkingLevel ?? modelThinkingLevel(activeThreadModelId, visibleModelOptions))
     : selectedThinkingLevel;
 
   useEffect(() => {
