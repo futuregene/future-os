@@ -1,9 +1,8 @@
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { StoredArtifact } from "../../integrations/storage/threadStore";
 import type { FileKind } from "../../lib/fileType";
 import type { LinkMenuItem } from "../markdown/renderers/LinkContextMenu";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Upload } from "lucide-react";
+import { MoreHorizontal, Upload } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
@@ -17,6 +16,7 @@ import {
   openPath,
   storedTimeToIso,
 } from "../../integrations/storage/threadStore";
+import { cn } from "../../lib/cn";
 import { formatDateTime } from "../../lib/date";
 import { errorMessage } from "../../lib/errors";
 import { fileKind } from "../../lib/fileType";
@@ -183,26 +183,23 @@ function ArtifactCard({
     { danger: true, divider: true, label: t("menu.delete"), onSelect: () => void handleDelete() },
   ];
 
-  function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      onSelectArtifact(artifact.id);
-    }
-  }
-
   return (
     <>
       <div
-        aria-label={t("card.viewArtifact", { title: artifact.title })}
-        className="cursor-pointer rounded-md border border-line-soft bg-surface p-3 transition-colors hover:border-line hover:bg-surface-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
-        onClick={() => onSelectArtifact(artifact.id)}
+        className="group relative rounded-md border border-line-soft bg-surface p-3 transition-colors hover:border-line hover:bg-surface-subtle"
         onContextMenu={menu.open}
-        onKeyDown={handleKeyDown}
-        role="button"
-        tabIndex={0}
-        title={t("card.viewDetails")}
       >
-        <div className="flex items-start gap-2">
+        {/* Full-card click target → detail. The content below is
+            pointer-events-none so clicks fall through to this button; the
+            actions button keeps a higher stacking so it stays clickable. */}
+        <button
+          aria-label={t("card.viewArtifact", { title: artifact.title })}
+          className="absolute inset-0 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+          onClick={() => onSelectArtifact(artifact.id)}
+          title={t("card.viewDetails")}
+          type="button"
+        />
+        <div className="pointer-events-none relative flex items-start gap-2">
           {artifactIcon(artifact)}
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold text-ink">{artifact.title}</div>
@@ -215,6 +212,21 @@ function ArtifactCard({
                 )
               : null}
           </div>
+          <button
+            aria-label={t("card.artifactActions", { title: artifact.title })}
+            className={cn(
+              "pointer-events-auto relative z-10 inline-flex size-6 shrink-0 items-center justify-center rounded-md text-ink-muted opacity-0 transition-colors hover:bg-surface hover:text-ink group-hover:opacity-100",
+              menu.position && "opacity-100",
+            )}
+            onClick={(event) => {
+              event.stopPropagation();
+              menu.open(event);
+            }}
+            title={t("card.artifactActions", { title: artifact.title })}
+            type="button"
+          >
+            <MoreHorizontal className="size-4" />
+          </button>
         </div>
       </div>
 
