@@ -226,8 +226,8 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
                     )}
                 <div className="mt-1 text-[11px] text-ink-muted">
                   {filePreview.truncated
-                    ? t("detail.sizeBytesTruncated", { size: filePreview.size.toLocaleString() })
-                    : t("detail.sizeBytes", { size: filePreview.size.toLocaleString() })}
+                    ? t("detail.sizeBytesTruncated", { size: new Intl.NumberFormat(i18n.language).format(filePreview.size) })
+                    : t("detail.sizeBytes", { size: new Intl.NumberFormat(i18n.language).format(filePreview.size) })}
                 </div>
               </div>
             )

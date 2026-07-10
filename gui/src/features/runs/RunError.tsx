@@ -1,6 +1,7 @@
 import type { StoredRun } from "../../integrations/storage/threadStore";
+import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
-import { formatErrorType } from "./runDisplayFormatters";
+import { errorTypeMeta } from "./runErrorMeta";
 
 /**
  * Run error display, shared by the run list (compact `summary`) and the run
@@ -16,7 +17,8 @@ export function RunError({
   errorType?: StoredRun["errorType"];
   variant: "summary" | "banner";
 }) {
-  const meta = formatErrorType(errorType);
+  const { t } = useTranslation("runs");
+  const meta = errorTypeMeta(errorType);
   const banner = variant === "banner";
   return (
     <div className={banner ? "mt-3 rounded-md border border-danger-line bg-danger-soft p-2" : "mt-2"}>
@@ -24,7 +26,7 @@ export function RunError({
         ? (
             <div className={cn("flex items-center gap-1.5 text-xs font-medium", banner && "mb-1", meta.color)}>
               <meta.Icon className="size-3.5 shrink-0" />
-              <span>{meta.label}</span>
+              <span>{t(meta.labelKey)}</span>
             </div>
           )
         : null}

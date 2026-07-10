@@ -48,7 +48,8 @@ export function ReviewHeader({
   review: GitReview;
   reviewBase: ReviewBase;
 }) {
-  const { t } = useTranslation("review");
+  const { t, i18n } = useTranslation("review");
+  const numberFormat = new Intl.NumberFormat(i18n.language);
   return (
     <div className="space-y-2 border-b border-line-soft pb-3">
       <div className="flex items-center gap-3 text-sm">
@@ -58,11 +59,11 @@ export function ReviewHeader({
         </div>
         <span className="font-medium text-success">
           +
-          {review.additions.toLocaleString()}
+          {numberFormat.format(review.additions)}
         </span>
         <span className="font-medium text-danger">
           -
-          {review.deletions.toLocaleString()}
+          {numberFormat.format(review.deletions)}
         </span>
       </div>
       {review.upstream

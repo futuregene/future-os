@@ -8,12 +8,18 @@ import { useEffect, useState } from "react";
  *
  * Keep the interval coarse (default 60s) — relative labels only change at the
  * minute granularity, so ticking faster just wastes renders.
+ *
+ * Pass `enabled: false` to freeze the clock (no interval, no re-renders) — e.g.
+ * a live elapsed timer that should only tick while its run is streaming.
  */
-export function useNow(intervalMs: number = 60_000): number {
+export function useNow(intervalMs: number = 60_000, enabled: boolean = true): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
+    if (!enabled)
+      return;
+    setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), intervalMs);
     return () => clearInterval(id);
-  }, [intervalMs]);
+  }, [intervalMs, enabled]);
   return now;
 }

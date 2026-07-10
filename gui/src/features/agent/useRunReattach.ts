@@ -55,6 +55,11 @@ export function useRunReattach({
   // survives a `loadThreadMessages` array-replace that lands mid-stream — the next
   // tick simply re-inserts it. That resilience is what makes a returned-to run
   // reconnect instead of showing an empty bubble the reload silently dropped.
+  //
+  // Deliberately hand-rolled rather than `usePolling`: the `() => !cancelled`
+  // token handed to `upsertStreamingPreview` is the only guard that stops a
+  // stale run's in-flight async upsert from applying after a thread/run switch —
+  // exactly the race-sensitive async case `usePolling` documents it can't cover.
   useEffect(() => {
     if (!threadId || !activeRunId || sendingRef.current)
       return;
