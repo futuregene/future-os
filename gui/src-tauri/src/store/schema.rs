@@ -37,22 +37,13 @@ CREATE TABLE IF NOT EXISTS threads (
     deleted_at INTEGER
 );
 
-CREATE TABLE IF NOT EXISTS messages (
-    id TEXT PRIMARY KEY,
-    thread_id TEXT NOT NULL REFERENCES threads(id),
-    run_id TEXT REFERENCES runs(id),
-    role TEXT NOT NULL,
-    content_type TEXT NOT NULL DEFAULT 'markdown',
-    content TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'complete',
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-);
+-- messages, run_events, tool_calls, tool_outputs — removed.
+-- Message history is now read from agent session JSONL.
 
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
     thread_id TEXT NOT NULL REFERENCES threads(id),
-    trigger_message_id TEXT REFERENCES messages(id),
+    trigger_message_id TEXT,
     status TEXT NOT NULL,
     model_provider TEXT,
     model_id TEXT,
@@ -64,40 +55,11 @@ CREATE TABLE IF NOT EXISTS runs (
     updated_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS run_events (
-    id TEXT PRIMARY KEY,
-    run_id TEXT NOT NULL REFERENCES runs(id),
-    event_type TEXT NOT NULL,
-    payload TEXT,
-    sequence INTEGER NOT NULL,
-    created_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS tool_calls (
-    id TEXT PRIMARY KEY,
-    run_id TEXT NOT NULL REFERENCES runs(id),
-    name TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    input TEXT,
-    status TEXT NOT NULL,
-    started_at INTEGER,
-    ended_at INTEGER,
-    created_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS tool_outputs (
-    id TEXT PRIMARY KEY,
-    tool_call_id TEXT NOT NULL REFERENCES tool_calls(id),
-    kind TEXT NOT NULL,
-    content TEXT,
-    created_at INTEGER NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS approval_requests (
     id TEXT PRIMARY KEY,
     thread_id TEXT NOT NULL REFERENCES threads(id),
     run_id TEXT REFERENCES runs(id),
-    tool_call_id TEXT REFERENCES tool_calls(id),
+    tool_call_id TEXT,
     kind TEXT NOT NULL,
     status TEXT NOT NULL,
     title TEXT NOT NULL,
@@ -140,7 +102,7 @@ CREATE TABLE IF NOT EXISTS review_changesets (
     id TEXT PRIMARY KEY,
     thread_id TEXT NOT NULL REFERENCES threads(id),
     run_id TEXT REFERENCES runs(id),
-    tool_call_id TEXT REFERENCES tool_calls(id),
+    tool_call_id TEXT,
     title TEXT NOT NULL,
     summary TEXT,
     status TEXT NOT NULL,
@@ -373,6 +335,11 @@ pub(super) const DROPPED_TABLES: &[&str] = &[
     "data_sources",
     "skill_enablements",
     "skills",
+    // messages / run_events / tool_calls / tool_outputs — now from agent JSONL
+    "messages",
+    "run_events",
+    "tool_outputs",
+    "tool_calls",
 ];
 
 /// Columns to drop from existing tables (now read from agent).
