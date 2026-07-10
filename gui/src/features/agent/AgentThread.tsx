@@ -4,7 +4,7 @@ import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { ArrowDown } from "lucide-react";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { cn } from "../../lib/cn";
@@ -73,9 +73,6 @@ export function AgentThread({
     handleSend,
     loadingThread,
     messages,
-    restoredScrollTop,
-    saveScrollPosition,
-    setRestoredScrollTop,
   } = useAgentThreadState({
     thread,
     loadingStore,
@@ -96,54 +93,13 @@ export function AgentThread({
 
   // Sticky auto-scroll: follow streaming output only while pinned near the
   // bottom; re-pins on thread switch and follows the growing message list.
-  // When restoredScrollTop is set (cache hit), skip the initial stick and
-  // restore the saved position instead.
-  const { handleScroll: handleStickyScroll, scrollToLatest, showJumpToLatest } = useStickyAutoScroll({
+  const { handleScroll, scrollToLatest, showJumpToLatest } = useStickyAutoScroll({
     scrollRef,
     resetKey: thread?.id ?? null,
     contentKey: messages,
-    restoreScrollTop: restoredScrollTop,
     onScroll: handleScrollbarVisibility,
     onContentSettled: () => updateFloatingScrollbar(false),
   });
-
-  // Clear restoredScrollTop after useStickyAutoScroll has applied it, so it
-  // doesn't re-apply on subsequent content changes (e.g. background refresh).
-  useEffect(() => {
-    if (restoredScrollTop != null && restoredScrollTop > 0) {
-      setRestoredScrollTop(null);
-    }
-  }, [restoredScrollTop, setRestoredScrollTop]);
-
-  // Track whether the user has manually scrolled away from the initial bottom
-  // position. We skip saving scrollTop during auto-scroll so the cached
-  // position reflects the user's actual reading spot, not the sticky bottom.
-  const didUserScrollRef = useRef(false);
-  useEffect(() => {
-    didUserScrollRef.current = false;
-  }, [thread?.id]);
-
-  // Compose scroll handler: track position for cache + delegate to sticky logic.
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (el && thread?.id) {
-      // Only save position after the user has scrolled away from the bottom.
-      const atBottom = el.scrollHeight - el.clientHeight - el.scrollTop < 48;
-      if (!atBottom) didUserScrollRef.current = true;
-      if (didUserScrollRef.current) saveScrollPosition(thread.id, el.scrollTop);
-    }
-    handleStickyScroll();
-  }, [saveScrollPosition, handleStickyScroll, scrollRef, thread?.id]);
-
-  // Save scroll position when leaving this thread. Only saves if the user
-  // actually scrolled — otherwise the initial bottom position gets cached.
-  useEffect(() => {
-    return () => {
-      if (!didUserScrollRef.current) return;
-      const el = scrollRef.current;
-      if (el && thread?.id) saveScrollPosition(thread.id, el.scrollTop);
-    };
-  }, [saveScrollPosition, scrollRef, thread?.id]);
 
   // A run is in flight while its assistant bubble is still streaming; the agent
   // rejects a concurrent prompt, so the composer is disabled until it settles.
