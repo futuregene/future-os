@@ -44,7 +44,8 @@ install-gui-release:
 
 # Symlink the built-in skill bundles into the agent's app-skills directory
 # so the agent discovers them on startup.  Pulls the latest from the skills
-# submodule first, then links each skill.
+# submodule first, then links each skill.  Orphaned symlinks (skills removed
+# from the repo) are cleaned up.
 install-skills:
 	git submodule update --init --remote skills
 	@mkdir -p "$${HOME}/.future/agent/skills"
@@ -55,6 +56,14 @@ install-skills:
 		rm -rf "$$link"; \
 		ln -s "$$abs" "$$link"; \
 		echo "  ✓ $$name"; \
+	done
+	@for link in "$${HOME}/.future/agent/skills"/*; do \
+		[ -L "$$link" ] || continue; \
+		name=$$(basename "$$link"); \
+		if [ ! -d "skills/builtin/$$name" ]; then \
+			rm -rf "$$link"; \
+			echo "  ✗ $$name (removed)"; \
+		fi; \
 	done
 	@echo "Linked built-in skills to ~/.future/agent/skills/"
 
