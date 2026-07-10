@@ -1,8 +1,11 @@
 import type { RefObject } from "react";
 import { Fragment } from "react";
 import { MenuPanel } from "../../../components/ui/MenuPanel";
+import { cn } from "../../../lib/cn";
 
 export interface LinkMenuItem {
+  /** Style the item as destructive (e.g. delete). */
+  danger?: boolean;
   /** Draw a separator line above this item. */
   divider?: boolean;
   label: string;
@@ -40,7 +43,10 @@ export function LinkContextMenu({
         <Fragment key={item.label}>
           {item.divider ? <div className="my-1 border-t border-line-soft" /> : null}
           <button
-            className="block w-full px-3 py-1.5 text-left text-sm text-ink hover:bg-surface-subtle"
+            className={cn(
+              "block w-full px-3 py-1.5 text-left text-sm",
+              item.danger ? "text-danger hover:bg-danger-soft" : "text-ink hover:bg-surface-subtle",
+            )}
             onClick={() => {
               close();
               item.onSelect();
