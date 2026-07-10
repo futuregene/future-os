@@ -523,9 +523,10 @@ export function ContextPanel({
             : (
                 <ArtifactsPanel
                   artifacts={artifacts}
-                  threadId={activeThread.id}
                   onChanged={refreshContext}
                   onSelectArtifact={handleSelectArtifact}
+                  threadId={activeThread.id}
+                  workspacePath={activeWorkspace?.path ?? null}
                 />
               )
           : null}
