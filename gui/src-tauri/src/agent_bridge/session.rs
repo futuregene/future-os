@@ -237,8 +237,10 @@ pub async fn fork_agent_session(
             .get("role")
             .and_then(|r| r.as_str())
             .unwrap_or("user");
-        // Skip entries with no visible text.
-        if content.trim().is_empty() {
+        // Only import user and assistant text. Tool entries and intermediate
+        // assistant entries (thinking-only, no text) are skipped — original
+        // sessions store only final replies, not individual tool results.
+        if content.trim().is_empty() || role == "tool" {
             continue;
         }
         let _ = store::append_message(store::AppendMessageInput {
