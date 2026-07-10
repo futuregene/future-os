@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArtifactDetailPanel } from "../../features/artifacts/ArtifactDetailPanel";
 import { ArtifactsPanel } from "../../features/artifacts/ArtifactsPanel";
+import { FileTreePanel } from "../../features/filetree/FileTreePanel";
 import { upsertFutureReferenceEntries } from "../../features/markdown/futureReferenceStore";
 import { ReviewPanel } from "../../features/review/ReviewPanel";
 import { RunInspectPanel } from "../../features/runs/RunInspectPanel";
@@ -28,22 +29,36 @@ import { EmptyState } from "../ui/EmptyState";
 import { IconButton } from "../ui/IconButton";
 import { Select } from "../ui/Select";
 
-export type ContextTab = "runs" | "review" | "artifacts";
+export type ContextTab = "runs" | "review" | "artifacts" | "files";
 export type { ReviewBase };
 
+// The Files tab appears for every thread — its root is the thread's workspace
+// path (chat threads use their temporary workspace), which is available
+// immediately, independent of the git/review capability probe.
 const gitTabs = [
-  { value: "runs", labelKey: "contextPanel.runs" },
   { value: "review", labelKey: "contextPanel.review" },
+  { value: "files", labelKey: "contextPanel.files" },
+  { value: "runs", labelKey: "contextPanel.runs" },
 ] satisfies Array<{ value: ContextTab; labelKey: string }>;
 
 const fileTabs = [
-  { value: "runs", labelKey: "contextPanel.runs" },
   { value: "artifacts", labelKey: "contextPanel.artifacts" },
+  { value: "files", labelKey: "contextPanel.files" },
+  { value: "runs", labelKey: "contextPanel.runs" },
 ] satisfies Array<{ value: ContextTab; labelKey: string }>;
 
 const pendingTabs = [
+  { value: "files", labelKey: "contextPanel.files" },
   { value: "runs", labelKey: "contextPanel.runs" },
 ] satisfies Array<{ value: ContextTab; labelKey: string }>;
+
+// On a thread switch, hold off blanking + showing the loading spinner: a local
+// fetch usually resolves in tens of ms, so the previous thread's data simply
+// swaps for the new one with no flash. Only if the fetch is still running after
+// this delay do we blank and show the spinner...
+const LOADING_SPINNER_DELAY_MS = 200;
+// ...and once shown, keep it visible at least this long so it can't itself flash.
+const LOADING_SPINNER_MIN_MS = 200;
 
 interface ContextPanelProps {
   activeThread: StoredThread | null;
@@ -86,9 +101,10 @@ export function ContextPanel({
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const refreshGenerationRef = useRef(0);
-  // Tracks the last thread we seeded a default tab for, so the seed runs once
-  // per thread and never fights a later manual tab choice.
-  const appliedDefaultThreadRef = useRef<string | null>(null);
+  // Guards the once-per-open default-tab seed: armed (false) while the panel is
+  // closed, tripped (true) after seeding so a thread switch mid-open never
+  // re-seeds. See the seeding effect below.
+  const seededForOpenRef = useRef(false);
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadMode = activeThread?.mode ?? null;
   const activeWorkspaceId = activeWorkspace?.id ?? activeThread?.workspaceId ?? null;
@@ -122,7 +138,7 @@ export function ContextPanel({
       }, null)
     : null;
 
-  const refreshContext = useCallback(async (options?: { showLoading?: boolean; ensureGit?: boolean }) => {
+  const refreshContext = useCallback(async (options?: { ensureGit?: boolean }) => {
     const refreshGeneration = refreshGenerationRef.current + 1;
     refreshGenerationRef.current = refreshGeneration;
     const isCurrentRefresh = () => refreshGenerationRef.current === refreshGeneration;
@@ -136,15 +152,9 @@ export function ContextPanel({
       return;
     }
 
-    const showLoading = options?.showLoading ?? false;
-    if (showLoading) {
-      setRuns([]);
-      setToolsByRun({});
-      setArtifacts([]);
-      setGitReview(null);
-      setLoading(true);
-    }
-
+    // Note: blanking + the loading spinner are driven by the thread-switch
+    // bootstrap effect (delayed + min-duration), not here — so a fast local
+    // refresh just swaps data in without a flash, and polls never blank.
     try {
       // When a workspace thread is opened, make sure its directory is under git
       // before the review query runs, so the Review tab and branch changes show
@@ -200,14 +210,6 @@ export function ContextPanel({
         setToolsByRun({});
         setArtifacts([]);
         setGitReview(null);
-      }
-    }
-    finally {
-      // Always clear the flag this refresh set, even if a concurrent poll
-      // superseded it (bumping refreshGenerationRef) — otherwise `loading`
-      // stays stuck true and surfaces as the loading text once the list empties.
-      if (showLoading) {
-        setLoading(false);
       }
     }
   }, [activeTab, activeThreadId, activeThreadMode, activeWorkspaceId, reviewBase, debouncedReviewCustomBase]);
@@ -277,10 +279,58 @@ export function ContextPanel({
     return () => clearTimeout(timer);
   }, [reviewCustomBase]);
 
-  // Thread-changed bootstrap: blank + ensure git only when the active thread
-  // switches, so tab/base/base-typing changes never clear the loaded panel.
+  // Thread-changed bootstrap: fetch the new thread's context (and ensure git),
+  // but avoid the loading flash on fast local switches. We keep showing the
+  // previous thread's data and only blank + show the spinner if the fetch is
+  // still running after LOADING_SPINNER_DELAY_MS; once shown, the spinner stays
+  // for at least LOADING_SPINNER_MIN_MS so it can't flash off immediately.
   useEffect(() => {
-    void refreshContext({ showLoading: true, ensureGit: true });
+    if (activeThreadId === null) {
+      void refreshContext();
+      return;
+    }
+    let cancelled = false;
+    let spinnerShownAt: number | null = null;
+    let minTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const spinnerTimer = setTimeout(() => {
+      if (cancelled)
+        return;
+      spinnerShownAt = performance.now();
+      setRuns([]);
+      setToolsByRun({});
+      setArtifacts([]);
+      setGitReview(null);
+      setLoading(true);
+    }, LOADING_SPINNER_DELAY_MS);
+
+    void refreshContext({ ensureGit: true }).finally(() => {
+      if (cancelled)
+        return;
+      clearTimeout(spinnerTimer);
+      if (spinnerShownAt === null) {
+        // Fast path: spinner never appeared — data just swapped in. (Also
+        // clears any spinner stranded true by a rapid earlier switch.)
+        setLoading(false);
+        return;
+      }
+      const remaining = LOADING_SPINNER_MIN_MS - (performance.now() - spinnerShownAt);
+      if (remaining <= 0) {
+        setLoading(false);
+        return;
+      }
+      minTimer = setTimeout(() => {
+        if (!cancelled)
+          setLoading(false);
+      }, remaining);
+    });
+
+    return () => {
+      cancelled = true;
+      clearTimeout(spinnerTimer);
+      if (minTimer)
+        clearTimeout(minTimer);
+    };
     // Keyed on the active thread only; refreshContext is intentionally omitted.
     // eslint-disable-next-line react/exhaustive-deps
   }, [activeThreadId]);
@@ -298,20 +348,23 @@ export function ContextPanel({
     setSelectedToolId(null);
   }, [activeThreadId]);
 
-  // Default the panel to the content tab (Review for workspace threads,
-  // Artifacts for chat) rather than Runs when a thread opens. Applied once per
-  // thread and only after the workspace kind resolves, so we land on the real
-  // tab (not the runs-only pending set) and never override a manual choice.
+  // Seed the content tab (Review for workspace threads, Artifacts for chat)
+  // each time the panel OPENS — not per thread. So opening the panel lands on
+  // the work-output tab, but while it stays open, switching threads keeps
+  // whatever tab you're on. Only seeds after the workspace kind resolves, so we
+  // pick the real tab (not the runs-only pending set).
   useEffect(() => {
-    if (activeThreadId === null || workspaceKindPending)
+    if (!expanded) {
+      seededForOpenRef.current = false; // Re-arm for the next open.
       return;
-    if (appliedDefaultThreadRef.current === activeThreadId)
+    }
+    if (activeThreadId === null || workspaceKindPending || seededForOpenRef.current)
       return;
-    appliedDefaultThreadRef.current = activeThreadId;
+    seededForOpenRef.current = true;
     const preferred: ContextTab = isWorkspaceThread ? "review" : "artifacts";
     if (activeTab !== preferred)
       onTabChange(preferred);
-  }, [activeThreadId, isWorkspaceThread, workspaceKindPending, activeTab, onTabChange]);
+  }, [expanded, activeThreadId, isWorkspaceThread, workspaceKindPending, activeTab, onTabChange]);
 
   useEffect(() => {
     const unsubscribers = [
@@ -475,6 +528,9 @@ export function ContextPanel({
                   onSelectArtifact={handleSelectArtifact}
                 />
               )
+          : null}
+        {!showInitialLoading && activeThread && activeTab === "files"
+          ? <FileTreePanel isWorkspace={isWorkspaceThread} rootPath={activeWorkspace?.path ?? null} />
           : null}
       </div>
     </aside>

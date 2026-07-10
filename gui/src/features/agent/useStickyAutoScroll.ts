@@ -1,5 +1,5 @@
 import type { RefObject } from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /** Within this many px of the bottom, auto-follow streaming output. */
 const STICK_THRESHOLD_PX = 48;
@@ -63,7 +63,7 @@ export function useStickyAutoScroll({
       return;
     stickToBottomRef.current = true;
     setShowJumpToLatest(false);
-    scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: "smooth" });
+    scrollContainer.scrollTop = scrollContainer.scrollHeight;
   }, [scrollRef]);
 
   // Opening/switching a thread starts pinned to the latest message.
@@ -72,7 +72,9 @@ export function useStickyAutoScroll({
     setShowJumpToLatest(false);
   }, [resetKey]);
 
-  useEffect(() => {
+  // useLayoutEffect so the scroll-to-bottom happens before the browser paints,
+  // avoiding a visible "flash at top → jump to bottom" when switching threads.
+  useLayoutEffect(() => {
     const scrollContainer = scrollRef.current;
     if (!scrollContainer)
       return;
@@ -81,10 +83,7 @@ export function useStickyAutoScroll({
     // scrolled up, leave their position but surface the jump button once the
     // still-growing content pushes them far enough from the bottom.
     if (stickToBottomRef.current) {
-      scrollContainer.scrollTo({
-        top: scrollContainer.scrollHeight,
-        behavior: "auto",
-      });
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
     }
     else {
       const distance = scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;

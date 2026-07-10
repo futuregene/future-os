@@ -40,6 +40,13 @@ pub fn list_run_events(run_id: String) -> Result<Vec<store::RunEventRecord>, cra
 }
 
 #[tauri::command]
+pub fn list_run_events_bulk(
+    run_ids: Vec<String>,
+) -> Result<Vec<(String, Vec<store::RunEventRecord>)>, crate::AppError> {
+    store::list_run_events_bulk(&run_ids)
+}
+
+#[tauri::command]
 pub fn list_tool_calls(run_id: String) -> Result<Vec<store::ToolCallRecord>, crate::AppError> {
     store::list_tool_calls(&run_id)
 }
