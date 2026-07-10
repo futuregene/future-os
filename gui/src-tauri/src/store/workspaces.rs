@@ -330,10 +330,6 @@ mod tests {
                  VALUES ('{ws}_t', '{ws}', 'workspace', 'T', 'active', 0, 0, 1, 1);
              INSERT INTO runs (id, thread_id, status, created_at, updated_at)
                  VALUES ('{ws}_r', '{ws}_t', 'completed', 1, 1);
-             INSERT INTO messages (id, thread_id, run_id, role, content_type,
-                 content, status, created_at, updated_at)
-                 VALUES ('{ws}_m', '{ws}_t', '{ws}_r', 'user', 'markdown', 'hi',
-                         'complete', 1, 1);
              INSERT INTO artifacts (id, workspace_id, thread_id, run_id, title,
                  artifact_type, created_at, updated_at)
                  VALUES ('{ws}_a', '{ws}', '{ws}_t', '{ws}_r', 'A', 'markdown', 1, 1);
