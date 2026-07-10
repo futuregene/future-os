@@ -37,9 +37,6 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
   const cacheRef = useRef(new Map<string, ThreadCacheEntry>());
   // LRU order: most recently accessed threadId first.
   const lruRef = useRef<string[]>([]);
-  // Saved scroll position for the currently-active thread (updated on scroll,
-  // written to cache on thread switch). Null = not yet saved.
-  const pendingScrollTopRef = useRef<number | null>(null);
   // Scroll position restored from cache on switch-back — the caller reads this
   // once and then we clear it so it doesn't re-apply on a content refresh.
   const restoredScrollTopRef = useRef<number | null>(null);
@@ -52,8 +49,11 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
       if (oldest)
         cache.delete(oldest);
     }
-    // Carry forward any pending scroll position for the thread being replaced.
-    entry.scrollTop = pendingScrollTopRef.current ?? 0;
+    // Preserve any previously-saved scroll position.
+    const existing = cache.get(tid);
+    if (existing && existing.scrollTop > 0 && entry.scrollTop === 0) {
+      entry.scrollTop = existing.scrollTop;
+    }
     cache.set(tid, entry);
     lruRef.current = [tid, ...lruRef.current.filter(id => id !== tid)];
   }
@@ -67,9 +67,12 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     return entry;
   }
 
-  /** Save the current active thread's scroll position before switching away. */
-  const saveScrollPosition = useCallback((scrollTop: number) => {
-    pendingScrollTopRef.current = scrollTop;
+  /** Persist scroll position directly into the cache for the given thread. */
+  const saveScrollPosition = useCallback((tid: string, scrollTop: number) => {
+    const entry = cacheRef.current.get(tid);
+    if (entry) {
+      entry.scrollTop = scrollTop;
+    }
   }, []);
 
   /** The scroll position restored from the last cache hit, or null. */
