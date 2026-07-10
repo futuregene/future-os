@@ -16,6 +16,7 @@ import { cn } from "../../lib/cn";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { isMacOS } from "../../lib/platform";
 import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, isDraggableAttachment, MAX_ATTACHMENTS_PER_TURN, pickerExtensions } from "./attachments";
+import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "./composerDraft";
 import { MentionEditor } from "./MentionEditor";
 
 /** Approval-tier order for the composer dropdown (sandbox is macOS-only). */
@@ -66,6 +67,13 @@ interface ComposerProps {
   placeholder?: string;
   textareaClassName?: string;
   workspaceId?: string | null;
+  /**
+   * Identifies the conversation whose unsent input (text, mentions, attachments)
+   * this composer holds. The draft is scoped to this key in sessionStorage, so
+   * switching conversations never carries content across; undefined disables
+   * draft persistence (e.g. no active thread).
+   */
+  draftKey?: string;
 }
 
 export function Composer({
@@ -85,6 +93,7 @@ export function Composer({
   placeholder,
   textareaClassName,
   workspaceId,
+  draftKey,
 }: ComposerProps) {
   const { t } = useTranslation("agent");
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
@@ -104,6 +113,53 @@ export function Composer({
   // until it settles.
   const [sendPending, setSendPending] = useState(false);
   const editorRef = useRef<MentionEditorHandle | null>(null);
+
+  // ── Per-conversation draft (sessionStorage, keyed by draftKey) ──────────────
+  // Live mirrors so the persist path always reads current values regardless of
+  // render timing (the editor text is read from the live DOM on save).
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+  const draftKeyRef = useRef(draftKey);
+  draftKeyRef.current = draftKey;
+  // Last known editor text (getContent markdown) — a fallback for when the
+  // editor ref is gone (e.g. reading during unmount).
+  const lastTextRef = useRef("");
+  // Set while applying a restore, so the attachments effect below doesn't
+  // re-persist the just-loaded draft with values that haven't settled yet.
+  const restoringRef = useRef(false);
+
+  const saveDraft = useCallback(() => {
+    const key = draftKeyRef.current;
+    if (!key)
+      return;
+    const text = editorRef.current ? editorRef.current.getContent() : lastTextRef.current;
+    lastTextRef.current = text;
+    saveComposerDraft(key, { attachments: attachmentsRef.current, text });
+  }, []);
+
+  // Load this conversation's draft when it becomes active. Continuous saves
+  // (editor onChange + the attachments effect) keep the outgoing conversation's
+  // draft current, so switching in never needs to flush the previous one here.
+  useEffect(() => {
+    restoringRef.current = true;
+    const draft = draftKey ? loadComposerDraft(draftKey) : null;
+    const text = draft?.text ?? "";
+    editorRef.current?.restore(text);
+    lastTextRef.current = text;
+    setAttachments(draft?.attachments ?? []);
+    setAttachError(null);
+  }, [draftKey]);
+
+  // Persist attachment edits (skip the restore-driven update, which the effect
+  // above already loaded from storage).
+  useEffect(() => {
+    if (restoringRef.current) {
+      restoringRef.current = false;
+      return;
+    }
+    saveDraft();
+  }, [attachments, saveDraft]);
+
   const activeModelId = modelId || (modelOptions[0] ? modelKey(modelOptions[0]) : "");
   const activeModel = modelOption(activeModelId, modelOptions);
   // Only offer/accept images when the active model advertises image input.
@@ -132,6 +188,9 @@ export function Composer({
       editorRef.current?.clear();
       setAttachments([]);
       setAttachError(null);
+      lastTextRef.current = "";
+      if (draftKeyRef.current)
+        clearComposerDraft(draftKeyRef.current);
     };
     const result = onSend({ attachments, content: trimmed });
     if (result) {
@@ -325,6 +384,7 @@ export function Composer({
         placeholder={placeholder ?? t("composer.placeholder")}
         onSubmit={submitValue}
         onEmptyChange={setInputEmpty}
+        onChange={saveDraft}
         onPasteImages={files => void attachImageFiles(files)}
       />
       {attachError
