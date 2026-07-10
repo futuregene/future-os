@@ -203,7 +203,7 @@ function MessageBlockImpl({
             ? (
                 <button
                   className={cn(
-                    "flex items-center gap-1 rounded px-2 py-1 text-xs text-ink-muted hover:text-ink will-change-[opacity] transition-opacity duration-200",
+                    "rounded p-1 text-ink-muted hover:text-ink will-change-[opacity] transition-opacity duration-200",
                     hovered ? "opacity-100" : "pointer-events-none opacity-0",
                   )}
                   onClick={() => onFork(message)}
@@ -211,7 +211,6 @@ function MessageBlockImpl({
                   type="button"
                 >
                   <GitFork className="size-3.5" />
-                  Fork
                 </button>
               )
             : null}
