@@ -601,14 +601,23 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                                 content_text
                             };
 
-                            serde_json::json!({
+                            let mut entry = serde_json::json!({
                                 "id": e.id,
                                 "role": e.role,
                                 "content": full_content,
                                 "name": e.name,
                                 "tool_args": e.tool_args,
                                 "timestamp": e.timestamp.to_rfc3339(),
-                            })
+                            });
+                            // Include thinking and tool_calls for the new agent-based
+                            // message display (entryProjection.ts).
+                            if !e.thinking.is_empty() {
+                                entry["thinking"] = serde_json::Value::String(e.thinking.clone());
+                            }
+                            if !e.tool_calls.is_empty() {
+                                entry["tool_calls"] = serde_json::to_value(&e.tool_calls).unwrap_or(serde_json::Value::Null);
+                            }
+                            entry
                         })
                         .collect()
                     })
