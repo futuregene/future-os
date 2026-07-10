@@ -296,19 +296,7 @@ pub fn clear_finished_runs(thread_id: &str) -> Result<usize, crate::AppError> {
         let rows = stmt.query_map(params![thread_id], |row| row.get::<_, String>(0))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
-    tx.execute(
-        &format!(
-            "UPDATE messages
-             SET run_id = NULL
-             WHERE thread_id = ?1
-               AND run_id IN (
-                 SELECT id FROM runs
-                 WHERE thread_id = ?1
-                   AND status IN ({TERMINAL_RUN_STATUSES_SQL})
-               )"
-        ),
-        params![thread_id],
-    )?;
+    // messages table dropped — no longer needed
     tx.execute(
         &format!(
             "UPDATE artifacts
@@ -322,30 +310,8 @@ pub fn clear_finished_runs(thread_id: &str) -> Result<usize, crate::AppError> {
         ),
         params![thread_id],
     )?;
-    tx.execute(
-        &format!(
-            "DELETE FROM tool_outputs
-         WHERE tool_call_id IN (
-           SELECT tc.id
-           FROM tool_calls tc
-           JOIN runs r ON r.id = tc.run_id
-           WHERE r.thread_id = ?1
-             AND r.status IN ({TERMINAL_RUN_STATUSES_SQL})
-         )"
-        ),
-        params![thread_id],
-    )?;
-    tx.execute(
-        &format!(
-            "DELETE FROM run_events
-         WHERE run_id IN (
-           SELECT id FROM runs
-           WHERE thread_id = ?1
-             AND status IN ({TERMINAL_RUN_STATUSES_SQL})
-         )"
-        ),
-        params![thread_id],
-    )?;
+    // tool_outputs table dropped
+    // run_events table dropped
     tx.execute(
         &format!(
             "DELETE FROM approval_requests
@@ -363,17 +329,7 @@ pub fn clear_finished_runs(thread_id: &str) -> Result<usize, crate::AppError> {
     for run_id in &terminal_run_ids {
         delete_run_review_in(&tx, run_id)?;
     }
-    tx.execute(
-        &format!(
-            "DELETE FROM tool_calls
-         WHERE run_id IN (
-           SELECT id FROM runs
-           WHERE thread_id = ?1
-             AND status IN ({TERMINAL_RUN_STATUSES_SQL})
-         )"
-        ),
-        params![thread_id],
-    )?;
+    // tool_calls table dropped
     let deleted_runs = tx.execute(
         &format!(
             "DELETE FROM runs

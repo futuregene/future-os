@@ -284,26 +284,8 @@ pub(super) fn delete_thread_children_in(
         params![thread_id],
     )?;
     // Tool outputs → tool calls (scoped through the thread's runs).
-    conn.execute(
-        "DELETE FROM tool_outputs WHERE tool_call_id IN (
-             SELECT tc.id FROM tool_calls tc
-             JOIN runs r ON r.id = tc.run_id
-             WHERE r.thread_id = ?1
-         )",
-        params![thread_id],
-    )?;
-    conn.execute(
-        "DELETE FROM run_events WHERE run_id IN (
-             SELECT id FROM runs WHERE thread_id = ?1
-         )",
-        params![thread_id],
-    )?;
-    conn.execute(
-        "DELETE FROM tool_calls WHERE run_id IN (
-             SELECT id FROM runs WHERE thread_id = ?1
-         )",
-        params![thread_id],
-    )?;
+    // tool_outputs/run_events/tool_calls tables dropped
+
     // Detach workspace-level artifacts from the thread/run being removed.
     conn.execute(
         "UPDATE artifacts SET run_id = NULL
