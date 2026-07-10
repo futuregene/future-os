@@ -18,6 +18,12 @@
     "delete": "删除工作成果",
     "deleteFailed": "删除工作成果失败：{{message}}"
   },
+  "menu": {
+    "viewDetails": "查看详情",
+    "open": "打开",
+    "preview": "预览",
+    "delete": "删除"
+  },
   "detail": {
     "back": "工作成果",
     "copyPath": "复制路径",

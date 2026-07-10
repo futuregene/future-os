@@ -18,6 +18,12 @@
     "delete": "Delete artifact",
     "deleteFailed": "Failed to delete artifact: {{message}}"
   },
+  "menu": {
+    "viewDetails": "View details",
+    "open": "Open",
+    "preview": "Preview",
+    "delete": "Delete"
+  },
   "detail": {
     "back": "Artifacts",
     "copyPath": "Copy path",

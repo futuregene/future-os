@@ -1,7 +1,9 @@
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { StoredArtifact } from "../../integrations/storage/threadStore";
 import type { FileKind } from "../../lib/fileType";
+import type { LinkMenuItem } from "../markdown/renderers/LinkContextMenu";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Info, Trash2, Upload } from "lucide-react";
+import { Upload } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
@@ -12,6 +14,7 @@ import {
   deleteArtifact,
   importAttachmentArtifact,
   inspectAttachment,
+  openPath,
   storedTimeToIso,
 } from "../../integrations/storage/threadStore";
 import { formatDateTime } from "../../lib/date";
@@ -20,6 +23,10 @@ import { fileKind } from "../../lib/fileType";
 import { formatBytes } from "../../lib/format";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { READ_SOURCE_MAX_BYTES } from "../agent/attachments";
+import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
+import { previewKindForPath } from "../filepreview/previewKind";
+import { LinkContextMenu } from "../markdown/renderers/LinkContextMenu";
+import { useLinkContextMenu } from "../markdown/renderers/useLinkContextMenu";
 
 export function ArtifactsPanel({
   artifacts,
@@ -130,6 +137,12 @@ function ArtifactCard({
   onSelectArtifact: (artifactId: string) => void;
 }) {
   const { i18n, t } = useTranslation("artifacts");
+  const menu = useLinkContextMenu();
+  const [previewOpen, setPreviewOpen] = useState(false);
+  // Only file-backed artifacts can be opened in the OS; only image/markdown
+  // ones can preview inline — the same distinctions the file manager draws.
+  const previewKind = artifact.path ? previewKindForPath(artifact.path) : null;
+
   async function handleDelete() {
     try {
       await deleteArtifact(artifact.id);
@@ -140,47 +153,67 @@ function ArtifactCard({
     }
   }
 
+  const menuItems: LinkMenuItem[] = [
+    { label: t("menu.viewDetails"), onSelect: () => onSelectArtifact(artifact.id) },
+    ...(artifact.path && previewKind
+      ? [{ label: t("menu.preview"), onSelect: () => setPreviewOpen(true) }]
+      : []),
+    ...(artifact.path
+      ? [{ label: t("menu.open"), onSelect: () => void openPath(artifact.path ?? "").catch(() => {}) }]
+      : []),
+    { danger: true, divider: true, label: t("menu.delete"), onSelect: () => void handleDelete() },
+  ];
+
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onSelectArtifact(artifact.id);
+    }
+  }
+
   return (
-    <div className="rounded-md border border-line-soft bg-surface p-3">
-      <div className="flex items-start gap-2">
-        {artifactIcon(artifact)}
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-ink">{artifact.title}</div>
-              <div className="mt-1 text-xs text-ink-muted">{formatDateTime(storedTimeToIso(artifact.createdAt), i18n.language)}</div>
-            </div>
-            <div className="flex shrink-0 items-center gap-1">
-              <button
-                aria-label={t("card.viewArtifact", { title: artifact.title })}
-                className="inline-flex size-7 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
-                onClick={() => onSelectArtifact(artifact.id)}
-                title={t("card.viewDetails")}
-                type="button"
-              >
-                <Info className="size-3.5" />
-              </button>
-              <button
-                aria-label={t("card.deleteArtifact", { title: artifact.title })}
-                className="inline-flex size-7 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-danger-soft hover:text-danger"
-                onClick={() => void handleDelete()}
-                title={t("card.delete")}
-                type="button"
-              >
-                <Trash2 className="size-3.5" />
-              </button>
-            </div>
+    <>
+      <div
+        aria-label={t("card.viewArtifact", { title: artifact.title })}
+        className="cursor-pointer rounded-md border border-line-soft bg-surface p-3 transition-colors hover:border-line hover:bg-surface-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+        onClick={() => onSelectArtifact(artifact.id)}
+        onContextMenu={menu.open}
+        onKeyDown={handleKeyDown}
+        role="button"
+        tabIndex={0}
+        title={t("card.viewDetails")}
+      >
+        <div className="flex items-start gap-2">
+          {artifactIcon(artifact)}
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-semibold text-ink">{artifact.title}</div>
+            <div className="mt-1 text-xs text-ink-muted">{formatDateTime(storedTimeToIso(artifact.createdAt), i18n.language)}</div>
+            {!artifact.path && artifact.content
+              ? (
+                  <pre className="mt-2 max-h-32 overflow-auto rounded-md bg-surface-subtle p-2 text-[11px] leading-4 text-ink-soft">
+                    <code>{artifact.content}</code>
+                  </pre>
+                )
+              : null}
           </div>
-          {!artifact.path && artifact.content
-            ? (
-                <pre className="mt-2 max-h-32 overflow-auto rounded-md bg-surface-subtle p-2 text-[11px] leading-4 text-ink-soft">
-                  <code>{artifact.content}</code>
-                </pre>
-              )
-            : null}
         </div>
       </div>
-    </div>
+
+      <LinkContextMenu controller={menu} items={menuItems} />
+
+      {artifact.path && previewKind
+        ? (
+            <FilePreviewOverlay
+              kind={previewKind}
+              name={artifact.title}
+              onClose={() => setPreviewOpen(false)}
+              onOpenExternal={() => void openPath(artifact.path ?? "").catch(() => {})}
+              open={previewOpen}
+              path={artifact.path}
+            />
+          )
+        : null}
+    </>
   );
 }
 
