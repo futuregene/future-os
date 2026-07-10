@@ -489,7 +489,8 @@ impl Manager {
 
 pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
     let chain = for_each_entry(&parent.entries, from_entry_id);
-    let mut entries: Vec<SessionEntry> = chain.into_iter().cloned().rev().collect();
+    // for_each_entry returns root→target order; clone as-is (IDs are regenerated below).
+    let mut entries: Vec<SessionEntry> = chain.into_iter().cloned().collect();
     for e in &mut entries {
         e.id = generate_entry_id();
     }
@@ -541,25 +542,22 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
 }
 
 fn for_each_entry<'a>(entries: &'a [SessionEntry], from_id: &str) -> Vec<&'a SessionEntry> {
-    let mut result = vec![];
-    for e in entries.iter() {
-        if e.id == from_id {
-            result.push(e);
+    // Build an id→entry map for O(1) parent lookups.
+    let by_id: std::collections::HashMap<&str, &SessionEntry> =
+        entries.iter().map(|e| (e.id.as_str(), e)).collect();
+
+    // Walk from the target entry up to the root via parent_id.
+    let mut chain = vec![];
+    let mut current = by_id.get(from_id).copied();
+    while let Some(entry) = current {
+        chain.push(entry);
+        if entry.parent_id.is_empty() {
             break;
         }
+        current = by_id.get(entry.parent_id.as_str()).copied();
     }
-    // Walk parent chain
-    if let Some(first) = result.first() {
-        if !first.parent_id.is_empty() {
-            for e in entries.iter().rev() {
-                if e.id == first.parent_id {
-                    result.insert(0, e);
-                    break;
-                }
-            }
-        }
-    }
-    result
+    chain.reverse();
+    chain
 }
 
 /// Convert SessionEntry to AgentMessage for TUI display
