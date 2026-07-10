@@ -205,6 +205,9 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     return () => {
       cancelled = true;
     };
+    // loadFromStore is an unstable inner function; the reload must fire on
+    // thread/workspace change only, not on every render, so it's excluded.
+    // eslint-disable-next-line react/exhaustive-deps
   }, [refreshRecentRun, workspaceId, threadId]);
 
   // Stable flag so the poll effect keys on "is a run active", not on the
