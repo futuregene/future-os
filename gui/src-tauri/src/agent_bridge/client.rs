@@ -88,10 +88,6 @@ pub(super) fn fork_command(
     }
 }
 
-pub(super) fn get_fork_messages_command(session_id: String) -> RpcCommand {
-    base_command("get_fork_messages", session_id)
-}
-
 pub(super) fn get_session_entries_command(session_id: String) -> RpcCommand {
     base_command("get_session_entries", session_id)
 }
