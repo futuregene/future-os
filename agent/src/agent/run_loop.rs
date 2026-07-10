@@ -1,7 +1,8 @@
 use crate::events::{
     self, agent_end, agent_end_with_stop_reason, agent_start, error_event, message_end,
     message_start, text_delta, text_end, text_start, thinking_delta, thinking_end, thinking_start,
-    tool_end, tool_start, toolcall_delta, toolcall_end, toolcall_start, turn_start, usage_event,
+    tool_end, tool_start, toolcall_delta, toolcall_end, toolcall_start, turn_start,
+    usage_event,
 };
 use crate::types::{
     AgentMessage, AgentToolCall, ContentBlock, ConvertFromLLM, ConvertToLLM, Message, StreamEvent,
@@ -15,7 +16,7 @@ use tokio_stream::StreamExt;
 use super::{Loop, C_MAGENTA, C_RESET, DEFAULT_MAX_TURNS};
 
 const STREAM_EVENT_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
-const COMPLETE_TOOL_CALL_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
+const COMPLETE_TOOL_CALL_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 
 impl Loop {
     pub async fn run_streaming_with_messages(
@@ -469,7 +470,24 @@ impl Loop {
                         }
                         if let Some(tc_ref) = &mut current_tool_calls[idx] {
                             if let serde_json::Value::String(ref mut s) = tc_ref.args {
-                                s.push_str(&event.text);
+                                // Some proxies (e.g. Anthropic → OpenAI) send the
+                                // full current state of the tool input JSON in every
+                                // delta, not incremental fragments. Detect this by
+                                // checking if the delta starts with '{' — incremental
+                                // OpenAI fragments always start with ',' or another
+                                // continuation character. When the accumulated args
+                                // are empty, just "{}", or a prefix of the delta,
+                                // replace instead of concatenating to avoid corrupt
+                                // JSON like {}{"path":...}.
+                                if event.text.starts_with('{')
+                                    && (s.is_empty()
+                                        || s == "{}"
+                                        || event.text.starts_with(s.as_str()))
+                                {
+                                    *s = event.text.clone();
+                                } else {
+                                    s.push_str(&event.text);
+                                }
                             } else {
                                 tc_ref.args = serde_json::Value::String(event.text.clone());
                             }
@@ -486,6 +504,9 @@ impl Loop {
                         }
                     }
                     "tool_call" | "toolcall_end" => {
+                        if let Some(ref u) = event.usage {
+                            self.process_usage_event(u, &mut total_usage);
+                        }
                         for tc_opt in current_tool_calls.iter_mut() {
                             if let Some(tc) = tc_opt.take() {
                                 tool_calls.push(finalize_agent_tool_call(tc));
@@ -507,34 +528,18 @@ impl Loop {
                     }
                     "usage" => {
                         if let Some(ref u) = event.usage {
-                            self.cumulative_input_tokens
-                                .fetch_add(u.prompt_tokens, std::sync::atomic::Ordering::Relaxed);
-                            self.last_prompt_tokens.store(
-                                u.prompt_tokens + u.completion_tokens,
-                                std::sync::atomic::Ordering::Relaxed,
-                            );
-                            self.cumulative_output_tokens.fetch_add(
-                                u.completion_tokens,
-                                std::sync::atomic::Ordering::Relaxed,
-                            );
-                            if let Some(cache_r) = u.cache_read_tokens {
-                                self.cumulative_cache_read_tokens
-                                    .fetch_add(cache_r, std::sync::atomic::Ordering::Relaxed);
-                            }
-                            if let Some(cache_w) = u.cache_write_tokens {
-                                self.cumulative_cache_write_tokens
-                                    .fetch_add(cache_w, std::sync::atomic::Ordering::Relaxed);
-                            }
-                            total_usage = Some(u.clone());
-                            if let Some(ref bus) = self.event_bus {
-                                bus.emit(usage_event(u));
-                            }
+                            self.process_usage_event(u, &mut total_usage);
                         }
                         if !event.stop_reason.is_empty() {
                             last_stop_reason = event.stop_reason.clone();
                         }
                     }
                     "stop" => {
+                        // Process usage if attached to this event (e.g. when
+                        // the same chunk carries both usage and finish_reason).
+                        if let Some(ref u) = event.usage {
+                            self.process_usage_event(u, &mut total_usage);
+                        }
                         for tc_opt in current_tool_calls.iter_mut() {
                             if let Some(tc) = tc_opt.take() {
                                 tool_calls.push(finalize_agent_tool_call(tc));
@@ -761,6 +766,32 @@ impl Loop {
             }
         }
     }
+
+    fn process_usage_event(
+        &self,
+        u: &crate::types::Usage,
+        total_usage: &mut Option<crate::types::Usage>,
+    ) {
+        use std::sync::atomic::Ordering;
+        self.cumulative_input_tokens
+            .fetch_add(u.prompt_tokens, Ordering::Relaxed);
+        self.last_prompt_tokens
+            .store(u.prompt_tokens + u.completion_tokens, Ordering::Relaxed);
+        self.cumulative_output_tokens
+            .fetch_add(u.completion_tokens, Ordering::Relaxed);
+        if let Some(cache_r) = u.cache_read_tokens {
+            self.cumulative_cache_read_tokens
+                .fetch_add(cache_r, Ordering::Relaxed);
+        }
+        if let Some(cache_w) = u.cache_write_tokens {
+            self.cumulative_cache_write_tokens
+                .fetch_add(cache_w, Ordering::Relaxed);
+        }
+        *total_usage = Some(u.clone());
+        if let Some(ref bus) = self.event_bus {
+            bus.emit(usage_event(u));
+        }
+    }
 }
 
 fn tool_call_args_complete(tool_call: &AgentToolCall) -> bool {
@@ -955,6 +986,76 @@ mod tests {
         assert_eq!(
             merge_args("{\"pa", "{\"path\":\"/etc/hosts\"}"),
             "{\"path\":\"/etc/hosts\"}"
+        );
+    }
+
+    #[test]
+    fn toolcall_delta_detects_full_replacement() {
+        /// Simulates the toolcall_delta handler: merge `delta` into `existing`,
+        /// detecting full-state replacements (Anthropic partial_json style).
+        fn accumulate(existing: &str, delta: &str) -> String {
+            if delta.starts_with('{')
+                && (existing.is_empty()
+                    || existing == "{}"
+                    || delta.starts_with(existing))
+            {
+                delta.to_string()
+            } else {
+                format!("{}{}", existing, delta)
+            }
+        }
+
+        // Scenario 1: Standard OpenAI — first fragment starts with {, empty args
+        assert_eq!(accumulate("", "{\"path\": \"/file.txt\""), "{\"path\": \"/file.txt\"");
+
+        // Scenario 2: Standard OpenAI — incremental fragment (starts with comma)
+        assert_eq!(
+            accumulate("{\"path\": \"/file.txt\"", ", \"content\": \"hello\"}"),
+            "{\"path\": \"/file.txt\", \"content\": \"hello\"}"
+        );
+
+        // Scenario 3: Anthropic full replacement — delta extends current
+        assert_eq!(
+            accumulate(
+                "{\"path\": \"/file.txt\", \"content\": \"hello",
+                "{\"path\": \"/file.txt\", \"content\": \"hello world\"}"
+            ),
+            "{\"path\": \"/file.txt\", \"content\": \"hello world\"}"
+        );
+
+        // Scenario 4: Anthropic — first delta after toolcall_start with "{}" args
+        // (e.g. proxy emits toolcall_start with empty-object args, then delta
+        // carries the full partial_json). Delta starts with { but does NOT start
+        // with "{}" — must still replace, not concatenate.
+        assert_eq!(
+            accumulate("{}", "{\"path\": \"/file.txt\", \"content\": \"hello\"}"),
+            "{\"path\": \"/file.txt\", \"content\": \"hello\"}"
+        );
+
+        // Scenario 5: Anthropic — first delta from empty args
+        assert_eq!(
+            accumulate("", "{\"path\": \"/file.txt\", \"content\": \"hello world\"}"),
+            "{\"path\": \"/file.txt\", \"content\": \"hello world\"}"
+        );
+
+        // Scenario 6: Nested JSON in content value — delta starts with { but
+        // doesn't match the accumulated prefix and s is not empty/{}
+        assert_eq!(
+            accumulate(
+                "{\"path\": \"/file.txt\", \"content\": \"",
+                "{\"nested\": \"value\"}\"}"
+            ),
+            "{\"path\": \"/file.txt\", \"content\": \"{\"nested\": \"value\"}\"}"
+        );
+
+        // Scenario 7: Corrupted accumulated state — delta doesn't match prefix,
+        // s is non-empty and not "{}" → append (best effort)
+        assert_eq!(
+            accumulate(
+                "{\"path\": \"/file.txt\"}{\"path\": \"/file.txt\", \"content\": \"hello",
+                "{\"path\": \"/file.txt\", \"content\": \"hello world\"}"
+            ),
+            "{\"path\": \"/file.txt\"}{\"path\": \"/file.txt\", \"content\": \"hello{\"path\": \"/file.txt\", \"content\": \"hello world\"}"
         );
     }
 }

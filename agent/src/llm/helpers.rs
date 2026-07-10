@@ -240,6 +240,11 @@ impl Client {
         // (DeepSeek) include usage in the final chunk alongside an empty content
         // string and finish_reason. If we process content first, we return early
         // and never see the usage data.
+        //
+        // When finish_reason is also present in the same chunk (e.g. "length"
+        // or "tool_calls"), do NOT return early — let the finish_reason logic
+        // below emit toolcall_end/stop so the run loop finalizes tool calls
+        // promptly instead of waiting for the idle timeout.
         if let Some(usage_val) = chunk.get("usage").filter(|v| !v.is_null()) {
             if let Ok(mut usage) = serde_json::from_value::<Usage>(usage_val.clone()) {
                 // DeepSeek nests cache tokens under prompt_tokens_details.
@@ -262,8 +267,12 @@ impl Client {
                     }
                 }
                 event.usage = Some(usage);
-                event.event_type = "usage".to_string();
-                return Ok(event);
+                if finish_reason.is_empty() {
+                    event.event_type = "usage".to_string();
+                    return Ok(event);
+                }
+                // Both usage and finish_reason: fall through so finish_reason
+                // is processed into toolcall_end / stop below.
             }
         }
 
@@ -372,10 +381,13 @@ mod usage_parse_tests {
 
     #[test]
     fn parses_deepseek_finish_chunk_usage() {
+        // DeepSeek sends usage + finish_reason="length" in the same chunk.
+        // When both are present, finish_reason takes priority so the run loop
+        // finalizes tool calls promptly. Usage is still attached to the event.
         let data = r#"{"choices":[{"index":0,"delta":{"content":"","reasoning_content":null},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}"#;
         let event = Client::parse_sse_chunk(data).expect("parse");
         assert_eq!(
-            event.event_type, "usage",
+            event.event_type, "stop",
             "got event_type={}",
             event.event_type
         );

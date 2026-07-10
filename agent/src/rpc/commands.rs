@@ -177,7 +177,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             fresh_loop.verbose = verbose;
 
             let new_session_id = if cmd.session_id.is_empty() {
-                crate::utils::generate_id()
+                format!("agent_session_{}", crate::utils::generate_id())
             } else {
                 cmd.session_id.clone()
             };
