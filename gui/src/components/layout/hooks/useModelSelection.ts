@@ -3,7 +3,7 @@ import type { StoredThread } from "../../../integrations/storage/threadStore";
 import { useEffect, useRef, useState } from "react";
 import i18n from "../../../i18n";
 import { defaultThinkingLevel, modelOption, modelThinkingLevel, normalizeThinkingLevel, rememberLastUsedModel, rememberLastUsedThinkingLevel, resolveInitialModelId, resolveInitialThinkingLevel } from "../../../integrations/agent/agentClient";
-import { getCachedAgentState, updateCachedAgentState } from "../../../integrations/agent/agentStateCache";
+import { updateCachedAgentState, useCachedAgentState } from "../../../integrations/agent/agentStateCache";
 import { updateThreadModel, updateThreadThinkingLevel } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
 import { emitFutureEvent } from "../../../lib/futureEvents";
@@ -68,7 +68,9 @@ export function useModelSelection({
         ? "all_disabled"
         : "no_models";
   // Agent state is authoritative for model/thinking; DB values are fallback.
-  const agentState = getCachedAgentState(activeThread?.id);
+  // Reactive read: a background prefetch re-renders us the moment it lands, so
+  // switching to an old thread doesn't briefly show the model default.
+  const agentState = useCachedAgentState(activeThread?.id);
   const rawThreadModelId = agentState?.model ?? selectedModelId;
   const activeThreadModelId = modelOption(rawThreadModelId, visibleModelOptions)
     ? rawThreadModelId
