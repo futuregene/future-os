@@ -94,6 +94,22 @@ pub fn estimate_context_tokens(messages: &[Message]) -> i32 {
     messages.iter().map(estimate_tokens).sum()
 }
 
+/// When `cut` falls on a tool message, walk backward to include the preceding
+/// assistant message that carries the tool_calls.  Without this, the LLM API
+/// rejects the request because tool results must always follow an assistant
+/// message with matching tool_calls.
+fn adjust_cut_for_tool_context(messages: &[Message], cut: usize) -> usize {
+    if cut >= messages.len() || messages[cut].role != "tool" {
+        return cut;
+    }
+    for i in (0..cut).rev() {
+        if messages[i].role == "assistant" && messages[i].tool_calls.is_some() {
+            return i;
+        }
+    }
+    cut
+}
+
 /// Find cut points where it's safe to cut (not in the middle of tool results).
 pub fn find_valid_cut_points(messages: &[Message]) -> Vec<usize> {
     let mut points = vec![];
@@ -211,6 +227,9 @@ pub fn compact(
     }
 
     let cut = find_cut_point(&messages, opts.keep_recent_tokens);
+    // When the cut lands on a tool message, back up to include the preceding
+    // assistant message (which carries the tool_calls the API requires).
+    let cut = adjust_cut_for_tool_context(&messages, cut);
     if cut == 0 {
         // find_cut_point may return 0 when its char-based estimate is much
         // lower than the API-reported tokens (e.g. after a prior compaction
