@@ -200,9 +200,6 @@ export function Composer({
       lastTextRef.current = "";
       if (draftKeyRef.current)
         clearComposerDraft(draftKeyRef.current);
-      // Keep focus on the editor after sending so the user can type the next
-      // message without re-clicking (the async path clears on resolve).
-      editorRef.current?.focus();
     };
     const result = onSend({ attachments, content: trimmed });
     if (result) {
