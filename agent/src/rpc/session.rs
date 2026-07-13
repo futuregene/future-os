@@ -617,7 +617,13 @@ impl ServerSession {
     pub fn switch_session(&mut self, id: &str) -> Result<()> {
         if let Some(path) = self.session_manager.find(id) {
             let session = self.session_manager.load_path(&path, id)?;
-            let msgs = crate::session::entries_to_agent_messages(&session.entries);
+            let effective_model = if session.model.is_empty() {
+                self.model.clone()
+            } else {
+                session.model.clone()
+            };
+            let supports_images = crate::models::model_accepts_images(&effective_model);
+            let msgs = crate::session::entries_to_agent_messages(&session.entries, supports_images);
             if !session.model.is_empty() {
                 self.model = session.model.clone();
             }

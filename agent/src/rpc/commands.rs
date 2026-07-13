@@ -246,8 +246,16 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
 
             // Restore entries from a pre-existing session (forked or persisted).
             if let Some((entries, disk_model)) = existing_entries {
+                // Gate image re-hydration on the model that will actually run
+                // (disk model wins over the command's default).
+                let effective_model = if disk_model.is_empty() {
+                    new_sess.model.clone()
+                } else {
+                    disk_model.clone()
+                };
+                let supports_images = crate::models::model_accepts_images(&effective_model);
                 let mut msgs = new_sess.messages.write().unwrap();
-                *msgs = crate::session::entries_to_agent_messages(&entries);
+                *msgs = crate::session::entries_to_agent_messages(&entries, supports_images);
                 if !disk_model.is_empty() {
                     new_sess.model = disk_model.clone();
                     *new_sess.compaction_model.write().unwrap() = disk_model;
