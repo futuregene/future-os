@@ -275,22 +275,6 @@ export interface StoredFile {
   insideWorkspace: boolean;
 }
 
-export interface StoredResearchResource {
-  id: string;
-  collectionId: string;
-  workspaceId: string;
-  sourceArtifactId?: string | null;
-  title: string;
-  resourceType: string;
-  sourceUri?: string | null;
-  content?: string | null;
-  contentStorage?: "file" | "inline" | string | null;
-  summary?: string | null;
-  metadata?: string | null;
-  createdAt: number;
-  updatedAt: number;
-}
-
 export interface WorkspaceFileResult {
   /** Path relative to the workspace root (POSIX separators). */
   path: string;

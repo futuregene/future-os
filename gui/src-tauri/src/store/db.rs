@@ -87,9 +87,8 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
     conn.execute_batch(SCHEMA)?;
     // Rename columns on databases created before the N-3 rename. `CREATE TABLE
     // IF NOT EXISTS` can't do it, and without this the store reads/writes
-    // `event_type`/`artifact_type`/`resource_type` against tables that still
-    // have the old `type` column — silently dropping run events, artifacts, and
-    // research resources. Idempotent: skip when already migrated.
+    // `artifact_type` against a table that still has the old `type` column —
+    // silently dropping artifacts. Idempotent: skip when already migrated.
     for (table, old, new) in RENAMED_COLUMNS {
         if column_exists(conn, table, old)? && !column_exists(conn, table, new)? {
             conn.execute(

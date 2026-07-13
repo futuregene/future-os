@@ -1,4 +1,4 @@
-import type { StoredArtifact, StoredResearchResource, WorkspaceFileResult } from "./types";
+import type { StoredArtifact, WorkspaceFileResult } from "./types";
 import { invokeCommand } from "../tauri/invoke";
 
 // ─── Artifacts ───────────────────────────────────────────────────────────
@@ -27,16 +27,6 @@ export async function importAttachmentArtifact(input: { threadId: string; path: 
 
 export async function deleteArtifact(artifactId: string) {
   return invokeCommand<StoredArtifact>("delete_artifact", { artifactId });
-}
-
-// ─── Research ─────────────────────────────────────────────────────────────
-
-export async function promoteArtifactToResearch(artifactId: string) {
-  return invokeCommand<StoredResearchResource>("promote_artifact_to_research", { artifactId });
-}
-
-export async function listResearchResources(workspaceId: string) {
-  return invokeCommand<StoredResearchResource[]>("list_research_resources", { workspaceId });
 }
 
 // ─── Workspace file `@`-mention search ─────────────────────────────────────

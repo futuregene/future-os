@@ -2,7 +2,6 @@ import type {
   StoredApprovalRequest,
   StoredArtifact,
   StoredFile,
-  StoredResearchResource,
   StoredReviewChangeset,
   StoredRun,
   StoredToolCall,
@@ -58,15 +57,6 @@ export function isStoredReview(value: unknown): value is StoredReviewChangeset {
     && typeof value.title === "string"
     && typeof value.status === "string"
     && typeof value.filesChanged === "number";
-}
-
-export function isStoredResearch(value: unknown): value is StoredResearchResource {
-  return isRecord(value)
-    && typeof value.id === "string"
-    && typeof value.collectionId === "string"
-    && typeof value.workspaceId === "string"
-    && typeof value.title === "string"
-    && typeof value.resourceType === "string";
 }
 
 export function isStoredTool(value: unknown): value is StoredToolCall {

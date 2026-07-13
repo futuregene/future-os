@@ -294,9 +294,9 @@ function htmlToSafeParagraph(node: Html): MarkdownNode[] {
 
 function parseFutureEmbed(node: Code): FutureReference | null {
   // Minimal link mode: only `futureos-file` block embeds are recognized;
-  // application-object embeds (approval/artifact/research/review/run/tool) are
+  // application-object embeds (approval/artifact/review/run/tool) are
   // disabled and fall through to a plain code block. To restore them, widen the
-  // pattern back to `futureos-(approval|artifact|file|research|review|run|tool)`.
+  // pattern back to `futureos-(approval|artifact|file|review|run|tool)`.
   const match = node.lang?.match(/^futureos-(file)$/);
   if (!match)
     return null;
@@ -397,8 +397,8 @@ function safeDecodeURIComponent(value: string) {
 }
 
 function isFutureReferenceType(value: string): value is FutureReferenceType {
-  // Minimal link mode: application-object references (approval/artifact/research/
-  // review/run/tool via the `futureos://` scheme) are disabled — any such link
+  // Minimal link mode: application-object references (approval/artifact/review/
+  // run/tool via the `futureos://` scheme) are disabled — any such link
   // falls through to a plain/inert link. Local files are unaffected: they arrive
   // as plain markdown path links, not via this scheme. To restore app objects,
   // uncomment the checks below (and re-enable them in `parseFutureEmbed` and the
@@ -407,7 +407,6 @@ function isFutureReferenceType(value: string): value is FutureReferenceType {
   return false;
   // return value === "approval"
   //   || value === "artifact"
-  //   || value === "research"
   //   || value === "review"
   //   || value === "run"
   //   || value === "tool";

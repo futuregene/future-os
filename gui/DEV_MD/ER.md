@@ -11,8 +11,8 @@
 - 支持 Workspace 与普通 Chat 两种工作入口；Workspace 支持打开（按路径去重）、重命名、软删除（级联软删子对话）。
 - 支持 Thread 创建、恢复、重命名、置顶、归档、删除。
 - 支持消息、Run、Run Event 的持久化。
-- 支持 artifacts、Research resources、Data sources、Skills。
-- 支持统一引用对象，用于 `@` 引用 Research Resource、Artifact、文件和 Data Source。
+- 支持 artifacts、Data sources、Skills。（Research 延后，见 §4.12。）
+- 支持统一引用对象，用于 `@` 引用 Artifact、文件和 Data Source。
 - 支持审批对象，用于高风险操作的批准或拒绝。
 - 支持 Review 对象，用于文件、代码和文本类 artifact 的变更对比。
 
@@ -23,7 +23,6 @@ erDiagram
     WORKSPACE ||--o{ THREAD : contains
     WORKSPACE ||--o{ ARTIFACT : stores
     WORKSPACE ||--o{ WORKSPACE_FILE : exposes
-    WORKSPACE ||--o{ RESEARCH_COLLECTION : owns
 
     THREAD ||--o{ MESSAGE : has
     THREAD ||--o{ RUN : triggers
@@ -40,8 +39,6 @@ erDiagram
 
     REVIEW_CHANGESET ||--o{ REVIEW_FILE_CHANGE : contains
     REVIEW_SNAPSHOT ||--o{ REVIEW_CHANGESET : bounds
-
-    RESEARCH_COLLECTION ||--o{ RESEARCH_RESOURCE : contains
 
     DATA_SOURCE ||--o{ DATA_CREDENTIAL : uses
     SKILL ||--o{ SKILL_ENABLEMENT : enabled_by
@@ -64,7 +61,6 @@ erDiagram
 - `Review Changeset`：一组可供用户 review 的变更集合。
 - `Review File Change`：Review Changeset 中某个文件或 artifact 的具体变更。
 - `Artifact`：工作过程中产生的可复用产物。
-- `Research Resource`：Research 中沉淀的研究材料。
 - `Data Source`：Data 模块中可访问的数据入口。
 - `Reference Target`：统一引用对象的索引层，供 `@` 引用和跨对象引用使用。
 
@@ -95,7 +91,6 @@ Workspace 表示一个项目或工作上下文。
 
 - 一个 Workspace 可以包含多个 Thread。
 - 一个 Workspace 可以包含多个 Artifact。
-- 一个 Workspace 可以包含多个 Research Collection。
 - 一个 Workspace 可以暴露多个 Workspace File。
 
 说明：
@@ -265,7 +260,7 @@ Tool Call 表示 Agent 调用某个工具的记录。
 | `id` | Tool Call 唯一标识 |
 | `run_id` | 所属 Run |
 | `name` | 工具名称 |
-| `kind` | `shell`、`read_file`、`write_file`、`edit_file`、`data_query`、`research` 等 |
+| `kind` | `shell`、`read_file`、`write_file`、`edit_file`、`data_query` 等 |
 | `input` | 工具输入 |
 | `status` | `running`、`completed`、`failed`、`cancelled` |
 | `started_at` | 开始时间 |
@@ -478,7 +473,6 @@ Artifact 表示工作过程中产生的可复用产物。
 
 - 一个 Artifact 属于一个 Workspace。
 - 一个 Artifact 可以来源于一个 Thread 或 Run。
-- 一个 Artifact 可以被加入 Research。
 - 一个 Artifact 可以成为引用对象。
 
 说明：
@@ -486,68 +480,16 @@ Artifact 表示工作过程中产生的可复用产物。
 - Artifact 的 `content` 只存小内容。
 - 大内容全部走文件路径，即 `content_storage = file` 并填写 `path`。
 - 普通 Chat 产生的 Artifact 存在临时 Workspace 下。
-- 清理普通 Chat 时，用户可以下载 Artifact，或将 Artifact 转入 Research。
-- 转入 Research 后不保留原始对话引用。
+- 清理普通 Chat 时，用户可以下载 Artifact。
 - 用户在普通 Chat 上传的图片附件会保存到临时工作目录并登记为 Artifact（`type = image`，`content_storage = file`），同时作为多模态输入传给模型。Workspace 对话上传的图片附件不落盘到用户项目目录、不创建 Artifact，只传给模型，避免污染用户项目目录。
 - **图片持久化目录**（不属于 Artifact/SQLite，纯文件树）：`~/.future/app/images/<threadId>/` 下 `thumb/`（两种模式的缩略图）与 `origin/`（**仅 workspace** 模式的图片原图拷贝，供显示/重发）。放这里而非 `appCacheDir`——后者在 macOS = `~/Library/Caches`，属系统可回收空间会被静默清理，导致消息里的缩略图路径失效、图片渲染成空白框。附件元数据（`path` / `thumbnail`）存在 `messages.content` 的 mixed JSON 里,**无独立表、无 schema 变更**。
 - **回收**：`images/<tid>` 无逐删执行器,靠启动时 `reconcile_orphan_images` 孤儿清扫——`threads` 表中 `status='deleted'` 或无行的 tid 其目录被删（无软删撤销）；整库 reset 额外清 `images/` 整棵。覆盖 GUI 删、TUI/CLI 外部删 session、reset 三种来源。
 
-### 4.12 Research Collection
+### 4.12–4.13 Research Collection / Research Resource（已延后，未建表）
 
-Research Collection 表示 Research 模块中的资料集合。
-
-字段草案：
-
-| 字段 | 说明 |
-| --- | --- |
-| `id` | Research Collection 唯一标识 |
-| `workspace_id` | 所属 Workspace |
-| `name` | 名称 |
-| `description` | 描述 |
-| `created_at` | 创建时间 |
-| `updated_at` | 更新时间 |
-
-关系：
-
-- 一个 Workspace 可以有多个 Research Collection。
-- 一个 Research Collection 包含多个 Research Resource。
-
-说明：
-
-- 第一版可以先为每个科研 workspace 创建一个默认 Research Collection。
-
-### 4.13 Research Resource
-
-Research Resource 表示 Research 中沉淀的研究材料。
-
-字段草案：
-
-| 字段 | 说明 |
-| --- | --- |
-| `id` | Research Resource 唯一标识 |
-| `collection_id` | 所属 Research Collection |
-| `source_artifact_id` | 来源 Artifact，可为空 |
-| `title` | 标题 |
-| `resource_type` | `paper`、`webpage`、`note`、`table`、`dataset_note`、`summary`、`artifact` 等 |
-| `source_uri` | 来源链接或文件路径 |
-| `content` | 小型内容，可为空 |
-| `content_storage` | `inline` 或 `file` |
-| `summary` | 摘要 |
-| `metadata` | 作者、年份、DOI、标签等 |
-| `created_at` | 创建时间 |
-| `updated_at` | 更新时间 |
-
-关系：
-
-- 一个 Research Resource 属于一个 Research Collection。
-- 一个 Research Resource 可以来自 Artifact。
-- 一个 Research Resource 可以成为引用对象。
-
-说明：
-
-- 对话产物转入 Research 时，可以生成 Research Resource。
-- 按产品决策，转入 Research 后不保留原始对话引用。
-- 大内容同样走文件路径。
+> **第一版发布前不上线，已从 schema 移除。** Research 模块（资料集合 + 沉淀的研究材料）的数据模型、存储方式、产品形态均未定，为避免日后迁移负担，第一版**不建表**：`research_collections`、`research_resources` 两张表及其 CRUD、命令、前端视图已整体移除，`apply_schema` 通过 `DROPPED_TABLES`（`store/schema.rs`）在旧库上 `DROP TABLE IF EXISTS` 清除它们。
+>
+> 产品记录**仅保留在 PRODUCT.md §4.9**。日后重启 Research 时，需重新设计数据模型并回写本节。
 
 ### 4.14–4.17 Data Source / Data Credential / Skill / Skill Enablement（已废弃）
 
@@ -593,7 +535,7 @@ Reference Target 是统一引用对象的索引层。
 | 字段 | 说明 |
 | --- | --- |
 | `id` | Reference Target 唯一标识 |
-| `target_type` | 实现中解析器使用**短名**（见 `store/markdown_refs/resolve.rs`）：`artifact`、`file`、`run`、`tool`、`approval`、`review`、`research`。`data_source`、`skill` 的 Data/Skill 引用未实现（落 "not supported yet" 分支）；其余类型是设计草案 |
+| `target_type` | 实现中解析器使用**短名**（见 `store/markdown_refs/resolve.rs`）：`artifact`、`file`、`run`、`tool`、`approval`、`review`。`data_source`、`skill` 的 Data/Skill 引用未实现（落 "not supported yet" 分支）；`research` 已随 Research 模块整体移除（见 §4.12）；其余类型是设计草案 |
 | `target_id` | 目标对象 id |
 | `scope` | `global` 或 `workspace` |
 | `workspace_id` | 所属 Workspace，可为空 |
@@ -605,7 +547,7 @@ Reference Target 是统一引用对象的索引层。
 
 关系：
 
-- Artifact、Run、Tool Call、Approval Request、Review Changeset、Research Resource、Workspace File、Data Source、Skill 都可以注册为 Reference Target。
+- Artifact、Run、Tool Call、Approval Request、Review Changeset、Workspace File、Data Source、Skill 都可以注册为 Reference Target。
 - Message、Review File Change 等对象可以通过 Object Reference 指向 Reference Target。
 
 说明：
@@ -649,13 +591,13 @@ Object Reference 表示某个对象引用了另一个对象。
 - `review_file_changes`
 - `review_snapshots`
 - `artifacts`
-- `research_collections`
-- `research_resources`
 - `workspace_files`
 - `reference_targets`
 - `object_references`
 - `app_settings`（应用级设置，键值表：`approval_tier`（`manual`/`sandbox`/`off`）、`hidden_models`、`remote_enabled`、`remote_pair_id`、`remote_nats_url`、`show_thinking`，见 `store/app_settings.rs`）
 
+> `research_collections`、`research_resources` 曾在此清单，因 Research 延后于第一版发布前从 schema 移除（详见 §4.12–4.13）。
+>
 > `data_sources`、`data_credentials`、`skills`、`skill_enablements` 曾在此清单，已于 2026-07-07 从 schema 删除（从未接线，详见 §4.14–4.17）。
 >
 > P2 审批脚手架的三张预留表（`sandbox_config`、`approval_policy_config`、`approval_rules`）已于 2026-07-05 删除——规则迁到文件后成为死结构，详见 §4.8。
@@ -694,17 +636,15 @@ Review 解决“改了什么”的问题。
 
 ### 6.4 引用对象独立建模
 
-Research Resource、Artifact、Run、Tool Call、Approval Request、Review Changeset、Workspace File、Data Source、Skill 都可以被 `@` 引用或被 markdown 中的 `futureos://` 链接引用。
+Artifact、Run、Tool Call、Approval Request、Review Changeset、Workspace File、Data Source、Skill 都可以被 `@` 引用或被 markdown 中的 `futureos://` 链接引用。
 
 为了避免每种对象分别实现搜索和引用，建议通过 Reference Target 做统一索引，再通过 Object Reference 记录引用关系。
 
 Reference Target 需要支持全局对象，例如全局 Data Source 和全局 Skill。
 
-### 6.5 Research 转入不保留原始对话引用
+### 6.5 Research 转入（已延后）
 
-普通 Chat 清理前，用户可以把产物转入 Research。
-
-按产品决策，转入 Research 后不保留原始对话引用。Research Resource 可以保留来源类型和基础元信息，但不依赖原 Thread 继续存在。
+Research 模块延后至第一版发布后，相关设计已移除，仅在 PRODUCT.md §4.9 保留产品记录，数据模型见 §4.12–4.13 的延后说明。（编号保留，避免后续小节与 §6.8/§6.9 及 gui/CLAUDE.md 的引用错位。）
 
 ### 6.6 Data 凭证与模型凭证分离
 
@@ -714,7 +654,7 @@ Data Credential 只服务 Data Source。
 
 ### 6.7 大内容走文件路径
 
-Artifact 和 Research Resource 的 `content` 只用于存放小内容。
+Artifact 的 `content` 只用于存放小内容。
 
 大内容统一走文件路径，数据库只保存路径、摘要和元信息。
 

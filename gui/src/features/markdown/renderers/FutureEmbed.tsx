@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import {
   isStoredApproval,
   isStoredArtifact,
-  isStoredResearch,
   isStoredReview,
   isStoredRun,
   isStoredTool,
@@ -12,7 +11,7 @@ import {
 import { ArtifactEmbed } from "./ArtifactEmbed";
 import { renderFileReference } from "./fileReference";
 import { MissingReference } from "./MissingReference";
-import { ApprovalEmbed, ResearchEmbed, ReviewEmbed, ToolEmbed } from "./ObjectEmbed";
+import { ApprovalEmbed, ReviewEmbed, ToolEmbed } from "./ObjectEmbed";
 import { PendingReference } from "./PendingReference";
 import { RunEmbed } from "./RunEmbed";
 
@@ -65,13 +64,6 @@ export function FutureEmbed({
       return <ReviewEmbed reference={reference} review={resolved.data} />;
     }
     return <MissingReference error={t("embed.reviewPayloadInvalid")} reference={reference} />;
-  }
-
-  if (reference.targetType === "research" && resolved.targetType === "research") {
-    if (isStoredResearch(resolved.data)) {
-      return <ResearchEmbed reference={reference} resource={resolved.data} />;
-    }
-    return <MissingReference error={t("embed.researchPayloadInvalid")} reference={reference} />;
   }
 
   if (reference.targetType === "tool" && resolved.targetType === "tool") {
