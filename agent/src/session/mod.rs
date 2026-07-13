@@ -97,6 +97,19 @@ pub struct SessionEntry {
     pub tool_args: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub thinking: String,
+    /// Output (completion) tokens for the reply this entry belongs to. Only the
+    /// final assistant entry of a run carries a non-zero value; used by the GUI
+    /// to show per-reply token counts when reloading history from JSONL.
+    #[serde(rename = "output_tokens", default, skip_serializing_if = "is_zero_i64")]
+    pub output_tokens: i64,
+    /// Wall-clock duration of the run this entry belongs to, in milliseconds.
+    /// Set alongside `output_tokens` on the final assistant entry of a run.
+    #[serde(rename = "duration_ms", default, skip_serializing_if = "is_zero_i64")]
+    pub duration_ms: i64,
+}
+
+fn is_zero_i64(v: &i64) -> bool {
+    *v == 0
 }
 
 impl SessionEntry {
@@ -122,6 +135,8 @@ impl SessionEntry {
             name: String::new(),
             tool_args: String::new(),
             thinking: String::new(),
+            output_tokens: 0,
+            duration_ms: 0,
         }
     }
 
@@ -147,6 +162,8 @@ impl SessionEntry {
             name: String::new(),
             tool_args: String::new(),
             thinking: String::new(),
+            output_tokens: 0,
+            duration_ms: 0,
         }
     }
 
@@ -172,6 +189,8 @@ impl SessionEntry {
             name: String::new(),
             tool_args: String::new(),
             thinking: String::new(),
+            output_tokens: 0,
+            duration_ms: 0,
         }
     }
 }
@@ -480,7 +499,8 @@ impl Manager {
                             }
                         }
                     }
-                } else if entry.entry_type == ENTRY_TYPE_SESSION_INFO && session_info_name.is_none() {
+                } else if entry.entry_type == ENTRY_TYPE_SESSION_INFO && session_info_name.is_none()
+                {
                     if let Some(ref content_val) = entry.content {
                         if let Some(n) = content_val.get("session_name").and_then(|v| v.as_str()) {
                             let trimmed = n.trim();
@@ -608,6 +628,8 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
             name: String::new(),
             tool_args: String::new(),
             thinking: String::new(),
+            output_tokens: 0,
+            duration_ms: 0,
         },
     );
     let now = Local::now();
@@ -776,6 +798,11 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
         name: msg.name.clone(),
         tool_args: msg.tool_args.clone(),
         thinking: msg.thinking.clone(),
+        // Populated at the save site (session_prompt.rs): only the final
+        // assistant entry of a run gets a non-zero value, and prior entries'
+        // values are preserved from the previously-saved session.
+        output_tokens: 0,
+        duration_ms: 0,
     }
 }
 

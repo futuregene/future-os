@@ -570,11 +570,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 let sess = session.read().unwrap();
                 (sess.session_manager.clone(), sess.session_id.clone())
             };
-            let entries: Vec<serde_json::Value> =
-                session_manager
-                    .load(&session_id)
-                    .map(|s| {
-                        s.entries
+            let entries: Vec<serde_json::Value> = session_manager
+                .load(&session_id)
+                .map(|s| {
+                    s.entries
                         .iter()
                         .filter(|e| {
                             matches!(
@@ -583,7 +582,9 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                             )
                         })
                         .map(|e| {
-                            let content_text = e.content.as_ref()
+                            let content_text = e
+                                .content
+                                .as_ref()
                                 .map(|c| {
                                     if let Some(arr) = c.as_array() {
                                         arr.iter()
@@ -626,7 +627,17 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                                 entry["thinking"] = serde_json::Value::String(e.thinking.clone());
                             }
                             if !e.tool_calls.is_empty() {
-                                entry["tool_calls"] = serde_json::to_value(&e.tool_calls).unwrap_or(serde_json::Value::Null);
+                                entry["tool_calls"] = serde_json::to_value(&e.tool_calls)
+                                    .unwrap_or(serde_json::Value::Null);
+                            }
+                            // Per-reply metadata for the GUI's message footer
+                            // ("time · N tokens"); set on the final assistant
+                            // entry of each run.
+                            if e.output_tokens > 0 {
+                                entry["output_tokens"] = serde_json::json!(e.output_tokens);
+                            }
+                            if e.duration_ms > 0 {
+                                entry["duration_ms"] = serde_json::json!(e.duration_ms);
                             }
                             // For session_info entries, include the original content
                             // JSON (session_name, cwd, parent_session_id, …) and the
@@ -640,14 +651,15 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                                     entry["model"] = serde_json::Value::String(e.model.clone());
                                 }
                                 if !e.thinking_level.is_empty() {
-                                    entry["thinking_level"] = serde_json::Value::String(e.thinking_level.clone());
+                                    entry["thinking_level"] =
+                                        serde_json::Value::String(e.thinking_level.clone());
                                 }
                             }
                             entry
                         })
                         .collect()
-                    })
-                    .unwrap_or_default();
+                })
+                .unwrap_or_default();
             RpcResponse::ok(
                 id,
                 "get_session_entries",
@@ -691,6 +703,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     name: String::new(),
                     tool_args: String::new(),
                     thinking: String::new(),
+                    output_tokens: 0,
+                    duration_ms: 0,
                 });
                 s.name = cmd.name.clone();
                 let _ = session_manager.save(&s);
