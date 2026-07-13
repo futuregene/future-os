@@ -126,11 +126,6 @@ SET status = 'cancelled',
     ended_at = COALESCE(ended_at, CAST(strftime('%s','now') AS INTEGER) * 1000),
     updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000
 WHERE status IN ('queued', 'running', 'waiting_approval');
-
-UPDATE tool_calls
-SET status = 'failed',
-    ended_at = COALESCE(ended_at, CAST(strftime('%s','now') AS INTEGER) * 1000)
-WHERE status = 'running';
 SQL
 }
 
