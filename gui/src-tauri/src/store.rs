@@ -9,7 +9,6 @@ mod db;
 mod markdown_refs;
 mod messages;
 mod records;
-mod research;
 mod review_snapshots;
 mod runs;
 mod schema;
@@ -43,7 +42,6 @@ pub use db::{
 pub use markdown_refs::resolve_markdown_references;
 pub use messages::{append_message, list_messages, MessageRecord};
 pub use records::*;
-pub use research::{list_research_resources, promote_artifact_to_research, ResearchResourceRecord};
 pub use review_snapshots::{
     create_review_snapshot, get_last_run_changeset, get_review_snapshot, get_run_changeset,
     list_snapshots_with_commits, list_unmaterialized_runs, mark_run_overlapped,

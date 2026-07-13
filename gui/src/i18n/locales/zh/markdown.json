@@ -10,14 +10,12 @@
     "runPayloadInvalid": "run 数据无效",
     "approvalPayloadInvalid": "approval 数据无效",
     "reviewPayloadInvalid": "review 数据无效",
-    "researchPayloadInvalid": "research 数据无效",
     "toolPayloadInvalid": "tool 数据无效",
     "typeMismatch": "引用类型不匹配"
   },
   "objectEmbed": {
     "reviewMeta": "{{files}} 个文件，+{{additions}} -{{deletions}}",
     "openReview": "打开 Review",
-    "openResearch": "打开 Research",
     "inspectRun": "查看 Run"
   },
   "artifactEmbed": {

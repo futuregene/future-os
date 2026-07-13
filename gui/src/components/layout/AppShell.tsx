@@ -8,7 +8,6 @@ import { useTranslation } from "react-i18next";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { RemoteView } from "../../features/remote/RemoteView";
-import { ResearchView } from "../../features/research/ResearchView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
 import {
@@ -16,7 +15,7 @@ import {
   pinThread,
   restoreThread,
 } from "../../integrations/storage/threadStore";
-import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { ToastHost } from "../ui/ToastHost";
 import { ActivityRail } from "./ActivityRail";
 import { AppShellDialogs } from "./AppShellDialogs";
@@ -58,7 +57,6 @@ export function AppShell() {
   // Bumped on every workspace-header "+" click so the new-conversation view
   // remounts and re-opens the create dialog even when we're already on it.
   const [newWorkspaceNonce, setNewWorkspaceNonce] = useState(0);
-  const [selectedResearchResourceId, setSelectedResearchResourceId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
 
@@ -156,13 +154,6 @@ export function AppShell() {
     [workspaces],
   );
   const hideRightPanel = centerMode === "new-chat" || section === "skill" || section === "remote";
-
-  useEffect(() => onFutureEvent("open-research-resource", (detail) => {
-    setSelectedResearchResourceId(detail.resourceId);
-    setSection("research");
-    setCenterMode("thread");
-    setNewChatWorkspaceId(null);
-  }), []);
 
   // Bridge the backend's deferred shadow-review notification (C1) onto the
   // typed event bus so the Review panel refreshes when the changeset lands.
@@ -370,64 +361,56 @@ export function AppShell() {
                 workspaces={userWorkspaces}
               />
             )
-          : section === "research"
+          : section === "skill"
             ? (
-                <ResearchView
-                  selectedResourceId={selectedResearchResourceId}
-                  workspaceId={activeWorkspace?.id ?? null}
-                  workspaceName={activeWorkspace?.name ?? t("appShell.noWorkspaceSelected")}
-                />
+                <SkillsView />
               )
-            : section === "skill"
+            : section === "remote"
               ? (
-                  <SkillsView />
+                  <RemoteView appSettings={appSettings} onChangeSettings={patch => void changeSettings(patch)} />
                 )
-              : section === "remote"
+              : section === "data"
                 ? (
-                    <RemoteView appSettings={appSettings} onChangeSettings={patch => void changeSettings(patch)} />
+                    <ModulePlaceholder section="data" />
                   )
-                : section === "data"
+                : storeError
                   ? (
-                      <ModulePlaceholder section="data" />
+                      <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
+                        {t("appShell.storeInitFailed")}
+                        {storeError}
+                      </div>
                     )
-                  : storeError
-                    ? (
-                        <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
-                          {t("appShell.storeInitFailed")}
-                          {storeError}
-                        </div>
-                      )
-                    : (
-                        <AgentThread
-                          activeApproval={activeApproval}
-                          agentConnection={agentConnection}
-                          approvalTier={appSettings.approvalTier}
-                          showThinking={appSettings.showThinking}
-                          loadingStore={loadingStore}
-                          modelId={activeThreadModelId}
-                          modelOptions={visibleModelOptions}
-                          onModelChange={changeModel}
-                          onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
-                          thinkingLevel={activeThinkingLevel}
-                          onThinkingLevelChange={changeThinkingLevel}
-                          pendingPrompt={pendingPrompt}
-                          thread={activeThread}
-                          workspacePath={activeWorkspace?.path ?? null}
-                          onApprovalDecision={handleApprovalDecision}
-                          leftPanelExpanded={leftExpanded}
-                          onRetryAgentConnection={() => void refreshAgentModels()}
-                          onOpenAccount={handleOpenAccount}
-                          onOpenModels={handleOpenModels}
-                          onToggleLeftPanel={handleToggleLeftPanel}
-                          onPromptConsumed={consumePendingPrompt}
-                          onForked={(forkedThreadId: string) => {
-                            void refreshStore(forkedThreadId);
-                          }}
-                          onThreadActivity={() => {
-                            void refreshStore(activeThread?.id ?? undefined);
-                          }}
-                        />
-                      )}
+                  : (
+                      <AgentThread
+                        activeApproval={activeApproval}
+                        agentConnection={agentConnection}
+                        approvalTier={appSettings.approvalTier}
+                        showThinking={appSettings.showThinking}
+                        loadingStore={loadingStore}
+                        modelId={activeThreadModelId}
+                        modelOptions={visibleModelOptions}
+                        onModelChange={changeModel}
+                        onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
+                        thinkingLevel={activeThinkingLevel}
+                        onThinkingLevelChange={changeThinkingLevel}
+                        pendingPrompt={pendingPrompt}
+                        thread={activeThread}
+                        workspacePath={activeWorkspace?.path ?? null}
+                        onApprovalDecision={handleApprovalDecision}
+                        leftPanelExpanded={leftExpanded}
+                        onRetryAgentConnection={() => void refreshAgentModels()}
+                        onOpenAccount={handleOpenAccount}
+                        onOpenModels={handleOpenModels}
+                        onToggleLeftPanel={handleToggleLeftPanel}
+                        onPromptConsumed={consumePendingPrompt}
+                        onForked={(forkedThreadId: string) => {
+                          void refreshStore(forkedThreadId);
+                        }}
+                        onThreadActivity={() => {
+                          void refreshStore(activeThread?.id ?? undefined);
+                        }}
+                      />
+                    )}
       </main>
       {/* Views without thread context hide the right panel entirely, including
           the collapsed expand affordance. */}

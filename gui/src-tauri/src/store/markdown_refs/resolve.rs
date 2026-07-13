@@ -10,9 +10,6 @@ use crate::store::approvals::{
 use crate::store::artifacts::{artifact_from_row, ArtifactRecord, ARTIFACT_COLUMNS};
 use crate::store::db::connect;
 use crate::store::records::*;
-use crate::store::research::{
-    research_resource_from_row, ResearchResourceRecord, RESEARCH_RESOURCE_COLUMNS,
-};
 use crate::store::review_snapshots::{
     review_changeset_from_row, ReviewChangesetRecord, REVIEW_CHANGESET_COLUMNS,
 };
@@ -83,13 +80,6 @@ pub(super) fn resolve_markdown_reference(
         "review" => match get_review_changeset_in_workspace(conn, workspace_id, &target_id) {
             Ok(Some(review)) => resolved_reference(target_type, target_id, review),
             Ok(None) => missing_reference(target_type, target_id, "review changeset was not found"),
-            Err(error) => failed_reference(target_type, target_id, error),
-        },
-        "research" => match get_research_resource_in_workspace(conn, workspace_id, &target_id) {
-            Ok(Some(resource)) => resolved_reference(target_type, target_id, resource),
-            Ok(None) => {
-                missing_reference(target_type, target_id, "research resource was not found")
-            }
             Err(error) => failed_reference(target_type, target_id, error),
         },
         _ => missing_reference(
@@ -308,25 +298,6 @@ fn get_review_changeset_in_workspace(
         ),
         params![id, workspace_id],
         review_changeset_from_row,
-    )
-    .optional()
-    .map_err(crate::AppError::from)
-}
-
-fn get_research_resource_in_workspace(
-    conn: &Connection,
-    workspace_id: &str,
-    id: &str,
-) -> Result<Option<ResearchResourceRecord>, crate::AppError> {
-    conn.query_row(
-        &format!(
-            "SELECT {RESEARCH_RESOURCE_COLUMNS}
-         FROM research_resources r
-         JOIN research_collections c ON c.id = r.collection_id
-         WHERE r.id = ?1 AND c.workspace_id = ?2"
-        ),
-        params![id, workspace_id],
-        research_resource_from_row,
     )
     .optional()
     .map_err(crate::AppError::from)

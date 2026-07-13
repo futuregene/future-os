@@ -28,7 +28,7 @@ import { IconButton } from "../ui/IconButton";
 import { WorkspaceHeaderMenu } from "./ActivityRailMenus";
 import { ThreadListItem } from "./ThreadListItem";
 
-export type ActivitySection = "chat" | "workspace" | "research" | "data" | "skill" | "remote" | "settings";
+export type ActivitySection = "chat" | "workspace" | "data" | "skill" | "remote" | "settings";
 
 interface ActivityRailProps {
   active: ActivitySection;
@@ -54,10 +54,10 @@ interface ActivityRailProps {
   onToggleExpanded: () => void;
 }
 
-// Research / Data / Skill entries are temporarily hidden from the navigation:
+// Data / Skill entries are temporarily hidden from the navigation:
 // these modules have been deprioritised (see PLAN.md "Next Priorities").
-// Section handling logic is preserved (markdown research embeds still navigate);
-// only the left-nav items are removed — add them back to restore.
+// Section handling logic is preserved; only the left-nav items are removed —
+// add them back to restore. (Research was removed entirely; see PRODUCT.md §4.9.)
 const featureItems: Array<{ id: ActivitySection; label: string; icon: LucideIcon }> = [];
 
 const settingsItem = { id: "settings", label: "Settings", icon: Settings } satisfies {

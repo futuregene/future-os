@@ -214,7 +214,7 @@ pub fn workspace_agent_session_ids(workspace_id: &str) -> Result<Vec<String>, cr
 }
 
 /// Hard-deletes a Workspace: every thread in it (via the same FK-safe cascade as
-/// [`super::delete_thread`]) plus the workspace-scoped rows (artifacts, research,
+/// [`super::delete_thread`]) plus the workspace-scoped rows (artifacts,
 /// references, file index) and finally the workspace row itself. The user's files
 /// on disk are NEVER touched — a user Workspace's `path` is their own directory,
 /// and GUI-managed scratch/review dirs are reclaimed by the startup reconcilers
@@ -249,16 +249,6 @@ pub(super) fn delete_workspace_in(conn: &Connection, workspace_id: &str) -> rusq
     )?;
 
     // 2. Workspace-scoped rows, FK-safe (children before parents).
-    conn.execute(
-        "DELETE FROM research_resources WHERE collection_id IN (
-             SELECT id FROM research_collections WHERE workspace_id = ?1
-         )",
-        params![workspace_id],
-    )?;
-    conn.execute(
-        "DELETE FROM research_collections WHERE workspace_id = ?1",
-        params![workspace_id],
-    )?;
     conn.execute(
         "DELETE FROM artifacts WHERE workspace_id = ?1",
         params![workspace_id],
@@ -351,11 +341,6 @@ mod tests {
              INSERT INTO artifacts (id, workspace_id, thread_id, run_id, title,
                  artifact_type, created_at, updated_at)
                  VALUES ('{ws}_a', '{ws}', '{ws}_t', '{ws}_r', 'A', 'markdown', 1, 1);
-             INSERT INTO research_collections (id, workspace_id, name, created_at,
-                 updated_at) VALUES ('{ws}_c', '{ws}', 'C', 1, 1);
-             INSERT INTO research_resources (id, collection_id, source_artifact_id,
-                 title, resource_type, created_at, updated_at)
-                 VALUES ('{ws}_rr', '{ws}_c', '{ws}_a', 'R', 'note', 1, 1);
              INSERT INTO workspace_files (id, workspace_id, path, name, created_at,
                  updated_at) VALUES ('{ws}_f', '{ws}', '/p', 'f', 1, 1);
              INSERT INTO reference_targets (id, target_type, target_id, scope,
@@ -374,8 +359,6 @@ mod tests {
             "threads",
             "runs",
             "artifacts",
-            "research_collections",
-            "research_resources",
             "workspace_files",
             "reference_targets",
             "object_references",

@@ -165,29 +165,11 @@ CREATE TABLE IF NOT EXISTS artifacts (
     deleted_at INTEGER
 );
 
-CREATE TABLE IF NOT EXISTS research_collections (
-    id TEXT PRIMARY KEY,
-    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
-    name TEXT NOT NULL,
-    description TEXT,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS research_resources (
-    id TEXT PRIMARY KEY,
-    collection_id TEXT NOT NULL REFERENCES research_collections(id),
-    source_artifact_id TEXT REFERENCES artifacts(id),
-    title TEXT NOT NULL,
-    resource_type TEXT NOT NULL,
-    source_uri TEXT,
-    content TEXT,
-    content_storage TEXT,
-    summary TEXT,
-    metadata TEXT,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-);
+-- NOTE: Research (`research_collections`, `research_resources`) is deferred
+-- past the first release; its data model, storage, and product surface are
+-- undecided, so no tables are created for it yet (product record kept in
+-- gui/DEV_MD/PRODUCT.md §4.9). `apply_schema` drops any pre-existing research
+-- tables via `DROPPED_TABLES`.
 
 -- NOTE: `data_sources`, `data_credentials`, `skills`, and `skill_enablements`
 -- were removed on 2026-07-07. They were created by an early schema but never had
@@ -316,7 +298,6 @@ pub(super) const ADDED_COLUMNS: &[(&str, &str)] = &[
 pub(super) const RENAMED_COLUMNS: &[(&str, &str, &str)] = &[
     // // ("run_events", "type", "event_type"), -- table dropped -- table dropped
     ("artifacts", "type", "artifact_type"),
-    ("research_resources", "type", "resource_type"),
 ];
 
 /// Indexes that reference columns from `ADDED_COLUMNS`. These must run *after*
@@ -331,6 +312,9 @@ pub(super) const ADDED_INDEXES: &[&str] =
 /// can't lose data. Ordered so a table is dropped before the one it references,
 /// keeping the drop FK-safe.
 pub(super) const DROPPED_TABLES: &[&str] = &[
+    // Research deferred: drop resources before collections (FK order).
+    "research_resources",
+    "research_collections",
     "data_credentials",
     "data_sources",
     "skill_enablements",
