@@ -250,12 +250,12 @@ fn dedup(items: Vec<String>) -> Vec<String> {
 /// shell commands (e.g. `dir` vs `ls`, path separators, package managers).
 fn os_hint() -> String {
     match std::env::consts::OS {
-        "macos" => "Host platform: macOS. Use macOS/zsh shell commands. "
-            .to_string(),
-        "windows" => "Host platform: Windows. Use Windows shell commands: "
-            .to_string()
-            + "dir (not ls), type (not cat), path separators \\ (not /). "
-            + "PowerShell or cmd syntax is acceptable.",
+        "macos" => "Host platform: macOS. Use macOS/zsh shell commands. ".to_string(),
+        "windows" => {
+            "Host platform: Windows. Use Windows shell commands: ".to_string()
+                + "dir (not ls), type (not cat), path separators \\ (not /). "
+                + "PowerShell or cmd syntax is acceptable."
+        }
         "linux" => "Host platform: Linux.".to_string(),
         other => format!("Host platform: {other}."),
     }
