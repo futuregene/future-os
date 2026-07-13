@@ -316,6 +316,12 @@ impl ServerSession {
         let perm = self.permission_level.clone();
         let scope_sandbox = sandbox.clone();
         tokio::spawn(async move {
+            // Anchors for per-reply metadata written at the save site: wall-clock
+            // start and the session-cumulative output-token count before this
+            // prompt ran. The delta/elapsed are attributed to the final assistant
+            // entry so the GUI can show "time · N tokens" when reloading history.
+            let run_start = std::time::Instant::now();
+            let out_start = tokens_out.load(std::sync::atomic::Ordering::Relaxed);
             let result = crate::tools::with_tool_scope(
                 crate::tools::ScopeOptions {
                     workspace: session_cwd.clone(),
@@ -450,6 +456,62 @@ impl ServerSession {
                             .map(crate::session::agent_message_to_entry)
                             .collect();
 
+                        // The whole session is rebuilt from the in-memory message
+                        // list on every save, and agent_message_to_entry re-stamps
+                        // `now()` with zero token/duration. Without preserving them,
+                        // every reload shows all messages at the current time
+                        // ("just now") and drops earlier replies' token counts.
+                        // Messages only grow by appending, so the on-disk message
+                        // entries align by index with this prefix. Filter the old
+                        // side to message entries only (matching what the rebuild
+                        // produces) so any interleaved label/model_change entries
+                        // can't shift the alignment.
+                        {
+                            let is_message_entry = |t: &str| {
+                                matches!(
+                                    t,
+                                    crate::session::ENTRY_TYPE_USER
+                                        | crate::session::ENTRY_TYPE_ASSISTANT
+                                        | crate::session::ENTRY_TYPE_TOOL
+                                        | crate::session::ENTRY_TYPE_SYSTEM
+                                )
+                            };
+                            let old_msg_entries: Vec<crate::session::SessionEntry> =
+                                session_manager
+                                    .load(&session_id)
+                                    .map(|s| {
+                                        s.entries
+                                            .into_iter()
+                                            .filter(|e| is_message_entry(&e.entry_type))
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                            for (new_entry, old_entry) in
+                                entries.iter_mut().zip(old_msg_entries.iter())
+                            {
+                                new_entry.timestamp = old_entry.timestamp;
+                                new_entry.output_tokens = old_entry.output_tokens;
+                                new_entry.duration_ms = old_entry.duration_ms;
+                            }
+
+                            // Attach this run's output tokens + wall-clock duration
+                            // to the final assistant entry (the reply just made). It
+                            // sits beyond the preserved prefix, so earlier replies
+                            // are untouched.
+                            let run_output_tokens =
+                                (tokens_out.load(std::sync::atomic::Ordering::Relaxed) - out_start)
+                                    .max(0);
+                            let run_duration_ms = run_start.elapsed().as_millis() as i64;
+                            if let Some(last_assistant) = entries
+                                .iter_mut()
+                                .rev()
+                                .find(|e| e.entry_type == crate::session::ENTRY_TYPE_ASSISTANT)
+                            {
+                                last_assistant.output_tokens = run_output_tokens;
+                                last_assistant.duration_ms = run_duration_ms;
+                            }
+                        }
+
                         // Prepend session_info entry with metadata
                         use std::sync::atomic::Ordering;
                         // Preserve parent_session_id from existing session on disk
@@ -468,9 +530,7 @@ impl ServerSession {
                                 .map(|c| {
                                     if let Some(arr) = c.as_array() {
                                         arr.iter()
-                                            .filter_map(|b| {
-                                                b.get("text").and_then(|t| t.as_str())
-                                            })
+                                            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
                                             .collect::<Vec<_>>()
                                             .join(" ")
                                     } else {
@@ -524,6 +584,8 @@ impl ServerSession {
                             name: String::new(),
                             tool_args: String::new(),
                             thinking: String::new(),
+                            output_tokens: 0,
+                            duration_ms: 0,
                         };
                         entries.insert(0, info_entry);
 
