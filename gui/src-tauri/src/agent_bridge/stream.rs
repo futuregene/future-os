@@ -43,6 +43,7 @@ pub(super) async fn collect_agent_response(
 ) -> Result<AgentResponse, crate::AppError> {
     let mut content = String::new();
     let mut saw_agent_end = false;
+    let mut clean_end = false;
     let mut waiting_for_approval = false;
     let mut sequence = 0_i64;
 
@@ -106,6 +107,12 @@ pub(super) async fn collect_agent_response(
             }
             "agent_end" => {
                 saw_agent_end = true;
+                // An `agent_end` with reason `incomplete` means the LLM stream
+                // was truncated (idle timeout / upstream closed mid-reply
+                // without a finish signal). Treat it as a non-clean end so the
+                // caller keeps the partial text but finalizes the run as failed
+                // rather than presenting a cut-off reply as completed.
+                clean_end = !agent_end_incomplete(&event.data);
                 break;
             }
             "error" => {
@@ -124,9 +131,24 @@ pub(super) async fn collect_agent_response(
     } else {
         Ok(AgentResponse {
             content,
-            complete: saw_agent_end,
+            complete: clean_end,
         })
     }
+}
+
+/// Returns true when an `agent_end` event's data marks the turn as incomplete —
+/// i.e. the LLM stream was truncated before a genuine finish. Such a reply is a
+/// prefix and must not be persisted as a clean completion.
+fn agent_end_incomplete(data: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(data)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("reason")
+                .and_then(|reason| reason.as_str())
+                .map(str::to_string)
+        })
+        .is_some_and(|reason| reason == "incomplete")
 }
 
 fn event_text(data: &str) -> Option<String> {
@@ -150,4 +172,28 @@ fn event_error(data: &str) -> Option<String> {
                 .and_then(|error| error.as_str())
                 .map(str::to_string)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::agent_end_incomplete;
+
+    #[test]
+    fn incomplete_reason_marks_truncated() {
+        // Truncated stream: run loop emits agent_end reason "incomplete".
+        assert!(agent_end_incomplete(r#"{"reason":"incomplete"}"#));
+        assert!(agent_end_incomplete(
+            r#"{"reason":"incomplete","stop_reason":"truncated"}"#
+        ));
+    }
+
+    #[test]
+    fn clean_reasons_are_not_truncated() {
+        assert!(!agent_end_incomplete(r#"{"reason":"complete"}"#));
+        assert!(!agent_end_incomplete(r#"{"reason":"stop_condition"}"#));
+        assert!(!agent_end_incomplete(r#"{"reason":"interrupted"}"#));
+        // Missing / malformed reason must default to clean, not truncated.
+        assert!(!agent_end_incomplete(r#"{"usage":{}}"#));
+        assert!(!agent_end_incomplete("not json"));
+    }
 }

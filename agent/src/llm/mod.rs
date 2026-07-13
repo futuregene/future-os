@@ -408,6 +408,21 @@ impl crate::types::LLMProvider for Client {
             let mut in_tool_call = false;
             let mut buffer: Vec<u8> = Vec::new();
             let mut last_sse_event_at = std::time::Instant::now();
+            // Tracks whether the provider sent a genuine terminal signal —
+            // either `[DONE]` or a chunk carrying finish_reason stop/tool_calls.
+            // If the read loop instead exits via idle timeout or a premature
+            // connection close (`Ok(None)`), the response was cut off mid-flight
+            // and must be flagged so the run loop doesn't present a truncated
+            // prefix as a clean completion.
+            let mut saw_terminal = false;
+            // Diagnostics for premature stream termination: how long the stream
+            // ran, how much it delivered, and which exit path fired. Logged only
+            // when the stream ends without a terminal signal so recurring
+            // upstream drops (gateway / proxy cutting the connection mid-reply)
+            // leave an actionable trace instead of a silent truncation.
+            let stream_started_at = std::time::Instant::now();
+            let mut total_bytes: usize = 0;
+            let mut idle_timed_out = false;
 
             // Helper to emit events from a parsed SSE data line, handling
             // thinking/tool-call bookending (matches original per-line logic).
@@ -416,8 +431,10 @@ impl crate::types::LLMProvider for Client {
                 tx: &mpsc::Sender<StreamEvent>,
                 in_thinking: &mut bool,
                 in_tool_call: &mut bool,
+                saw_terminal: &mut bool,
             ) -> bool {
                 if data == "[DONE]" {
+                    *saw_terminal = true;
                     if *in_tool_call {
                         let _ = tx
                             .send(StreamEvent {
@@ -507,6 +524,10 @@ impl crate::types::LLMProvider for Client {
                     }
 
                     if should_finish_response {
+                        // A real finish_reason (stop/tool_calls) is a genuine
+                        // terminal signal even when the provider never sends a
+                        // trailing `[DONE]` (some close the socket right after).
+                        *saw_terminal = true;
                         let _ = tx
                             .send(StreamEvent {
                                 event_type: "stop".to_string(),
@@ -544,7 +565,10 @@ impl crate::types::LLMProvider for Client {
                     ) => match res {
                         Ok(Some(chunk_result)) => chunk_result,
                         Ok(None) => break,
-                        Err(_) => break,
+                        Err(_) => {
+                            idle_timed_out = true;
+                            break;
+                        }
                     },
                 };
 
@@ -553,6 +577,7 @@ impl crate::types::LLMProvider for Client {
                         if let Some(ref cb) = on_payload {
                             cb(&bytes);
                         }
+                        total_bytes += bytes.len();
                         buffer.extend_from_slice(&bytes);
 
                         // Guard against malformed streams (no \n\n delimiter).
@@ -584,6 +609,7 @@ impl crate::types::LLMProvider for Client {
                                     &tx,
                                     &mut in_thinking,
                                     &mut in_tool_call,
+                                    &mut saw_terminal,
                                 )
                                 .await
                                 {
@@ -649,9 +675,32 @@ impl crate::types::LLMProvider for Client {
                     .await;
             }
 
+            // If we never saw a genuine terminal signal, the read loop exited
+            // via idle timeout or a premature EOF — the response is a truncated
+            // prefix. Mark the synthetic stop so the run loop can distinguish it
+            // from a clean completion instead of persisting a cut-off reply as a
+            // success.
+            let stop_reason = if saw_terminal {
+                String::new()
+            } else {
+                warn!(
+                    elapsed_ms = stream_started_at.elapsed().as_millis() as u64,
+                    bytes = total_bytes,
+                    in_tool_call = in_tool_call,
+                    cause = if idle_timed_out {
+                        "idle_timeout"
+                    } else {
+                        "upstream_eof"
+                    },
+                    "LLM stream ended without a terminal signal ([DONE]/finish_reason \
+                     missing) — response truncated mid-flight"
+                );
+                "truncated".to_string()
+            };
             let _ = tx
                 .send(StreamEvent {
                     event_type: "stop".to_string(),
+                    stop_reason,
                     ..Default::default()
                 })
                 .await;
