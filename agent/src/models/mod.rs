@@ -615,6 +615,19 @@ fn load_user_models_with_overrides(
             if let Some(ref compat) = provider.compat {
                 m.compat = compat.clone();
             }
+            // Derive compat from supportedParameters (e.g. max_completion_tokens
+            // → maxTokensField).  This mirrors what convert_future_model does for
+            // Future platform models.
+            if let Some(ref supported_params) = model.supported_parameters {
+                let (derived_compat, derived_tlm) =
+                    derive_thinking_compat(supported_params, None);
+                for (k, v) in derived_compat {
+                    m.compat.insert(k, v);
+                }
+                if m.thinking_level_map.is_empty() {
+                    m.thinking_level_map = derived_tlm;
+                }
+            }
             // Model-level compat overrides provider-level compat on a per-key basis
             if let Some(ref model_compat) = model.compat {
                 for (k, v) in model_compat {
@@ -692,6 +705,9 @@ struct ModelConfig {
     /// Model-level compat overrides (e.g. maxTokensField for reasoning models).
     #[serde(rename = "compat", default)]
     compat: Option<HashMap<String, serde_json::Value>>,
+    /// Supported parameters, used to auto-derive compat (maxTokensField, thinkingFormat, etc.).
+    #[serde(rename = "supportedParameters", default)]
+    supported_parameters: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
