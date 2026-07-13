@@ -49,7 +49,8 @@ export function FileTreeNode({ entry, depth, tree, activePath, onContextMenu, on
   function handleClick() {
     if (entry.isDir) {
       tree.toggle(entry.path);
-    } else {
+    }
+    else {
       onOpenFile?.(entry);
     }
   }
