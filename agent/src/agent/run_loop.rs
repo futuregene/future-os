@@ -282,6 +282,10 @@ impl Loop {
             let mut current_tool_calls: Vec<Option<AgentToolCall>> = vec![];
             let mut output_started = false;
             let mut stream_error = None;
+            // Set when the LLM layer signals the stream was cut off (idle
+            // timeout or premature EOF without a finish_reason / `[DONE]`).
+            // The accumulated text is a prefix, not a finished answer.
+            let mut stream_truncated = false;
 
             loop {
                 let event_idle_timeout = if current_tool_calls
@@ -293,8 +297,9 @@ impl Loop {
                     STREAM_EVENT_IDLE_TIMEOUT
                 };
 
+                let mut event_timed_out = false;
                 let event = if let Some(ref mut irx) = interrupt_rx {
-                    tokio::time::timeout(event_idle_timeout, async {
+                    match tokio::time::timeout(event_idle_timeout, async {
                         tokio::select! {
                             event_opt = rx.next() => event_opt,
                             _ = irx.recv() => {
@@ -304,16 +309,37 @@ impl Loop {
                         }
                     })
                     .await
-                    .unwrap_or_default()
+                    {
+                        Ok(inner) => inner,
+                        Err(_) => {
+                            event_timed_out = true;
+                            None
+                        }
+                    }
                 } else {
-                    tokio::time::timeout(event_idle_timeout, rx.next())
-                        .await
-                        .unwrap_or_default()
+                    match tokio::time::timeout(event_idle_timeout, rx.next()).await {
+                        Ok(inner) => inner,
+                        Err(_) => {
+                            event_timed_out = true;
+                            None
+                        }
+                    }
                 };
 
                 let event = match event {
                     Some(e) => e,
-                    None => break,
+                    None => {
+                        // No event for the whole idle window means the LLM layer
+                        // went silent without delivering a terminal event — the
+                        // stream stalled. Mark it truncated so the turn ends as
+                        // `incomplete`, not a silent `complete`. (A normal end
+                        // arrives as the channel closing right after a `stop`,
+                        // which is not a timeout.)
+                        if event_timed_out {
+                            stream_truncated = true;
+                        }
+                        break;
+                    }
                 };
                 on_event(event.clone());
 
@@ -534,6 +560,13 @@ impl Loop {
                         }
                     }
                     "stop" => {
+                        // A `truncated` stop_reason means the stream was cut off
+                        // mid-flight (idle timeout / premature EOF) rather than
+                        // reaching a real finish. Remember it so the turn ends as
+                        // `incomplete` instead of `complete`.
+                        if event.stop_reason == "truncated" {
+                            stream_truncated = true;
+                        }
                         // Process usage if attached to this event (e.g. when
                         // the same chunk carries both usage and finish_reason).
                         if let Some(ref u) = event.usage {
@@ -623,6 +656,29 @@ impl Loop {
                 });
             }
             messages.push(assistant_msg);
+
+            // Stream was truncated mid-reply: the assistant text is a prefix,
+            // not a finished answer. End the turn as `incomplete` (keeping the
+            // partial text so it isn't lost) rather than draining the follow-up
+            // queue or presenting a cut-off reply as `complete`. Tool calls, if
+            // any, are left unexecuted — their arguments may be partial.
+            if stream_truncated {
+                if let Some(ref bus) = self.event_bus {
+                    bus.emit(agent_end_with_stop_reason(
+                        "incomplete",
+                        total_usage.as_ref(),
+                        &last_stop_reason,
+                    ));
+                }
+                if self.verbose {
+                    tracing::warn!(
+                        "[agent] stream truncated turns={} output_len={}",
+                        turn + 1,
+                        assistant_text.len()
+                    );
+                }
+                return Ok((assistant_text, messages));
+            }
 
             // Check stop condition
             if let Some(ref stop_fn) = self.config.stop_condition {
