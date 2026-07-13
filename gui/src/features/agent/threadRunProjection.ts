@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageSegment } from "./agentThreadTypes";
-import { listRunEvents, listRunEventsBulk, listRuns } from "../../integrations/storage/threadStore";
+import { listRunEvents, listRunEventsBulk, listRuns, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { buildAssistantRunProjection } from "./agentActivity";
 
 /** Apply a patch to the single message with `id`, leaving the rest untouched. */
@@ -223,6 +223,12 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
     const index = turnIndices[i]!;
     const run = runs[i]!;
     const message = patched[index]!;
+    // An aborted turn projects with no content and no reply time (the agent
+    // saved no assistant entry). Stamp it with the run's end time — the actual
+    // stop time — instead of the session-derived fallback. A turn with real
+    // content keeps its own recorded reply time.
+    const isEmpty = !message.content.trim() && !message.segments?.length;
+    const stopTime = isEmpty ? runEndedIso(run) : null;
     patched[index] = {
       ...message,
       runId: run.id,
@@ -230,9 +236,16 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
       stopped: run.status === "cancelled",
       status: run.status === "failed" ? "failed" : (message.status ?? "complete"),
       durationMs: message.durationMs ?? runDurationMs(run),
+      createdAt: stopTime ?? message.createdAt,
     };
   }
   return patched;
+}
+
+/** The run's end (stop) time as ISO, or null when the run recorded none. */
+function runEndedIso(run: StoredRun): string | null {
+  const ms = run.endedAt ?? run.updatedAt;
+  return typeof ms === "number" ? storedTimeToIso(ms) : null;
 }
 
 /** Whether a turn projected from session entries carries nothing renderable. */

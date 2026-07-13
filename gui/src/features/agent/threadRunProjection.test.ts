@@ -164,6 +164,25 @@ describe("applyRunMetadata", () => {
     expect(result[2]?.status).toBe("complete");
   });
 
+  it("stamps an aborted (empty) turn with the run's end time — the stop time", () => {
+    const stopMs = Date.parse("2026-07-01T10:00:06.000Z");
+    const result = applyRunMetadata(
+      [user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }), assistant("a1", { content: "" })],
+      [run("r1", { status: "cancelled", startedAt: stopMs - 6000, endedAt: stopMs })],
+    );
+    expect(result[1]?.createdAt).toBe(new Date(stopMs).toISOString());
+    expect(result[1]?.stopped).toBe(true);
+  });
+
+  it("keeps a completed turn's own reply time rather than restamping it", () => {
+    const replyTs = "2026-07-01T10:00:07.000Z";
+    const result = applyRunMetadata(
+      [user("u1"), assistant("a1", { content: "answer", createdAt: replyTs })],
+      [run("r1", { status: "completed", endedAt: 999 })],
+    );
+    expect(result[1]?.createdAt).toBe(replyTs);
+  });
+
   it("returns messages unchanged when there are no runs", () => {
     const messages = [user("u1"), assistant("a1")];
     expect(applyRunMetadata(messages, [])).toBe(messages);
