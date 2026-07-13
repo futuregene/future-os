@@ -112,7 +112,7 @@ fn normalize_target_type(value: &str) -> Option<String> {
         // `file` is intentionally absent: local files arrive as plain path links
         // (see `extract_local_file_links`), not via the `futureos://` scheme,
         // which now carries only id-based objects.
-        "approval" | "artifact" | "research" | "review" | "run" | "tool" => Some(normalized),
+        "approval" | "artifact" | "review" | "run" | "tool" => Some(normalized),
         _ => None,
     }
 }
@@ -291,7 +291,7 @@ mod tests {
 See [plan](futureos://artifact/artifact_123) and [run](futureos://run/run_456).
 Duplicate [plan again](futureos://artifact/artifact_123).
 Other objects: [tool](futureos://tool/tool_123), [approval](futureos://approval/approval_123),
-[review](futureos://review/review_123), [research](futureos://research/research_123).
+[review](futureos://review/review_123).
 
 ```futureos-artifact
 id: artifact_789
@@ -327,10 +327,6 @@ view: timeline
                 MarkdownObjectReference {
                     target_id: "review_123".to_string(),
                     target_type: "review".to_string(),
-                },
-                MarkdownObjectReference {
-                    target_id: "research_123".to_string(),
-                    target_type: "research".to_string(),
                 },
                 MarkdownObjectReference {
                     target_id: "artifact_789".to_string(),
