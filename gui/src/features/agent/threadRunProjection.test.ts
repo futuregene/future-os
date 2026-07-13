@@ -1,7 +1,7 @@
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
 import type { AgentMessage } from "./agentThreadTypes";
 import { describe, expect, it } from "vitest";
-import { applyRunMetadata, deriveRenderFields, patchMessage, runDurationMs } from "./threadRunProjection";
+import { applyRecoveredEvents, applyRunMetadata, deriveRenderFields, patchMessage, runDurationMs } from "./threadRunProjection";
 
 function message(id: string, patch: Partial<AgentMessage> = {}): AgentMessage {
   return {
@@ -175,6 +175,58 @@ describe("applyRunMetadata", () => {
       [run("r1", { startedAt: 1000, endedAt: 9000 })],
     );
     expect(result[1]?.durationMs).toBe(1234);
+  });
+});
+
+describe("applyRecoveredEvents", () => {
+  it("fills an empty aborted turn with the streamed partial text", () => {
+    const messages = [
+      user("u1"),
+      assistant("a1", { content: "", runId: "r1", stopped: true }),
+    ];
+    const result = applyRecoveredEvents(
+      messages,
+      new Map([["r1", events([["text_chunk", { text: "half a poem" }]])]]),
+    );
+    expect(result[1]?.content).toBe("half a poem");
+    expect(result[1]?.segments).toBeDefined();
+    // Recovery doesn't touch the stopped marker the run metadata set.
+    expect(result[1]?.stopped).toBe(true);
+  });
+
+  it("leaves a turn that already has content untouched", () => {
+    const messages = [user("u1"), assistant("a1", { content: "final answer", runId: "r1" })];
+    const result = applyRecoveredEvents(
+      messages,
+      new Map([["r1", events([["text_chunk", { text: "something else" }]])]]),
+    );
+    expect(result[1]?.content).toBe("final answer");
+  });
+
+  it("leaves a turn with segments untouched (tool activity already projected)", () => {
+    const withSegments = assistant("a1", {
+      content: "",
+      runId: "r1",
+      segments: [{ id: "s", kind: "text", text: "kept" }],
+    });
+    const result = applyRecoveredEvents(
+      [user("u1"), withSegments],
+      new Map([["r1", events([["text_chunk", { text: "ignored" }]])]]),
+    );
+    expect(result[1]?.segments).toEqual([{ id: "s", kind: "text", text: "kept" }]);
+    expect(result[1]?.content).toBe("");
+  });
+
+  it("leaves an empty turn untouched when its events carried no text", () => {
+    const messages = [user("u1"), assistant("a1", { content: "", runId: "r1" })];
+    const result = applyRecoveredEvents(messages, new Map([["r1", events([])]]));
+    expect(result[1]?.content).toBe("");
+  });
+
+  it("ignores turns without a runId", () => {
+    const messages = [user("u1"), assistant("a1", { content: "" })];
+    const result = applyRecoveredEvents(messages, new Map([["r1", events([["text_chunk", { text: "x" }]])]]));
+    expect(result[1]?.content).toBe("");
   });
 });
 

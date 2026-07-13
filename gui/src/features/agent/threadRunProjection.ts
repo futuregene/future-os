@@ -235,6 +235,64 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
   return patched;
 }
 
+/** Whether a turn projected from session entries carries nothing renderable. */
+function isEmptyTurn(message: AgentMessage): boolean {
+  return message.role === "assistant"
+    && !!message.runId
+    && !message.content.trim()
+    && !message.segments?.length;
+}
+
+/**
+ * Fill empty aborted/failed turns from their run events (pure; events already
+ * fetched). When a run is stopped mid-stream the agent's session JSONL holds no
+ * assistant reply, so the turn projects empty — but the partial text the model
+ * streamed was persisted as run events. Recover it so a reload shows the
+ * half-written answer instead of a blank "stopped" bubble. Turns that already
+ * have content or segments are left untouched, so clean session-derived segments
+ * are never overwritten by event-derived ones.
+ */
+export function applyRecoveredEvents(
+  messages: AgentMessage[],
+  eventsByRunId: Map<string, StoredRunEvent[]>,
+): AgentMessage[] {
+  return messages.map((message) => {
+    if (!isEmptyTurn(message))
+      return message;
+    const events = eventsByRunId.get(message.runId!);
+    if (!events?.length)
+      return message;
+    const projection = buildAssistantRunProjection(events);
+    if (!projection.content.trim() && projection.segments.length === 0)
+      return message;
+    return {
+      ...message,
+      content: projection.content,
+      segments: projection.segments.length > 0 ? projection.segments : message.segments,
+      activityItems: projection.activityItems,
+      outputTokens: projection.outputTokens,
+    };
+  });
+}
+
+/**
+ * Recover partial content for aborted turns loaded via the agent session path.
+ * Fetches events only for the empty turns, then applies {@link applyRecoveredEvents}.
+ * Best-effort: any failure leaves the messages as-is.
+ */
+export async function recoverAbortedTurns(messages: AgentMessage[]): Promise<AgentMessage[]> {
+  const emptyRunIds = messages.filter(isEmptyTurn).map(message => message.runId!);
+  if (emptyRunIds.length === 0)
+    return messages;
+  try {
+    const bulk = await listRunEventsBulk(emptyRunIds);
+    return applyRecoveredEvents(messages, new Map(bulk));
+  }
+  catch {
+    return messages;
+  }
+}
+
 let clientIdCounter = 0;
 
 export function clientId(prefix: string) {
