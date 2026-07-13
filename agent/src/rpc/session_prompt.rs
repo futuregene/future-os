@@ -61,10 +61,7 @@ impl ServerSession {
         }
 
         // Whether the active model accepts image input (catalog modalities).
-        let model_supports_images = crate::models::Registry::new()
-            .resolve(&self.model)
-            .map(|m| m.input.iter().any(|i| i == "image"))
-            .unwrap_or(false);
+        let model_supports_images = crate::models::model_accepts_images(&self.model);
         // Images are read + (down)encoded to base64 here, on the agent, from the
         // local path the GUI sent — the base64 never crosses the wire.
         let user_message = build_user_message(

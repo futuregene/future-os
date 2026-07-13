@@ -154,6 +154,16 @@ pub fn builtin_models() -> Vec<Model> {
         .collect()
 }
 
+/// Whether the resolved model advertises image input (catalog `input`
+/// modalities). Unknown models → false. Shared by the prompt path (deciding
+/// image_url vs. a path fallback) and session reload (re-hydrating images).
+pub fn model_accepts_images(model: &str) -> bool {
+    Registry::new()
+        .resolve(model)
+        .map(|m| m.input.iter().any(|i| i == "image"))
+        .unwrap_or(false)
+}
+
 /// UserModelsPath returns ~/.future/agent/models.json.
 pub fn user_models_path() -> String {
     let home = dirs::home_dir()

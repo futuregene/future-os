@@ -684,8 +684,16 @@ fn for_each_entry<'a>(entries: &'a [SessionEntry], from_id: &str) -> Vec<&'a Ses
     result
 }
 
-/// Convert SessionEntry to AgentMessage for TUI display
-pub fn entries_to_agent_messages(entries: &[SessionEntry]) -> Vec<crate::types::AgentMessage> {
+/// Rebuild in-memory messages from persisted entries when a session is loaded
+/// (new_session restore / fork). `model_supports_images` gates image
+/// re-hydration: GUI image attachments have their base64 stripped from the JSONL
+/// (to keep it small — see `agent_message_to_entry`) and are re-read from their
+/// on-disk paths here so the model still sees them after a reload. Legacy
+/// `images`-field base64 (TUI / channels) is kept on disk and preserved as-is.
+pub fn entries_to_agent_messages(
+    entries: &[SessionEntry],
+    model_supports_images: bool,
+) -> Vec<crate::types::AgentMessage> {
     use crate::types::{AgentToolCall, ContentBlock};
     let mut msgs = vec![];
     for entry in entries {
@@ -694,13 +702,25 @@ pub fn entries_to_agent_messages(entries: &[SessionEntry]) -> Vec<crate::types::
             _ => continue,
         };
 
-        let content: Vec<ContentBlock> = match &entry.content {
+        let mut content: Vec<ContentBlock> = match &entry.content {
             Some(serde_json::Value::Array(arr)) => arr
                 .iter()
-                .map(|v| {
-                    let text = v.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                    ContentBlock::Text {
-                        text: text.to_string(),
+                .filter_map(|v| match v.get("type").and_then(|t| t.as_str()) {
+                    Some("image_url") => {
+                        // Preserve an on-disk base64 image_url (channels/TUI); a
+                        // stripped/empty one (GUI) is skipped — rebuilt from meta.
+                        let url = v
+                            .get("image_url")
+                            .and_then(|u| u.get("url"))
+                            .and_then(|u| u.as_str())
+                            .unwrap_or("");
+                        (!url.is_empty()).then(|| ContentBlock::image(url))
+                    }
+                    _ => {
+                        let text = v.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                        Some(ContentBlock::Text {
+                            text: text.to_string(),
+                        })
                     }
                 })
                 .collect(),
@@ -709,6 +729,29 @@ pub fn entries_to_agent_messages(entries: &[SessionEntry]) -> Vec<crate::types::
             }
             _ => vec![],
         };
+
+        // Re-hydrate GUI image attachments from their paths (base64 was stripped
+        // from the JSONL). Skipped for text-only models — they never got the
+        // image; the file-path text block (if any) is already in `content`.
+        if model_supports_images {
+            if let Some(atts) = entry
+                .meta
+                .as_ref()
+                .and_then(|m| m.get("attachments"))
+                .and_then(|a| a.as_array())
+            {
+                for att in atts {
+                    if att.get("kind").and_then(|k| k.as_str()) != Some("image") {
+                        continue;
+                    }
+                    if let Some(path) = att.get("path").and_then(|p| p.as_str()) {
+                        if let Some(url) = crate::utils::image_data_url_for_model(path) {
+                            content.push(ContentBlock::image(url));
+                        }
+                    }
+                }
+            }
+        }
 
         let tool_calls: Vec<AgentToolCall> = entry
             .tool_calls
@@ -774,10 +817,26 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
         _ => ENTRY_TYPE_USER,
     };
 
+    // A GUI message records its images in `meta`, so their (multi-MB) base64
+    // image_url blocks are redundant on disk — drop them to keep the JSONL small;
+    // entries_to_agent_messages re-reads them from the attachment paths on load.
+    // Legacy `images`-field images (TUI / channels) have no meta and are kept.
+    let strip_image_blocks = msg
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("attachments"))
+        .and_then(|a| a.as_array())
+        .is_some_and(|arr| {
+            arr.iter()
+                .any(|a| a.get("kind").and_then(|k| k.as_str()) == Some("image"))
+        });
     let content_blocks: Vec<serde_json::Value> = msg
         .content
         .iter()
         .map(|b| serde_json::to_value(b).unwrap_or(serde_json::Value::Null))
+        .filter(|v| {
+            !(strip_image_blocks && v.get("type").and_then(|t| t.as_str()) == Some("image_url"))
+        })
         .collect();
     let content = if content_blocks.is_empty() {
         None
@@ -861,4 +920,110 @@ pub fn truncate_visible(s: &str, max_vis: usize) -> String {
         result.push(ch);
     }
     result
+}
+
+#[cfg(test)]
+mod image_persistence_tests {
+    use super::*;
+    use crate::types::{AgentMessage, ContentBlock};
+
+    fn write_png(tag: &str) -> std::path::PathBuf {
+        let img = image::RgbImage::from_fn(8, 8, |_, _| image::Rgb([1u8, 2, 3]));
+        let p = std::env::temp_dir().join(format!(
+            "futureos-sess-img-{}-{}.png",
+            std::process::id(),
+            tag
+        ));
+        img.save(&p).unwrap();
+        p
+    }
+
+    fn user_msg_with_image_meta() -> AgentMessage {
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "attachments".to_string(),
+            serde_json::json!([{"path": "/x.png", "kind": "image", "name": "x.png"}]),
+        );
+        AgentMessage {
+            role: "user".to_string(),
+            content: vec![
+                ContentBlock::text("hi"),
+                ContentBlock::image("data:image/png;base64,AAAA"),
+            ],
+            thinking: String::new(),
+            tool_calls: vec![],
+            tool_call_id: String::new(),
+            name: String::new(),
+            tool_args: String::new(),
+            metadata: Some(meta),
+        }
+    }
+
+    #[test]
+    fn base64_image_is_stripped_from_jsonl_when_backed_by_meta() {
+        let entry = agent_message_to_entry(&user_msg_with_image_meta());
+        let arr = entry.content.unwrap();
+        let arr = arr.as_array().unwrap();
+        // The base64 image_url block is gone; only the text block persists.
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["type"], "text");
+    }
+
+    #[test]
+    fn image_is_rehydrated_from_meta_path_on_reload() {
+        let png = write_png("rehydrate");
+        // A reloaded user entry: text-only content (image stripped), meta points
+        // at the on-disk image.
+        let mut entry =
+            SessionEntry::new_user("user", serde_json::json!([{"type": "text", "text": "hi"}]));
+        entry.meta = Some(serde_json::json!({
+            "attachments": [{"path": png.to_string_lossy(), "kind": "image", "name": "x.png"}]
+        }));
+
+        let has_image = |msgs: &[AgentMessage]| {
+            msgs[0]
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Image { .. }))
+        };
+
+        // Image-capable model → rebuilt from the path.
+        assert!(has_image(&entries_to_agent_messages(
+            std::slice::from_ref(&entry),
+            true
+        )));
+        // Text-only model → not rebuilt.
+        assert!(!has_image(&entries_to_agent_messages(&[entry], false)));
+
+        std::fs::remove_file(&png).ok();
+    }
+
+    #[test]
+    fn legacy_image_url_without_meta_is_preserved() {
+        // A channels/TUI message (base64 image_url in content, no meta) keeps its
+        // image on both save and reload.
+        let msg = AgentMessage {
+            role: "user".to_string(),
+            content: vec![
+                ContentBlock::text("hi"),
+                ContentBlock::image("data:image/png;base64,ZZZZ"),
+            ],
+            thinking: String::new(),
+            tool_calls: vec![],
+            tool_call_id: String::new(),
+            name: String::new(),
+            tool_args: String::new(),
+            metadata: None,
+        };
+        let entry = agent_message_to_entry(&msg);
+        // Not stripped on save.
+        let arr = entry.content.clone().unwrap();
+        assert_eq!(arr.as_array().unwrap().len(), 2);
+        // Preserved on reload (no re-read needed; base64 is on disk).
+        let msgs = entries_to_agent_messages(&[entry], true);
+        assert!(msgs[0]
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. })));
+    }
 }

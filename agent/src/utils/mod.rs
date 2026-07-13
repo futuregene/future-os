@@ -92,7 +92,16 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
     let fits_base64 = |len: usize| len.div_ceil(3) * 4 <= MAX_BASE64_BYTES;
 
     let bytes = std::fs::read(path).ok()?;
-    let img = image::load_from_memory(&bytes).ok()?;
+    // Cap the decoder's allocation so a decompression bomb (a tiny file that
+    // decodes to a huge bitmap) can't OOM the agent. 512MB comfortably fits any
+    // legitimate photo/screenshot while rejecting absurd dimensions.
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(512 * 1024 * 1024);
+    reader.limits(limits);
+    let img = reader.decode().ok()?;
     let (width, height) = (img.width(), img.height());
 
     // Small enough already: send the original bytes, keeping the source format
