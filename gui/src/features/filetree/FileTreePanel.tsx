@@ -60,7 +60,8 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
       return;
     if (previewKindForPath(entry.path)) {
       setPreviewTarget(entry);
-    } else {
+    }
+    else {
       void openEntry(entry);
     }
   }, [openEntry]);

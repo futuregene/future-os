@@ -2,6 +2,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredThread, StoredWorkspace } from "../../../integrations/storage/threadStore";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import i18n from "../../../i18n";
+import { prefetchAgentState } from "../../../integrations/agent/agentStateCache";
 import {
   getRecentOrCreateDefaultThread,
   initializeAppStore,
@@ -9,7 +10,6 @@ import {
   listThreads,
   listWorkspaces,
 } from "../../../integrations/storage/threadStore";
-import { prefetchAgentState } from "../../../integrations/agent/agentStateCache";
 import { errorMessage } from "../../../lib/errors";
 import { usePolling } from "../../../lib/usePolling";
 

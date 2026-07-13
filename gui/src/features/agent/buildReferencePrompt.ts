@@ -1,7 +1,6 @@
 import type {
   StoredApprovalRequest,
   StoredArtifact,
-  StoredResearchResource,
   StoredReviewChangeset,
   StoredRun,
   StoredToolCall,
@@ -55,8 +54,6 @@ function summarizeReference(index: number, targetType: string, targetId: string,
       return summarizeApproval(index, targetId, data);
     case "review":
       return summarizeReview(index, targetId, data);
-    case "research":
-      return summarizeResearch(index, targetId, data);
     default:
       return `${index}. ${targetType}:${targetId}`;
   }
@@ -129,19 +126,6 @@ function summarizeReview(index: number, targetId: string, data: unknown) {
   ].filter(Boolean).join(" | ");
 }
 
-function summarizeResearch(index: number, targetId: string, data: unknown) {
-  if (!isResearch(data))
-    return `${index}. research:${targetId} - invalid payload`;
-
-  return [
-    `${index}. research:${quote(data.id)}`,
-    field("title", data.title),
-    field("type", data.resourceType),
-    field("source", data.sourceUri),
-    field("summary", data.summary),
-  ].filter(Boolean).join(" | ");
-}
-
 function isArtifact(value: unknown): value is StoredArtifact {
   return isRecord(value)
     && typeof value.id === "string"
@@ -177,13 +161,6 @@ function isReview(value: unknown): value is StoredReviewChangeset {
     && typeof value.title === "string"
     && typeof value.status === "string"
     && typeof value.filesChanged === "number";
-}
-
-function isResearch(value: unknown): value is StoredResearchResource {
-  return isRecord(value)
-    && typeof value.id === "string"
-    && typeof value.title === "string"
-    && typeof value.resourceType === "string";
 }
 
 function field(name: string, value?: string | null, maxLength = 240) {

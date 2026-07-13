@@ -13,7 +13,6 @@ export type {
   StoredApprovalRequest,
   StoredArtifact,
   StoredMessage,
-  StoredResearchResource,
   StoredReviewChangeset,
   StoredReviewFileChange,
   StoredRun,

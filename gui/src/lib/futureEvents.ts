@@ -10,7 +10,6 @@ export interface FutureEventMap {
   "inspect-artifact": { artifactId: string };
   "open-review": { reviewId: string };
   "review-updated": { threadId: string };
-  "open-research-resource": { resourceId: string };
   "recover-run": {
     action: "continue" | "retry";
     runId: string;
