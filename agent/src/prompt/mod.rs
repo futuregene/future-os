@@ -249,15 +249,33 @@ fn dedup(items: Vec<String>) -> Vec<String> {
 /// Returns an OS platform hint so the model generates platform-appropriate
 /// shell commands (e.g. `dir` vs `ls`, path separators, package managers).
 fn os_hint() -> String {
+    let skills_hint = "Skill files are located under the user's home directory \
+        at .agents/skills/<name>/SKILL.md. When creating a new skill, \
+        construct the path by joining the home directory with this relative path \
+        using the correct path separator for this platform.";
+
     match std::env::consts::OS {
-        "macos" => "Host platform: macOS. Use macOS/zsh shell commands. ".to_string(),
-        "windows" => {
-            "Host platform: Windows. Use Windows shell commands: ".to_string()
-                + "dir (not ls), type (not cat), path separators \\ (not /). "
-                + "PowerShell or cmd syntax is acceptable."
+        "macos" => {
+            format!(
+                "Host platform: macOS. Use macOS/zsh shell commands. \
+                 {skills_hint} (Example: ~/.agents/skills/my-skill/SKILL.md)"
+            )
         }
-        "linux" => "Host platform: Linux.".to_string(),
-        other => format!("Host platform: {other}."),
+        "windows" => {
+            format!(
+                "Host platform: Windows. Use Windows shell commands: \
+                 dir (not ls), type (not cat), path separators \\ (not /). \
+                 PowerShell or cmd syntax is acceptable. \
+                 {skills_hint} (Example: %USERPROFILE%\\.agents\\skills\\my-skill\\SKILL.md)"
+            )
+        }
+        "linux" => {
+            format!(
+                "Host platform: Linux. \
+                 {skills_hint} (Example: ~/.agents/skills/my-skill/SKILL.md)"
+            )
+        }
+        other => format!("Host platform: {other}. {skills_hint}"),
     }
 }
 
