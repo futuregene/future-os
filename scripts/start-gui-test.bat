@@ -220,10 +220,6 @@ set "STALE_SQL=%TEMP%\futureos-stale-tasks-%RANDOM%.sql"
   echo     ended_at = COALESCE^(ended_at, CAST^(strftime^('%%s','now'^) AS INTEGER^) * 1000^),
   echo     updated_at = CAST^(strftime^('%%s','now'^) AS INTEGER^) * 1000
   echo WHERE status IN ^('queued', 'running', 'waiting_approval'^);
-  echo UPDATE tool_calls
-  echo SET status = 'failed',
-  echo     ended_at = COALESCE^(ended_at, CAST^(strftime^('%%s','now'^) AS INTEGER^) * 1000^)
-  echo WHERE status = 'running';
 )
 sqlite3 "%APP_DB%" < "%STALE_SQL%" || echo Skipping stale app task cleanup because the database is busy or not initialized.
 del /q "%STALE_SQL%" >nul 2>&1
