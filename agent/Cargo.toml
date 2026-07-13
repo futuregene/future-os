@@ -35,6 +35,16 @@ schemars = "0.8"
 rand = "0.8"
 sha2 = "0.10"
 base32 = "0.5"
+base64 = "0.22"
+# Decode/resize/re-encode user-attached images before sending them to a vision
+# model (downscale oversized images so they don't blow up the LLM request).
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+    "bmp",
+] }
 fd-lock = "4"
 signal-hook = "0.3"
 atty = "0.2"

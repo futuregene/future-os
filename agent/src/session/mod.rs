@@ -728,10 +728,7 @@ pub fn entries_to_agent_messages(entries: &[SessionEntry]) -> Vec<crate::types::
             tool_call_id: entry.tool_call_id.clone(),
             name: entry.name.clone(),
             tool_args: entry.tool_args.clone(),
-            metadata: entry
-                .meta
-                .as_ref()
-                .and_then(|m| m.as_object().cloned()),
+            metadata: entry.meta.as_ref().and_then(|m| m.as_object().cloned()),
         });
     }
     msgs
@@ -830,10 +827,7 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
         // Carry structured metadata (e.g. user attachments) into the JSONL so it
         // survives reload; the reverse mapping restores it in
         // entries_to_agent_messages.
-        meta: msg
-            .metadata
-            .clone()
-            .map(serde_json::Value::Object),
+        meta: msg.metadata.clone().map(serde_json::Value::Object),
     }
 }
 

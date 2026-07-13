@@ -399,9 +399,6 @@ pub struct Attachment {
     pub kind: String,
     #[serde(default)]
     pub name: String,
-    /// Optional data: URL (base64) for images. Empty for non-image files.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base64: Option<String>,
     /// Optional cached-thumbnail path (images only). Not model-facing; carried
     /// into the user entry's meta so the GUI can render the chip after reload.
     #[serde(default, skip_serializing_if = "Option::is_none")]

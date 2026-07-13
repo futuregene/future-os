@@ -1,16 +1,12 @@
-//! Construction of gRPC `RpcCommand`s and the agent endpoint, plus image
-//! attachment encoding. This is the thin request-building layer; orchestration
-//! and event handling live in the parent module.
+//! Construction of gRPC `RpcCommand`s and the agent endpoint. This is the thin
+//! request-building layer; orchestration and event handling live in the parent
+//! module.
 
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use std::{
-    fs,
-    path::Path,
     sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use std::time::Duration;
 use tonic::transport::{Channel, Endpoint};
 
 use crate::agent_proto::{Attachment, FutureAgentClient, RpcCommand, RpcResponse};
@@ -20,10 +16,10 @@ use crate::agent_proto::{Attachment, FutureAgentClient, RpcCommand, RpcResponse}
 /// overlapping calls, and a late failure could clobber fresh state.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// gRPC message-size cap, well above tonic's 4MB default. A prompt can carry
-/// several base64-encoded images (up to 4 × 25MB source ≈ 137MB base64); must
-/// match the agent server's limit.
-const MAX_GRPC_MESSAGE_SIZE: usize = 256 * 1024 * 1024;
+/// gRPC message-size cap, above tonic's 4MB default (large session responses).
+/// Image bytes no longer travel over the wire — the agent reads them from the
+/// path — so this need not accommodate base64 payloads. Matches the server.
+const MAX_GRPC_MESSAGE_SIZE: usize = 32 * 1024 * 1024;
 
 /// Bare `host:port` the GUI talks to (env override or the default). The single
 /// source of the default address, shared with the bundled-agent supervisor.
@@ -210,9 +206,19 @@ pub(super) fn prompt_command(
     session_id: String,
     attachments: Vec<AttachmentInput>,
 ) -> Result<RpcCommand, crate::AppError> {
+    // Only paths cross the wire; the agent reads + encodes image bytes itself.
+    let attachments = attachments
+        .into_iter()
+        .map(|item| Attachment {
+            path: item.path,
+            kind: item.kind,
+            name: item.name,
+            thumbnail: item.thumbnail.unwrap_or_default(),
+        })
+        .collect();
     Ok(RpcCommand {
         message,
-        attachments: encode_attachments(attachments)?,
+        attachments,
         ..base_command("prompt", session_id)
     })
 }
@@ -257,51 +263,6 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         run_id: String::new(),
         since_idx: 0,
         sandbox_policy: None,
-    }
-}
-
-/// Turn frontend attachments into proto attachments. Images are read into a
-/// base64 data URL so the agent can emit an image_url block when the model
-/// accepts image input (it falls back to the path otherwise). Non-image files
-/// carry only their path — the agent reads them with its own tools.
-fn encode_attachments(items: Vec<AttachmentInput>) -> Result<Vec<Attachment>, crate::AppError> {
-    items
-        .into_iter()
-        .map(|item| {
-            let base64 = if item.kind == "image" {
-                let mime_type = image_mime_type(&item.path)
-                    .ok_or_else(|| format!("Unsupported image attachment type: {}", item.path))?;
-                let bytes = fs::read(&item.path)
-                    .map_err(|error| format!("Unable to read image {}: {error}", item.path))?;
-                format!("data:{mime_type};base64,{}", BASE64_STANDARD.encode(bytes))
-            } else {
-                String::new()
-            };
-            Ok(Attachment {
-                path: item.path,
-                kind: item.kind,
-                name: item.name,
-                base64,
-                thumbnail: item.thumbnail.unwrap_or_default(),
-            })
-        })
-        .collect()
-}
-
-fn image_mime_type(path: &str) -> Option<&'static str> {
-    let extension = Path::new(path)
-        .extension()
-        .and_then(|value| value.to_str())?
-        .to_ascii_lowercase();
-
-    match extension.as_str() {
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "png" => Some("image/png"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        "bmp" => Some("image/bmp"),
-        "svg" => Some("image/svg+xml"),
-        _ => None,
     }
 }
 
