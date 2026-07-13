@@ -180,6 +180,61 @@ export function runDurationMs(run: StoredRun | null | undefined, fallbackStartMs
   return null;
 }
 
+/**
+ * A compaction divider is projected as an assistant message but is not a real
+ * turn — it carries no content and a single `compaction` segment. It must not
+ * consume a run slot when aligning runs to turns.
+ */
+function isCompactionDivider(message: AgentMessage): boolean {
+  return message.role === "assistant"
+    && !message.content
+    && message.segments?.length === 1
+    && message.segments[0]?.kind === "compaction";
+}
+
+/**
+ * Backfill run-derived status onto messages projected from agent session
+ * entries. Agent JSONL only records message content, not a run's GUI-side
+ * outcome (failed/cancelled/model) — that lives in the SQLite `runs` table. So a
+ * reload from the agent path would otherwise show every turn as "complete",
+ * losing the Retry/Continue affordance, the "stopped" marker, and the model
+ * badge.
+ *
+ * `runs` arrive newest-first (`list_runs` orders by `created_at DESC`); real
+ * assistant turns arrive oldest-first. Aligning from the newest end pairs the
+ * most-recent turn with the most-recent run — the pairing that matters, since a
+ * failure lands on the latest turn and `canRecover` only applies to the last
+ * message. Counts can differ (a run that failed before emitting an assistant
+ * entry, or a fork/import that synthesized a `completed` run); the extra items
+ * on either end are simply ignored rather than force-matched into a misalignment.
+ */
+export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): AgentMessage[] {
+  if (!runs.length)
+    return messages;
+  // Indices of real assistant turns, oldest-first; reversed to newest-first to
+  // zip against the newest-first runs.
+  const turnIndices = messages
+    .map((message, index) => (message.role === "assistant" && !isCompactionDivider(message) ? index : -1))
+    .filter(index => index >= 0)
+    .reverse();
+
+  const patched = [...messages];
+  for (let i = 0; i < turnIndices.length && i < runs.length; i++) {
+    const index = turnIndices[i]!;
+    const run = runs[i]!;
+    const message = patched[index]!;
+    patched[index] = {
+      ...message,
+      runId: run.id,
+      modelId: run.modelId ?? message.modelId,
+      stopped: run.status === "cancelled",
+      status: run.status === "failed" ? "failed" : (message.status ?? "complete"),
+      durationMs: message.durationMs ?? runDurationMs(run),
+    };
+  }
+  return patched;
+}
+
 let clientIdCounter = 0;
 
 export function clientId(prefix: string) {
