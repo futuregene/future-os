@@ -171,7 +171,10 @@ export function entriesToMessages(entries: SessionEntry[]): AgentMessage[] {
       content: acc.finalText || textSegments.map(s => s.text).join("\n"),
       segments: segments.length > 0 ? segments : undefined,
       status: "complete",
-      createdAt: acc.assistantCreatedAt ?? now,
+      // An aborted turn has no assistant entry, so no recorded reply time — fall
+      // back to the turn's user time (a real timestamp) rather than `now`, which
+      // would re-stamp the reply "just now" on every reload.
+      createdAt: acc.assistantCreatedAt ?? acc.userMessage.createdAt,
       outputTokens: acc.outputTokens,
       durationMs: acc.durationMs,
     });
