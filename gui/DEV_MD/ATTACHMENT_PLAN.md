@@ -61,6 +61,7 @@
 | **Artifact 面板** | chat 附件不再登记 Artifact | 不再进 Artifacts 面板；预览改走 `filepreview` 直接读原始路径 |
 | **图片降级判定** | `supportsImages` 标记不可靠（Future provider Qwen-VL 曾被误标 text-only，见 `sendPipeline.ts` 注释） | 沿用现状「总是发图 + API 报错兜底」，或用更可靠能力信号；避免误降级能看图的模型 |
 | **channels** | 「都在本机」前提对飞书/钉钉不成立（附件从对方服务器下载） | 本期不做；后续各 channel 把下载的临时路径传入 |
+| **agent 直接读附件路径（绕过 approval/sandbox）** | 图片编码走 `std::fs::read`（`build_user_message` / `entries_to_agent_messages`），**不经 approval/sandbox 层**——因为是用户在自己 GUI 里显式附加的文件，且读操作本就默认放行。理论上路径可指向敏感文件，但仅限 `kind=="image"`（扩展名门控）且信任边界与「GUI 自己读该文件」等同，无新增暴露面。**有意为之**，非 bug。 |
 
 ---
 
@@ -120,6 +121,8 @@ make run-gui   # 实机跑通 图片 / PDF(走 bash) / 文本 三类附件端到
 - **注入文本简化 + markdown 链接**：附件文本块**只列路径**，不再解释 read/bash/pdftotext（工具已在系统提示词别处描述，且平台相关）。每行用 markdown 链接、尖括号包路径 `- [name](</abs/path>)`（兼容空格/特殊字符），降级图片带 ` (image)` 标记。
 - ✅ **重开对话缩略图修复**：消息在重开时从 **agent JSONL**（`get_session_entries`）重建，GUI SQLite 的 `messages` 表已废弃（`list_messages` 返回空、`append_message` 是 no-op），所以缩略图**必须走 agent meta**。`Attachment` 加 `thumbnail` 字段贯穿 proto→Tauri→agent；`SessionEntry.meta.attachments` 存 `{path,kind,name,thumbnail}`；`get_session_entries` 返回 `meta`，且**用户条目可见 content 只取第一个 text 块**（注入的路径块不泄漏进气泡）；`entryProjection.entriesToMessages` 从 `meta` 重建 chip。注意：此修复前创建的旧会话 meta 无 thumbnail，需发新附件消息验证。
 - ✅ **图片 base64 改到 agent 端生成 + 超大图缩放**：gRPC **只传路径**（原图 + 缩略图，都进 meta），不再传 base64——之前两张图 base64 ~6.7MB 超过 tonic 4MB 默认上限导致整条 run 失败、留空 thread。现在 agent 在 `build_user_message` 里按路径读原图、`utils::image_data_url_for_model` 编码：≤2000×2000 且 base64 ≤5MB 原样保留格式；否则缩放到 2000px 内 + JPEG 逐级降质（80→40）直到 ≤5MB（参考 opencode 的 normalize）；读/解码失败或塞不下就**跳过该图**（路径对图片无意义）。base64 只进 LLM 请求、**不回传 GUI**、不写 meta。gRPC 上限调回 32MB（仅为大 session 响应留余量）。agent 新增 `image`/`base64` 依赖。
+- ✅ **base64 不进 JSONL + 重开保留图片**：GUI 图片的 base64 之前被无脑序列化进 session JSONL（一个 2 图会话 6.7MB），却在 `entries_to_agent_messages` 重载时被丢弃——写进去、从不读回、重开即清，纯浪费且模型丢图。现在：`agent_message_to_entry` **save 时剥掉** meta 支撑的图片 image_url base64（JSONL 变小）；`entries_to_agent_messages(entries, model_supports_images)` **reload 时从 meta 的路径重读+编码** image_url（模型重开后仍看得见图，按模型图片能力门控）。legacy `images` 字段（TUI/channels，base64 在 content、无 meta）原样保留、reload 时也从盘上 base64 复原（顺带修好 channels 重载丢图）。重编码只在 session 首次载入内存/fork 时发生（`ensure_agent_session` 命中即复用），一次性成本，**未加缓存**。共享 `models::model_accepts_images` 于 prompt/两处 reload。
+- ✅ **杂项**：SVG 归为普通文件（走路径、模型 read 其 XML）；图片解码加 `image::Limits{max_alloc:512MB}` 防解压炸弹；清理死代码（`loadFromStore`/`toAgentMessage`/`parseMessageContent`）并修复 `reloadMessagesQuiet` 走废弃 store 会清空当前会话消息的 bug。
 - ⏳ **待办**：`make run-gui` 实机端到端验证（图片 / PDF 走 bash / 文本 三类）；未验证前视为"静态通过、运行未验"。旧 `attachDialogFilter*` / `attachLimitReached` i18n key 已不再引用（无害，可后续清理）。
 
 ## 7. 关键源码索引

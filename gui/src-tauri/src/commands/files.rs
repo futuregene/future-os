@@ -207,25 +207,51 @@ fn safe_file_name(name: &str) -> String {
     }
 }
 
-/// Persist a base64-encoded JPEG thumbnail under
-/// `~/.future/app/images/<thread_id>/thumb/<stamp>.jpg` and return its absolute
-/// path (rendered in the webview via `convertFileSrc`). This lives in a
-/// persistent tree — unlike the app cache dir, which macOS purges as reclaimable
-/// space, orphaning the thumbnail paths stored in messages.
+/// Decode an image and write a downscaled JPEG thumbnail under
+/// `~/.future/app/images/<thread_id>/thumb/<stamp>.jpg`, returning its path.
+/// Done entirely in Rust so the full-size image (up to tens of MB) never crosses
+/// the IPC bridge to a webview canvas — only the tiny thumbnail is produced. The
+/// decoder's allocation is capped to reject decompression bombs. Returns an error
+/// the caller treats as "no thumbnail" (it falls back to a named pill).
 #[tauri::command]
-pub fn write_thumbnail(thread_id: String, base64_jpeg: String) -> Result<String, crate::AppError> {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
+pub fn generate_image_thumbnail(
+    thread_id: String,
+    source_path: String,
+) -> Result<String, crate::AppError> {
+    const MAX_EDGE: u32 = 256;
+
     let thread_id = safe_component(&thread_id);
     if thread_id.is_empty() {
         return Err("invalid thread id.".to_string().into());
     }
-    let bytes = STANDARD
-        .decode(base64_jpeg.as_bytes())
-        .map_err(|error| format!("invalid thumbnail data: {error}"))?;
+    let bytes = std::fs::read(source_path.trim())
+        .map_err(|error| format!("unable to read image: {error}"))?;
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
+        .with_guessed_format()
+        .map_err(|error| format!("unreadable image: {error}"))?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(512 * 1024 * 1024);
+    reader.limits(limits);
+    let img = reader
+        .decode()
+        .map_err(|error| format!("undecodable image: {error}"))?;
+    let thumb = img.resize(MAX_EDGE, MAX_EDGE, image::imageops::FilterType::Lanczos3);
+
+    let mut buf = Vec::new();
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 70);
+    image::ImageEncoder::write_image(
+        encoder,
+        thumb.to_rgb8().as_raw(),
+        thumb.width(),
+        thumb.height(),
+        image::ExtendedColorType::Rgb8,
+    )
+    .map_err(|error| format!("thumbnail encode failed: {error}"))?;
+
     let dir = crate::store::thread_images_dir(&thread_id)?.join("thumb");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{}.jpg", unique_stamp()));
-    std::fs::write(&path, &bytes)?;
+    std::fs::write(&path, &buf)?;
     Ok(path.display().to_string())
 }
 

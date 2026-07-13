@@ -200,7 +200,7 @@ pub fn run() {
             read_text_file_preview,
             inspect_attachment,
             read_file_base64,
-            write_thumbnail,
+            generate_image_thumbnail,
             import_workspace_image,
             delete_temp_attachment,
             export_artifact_file,
