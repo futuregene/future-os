@@ -1,8 +1,7 @@
 use crate::events::{
     self, agent_end, agent_end_with_stop_reason, agent_start, error_event, message_end,
     message_start, text_delta, text_end, text_start, thinking_delta, thinking_end, thinking_start,
-    tool_end, tool_start, toolcall_delta, toolcall_end, toolcall_start, turn_start,
-    usage_event,
+    tool_end, tool_start, toolcall_delta, toolcall_end, toolcall_start, turn_start, usage_event,
 };
 use crate::types::{
     AgentMessage, AgentToolCall, ContentBlock, ConvertFromLLM, ConvertToLLM, Message, StreamEvent,
@@ -995,9 +994,7 @@ mod tests {
         /// detecting full-state replacements (Anthropic partial_json style).
         fn accumulate(existing: &str, delta: &str) -> String {
             if delta.starts_with('{')
-                && (existing.is_empty()
-                    || existing == "{}"
-                    || delta.starts_with(existing))
+                && (existing.is_empty() || existing == "{}" || delta.starts_with(existing))
             {
                 delta.to_string()
             } else {
@@ -1006,7 +1003,10 @@ mod tests {
         }
 
         // Scenario 1: Standard OpenAI — first fragment starts with {, empty args
-        assert_eq!(accumulate("", "{\"path\": \"/file.txt\""), "{\"path\": \"/file.txt\"");
+        assert_eq!(
+            accumulate("", "{\"path\": \"/file.txt\""),
+            "{\"path\": \"/file.txt\""
+        );
 
         // Scenario 2: Standard OpenAI — incremental fragment (starts with comma)
         assert_eq!(
@@ -1034,7 +1034,10 @@ mod tests {
 
         // Scenario 5: Anthropic — first delta from empty args
         assert_eq!(
-            accumulate("", "{\"path\": \"/file.txt\", \"content\": \"hello world\"}"),
+            accumulate(
+                "",
+                "{\"path\": \"/file.txt\", \"content\": \"hello world\"}"
+            ),
             "{\"path\": \"/file.txt\", \"content\": \"hello world\"}"
         );
 
