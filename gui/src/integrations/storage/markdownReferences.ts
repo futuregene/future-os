@@ -2,14 +2,13 @@ import type {
   StoredApprovalRequest,
   StoredArtifact,
   StoredFile,
-  StoredResearchResource,
   StoredReviewChangeset,
   StoredRun,
   StoredToolCall,
 } from "./types";
 import { invokeCommand } from "../tauri/invoke";
 
-export type FutureReferenceType = "approval" | "artifact" | "file" | "research" | "review" | "run" | "tool";
+export type FutureReferenceType = "approval" | "artifact" | "file" | "review" | "run" | "tool";
 
 export interface MarkdownReferenceRequest {
   targetType: FutureReferenceType;
@@ -20,7 +19,7 @@ export interface ResolvedMarkdownReference {
   targetType: FutureReferenceType | string;
   targetId: string;
   status: "resolved" | "missing" | "forbidden" | string;
-  data?: StoredApprovalRequest | StoredArtifact | StoredFile | StoredResearchResource | StoredReviewChangeset | StoredRun | StoredToolCall | null;
+  data?: StoredApprovalRequest | StoredArtifact | StoredFile | StoredReviewChangeset | StoredRun | StoredToolCall | null;
   error?: string | null;
 }
 
