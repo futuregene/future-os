@@ -82,7 +82,7 @@
     "attachDialogTitle": "Attach files",
     "removeAttachment": "Remove {{name}}",
     "attachIgnored": "Ignored: {{items}}",
-    "attachRejectedLimit": "{{name}} (up to {{count}})",
+    "attachRejectedLimit": "{{name}} (up to {{count}} images)",
     "attachRejectedReason": "{{name}} ({{reason}})",
     "model": "Model",
     "startAgentForModels": "Start Future Agent to load models.",

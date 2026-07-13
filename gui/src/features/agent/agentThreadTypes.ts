@@ -35,11 +35,11 @@ export type MessageSegment
     | { kind: "compaction"; id: string; tokensBefore?: number };
 
 export interface MessageAttachment {
-  artifactId?: string | null;
   name: string;
+  /** Original absolute local path — never copied; the agent reads it on demand. */
   path: string;
-  /** image | pdf | text — drives inlining and thread rendering. */
-  kind?: "image" | "pdf" | "text" | null;
+  /** image | file — images send inline (when supported); files send as a path. */
+  kind?: "image" | "file" | null;
   /** Absolute path to a cached thumbnail (images only), rendered via convertFileSrc. */
   thumbnail?: string | null;
 }

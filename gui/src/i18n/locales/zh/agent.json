@@ -77,7 +77,7 @@
     "attachDialogTitle": "添加附件",
     "removeAttachment": "移除 {{name}}",
     "attachIgnored": "已忽略：{{items}}",
-    "attachRejectedLimit": "{{name}}（最多 {{count}} 个）",
+    "attachRejectedLimit": "{{name}}（最多 {{count}} 张图片）",
     "attachRejectedReason": "{{name}}（{{reason}}）",
     "model": "模型",
     "startAgentForModels": "启动 Future Agent 以加载模型。",

@@ -228,7 +228,7 @@ impl ServerSession {
 
     pub fn follow_up(&mut self, msg: &str) -> Result<()> {
         if !self.is_streaming.load(std::sync::atomic::Ordering::Relaxed) {
-            return self.prompt(msg, &[], "");
+            return self.prompt(msg, &[], &[], "");
         }
         let _ = self.follow_up_tx.try_send(msg.to_string());
         Ok(())

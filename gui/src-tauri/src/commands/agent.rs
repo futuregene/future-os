@@ -10,7 +10,7 @@ pub async fn list_agent_models() -> Result<Vec<agent_bridge::AgentModelOption>, 
 #[tauri::command]
 pub async fn agent_prompt(
     message: String,
-    image_paths: Option<Vec<String>>,
+    attachments: Option<Vec<agent_bridge::AttachmentInput>>,
     thread_id: String,
     session_id: Option<String>,
     run_id: Option<String>,
@@ -19,7 +19,7 @@ pub async fn agent_prompt(
 ) -> Result<agent_bridge::AgentPromptResponse, crate::AppError> {
     agent_bridge::agent_prompt(
         message,
-        image_paths,
+        attachments,
         thread_id,
         session_id,
         run_id,

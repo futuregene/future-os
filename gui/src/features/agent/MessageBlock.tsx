@@ -337,7 +337,7 @@ function AttachmentChip({ attachment }: { attachment: MessageAttachment }) {
       className="inline-flex max-w-72 items-center gap-1.5 rounded-md bg-surface px-2 py-1 text-xs text-ink-soft ring-1 ring-line-soft"
       title={attachment.path}
     >
-      {attachment.kind === "pdf" || attachment.kind === "text"
+      {attachment.kind === "file"
         ? <FileText className="size-3 shrink-0" />
         : <Paperclip className="size-3 shrink-0" />}
       <span className="truncate">{attachment.name}</span>
