@@ -8,7 +8,7 @@ import { usePolling } from "../../lib/usePolling";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
 import { matchesSettledRun, toAgentMessage } from "./agentMessageFormatters";
 import { entriesToMessages } from "./entryProjection";
-import { restoreMessageActivities } from "./threadRunProjection";
+import { applyRunMetadata, restoreMessageActivities } from "./threadRunProjection";
 
 interface UseThreadMessagesInput {
   threadId: string | null;
@@ -124,8 +124,13 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
       const messages = entriesToMessages(result.entries as unknown as import("./entryProjection").SessionEntry[]);
       if (!messages.length)
         return null;
+      // Agent JSONL doesn't record a run's GUI-side outcome (failed/cancelled/
+      // model) — backfill it from the SQLite `runs` table so a reload keeps the
+      // Retry/Continue button, the "stopped" marker, and the model badge.
+      const runs = await listRuns(tid).catch(() => [] as StoredRun[]);
+      const withRunMeta = applyRunMetadata(messages, runs);
       await refreshRecentRun(tid, wid).catch(() => {});
-      return messages;
+      return withRunMeta;
     }
     catch {
       return null;

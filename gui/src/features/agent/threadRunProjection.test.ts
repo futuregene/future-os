@@ -1,7 +1,7 @@
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
 import type { AgentMessage } from "./agentThreadTypes";
 import { describe, expect, it } from "vitest";
-import { deriveRenderFields, patchMessage, runDurationMs } from "./threadRunProjection";
+import { applyRunMetadata, deriveRenderFields, patchMessage, runDurationMs } from "./threadRunProjection";
 
 function message(id: string, patch: Partial<AgentMessage> = {}): AgentMessage {
   return {
@@ -79,6 +79,102 @@ describe("runDurationMs", () => {
 
   it("falls back to elapsed-since-anchor while the run is still settling", () => {
     expect(runDurationMs(null, Date.now())).toBeGreaterThanOrEqual(0);
+  });
+});
+
+function user(id: string, patch: Partial<AgentMessage> = {}): AgentMessage {
+  return message(id, { role: "user", authorKey: "author.you", status: "complete", ...patch });
+}
+
+function assistant(id: string, patch: Partial<AgentMessage> = {}): AgentMessage {
+  return message(id, { status: "complete", ...patch });
+}
+
+function run(id: string, patch: Partial<StoredRun> = {}): StoredRun {
+  return {
+    id,
+    threadId: "t1",
+    status: "completed",
+    createdAt: 0,
+    updatedAt: 0,
+    ...patch,
+  } as StoredRun;
+}
+
+describe("applyRunMetadata", () => {
+  it("marks the most recent turn failed when its run failed", () => {
+    const messages = [
+      user("u1"),
+      assistant("a1"),
+      user("u2"),
+      assistant("a2"),
+    ];
+    // Newest run first (created_at DESC): a2 ↔ r2 (failed), a1 ↔ r1.
+    const result = applyRunMetadata(messages, [
+      run("r2", { status: "failed", modelId: "m-2" }),
+      run("r1", { status: "completed", modelId: "m-1" }),
+    ]);
+    expect(result[3]).toMatchObject({ id: "a2", runId: "r2", status: "failed", modelId: "m-2", stopped: false });
+    expect(result[1]).toMatchObject({ id: "a1", runId: "r1", status: "complete", modelId: "m-1", stopped: false });
+  });
+
+  it("marks a cancelled run's turn as stopped without failing it", () => {
+    const result = applyRunMetadata([user("u1"), assistant("a1")], [run("r1", { status: "cancelled" })]);
+    expect(result[1]).toMatchObject({ id: "a1", runId: "r1", status: "complete", stopped: true });
+  });
+
+  it("aligns from the newest end and ignores extra older runs", () => {
+    // One turn, two runs: only the newest run pairs with the turn.
+    const result = applyRunMetadata([user("u1"), assistant("a1")], [
+      run("r-new", { status: "failed" }),
+      run("r-old", { status: "completed" }),
+    ]);
+    expect(result[1]).toMatchObject({ id: "a1", runId: "r-new", status: "failed" });
+  });
+
+  it("leaves older turns untouched when there are fewer runs than turns", () => {
+    const result = applyRunMetadata([
+      user("u1"),
+      assistant("a1"),
+      user("u2"),
+      assistant("a2"),
+    ], [run("r2", { status: "failed" })]);
+    // Newest turn pairs with the only run; the older turn keeps its defaults.
+    expect(result[3]).toMatchObject({ id: "a2", runId: "r2", status: "failed" });
+    expect(result[1]?.runId).toBeUndefined();
+    expect(result[1]?.status).toBe("complete");
+  });
+
+  it("does not consume a run slot for a compaction divider", () => {
+    const divider = assistant("div", { content: "", segments: [{ id: "s", kind: "compaction" }] });
+    const result = applyRunMetadata([
+      user("u1"),
+      assistant("a1"),
+      divider,
+      user("u2"),
+      assistant("a2"),
+    ], [
+      run("r2", { status: "failed" }),
+      run("r1", { status: "completed" }),
+    ]);
+    expect(result[4]).toMatchObject({ id: "a2", runId: "r2", status: "failed" });
+    expect(result[1]).toMatchObject({ id: "a1", runId: "r1" });
+    // The divider stays a plain complete marker with no run attached.
+    expect(result[2]?.runId).toBeUndefined();
+    expect(result[2]?.status).toBe("complete");
+  });
+
+  it("returns messages unchanged when there are no runs", () => {
+    const messages = [user("u1"), assistant("a1")];
+    expect(applyRunMetadata(messages, [])).toBe(messages);
+  });
+
+  it("keeps an existing agent-recorded durationMs over the run's wall-clock", () => {
+    const result = applyRunMetadata(
+      [user("u1"), assistant("a1", { durationMs: 1234 })],
+      [run("r1", { startedAt: 1000, endedAt: 9000 })],
+    );
+    expect(result[1]?.durationMs).toBe(1234);
   });
 });
 
