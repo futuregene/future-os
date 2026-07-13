@@ -432,18 +432,32 @@ pub fn list_tool_calls(run_id: &str) -> Result<Vec<ToolCallRecord>, crate::AppEr
                 // this call with its `tool_end` output.
                 let id = event_tool_id(event).unwrap_or_else(|| event.id.clone());
                 let (name, kind, input) = parse_tool_start_payload(event.payload.as_deref());
-                index_by_id.insert(id.clone(), tools.len());
-                tools.push(ToolCallRecord {
-                    id,
-                    run_id: event.run_id.clone(),
-                    name,
-                    kind,
-                    input,
-                    status: "running".to_string(),
-                    started_at: Some(event.created_at),
-                    ended_at: None,
-                    created_at: event.created_at,
-                });
+                if let Some(&idx) = index_by_id.get(&id) {
+                    // The same call announced twice: `toolcall_start` fires first
+                    // with empty args (they stream in via toolcall_delta), then
+                    // the execution `tool_start` carries the complete args. Enrich
+                    // the existing record rather than adding an empty duplicate.
+                    if input.as_deref().is_some_and(|s| !s.is_empty()) {
+                        tools[idx].input = input;
+                    }
+                    if !name.is_empty() {
+                        tools[idx].name = name;
+                        tools[idx].kind = kind;
+                    }
+                } else {
+                    index_by_id.insert(id.clone(), tools.len());
+                    tools.push(ToolCallRecord {
+                        id,
+                        run_id: event.run_id.clone(),
+                        name,
+                        kind,
+                        input,
+                        status: "running".to_string(),
+                        started_at: Some(event.created_at),
+                        ended_at: None,
+                        created_at: event.created_at,
+                    });
+                }
             }
             "tool_end" | "tool_result" => {
                 let idx = event_tool_id(event)
