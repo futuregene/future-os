@@ -94,23 +94,6 @@ pub(super) fn review_metadata(
     }
 }
 
-pub(super) fn research_metadata(
-    title: String,
-    resource_type: String,
-    source_uri: Option<String>,
-    summary: Option<String>,
-) -> ReferenceMetadata {
-    let search_text = compact_search_text(
-        &[&title, &resource_type],
-        &[source_uri.as_ref(), summary.as_ref()],
-    );
-    ReferenceMetadata {
-        subtitle: source_uri.or(Some(resource_type)),
-        search_text: Some(search_text),
-        title,
-    }
-}
-
 /// Join the non-empty required and present-optional fields with newlines into
 /// the single blob the `@`-mention substring search runs against.
 pub(super) fn compact_search_text(required: &[&str], optional: &[Option<&String>]) -> String {

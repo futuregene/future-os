@@ -5,8 +5,8 @@ import type { ActivitySection } from "../ActivityRail";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import i18n from "../../../i18n";
-import { createThread } from "../../../integrations/storage/threadStore";
 import { updateCachedAgentState } from "../../../integrations/agent/agentStateCache";
+import { createThread } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
 import { emitFutureEvent } from "../../../lib/futureEvents";
 

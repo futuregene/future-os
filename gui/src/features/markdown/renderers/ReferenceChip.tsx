@@ -1,6 +1,6 @@
 import type { ResolvedMarkdownReference } from "../../../integrations/storage/markdownReferences";
 import type { FutureReference } from "../futureMarkdownTypes";
-import { AlertTriangle, Beaker, Box, FileDiff, Microscope, PlayCircle } from "lucide-react";
+import { AlertTriangle, Beaker, Box, FileDiff, PlayCircle } from "lucide-react";
 import { MissingReference } from "./MissingReference";
 import { PendingReference } from "./PendingReference";
 
@@ -36,8 +36,6 @@ function renderReferenceIcon(targetType: FutureReference["targetType"]) {
   switch (targetType) {
     case "approval":
       return <AlertTriangle className={className} />;
-    case "research":
-      return <Microscope className={className} />;
     case "review":
       return <FileDiff className={className} />;
     case "run":

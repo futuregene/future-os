@@ -263,8 +263,6 @@ pub fn run() {
             create_artifact,
             import_attachment_artifact,
             delete_artifact,
-            promote_artifact_to_research,
-            list_research_resources,
             resolve_markdown_references,
             search_workspace_files,
             list_agent_models,

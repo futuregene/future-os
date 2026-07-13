@@ -3,8 +3,8 @@ import type { StoredThread } from "../../../integrations/storage/threadStore";
 import type { DeleteDialogState, RenameDialogState } from "../AppShellDialogs";
 import { useState } from "react";
 import i18n from "../../../i18n";
-import { deleteThread, getThreadCleanupSummary, renameThread } from "../../../integrations/storage/threadStore";
 import { invalidateAgentState, prefetchAgentState } from "../../../integrations/agent/agentStateCache";
+import { deleteThread, getThreadCleanupSummary, renameThread } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
 
 interface UseThreadDialogsParams {

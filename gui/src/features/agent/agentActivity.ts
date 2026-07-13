@@ -575,7 +575,7 @@ function hasToolError(payload: unknown, command: string | undefined) {
 }
 
 /** The non-zero code from a "[exit code: N]" bash prefix, or null (exit 0 / not bash). */
-function nonZeroExitCode(output: string | undefined) {
+export function nonZeroExitCode(output: string | undefined) {
   if (!output)
     return null;
   const match = /^\[exit code: (-?\d+)\]/.exec(output.trimStart());
@@ -585,7 +585,7 @@ function nonZeroExitCode(output: string | undefined) {
   return code === 0 ? null : code;
 }
 
-function isSoftExit(exitCode: number, command: string | undefined) {
+export function isSoftExit(exitCode: number, command: string | undefined) {
   // Only exit 1 from a *bare* soft-fail command is exempt. Any shell operator
   // makes the exit code ambiguous (pipeline/list), so those stay failures.
   if (exitCode !== 1 || !command || /[|&;\n`<>]|\$\(/.test(command))

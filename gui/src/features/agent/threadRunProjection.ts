@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageSegment } from "./agentThreadTypes";
-import { listRunEvents, listRunEventsBulk, listRuns } from "../../integrations/storage/threadStore";
+import { listRunEvents, listRunEventsBulk, listRuns, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { buildAssistantRunProjection } from "./agentActivity";
 
 /** Apply a patch to the single message with `id`, leaving the rest untouched. */
@@ -178,6 +178,132 @@ export function runDurationMs(run: StoredRun | null | undefined, fallbackStartMs
     return Math.max(0, Date.now() - fallbackStartMs);
   }
   return null;
+}
+
+/**
+ * A compaction divider is projected as an assistant message but is not a real
+ * turn — it carries no content and a single `compaction` segment. It must not
+ * consume a run slot when aligning runs to turns.
+ */
+function isCompactionDivider(message: AgentMessage): boolean {
+  return message.role === "assistant"
+    && !message.content
+    && message.segments?.length === 1
+    && message.segments[0]?.kind === "compaction";
+}
+
+/**
+ * Backfill run-derived status onto messages projected from agent session
+ * entries. Agent JSONL only records message content, not a run's GUI-side
+ * outcome (failed/cancelled/model) — that lives in the SQLite `runs` table. So a
+ * reload from the agent path would otherwise show every turn as "complete",
+ * losing the Retry/Continue affordance, the "stopped" marker, and the model
+ * badge.
+ *
+ * `runs` arrive newest-first (`list_runs` orders by `created_at DESC`); real
+ * assistant turns arrive oldest-first. Aligning from the newest end pairs the
+ * most-recent turn with the most-recent run — the pairing that matters, since a
+ * failure lands on the latest turn and `canRecover` only applies to the last
+ * message. Counts can differ (a run that failed before emitting an assistant
+ * entry, or a fork/import that synthesized a `completed` run); the extra items
+ * on either end are simply ignored rather than force-matched into a misalignment.
+ */
+export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): AgentMessage[] {
+  if (!runs.length)
+    return messages;
+  // Indices of real assistant turns, oldest-first; reversed to newest-first to
+  // zip against the newest-first runs.
+  const turnIndices = messages
+    .map((message, index) => (message.role === "assistant" && !isCompactionDivider(message) ? index : -1))
+    .filter(index => index >= 0)
+    .reverse();
+
+  const patched = [...messages];
+  for (let i = 0; i < turnIndices.length && i < runs.length; i++) {
+    const index = turnIndices[i]!;
+    const run = runs[i]!;
+    const message = patched[index]!;
+    // An aborted turn projects with no content and no reply time (the agent
+    // saved no assistant entry). Stamp it with the run's end time — the actual
+    // stop time — instead of the session-derived fallback. A turn with real
+    // content keeps its own recorded reply time.
+    const isEmpty = !message.content.trim() && !message.segments?.length;
+    const stopTime = isEmpty ? runEndedIso(run) : null;
+    patched[index] = {
+      ...message,
+      runId: run.id,
+      modelId: run.modelId ?? message.modelId,
+      stopped: run.status === "cancelled",
+      status: run.status === "failed" ? "failed" : (message.status ?? "complete"),
+      durationMs: message.durationMs ?? runDurationMs(run),
+      createdAt: stopTime ?? message.createdAt,
+    };
+  }
+  return patched;
+}
+
+/** The run's end (stop) time as ISO, or null when the run recorded none. */
+function runEndedIso(run: StoredRun): string | null {
+  const ms = run.endedAt ?? run.updatedAt;
+  return typeof ms === "number" ? storedTimeToIso(ms) : null;
+}
+
+/** Whether a turn projected from session entries carries nothing renderable. */
+function isEmptyTurn(message: AgentMessage): boolean {
+  return message.role === "assistant"
+    && !!message.runId
+    && !message.content.trim()
+    && !message.segments?.length;
+}
+
+/**
+ * Fill empty aborted/failed turns from their run events (pure; events already
+ * fetched). When a run is stopped mid-stream the agent's session JSONL holds no
+ * assistant reply, so the turn projects empty — but the partial text the model
+ * streamed was persisted as run events. Recover it so a reload shows the
+ * half-written answer instead of a blank "stopped" bubble. Turns that already
+ * have content or segments are left untouched, so clean session-derived segments
+ * are never overwritten by event-derived ones.
+ */
+export function applyRecoveredEvents(
+  messages: AgentMessage[],
+  eventsByRunId: Map<string, StoredRunEvent[]>,
+): AgentMessage[] {
+  return messages.map((message) => {
+    if (!isEmptyTurn(message))
+      return message;
+    const events = eventsByRunId.get(message.runId!);
+    if (!events?.length)
+      return message;
+    const projection = buildAssistantRunProjection(events);
+    if (!projection.content.trim() && projection.segments.length === 0)
+      return message;
+    return {
+      ...message,
+      content: projection.content,
+      segments: projection.segments.length > 0 ? projection.segments : message.segments,
+      activityItems: projection.activityItems,
+      outputTokens: projection.outputTokens,
+    };
+  });
+}
+
+/**
+ * Recover partial content for aborted turns loaded via the agent session path.
+ * Fetches events only for the empty turns, then applies {@link applyRecoveredEvents}.
+ * Best-effort: any failure leaves the messages as-is.
+ */
+export async function recoverAbortedTurns(messages: AgentMessage[]): Promise<AgentMessage[]> {
+  const emptyRunIds = messages.filter(isEmptyTurn).map(message => message.runId!);
+  if (emptyRunIds.length === 0)
+    return messages;
+  try {
+    const bulk = await listRunEventsBulk(emptyRunIds);
+    return applyRecoveredEvents(messages, new Map(bulk));
+  }
+  catch {
+    return messages;
+  }
 }
 
 let clientIdCounter = 0;

@@ -9,8 +9,8 @@ use crate::store::util::{create_id, now_millis};
 
 use super::extract::{extract_markdown_references, MarkdownObjectReference};
 use super::metadata::{
-    approval_metadata, artifact_metadata, research_metadata, review_metadata, run_metadata,
-    tool_metadata, ReferenceMetadata,
+    approval_metadata, artifact_metadata, review_metadata, run_metadata, tool_metadata,
+    ReferenceMetadata,
 };
 
 pub fn sync_message_markdown_references(
@@ -175,24 +175,6 @@ fn resolve_reference_target_metadata(
                         row.get(3)?,
                         row.get(4)?,
                         row.get(5)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(crate::AppError::from),
-        "research" => conn
-            .query_row(
-                "SELECT r.title, r.resource_type, r.source_uri, r.summary
-                 FROM research_resources r
-                 JOIN research_collections c ON c.id = r.collection_id
-                 WHERE r.id = ?1 AND c.workspace_id = ?2",
-                params![reference.target_id, workspace_id],
-                |row| {
-                    Ok(research_metadata(
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
                     ))
                 },
             )

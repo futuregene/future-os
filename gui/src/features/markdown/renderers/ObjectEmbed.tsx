@@ -1,12 +1,11 @@
 import type { ReactNode } from "react";
 import type {
   StoredApprovalRequest,
-  StoredResearchResource,
   StoredReviewChangeset,
   StoredToolCall,
 } from "../../../integrations/storage/types";
 import type { FutureReference } from "../futureMarkdownTypes";
-import { AlertTriangle, Beaker, FileDiff, Maximize2, Microscope } from "lucide-react";
+import { AlertTriangle, Beaker, FileDiff, Maximize2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "../../../components/ui/Badge";
 import { Button } from "../../../components/ui/Button";
@@ -67,38 +66,6 @@ export function ReviewEmbed({
         variant="toolbar"
       >
         {t("objectEmbed.openReview")}
-      </Button>
-    </ObjectFrame>
-  );
-}
-
-export function ResearchEmbed({
-  reference,
-  resource,
-}: {
-  reference: FutureReference;
-  resource: StoredResearchResource;
-}) {
-  const { t } = useTranslation("markdown");
-  function openResearch() {
-    emitFutureEvent("open-research-resource", { resourceId: resource.id });
-  }
-
-  return (
-    <ObjectFrame
-      icon={<Microscope className="mt-0.5 size-4 shrink-0 text-accent" />}
-      meta={resource.sourceUri ?? resource.resourceType}
-      title={resource.title || reference.label || resource.id}
-    >
-      {resource.summary ? <p className="text-sm leading-5 text-ink-soft">{resource.summary}</p> : null}
-      <Button
-        className="mt-2"
-        leftIcon={<Maximize2 className="size-3.5" />}
-        onClick={openResearch}
-        size="xs"
-        variant="toolbar"
-      >
-        {t("objectEmbed.openResearch")}
       </Button>
     </ObjectFrame>
   );
