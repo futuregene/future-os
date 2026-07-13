@@ -106,6 +106,11 @@ pub struct Attachment {
     /// when the model supports image input. Empty for non-image files.
     #[prost(string, tag = "4")]
     pub base64: ::prost::alloc::string::String,
+    /// Optional absolute path to a cached thumbnail (images only). Not model-facing
+    /// — carried through to the user entry's meta so the GUI can render the chip
+    /// after a reload (messages are reconstructed from the agent JSONL).
+    #[prost(string, tag = "5")]
+    pub thumbnail: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SandboxPolicy {
