@@ -20,6 +20,11 @@ use crate::agent_proto::{Attachment, FutureAgentClient, RpcCommand, RpcResponse}
 /// overlapping calls, and a late failure could clobber fresh state.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// gRPC message-size cap, well above tonic's 4MB default. A prompt can carry
+/// several base64-encoded images (up to 4 × 25MB source ≈ 137MB base64); must
+/// match the agent server's limit.
+const MAX_GRPC_MESSAGE_SIZE: usize = 256 * 1024 * 1024;
+
 /// Bare `host:port` the GUI talks to (env override or the default). The single
 /// source of the default address, shared with the bundled-agent supervisor.
 pub(crate) fn raw_agent_addr() -> String {
@@ -51,7 +56,12 @@ pub async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppErr
         .connect()
         .await
         .map_err(unavailable)?;
-    Ok(FutureAgentClient::new(channel))
+    // Match the agent server's raised limits: a prompt can carry several
+    // base64-encoded images (two ~3MB images ≈ 7MB), which blows past tonic's
+    // 4MB default and would otherwise fail the send before the run starts.
+    Ok(FutureAgentClient::new(channel)
+        .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
+        .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE))
 }
 
 /// Turn a gRPC `RpcResponse` into a `Result`, surfacing the agent's own error
