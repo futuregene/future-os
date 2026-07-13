@@ -130,14 +130,7 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
              id, workspace_id, mode, title, status, pinned, readonly,
              agent_session_id, last_opened_at, created_at, updated_at
          ) VALUES (?1, ?2, ?3, ?4, 'active', 0, 0, ?5, ?6, ?6, ?6)",
-        params![
-            thread_id,
-            workspace.id,
-            mode,
-            title,
-            agent_session_id,
-            now
-        ],
+        params![thread_id, workspace.id, mode, title, agent_session_id, now],
     )?;
 
     let thread = loaded(get_thread_in(&tx, &thread_id)?, "Created thread")?;
@@ -195,10 +188,7 @@ pub fn update_thread_thinking_level(
 }
 
 /// Persist the agent-generated session id after the first prompt creates it.
-pub fn update_thread_session_id(
-    thread_id: &str,
-    session_id: &str,
-) -> Result<(), crate::AppError> {
+pub fn update_thread_session_id(thread_id: &str, session_id: &str) -> Result<(), crate::AppError> {
     let now = now_millis();
     let conn = connect()?;
     conn.execute(
@@ -296,6 +286,18 @@ pub(super) fn delete_thread_children_in(
         "UPDATE artifacts SET thread_id = NULL WHERE thread_id = ?1",
         params![thread_id],
     )?;
+    // Drop the per-run event logs (and any buffered events) for this thread's
+    // runs before the run rows go — otherwise the JSONL files leak on disk.
+    {
+        let mut stmt = conn.prepare("SELECT id FROM runs WHERE thread_id = ?1")?;
+        let run_ids = stmt
+            .query_map(params![thread_id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for run_id in run_ids {
+            super::delete_run_events_file(&run_id);
+            super::clear_run_event_buffer(&run_id);
+        }
+    }
     // Break the runs ↔ messages FK cycle, then delete both.
     conn.execute(
         "UPDATE runs SET trigger_message_id = NULL WHERE thread_id = ?1",
@@ -362,7 +364,6 @@ pub fn purge_soft_deleted_threads() -> Result<usize, crate::AppError> {
     tx.commit()?;
     Ok(ids.len())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -456,11 +457,10 @@ mod tests {
 
         super::delete_thread_children_in(&conn, "t1").expect("cascade delete");
 
-        // Every conversation child row is gone.
+        // Every conversation child row is gone. (run_events / tool_calls /
+        // tool_outputs tables were dropped — their data now lives in the agent
+        // JSONL / in-memory buffer, not SQLite.)
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM runs"), 0);
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM run_events"), 0);
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tool_calls"), 0);
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tool_outputs"), 0);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM approval_requests"), 0);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM review_snapshots"), 0);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM review_changesets"), 0);

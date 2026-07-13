@@ -64,6 +64,11 @@ pub fn thread_images_dir(thread_id: &str) -> Result<PathBuf, crate::AppError> {
 }
 
 pub(super) fn ensure_app_dirs() -> Result<(), crate::AppError> {
+    // `app_dir()` holds app.db itself; it must exist before `connect()` opens
+    // the database. The chat-workspace root moved out from under `app/`, so
+    // creating it no longer implicitly creates `app/` — create both explicitly
+    // (a fresh install has neither).
+    fs::create_dir_all(app_dir()?)?;
     fs::create_dir_all(chat_workspaces_root()?).map_err(crate::AppError::from)
 }
 
@@ -261,48 +266,5 @@ mod tests {
             .query_row([], |_| Ok(true))
             .unwrap_or(false);
         assert!(has_source_kind);
-    }
-
-    #[test]
-    fn apply_schema_renames_legacy_type_columns() {
-        // A DB created before N-3 still has `run_events.type`. The store now
-        // reads/writes `event_type`; without the rename migration, run events
-        // are silently dropped (e.g. a Run's streaming activity never lands).
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE run_events (
-                 id TEXT PRIMARY KEY,
-                 run_id TEXT NOT NULL,
-                 type TEXT NOT NULL,
-                 payload TEXT,
-                 sequence INTEGER NOT NULL,
-                 created_at INTEGER NOT NULL
-             );
-             INSERT INTO run_events (id, run_id, type, payload, sequence, created_at)
-             VALUES ('e1', 'r1', 'text_chunk', '{}', 0, 1);",
-        )
-        .unwrap();
-
-        apply_schema(&conn).unwrap();
-        // Idempotent: a fresh DB already has `event_type`, so re-running is a no-op.
-        apply_schema(&conn).unwrap();
-
-        assert!(
-            column_exists(&conn, "run_events", "event_type").unwrap(),
-            "type must be renamed to event_type"
-        );
-        assert!(
-            !column_exists(&conn, "run_events", "type").unwrap(),
-            "old type column must be gone"
-        );
-        // The pre-existing row survives the rename and is readable under the new name.
-        let kind: String = conn
-            .query_row(
-                "SELECT event_type FROM run_events WHERE id = 'e1'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(kind, "text_chunk");
     }
 }

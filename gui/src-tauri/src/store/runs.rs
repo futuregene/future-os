@@ -1,9 +1,10 @@
 #![allow(dead_code)]
-#![allow(dead_code)]
 use std::collections::HashMap;
+use std::io::Write;
+use std::path::PathBuf;
 
 use rusqlite::params;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::db::*;
 use super::records::*;
@@ -31,7 +32,7 @@ pub struct RunRecord {
     pub updated_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub struct RunEventRecord {
@@ -278,33 +279,94 @@ pub fn fail_run_if_active(
 }
 
 pub fn list_run_events(run_id: &str) -> Result<Vec<RunEventRecord>, crate::AppError> {
-    if let Ok(buf) = RUN_EVENT_BUFFER.lock() {
-        if let Some(events) = buf.get(run_id) {
-            return Ok(events.clone());
-        }
-    }
-    Ok(vec![])
+    Ok(read_run_events(run_id))
 }
 
 pub fn list_run_events_bulk(
     run_ids: &[String],
 ) -> Result<Vec<(String, Vec<RunEventRecord>)>, crate::AppError> {
-    if let Ok(buf) = RUN_EVENT_BUFFER.lock() {
-        let mut result = Vec::new();
-        for rid in run_ids {
-            if let Some(events) = buf.get(rid) {
-                result.push((rid.clone(), events.clone()));
-            }
+    let mut result = Vec::new();
+    for rid in run_ids {
+        let events = read_run_events(rid);
+        if !events.is_empty() {
+            result.push((rid.clone(), events));
         }
-        return Ok(result);
     }
-    Ok(vec![])
+    Ok(result)
 }
 
-/// In-memory buffer for streaming run events (replaces SQLite run_events table).
-/// Keyed by run_id; cleared when the run settles (agent_end received).
-static RUN_EVENT_BUFFER: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Vec<RunEventRecord>>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+/// In-memory buffer for streaming run events. A run's events live here while it
+/// is active (fast streaming reads) and are also appended to a per-run JSONL
+/// file on disk so the Runs panel/inspector survive an app restart. The buffer
+/// entry is dropped once the run settles (see `clear_run_event_buffer`); reads
+/// then fall back to the file. Keyed by run_id.
+static RUN_EVENT_BUFFER: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<String, Vec<RunEventRecord>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Directory holding per-run event logs: `~/.future/app/run_events/`.
+fn run_events_dir() -> Option<PathBuf> {
+    let dir = app_dir().ok()?.join("run_events");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Per-run event log path, or None if `run_id` isn't a safe filename slug
+/// (defends against path traversal from an unexpected id).
+fn run_events_path(run_id: &str) -> Option<PathBuf> {
+    if run_id.is_empty()
+        || !run_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+    Some(run_events_dir()?.join(format!("{run_id}.jsonl")))
+}
+
+/// Append one event as a JSON line to the run's log (best-effort; a failed
+/// write just means that event won't survive a restart).
+fn persist_event_to_disk(record: &RunEventRecord) {
+    let Some(path) = run_events_path(&record.run_id) else {
+        return;
+    };
+    let Ok(line) = serde_json::to_string(record) else {
+        return;
+    };
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+/// Read a run's events from the persisted log (one JSON object per line).
+fn read_events_from_disk(run_id: &str) -> Vec<RunEventRecord> {
+    let Some(path) = run_events_path(run_id) else {
+        return vec![];
+    };
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return vec![];
+    };
+    contents
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<RunEventRecord>(line).ok())
+        .collect()
+}
+
+/// A run's events, in append order: the in-memory buffer while the run is
+/// active, else the persisted log (survives restart / post-settle eviction).
+fn read_run_events(run_id: &str) -> Vec<RunEventRecord> {
+    if let Ok(buf) = RUN_EVENT_BUFFER.lock() {
+        if let Some(events) = buf.get(run_id) {
+            return events.clone();
+        }
+    }
+    read_events_from_disk(run_id)
+}
 
 pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, crate::AppError> {
     let id = create_id("event");
@@ -318,42 +380,61 @@ pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, cr
         created_at: now,
     };
     if let Ok(mut buf) = RUN_EVENT_BUFFER.lock() {
-        buf.entry(input.run_id.clone()).or_default().push(record.clone());
+        buf.entry(input.run_id.clone())
+            .or_default()
+            .push(record.clone());
     }
+    persist_event_to_disk(&record);
     Ok(record)
 }
 
-/// Clear buffered events for a settled run (called when agent_end is received).
+/// Drop a settled run's in-memory events (called on `agent_end`). The persisted
+/// log stays, so reads still work — this only bounds memory so a long-lived app
+/// doesn't accumulate every run's events forever.
 pub fn clear_run_event_buffer(run_id: &str) {
     if let Ok(mut buf) = RUN_EVENT_BUFFER.lock() {
         buf.remove(run_id);
     }
 }
 
+/// Delete a run's persisted event log (called when the run/thread is deleted).
+pub fn delete_run_events_file(run_id: &str) {
+    if let Some(path) = run_events_path(run_id) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Remove the whole run-events directory (called by `clear_all_data`).
+pub fn clear_all_run_events_files() {
+    if let Ok(dir) = app_dir() {
+        let _ = std::fs::remove_dir_all(dir.join("run_events"));
+    }
+    if let Ok(mut buf) = RUN_EVENT_BUFFER.lock() {
+        buf.clear();
+    }
+}
+
 pub fn list_tool_calls(run_id: &str) -> Result<Vec<ToolCallRecord>, crate::AppError> {
-    // Read from the in-memory event buffer (tool_calls table was dropped).
-    // Each tool call is reconstructed from tool_start / tool_end events.
-    let buf = match RUN_EVENT_BUFFER.lock() {
-        Ok(buf) => buf,
-        Err(_) => return Ok(vec![]),
-    };
-    let events = match buf.get(run_id) {
-        Some(events) => events.clone(),
-        None => return Ok(vec![]),
-    };
+    // Reconstruct each tool call from its tool_start / tool_end events (the
+    // tool_calls table was dropped). Both events carry the agent's stable tool
+    // id, so pair by id — a single "current" slot would mispair overlapping
+    // (parallel) tool calls.
+    let events = read_run_events(run_id);
 
     let mut tools: Vec<ToolCallRecord> = Vec::new();
-    let mut current: Option<ToolCallRecord> = None;
+    let mut index_by_id: HashMap<String, usize> = HashMap::new();
 
     for event in &events {
         match event.event_type.as_str() {
-            "tool_start" => {
-                if let Some(tool) = current.take() {
-                    tools.push(tool);
-                }
+            "tool_start" | "toolcall_start" => {
+                // Stable agent tool id (not the ephemeral event id) so the
+                // inspector's `list_tool_outputs(run_id, tool.id)` can correlate
+                // this call with its `tool_end` output.
+                let id = event_tool_id(event).unwrap_or_else(|| event.id.clone());
                 let (name, kind, input) = parse_tool_start_payload(event.payload.as_deref());
-                current = Some(ToolCallRecord {
-                    id: event.id.clone(),
+                index_by_id.insert(id.clone(), tools.len());
+                tools.push(ToolCallRecord {
+                    id,
                     run_id: event.run_id.clone(),
                     name,
                     kind,
@@ -364,54 +445,156 @@ pub fn list_tool_calls(run_id: &str) -> Result<Vec<ToolCallRecord>, crate::AppEr
                     created_at: event.created_at,
                 });
             }
-            "tool_end" => {
-                if let Some(mut tool) = current.take() {
-                    tool.status = parse_tool_end_status(event.payload.as_deref());
-                    tool.ended_at = Some(event.created_at);
-                    tools.push(tool);
+            "tool_end" | "tool_result" => {
+                let idx = event_tool_id(event)
+                    .as_deref()
+                    .and_then(|id| index_by_id.get(id).copied());
+                if let Some(idx) = idx {
+                    let command = bash_command_from_input(tools[idx].input.as_deref());
+                    tools[idx].status =
+                        tool_end_status(event.payload.as_deref(), command.as_deref());
+                    tools[idx].ended_at = Some(event.created_at);
                 }
             }
             _ => {}
         }
     }
-    if let Some(tool) = current.take() {
-        tools.push(tool);
-    }
     Ok(tools)
+}
+
+/// The agent's stable tool-call id from a buffered tool event payload
+/// (`tool_id`/`toolID`/`tool_call_id`). Both `tool_start` and `tool_end` carry
+/// it (agent/mod.rs broadcasts `tc.id` on each), so it's how a tool call and
+/// its output are correlated across the two events.
+fn event_tool_id(event: &RunEventRecord) -> Option<String> {
+    let payload = event.payload.as_deref()?;
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    ["tool_id", "toolID", "tool_call_id"].iter().find_map(|k| {
+        v.get(*k)
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    })
 }
 
 fn parse_tool_start_payload(payload: Option<&str>) -> (String, String, Option<String>) {
     let default = (String::new(), String::new(), None);
-    let Some(payload) = payload else { return default; };
-    let Ok(v): Result<serde_json::Value, _> = serde_json::from_str(payload) else { return default; };
-    let name = v.get("tool_name").and_then(|s| s.as_str()).unwrap_or("").to_string();
+    let Some(payload) = payload else {
+        return default;
+    };
+    let Ok(v): Result<serde_json::Value, _> = serde_json::from_str(payload) else {
+        return default;
+    };
+    let name = v
+        .get("tool_name")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
     let kind = name.clone(); // tool_name doubles as kind (bash, write, edit, read)
-    let input = v.get("tool_args").or(v.get("input")).and_then(|s| s.as_str()).map(|s| s.to_string());
+    let input = v
+        .get("tool_args")
+        .or(v.get("input"))
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string());
     (name, kind, input)
 }
 
-fn parse_tool_end_status(payload: Option<&str>) -> String {
-    let Some(payload) = payload else { return "completed".to_string() };
-    let Ok(v): Result<serde_json::Value, _> = serde_json::from_str(payload) else { return "completed".to_string() };
-    v.get("error").map_or("completed".to_string(), |_| "failed".to_string())
+/// Tool-call status from its `tool_end` payload. An explicit `error` is a
+/// failure; so is a bash command that exits non-zero — the agent returns that
+/// as a *successful* result with `[exit code: N]` baked into the output text
+/// (no error field), so the text must be inspected. A bare grep/diff/test
+/// exiting 1 is a normal "no match / differs" signal, not a failure.
+fn tool_end_status(payload: Option<&str>, command: Option<&str>) -> String {
+    let Some(payload) = payload else {
+        return "completed".to_string();
+    };
+    let Ok(v): Result<serde_json::Value, _> = serde_json::from_str(payload) else {
+        return "completed".to_string();
+    };
+    let has_error = v
+        .get("error")
+        .or_else(|| v.get("errorText"))
+        .and_then(|s| s.as_str())
+        .is_some_and(|s| !s.is_empty());
+    if has_error {
+        return "failed".to_string();
+    }
+    let output = v
+        .get("text")
+        .or_else(|| v.get("result"))
+        .and_then(|s| s.as_str());
+    match nonzero_exit_code(output) {
+        Some(1) if is_soft_fail_command(command) => "completed".to_string(),
+        Some(_) => "failed".to_string(),
+        None => "completed".to_string(),
+    }
 }
 
-pub fn get_tool_call_input(run_id: &str, tool_call_id: &str) -> Result<Option<String>, crate::AppError> {
-    // Read from the in-memory event buffer — look for a tool_start event
-    // whose id matches the tool_call_id and return its input/args.
-    let buf = match RUN_EVENT_BUFFER.lock() {
-        Ok(buf) => buf,
-        Err(_) => return Ok(None),
+/// The non-zero code from a `[exit code: N]` bash prefix, or None (exit 0 / not
+/// a bash result). Mirrors the agent-bridge persist logic.
+fn nonzero_exit_code(output: Option<&str>) -> Option<i64> {
+    let rest = output?.trim_start().strip_prefix("[exit code: ")?;
+    let (code, _) = rest.split_once(']')?;
+    code.trim().parse::<i64>().ok().filter(|code| *code != 0)
+}
+
+/// A bare grep/diff/cmp/test exiting 1 is a normal signal, not an error. Any
+/// shell operator makes the exit ambiguous (pipeline/list), so those stay
+/// failures.
+fn is_soft_fail_command(command: Option<&str>) -> bool {
+    let Some(command) = command else {
+        return false;
     };
-    let events = match buf.get(run_id) {
-        Some(events) => events,
-        None => return Ok(None),
+    if command.contains(['|', '&', ';', '\n', '`', '<', '>']) || command.contains("$(") {
+        return false;
+    }
+    let Some(first) = command.split_whitespace().next() else {
+        return false;
     };
+    let base = first
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(first)
+        .to_ascii_lowercase();
+    let program = base.strip_suffix(".exe").unwrap_or(base.as_str());
+    matches!(
+        program,
+        "grep" | "egrep" | "fgrep" | "rg" | "findstr" | "diff" | "cmp" | "test" | "["
+    )
+}
+
+/// Extract the bash `command` from a tool call's persisted input JSON (used to
+/// exempt soft-fail commands). Handles a doubly-encoded JSON string input.
+fn bash_command_from_input(input: Option<&str>) -> Option<String> {
+    let mut value: serde_json::Value = serde_json::from_str(input?).ok()?;
+    if let serde_json::Value::String(inner) = &value {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(inner) {
+            value = parsed;
+        }
+    }
+    value
+        .get("command")
+        .and_then(|c| c.as_str())
+        .map(str::to_string)
+}
+
+pub fn get_tool_call_input(
+    run_id: &str,
+    tool_call_id: &str,
+) -> Result<Option<String>, crate::AppError> {
+    // Look for the tool_start event whose stable tool id matches and return its
+    // input/args (buffer while active, else the persisted log).
+    let events = read_run_events(run_id);
     for event in events.iter().rev() {
-        if event.event_type == "tool_start" && event.id == tool_call_id {
+        if event.event_type == "tool_start" && event_tool_id(event).as_deref() == Some(tool_call_id)
+        {
             if let Some(ref payload) = event.payload {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) {
-                    return Ok(v.get("tool_args").or(v.get("input")).and_then(|s| s.as_str()).map(|s| s.to_string()));
+                    return Ok(v
+                        .get("tool_args")
+                        .or(v.get("input"))
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string()));
                 }
             }
             return Ok(None);
@@ -420,13 +603,81 @@ pub fn get_tool_call_input(run_id: &str, tool_call_id: &str) -> Result<Option<St
     Ok(None)
 }
 
-pub fn list_tool_outputs(_tool_call_id: &str) -> Result<Vec<ToolOutputRecord>, crate::AppError> { Ok(vec![]) }
+/// Reconstruct a tool call's output from the run's `tool_end` event that
+/// carries the same stable tool id. `tool_end` carries the result text and any
+/// error (agent/mod.rs broadcasts `text`/`error`). Reads the buffer while the
+/// run is active, else the persisted log, so the inspector's stdout/stderr
+/// panes survive an app restart.
+pub fn list_tool_outputs(
+    run_id: &str,
+    tool_call_id: &str,
+) -> Result<Vec<ToolOutputRecord>, crate::AppError> {
+    let events = read_run_events(run_id);
+    for event in &events {
+        if !matches!(event.event_type.as_str(), "tool_end" | "tool_result") {
+            continue;
+        }
+        if event_tool_id(event).as_deref() != Some(tool_call_id) {
+            continue;
+        }
+        let v: serde_json::Value = event
+            .payload
+            .as_deref()
+            .and_then(|p| serde_json::from_str(p).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let text = v
+            .get("text")
+            .or_else(|| v.get("result"))
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty());
+        let error = v
+            .get("error")
+            .or_else(|| v.get("errorText"))
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty());
+
+        // Wrap into a JSON object: the inspector runs the content through
+        // `parseJsonish` and keeps only object results, reading stdout from
+        // `text` and stderr from `error`. A bare string would be dropped.
+        let mut obj = serde_json::Map::new();
+        if let Some(text) = text {
+            obj.insert(
+                "text".to_string(),
+                serde_json::Value::String(text.to_string()),
+            );
+        }
+        if let Some(error) = error {
+            obj.insert(
+                "error".to_string(),
+                serde_json::Value::String(error.to_string()),
+            );
+        }
+        let content = if obj.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::Object(obj).to_string())
+        };
+
+        return Ok(vec![ToolOutputRecord {
+            id: event.id.clone(),
+            tool_call_id: tool_call_id.to_string(),
+            kind: if error.is_some() { "error" } else { "text" }.to_string(),
+            content,
+            created_at: event.created_at,
+        }]);
+    }
+    Ok(vec![])
+}
 
 #[allow(dead_code)]
-pub fn upsert_tool_call(_input: UpsertToolCallInput) -> Result<(), crate::AppError> { Ok(()) }
+pub fn upsert_tool_call(_input: UpsertToolCallInput) -> Result<(), crate::AppError> {
+    Ok(())
+}
 
 #[allow(dead_code)]
-pub fn complete_tool_call(_input: CompleteToolCallInput) -> Result<(), crate::AppError> { Ok(()) }
+pub fn complete_tool_call(_input: CompleteToolCallInput) -> Result<(), crate::AppError> {
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

@@ -47,7 +47,7 @@ export async function loadRunResumeSummary(runId: string) {
     const outputEntries = await Promise.all(
       tools.slice(0, 8).map(async (tool) => {
         try {
-          return [tool.id, await listToolOutputs(tool.id)] as const;
+          return [tool.id, await listToolOutputs(tool.runId, tool.id)] as const;
         }
         catch {
           return [tool.id, [] as StoredToolOutput[]] as const;

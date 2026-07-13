@@ -1,17 +1,16 @@
 import type { AgentConnectionState } from "../../components/layout/AppShell";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
-import { forkThread } from "../../integrations/storage/threadStore";
-import { errorMessage } from "../../lib/errors";
-import { emitFutureEvent } from "../../lib/futureEvents";
 import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageAttachment } from "./agentThreadTypes";
 import { ArrowDown } from "lucide-react";
 import { useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
+import { forkThread } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
-import { onFutureEvent } from "../../lib/futureEvents";
+import { errorMessage } from "../../lib/errors";
+import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { ApprovalPrompt } from "./ApprovalPrompt";
 import { buildContinuePrompt, loadRunResumeSummary, previousUserForRun } from "./buildContinuePrompt";
@@ -156,7 +155,8 @@ export function AgentThread({
   }), [handleContinueRun, handleRetryRun]);
 
   const handleFork = useCallback(async (aiMessage: AgentMessage) => {
-    if (!thread || !messages.length) return;
+    if (!thread || !messages.length)
+      return;
     // Find the user message that triggered this AI response.
     const aiIndex = messages.indexOf(aiMessage);
     let userMessage: AgentMessage | undefined;
@@ -166,9 +166,15 @@ export function AgentThread({
         break;
       }
     }
-    if (!userMessage) return;
+    if (!userMessage)
+      return;
+    // 0-based ordinal among user messages — the fork point, robust to two
+    // identical prompts (content is only a fallback on the backend).
+    const userMessageIndex = messages
+      .filter(message => message.role === "user")
+      .indexOf(userMessage);
     try {
-      const newThreadId = await forkThread(thread.id, userMessage.content);
+      const newThreadId = await forkThread(thread.id, userMessage.content, userMessageIndex);
       onForked(newThreadId);
     }
     catch (error) {

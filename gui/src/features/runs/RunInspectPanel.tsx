@@ -47,7 +47,7 @@ export function RunInspectPanel({ compact = false, onBack, run, tools }: RunInsp
     async () => {
       const outputEntries = await Promise.all(sortedTools.map(async (tool) => {
         try {
-          return [tool.id, await listToolOutputs(tool.id)] as const;
+          return [tool.id, await listToolOutputs(tool.runId, tool.id)] as const;
         }
         catch {
           return [tool.id, [] as StoredToolOutput[]] as const;

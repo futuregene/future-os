@@ -151,9 +151,13 @@ export async function appendMessage(input: {
   return invokeCommand<StoredMessage>("append_message", { input });
 }
 
-/** Fork the agent session at the given user message, returning the new session id. */
-export function forkThread(threadId: string, userMessageContent: string) {
-  return invokeCommand<string>("fork_thread", { threadId, userMessageContent });
+/**
+ * Fork the agent session at the given user message, returning the new session
+ * id. `userMessageIndex` is the 0-based ordinal of the message among user
+ * messages — the authoritative fork point; content is a fallback.
+ */
+export function forkThread(threadId: string, userMessageContent: string, userMessageIndex: number) {
+  return invokeCommand<string>("fork_thread", { threadId, userMessageContent, userMessageIndex });
 }
 
 /** Fetch session entries from the agent (primary message source). */

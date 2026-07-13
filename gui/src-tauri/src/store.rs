@@ -36,7 +36,10 @@ pub use cleanup::{
     cancel_stale_approval_requests, clear_finished_runs, get_thread_cleanup_summary,
     reconcile_orphan_chat_workspaces, reconcile_orphan_images, reconcile_orphan_review_repos,
 };
-pub use db::{app_images_root, chat_workspace_path, future_dir, get_approval_request, get_run, thread_images_dir};
+pub use db::{
+    app_images_root, chat_workspace_path, future_dir, get_approval_request, get_run,
+    thread_images_dir,
+};
 pub use markdown_refs::resolve_markdown_references;
 pub use messages::{append_message, list_messages, MessageRecord};
 pub use records::*;
@@ -48,7 +51,8 @@ pub use review_snapshots::{
     ReviewFileChangeRecord, ReviewSnapshotRecord,
 };
 pub use runs::{
-    active_run_sessions, append_run_event, complete_tool_call, create_run, fail_run_if_active,
+    active_run_sessions, append_run_event, clear_all_run_events_files, clear_run_event_buffer,
+    complete_tool_call, create_run, delete_run_events_file, fail_run_if_active,
     get_tool_call_input, list_run_events, list_run_events_bulk, list_runs, list_tool_calls,
     list_tool_outputs, update_run_status_if_active, upsert_tool_call, RunEventRecord, RunRecord,
     ToolCallRecord, ToolOutputRecord,
@@ -62,8 +66,8 @@ pub use threads::{
 pub use workspace_files::{search_workspace_files, WorkspaceFileResult, WorkspaceFileSearchInput};
 pub use workspaces::{
     create_workspace, delete_workspace, get_or_create_chat_workspace, get_workspace,
-    list_workspaces, purge_soft_deleted_workspaces, rename_workspace,
-    update_chat_workspace_path, workspace_agent_session_ids, WorkspaceRecord,
+    list_workspaces, purge_soft_deleted_workspaces, rename_workspace, update_chat_workspace_path,
+    workspace_agent_session_ids, WorkspaceRecord,
 };
 
 pub fn app_data_path() -> Result<AppDataPath, crate::AppError> {
@@ -148,6 +152,8 @@ pub fn clear_all_data() -> Result<(), crate::AppError> {
     let _ = std::fs::remove_dir_all(app.join("workspaces"));
     let _ = std::fs::remove_dir_all(app.join("review"));
     let _ = std::fs::remove_dir_all(app.join("images"));
+    // Per-run event logs + their in-memory buffer.
+    clear_all_run_events_files();
     // New chat workspace root (~/.future/workspaces/chat/), outside app_dir.
     let _ = std::fs::remove_dir_all(future_dir()?.join("workspaces").join("chat"));
     Ok(())

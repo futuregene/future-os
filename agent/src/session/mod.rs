@@ -560,9 +560,20 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
         .first()
         .filter(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO);
 
+    // Prefer the parent's actual level: the session_info struct field, then the
+    // content JSON (forked parents carry it there) — only fall back to a literal
+    // when neither is set, so a `low`/`medium` parent doesn't silently fork to
+    // `high`.
     let parent_thinking_level = parent_info
         .map(|e| e.thinking_level.as_str())
         .filter(|s| !s.is_empty())
+        .or_else(|| {
+            parent_info
+                .and_then(|e| e.content.as_ref())
+                .and_then(|c| c.get("thinking_level"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+        })
         .unwrap_or("high");
 
     let parent_model = parent_info

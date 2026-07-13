@@ -53,7 +53,8 @@ pub fn list_tool_calls(run_id: String) -> Result<Vec<store::ToolCallRecord>, cra
 
 #[tauri::command]
 pub fn list_tool_outputs(
+    run_id: String,
     tool_call_id: String,
 ) -> Result<Vec<store::ToolOutputRecord>, crate::AppError> {
-    store::list_tool_outputs(&tool_call_id)
+    store::list_tool_outputs(&run_id, &tool_call_id)
 }

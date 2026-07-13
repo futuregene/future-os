@@ -51,8 +51,8 @@ export async function listToolCalls(runId: string) {
   return invokeCommand<StoredToolCall[]>("list_tool_calls", { runId });
 }
 
-export async function listToolOutputs(toolCallId: string) {
-  return invokeCommand<StoredToolOutput[]>("list_tool_outputs", { toolCallId });
+export async function listToolOutputs(runId: string, toolCallId: string) {
+  return invokeCommand<StoredToolOutput[]>("list_tool_outputs", { runId, toolCallId });
 }
 
 // ─── Approvals ───────────────────────────────────────────────────────────
