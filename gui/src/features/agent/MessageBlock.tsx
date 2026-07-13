@@ -74,6 +74,19 @@ function MessageBlockImpl({
     ? segments.flatMap(segment => (segment.kind === "text" ? [segment.text] : [])).join("\n\n")
     : message.content ?? "").trim();
 
+  // A reloaded compaction marker is a message carrying only a compaction
+  // segment: render just the divider (no author header / bubble), matching the
+  // inline divider the live path shows mid-reply.
+  if (segments && segments.length === 1 && segments[0]!.kind === "compaction") {
+    return (
+      <article className="flex justify-center">
+        <div className="min-w-0 w-full max-w-3xl">
+          <CompactionDivider tokensBefore={segments[0]!.tokensBefore} />
+        </div>
+      </article>
+    );
+  }
+
   return (
     <article className="flex justify-center">
       <div

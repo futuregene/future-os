@@ -87,4 +87,93 @@ describe("entriesToMessages", () => {
     const activities = assistant?.segments?.filter(segment => segment.kind === "activity") ?? [];
     expect(activities).toHaveLength(1);
   });
+
+  it("marks a tool activity failed when its result reports an error", () => {
+    const entries: SessionEntry[] = [
+      { id: "u1", role: "user", content: "run it", timestamp: "2026-07-01T10:00:00+08:00" },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "",
+        timestamp: "2026-07-01T10:00:03+08:00",
+        tool_calls: [{ function: { name: "bash", arguments: JSON.stringify({ command: "futre --version" }) } }],
+      },
+      { id: "t1", role: "tool", name: "bash", content: "[exit code: 127]\nfutre: command not found", timestamp: "2026-07-01T10:00:04+08:00" },
+      { id: "a2", role: "assistant", content: "that failed", timestamp: "2026-07-01T10:00:05+08:00" },
+    ];
+
+    const assistant = entriesToMessages(entries)[1];
+    const activity = assistant?.segments?.find(segment => segment.kind === "activity");
+    expect(activity?.kind === "activity" ? activity.item.status : undefined).toBe("failed");
+  });
+
+  it("keeps a bare grep exit-1 as completed (soft-fail exemption)", () => {
+    const entries: SessionEntry[] = [
+      { id: "u1", role: "user", content: "grep", timestamp: "2026-07-01T10:00:00+08:00" },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "",
+        timestamp: "2026-07-01T10:00:03+08:00",
+        tool_calls: [{ function: { name: "bash", arguments: JSON.stringify({ command: "grep foo file.txt" }) } }],
+      },
+      { id: "t1", role: "tool", name: "bash", content: "[exit code: 1]\n", timestamp: "2026-07-01T10:00:04+08:00" },
+    ];
+
+    const assistant = entriesToMessages(entries)[1];
+    const activity = assistant?.segments?.find(segment => segment.kind === "activity");
+    expect(activity?.kind === "activity" ? activity.item.status : undefined).toBe("completed");
+  });
+
+  it("orders preamble text before the tool activity it introduces", () => {
+    const entries: SessionEntry[] = [
+      { id: "u1", role: "user", content: "check config", timestamp: "2026-07-01T10:00:00+08:00" },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Let me check the config.",
+        timestamp: "2026-07-01T10:00:03+08:00",
+        tool_calls: [{ function: { name: "read", arguments: JSON.stringify({ path: "config.toml" }) } }],
+      },
+    ];
+
+    const kinds = entriesToMessages(entries)[1]?.segments?.map(segment => segment.kind);
+    expect(kinds).toEqual(["text", "activity"]);
+  });
+
+  it("collapses a burst of same-kind tools into one row with a count", () => {
+    const editCall = (path: string) => ({ function: { name: "edit", arguments: JSON.stringify({ path }) } });
+    const entries: SessionEntry[] = [
+      { id: "u1", role: "user", content: "edit files", timestamp: "2026-07-01T10:00:00+08:00" },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "",
+        timestamp: "2026-07-01T10:00:03+08:00",
+        tool_calls: [editCall("a.ts"), editCall("b.ts"), editCall("c.ts")],
+      },
+    ];
+
+    const activities = entriesToMessages(entries)[1]?.segments?.filter(s => s.kind === "activity") ?? [];
+    expect(activities).toHaveLength(1);
+    const item = activities[0]?.kind === "activity" ? activities[0].item : undefined;
+    expect(item?.count).toBe(3);
+    expect(item?.children).toHaveLength(3);
+  });
+
+  it("renders the compaction summary as a divider, not a user bubble", () => {
+    const entries: SessionEntry[] = [
+      { id: "c1", role: "user", content: "[Context compaction: Previous conversation summarized. Files read: a.ts. Modified: .]", timestamp: "2026-07-01T10:00:00+08:00" },
+      { id: "u1", role: "user", content: "carry on", timestamp: "2026-07-01T10:01:00+08:00" },
+      { id: "a1", role: "assistant", content: "ok", timestamp: "2026-07-01T10:01:02+08:00" },
+    ];
+
+    const messages = entriesToMessages(entries);
+    // A divider message (compaction segment) + the real user turn + its reply.
+    const divider = messages.find(message => message.segments?.some(s => s.kind === "compaction"));
+    expect(divider).toBeDefined();
+    expect(divider?.role).toBe("assistant");
+    // The compaction text must not appear as a user bubble.
+    expect(messages.some(message => message.role === "user" && message.content.startsWith("[Context compaction:"))).toBe(false);
+  });
 });

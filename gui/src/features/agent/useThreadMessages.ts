@@ -119,12 +119,15 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
   async function loadFromAgent(tid: string, wid?: string | null) {
     try {
       const result = await getSessionEntries(tid);
-      if (!result?.entries?.length) return null;
+      if (!result?.entries?.length)
+        return null;
       const messages = entriesToMessages(result.entries as unknown as import("./entryProjection").SessionEntry[]);
-      if (!messages.length) return null;
+      if (!messages.length)
+        return null;
       await refreshRecentRun(tid, wid).catch(() => {});
       return messages;
-    } catch {
+    }
+    catch {
       return null;
     }
   }
