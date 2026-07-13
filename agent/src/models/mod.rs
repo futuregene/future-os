@@ -619,8 +619,7 @@ fn load_user_models_with_overrides(
             // → maxTokensField).  This mirrors what convert_future_model does for
             // Future platform models.
             if let Some(ref supported_params) = model.supported_parameters {
-                let (derived_compat, derived_tlm) =
-                    derive_thinking_compat(supported_params, None);
+                let (derived_compat, derived_tlm) = derive_thinking_compat(supported_params, None);
                 for (k, v) in derived_compat {
                     m.compat.insert(k, v);
                 }
@@ -739,7 +738,12 @@ struct ProviderOverride {
 
 #[cfg(test)]
 mod tests {
-    use super::derive_thinking_compat;
+    use super::{
+        derive_thinking_compat, enrich_user_models, find_best_builtin_match, provider_similarity,
+    };
+    use super::{Cost, Model};
+    use serde_json::json;
+    use std::collections::HashMap;
 
     #[test]
     fn derives_max_completion_tokens_field_from_supported_parameters() {
@@ -766,6 +770,537 @@ mod tests {
 
         assert!(!compat.contains_key("maxTokensField"));
     }
+
+    // ── provider_similarity ──
+
+    #[test]
+    fn provider_similarity_exact_match() {
+        assert_eq!(provider_similarity("openai", "openai"), 1.0);
+    }
+
+    #[test]
+    fn provider_similarity_contains() {
+        // "azurefo" contains neither "openai" nor vice versa, but falls
+        // through to group matching.
+        assert!(provider_similarity("azurefo", "openai") > 0.0);
+    }
+
+    #[test]
+    fn provider_similarity_different_groups() {
+        assert_eq!(provider_similarity("openai", "deepseek"), 0.0);
+    }
+
+    // ── find_best_builtin_match ──
+
+    fn make_model(id: &str, provider: &str) -> Model {
+        Model {
+            id: id.to_string(),
+            provider: provider.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn find_best_builtin_match_no_candidates() {
+        let builtins = vec![make_model("gpt-4", "openai")];
+        let user = make_model("claude-opus-4-8", "realapi");
+        assert!(find_best_builtin_match(&user, &builtins).is_none());
+    }
+
+    #[test]
+    fn find_best_builtin_match_single_candidate() {
+        let builtins = vec![make_model("gpt-4", "openai")];
+        let user = make_model("gpt-4", "azurefo");
+        let result = find_best_builtin_match(&user, &builtins);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().provider, "openai");
+    }
+
+    #[test]
+    fn find_best_builtin_match_picks_by_provider_similarity() {
+        let builtins = vec![
+            make_model("gpt-5.6-sol", "amazon-bedrock"),
+            make_model("gpt-5.6-sol", "openai"),
+        ];
+        let user = make_model("gpt-5.6-sol", "azurefo");
+        let result = find_best_builtin_match(&user, &builtins);
+        assert!(result.is_some());
+        // azurefo should be closer to openai than amazon-bedrock
+        assert_eq!(result.unwrap().provider, "openai");
+    }
+
+    // ── enrich_user_models ──
+
+    fn make_builtin_deepseek_v4() -> Model {
+        let mut compat = HashMap::new();
+        compat.insert("thinkingFormat".to_string(), json!("deepseek"));
+        compat.insert(
+            "requiresReasoningContentOnAssistantMessages".to_string(),
+            json!(true),
+        );
+
+        let mut tlm = HashMap::new();
+        tlm.insert("high".to_string(), json!("high"));
+        tlm.insert("xhigh".to_string(), json!("max"));
+
+        Model {
+            id: "deepseek-v4-pro".to_string(),
+            name: "DeepSeek V4 Pro".to_string(),
+            provider: "deepseek".to_string(),
+            reasoning: true,
+            input: vec!["text".to_string(), "image".to_string()],
+            context_window: 1000000,
+            max_tokens: 384000,
+            cost: Cost {
+                input: 1.74,
+                output: 3.48,
+                cache_read: 0.14,
+                cache_write: 0.0,
+            },
+            compat,
+            thinking_level_map: tlm,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn enrich_fills_empty_compat_from_builtin() {
+        let builtins = vec![make_builtin_deepseek_v4()];
+        let mut models = vec![Model {
+            id: "deepseek-v4-pro".to_string(),
+            name: "DSv4".to_string(),
+            provider: "custom-provider".to_string(),
+            ..Default::default()
+        }];
+
+        enrich_user_models(&mut models, &builtins);
+
+        let enriched = &models[0];
+        assert_eq!(
+            enriched
+                .compat
+                .get("thinkingFormat")
+                .and_then(|v| v.as_str()),
+            Some("deepseek")
+        );
+        assert_eq!(
+            enriched
+                .thinking_level_map
+                .get("xhigh")
+                .and_then(|v| v.as_str()),
+            Some("max")
+        );
+    }
+
+    #[test]
+    fn enrich_merges_compat_key_by_key() {
+        let builtins = vec![make_builtin_deepseek_v4()];
+
+        // User already set maxTokensField but not thinkingFormat
+        let mut models = vec![Model {
+            id: "deepseek-v4-pro".to_string(),
+            name: "DSv4".to_string(),
+            provider: "custom-provider".to_string(),
+            compat: {
+                let mut c = HashMap::new();
+                c.insert("maxTokensField".to_string(), json!("max_completion_tokens"));
+                c
+            },
+            ..Default::default()
+        }];
+
+        enrich_user_models(&mut models, &builtins);
+
+        let user = &models[0];
+        // User's key preserved
+        assert_eq!(
+            user.compat.get("maxTokensField").and_then(|v| v.as_str()),
+            Some("max_completion_tokens")
+        );
+        // Missing keys filled from builtin
+        assert_eq!(
+            user.compat.get("thinkingFormat").and_then(|v| v.as_str()),
+            Some("deepseek")
+        );
+        // thinking_level_map was empty → full takeover from builtin
+        assert_eq!(
+            user.thinking_level_map
+                .get("xhigh")
+                .and_then(|v| v.as_str()),
+            Some("max")
+        );
+    }
+
+    #[test]
+    fn enrich_fills_scalar_fields_from_builtin() {
+        let builtins = vec![make_builtin_deepseek_v4()];
+        let mut models = vec![Model {
+            id: "deepseek-v4-pro".to_string(),
+            name: "DSv4".to_string(),
+            provider: "custom-provider".to_string(),
+            ..Default::default()
+        }];
+
+        enrich_user_models(&mut models, &builtins);
+
+        let user = &models[0];
+        assert!(user.reasoning);
+        assert_eq!(user.input, vec!["text", "image"]);
+        assert_eq!(user.context_window, 1000000);
+        assert_eq!(user.max_tokens, 384000);
+        assert_eq!(user.cost.input, 1.74);
+        assert_eq!(user.cost.output, 3.48);
+        assert_eq!(user.cost.cache_read, 0.14);
+    }
+
+    #[test]
+    fn enrich_respects_user_scalar_values() {
+        let builtins = vec![make_builtin_deepseek_v4()];
+        let mut models = vec![Model {
+            id: "deepseek-v4-pro".to_string(),
+            name: "DSv4".to_string(),
+            provider: "custom-provider".to_string(),
+            // reasoning left as default false — builtin has true, so it gets
+            // enriched. This is intentional: reasoning-capable models should
+            // be marked as such.
+            input: vec!["text".to_string()],
+            context_window: 64000,
+            max_tokens: 8192,
+            cost: Cost {
+                input: 0.5,
+                output: 1.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+            ..Default::default()
+        }];
+
+        enrich_user_models(&mut models, &builtins);
+
+        let user = &models[0];
+        // reasoning adopted from builtin (builtin says true)
+        assert!(user.reasoning);
+        // User-provided values preserved
+        assert_eq!(user.input, vec!["text"]);
+        assert_eq!(user.context_window, 64000);
+        assert_eq!(user.max_tokens, 8192);
+        assert_eq!(user.cost.input, 0.5);
+        assert_eq!(user.cost.output, 1.0);
+    }
+
+    #[test]
+    fn derive_max_tokens_field_from_only_max_completion_tokens() {
+        // Exact gpt-5.5 scenario: only "max_completion_tokens" in supportedParameters
+        let supported = vec!["max_completion_tokens".to_string()];
+        let (compat, _) = derive_thinking_compat(&supported, None);
+        assert_eq!(
+            compat.get("maxTokensField").and_then(|v| v.as_str()),
+            Some("max_completion_tokens"),
+            "maxTokensField should be set when supportedParameters has max_completion_tokens"
+        );
+    }
+
+    #[test]
+    fn enrich_gpt55_from_builtin_preserves_derived_max_tokens_field() {
+        // Simulate the builtin gpt-5.5 entries (all have empty compat_json)
+        let builtins = vec![
+            Model {
+                id: "gpt-5.5".to_string(),
+                provider: "openai".to_string(),
+                reasoning: true,
+                context_window: 272000,
+                max_tokens: 128000,
+                thinking_level_map: {
+                    let mut m = HashMap::new();
+                    m.insert("off".to_string(), json!(null));
+                    m.insert("xhigh".to_string(), json!("xhigh"));
+                    m
+                },
+                ..Default::default()
+            },
+            Model {
+                id: "gpt-5.5".to_string(),
+                provider: "github-copilot".to_string(),
+                reasoning: true,
+                context_window: 400000,
+                max_tokens: 128000,
+                ..Default::default()
+            },
+        ];
+
+        // Simulate user model from models.json: azurefo/gpt-5.5 with
+        // supportedParameters: ["max_completion_tokens"]
+        // After load_user_models_with_overrides processing:
+        let mut compat = HashMap::new();
+        // derive_thinking_compat would have set this from supportedParameters
+        let (derived_compat, _) =
+            derive_thinking_compat(&["max_completion_tokens".to_string()], None);
+        for (k, v) in derived_compat {
+            compat.insert(k, v);
+        }
+
+        let user = Model {
+            id: "gpt-5.5".to_string(),
+            provider: "azurefo".to_string(),
+            reasoning: false, // user didn't set it
+            max_tokens: 0,    // user didn't set it
+            compat,
+            ..Default::default()
+        };
+
+        let mut models = vec![user];
+        enrich_user_models(&mut models, &builtins);
+        let user = &models[0];
+
+        // After enrichment:
+        // - maxTokensField from supportedParameters MUST be preserved
+        assert_eq!(
+            user.compat.get("maxTokensField").and_then(|v| v.as_str()),
+            Some("max_completion_tokens"),
+            "maxTokensField from supportedParameters should survive enrichment"
+        );
+        // - reasoning adopted from builtin
+        assert!(user.reasoning, "reasoning should be adopted from builtin");
+        // - thinking_level_map filled from builtin
+        assert_eq!(
+            user.thinking_level_map
+                .get("xhigh")
+                .and_then(|v| v.as_str()),
+            Some("xhigh"),
+            "thinking_level_map should be filled from builtin"
+        );
+    }
+
+    #[test]
+    fn enrich_no_match_does_nothing() {
+        let builtins = vec![make_builtin_deepseek_v4()];
+        let mut models = vec![Model {
+            id: "nonexistent-model".to_string(),
+            provider: "custom-provider".to_string(),
+            ..Default::default()
+        }];
+
+        let original = models[0].clone();
+        enrich_user_models(&mut models, &builtins);
+
+        // No match → model unchanged
+        assert_eq!(models[0].compat, original.compat);
+        assert_eq!(models[0].max_tokens, original.max_tokens);
+    }
+
+    #[test]
+    fn enrich_infers_max_tokens_field_for_reasoning_models() {
+        // gpt-5.5 with no supportedParameters, no compat at all.
+        // Builtin also has empty compat. Fallback should infer maxTokensField
+        // from reasoning + openai-compatible API.
+        let builtins = vec![Model {
+            id: "gpt-5.5".to_string(),
+            provider: "openai".to_string(),
+            reasoning: true,
+            ..Default::default()
+        }];
+
+        let mut models = vec![Model {
+            id: "gpt-5.5".to_string(),
+            provider: "azurefo".to_string(),
+            api: "openai-completions".to_string(),
+            reasoning: false,
+            ..Default::default()
+        }];
+
+        enrich_user_models(&mut models, &builtins);
+
+        let user = &models[0];
+        assert!(user.reasoning, "reasoning should be true from builtin");
+        assert_eq!(
+            user.compat.get("maxTokensField").and_then(|v| v.as_str()),
+            Some("max_completion_tokens"),
+            "maxTokensField should be inferred for reasoning models on openai-compatible API"
+        );
+    }
+}
+
+/// Calculate a simple similarity score between two provider names.
+/// Used to pick the best matching builtin when multiple models share the same ID
+/// but come from different providers (e.g. "azure" vs "openai" for gpt-* models).
+fn provider_similarity(a: &str, b: &str) -> f64 {
+    let a = a.to_lowercase();
+    let b = b.to_lowercase();
+
+    // Exact match
+    if a == b {
+        return 1.0;
+    }
+
+    // One contains the other (e.g. "azurefo" contains no common substring with "openai")
+    if a.contains(&b) || b.contains(&a) {
+        return 0.9;
+    }
+
+    // Normalize: extract alphanumeric chars only
+    let na: String = a.chars().filter(|c| c.is_alphanumeric()).collect();
+    let nb: String = b.chars().filter(|c| c.is_alphanumeric()).collect();
+
+    if na == nb {
+        return 0.8;
+    }
+    if na.contains(&nb) || nb.contains(&na) {
+        return 0.7;
+    }
+
+    // Known provider groups — providers within the same group get a bonus
+    let groups: &[&[&str]] = &[
+        &["openai", "azure", "azurefo"],
+        &["anthropic", "claude"],
+        &["deepseek"],
+        &["google", "gemini", "vertex"],
+        &["qwen", "dashscope", "alibaba"],
+    ];
+    for group in groups {
+        let a_in = group.iter().any(|g| na.contains(g) || g.contains(&na));
+        let b_in = group.iter().any(|g| nb.contains(g) || g.contains(&nb));
+        if a_in && b_in {
+            return 0.5;
+        }
+    }
+
+    0.0
+}
+
+/// Find the best matching builtin model for a user-provided model.
+/// Matches by `id` first; if multiple builtins share the same ID (different
+/// providers), picks the one whose provider name is most similar.
+fn find_best_builtin_match<'a>(user_model: &Model, builtins: &'a [Model]) -> Option<&'a Model> {
+    let candidates: Vec<&'a Model> = builtins.iter().filter(|b| b.id == user_model.id).collect();
+
+    match candidates.len() {
+        0 => None,
+        1 => Some(candidates[0]),
+        _ => {
+            // Multiple matches — pick by provider similarity
+            candidates.into_iter().max_by(|a, b| {
+                let sa = provider_similarity(&user_model.provider, &a.provider);
+                let sb = provider_similarity(&user_model.provider, &b.provider);
+                sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+            })
+        }
+    }
+}
+
+/// Enrich user-provided models with missing parameters from the builtin catalog.
+///
+/// When a user defines a custom model in models.json they often omit
+/// provider-specific parameters (thinking format, compat flags, thinking level
+/// map, cost, etc.).  This function matches each user model against the builtin
+/// catalog by model ID (with provider-similarity tie-breaking) and back-fills
+/// any fields the user didn't explicitly set.
+///
+/// Rules:
+/// - `compat` — empty map → take all from builtin; non-empty → merge key-by-key
+/// - `thinking_level_map` — same as compat
+/// - `reasoning` — if builtin has it true, adopt it
+/// - `input` — fill from builtin when empty
+/// - `context_window` — fill when == 128000 (default)
+/// - `max_tokens` — fill when == 0
+/// - `cost` — fill each field when == 0.0
+/// - `headers` — merge from builtin
+fn enrich_user_models(user_models: &mut [Model], builtins: &[Model]) {
+    for user_model in user_models.iter_mut() {
+        let best = match find_best_builtin_match(user_model, builtins) {
+            Some(b) => b,
+            None => continue,
+        };
+
+        // reasoning: adopt from builtin if builtin has it
+        if best.reasoning {
+            user_model.reasoning = true;
+        }
+
+        // input: fill from builtin if user didn't specify
+        if user_model.input.is_empty() && !best.input.is_empty() {
+            user_model.input = best.input.clone();
+        }
+
+        // context_window: fill if still at default (0 from Default, or
+        // 128000 from load_user_models_with_overrides fallback).
+        if user_model.context_window == 0 || user_model.context_window == 128000 {
+            user_model.context_window = best.context_window;
+        }
+
+        // max_tokens: fill if user didn't specify
+        if user_model.max_tokens == 0 {
+            user_model.max_tokens = best.max_tokens;
+        }
+
+        // cost: per-field fill
+        if user_model.cost.input == 0.0 {
+            user_model.cost.input = best.cost.input;
+        }
+        if user_model.cost.output == 0.0 {
+            user_model.cost.output = best.cost.output;
+        }
+        if user_model.cost.cache_read == 0.0 {
+            user_model.cost.cache_read = best.cost.cache_read;
+        }
+        if user_model.cost.cache_write == 0.0 {
+            user_model.cost.cache_write = best.cost.cache_write;
+        }
+
+        // compat: empty → full takeover; non-empty → merge missing keys
+        if user_model.compat.is_empty() {
+            user_model.compat = best.compat.clone();
+        } else {
+            for (k, v) in &best.compat {
+                user_model
+                    .compat
+                    .entry(k.clone())
+                    .or_insert_with(|| v.clone());
+            }
+        }
+
+        // thinking_level_map: same merge strategy
+        if user_model.thinking_level_map.is_empty() {
+            user_model.thinking_level_map = best.thinking_level_map.clone();
+        } else {
+            for (k, v) in &best.thinking_level_map {
+                user_model
+                    .thinking_level_map
+                    .entry(k.clone())
+                    .or_insert_with(|| v.clone());
+            }
+        }
+
+        // headers: merge from builtin
+        for (k, v) in &best.headers {
+            user_model
+                .headers
+                .entry(k.clone())
+                .or_insert_with(|| v.clone());
+        }
+
+        // Fallback: reasoning models on OpenAI-compatible APIs need
+        // max_completion_tokens instead of max_tokens. The builtin catalog
+        // often has empty compat_json for these models, and users may not
+        // provide supportedParameters either.
+        if !user_model.compat.contains_key("maxTokensField")
+            && user_model.reasoning
+            && is_openai_compatible_api(&user_model.api)
+        {
+            user_model.compat.insert(
+                "maxTokensField".to_string(),
+                serde_json::json!("max_completion_tokens"),
+            );
+        }
+    }
+}
+
+/// Check whether an API identifier refers to an OpenAI-compatible
+/// completions/chat endpoint (where reasoning models use max_completion_tokens).
+fn is_openai_compatible_api(api: &str) -> bool {
+    matches!(
+        api,
+        "openai-completions" | "chat" | "openai" | "azure-openai-responses"
+    )
 }
 
 /// Registry provides model resolution.
@@ -777,7 +1312,7 @@ pub struct Registry {
 
 impl Registry {
     pub fn new() -> Self {
-        let (user_models, overrides) =
+        let (mut user_models, overrides) =
             load_user_models_with_overrides(&user_models_path()).unwrap_or_default();
 
         let mut builtin = builtin_models();
@@ -808,6 +1343,10 @@ impl Registry {
         } else {
             None
         };
+
+        // Enrich user models with missing parameters from builtin catalog
+        // (e.g. compat, thinking_level_map, cost) based on model ID match.
+        enrich_user_models(&mut user_models, &builtin);
 
         let mut final_overrides = overrides;
         if let Some((name, ov)) = future_provider_override {
