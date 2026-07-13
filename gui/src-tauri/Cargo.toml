@@ -30,6 +30,15 @@ tauri-plugin-dialog = "2"
 # whose re-parsing of `&`/`^`/`%VAR%` in arguments is an injection vector).
 open = "5"
 base64 = "0.22"
+# Decode + downscale image attachments into thumbnails on the Rust side (avoids
+# shipping the full-size image base64 over the IPC bridge to a webview canvas).
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+    "bmp",
+] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 zip = { version = "8", default-features = false, features = ["deflate"] }
 # Workspace file `@`-mention picker: gitignore-aware directory walk + fuzzy rank.

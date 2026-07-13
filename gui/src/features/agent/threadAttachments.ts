@@ -1,6 +1,5 @@
 import type { MessageAttachment } from "./agentThreadTypes";
-import { deleteTempAttachment, importWorkspaceImage } from "../../integrations/storage/files";
-import { generateImageThumbnail } from "./attachmentThumbnail";
+import { deleteTempAttachment, generateImageThumbnail, importWorkspaceImage } from "../../integrations/storage/files";
 
 /**
  * A pasted/downloaded image lives in our temp dir (`futureos-attachments`) and
@@ -38,7 +37,7 @@ export async function persistImageAttachments(attachments: MessageAttachment[], 
           // Best-effort: keep the temp path if the durable copy fails.
         }
       }
-      const thumbnail = await generateImageThumbnail(path, threadId);
+      const thumbnail = await generateImageThumbnail({ sourcePath: path, threadId }).catch(() => null);
       return thumbnail ? { ...attachment, path, thumbnail } : { ...attachment, path };
     }),
   );

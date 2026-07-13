@@ -2,13 +2,13 @@ import type { StoredRun } from "../../integrations/storage/threadStore";
 import type { AgentMessage } from "./agentThreadTypes";
 import { useCallback, useEffect, useRef, useState } from "react";
 import i18n from "../../i18n";
-import { getSessionEntries, listMessages, listRuns } from "../../integrations/storage/threadStore";
+import { getSessionEntries, listRuns } from "../../integrations/storage/threadStore";
 import { errorMessage } from "../../lib/errors";
 import { usePolling } from "../../lib/usePolling";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
-import { matchesSettledRun, toAgentMessage } from "./agentMessageFormatters";
+import { matchesSettledRun } from "./agentMessageFormatters";
 import { entriesToMessages } from "./entryProjection";
-import { applyRunMetadata, recoverAbortedTurns, restoreMessageActivities } from "./threadRunProjection";
+import { applyRunMetadata, recoverAbortedTurns } from "./threadRunProjection";
 
 interface UseThreadMessagesInput {
   threadId: string | null;
@@ -89,33 +89,24 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     }
   }, []);
 
-  // Reload a thread's messages from the store without flipping the full-screen
-  // loading state — used to swap a synthetic streaming bubble for the persisted
-  // assistant message once a background run settles.
+  // Reload a thread's messages from the agent session (the sole source of truth)
+  // without flipping the full-screen loading state — used to swap a synthetic
+  // streaming bubble for the persisted assistant message once a background run
+  // settles. Keeps the current messages if the agent has nothing (never blanks).
   const reloadMessagesQuiet = useCallback(async (targetThreadId: string) => {
-    try {
-      const storedMessages = await listMessages(targetThreadId);
-      const agentMessages = storedMessages.map(toAgentMessage);
-      const restoredMessages = await restoreMessageActivities(agentMessages, targetThreadId);
-      if (targetThreadId !== activeThreadIdRef.current) {
-        return;
-      }
-      setMessages(restoredMessages);
-      cachePut(targetThreadId, { messages: restoredMessages, recentRun: null });
-    }
-    catch {
-      // Best-effort refresh: keep the current messages on failure.
-    }
+    const restored = await loadFromAgent(targetThreadId);
+    if (!restored || targetThreadId !== activeThreadIdRef.current)
+      return;
+    setMessages(restored);
+    cachePut(targetThreadId, { messages: restored, recentRun: null });
+    // loadFromAgent is a hoisted inner function; this reload fires only on
+    // explicit call, so it's intentionally excluded from the deps.
+    // eslint-disable-next-line react/exhaustive-deps
   }, []);
 
-  async function loadFromStore(tid: string, wid?: string | null) {
-    const [storedMessages] = await Promise.all([listMessages(tid), refreshRecentRun(tid, wid)]);
-    const agentMessages = storedMessages.map(toAgentMessage);
-    const restoredMessages = await restoreMessageActivities(agentMessages, tid);
-    return restoredMessages;
-  }
-
-  // Try loading messages from the agent session first; fall back to SQLite.
+  // Reconstruct a thread's messages from the agent session JSONL
+  // (get_session_entries) — the only message store (the SQLite messages table
+  // was removed). Returns null when the agent has no entries for the thread.
   async function loadFromAgent(tid: string, wid?: string | null) {
     try {
       const result = await getSessionEntries(tid);
@@ -156,10 +147,9 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
         setMessages(cached.messages);
         setRecentRun(cached.recentRun);
         setLoadingThread(false);
-        // Background refresh: try agent first, fall back to store.
+        // Background refresh from the agent session (empty when it has none).
         try {
-          const restored = await loadFromAgent(threadId, workspaceId)
-            ?? await loadFromStore(threadId, workspaceId);
+          const restored = await loadFromAgent(threadId, workspaceId) ?? [];
           if (!cancelled && threadId === activeThreadIdRef.current) {
             setMessages(restored);
             cachePut(threadId, { messages: restored, recentRun: null });
@@ -173,8 +163,7 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
 
       setLoadingThread(true);
       try {
-        const restoredMessages = await loadFromAgent(threadId, workspaceId)
-          ?? await loadFromStore(threadId, workspaceId);
+        const restoredMessages = await loadFromAgent(threadId, workspaceId) ?? [];
         if (!cancelled) {
           setMessages(restoredMessages);
           cachePut(threadId, { messages: restoredMessages, recentRun: null });
@@ -206,7 +195,7 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     return () => {
       cancelled = true;
     };
-    // loadFromStore is an unstable inner function; the reload must fire on
+    // loadFromAgent is an unstable inner function; the reload must fire on
     // thread/workspace change only, not on every render, so it's excluded.
     // eslint-disable-next-line react/exhaustive-deps
   }, [refreshRecentRun, workspaceId, threadId]);

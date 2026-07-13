@@ -81,9 +81,14 @@ export async function readFileBase64(input: { path: string; maxBytes?: number | 
   });
 }
 
-export async function writeThumbnail(input: { threadId: string; base64Jpeg: string }) {
-  return invokeCommand<string>("write_thumbnail", {
-    base64Jpeg: input.base64Jpeg,
+/**
+ * Decode + downscale an image into a thumbnail entirely in Rust and return its
+ * persistent path. Avoids shipping the full-size image over the IPC bridge to a
+ * webview canvas.
+ */
+export async function generateImageThumbnail(input: { threadId: string; sourcePath: string }) {
+  return invokeCommand<string>("generate_image_thumbnail", {
+    sourcePath: input.sourcePath,
     threadId: input.threadId,
   });
 }

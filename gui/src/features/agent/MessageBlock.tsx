@@ -312,12 +312,11 @@ function StreamingIndicator({ label }: { label: string }) {
 }
 
 function AttachmentChip({ attachment }: { attachment: MessageAttachment }) {
-  // The thumbnail/original file can be missing (e.g. the thread's image dir was
-  // reclaimed, or an old message predates the persistent-image change); fall
-  // back to the file chip instead of rendering a blank box.
+  // A thumbnail (images now; PDF page previews later) renders as a small preview.
+  // If it's absent (generation failed, or the thread's image dir was reclaimed)
+  // or fails to load, fall back to the named pill instead of a blank box.
   const [failed, setFailed] = useState(false);
-  const thumbSrc = attachment.thumbnail ?? (attachment.kind === "image" ? attachment.path : null);
-  if (attachment.kind === "image" && thumbSrc && !failed) {
+  if (attachment.thumbnail && !failed) {
     return (
       <span
         className="inline-flex items-center overflow-hidden rounded-md ring-1 ring-line-soft"
@@ -327,7 +326,7 @@ function AttachmentChip({ attachment }: { attachment: MessageAttachment }) {
           alt={attachment.name}
           className="size-16 object-cover"
           onError={() => setFailed(true)}
-          src={convertFileSrc(thumbSrc)}
+          src={convertFileSrc(attachment.thumbnail)}
         />
       </span>
     );

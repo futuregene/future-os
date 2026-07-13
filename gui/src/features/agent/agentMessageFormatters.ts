@@ -1,11 +1,7 @@
-import type { StoredMessage, StoredRun } from "../../integrations/storage/threadStore";
+import type { StoredRun } from "../../integrations/storage/threadStore";
 import type { AgentMessage } from "./agentThreadTypes";
 import i18n from "../../i18n";
-import {
-  storedTimeToIso,
-  updateRunStatus,
-} from "../../integrations/storage/threadStore";
-import { parseMessageContent } from "./messageContent";
+import { updateRunStatus } from "../../integrations/storage/threadStore";
 
 export function matchesSettledRun(status: StoredRun["status"]) {
   return status === "completed" || status === "failed" || status === "cancelled";
@@ -22,21 +18,6 @@ export function previousUserMessageBefore(messages: AgentMessage[], beforeIndex:
       return message;
   }
   return null;
-}
-
-export function toAgentMessage(message: StoredMessage): AgentMessage {
-  const content = parseMessageContent(message.content, message.contentType);
-
-  return {
-    id: message.id,
-    runId: message.runId,
-    role: message.role === "user" ? "user" : "assistant",
-    authorKey: message.role === "user" ? "author.you" : "author.researchCopilot",
-    content: content.text,
-    status: message.status,
-    createdAt: storedTimeToIso(message.createdAt),
-    attachments: content.attachments,
-  };
 }
 
 export function buildAgentFailureContent(message: string) {

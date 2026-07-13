@@ -9,7 +9,10 @@ import { pathBasename } from "../../lib/workspacePath";
  */
 export const MAX_IMAGES_PER_TURN = 4;
 
-const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"] as const;
+// SVG is intentionally excluded: it's text (XML), not a raster image the vision
+// pipeline can decode/downscale. It's treated as a normal file so the model
+// reads its source with its tools.
+const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "gif", "webp", "bmp"] as const;
 
 /** Per-image byte cap. Non-image files carry no size limit. */
 export const READ_SOURCE_MAX_BYTES = 25 * 1024 * 1024;
@@ -21,7 +24,6 @@ const IMAGE_MIME_EXTENSIONS: Record<string, string> = {
   "image/gif": "gif",
   "image/jpeg": "jpg",
   "image/png": "png",
-  "image/svg+xml": "svg",
   "image/webp": "webp",
 };
 
