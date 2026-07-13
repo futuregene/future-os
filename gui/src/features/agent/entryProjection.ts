@@ -23,6 +23,33 @@ function asToolKind(name: string): "read" | "bash" | "edit" | "write" {
   return TOOL_NAMES.has(name) ? (name as "read" | "bash" | "edit" | "write") : "bash";
 }
 
+/**
+ * The activity's display target from a tool call's arguments: the command for
+ * bash, else the file path. Without this a reloaded write/read/edit row shows
+ * its label ("写入") with no path. Args are the agent's arguments value — a JSON
+ * string (usual) or an already-parsed object.
+ */
+function targetFromToolArgs(kind: string, args: unknown): string | undefined {
+  let obj: Record<string, unknown> | null = null;
+  if (args && typeof args === "object") {
+    obj = args as Record<string, unknown>;
+  }
+  else if (typeof args === "string") {
+    try {
+      const parsed = JSON.parse(args) as unknown;
+      if (parsed && typeof parsed === "object")
+        obj = parsed as Record<string, unknown>;
+    }
+    catch {
+      return undefined;
+    }
+  }
+  if (!obj)
+    return undefined;
+  const str = (key: string) => (typeof obj[key] === "string" ? (obj[key] as string) : undefined);
+  return kind === "bash" ? str("command") : (str("path") ?? str("file_path") ?? str("filePath"));
+}
+
 interface TurnAcc {
   userMessage?: AgentMessage;
   segments: MessageSegment[];
@@ -97,13 +124,15 @@ export function entriesToMessages(entries: SessionEntry[]): AgentMessage[] {
       }
       if (entry.tool_calls) {
         for (const tc of entry.tool_calls) {
+          const kind = asToolKind(tc.function.name);
           acc.segments.push({
             id: segId(),
             kind: "activity",
             item: {
               id: segId(),
-              kind: asToolKind(tc.function.name),
+              kind,
               status: "completed",
+              target: targetFromToolArgs(kind, tc.function.arguments),
               detail: typeof tc.function.arguments === "string" ? tc.function.arguments : JSON.stringify(tc.function.arguments),
             },
           });
@@ -114,20 +143,12 @@ export function entriesToMessages(entries: SessionEntry[]): AgentMessage[] {
         acc.finalText = entry.content;
       }
     }
-    else if (entry.role === "tool") {
-      if (!acc)
-        acc = { segments: [], finalText: "" };
-      acc.segments.push({
-        id: segId(),
-        kind: "activity",
-        item: {
-          id: segId(),
-          kind: asToolKind(entry.name || "bash"),
-          status: "completed",
-          detail: entry.tool_args || "",
-        },
-      });
-    }
+    // `tool` (result) entries are intentionally not rendered as their own
+    // activity: the preceding assistant entry's `tool_calls` already produced
+    // one row per tool (with the name + args + path), and the result entry
+    // carries no display info here (its `tool_args` is empty; the output shows
+    // in the Runs inspector, not the chat row). Emitting one duplicated the row
+    // as a second, blank "写入"/activity.
   }
   if (acc)
     flush();
