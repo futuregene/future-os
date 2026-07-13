@@ -175,6 +175,15 @@ export function Composer({
     editorRef.current?.insertMention(detail);
   }), []);
 
+  // Autofocus so the user can type immediately: on mount, when switching
+  // conversations (draftKey changes), and when the composer re-enables after a
+  // send settles (disabled: true → false). A disabled editor is
+  // contentEditable=false and can't hold a caret, so only focus while enabled.
+  useEffect(() => {
+    if (!disabled)
+      editorRef.current?.focus();
+  }, [disabled, draftKey]);
+
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
     submitValue();
