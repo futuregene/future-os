@@ -1,3 +1,4 @@
+import type { AttachmentInput } from "../../features/agent/messageContent";
 import { invokeCommand } from "../tauri/invoke";
 
 export const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
@@ -30,11 +31,11 @@ export async function sendPromptToFutureAgent(
   sessionId?: string | null,
   runId?: string | null,
   modelId?: string | null,
-  imagePaths?: string[],
+  attachments?: AttachmentInput[],
   thinkingLevel?: string | null,
 ) {
   const response = await invokeCommand<AgentPromptResponse>("agent_prompt", {
-    imagePaths: imagePaths ?? [],
+    attachments: attachments ?? [],
     message,
     sessionId: sessionId ?? null,
     threadId,

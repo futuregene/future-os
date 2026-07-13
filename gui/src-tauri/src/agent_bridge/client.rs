@@ -13,7 +13,7 @@ use std::{
 use std::time::Duration;
 use tonic::transport::{Channel, Endpoint};
 
-use crate::agent_proto::{image_content, FutureAgentClient, ImageContent, RpcCommand, RpcResponse};
+use crate::agent_proto::{Attachment, FutureAgentClient, RpcCommand, RpcResponse};
 
 /// Cap on how long a single connection attempt may take. Without it a hung agent
 /// can stall a caller indefinitely — e.g. the GUI's 10s model poll would pile up
@@ -180,14 +180,25 @@ pub(super) fn add_session_rule_command(
     }
 }
 
+/// A file attached to a prompt, as passed from the frontend. Files are
+/// referenced by their original absolute path — never copied. Images carry no
+/// data here; `encode_attachments` reads the bytes and fills `base64`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct AttachmentInput {
+    pub path: String,
+    /// "image" | "file".
+    pub kind: String,
+    pub name: String,
+}
+
 pub(super) fn prompt_command(
     message: String,
     session_id: String,
-    image_paths: Vec<String>,
+    attachments: Vec<AttachmentInput>,
 ) -> Result<RpcCommand, crate::AppError> {
     Ok(RpcCommand {
         message,
-        images: encode_image_paths(image_paths)?,
+        attachments: encode_attachments(attachments)?,
         ..base_command("prompt", session_id)
     })
 }
@@ -212,6 +223,7 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         r#type: command_type.to_string(),
         message: String::new(),
         images: vec![],
+        attachments: vec![],
         streaming_behavior: String::new(),
         parent_session: String::new(),
         model_id: String::new(),
@@ -234,19 +246,28 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
     }
 }
 
-fn encode_image_paths(paths: Vec<String>) -> Result<Vec<ImageContent>, crate::AppError> {
-    paths
+/// Turn frontend attachments into proto attachments. Images are read into a
+/// base64 data URL so the agent can emit an image_url block when the model
+/// accepts image input (it falls back to the path otherwise). Non-image files
+/// carry only their path — the agent reads them with its own tools.
+fn encode_attachments(items: Vec<AttachmentInput>) -> Result<Vec<Attachment>, crate::AppError> {
+    items
         .into_iter()
-        .map(|path| {
-            let mime_type = image_mime_type(&path)
-                .ok_or_else(|| format!("Unsupported image attachment type: {path}"))?;
-            let bytes =
-                fs::read(&path).map_err(|error| format!("Unable to read image {path}: {error}"))?;
-            let data_url = format!("data:{mime_type};base64,{}", BASE64_STANDARD.encode(bytes));
-            Ok(ImageContent {
-                r#type: "image_base64".to_string(),
-                file_path: path,
-                content: Some(image_content::Content::Base64(data_url)),
+        .map(|item| {
+            let base64 = if item.kind == "image" {
+                let mime_type = image_mime_type(&item.path)
+                    .ok_or_else(|| format!("Unsupported image attachment type: {}", item.path))?;
+                let bytes = fs::read(&item.path)
+                    .map_err(|error| format!("Unable to read image {}: {error}", item.path))?;
+                format!("data:{mime_type};base64,{}", BASE64_STANDARD.encode(bytes))
+            } else {
+                String::new()
+            };
+            Ok(Attachment {
+                path: item.path,
+                kind: item.kind,
+                name: item.name,
+                base64,
             })
         })
         .collect()

@@ -1,78 +1,45 @@
-import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { MessageAttachment } from "./agentThreadTypes";
-import { importAttachmentArtifact, importWorkspaceImage } from "../../integrations/storage/threadStore";
+import { deleteTempAttachment, importWorkspaceImage } from "../../integrations/storage/files";
 import { generateImageThumbnail } from "./attachmentThumbnail";
 
 /**
- * Copy a chat thread's pasted attachments into the artifact store so they get a
- * stable path (chat temp workspaces are ephemeral). Workspace threads keep their
- * original paths. Returns the attachments with `artifactId`/`path` filled in.
+ * A pasted/downloaded image lives in our temp dir (`futureos-attachments`) and
+ * has no durable filesystem original; a picked/dragged image has a real path the
+ * user owns. We key off the temp marker to decide whether the origin must be
+ * persisted. Matches the Rust `delete_temp_attachment` guard's dir.
  */
-export async function importChatAttachments(thread: StoredThread, attachments: MessageAttachment[]) {
-  if (thread.mode !== "chat") {
-    return attachments;
-  }
-
-  return Promise.all(
-    attachments.map(async (attachment) => {
-      const artifact = await importAttachmentArtifact({
-        path: attachment.path,
-        threadId: thread.id,
-      });
-
-      return {
-        ...attachment,
-        artifactId: artifact.id,
-        path: artifact.path ?? attachment.path,
-      };
-    }),
-  );
+function isEphemeralImagePath(path: string) {
+  return path.includes("futureos-attachments");
 }
 
 /**
- * Copy workspace-mode image originals into the thread's persistent image dir so
- * they survive: workspace conversations don't save attachments into the user's
- * project dir, so the original otherwise lives only in the temp dir (purged by
- * the OS, and deleted after send). Chat-mode attachments are already copied into
- * the temp chat workspace by `importChatAttachments`, so they're skipped here.
+ * Persist image attachments for the thread. Every image gets a cached thumbnail
+ * (for the bubble). Pasted/downloaded images — which only ever existed in the
+ * temp dir — are additionally copied into `~/.future/app/images/<tid>/origin`
+ * and their path rewritten there, so the reference survives after the temp file
+ * is cleaned; the temp copy is then removed. Local (picked/dragged) images keep
+ * their original path and are not copied. Non-image files are untouched — they
+ * are referenced by their original path and read by the agent on demand.
  */
-export async function importWorkspaceImages(thread: StoredThread, attachments: MessageAttachment[]) {
-  if (thread.mode === "chat") {
-    return attachments;
-  }
+export async function persistImageAttachments(attachments: MessageAttachment[], threadId: string) {
   return Promise.all(
     attachments.map(async (attachment) => {
       if (attachment.kind !== "image") {
         return attachment;
       }
-      try {
-        const path = await importWorkspaceImage({
-          name: attachment.name,
-          path: attachment.path,
-          threadId: thread.id,
-        });
-        return { ...attachment, path };
+      let path = attachment.path;
+      if (isEphemeralImagePath(path)) {
+        try {
+          const origin = await importWorkspaceImage({ name: attachment.name, path, threadId });
+          await deleteTempAttachment(path).catch(() => {});
+          path = origin;
+        }
+        catch {
+          // Best-effort: keep the temp path if the durable copy fails.
+        }
       }
-      catch {
-        // Best-effort: keep the original (temp) path if the copy fails.
-        return attachment;
-      }
-    }),
-  );
-}
-
-/**
- * Generate a persistent thumbnail for image attachments so the thread can show a
- * small preview without loading the full-size original.
- */
-export async function withImageThumbnails(attachments: MessageAttachment[], threadId: string) {
-  return Promise.all(
-    attachments.map(async (attachment) => {
-      if (attachment.kind !== "image") {
-        return attachment;
-      }
-      const thumbnail = await generateImageThumbnail(attachment.path, threadId);
-      return thumbnail ? { ...attachment, thumbnail } : attachment;
+      const thumbnail = await generateImageThumbnail(path, threadId);
+      return thumbnail ? { ...attachment, path, thumbnail } : { ...attachment, path };
     }),
   );
 }

@@ -4,12 +4,7 @@ import type { AgentMessage } from "./agentThreadTypes";
 import type { ComposerSendPayload } from "./Composer";
 import i18n from "../../i18n";
 import { sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
-import {
-  appendMessage,
-  createRun,
-  deleteTempAttachment,
-  storedTimeToIso,
-} from "../../integrations/storage/threadStore";
+import { appendMessage, createRun, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { errorMessage } from "../../lib/errors";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
 import {
@@ -17,10 +12,9 @@ import {
   matchesSettledRun,
   updateRunStatusSafe,
 } from "./agentMessageFormatters";
-import { buildInlineAttachmentContext } from "./attachmentContext";
 import { buildReferencePrompt } from "./buildReferencePrompt";
-import { imageAttachmentPaths, stringifyMessageContent } from "./messageContent";
-import { importChatAttachments, importWorkspaceImages, withImageThumbnails } from "./threadAttachments";
+import { attachmentInputs, stringifyMessageContent } from "./messageContent";
+import { persistImageAttachments } from "./threadAttachments";
 import {
   clientId,
   deriveRenderFields,
@@ -98,23 +92,16 @@ export async function runSendPipeline(
   let run: StoredRun | null = null;
 
   try {
-    const importedAttachments = await withImageThumbnails(
-      await importWorkspaceImages(thread, await importChatAttachments(thread, attachments)),
-      thread.id,
-    );
+    // Non-image files are referenced by their original path — never copied.
+    // Images get a cached thumbnail; pasted/downloaded ones are also persisted to
+    // the thread's origin dir (they have no durable original). See
+    // persistImageAttachments.
+    const importedAttachments = await persistImageAttachments(attachments, thread.id);
 
-    // Extract PDF/text into the model-facing prompt only; keep the visible
-    // bubble (messageContent) free of the bulky inlined text. inlineContext is
-    // persisted in the stored message so a resend can reuse it.
-    const inlineContext = await buildInlineAttachmentContext(importedAttachments);
     const messageContent = importedAttachments.length > 0
-      ? stringifyMessageContent(content, importedAttachments, inlineContext)
+      ? stringifyMessageContent(content, importedAttachments)
       : content;
-    const promptContent = await buildReferencePrompt(
-      thread.workspaceId,
-      content,
-      inlineContext ? `${content}${inlineContext}` : content,
-    );
+    const promptContent = await buildReferencePrompt(thread.workspaceId, content, content);
 
     if (isCurrentSend()) {
       patchMessage(setMessages, optimisticUserId, { attachments: importedAttachments });
@@ -163,23 +150,18 @@ export async function runSendPipeline(
       agentSessionId,
       run.id,
       modelId,
-      // Always forward image attachments. The per-model supportsImages flag
-      // comes from the provider catalog's modality data, which is unreliable
-      // for the Future provider (capable models like Qwen-VL were mis-flagged
-      // text-only, so images were silently dropped). A genuinely text-only
-      // model returns a clear API error instead — better than the model
-      // replying "I don't see an image".
-      imageAttachmentPaths(importedAttachments),
+      // All attachments (images + files) travel by original path. The agent
+      // decides per attachment: an image goes inline (image_url) when the model
+      // accepts image input, otherwise — and for every non-image file — the path
+      // is surfaced for the agent's own tools to read.
+      attachmentInputs(importedAttachments),
       thinkingLevel,
     );
     clearStreamTimer();
 
-    // Both modes now hold a durable copy of pasted images — chat in the artifact
-    // store, workspace in images/<tid>/origin — so the pasted temp originals are
-    // redundant and can go. deleteTempAttachment is guarded to our
-    // futureos-attachments dir, so user-picked files (real paths) are rejected
-    // and left untouched.
-    void Promise.all(attachments.map(item => deleteTempAttachment(item.path).catch(() => {})));
+    // No cleanup here: non-image files were never copied, and pasted/downloaded
+    // images already had their temp original moved into the thread's origin dir
+    // by persistImageAttachments (which deletes the temp copy).
 
     const currentRun = await loadCurrentRun(thread.id, run.id);
     if (currentRun && matchesSettledRun(currentRun.status)) {

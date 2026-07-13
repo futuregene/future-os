@@ -387,6 +387,23 @@ pub struct TextContent {
     pub text: String,
 }
 
+/// A local file attached to a prompt (GUI). Files are referenced by their
+/// original absolute path — never copied — and read on demand by the agent's
+/// tools. Images additionally carry base64 for an image_url block.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Attachment {
+    #[serde(default)]
+    pub path: String,
+    /// "image" | "file".
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub name: String,
+    /// Optional data: URL (base64) for images. Empty for non-image files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base64: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageContent {
     #[serde(rename = "type")]

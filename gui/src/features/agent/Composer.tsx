@@ -15,7 +15,7 @@ import { savePastedImage } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { isMacOS } from "../../lib/platform";
-import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, isDraggableAttachment, MAX_ATTACHMENTS_PER_TURN, pickerExtensions } from "./attachments";
+import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, isDraggableAttachment, MAX_IMAGES_PER_TURN } from "./attachments";
 import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "./composerDraft";
 import { MentionEditor } from "./MentionEditor";
 
@@ -218,17 +218,22 @@ export function Composer({
     for (const { path, result } of classified) {
       if (next.some(attachment => attachment.path === path))
         continue;
-      if (next.length >= MAX_ATTACHMENTS_PER_TURN) {
-        rejected.push(t("composer.attachRejectedLimit", { name: fileNameFromPath(path), count: MAX_ATTACHMENTS_PER_TURN }));
-        continue;
-      }
       if (result.kind === null) {
         rejected.push(t("composer.attachRejectedReason", { name: fileNameFromPath(path), reason: result.reason }));
         continue;
       }
-      if (result.kind === "image" && !allowImages) {
-        rejected.push(t("composer.attachRejectedNoImage", { name: fileNameFromPath(path) }));
-        continue;
+      // Only images are limited (count + model support). Every other file type
+      // is unlimited — the agent reads local paths on demand with its own tools.
+      if (result.kind === "image") {
+        if (!allowImages) {
+          rejected.push(t("composer.attachRejectedNoImage", { name: fileNameFromPath(path) }));
+          continue;
+        }
+        const imageCount = next.filter(attachment => attachment.kind === "image").length;
+        if (imageCount >= MAX_IMAGES_PER_TURN) {
+          rejected.push(t("composer.attachRejectedLimit", { name: fileNameFromPath(path), count: MAX_IMAGES_PER_TURN }));
+          continue;
+        }
       }
       next.push({ kind: result.kind, name: fileNameFromPath(path), path });
     }
@@ -263,8 +268,10 @@ export function Composer({
     if (disabled)
       return;
 
+    // Any file type is acceptable (the agent reads paths with its own tools), so
+    // the picker offers no extension filter. Images picked for a text-only model
+    // are rejected post-selection in addAttachmentPaths.
     const selected = await open({
-      filters: [{ extensions: pickerExtensions(allowImages), name: allowImages ? t("composer.attachDialogFilter") : t("composer.attachDialogFilterNoImage") }],
       multiple: true,
       title: t("composer.attachDialogTitle"),
     });
@@ -394,11 +401,11 @@ export function Composer({
         <div className="flex items-center gap-1">
           <button
             className="inline-flex size-7 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
-            disabled={disabled || attachments.length >= MAX_ATTACHMENTS_PER_TURN}
+            disabled={disabled}
             onClick={() => void handleAttachFiles()}
             type="button"
             aria-label={t("composer.attachFiles")}
-            title={attachments.length >= MAX_ATTACHMENTS_PER_TURN ? t("composer.attachLimitReached") : allowImages ? t("composer.attachFilesHint") : t("composer.attachFilesHintNoImage")}
+            title={allowImages ? t("composer.attachFilesHint") : t("composer.attachFilesHintNoImage")}
           >
             <Paperclip className="size-3.5" />
           </button>

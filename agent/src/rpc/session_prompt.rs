@@ -11,6 +11,7 @@ impl ServerSession {
         &mut self,
         msg: &str,
         images: &[crate::types::ImageContent],
+        attachments: &[crate::types::Attachment],
         _behavior: &str,
     ) -> Result<()> {
         std::fs::create_dir_all(&self.cwd)?;
@@ -59,25 +60,13 @@ impl ServerSession {
             r#loop.config.system_prompt = system_prompt;
         }
 
-        // Build content blocks: text + images
-        let mut content: Vec<serde_json::Value> = Vec::new();
-        content.push(serde_json::json!({"type": "text", "text": msg}));
-        for img in images {
-            let url = img.data.as_deref().unwrap_or("");
-            if !url.is_empty() {
-                content.push(serde_json::json!({
-                    "type": "image_url",
-                    "image_url": {"url": url}
-                }));
-            }
-        }
-        self.messages
-            .write()
-            .unwrap()
-            .push(crate::types::AgentMessage::new_user(
-                "user",
-                serde_json::Value::Array(content),
-            ));
+        // Whether the active model accepts image input (catalog modalities).
+        let model_supports_images = crate::models::Registry::new()
+            .resolve(&self.model)
+            .map(|m| m.input.iter().any(|i| i == "image"))
+            .unwrap_or(false);
+        let user_message = build_user_message(msg, images, attachments, model_supports_images);
+        self.messages.write().unwrap().push(user_message);
 
         // Set streaming flag + start a new run. P1: run_id is assigned once per
         // user run at the is_streaming false→true edge (resets idx + event buffer);
@@ -586,6 +575,7 @@ impl ServerSession {
                             thinking: String::new(),
                             output_tokens: 0,
                             duration_ms: 0,
+                            meta: None,
                         };
                         entries.insert(0, info_entry);
 
@@ -634,6 +624,92 @@ impl ServerSession {
 
         Ok(())
     }
+}
+
+/// Assemble the user message the model sees, plus its stored metadata.
+///
+/// Content blocks: the prompt text, then legacy `images` (always image_url,
+/// back-compat for TUI/channels), then structured `attachments`. An image
+/// attachment becomes an image_url block when `model_supports_images` and it
+/// carries base64; every other file — and any image the model can't take —
+/// degrades to an absolute path listed in one trailing text block. We only list
+/// the paths and let the model decide how to read each one (its tools are
+/// already described elsewhere in the system prompt, and the right approach is
+/// platform-dependent). The attachment list is also recorded on the message
+/// `metadata` (original paths, not copies) so it survives reload and is
+/// available to the UI/transcript without re-parsing the model-visible text.
+fn build_user_message(
+    msg: &str,
+    images: &[crate::types::ImageContent],
+    attachments: &[crate::types::Attachment],
+    model_supports_images: bool,
+) -> crate::types::AgentMessage {
+    let mut content: Vec<serde_json::Value> = Vec::new();
+    content.push(serde_json::json!({"type": "text", "text": msg}));
+
+    for img in images {
+        let url = img.data.as_deref().unwrap_or("");
+        if !url.is_empty() {
+            content.push(serde_json::json!({
+                "type": "image_url",
+                "image_url": {"url": url}
+            }));
+        }
+    }
+
+    let mut path_lines: Vec<String> = Vec::new();
+    for att in attachments {
+        let is_image = att.kind == "image";
+        if is_image && model_supports_images {
+            if let Some(url) = att.base64.as_deref().filter(|s| !s.is_empty()) {
+                content.push(serde_json::json!({
+                    "type": "image_url",
+                    "image_url": {"url": url}
+                }));
+                continue;
+            }
+        }
+        let name = if att.name.is_empty() {
+            att.path.as_str()
+        } else {
+            att.name.as_str()
+        };
+        // Markdown link with an angle-bracketed destination: the `<...>` safely
+        // wraps paths containing spaces or other special characters.
+        if is_image {
+            path_lines.push(format!("- [{name}](<{}>) (image)", att.path));
+        } else {
+            path_lines.push(format!("- [{name}](<{}>)", att.path));
+        }
+    }
+    if !path_lines.is_empty() {
+        content.push(serde_json::json!({
+            "type": "text",
+            "text": format!(
+                "\n\nThe user attached the following local files:\n{}",
+                path_lines.join("\n")
+            )
+        }));
+    }
+
+    let mut user_message =
+        crate::types::AgentMessage::new_user("user", serde_json::Value::Array(content));
+    if !attachments.is_empty() {
+        let atts: Vec<serde_json::Value> = attachments
+            .iter()
+            .map(|a| {
+                serde_json::json!({
+                    "path": a.path,
+                    "kind": a.kind,
+                    "name": a.name,
+                })
+            })
+            .collect();
+        let mut meta = serde_json::Map::new();
+        meta.insert("attachments".to_string(), serde_json::Value::Array(atts));
+        user_message.metadata = Some(meta);
+    }
+    user_message
 }
 
 fn prepare_session_tool_call(
@@ -709,6 +785,96 @@ fn normalize_path(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+#[cfg(test)]
+mod build_user_message_tests {
+    use super::build_user_message;
+    use crate::types::{Attachment, ContentBlock, ImageContent};
+
+    fn image_att(name: &str, path: &str, base64: Option<&str>) -> Attachment {
+        Attachment {
+            path: path.to_string(),
+            kind: "image".to_string(),
+            name: name.to_string(),
+            base64: base64.map(str::to_string),
+        }
+    }
+
+    fn file_att(name: &str, path: &str) -> Attachment {
+        Attachment {
+            path: path.to_string(),
+            kind: "file".to_string(),
+            name: name.to_string(),
+            base64: None,
+        }
+    }
+
+    fn image_urls(msg: &crate::types::AgentMessage) -> Vec<String> {
+        msg.content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Image { image_url } => image_url.url.clone(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn file_attachment_becomes_path_block_and_meta() {
+        let atts = vec![file_att("report.pdf", "/abs/report.pdf")];
+        let msg = build_user_message("hi", &[], &atts, true);
+
+        // The file surfaces as a markdown link with an angle-bracketed path (no
+        // image block).
+        assert!(image_urls(&msg).is_empty());
+        assert!(msg.text().contains("[report.pdf](</abs/report.pdf>)"));
+        // Only the path is listed — no tool names / how-to-read framing.
+        assert!(!msg.text().to_lowercase().contains("pdftotext"));
+        assert!(!msg.text().contains("`read`"));
+
+        // Structured meta records the original path (not a copy).
+        let meta = msg.metadata.expect("metadata set");
+        let stored = &meta["attachments"][0];
+        assert_eq!(stored["path"], "/abs/report.pdf");
+        assert_eq!(stored["kind"], "file");
+    }
+
+    #[test]
+    fn image_sent_as_image_url_when_model_supports_images() {
+        let atts = vec![image_att("a.png", "/abs/a.png", Some("data:image/png;base64,AAA"))];
+        let msg = build_user_message("hi", &[], &atts, true);
+
+        assert_eq!(image_urls(&msg), vec!["data:image/png;base64,AAA".to_string()]);
+        // No path fallback line for an image that went through as an image.
+        assert!(!msg.text().contains("/abs/a.png"));
+        // Still recorded in meta.
+        assert_eq!(msg.metadata.unwrap()["attachments"][0]["kind"], "image");
+    }
+
+    #[test]
+    fn image_degrades_to_path_when_model_lacks_image_input() {
+        let atts = vec![image_att("a.png", "/abs/a.png", Some("data:image/png;base64,AAA"))];
+        let msg = build_user_message("hi", &[], &atts, false);
+
+        assert!(image_urls(&msg).is_empty());
+        assert!(msg.text().contains("/abs/a.png"));
+        assert!(msg.text().contains("(image)"));
+    }
+
+    #[test]
+    fn legacy_images_field_still_emits_image_url() {
+        let images = vec![ImageContent {
+            content_type: "image_base64".to_string(),
+            mime_type: None,
+            data: Some("data:image/png;base64,ZZZ".to_string()),
+            source: None,
+        }];
+        let msg = build_user_message("hi", &images, &[], false);
+        assert_eq!(image_urls(&msg), vec!["data:image/png;base64,ZZZ".to_string()]);
+        // No attachments → no metadata.
+        assert!(msg.metadata.is_none());
+    }
 }
 
 #[cfg(test)]

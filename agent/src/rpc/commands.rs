@@ -43,7 +43,12 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     "agent is still streaming; wait or abort first",
                 )
             } else {
-                let _ = sess.prompt(&cmd.message, &cmd.images, &cmd.streaming_behavior);
+                let _ = sess.prompt(
+                    &cmd.message,
+                    &cmd.images,
+                    &cmd.attachments,
+                    &cmd.streaming_behavior,
+                );
                 RpcResponse::ok(id, "prompt", serde_json::json!({}))
             }
         }
@@ -705,6 +710,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     thinking: String::new(),
                     output_tokens: 0,
                     duration_ms: 0,
+                    meta: None,
                 });
                 s.name = cmd.name.clone();
                 let _ = session_manager.save(&s);

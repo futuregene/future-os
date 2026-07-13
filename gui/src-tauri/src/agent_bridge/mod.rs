@@ -32,6 +32,7 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
+pub use self::client::AttachmentInput;
 use self::client::{base_command, prompt_command};
 use self::run_control::{mark_run_failed_if_active, wait_for_agent_idle};
 use self::session::{
@@ -113,7 +114,7 @@ pub async fn reload_agent_credentials() -> Result<(), crate::AppError> {
 
 pub async fn agent_prompt(
     message: String,
-    image_paths: Option<Vec<String>>,
+    attachments: Option<Vec<AttachmentInput>>,
     thread_id: String,
     session_id: Option<String>,
     run_id: Option<String>,
@@ -138,7 +139,7 @@ pub async fn agent_prompt(
 
     let result = agent_prompt_inner(
         message,
-        image_paths,
+        attachments,
         thread_id.clone(),
         session_id,
         run_id.clone(),
@@ -196,7 +197,7 @@ pub async fn agent_prompt(
 
 async fn agent_prompt_inner(
     message: String,
-    image_paths: Option<Vec<String>>,
+    attachments: Option<Vec<AttachmentInput>>,
     thread_id: String,
     session_id: Option<String>,
     run_id: Option<String>,
@@ -308,7 +309,7 @@ async fn agent_prompt_inner(
         .execute_command(prompt_command(
             message,
             session_id.clone(),
-            image_paths.unwrap_or_default(),
+            attachments.unwrap_or_default(),
         )?)
         .await
         .map_err(|error| format!("Unable to send prompt to Future Agent: {error}"))?

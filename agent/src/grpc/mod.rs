@@ -107,11 +107,27 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             })
             .collect();
 
+        let internal_attachments: Vec<crate::types::Attachment> = cmd
+            .attachments
+            .into_iter()
+            .map(|att| crate::types::Attachment {
+                path: att.path,
+                kind: att.kind,
+                name: att.name,
+                base64: if att.base64.is_empty() {
+                    None
+                } else {
+                    Some(att.base64)
+                },
+            })
+            .collect();
+
         let internal_cmd = crate::rpc::RpcCommand {
             id: cmd.id,
             cmd_type: cmd.r#type,
             message: cmd.message,
             images: internal_images,
+            attachments: internal_attachments,
             streaming_behavior: cmd.streaming_behavior,
             parent_session: cmd.parent_session,
             model_id: cmd.model_id,

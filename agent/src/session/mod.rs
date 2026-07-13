@@ -106,6 +106,12 @@ pub struct SessionEntry {
     /// Set alongside `output_tokens` on the final assistant entry of a run.
     #[serde(rename = "duration_ms", default, skip_serializing_if = "is_zero_i64")]
     pub duration_ms: i64,
+    /// Structured per-entry metadata (not model-visible). For user entries this
+    /// carries `{ "attachments": [{ path, kind, name }] }` — the files the user
+    /// attached, referenced by original absolute path (never copied). Populated
+    /// from `AgentMessage.metadata`; absent on entries without metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
 }
 
 fn is_zero_i64(v: &i64) -> bool {
@@ -137,6 +143,7 @@ impl SessionEntry {
             thinking: String::new(),
             output_tokens: 0,
             duration_ms: 0,
+            meta: None,
         }
     }
 
@@ -164,6 +171,7 @@ impl SessionEntry {
             thinking: String::new(),
             output_tokens: 0,
             duration_ms: 0,
+            meta: None,
         }
     }
 
@@ -191,6 +199,7 @@ impl SessionEntry {
             thinking: String::new(),
             output_tokens: 0,
             duration_ms: 0,
+            meta: None,
         }
     }
 }
@@ -641,6 +650,7 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
             thinking: String::new(),
             output_tokens: 0,
             duration_ms: 0,
+            meta: None,
         },
     );
     let now = Local::now();
@@ -718,7 +728,10 @@ pub fn entries_to_agent_messages(entries: &[SessionEntry]) -> Vec<crate::types::
             tool_call_id: entry.tool_call_id.clone(),
             name: entry.name.clone(),
             tool_args: entry.tool_args.clone(),
-            metadata: None,
+            metadata: entry
+                .meta
+                .as_ref()
+                .and_then(|m| m.as_object().cloned()),
         });
     }
     msgs
@@ -814,6 +827,13 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
         // values are preserved from the previously-saved session.
         output_tokens: 0,
         duration_ms: 0,
+        // Carry structured metadata (e.g. user attachments) into the JSONL so it
+        // survives reload; the reverse mapping restores it in
+        // entries_to_agent_messages.
+        meta: msg
+            .metadata
+            .clone()
+            .map(serde_json::Value::Object),
     }
 }
 

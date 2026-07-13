@@ -82,6 +82,30 @@ pub struct RpcCommand {
     /// Read when type == "set_sandbox_policy".
     #[prost(message, optional, tag = "150")]
     pub sandbox_policy: ::core::option::Option<SandboxPolicy>,
+    /// ── Attachments (GUI) ──────────────────────────────────────────────────
+    /// Structured attachments referenced by absolute local path. The agent
+    /// injects each file's path into the model-visible message (so the model can
+    /// read it with its own tools) and records the list in the user entry's meta.
+    /// Images additionally carry base64 and are sent as image_url when the active
+    /// model accepts image input; otherwise they degrade to a path reference.
+    #[prost(message, repeated, tag = "151")]
+    pub attachments: ::prost::alloc::vec::Vec<Attachment>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Attachment {
+    /// Absolute local filesystem path (original, not a workspace copy).
+    #[prost(string, tag = "1")]
+    pub path: ::prost::alloc::string::String,
+    /// "image" | "file".
+    #[prost(string, tag = "2")]
+    pub kind: ::prost::alloc::string::String,
+    /// Display name (basename), for UI + the injected path block.
+    #[prost(string, tag = "3")]
+    pub name: ::prost::alloc::string::String,
+    /// Optional data: URL (base64) for images, used to emit an image_url block
+    /// when the model supports image input. Empty for non-image files.
+    #[prost(string, tag = "4")]
+    pub base64: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SandboxPolicy {
