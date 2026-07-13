@@ -22,7 +22,7 @@ fn short_id(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::resolve::resolve_markdown_reference;
-    use super::sync_message_markdown_references;
+    use super::sync::sync_message_markdown_references;
     use crate::store::records::MarkdownReferenceInput;
     use crate::store::schema::SCHEMA;
     use rusqlite::Connection;

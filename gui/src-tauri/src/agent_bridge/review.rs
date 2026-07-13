@@ -321,6 +321,8 @@ mod tests {
         let run = store::create_run(CreateRunInput {
             thread_id: thread.id.clone(),
             trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
         })
         .unwrap();
 
@@ -391,6 +393,8 @@ mod tests {
             let extra = store::create_run(CreateRunInput {
                 thread_id: thread.id.clone(),
                 trigger_message_id: None,
+                model_provider: None,
+                model_id: None,
             })
             .unwrap();
             store::upsert_run_changeset(store::UpsertRunChangesetInput {

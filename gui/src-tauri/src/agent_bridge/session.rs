@@ -136,9 +136,16 @@ pub(super) fn is_chat_thread(thread_id: &str) -> bool {
 pub async fn fork_agent_session(
     thread_id: &str,
     user_message_content: &str,
+    // 0-based ordinal of the user message among all user messages. The GUI
+    // renders exactly one message per user entry in order, so the Nth user
+    // message maps to the Nth user entry — matching by ordinal instead of
+    // content means two identical prompts ("continue", "run the tests") fork the
+    // intended turn, not the first occurrence. `< 0` (unknown) falls back to
+    // content matching.
+    user_message_index: i64,
 ) -> Result<String, crate::AppError> {
-    let thread = store::get_thread(thread_id)?
-        .ok_or_else(|| "Thread could not be loaded.".to_string())?;
+    let thread =
+        store::get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
     let session_id = thread
         .agent_session_id
         .ok_or_else(|| "No agent session for this thread.".to_string())?;
@@ -154,26 +161,39 @@ pub async fn fork_agent_session(
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the session-entries request.")?;
 
-    let entries: Vec<serde_json::Value> =
-        serde_json::from_str::<serde_json::Value>(&response.data)
-            .ok()
-            .and_then(|v| v.get("entries").cloned())
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default();
+    let entries: Vec<serde_json::Value> = serde_json::from_str::<serde_json::Value>(&response.data)
+        .ok()
+        .and_then(|v| v.get("entries").cloned())
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
 
-    let match_idx = entries
-        .iter()
-        .position(|e| {
-            e.get("content")
-                .and_then(|c| c.as_str())
-                .is_some_and(|c| c.trim() == user_message_content.trim())
-                && e.get("role").and_then(|r| r.as_str()) == Some("user")
+    let is_user = |e: &serde_json::Value| e.get("role").and_then(|r| r.as_str()) == Some("user");
+
+    // Prefer the user-message ordinal; fall back to content when it's unknown
+    // (< 0) or out of range.
+    let match_idx = usize::try_from(user_message_index)
+        .ok()
+        .and_then(|nth| {
+            entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| is_user(e))
+                .nth(nth)
+                .map(|(i, _)| i)
+        })
+        .or_else(|| {
+            entries.iter().position(|e| {
+                is_user(e)
+                    && e.get("content")
+                        .and_then(|c| c.as_str())
+                        .is_some_and(|c| c.trim() == user_message_content.trim())
+            })
         })
         .ok_or_else(|| "No matching user message found in agent session.".to_string())?;
 
     let mut fork_idx = match_idx;
-    for i in (match_idx + 1)..entries.len() {
-        let role = entries[i].get("role").and_then(|r| r.as_str()).unwrap_or("");
+    for (i, entry) in entries.iter().enumerate().skip(match_idx + 1) {
+        let role = entry.get("role").and_then(|r| r.as_str()).unwrap_or("");
         fork_idx = i;
         if role == "user" {
             fork_idx = i - 1;
@@ -251,8 +271,7 @@ pub async fn fork_agent_session(
 
     let (workspace_id, _cwd) = if thread.mode == "chat" {
         let ws = store::get_or_create_chat_workspace(&new_session_id, Some(session_name.clone()))?;
-        let dir = store::chat_workspace_path(&new_session_id)
-            .map(|p| p.display().to_string())?;
+        let dir = store::chat_workspace_path(&new_session_id).map(|p| p.display().to_string())?;
         std::fs::create_dir_all(&dir)?;
         // Tell the agent the correct cwd (the forked session inherited the
         // parent's cwd from its session_info).

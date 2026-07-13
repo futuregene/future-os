@@ -497,16 +497,16 @@ fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
         // text editor.
         #[cfg(target_os = "macos")]
         {
-            std::process::Command::new("open")
+            let status = std::process::Command::new("open")
                 .arg("-t")
                 .arg(path)
                 .status()
-                .map(|s| {
-                    if !s.success() {
-                        eprintln!("open -t {} failed with status {s}", path);
-                    }
-                })
-                .map_err(|e| format!("Failed to open: {e}").into())
+                .map_err(|e| format!("Failed to open: {e}"))?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("Failed to open {path}: open -t exited with {status}").into())
+            }
         }
         #[cfg(not(target_os = "macos"))]
         Err(format!("Failed to open: {path}").into())
@@ -537,7 +537,7 @@ mod tests {
     #[test]
     fn workspace_product_file_is_allowed() {
         let future_dir = future_root("allow");
-        let artifact = write_under(&future_dir, "app/workspaces/chat/thread_x/长诗.md");
+        let artifact = write_under(&future_dir, "workspaces/chat/thread_x/长诗.md");
         assert!(is_allowed_workspace_artifact(&future_dir, &artifact));
     }
 

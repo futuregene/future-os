@@ -132,11 +132,7 @@ pub fn update_chat_workspace_path(thread_id: &str, new_path: &str) -> Result<(),
     conn.execute(
         "UPDATE workspaces SET path = ?1, updated_at = ?2
          WHERE path = ?3 AND kind = 'temporary'",
-        rusqlite::params![
-            new_path,
-            super::util::now_millis(),
-            old_path,
-        ],
+        rusqlite::params![new_path, super::util::now_millis(), old_path,],
     )?;
     Ok(())
 }
@@ -377,7 +373,6 @@ mod tests {
             "workspaces",
             "threads",
             "runs",
-            "messages",
             "artifacts",
             "research_collections",
             "research_resources",

@@ -146,9 +146,7 @@ fn live_thread_ids(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
 /// Live chat workspace directory names: both thread ids (legacy) and agent
 /// session ids (current).  Directories under `~/.future/workspaces/chat/` are
 /// now named after the session id, but older ones may still use the thread id.
-fn live_chat_workspace_dir_ids(
-    conn: &Connection,
-) -> rusqlite::Result<HashSet<String>> {
+fn live_chat_workspace_dir_ids(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
     let mut stmt = conn.prepare(
         "SELECT id FROM threads WHERE status != 'deleted'
          UNION
@@ -479,12 +477,6 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO tool_calls (id, run_id, name, kind, status, created_at)
-             VALUES ('tc', 'run_running', 'bash', 'agent_tool', 'running', 1)",
-            [],
-        )
-        .unwrap();
 
         let tx = conn.transaction().unwrap();
         let cancelled = converge_orphan_runs_tx(&tx, 42).unwrap();
@@ -505,12 +497,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ap_status, "cancelled");
-        let tc_status: String = conn
-            .query_row("SELECT status FROM tool_calls WHERE id = 'tc'", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert_eq!(tc_status, "cancelled");
+        // (tool_calls cascade dropped — the table no longer exists; converge
+        // only cancels the run + its pending approvals now.)
     }
 
     #[test]

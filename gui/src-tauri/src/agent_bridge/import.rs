@@ -19,6 +19,9 @@ struct AgentSessionSummary {
     id: String,
     #[serde(default)]
     name: Option<String>,
+    // Tolerate a missing/null cwd (e.g. channel sessions) — an empty cwd is
+    // routed to a chat workspace by `thread_mode`, not dropped.
+    #[serde(default)]
     cwd: String,
     #[serde(default)]
     model: String,
@@ -27,11 +30,6 @@ struct AgentSessionSummary {
     #[serde(default)]
     #[allow(dead_code)]
     parent_session_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ListSessionsResponse {
-    sessions: Vec<AgentSessionSummary>,
 }
 
 /// A single entry from the agent's `get_session_entries` RPC.
@@ -90,13 +88,30 @@ async fn list_agent_sessions() -> Vec<AgentSessionSummary> {
         return vec![];
     }
 
-    match serde_json::from_str::<ListSessionsResponse>(&inner.data) {
-        Ok(parsed) => parsed.sessions,
+    // Parse per-session rather than all-or-nothing: a single malformed entry
+    // must not drop every other importable session.
+    let value: serde_json::Value = match serde_json::from_str(&inner.data) {
+        Ok(value) => value,
         Err(error) => {
             eprintln!("FutureOS: session import parse failed: {error}");
-            vec![]
+            return vec![];
+        }
+    };
+    let raw_sessions = value
+        .get("sessions")
+        .and_then(|s| s.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut sessions = Vec::with_capacity(raw_sessions.len());
+    for raw in raw_sessions {
+        match serde_json::from_value::<AgentSessionSummary>(raw) {
+            Ok(summary) => sessions.push(summary),
+            Err(error) => {
+                eprintln!("FutureOS: skipping malformed session in import list: {error}");
+            }
         }
     }
+    sessions
 }
 
 /// Fetch the full entry list for a session. Returns empty on any failure.
@@ -198,7 +213,12 @@ fn thread_mode(
         .and_then(|n| n.to_str())
         .unwrap_or(title)
         .to_string();
-    ("workspace".to_string(), None, Some(summary.cwd.clone()), Some(name))
+    (
+        "workspace".to_string(),
+        None,
+        Some(summary.cwd.clone()),
+        Some(name),
+    )
 }
 
 /// Returns `true` when `cwd` is strictly under the GUI chat workspace
@@ -224,9 +244,7 @@ fn is_gui_chat_cwd(cwd: &str) -> bool {
 /// Best-effort write-back: tell the agent to use `cwd` for the session so the
 /// session file matches the assigned GUI chat workspace.
 async fn write_back_cwd(session_id: &str, cwd: &str) -> Result<(), String> {
-    let mut client = connect_agent()
-        .await
-        .map_err(|e| format!("connect: {e}"))?;
+    let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
     // Use new_session with the existing id and the assigned cwd.
     // The agent will load the session from disk (idempotent) and save
     // it back with the updated cwd in the session_info entry.
@@ -274,12 +292,15 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
         agent_session_id: Some(summary.id.clone()),
     })?;
 
-    // If the session had no cwd, spawn a best-effort write-back to the agent
-    // so the session file stays consistent with the assigned chat workspace.
+    // If the session had no cwd, write the assigned chat workspace path back to
+    // the agent so its session_info cwd matches what a later resume compares
+    // against. Use the *created thread's* actual workspace path (thread-id
+    // based), not the summary-id path from `thread_mode` — otherwise
+    // `ensure_agent_session` sees a cwd mismatch on resume and forks a fresh,
+    // empty session, orphaning the imported history.
     if summary.cwd.is_empty() {
-        if let Some(ref path) = workspace_path {
+        if let Ok(cwd) = super::session::workspace_path_for_thread(&thread.id) {
             let sid = summary.id.clone();
-            let cwd = path.clone();
             tokio::spawn(async move {
                 if let Err(e) = write_back_cwd(&sid, &cwd).await {
                     eprintln!("FutureOS: cwd write-back failed for {sid}: {e}");

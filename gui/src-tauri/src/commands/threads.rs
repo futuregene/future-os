@@ -6,8 +6,9 @@ use crate::{agent_bridge, store};
 pub async fn fork_thread(
     thread_id: String,
     user_message_content: String,
+    user_message_index: i64,
 ) -> Result<String, crate::AppError> {
-    agent_bridge::fork_agent_session(&thread_id, &user_message_content).await
+    agent_bridge::fork_agent_session(&thread_id, &user_message_content, user_message_index).await
 }
 
 #[tauri::command]
@@ -64,8 +65,7 @@ pub async fn update_thread_model(
     let thread = store::update_thread_model(input)?;
     // Propagate to the agent immediately so the change takes effect before the
     // next prompt (best-effort — a failure here must not fail the local update).
-    if let (Some(model_id), Ok(mut client)) =
-        (model_id, crate::agent_bridge::connect_agent().await)
+    if let (Some(model_id), Ok(mut client)) = (model_id, crate::agent_bridge::connect_agent().await)
     {
         if !model_id.trim().is_empty() {
             let session_id = thread
@@ -100,8 +100,7 @@ pub async fn update_thread_thinking_level(
                 .filter(|id| !id.is_empty())
                 .unwrap_or(&thread.id)
                 .to_string();
-            let cmd =
-                crate::agent_bridge::set_thinking_level_command(thinking_level, session_id);
+            let cmd = crate::agent_bridge::set_thinking_level_command(thinking_level, session_id);
             let _ = client.execute_command(cmd).await;
         }
     }
@@ -150,18 +149,20 @@ pub async fn delete_thread(thread_id: String) -> Result<store::ThreadRecord, cra
 pub async fn get_thread_agent_state(
     thread_id: String,
 ) -> Result<serde_json::Value, crate::AppError> {
-    let thread = store::get_thread(&thread_id)?
-        .ok_or_else(|| "Thread not found.".to_string())?;
-    let session_id = thread.agent_session_id.as_deref().unwrap_or(&thread.id);
+    let thread = store::get_thread(&thread_id)?.ok_or_else(|| "Thread not found.".to_string())?;
+    let session_id = thread
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or(&thread.id);
 
     if let Ok(mut client) = crate::agent_bridge::connect_agent().await {
         let cmd = crate::agent_bridge::get_state_command(session_id.to_string());
         if let Ok(resp) = client.execute_command(cmd).await {
             let inner = resp.into_inner();
             if inner.success {
-                if let Ok(data) =
-                    serde_json::from_str::<serde_json::Value>(&inner.data)
-                {
+                if let Ok(data) = serde_json::from_str::<serde_json::Value>(&inner.data) {
                     return Ok(data);
                 }
             }
@@ -181,17 +182,22 @@ pub async fn get_thread_agent_state(
 /// Fetch session entries from the agent (user, assistant, tool messages).
 /// Used as the primary message source — SQLite messages are a fallback.
 #[tauri::command]
-pub async fn get_session_entries(
-    thread_id: String,
-) -> Result<serde_json::Value, crate::AppError> {
-    let thread = store::get_thread(&thread_id)?
-        .ok_or_else(|| "Thread not found.".to_string())?;
-    let session_id = thread.agent_session_id.as_deref().unwrap_or(&thread.id);
+pub async fn get_session_entries(thread_id: String) -> Result<serde_json::Value, crate::AppError> {
+    let thread = store::get_thread(&thread_id)?.ok_or_else(|| "Thread not found.".to_string())?;
+    let session_id = thread
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or(&thread.id);
 
-    let mut client = crate::agent_bridge::connect_agent().await
+    let mut client = crate::agent_bridge::connect_agent()
+        .await
         .map_err(|e| format!("Agent unavailable: {e}"))?;
     let cmd = crate::agent_bridge::get_session_entries_command(session_id.to_string());
-    let resp = client.execute_command(cmd).await
+    let resp = client
+        .execute_command(cmd)
+        .await
         .map_err(|e| format!("get_session_entries failed: {e}"))?
         .into_inner();
     if !resp.success {

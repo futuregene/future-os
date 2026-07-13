@@ -46,7 +46,7 @@ fn rejects_duplicate_name_case_insensitive() {
 #[test]
 fn rejects_builtin_name() {
     let _home = HomeGuard::new("builtin-name");
-    let err = upsert_custom_provider(input("mine", "futuregene", true)).unwrap_err();
+    let err = upsert_custom_provider(input("mine", "Future", true)).unwrap_err();
     assert!(err.to_string().contains("built-in"));
 }
 

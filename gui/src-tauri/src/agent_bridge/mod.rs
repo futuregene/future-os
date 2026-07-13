@@ -10,15 +10,15 @@ mod session;
 mod skills;
 mod stream;
 
-pub(crate) use self::import::import_missing_sessions;
 pub use self::approval::{decide_approval, inject_session_rule};
+pub(crate) use self::client::raw_agent_addr;
 pub use self::client::{
     connect_agent, delete_session_command, get_session_entries_command, get_state_command,
     set_cwd_command, set_model_command, set_session_name_command, set_thinking_level_command,
     RpcResponseExt,
 };
-pub(crate) use self::client::raw_agent_addr;
 pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, PreparedPrompt};
+pub(crate) use self::import::import_missing_sessions;
 pub use self::models::{list_agent_models, AgentModelOption};
 pub use self::run_control::abort_run;
 pub(crate) use self::run_control::abort_session;
@@ -32,13 +32,11 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-use self::client::{
-    base_command, prompt_command,
-};
+use self::client::{base_command, prompt_command};
 use self::run_control::{mark_run_failed_if_active, wait_for_agent_idle};
 use self::session::{
-    ensure_agent_session, is_chat_thread, set_agent_permission_level,
-    set_agent_sandbox_policy, workspace_path_for_thread,
+    ensure_agent_session, is_chat_thread, set_agent_permission_level, set_agent_sandbox_policy,
+    workspace_path_for_thread,
 };
 use self::stream::collect_agent_response;
 use crate::agent_proto::StreamRequest;
@@ -155,6 +153,11 @@ pub async fn agent_prompt(
     }
 
     if let Some(run_id) = run_id.clone() {
+        // The run has settled and every event was already persisted to the
+        // per-run log (stream.rs awaits each write in order), so drop this run's
+        // in-memory events — the Runs panel/inspector read the log from here on.
+        // Bounds memory so a long-lived app doesn't hoard every run's events.
+        crate::store::clear_run_event_buffer(&run_id);
         // §6.2: a normal `agent_end` means the Agent has stopped writing. On an
         // abnormal return wait for the Agent to confirm idle before snapshotting.
         if result.is_err() {
@@ -238,8 +241,8 @@ async fn agent_prompt_inner(
     if session_id != stored_session_id {
         let _ = crate::store::update_thread_session_id(&thread_id, &session_id);
         if is_chat_thread(&thread_id) {
-            let new_cwd = crate::store::chat_workspace_path(&session_id)
-                .map(|p| p.display().to_string())?;
+            let new_cwd =
+                crate::store::chat_workspace_path(&session_id).map(|p| p.display().to_string())?;
             if new_cwd != existing_cwd {
                 std::fs::create_dir_all(&new_cwd)?;
                 let _ = crate::store::update_chat_workspace_path(&thread_id, &new_cwd);
@@ -260,25 +263,36 @@ async fn agent_prompt_inner(
         .map_err(|error| format!("Unable to subscribe to Future Agent events: {error}"))?
         .into_inner();
 
-    if let Some(model_id) = model_id.filter(|value| !value.trim().is_empty()) {
-        command_client
-            .execute_command(set_model_command(model_id, session_id.clone()))
-            .await
-            .map_err(|error| format!("Unable to set Future Agent model: {error}"))?
-            .into_inner()
-            .ok_or_rpc_error("Future Agent rejected the model selection.")?;
-    }
+    // Apply the prompt's model / thinking level ONLY when this call created a
+    // fresh session (its generated id differs from the stored one). For an
+    // existing session the agent already holds the authoritative model, and an
+    // explicit user change is pushed separately by `update_thread_model`'s own
+    // `set_model`. Re-applying the caller-supplied value on every prompt let a
+    // cold/expired agent-state cache silently switch an existing thread's model
+    // to the global last-picked one (the composer's fallback value).
+    let session_was_created = session_id != stored_session_id;
 
-    if let Some(thinking_level) = thinking_level.filter(|value| !value.trim().is_empty()) {
-        command_client
-            .execute_command(set_thinking_level_command(
-                thinking_level,
-                session_id.clone(),
-            ))
-            .await
-            .map_err(|error| format!("Unable to set Future Agent thinking level: {error}"))?
-            .into_inner()
-            .ok_or_rpc_error("Future Agent rejected the thinking level selection.")?;
+    if session_was_created {
+        if let Some(model_id) = model_id.filter(|value| !value.trim().is_empty()) {
+            command_client
+                .execute_command(set_model_command(model_id, session_id.clone()))
+                .await
+                .map_err(|error| format!("Unable to set Future Agent model: {error}"))?
+                .into_inner()
+                .ok_or_rpc_error("Future Agent rejected the model selection.")?;
+        }
+
+        if let Some(thinking_level) = thinking_level.filter(|value| !value.trim().is_empty()) {
+            command_client
+                .execute_command(set_thinking_level_command(
+                    thinking_level,
+                    session_id.clone(),
+                ))
+                .await
+                .map_err(|error| format!("Unable to set Future Agent thinking level: {error}"))?
+                .into_inner()
+                .ok_or_rpc_error("Future Agent rejected the thinking level selection.")?;
+        }
     }
 
     // §6.1: before snapshot, after session/model setup but right before the
@@ -311,7 +325,7 @@ async fn agent_prompt_inner(
                 complete: response.complete,
                 session_id,
             })
-        },
+        }
         Err(error) => {
             // The prompt was already accepted, so the Agent keeps running
             // server-side with no consumer once we drop the stream — and there is
