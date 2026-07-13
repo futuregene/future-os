@@ -65,7 +65,15 @@ impl ServerSession {
             .resolve(&self.model)
             .map(|m| m.input.iter().any(|i| i == "image"))
             .unwrap_or(false);
-        let user_message = build_user_message(msg, images, attachments, model_supports_images);
+        // Images are read + (down)encoded to base64 here, on the agent, from the
+        // local path the GUI sent — the base64 never crosses the wire.
+        let user_message = build_user_message(
+            msg,
+            images,
+            attachments,
+            model_supports_images,
+            &crate::utils::image_data_url_for_model,
+        );
         self.messages.write().unwrap().push(user_message);
 
         // Set streaming flag + start a new run. P1: run_id is assigned once per
@@ -643,6 +651,7 @@ fn build_user_message(
     images: &[crate::types::ImageContent],
     attachments: &[crate::types::Attachment],
     model_supports_images: bool,
+    load_image: &dyn Fn(&str) -> Option<String>,
 ) -> crate::types::AgentMessage {
     let mut content: Vec<serde_json::Value> = Vec::new();
     content.push(serde_json::json!({"type": "text", "text": msg}));
@@ -661,13 +670,16 @@ fn build_user_message(
     for att in attachments {
         let is_image = att.kind == "image";
         if is_image && model_supports_images {
-            if let Some(url) = att.base64.as_deref().filter(|s| !s.is_empty()) {
+            // Read + encode the image from its local path. If it can't be read,
+            // decoded, or shrunk to fit, skip it — a path reference is useless
+            // (the model can't view a binary image through its text tools).
+            if let Some(url) = load_image(&att.path) {
                 content.push(serde_json::json!({
                     "type": "image_url",
                     "image_url": {"url": url}
                 }));
-                continue;
             }
+            continue;
         }
         let name = if att.name.is_empty() {
             att.path.as_str()
@@ -796,12 +808,11 @@ mod build_user_message_tests {
     use super::build_user_message;
     use crate::types::{Attachment, ContentBlock, ImageContent};
 
-    fn image_att(name: &str, path: &str, base64: Option<&str>) -> Attachment {
+    fn image_att(name: &str, path: &str) -> Attachment {
         Attachment {
             path: path.to_string(),
             kind: "image".to_string(),
             name: name.to_string(),
-            base64: base64.map(str::to_string),
             thumbnail: Some("/thumb/x.jpg".to_string()),
         }
     }
@@ -811,9 +822,18 @@ mod build_user_message_tests {
             path: path.to_string(),
             kind: "file".to_string(),
             name: name.to_string(),
-            base64: None,
             thumbnail: None,
         }
+    }
+
+    /// A stub image loader: returns a fixed data URL for any path (stands in for
+    /// the real read+resize+encode, which needs a file on disk).
+    fn ok_loader(_path: &str) -> Option<String> {
+        Some("data:image/jpeg;base64,ENCODED".to_string())
+    }
+
+    fn none_loader(_path: &str) -> Option<String> {
+        None
     }
 
     fn image_urls(msg: &crate::types::AgentMessage) -> Vec<String> {
@@ -829,7 +849,7 @@ mod build_user_message_tests {
     #[test]
     fn file_attachment_becomes_path_block_and_meta() {
         let atts = vec![file_att("report.pdf", "/abs/report.pdf")];
-        let msg = build_user_message("hi", &[], &atts, true);
+        let msg = build_user_message("hi", &[], &atts, true, &none_loader);
 
         // The file surfaces as a markdown link with an angle-bracketed path (no
         // image block).
@@ -848,10 +868,14 @@ mod build_user_message_tests {
 
     #[test]
     fn image_sent_as_image_url_when_model_supports_images() {
-        let atts = vec![image_att("a.png", "/abs/a.png", Some("data:image/png;base64,AAA"))];
-        let msg = build_user_message("hi", &[], &atts, true);
+        let atts = vec![image_att("a.png", "/abs/a.png")];
+        let msg = build_user_message("hi", &[], &atts, true, &ok_loader);
 
-        assert_eq!(image_urls(&msg), vec!["data:image/png;base64,AAA".to_string()]);
+        // The loader's encoded data URL becomes the image_url block.
+        assert_eq!(
+            image_urls(&msg),
+            vec!["data:image/jpeg;base64,ENCODED".to_string()]
+        );
         // No path fallback line for an image that went through as an image.
         assert!(!msg.text().contains("/abs/a.png"));
         // Still recorded in meta, with its thumbnail (for chip rebuild on reload).
@@ -861,9 +885,21 @@ mod build_user_message_tests {
     }
 
     #[test]
+    fn unreadable_image_is_skipped_not_degraded_to_path() {
+        let atts = vec![image_att("a.png", "/abs/a.png")];
+        let msg = build_user_message("hi", &[], &atts, true, &none_loader);
+
+        // Load failed → no image block AND no path line (a path is useless here).
+        assert!(image_urls(&msg).is_empty());
+        assert!(!msg.text().contains("/abs/a.png"));
+        // But it's still recorded in meta so the chip renders.
+        assert_eq!(msg.metadata.unwrap()["attachments"][0]["kind"], "image");
+    }
+
+    #[test]
     fn image_degrades_to_path_when_model_lacks_image_input() {
-        let atts = vec![image_att("a.png", "/abs/a.png", Some("data:image/png;base64,AAA"))];
-        let msg = build_user_message("hi", &[], &atts, false);
+        let atts = vec![image_att("a.png", "/abs/a.png")];
+        let msg = build_user_message("hi", &[], &atts, false, &ok_loader);
 
         assert!(image_urls(&msg).is_empty());
         assert!(msg.text().contains("/abs/a.png"));
@@ -878,8 +914,11 @@ mod build_user_message_tests {
             data: Some("data:image/png;base64,ZZZ".to_string()),
             source: None,
         }];
-        let msg = build_user_message("hi", &images, &[], false);
-        assert_eq!(image_urls(&msg), vec!["data:image/png;base64,ZZZ".to_string()]);
+        let msg = build_user_message("hi", &images, &[], false, &none_loader);
+        assert_eq!(
+            image_urls(&msg),
+            vec!["data:image/png;base64,ZZZ".to_string()]
+        );
         // No attachments → no metadata.
         assert!(msg.metadata.is_none());
     }

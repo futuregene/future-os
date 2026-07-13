@@ -31,12 +31,10 @@ pub async fn serve(state: AppState, host: &str, port: u16) -> Result<()> {
     // Start gRPC server
     let grpc_addr: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
 
-    // Raise the message-size limits well above tonic's 4MB default: a prompt can
-    // carry several base64-encoded images (an ExecuteCommand with two ~3MB images
-    // is ~7MB), and get_session_entries / export_html responses can be large too.
-    // Without this the server rejects the RpcCommand before the prompt ever runs,
-    // and the failed run leaves an empty thread.
-    const MAX_GRPC_MESSAGE_SIZE: usize = 256 * 1024 * 1024;
+    // Raise the message-size limits above tonic's 4MB default. Image bytes no
+    // longer cross the wire (the agent reads them from the path), but a large
+    // session's get_session_entries / export_html response can still exceed 4MB.
+    const MAX_GRPC_MESSAGE_SIZE: usize = 32 * 1024 * 1024;
 
     tonic::transport::Server::builder()
         .add_service(
@@ -123,11 +121,6 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                 path: att.path,
                 kind: att.kind,
                 name: att.name,
-                base64: if att.base64.is_empty() {
-                    None
-                } else {
-                    Some(att.base64)
-                },
                 thumbnail: if att.thumbnail.is_empty() {
                     None
                 } else {

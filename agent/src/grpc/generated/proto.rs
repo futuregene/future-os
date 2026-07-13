@@ -93,7 +93,9 @@ pub struct RpcCommand {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Attachment {
-    /// Absolute local filesystem path (original, not a workspace copy).
+    /// Absolute local filesystem path (original, not a workspace copy). For images
+    /// the agent reads + (down)encodes this to base64 itself — base64 never travels
+    /// over the wire.
     #[prost(string, tag = "1")]
     pub path: ::prost::alloc::string::String,
     /// "image" | "file".
@@ -102,10 +104,6 @@ pub struct Attachment {
     /// Display name (basename), for UI + the injected path block.
     #[prost(string, tag = "3")]
     pub name: ::prost::alloc::string::String,
-    /// Optional data: URL (base64) for images, used to emit an image_url block
-    /// when the model supports image input. Empty for non-image files.
-    #[prost(string, tag = "4")]
-    pub base64: ::prost::alloc::string::String,
     /// Optional absolute path to a cached thumbnail (images only). Not model-facing
     /// — carried through to the user entry's meta so the GUI can render the chip
     /// after a reload (messages are reconstructed from the agent JSONL).

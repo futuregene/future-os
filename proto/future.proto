@@ -141,15 +141,16 @@ message RpcCommand {
 // is the original on-disk location, read on demand by the agent's tools.
 
 message Attachment {
-  // Absolute local filesystem path (original, not a workspace copy).
+  // Absolute local filesystem path (original, not a workspace copy). For images
+  // the agent reads + (down)encodes this to base64 itself — base64 never travels
+  // over the wire.
   string path = 1;
   // "image" | "file".
   string kind = 2;
   // Display name (basename), for UI + the injected path block.
   string name = 3;
-  // Optional data: URL (base64) for images, used to emit an image_url block
-  // when the model supports image input. Empty for non-image files.
-  string base64 = 4;
+
+  reserved 4;  // was `base64` — images are now read from `path` on the agent
 
   // Optional absolute path to a cached thumbnail (images only). Not model-facing
   // — carried through to the user entry's meta so the GUI can render the chip

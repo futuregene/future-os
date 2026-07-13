@@ -119,6 +119,7 @@ make run-gui   # 实机跑通 图片 / PDF(走 bash) / 文本 三类附件端到
 - **图片持久化（按来源区分）**：`persistImageAttachments`——粘贴/下载图（临时目录、无用户原始路径）拷进 `images/<tid>/origin` + 删临时 + rewrite path（重发/大图预览可用）；本机图（真实路径）仅落 thumb、path 不变；两者都不写工作目录。非图片文件完全不落盘。
 - **注入文本简化 + markdown 链接**：附件文本块**只列路径**，不再解释 read/bash/pdftotext（工具已在系统提示词别处描述，且平台相关）。每行用 markdown 链接、尖括号包路径 `- [name](</abs/path>)`（兼容空格/特殊字符），降级图片带 ` (image)` 标记。
 - ✅ **重开对话缩略图修复**：消息在重开时从 **agent JSONL**（`get_session_entries`）重建，GUI SQLite 的 `messages` 表已废弃（`list_messages` 返回空、`append_message` 是 no-op），所以缩略图**必须走 agent meta**。`Attachment` 加 `thumbnail` 字段贯穿 proto→Tauri→agent；`SessionEntry.meta.attachments` 存 `{path,kind,name,thumbnail}`；`get_session_entries` 返回 `meta`，且**用户条目可见 content 只取第一个 text 块**（注入的路径块不泄漏进气泡）；`entryProjection.entriesToMessages` 从 `meta` 重建 chip。注意：此修复前创建的旧会话 meta 无 thumbnail，需发新附件消息验证。
+- ✅ **图片 base64 改到 agent 端生成 + 超大图缩放**：gRPC **只传路径**（原图 + 缩略图，都进 meta），不再传 base64——之前两张图 base64 ~6.7MB 超过 tonic 4MB 默认上限导致整条 run 失败、留空 thread。现在 agent 在 `build_user_message` 里按路径读原图、`utils::image_data_url_for_model` 编码：≤2000×2000 且 base64 ≤5MB 原样保留格式；否则缩放到 2000px 内 + JPEG 逐级降质（80→40）直到 ≤5MB（参考 opencode 的 normalize）；读/解码失败或塞不下就**跳过该图**（路径对图片无意义）。base64 只进 LLM 请求、**不回传 GUI**、不写 meta。gRPC 上限调回 32MB（仅为大 session 响应留余量）。agent 新增 `image`/`base64` 依赖。
 - ⏳ **待办**：`make run-gui` 实机端到端验证（图片 / PDF 走 bash / 文本 三类）；未验证前视为"静态通过、运行未验"。旧 `attachDialogFilter*` / `attachLimitReached` i18n key 已不再引用（无害，可后续清理）。
 
 ## 7. 关键源码索引
