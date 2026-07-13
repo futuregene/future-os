@@ -18,6 +18,21 @@ describe("entriesToMessages", () => {
     expect(messages[1]?.createdAt).toBe(asstTs);
   });
 
+  it("falls back to the user timestamp for a turn with no assistant entry", () => {
+    // An aborted turn: the agent recorded the user prompt but no reply. The
+    // assistant bubble must not be re-stamped "now" on every reload.
+    const userTs = "2026-07-01T10:00:00+08:00";
+    const entries: SessionEntry[] = [
+      { id: "u1", role: "user", content: "写一首长诗", timestamp: userTs },
+    ];
+
+    const messages = entriesToMessages(entries);
+
+    expect(messages).toHaveLength(2);
+    expect(messages[1]?.role).toBe("assistant");
+    expect(messages[1]?.createdAt).toBe(userTs);
+  });
+
   it("projects output tokens and duration from the final assistant entry", () => {
     const entries: SessionEntry[] = [
       { id: "u1", role: "user", content: "hi", timestamp: "2026-07-01T10:00:00+08:00" },
