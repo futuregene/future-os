@@ -698,11 +698,15 @@ fn build_user_message(
         let atts: Vec<serde_json::Value> = attachments
             .iter()
             .map(|a| {
-                serde_json::json!({
+                let mut obj = serde_json::json!({
                     "path": a.path,
                     "kind": a.kind,
                     "name": a.name,
-                })
+                });
+                if let Some(thumb) = a.thumbnail.as_deref().filter(|s| !s.is_empty()) {
+                    obj["thumbnail"] = serde_json::Value::String(thumb.to_string());
+                }
+                obj
             })
             .collect();
         let mut meta = serde_json::Map::new();
@@ -798,6 +802,7 @@ mod build_user_message_tests {
             kind: "image".to_string(),
             name: name.to_string(),
             base64: base64.map(str::to_string),
+            thumbnail: Some("/thumb/x.jpg".to_string()),
         }
     }
 
@@ -807,6 +812,7 @@ mod build_user_message_tests {
             kind: "file".to_string(),
             name: name.to_string(),
             base64: None,
+            thumbnail: None,
         }
     }
 
@@ -848,8 +854,10 @@ mod build_user_message_tests {
         assert_eq!(image_urls(&msg), vec!["data:image/png;base64,AAA".to_string()]);
         // No path fallback line for an image that went through as an image.
         assert!(!msg.text().contains("/abs/a.png"));
-        // Still recorded in meta.
-        assert_eq!(msg.metadata.unwrap()["attachments"][0]["kind"], "image");
+        // Still recorded in meta, with its thumbnail (for chip rebuild on reload).
+        let stored = &msg.metadata.unwrap()["attachments"][0];
+        assert_eq!(stored["kind"], "image");
+        assert_eq!(stored["thumbnail"], "/thumb/x.jpg");
     }
 
     #[test]

@@ -592,10 +592,18 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                                 .as_ref()
                                 .map(|c| {
                                     if let Some(arr) = c.as_array() {
-                                        arr.iter()
-                                            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                                            .collect::<Vec<_>>()
-                                            .join(" ")
+                                        let texts = arr
+                                            .iter()
+                                            .filter_map(|b| b.get("text").and_then(|t| t.as_str()));
+                                        if e.role == "user" {
+                                            // A user entry's visible text is only their typed
+                                            // message (the first text block). Any later text
+                                            // block is agent-injected attachment context
+                                            // (file paths), which must not leak into the bubble.
+                                            texts.take(1).collect::<Vec<_>>().join(" ")
+                                        } else {
+                                            texts.collect::<Vec<_>>().join(" ")
+                                        }
                                     } else {
                                         c.as_str().unwrap_or("").to_string()
                                     }
@@ -630,6 +638,12 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                             // message display (entryProjection.ts).
                             if !e.thinking.is_empty() {
                                 entry["thinking"] = serde_json::Value::String(e.thinking.clone());
+                            }
+                            // Structured per-entry metadata (e.g. user attachments with
+                            // their cached thumbnails) so the GUI can rebuild attachment
+                            // chips after reload — the JSONL is the only message source.
+                            if let Some(ref meta) = e.meta {
+                                entry["meta"] = meta.clone();
                             }
                             if !e.tool_calls.is_empty() {
                                 entry["tool_calls"] = serde_json::to_value(&e.tool_calls)

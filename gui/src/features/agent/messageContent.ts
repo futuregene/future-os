@@ -40,6 +40,8 @@ export interface AttachmentInput {
   path: string;
   kind: "image" | "file";
   name: string;
+  /** Cached-thumbnail path (images only); persisted in the entry meta for reload. */
+  thumbnail?: string;
 }
 
 export function attachmentInputs(attachments: MessageAttachment[]): AttachmentInput[] {
@@ -47,5 +49,6 @@ export function attachmentInputs(attachments: MessageAttachment[]): AttachmentIn
     path: attachment.path,
     kind: attachment.kind === "image" ? "image" : "file",
     name: attachment.name,
+    ...(attachment.thumbnail ? { thumbnail: attachment.thumbnail } : {}),
   }));
 }

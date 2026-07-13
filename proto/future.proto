@@ -150,6 +150,11 @@ message Attachment {
   // Optional data: URL (base64) for images, used to emit an image_url block
   // when the model supports image input. Empty for non-image files.
   string base64 = 4;
+
+  // Optional absolute path to a cached thumbnail (images only). Not model-facing
+  // — carried through to the user entry's meta so the GUI can render the chip
+  // after a reload (messages are reconstructed from the agent JSONL).
+  string thumbnail = 5;
 }
 
 // ── SandboxPolicy ────────────────────────────────────────────────────────────

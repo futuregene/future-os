@@ -118,6 +118,7 @@ make run-gui   # 实机跑通 图片 / PDF(走 bash) / 文本 三类附件端到
 - ✅ **P1（GUI，已静态验证）**：`attachments.ts` 分类简化为 `image|file`、非图片不限类型/大小/数量、仅图片限数量（`MAX_IMAGES_PER_TURN`）；删 `attachmentContext.ts`（pdfjs 抽取）、`inlineContext`、`importChatAttachments`/`importWorkspaceImages`（不再拷贝）；`sendPipeline` 只保留图片缩略图，附件按 `{path,kind,name}` 透传；`agentClient` 改传 `attachments`；Tauri `agent_prompt`/`prompt_command`/`encode_attachments` 按 attachments 读 base64（仅图片）构造 proto；Composer 接受任意文件、picker 无扩展过滤；`MessageBlock` chip 按 `image|file` 渲染。`tsc`/`eslint`/`vitest`(153)/`cargo check`/`clippy`/`fmt` 全过。
 - **图片持久化（按来源区分）**：`persistImageAttachments`——粘贴/下载图（临时目录、无用户原始路径）拷进 `images/<tid>/origin` + 删临时 + rewrite path（重发/大图预览可用）；本机图（真实路径）仅落 thumb、path 不变；两者都不写工作目录。非图片文件完全不落盘。
 - **注入文本简化 + markdown 链接**：附件文本块**只列路径**，不再解释 read/bash/pdftotext（工具已在系统提示词别处描述，且平台相关）。每行用 markdown 链接、尖括号包路径 `- [name](</abs/path>)`（兼容空格/特殊字符），降级图片带 ` (image)` 标记。
+- ✅ **重开对话缩略图修复**：消息在重开时从 **agent JSONL**（`get_session_entries`）重建，GUI SQLite 的 `messages` 表已废弃（`list_messages` 返回空、`append_message` 是 no-op），所以缩略图**必须走 agent meta**。`Attachment` 加 `thumbnail` 字段贯穿 proto→Tauri→agent；`SessionEntry.meta.attachments` 存 `{path,kind,name,thumbnail}`；`get_session_entries` 返回 `meta`，且**用户条目可见 content 只取第一个 text 块**（注入的路径块不泄漏进气泡）；`entryProjection.entriesToMessages` 从 `meta` 重建 chip。注意：此修复前创建的旧会话 meta 无 thumbnail，需发新附件消息验证。
 - ⏳ **待办**：`make run-gui` 实机端到端验证（图片 / PDF 走 bash / 文本 三类）；未验证前视为"静态通过、运行未验"。旧 `attachDialogFilter*` / `attachLimitReached` i18n key 已不再引用（无害，可后续清理）。
 
 ## 7. 关键源码索引

@@ -119,6 +119,11 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                 } else {
                     Some(att.base64)
                 },
+                thumbnail: if att.thumbnail.is_empty() {
+                    None
+                } else {
+                    Some(att.thumbnail)
+                },
             })
             .collect();
 

@@ -184,11 +184,15 @@ pub(super) fn add_session_rule_command(
 /// referenced by their original absolute path — never copied. Images carry no
 /// data here; `encode_attachments` reads the bytes and fills `base64`.
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AttachmentInput {
     pub path: String,
     /// "image" | "file".
     pub kind: String,
     pub name: String,
+    /// Cached-thumbnail path (images only); carried into the entry meta for reload.
+    #[serde(default)]
+    pub thumbnail: Option<String>,
 }
 
 pub(super) fn prompt_command(
@@ -268,6 +272,7 @@ fn encode_attachments(items: Vec<AttachmentInput>) -> Result<Vec<Attachment>, cr
                 kind: item.kind,
                 name: item.name,
                 base64,
+                thumbnail: item.thumbnail.unwrap_or_default(),
             })
         })
         .collect()

@@ -1,4 +1,4 @@
-import type { AgentActivityItem, AgentMessage, MessageSegment } from "./agentThreadTypes";
+import type { AgentActivityItem, AgentMessage, MessageAttachment, MessageSegment } from "./agentThreadTypes";
 import { isSoftExit, nonZeroExitCode } from "./agentActivity";
 
 /** Raw entry from agent get_session_entries RPC. */
@@ -16,6 +16,28 @@ export interface SessionEntry {
   output_tokens?: number;
   /** Run wall-clock duration in ms — paired with `output_tokens`. */
   duration_ms?: number;
+  /** Structured per-entry metadata; user entries carry attached files here. */
+  meta?: {
+    attachments?: Array<{
+      path: string;
+      kind?: "image" | "file" | null;
+      name: string;
+      thumbnail?: string | null;
+    }>;
+  };
+}
+
+/** Rebuild the message's attachment chips from a user entry's meta. */
+function attachmentsFromMeta(entry: SessionEntry): MessageAttachment[] | undefined {
+  const items = entry.meta?.attachments;
+  if (!Array.isArray(items) || items.length === 0)
+    return undefined;
+  return items.map(item => ({
+    path: item.path,
+    name: item.name,
+    kind: item.kind ?? "file",
+    thumbnail: item.thumbnail ?? null,
+  }));
 }
 
 const TOOL_NAMES = new Set(["read", "bash", "edit", "write"]);
@@ -210,6 +232,7 @@ export function entriesToMessages(entries: SessionEntry[]): AgentMessage[] {
         content: entry.content,
         status: "complete",
         createdAt: entry.timestamp ?? now,
+        attachments: attachmentsFromMeta(entry),
       };
     }
     else if (entry.role === "assistant") {
