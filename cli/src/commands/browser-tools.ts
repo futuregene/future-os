@@ -114,27 +114,48 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
 
   // Safari path — delegate to SafariManager
   if (browserArg === "safari") {
-    const { SafariManager } = await import("../browser/safari/safari-manager.js");
-    const mgr = new SafariManager();
-    const result = await mgr.start({ port: requestedPort, url: stringArg(args, "url") });
+    try {
+      const { SafariManager } = await import("../browser/safari/safari-manager.js");
+      const mgr = new SafariManager();
+      const result = await mgr.start({ port: requestedPort, url: stringArg(args, "url") });
 
-    // Persist connection config
-    if (result.connection.protocol === "webdriver") {
-      const config = await loadBrowserConfig();
-      config.connection = result.connection;
-      config.activeUrl = stringArg(args, "url");
-      await saveBrowserConfig(config);
+      // Persist connection config
+      if (result.connection.protocol === "webdriver") {
+        const config = await loadBrowserConfig();
+        config.connection = result.connection;
+        config.activeUrl = stringArg(args, "url");
+        await saveBrowserConfig(config);
+      }
+
+      return {
+        structuredContent: {
+          endpoint: result.connection.endpoint,
+          launcher: result.launcher,
+          port: result.port,
+          status: result.status,
+          browserKind: "safari",
+        },
+      };
+    } catch (e) {
+      const { BrowserPermissionError } = await import("../browser/errors.js");
+      if (e instanceof BrowserPermissionError) {
+        return {
+          structuredContent: {
+            status: "permission_required",
+            browserKind: "safari",
+            actionRequired: {
+              description: "Safari remote automation is not enabled. This is a one-time setup.",
+              steps: [
+                "Open Terminal and run: safaridriver --enable",
+                "You may be prompted for your password or to confirm in System Settings.",
+              ],
+              command: e.remedyCommand,
+            },
+          },
+        };
+      }
+      throw e;
     }
-
-    return {
-      structuredContent: {
-        endpoint: result.connection.endpoint,
-        launcher: result.launcher,
-        port: result.port,
-        status: result.status,
-        browserKind: "safari",
-      },
-    };
   }
 
   // Chrome/Edge/Chromium path

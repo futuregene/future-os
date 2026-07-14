@@ -67,12 +67,15 @@ export class BrowserConnectionError extends BrowserError {
 }
 
 export class BrowserPermissionError extends BrowserError {
+  public readonly remedyCommand: string;
+
   constructor(browser: string, remedy: string) {
     super(
-      `${browser} remote automation is disabled. ${remedy}`,
+      `${browser} remote automation is disabled.`,
       "browser_permission_error",
     );
     this.name = "BrowserPermissionError";
+    this.remedyCommand = remedy;
   }
 }
 
