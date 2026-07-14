@@ -897,6 +897,11 @@ impl Loop {
             self.cumulative_cache_write_tokens
                 .fetch_add(cache_w, Ordering::Relaxed);
         }
+        if let Some(cost) = u.credit_cost {
+            if let Ok(mut c) = self.cumulative_cost.lock() {
+                *c += cost;
+            }
+        }
         *total_usage = Some(u.clone());
         if let Some(ref bus) = self.event_bus {
             bus.emit(usage_event(u));

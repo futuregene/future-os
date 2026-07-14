@@ -38,6 +38,8 @@ pub struct Loop {
     pub cumulative_output_tokens: Arc<std::sync::atomic::AtomicI64>,
     pub cumulative_cache_read_tokens: Arc<std::sync::atomic::AtomicI64>,
     pub cumulative_cache_write_tokens: Arc<std::sync::atomic::AtomicI64>,
+    /// Cumulative cost as reported by upstream (Future API `credit_cost`).
+    pub cumulative_cost: Arc<std::sync::Mutex<f64>>,
     /// Last API call's prompt_tokens (actual context size, not cumulative across turns)
     pub last_prompt_tokens: Arc<std::sync::atomic::AtomicI64>,
 }
@@ -63,6 +65,7 @@ impl Loop {
             cumulative_output_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_cache_read_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_cache_write_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            cumulative_cost: Arc::new(std::sync::Mutex::new(0.0)),
             last_prompt_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
         }
     }
