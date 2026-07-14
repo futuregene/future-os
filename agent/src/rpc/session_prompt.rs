@@ -79,7 +79,7 @@ impl ServerSession {
         // because get_session_entries reads from disk.
         {
             let msgs = self.messages.read().unwrap();
-            let entries: Vec<crate::session::SessionEntry> = msgs
+            let mut entries: Vec<crate::session::SessionEntry> = msgs
                 .iter()
                 .map(crate::session::agent_message_to_entry)
                 .collect();
@@ -88,6 +88,49 @@ impl ServerSession {
                 .load(&self.session_id)
                 .map(|s| s.parent_session_id)
                 .unwrap_or_default();
+            // Prepend session_info so token counts and other metadata survive
+            // a crash — without this, a restarted session starts with zeroed
+            // token counters and may skip needed compaction.
+            {
+                use std::sync::atomic::Ordering;
+                let info = serde_json::json!({
+                    "cwd": self.cwd,
+                    "tokens_in": self.tokens_in.load(Ordering::Relaxed),
+                    "tokens_out": self.tokens_out.load(Ordering::Relaxed),
+                    "tokens_cache_r": self.tokens_cache_r.load(Ordering::Relaxed),
+                    "tokens_cache_w": self.tokens_cache_w.load(Ordering::Relaxed),
+                    "last_prompt_tokens": self.last_prompt_tokens.load(Ordering::Relaxed),
+                    "session_name": self.session_name,
+                    "auto_compaction": self.auto_compaction,
+                    "parent_session_id": parent_session_id,
+                });
+                let info_entry = crate::session::SessionEntry {
+                    id: crate::utils::generate_entry_id(),
+                    parent_id: String::new(),
+                    entry_type: crate::session::ENTRY_TYPE_SESSION_INFO.to_string(),
+                    role: "system".to_string(),
+                    content: Some(info),
+                    tool_calls: vec![],
+                    timestamp: chrono::Local::now(),
+                    summary: String::new(),
+                    model: self.model.clone(),
+                    label: String::new(),
+                    thinking_level: self.thinking_level.clone(),
+                    name: String::new(),
+                    tool_args: String::new(),
+                    thinking: String::new(),
+                    output_tokens: 0,
+                    duration_ms: 0,
+                    meta: None,
+                    branch_summary: None,
+                    custom_type: String::new(),
+                    custom_data: None,
+                    display: String::new(),
+                    provider: String::new(),
+                    tool_call_id: String::new(),
+                };
+                entries.insert(0, info_entry);
+            }
             let session = crate::session::Session {
                 id: self.session_id.clone(),
                 version: crate::session::CURRENT_SESSION_VERSION,
