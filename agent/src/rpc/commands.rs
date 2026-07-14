@@ -24,7 +24,22 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     let session = state.get_session(&cmd.session_id);
 
     match cmd_type.as_str() {
+        "shutdown" => {
+            state.shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
+            RpcResponse::ok(
+                id,
+                "shutdown",
+                serde_json::json!({"shutting_down": true, "note": "Existing runs continue; new prompts are rejected."}),
+            )
+        }
         "prompt" => {
+            if state.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+                return RpcResponse::build_fail(
+                    id,
+                    "prompt",
+                    "agent is shutting down; no new prompts accepted",
+                );
+            }
             let Some(session) = state.find_session(&cmd.session_id) else {
                 return RpcResponse::build_fail(
                     id,
@@ -57,6 +72,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "steer", serde_json::json!({}))
         }
         "follow_up" => {
+            if state.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+                return RpcResponse::build_fail(
+                    id,
+                    "follow_up",
+                    "agent is shutting down; no new prompts accepted",
+                );
+            }
             let _ = session.write().unwrap().follow_up(&cmd.message);
             RpcResponse::ok(id, "follow_up", serde_json::json!({}))
         }
