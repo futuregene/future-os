@@ -186,20 +186,32 @@ export function entriesToMessages(entries: SessionEntry[]): AgentMessage[] {
     // Collapse same-kind tool bursts only after statuses are final (a failing
     // tool result, processed later, must break the group).
     const segments = collapseActivitySegments(acc.segments);
-    messages.push({
-      id: segId(),
-      role: "assistant",
-      authorKey: "author.researchCopilot",
-      content: acc.finalText || textSegments.map(s => s.text).join("\n"),
-      segments: segments.length > 0 ? segments : undefined,
-      status: "complete",
-      // An aborted turn has no assistant entry, so no recorded reply time — fall
-      // back to the turn's user time (a real timestamp) rather than `now`, which
-      // would re-stamp the reply "just now" on every reload.
-      createdAt: acc.assistantCreatedAt ?? acc.userMessage.createdAt,
-      outputTokens: acc.outputTokens,
-      durationMs: acc.durationMs,
-    });
+    // Skip assistant message for incomplete turns — the user message is the last
+    // entry and the assistant reply hasn't been written to the JSONL yet (the
+    // agent is still streaming). An empty completed bubble would steal the runId
+    // in applyRunMetadata and block upsertStreamingPreview from inserting the
+    // live preview when the user returns to this thread.
+    const hasContent = acc.finalText
+      || textSegments.length > 0
+      || segments.length > 0
+      || acc.outputTokens !== undefined
+      || acc.durationMs !== undefined;
+    if (hasContent) {
+      messages.push({
+        id: segId(),
+        role: "assistant",
+        authorKey: "author.researchCopilot",
+        content: acc.finalText || textSegments.map(s => s.text).join("\n"),
+        segments: segments.length > 0 ? segments : undefined,
+        status: "complete",
+        // An aborted turn has no assistant entry, so no recorded reply time — fall
+        // back to the turn's user time (a real timestamp) rather than `now`, which
+        // would re-stamp the reply "just now" on every reload.
+        createdAt: acc.assistantCreatedAt ?? acc.userMessage.createdAt,
+        outputTokens: acc.outputTokens,
+        durationMs: acc.durationMs,
+      });
+    }
     acc = null;
   }
 
