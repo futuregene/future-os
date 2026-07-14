@@ -20,7 +20,7 @@ install-cli-deps:
 	cd cli && npm install
 
 install-cli: install-cli-deps build-tui
-	cd cli && npm run build && chmod +x dist/index.js && npm link
+	cd cli && npm run build && chmod +x dist/index.js && npm link --ignore-scripts
 
 install-gui:
 	cd gui && npm install
