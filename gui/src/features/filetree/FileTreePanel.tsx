@@ -2,11 +2,11 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 import type { DirEntry } from "../../integrations/storage/files";
 import type { LinkMenuItem } from "../markdown/renderers/LinkContextMenu";
 import { FolderOpen, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { openPath } from "../../integrations/storage/files";
-import { emitFutureEvent } from "../../lib/futureEvents";
+import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { relativizeWorkspacePath } from "../../lib/workspacePath";
 import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
 import { previewKindForPath } from "../filepreview/previewKind";
@@ -37,6 +37,21 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
   }, [rootPath, isWorkspace]);
   const tree = useFileTree(rootPath, showHidden);
   const menu = useLinkContextMenu();
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Auto-refresh when the agent completes a write/edit/bash tool so newly
+  // created or modified files appear without manual intervention. Debounced:
+  // at most one refresh per 2 s — the event fires every poll tick (220 ms).
+  useEffect(() => {
+    return onFutureEvent("file-tree-refresh", () => {
+      if (refreshTimerRef.current)
+        return; // already scheduled
+      refreshTimerRef.current = setTimeout(() => {
+        refreshTimerRef.current = null;
+        void tree.refresh();
+      }, 2000);
+    });
+  }, [tree.refresh]);
   const [refreshing, setRefreshing] = useState(false);
   const [previewTarget, setPreviewTarget] = useState<DirEntry | null>(null);
   const [menuTarget, setMenuTarget] = useState<DirEntry | null>(null);
