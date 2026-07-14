@@ -41,6 +41,8 @@ pub struct ServerSession {
     pub tokens_out: Arc<std::sync::atomic::AtomicI64>,
     pub tokens_cache_r: Arc<std::sync::atomic::AtomicI64>,
     pub tokens_cache_w: Arc<std::sync::atomic::AtomicI64>,
+    /// Cumulative cost as reported by upstream (Future API `credit_cost`).
+    pub cumulative_cost: Arc<std::sync::Mutex<f64>>,
     /// Last API call's prompt_tokens (actual context size, reset each call)
     pub last_prompt_tokens: Arc<std::sync::atomic::AtomicI64>,
     /// Sender for steering queue (cloned from loop, usable without loop lock)
@@ -137,6 +139,7 @@ impl ServerSession {
             tokens_out: to,
             tokens_cache_r: tcr,
             tokens_cache_w: tcw,
+            cumulative_cost: Arc::new(std::sync::Mutex::new(0.0)),
             last_prompt_tokens: lpt,
             steering_tx: stx,
             follow_up_tx: ftx,
@@ -193,6 +196,7 @@ impl ServerSession {
             tokens_out: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             tokens_cache_r: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             tokens_cache_w: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            cumulative_cost: Arc::new(std::sync::Mutex::new(0.0)),
             last_prompt_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             steering_tx: stx,
             follow_up_tx: ftx,
@@ -659,6 +663,11 @@ impl ServerSession {
                 restore_i64("tokens_cache_r", &self.tokens_cache_r);
                 restore_i64("tokens_cache_w", &self.tokens_cache_w);
                 restore_i64("last_prompt_tokens", &self.last_prompt_tokens);
+                if let Some(cost) = info.get("total_cost").and_then(|v| v.as_f64()) {
+                    if let Ok(mut c) = self.cumulative_cost.lock() {
+                        *c = cost;
+                    }
+                }
             }
             *self.messages.write().unwrap() = msgs;
             self.session_id = id.to_string();

@@ -201,8 +201,13 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
     let cache_r = sess.tokens_cache_r.load(Ordering::Relaxed);
     let cache_w = sess.tokens_cache_w.load(Ordering::Relaxed);
 
-    // Compute cost from model pricing
-    let total_cost = if let Some(model_config) = registry.resolve(&sess.model) {
+    // Prefer API-reported cost (Future platform returns `credit_cost` in
+    // the usage chunk).  When absent (most non-Future providers don't
+    // report it), fall back to token-count × model-price estimation.
+    let api_cost = *sess.cumulative_cost.lock().unwrap();
+    let total_cost = if api_cost > 0.0 {
+        api_cost
+    } else if let Some(model_config) = registry.resolve(&sess.model) {
         let input_cost = (tokens_in as f64 / 1_000_000.0) * model_config.cost.input;
         let output_cost = (tokens_out as f64 / 1_000_000.0) * model_config.cost.output;
         let cache_read_cost = (cache_r as f64 / 1_000_000.0) * model_config.cost.cache_read;

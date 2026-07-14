@@ -448,6 +448,55 @@ pub struct Usage {
         skip_serializing_if = "Option::is_none"
     )]
     pub cache_write_tokens: Option<i64>,
+    /// Cost of this request as reported by the upstream API (Future platform
+    /// returns `credit_cost` as a decimal string, e.g. "0.00019072").
+    /// Parsed as f64 for accumulation; absent / null → None.
+    #[serde(
+        rename = "credit_cost",
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_credit_cost"
+    )]
+    pub credit_cost: Option<f64>,
+}
+
+/// Deserialize `credit_cost` which may be a string ("0.00019") or a number.
+fn deserialize_credit_cost<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+    struct CreditCostVisitor;
+    impl<'de> de::Visitor<'de> for CreditCostVisitor {
+        type Value = Option<f64>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a number or string representing credit cost")
+        }
+        fn visit_some<D2>(self, deserializer: D2) -> Result<Self::Value, D2::Error>
+        where D2: de::Deserializer<'de>
+        {
+            deserializer.deserialize_any(self)
+        }
+        fn visit_none<E>(self) -> Result<Self::Value, E> where E: de::Error {
+            Ok(None)
+        }
+        fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> where E: de::Error {
+            Ok(Some(v))
+        }
+        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> where E: de::Error {
+            Ok(Some(v as f64))
+        }
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> where E: de::Error {
+            Ok(Some(v as f64))
+        }
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> where E: de::Error {
+            v.parse::<f64>().map(Some).map_err(|_| de::Error::custom("invalid float"))
+        }
+        fn visit_bool<E>(self, _v: bool) -> Result<Self::Value, E> where E: de::Error {
+            Ok(None)
+        }
+    }
+    deserializer.deserialize_option(CreditCostVisitor)
 }
 
 // ─── StreamEvent ────────────────────────────────────────────────────────────
