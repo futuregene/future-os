@@ -2,6 +2,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
 import type { AgentMessage, MessageSegment } from "./agentThreadTypes";
 import { listRunEvents, listRunEventsBulk, listRuns, storedTimeToIso } from "../../integrations/storage/threadStore";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { buildAssistantRunProjection } from "./agentActivity";
 
 /** Apply a patch to the single message with `id`, leaving the rest untouched. */
@@ -40,6 +41,10 @@ export async function upsertStreamingPreview(
       return;
 
     const projection = buildAssistantRunProjection(events);
+    // Notify the file tree whenever tool activity is detected (write, edit,
+    // bash) — the agent may have created or modified files.
+    if (projection.activityItems.length > 0)
+      emitFutureEvent("file-tree-refresh", undefined);
     const bubbleId = `stream_${runId}`;
 
     setMessages((current) => {
@@ -103,6 +108,8 @@ export async function updatePendingMessageFromRunEvents(
       return;
 
     const projection = buildAssistantRunProjection(events);
+    if (projection.activityItems.length > 0)
+      emitFutureEvent("file-tree-refresh", undefined);
 
     // Nothing renderable yet: no answer text, no tool activity, and no inline
     // segments. Reasoning-only turns DO carry a thinking segment, so this must
