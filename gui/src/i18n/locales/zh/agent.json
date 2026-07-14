@@ -13,6 +13,7 @@
     "runCommands": "{{prefix}}运行 {{count}} 条命令",
     "writeFiles": "{{prefix}}写入 {{count}} 个文件",
     "editFiles": "{{prefix}}编辑 {{count}} 个文件",
+    "readFiles": "{{prefix}}读取 {{count}} 个文件",
     "read": "{{prefix}}读取",
     "run": "{{prefix}}运行",
     "write": "{{prefix}}写入",
