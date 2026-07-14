@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { resolve as pathResolve, dirname as pathDirname } from "node:path";
 import { homedir } from "node:os";
 
 import { getRecord, isRecord, isNodeError } from "../utils/object.js";
@@ -190,15 +192,249 @@ async function callRemoteTool(apiKey: string, name: string, args: Record<string,
   };
 }
 
-/** Extract b64_json from structured_content.images[N].b64_json */
-function extractImageB64(structured: Record<string, unknown> | null): string | null {
-  if (!structured) return null;
-  const images = structured["images"];
-  if (!Array.isArray(images) || images.length === 0) return null;
-  const first = images[0];
-  if (!isRecord(first)) return null;
-  const b64 = first["b64_json"];
-  return typeof b64 === "string" ? b64 : null;
+// ── Tool-specific result formatters ─────────────────────────────────────────
+// Each formatter extracts the useful content from MCP responses, filtering
+// out JSON wrapper noise and usage metadata. Use --raw to get the original output.
+
+/** Format an MCP tool result for LLM agent consumption.
+ *  Returns clean, structured output that omits JSON wrappers and usage metadata.
+ *  Image tools save files to disk and return the absolute path. */
+async function formatToolResult(
+  toolName: string,
+  result: CallToolResponse,
+  outputPath: string | null,
+): Promise<string> {
+  const sc = result.structuredContent;
+  if (!sc) return result.text;
+
+  switch (toolName) {
+    case "search_paper": return formatSearchPaper(sc);
+    case "get_paper":    return formatGetPaper(sc);
+    case "web_search":   return formatWebSearch(sc);
+    case "fetch_url":    return formatFetchUrl(sc);
+    case "read_image":   return formatReadImage(sc);
+    case "parse_doc":    return formatParseDoc(sc);
+    case "image_gen":
+    case "image_edit":   return formatImageResult(toolName, sc, outputPath);
+    default:             return result.text || JSON.stringify(sc, null, 2);
+  }
+}
+
+// ── search_paper ────────────────────────────────────────────────────────────
+
+interface PaperItem {
+  paper_id?: unknown; title?: unknown; authors?: unknown; journal?: unknown;
+  volume?: unknown; pages?: unknown; publication_date?: unknown; year?: unknown;
+  doi?: unknown; pubmed_id?: unknown; pmc_id?: unknown; arxiv_id?: unknown;
+  url?: unknown; citation_count?: unknown; impact_factor?: unknown;
+  ai_summary?: unknown; source?: unknown;
+}
+
+function formatSearchPaper(sc: Record<string, unknown>): string {
+  const results = sc["results"];
+  if (!Array.isArray(results) || results.length === 0) return "No papers found.";
+
+  const parts: string[] = [];
+  for (const qr of results) {
+    if (!isRecord(qr)) continue;
+    const query = String(qr["query"] ?? "");
+    const papers: PaperItem[] = Array.isArray(qr["papers"]) ? qr["papers"] as PaperItem[] : [];
+    if (papers.length === 0) continue;
+
+    parts.push(`## Search Results: "${query}" (${papers.length} papers)\n`);
+    for (let i = 0; i < papers.length; i++) {
+      const p = papers[i];
+      const title = str(p.title);
+      const authors = str(p.authors);
+      const journal = str(p.journal);
+      const year = str(p.year);
+      const doi = str(p.doi);
+      const url = str(p.url);
+      const aiSummary = str(p.ai_summary);
+
+      parts.push(`### ${i + 1}. ${title || "Untitled"}`);
+      if (authors) parts.push(`**Authors:** ${authors}`);
+      if (journal || year) {
+        parts.push(`**Journal:** ${[journal, year ? `(${year})` : ""].filter(Boolean).join(" ")}`);
+      }
+      if (doi) parts.push(`**DOI:** ${doi}`);
+      if (url) parts.push(`**URL:** ${url}`);
+      if (aiSummary) parts.push(`\n${aiSummary}`);
+      parts.push("");
+    }
+  }
+  return parts.join("\n").trim() || "No papers found.";
+}
+
+// ── get_paper ───────────────────────────────────────────────────────────────
+
+function formatGetPaper(sc: Record<string, unknown>): string {
+  const paper = sc["paper"];
+  if (!isRecord(paper)) return "No paper found.";
+
+  const meta = paper as Record<string, unknown>;
+  const title = str(meta.title);
+  const authors = str(meta.authors);
+  const journal = str(meta.journal);
+  const year = str(meta.year);
+  const doi = str(meta.doi);
+  const pubmedId = str(meta.pubmed_id);
+  const url = str(meta.url);
+  const bodyText = str(meta.body_text);
+
+  const parts: string[] = [];
+  parts.push(`# ${title || "Untitled"}`);
+  if (authors) parts.push(`**Authors:** ${authors}`);
+  if (journal || year) {
+    parts.push(`**Journal:** ${[journal, year ? `(${year})` : ""].filter(Boolean).join(" ")}`);
+  }
+  if (doi) parts.push(`**DOI:** ${doi}${pubmedId ? ` | **PMID:** ${pubmedId}` : ""}`);
+  if (url) parts.push(`**URL:** ${url}`);
+  parts.push("");
+  parts.push("---");
+  parts.push("");
+  parts.push(bodyText || "(No body text available)");
+
+  return parts.join("\n");
+}
+
+// ── web_search ──────────────────────────────────────────────────────────────
+
+function formatWebSearch(sc: Record<string, unknown>): string {
+  const query = str(sc["query"]);
+  const results = sc["results"];
+  if (!Array.isArray(results) || results.length === 0) {
+    return `## Search Results: "${query}"\n\nNo results found.`;
+  }
+
+  const parts: string[] = [];
+  parts.push(`## Search Results: "${query}" (${results.length} results)\n`);
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    if (!isRecord(r)) continue;
+    const title = str((r as Record<string, unknown>).title);
+    const link = str((r as Record<string, unknown>).link);
+    const snippet = str((r as Record<string, unknown>).snippet);
+
+    parts.push(`${i + 1}. **${title || "Untitled"}**`);
+    if (link) parts.push(`   ${link}`);
+    if (snippet) parts.push(`   ${snippet}`);
+    parts.push("");
+  }
+  return parts.join("\n").trim();
+}
+
+// ── fetch_url ───────────────────────────────────────────────────────────────
+
+function formatFetchUrl(sc: Record<string, unknown>): string {
+  const url = str(sc["url"]);
+  const title = str(sc["title"]);
+  const content = str(sc["content"]);
+
+  const parts: string[] = [];
+  if (title) parts.push(`# ${title}`);
+  parts.push(`**URL:** ${url || "(unknown)"}`);
+  parts.push("");
+  parts.push(content || "(No content)");
+  return parts.join("\n");
+}
+
+// ── read_image ──────────────────────────────────────────────────────────────
+
+function formatReadImage(sc: Record<string, unknown>): string {
+  // The answer text is the only useful output for an agent.
+  const answer = str(sc["answer"]);
+  return answer || "(No answer)";
+}
+
+// ── parse_doc ───────────────────────────────────────────────────────────────
+
+function formatParseDoc(sc: Record<string, unknown>): string {
+  // Full markdown content — the text preview may be truncated.
+  const markdown = str(sc["markdown"]);
+  return markdown || "(No content)";
+}
+
+// ── image_gen / image_edit ──────────────────────────────────────────────────
+
+/** Default directory for generated/edited images. */
+const IMAGE_OUTPUT_DIR = join(homedir(), ".future", "agent", "images");
+
+async function formatImageResult(
+  toolName: string,
+  sc: Record<string, unknown>,
+  outputPath: string | null,
+): Promise<string> {
+  const images = sc["images"];
+  const prompt = str(sc["prompt"]);
+  const size = str(sc["size"]) || "unknown";
+  const quality = str(sc["quality"]) || "unknown";
+  const fmt = str(sc["format"]) || "png";
+
+  const verb = toolName === "image_edit" ? "Image edited" : "Image generated";
+  const parts: string[] = [];
+  parts.push(`[${verb}: ${size} ${quality} ${fmt}]`);
+  if (prompt) parts.push(`Prompt: ${prompt}`);
+
+  const imageList: Array<{ b64: string; fmt: string }> = [];
+  if (Array.isArray(images)) {
+    for (const img of images) {
+      if (!isRecord(img)) continue;
+      const b64 = img["b64_json"];
+      const imgFmt = str(img["format"]) || fmt;
+      if (typeof b64 === "string") imageList.push({ b64, fmt: imgFmt });
+    }
+  }
+  if (imageList.length === 0) return parts.join("\n");
+
+  // Generate output paths
+  const paths: string[] = [];
+  for (let i = 0; i < imageList.length; i++) {
+    const img = imageList[i];
+    const ext = img.fmt === "jpeg" ? "jpg" : img.fmt;
+    let filePath: string;
+
+    if (outputPath) {
+      // Single image with explicit --output: use it directly.
+      // Multiple images: insert a suffix before the extension.
+      if (imageList.length === 1) {
+        filePath = pathResolve(outputPath);
+      } else {
+        const dot = outputPath.lastIndexOf(".");
+        const base = dot > 0 ? outputPath.slice(0, dot) : outputPath;
+        const suffix = dot > 0 ? outputPath.slice(dot) : `.${ext}`;
+        filePath = pathResolve(`${base}_${i + 1}${suffix}`);
+      }
+    } else {
+      const ts = Date.now();
+      const suffix = imageList.length > 1 ? `_${i + 1}` : "";
+      const filename = `future-image-${ts}${suffix}.${ext}`;
+      filePath = join(IMAGE_OUTPUT_DIR, filename);
+    }
+
+    await fsMkdirForPath(filePath);
+    await writeFile(filePath, Buffer.from(img.b64, "base64"));
+    paths.push(filePath);
+  }
+
+  parts.push("");
+  for (let i = 0; i < paths.length; i++) {
+    if (imageList.length > 1) parts.push(`Image ${i + 1}: ${paths[i]}`);
+    else parts.push(`Saved: ${paths[i]}`);
+  }
+
+  return parts.join("\n");
+}
+
+async function fsMkdirForPath(filePath: string): Promise<void> {
+  const dir = pathDirname(filePath);
+  try { await mkdir(dir, { recursive: true }); } catch { /* ok */ }
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function str(v: unknown): string {
+  return typeof v === "string" ? v : "";
 }
 
 // ── Public command ───────────────────────────────────────────────────────────
@@ -388,7 +624,7 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
   if (command === "call") {
     const toolName = args[0];
     if (!toolName) {
-      console.error("Usage: future tools call <tool_name> [--args '<json>' | --stdin] [--output <path>] [--timeout <seconds>]");
+      console.error("Usage: future tools call <tool_name> [--args '<json>' | --stdin] [--raw] [--output <path>] [--timeout <seconds>]");
       process.exitCode = 1;
       return;
     }
@@ -409,6 +645,8 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
       : ["image_gen", "image_edit"].includes(toolName)
         ? 600_000   // image generation can take 2-10 minutes
         : undefined; // other tools use mcpPost's default 60s
+
+    const rawFlag = args.includes("--raw");
 
     if (stdinFlag) {
       // Read from stdin
@@ -452,26 +690,20 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     const apiKey = await loadApiKey();
     const result = await callRemoteTool(apiKey, toolName, toolArgs, timeoutMs);
 
-    // Output structured content as JSON when available (primary data for agent consumption).
-    // Fall back to text content otherwise.
-    if (result.structuredContent && Object.keys(result.structuredContent).length > 0) {
-      console.log(JSON.stringify(result.structuredContent, null, 2));
+    // --raw: output the original MCP result directly (structured content as JSON, or text).
+    // Otherwise: format the result for LLM agent consumption — strip JSON wrappers
+    // and metadata, keeping only the useful content. Image tools save files to disk
+    // and output the absolute path.
+    if (rawFlag) {
+      if (result.structuredContent && Object.keys(result.structuredContent).length > 0) {
+        console.log(JSON.stringify(result.structuredContent, null, 2));
+      } else {
+        console.log(result.text);
+      }
     } else {
-      console.log(result.text);
+      console.log(await formatToolResult(toolName, result, outputPath));
     }
 
-    // Handle image output
-    if (outputPath) {
-      const b64 = extractImageB64(result.structuredContent);
-      if (b64) {
-        const buf = Buffer.from(b64, "base64");
-        await writeFile(outputPath, buf);
-        console.log(`\nImage saved to: ${outputPath}`);
-      } else {
-        console.error("\nWarning: --output specified but no b64_json found in response.");
-        process.exitCode = 1;
-      }
-    }
     return;
   }
 }
