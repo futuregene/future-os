@@ -1,16 +1,13 @@
 /**
  * Test helper: launch a real Chrome browser and connect via Playwright.
- * Uses the same discovery logic as the production code.
- *
- * IMPORTANT: Due to sandbox restrictions on listen(), this helper does NOT
- * probe for free ports. It uses a FIXED port (from TEST_BROWSER_PORT env var,
- * default 9222). Only one test file can use this at a time.
+ * Uses a free port (or TEST_BROWSER_PORT env var).
  */
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { platform } from "node:os";
 import { join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createServer } from "node:net";
 
 export interface BrowserTestContext {
   browser: import("playwright-core").Browser;
@@ -35,23 +32,34 @@ function findChromePath(): string | null {
   }
   if (platform() === "win32") {
     const local = process.env["LOCALAPPDATA"];
-    const programFiles = process.env["PROGRAMFILES"];
-    const programFilesX86 = process.env["PROGRAMFILES(X86)"];
-    const candidates = [
+    const prog = process.env["PROGRAMFILES"];
+    const progX86 = process.env["PROGRAMFILES(X86)"];
+    return [
       local ? join(local, "Google", "Chrome", "Application", "chrome.exe") : "",
-      programFiles ? join(programFiles, "Google", "Chrome", "Application", "chrome.exe") : "",
-      programFilesX86 ? join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe") : "",
-      programFiles ? join(programFiles, "Microsoft", "Edge", "Application", "msedge.exe") : "",
-    ].filter(Boolean);
-    return candidates.find(c => existsSync(c)) ?? null;
+      prog ? join(prog, "Google", "Chrome", "Application", "chrome.exe") : "",
+      progX86 ? join(progX86, "Microsoft", "Edge", "Application", "msedge.exe") : "",
+      prog ? join(prog, "Microsoft", "Edge", "Application", "msedge.exe") : "",
+    ].filter(Boolean).find(c => existsSync(c)) ?? null;
   }
-  const candidates = [
+  return [
     process.env["CHROME_PATH"],
     "/usr/bin/google-chrome",
     "/usr/bin/chromium-browser",
     "/usr/bin/chromium",
-  ].filter(Boolean) as string[];
-  return candidates.find(c => existsSync(c)) ?? null;
+  ].filter(Boolean).find(c => existsSync(c as string)) ?? null;
+}
+
+function findFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.unref();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      server.close(() => resolve(port));
+    });
+  });
 }
 
 async function waitForEndpoint(endpoint: string, timeoutMs: number): Promise<void> {
@@ -60,9 +68,7 @@ async function waitForEndpoint(endpoint: string, timeoutMs: number): Promise<voi
     try {
       const resp = await fetch(`${endpoint}/json/version`, { signal: AbortSignal.timeout(1000) });
       if (resp.ok) return;
-    } catch {
-      // not ready yet
-    }
+    } catch { /* */ }
     await new Promise(resolve => setTimeout(resolve, 250));
   }
   throw new Error(`CDP endpoint ${endpoint} not reachable within ${timeoutMs}ms`);
@@ -70,72 +76,44 @@ async function waitForEndpoint(endpoint: string, timeoutMs: number): Promise<voi
 
 export async function launchTestBrowser(tempDir: string): Promise<BrowserTestContext> {
   const chromePath = findChromePath();
-  if (!chromePath) {
-    throw new Error("No Chrome/Edge/Chromium found. Install Chrome to run tests.");
-  }
+  if (!chromePath) throw new Error("No Chrome/Edge/Chromium found.");
 
-  const port = parseInt(process.env["TEST_BROWSER_PORT"] ?? "9222", 10);
+  const envPort = process.env["TEST_BROWSER_PORT"];
+  const port = envPort ? parseInt(envPort, 10) : await findFreePort();
   const profileDir = join(tempDir, "chrome-profile");
   await mkdir(profileDir, { recursive: true });
-
   const endpoint = `http://127.0.0.1:${port}`;
 
-  // If an existing browser is already on this port, try to reuse it
-  try {
-    const resp = await fetch(`${endpoint}/json/version`, { signal: AbortSignal.timeout(500) });
-    if (resp.ok) {
-      console.log(`  [test-browser] Reusing existing browser at ${endpoint}`);
-      const { chromium } = await import("playwright-core");
-      const browser = await chromium.connectOverCDP(endpoint, { timeout: 10_000 });
-      return { browser, endpoint, profileDir, pid: -1, port };
-    }
-  } catch {
-    // No existing browser — launch new one
-  }
-
-  const child: ChildProcess = spawn(
-    chromePath,
-    [
-      `--remote-debugging-port=${port}`,
-      `--user-data-dir=${profileDir}`,
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--headless=new",
-      "--disable-gpu",
-      "--disable-extensions",
-      "--password-store=basic",       // macOS: avoid keychain prompt
-      "--disable-features=DialMediaRouteProvider",  // macOS: suppress media route provider errors
-      "about:blank",
-    ],
-    {
-      detached: true,
-      stdio: "ignore",
-    },
-  );
+  const child: ChildProcess = spawn(chromePath, [
+    `--remote-debugging-port=${port}`,
+    `--user-data-dir=${profileDir}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--headless=new",
+    "--disable-gpu",
+    "--disable-extensions",
+    "--use-mock-keychain",
+    "--disable-features=DialMediaRouteProvider",
+    "about:blank",
+  ], { detached: true, stdio: "ignore" });
 
   const pid = child.pid!;
   child.unref();
-
   await waitForEndpoint(endpoint, 15_000);
 
   const { chromium } = await import("playwright-core");
   const browser = await chromium.connectOverCDP(endpoint, { timeout: 10_000 });
-
   return { browser, endpoint, profileDir, pid, port };
 }
 
 export function killTestBrowser(pid: number): void {
-  if (pid <= 0) return; // Was reused, not launched by us
+  if (pid <= 0) return;
   try {
     if (platform() === "win32") {
       require("node:child_process").execSync(`taskkill /F /T /PID ${pid} 2>nul`, { timeout: 5000 });
     } else {
       process.kill(-pid, "SIGTERM");
-      setTimeout(() => {
-        try { process.kill(-pid, "SIGKILL"); } catch { /* ignore */ }
-      }, 3000);
+      setTimeout(() => { try { process.kill(-pid, "SIGKILL"); } catch { /* */ } }, 3000);
     }
-  } catch {
-    // already gone
-  }
+  } catch { /* */ }
 }
