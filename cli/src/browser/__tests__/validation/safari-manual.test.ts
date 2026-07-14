@@ -12,7 +12,6 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { platform } from "node:os";
 import { existsSync } from "node:fs";
-import { SafariManager } from "../../safari/safari-manager.js";
 import { SafariSession } from "../../safari/safari-session.js";
 import { DEFAULT_TIMEOUTS } from "../../types.js";
 import { getFixture } from "../fixtures/pages.js";
@@ -24,20 +23,53 @@ async function safariReady(): Promise<boolean> {
   if (platform() !== "darwin") return false;
   if (!existsSync("/usr/bin/safaridriver")) return false;
 
-  // Try to create a real session to verify full readiness
-  const mgr = new SafariManager();
+  // Check if safaridriver is already running and responsive
   try {
-    const result = await mgr.start({ port: 4444 });
-    if (result.connection.protocol === "webdriver" && result.connection.sessionId) {
-      // Clean up immediately — we'll create fresh sessions per test
-      await fetch(`http://127.0.0.1:4444/session/${result.connection.sessionId}`, {
-        method: "DELETE",
-      }).catch(() => {});
-      return true;
+    const resp = await fetch("http://127.0.0.1:4444/status", { signal: AbortSignal.timeout(2000) });
+    if (resp.ok) {
+      // safaridriver is running — try creating a session to confirm readiness
+      try {
+        const sessionResp = await fetch("http://127.0.0.1:4444/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ capabilities: { alwaysMatch: { browserName: "safari" } } }),
+          signal: AbortSignal.timeout(5000),
+        });
+        if (sessionResp.ok) {
+          const data = await sessionResp.json() as Record<string, unknown>;
+          const sid = data.sessionId as string;
+          // Clean up immediately
+          await fetch(`http://127.0.0.1:4444/session/${sid}`, { method: "DELETE" }).catch(() => {});
+          return true;
+        }
+      } catch { /* */ }
     }
   } catch { /* */ }
+
+  // Not running — try to start it temporarily
+  try {
+    const { spawn } = await import("node:child_process");
+    const child = spawn("/usr/bin/safaridriver", ["--port", "4444"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    // Wait for it to come up
+    for (let i = 0; i < 30; i++) {
+      try {
+        const resp = await fetch("http://127.0.0.1:4444/status", { signal: AbortSignal.timeout(500) });
+        if (resp.ok) return true;
+      } catch { /* */ }
+      await new Promise(r => setTimeout(r, 500));
+    }
+  } catch { /* */ }
+
   return false;
 }
+
+// ── Shared safaridriver endpoint ────────────────────────────────────
+
+let driverEndpoint = "http://127.0.0.1:4444";
 
 // ── Test suite ───────────────────────────────────────────────────────
 
@@ -59,30 +91,39 @@ describe("Safari WebDriver", () => {
     if (iso) await iso.cleanup();
   });
 
-  // ── Helper: create a fresh session per test ──────────────────────
+  // ── Helper: create a fresh WebDriver session per test ─────────────
 
   async function makeSession(): Promise<SafariSession> {
-    const mgr = new SafariManager();
-    const result = await mgr.start({ port: 4444 });
-    if (result.connection.protocol !== "webdriver" || !result.connection.sessionId) {
-      throw new Error("Failed to create Safari session");
+    // Create a new WebDriver session directly (skip SafariManager — safaridriver is already running)
+    const resp = await fetch(`${driverEndpoint}/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ capabilities: { alwaysMatch: { browserName: "safari" } } }),
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Failed to create WebDriver session: HTTP ${resp.status} — ${text.slice(0, 200)}`);
     }
+    const data = await resp.json() as { sessionId: string };
+    const sessionId = data.sessionId;
+    if (!sessionId) throw new Error("No sessionId in response");
+
     const session = new SafariSession({
       protocol: "webdriver",
       browserKind: "safari",
-      endpoint: result.connection.endpoint,
-      sessionId: result.connection.sessionId,
+      endpoint: driverEndpoint,
+      sessionId,
       timeouts: DEFAULT_TIMEOUTS,
     });
-    // Store sessionId for cleanup
-    (session as unknown as { _sid: string })._sid = result.connection.sessionId;
+    // Store for cleanup
+    (session as unknown as { _sid: string })._sid = sessionId;
     return session;
   }
 
   async function cleanupSession(session: SafariSession): Promise<void> {
-    const sid = (session as unknown as { _sid?: string })._sid;
+    const sid = (session as unknown as { _sid: string })._sid;
     if (sid) {
-      await fetch(`http://127.0.0.1:4444/session/${sid}`, { method: "DELETE" }).catch(() => {});
+      await fetch(`${driverEndpoint}/session/${sid}`, { method: "DELETE" }).catch(() => {});
     }
     await session.disconnect().catch(() => {});
   }
