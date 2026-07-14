@@ -163,7 +163,8 @@ register("type: clear=true replaces content", async (ctx) => {
 
 register("type: submit=true sends Enter", async (ctx) => {
   const html = `<html><body>
-    <form onsubmit="event.preventDefault(); document.title='submitted'">
+    <script>window.__submitted = false;</script>
+    <form onsubmit="event.preventDefault(); window.__submitted = true">
       <input id="inp" type="text">
     </form>
   </body></html>`;
@@ -177,12 +178,12 @@ register("type: submit=true sends Enter", async (ctx) => {
   const result = await ctx.session.type(target, "test", { clear: true, submit: true });
   if (result.submitted !== true) throw new Error("Expected submitted=true");
 
-  const title = await ctx.session.evaluate<string>({
+  const submitted = await ctx.session.evaluate<boolean>({
     kind: "expression",
-    expression: "document.title",
+    expression: "window.__submitted",
   });
-  if (title !== "submitted") {
-    throw new Error(`Expected title "submitted", got "${title}"`);
+  if (submitted !== true) {
+    throw new Error(`Expected window.__submitted=true, got ${submitted}`);
   }
 });
 
@@ -231,11 +232,12 @@ register("tabs: list returns page info", async (ctx) => {
 
 register("tabs: new creates a tab", async (ctx) => {
   const before = await ctx.session.tabs({ action: "list" });
+  const beforeCount = before.kind === "list" ? before.tabs.length : 0;
   await ctx.session.tabs({ action: "new", url: "data:text/html,<title>Tab2</title>" });
   const after = await ctx.session.tabs({ action: "list" });
-  if (after.kind !== "list") throw new Error("Expected list");
-  if (after.tabs.length !== before.kind === "list" ? (before as { tabs: unknown[] }).tabs.length + 1 : 0) {
-    throw new Error("Tab count did not increase");
+  const afterCount = after.kind === "list" ? after.tabs.length : 0;
+  if (afterCount !== beforeCount + 1) {
+    throw new Error(`Tab count did not increase: ${beforeCount} → ${afterCount}`);
   }
 });
 

@@ -50,22 +50,32 @@ export class ExecutionContextTracker {
   }
 
   /**
-   * Get the default-world execution context for the main frame.
-   * Waits up to deadline for one to appear.
+   * Get a default-world execution context.
+   *
+   * Prefer one matching the given frameId. Falls back to any default-world
+   * context because Page.getFrameTree frameId may differ from
+   * Runtime.executionContextCreated auxData.frameId — a known CDP quirk.
    */
   async getMainWorldContextId(
     frameId: string,
     deadline: { remainingMs(): number; expired: boolean },
   ): Promise<number> {
     while (!deadline.expired) {
+      // Exact frameId match
       for (const ctx of this.contexts.values()) {
         if (ctx.frameId === frameId && ctx.isDefault) {
           return ctx.contextId;
         }
       }
+      // Fallback: any default-world context
+      for (const ctx of this.contexts.values()) {
+        if (ctx.isDefault) {
+          return ctx.contextId;
+        }
+      }
       await sleep(50);
     }
-    throw new Error(`No execution context found for frame ${frameId} within timeout`);
+    throw new Error(`No execution context found within timeout`);
   }
 
   /** Remove all event listeners. */
