@@ -103,6 +103,8 @@ export async function launchTestBrowser(tempDir: string): Promise<BrowserTestCon
       "--headless=new",
       "--disable-gpu",
       "--disable-extensions",
+      "--password-store=basic",       // macOS: avoid keychain prompt
+      "--disable-features=DialMediaRouteProvider",  // macOS: suppress media route provider errors
       "about:blank",
     ],
     {
