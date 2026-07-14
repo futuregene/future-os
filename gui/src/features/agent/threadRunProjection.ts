@@ -4,6 +4,7 @@ import type { AgentMessage, MessageSegment } from "./agentThreadTypes";
 import { listRunEvents, listRunEventsBulk, listRuns, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { buildAssistantRunProjection } from "./agentActivity";
+import { matchesSettledRun } from "./agentMessageFormatters";
 
 /** Apply a patch to the single message with `id`, leaving the rest untouched. */
 export function patchMessage(
@@ -225,10 +226,16 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
     .filter(index => index >= 0)
     .reverse();
 
+  // Only assign settled runs to persistent assistant messages.  An active
+  // (still-streaming) run has no assistant entry on disk yet; its live
+  // preview is inserted by upsertStreamingPreview.  Matching an active run
+  // to an old assistant turn (positional misalignment after an abort) would
+  // steal the runId and block the streaming bubble from ever appearing.
+  const settled = runs.filter(run => matchesSettledRun(run.status));
   const patched = [...messages];
-  for (let i = 0; i < turnIndices.length && i < runs.length; i++) {
+  for (let i = 0; i < turnIndices.length && i < settled.length; i++) {
     const index = turnIndices[i]!;
-    const run = runs[i]!;
+    const run = settled[i]!;
     const message = patched[index]!;
     // An aborted turn projects with no content and no reply time (the agent
     // saved no assistant entry). Stamp it with the run's end time — the actual
