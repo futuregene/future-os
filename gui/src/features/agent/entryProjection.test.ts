@@ -18,9 +18,13 @@ describe("entriesToMessages", () => {
     expect(messages[1]?.createdAt).toBe(asstTs);
   });
 
-  it("falls back to the user timestamp for a turn with no assistant entry", () => {
-    // An aborted turn: the agent recorded the user prompt but no reply. The
-    // assistant bubble must not be re-stamped "now" on every reload.
+  it("produces only the user message for a turn with no assistant entry", () => {
+    // A streaming or aborted turn: the agent recorded the user prompt but has
+    // not yet written (or will never write) an assistant reply.  An empty
+    // "completed" bubble would steal the runId in applyRunMetadata and block
+    // upsertStreamingPreview from attaching the live preview, so the turn
+    // produces only the user message; the streaming bubble (or aborted-turn
+    // recovery) fills in the assistant side at render time.
     const userTs = "2026-07-01T10:00:00+08:00";
     const entries: SessionEntry[] = [
       { id: "u1", role: "user", content: "写一首长诗", timestamp: userTs },
@@ -28,9 +32,10 @@ describe("entriesToMessages", () => {
 
     const messages = entriesToMessages(entries);
 
-    expect(messages).toHaveLength(2);
-    expect(messages[1]?.role).toBe("assistant");
-    expect(messages[1]?.createdAt).toBe(userTs);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.role).toBe("user");
+    expect(messages[0]?.content).toBe("写一首长诗");
+    expect(messages[0]?.createdAt).toBe(userTs);
   });
 
   it("projects output tokens and duration from the final assistant entry", () => {
