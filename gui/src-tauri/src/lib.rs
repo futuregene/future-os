@@ -188,11 +188,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            app_version,
             app_build_info,
             check_app_update,
             download_app_update,
-            app_data_path,
             open_path,
             list_directory,
             open_external_url,

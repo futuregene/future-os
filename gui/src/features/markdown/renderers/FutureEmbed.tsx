@@ -6,12 +6,11 @@ import {
   isStoredArtifact,
   isStoredReview,
   isStoredRun,
-  isStoredTool,
 } from "../../../integrations/storage/typeGuards";
 import { ArtifactEmbed } from "./ArtifactEmbed";
 import { renderFileReference } from "./fileReference";
 import { MissingReference } from "./MissingReference";
-import { ApprovalEmbed, ReviewEmbed, ToolEmbed } from "./ObjectEmbed";
+import { ApprovalEmbed, ReviewEmbed } from "./ObjectEmbed";
 import { PendingReference } from "./PendingReference";
 import { RunEmbed } from "./RunEmbed";
 
@@ -64,13 +63,6 @@ export function FutureEmbed({
       return <ReviewEmbed reference={reference} review={resolved.data} />;
     }
     return <MissingReference error={t("embed.reviewPayloadInvalid")} reference={reference} />;
-  }
-
-  if (reference.targetType === "tool" && resolved.targetType === "tool") {
-    if (isStoredTool(resolved.data)) {
-      return <ToolEmbed reference={reference} tool={resolved.data} />;
-    }
-    return <MissingReference error={t("embed.toolPayloadInvalid")} reference={reference} />;
   }
 
   return <MissingReference error={t("embed.typeMismatch")} reference={reference} />;

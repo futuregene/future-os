@@ -1,6 +1,6 @@
 import type { ResolvedMarkdownReference } from "../../../integrations/storage/markdownReferences";
 import type { FutureReference } from "../futureMarkdownTypes";
-import { AlertTriangle, Beaker, Box, FileDiff, PlayCircle } from "lucide-react";
+import { AlertTriangle, Box, FileDiff, PlayCircle } from "lucide-react";
 import { MissingReference } from "./MissingReference";
 import { PendingReference } from "./PendingReference";
 
@@ -40,8 +40,6 @@ function renderReferenceIcon(targetType: FutureReference["targetType"]) {
       return <FileDiff className={className} />;
     case "run":
       return <PlayCircle className={className} />;
-    case "tool":
-      return <Beaker className={className} />;
     default:
       return <Box className={className} />;
   }

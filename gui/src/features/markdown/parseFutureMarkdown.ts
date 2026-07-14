@@ -369,7 +369,7 @@ function parseFutureUrl(href: string) {
     if (!isFutureReferenceType(targetType))
       return null;
 
-    // `futureos://` carries only id-based internal objects (artifact/run/tool/…);
+    // `futureos://` carries only id-based internal objects (artifact/run/…);
     // local files use plain markdown-path links instead. Ids never start with a
     // slash, so stripping the single URL path separator is all that's needed.
     const targetId = safeDecodeURIComponent(url.pathname.replace(/^\//, ""));
@@ -398,7 +398,7 @@ function safeDecodeURIComponent(value: string) {
 
 function isFutureReferenceType(value: string): value is FutureReferenceType {
   // Minimal link mode: application-object references (approval/artifact/review/
-  // run/tool via the `futureos://` scheme) are disabled — any such link
+  // run via the `futureos://` scheme) are disabled — any such link
   // falls through to a plain/inert link. Local files are unaffected: they arrive
   // as plain markdown path links, not via this scheme. To restore app objects,
   // uncomment the checks below (and re-enable them in `parseFutureEmbed` and the
@@ -408,8 +408,7 @@ function isFutureReferenceType(value: string): value is FutureReferenceType {
   // return value === "approval"
   //   || value === "artifact"
   //   || value === "review"
-  //   || value === "run"
-  //   || value === "tool";
+  //   || value === "run";
 }
 
 function normalizeInlineView(view: string | undefined): FutureReferenceView | undefined {

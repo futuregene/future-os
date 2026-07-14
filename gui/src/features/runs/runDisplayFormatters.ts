@@ -18,24 +18,6 @@ export function formatRunStatus(status: StoredRun["status"]) {
   }
 }
 
-/** Title-case status label for run rows (badges use the lowercase `formatRunStatus`). */
-export function runStatusLabel(status: StoredRun["status"]) {
-  switch (status) {
-    case "completed":
-      return i18n.t("runs:statusLabel.success");
-    case "failed":
-      return i18n.t("runs:statusLabel.failed");
-    case "cancelled":
-      return i18n.t("runs:statusLabel.cancelled");
-    case "waiting_approval":
-      return i18n.t("runs:statusLabel.waiting");
-    case "queued":
-      return i18n.t("runs:statusLabel.queued");
-    default:
-      return i18n.t("runs:statusLabel.running");
-  }
-}
-
 /** Localized label for a tool call's own status (not the enclosing run's). */
 export function toolStatusLabel(status: string) {
   switch (status) {

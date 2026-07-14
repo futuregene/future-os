@@ -143,7 +143,9 @@ function pruneCache() {
 export function prefetchAgentState(threadId: string | undefined | null) {
   if (!threadId)
     return;
-  void getAgentState(threadId);
+  // Fire-and-forget: the agent may be offline or the thread may have no session
+  // yet, so swallow the rejection here — awaiting callers still see it.
+  void getAgentState(threadId).catch(() => {});
 }
 
 /**

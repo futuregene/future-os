@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { Download, FolderOpen, RefreshCw } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { invokeCommand } from "../../integrations/tauri/invoke";
@@ -38,6 +38,16 @@ export function UpdatePage() {
   const [savedPath, setSavedPath] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
+  // Tear down the streamed-progress listener if the page unmounts mid-download
+  // (the download command itself still settles in the background).
+  const mountedRef = useRef(true);
+  const unlistenRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => {
+    mountedRef.current = false;
+    unlistenRef.current?.();
+    unlistenRef.current = null;
+  }, []);
+
   async function handleCheck() {
     setChecking(true);
     setCheckError(null);
@@ -68,6 +78,12 @@ export function UpdatePage() {
       if (total > 0)
         setProgress(Math.min(100, Math.round((downloaded / total) * 100)));
     });
+    // Unmounted while subscribing — don't leak the listener.
+    if (!mountedRef.current) {
+      unlisten();
+      return;
+    }
+    unlistenRef.current = unlisten;
     try {
       const path = await invokeCommand<string>("download_app_update", {
         url: status.downloadUrl,
@@ -80,6 +96,7 @@ export function UpdatePage() {
     }
     finally {
       unlisten();
+      unlistenRef.current = null;
       setDownloading(false);
     }
   }

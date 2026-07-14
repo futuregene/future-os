@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
 import { resolvePreviewLinkPath } from "../../integrations/storage/files";
+import { useAsyncResource } from "../../lib/useAsyncResource";
 
 export interface PreviewLinkPath {
   path: string;
@@ -13,24 +13,11 @@ export interface PreviewLinkPath {
  * absolute path is known.
  */
 export function usePreviewLinkPath(baseFile: string, target: string): PreviewLinkPath | null {
-  const [resolved, setResolved] = useState<PreviewLinkPath | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setResolved(null);
-    resolvePreviewLinkPath(baseFile, target)
-      .then((result) => {
-        if (!cancelled)
-          setResolved(result);
-      })
-      .catch(() => {
-        if (!cancelled)
-          setResolved(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [baseFile, target]);
-
-  return resolved;
+  const { data, error, loading } = useAsyncResource<PreviewLinkPath | null>(
+    () => resolvePreviewLinkPath(baseFile, target),
+    [baseFile, target],
+    null,
+  );
+  // Neutral placeholder while the resolve is in flight or if it failed.
+  return loading || error ? null : data;
 }

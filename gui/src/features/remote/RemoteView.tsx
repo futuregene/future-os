@@ -32,6 +32,15 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
       setStatus(loadedStatus);
   }, [loadedStatus]);
 
+  // Seed the form once settings load — the useState initializers ran before the
+  // async settings arrived. Keyed on the persisted values, so it won't clobber
+  // in-progress edits (typing changes local state, not appSettings, and this
+  // component is the only writer of these fields).
+  useEffect(() => {
+    setNatsUrl(appSettings.remoteNatsUrl);
+    setPairId(appSettings.remotePairId);
+  }, [appSettings.remoteNatsUrl, appSettings.remotePairId]);
+
   const running = status?.running ?? false;
 
   // While running, poll so a dropped connection (or a stop from elsewhere) is

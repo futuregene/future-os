@@ -10,13 +10,11 @@
     "runPayloadInvalid": "run payload is invalid",
     "approvalPayloadInvalid": "approval payload is invalid",
     "reviewPayloadInvalid": "review payload is invalid",
-    "toolPayloadInvalid": "tool payload is invalid",
     "typeMismatch": "reference type mismatch"
   },
   "objectEmbed": {
     "reviewMeta": "{{files}} files, +{{additions}} -{{deletions}}",
-    "openReview": "Open Review",
-    "inspectRun": "Inspect run"
+    "openReview": "Open Review"
   },
   "artifactEmbed": {
     "details": "Details",

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { readFileBase64 } from "../../integrations/storage/files";
+import { useAsyncResource } from "../../lib/useAsyncResource";
 import { imageMimeForPath } from "./previewKind";
 import { PreviewNotice } from "./PreviewNotice";
 
@@ -21,29 +22,26 @@ export function ImagePreview({
   onError: () => void;
 }) {
   const { t } = useTranslation("markdown");
-  const [src, setSrc] = useState<string | null>(null);
-  // Hold onError in a ref so the load effect depends only on `path` — callers
-  // often pass a fresh callback each render, which would otherwise re-fire the
-  // fetch on every render and thrash the preview.
+  const { data: base64, error, loading } = useAsyncResource<string | null>(
+    () => readFileBase64({ path }),
+    [path],
+    null,
+  );
+  // Hold onError in a ref so the failure effect doesn't re-fire when callers
+  // pass a fresh callback each render.
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
+  // A read failure (missing/too large) routes back to `onError` so the overlay
+  // falls back to the OS default handler.
   useEffect(() => {
-    let cancelled = false;
-    setSrc(null);
-    readFileBase64({ path })
-      .then((base64) => {
-        if (!cancelled)
-          setSrc(`data:${imageMimeForPath(path)};base64,${base64}`);
-      })
-      .catch(() => {
-        if (!cancelled)
-          onErrorRef.current();
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [path]);
+    if (error)
+      onErrorRef.current();
+  }, [error]);
+
+  const src = loading || error || base64 == null
+    ? null
+    : `data:${imageMimeForPath(path)};base64,${base64}`;
 
   if (!src)
     return <PreviewNotice message={t("filePreview.loading")} />;

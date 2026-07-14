@@ -204,12 +204,24 @@ pub fn upsert_custom_provider(
         provider.insert("models".to_string(), Value::Array(model_values.clone()));
         // Write the API key first: if it fails we abort before persisting the
         // provider, avoiding a saved provider with a missing key while returning Err.
+        let provider_existed = providers.contains_key(&id);
         if let Some(key) = api_key.as_deref() {
             crate::auth_store::set_provider_key(&id, key)?;
         }
 
         providers.insert(id.clone(), Value::Object(provider));
-        config_io::write_json_atomic(&models_path, &models_doc, false)
+        if let Err(error) = config_io::write_json_atomic(&models_path, &models_doc, false) {
+            // The models.json write failed after the key landed. For a brand-new
+            // provider that key is now orphaned (no provider entry references it),
+            // so roll it back to keep auth.json from accumulating dangling
+            // credentials. For an existing provider the prior (still-intact)
+            // entry references the key, so leave it in place.
+            if !provider_existed && api_key.is_some() {
+                let _ = crate::auth_store::remove_provider_entry(&id);
+            }
+            return Err(error);
+        }
+        Ok(())
     })?;
 
     list_agent_providers()

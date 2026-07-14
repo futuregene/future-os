@@ -4,7 +4,6 @@ import type {
   StoredFile,
   StoredReviewChangeset,
   StoredRun,
-  StoredToolCall,
 } from "./types";
 import { isRecord } from "../../lib/objects";
 
@@ -57,13 +56,4 @@ export function isStoredReview(value: unknown): value is StoredReviewChangeset {
     && typeof value.title === "string"
     && typeof value.status === "string"
     && typeof value.filesChanged === "number";
-}
-
-export function isStoredTool(value: unknown): value is StoredToolCall {
-  return isRecord(value)
-    && typeof value.id === "string"
-    && typeof value.runId === "string"
-    && typeof value.name === "string"
-    && typeof value.kind === "string"
-    && typeof value.status === "string";
 }

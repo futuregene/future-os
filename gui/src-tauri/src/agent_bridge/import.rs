@@ -222,18 +222,25 @@ fn thread_mode(
 }
 
 /// Returns `true` when `cwd` is strictly under the GUI chat workspace
-/// directory: `$HOME/.future/workspaces/chat/…`
+/// directory: `$HOME/.future/workspaces/chat/…`. Tolerates Windows `\`
+/// separators and resolves the home dir via `crate::home_dir()` (which falls
+/// back to `USERPROFILE`, since `HOME` is normally unset on Windows).
 fn is_gui_chat_cwd(cwd: &str) -> bool {
     if cwd.is_empty() {
         return false;
     }
+    // Normalize separators so a Windows `C:\Users\<user>\.future\workspaces\chat\`
+    // matches the forward-slash suffix below.
+    let cwd = cwd.replace('\\', "/");
+    const SUFFIX: &str = "/.future/workspaces/chat/";
     // Literal tilde: ~/.future/workspaces/chat/…
-    if cwd.starts_with("~/.future/workspaces/chat/") {
+    if cwd.starts_with(&format!("~{SUFFIX}")) {
         return true;
     }
-    // Expanded home: /Users/<user>/.future/workspaces/chat/…
-    if let Ok(home) = std::env::var("HOME") {
-        let prefix = format!("{}/.future/workspaces/chat/", home.trim_end_matches('/'));
+    // Expanded home: <home>/.future/workspaces/chat/…
+    if let Some(home) = crate::home_dir() {
+        let home = home.replace('\\', "/");
+        let prefix = format!("{}{SUFFIX}", home.trim_end_matches('/'));
         if cwd.starts_with(&prefix) {
             return true;
         }
