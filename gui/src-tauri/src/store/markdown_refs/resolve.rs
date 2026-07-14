@@ -13,9 +13,7 @@ use crate::store::records::*;
 use crate::store::review_snapshots::{
     review_changeset_from_row, ReviewChangesetRecord, REVIEW_CHANGESET_COLUMNS,
 };
-use crate::store::runs::{
-    run_from_row, tool_call_from_row, RunRecord, ToolCallRecord, RUN_COLUMNS, TOOL_CALL_COLUMNS,
-};
+use crate::store::runs::{run_from_row, RunRecord, RUN_COLUMNS};
 use crate::store::util::qualify_columns;
 
 pub fn resolve_markdown_references(
@@ -65,11 +63,6 @@ pub(super) fn resolve_markdown_reference(
         "run" => match get_run_in_workspace(conn, workspace_id, &target_id) {
             Ok(Some(run)) => resolved_reference(target_type, target_id, run),
             Ok(None) => missing_reference(target_type, target_id, "run was not found"),
-            Err(error) => failed_reference(target_type, target_id, error),
-        },
-        "tool" => match get_tool_call_in_workspace(conn, workspace_id, &target_id) {
-            Ok(Some(tool)) => resolved_reference(target_type, target_id, tool),
-            Ok(None) => missing_reference(target_type, target_id, "tool call was not found"),
             Err(error) => failed_reference(target_type, target_id, error),
         },
         "approval" => match get_approval_request_in_workspace(conn, workspace_id, &target_id) {
@@ -237,26 +230,6 @@ fn get_run_in_workspace(
         ),
         params![id, workspace_id],
         run_from_row,
-    )
-    .optional()
-    .map_err(crate::AppError::from)
-}
-
-fn get_tool_call_in_workspace(
-    conn: &Connection,
-    workspace_id: &str,
-    id: &str,
-) -> Result<Option<ToolCallRecord>, crate::AppError> {
-    let cols = qualify_columns("tc", TOOL_CALL_COLUMNS);
-    conn.query_row(
-        &format!(
-            "SELECT {cols} FROM tool_calls tc
-         JOIN runs r ON r.id = tc.run_id
-         JOIN threads t ON t.id = r.thread_id
-         WHERE tc.id = ?1 AND t.workspace_id = ?2"
-        ),
-        params![id, workspace_id],
-        tool_call_from_row,
     )
     .optional()
     .map_err(crate::AppError::from)

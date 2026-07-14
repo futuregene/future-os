@@ -3,7 +3,6 @@ import type {
   StoredArtifact,
   StoredReviewChangeset,
   StoredRun,
-  StoredToolCall,
 } from "../../integrations/storage/types";
 import { isRecord, truncate } from "../../lib/objects";
 import { referenceKey } from "../markdown/futureMarkdownTypes";
@@ -48,8 +47,6 @@ function summarizeReference(index: number, targetType: string, targetId: string,
       return summarizeArtifact(index, targetId, data);
     case "run":
       return summarizeRun(index, targetId, data);
-    case "tool":
-      return summarizeTool(index, targetId, data);
     case "approval":
       return summarizeApproval(index, targetId, data);
     case "review":
@@ -81,19 +78,6 @@ function summarizeRun(index: number, targetId: string, data: unknown) {
     field("status", data.status),
     field("model", data.modelId),
     field("error", data.errorMessage),
-  ].filter(Boolean).join(" | ");
-}
-
-function summarizeTool(index: number, targetId: string, data: unknown) {
-  if (!isTool(data))
-    return `${index}. tool:${targetId} - invalid payload`;
-
-  return [
-    `${index}. tool:${quote(data.id)}`,
-    field("name", data.name),
-    field("kind", data.kind),
-    field("status", data.status),
-    field("input", data.input),
   ].filter(Boolean).join(" | ");
 }
 
@@ -136,14 +120,6 @@ function isArtifact(value: unknown): value is StoredArtifact {
 function isRun(value: unknown): value is StoredRun {
   return isRecord(value)
     && typeof value.id === "string"
-    && typeof value.status === "string";
-}
-
-function isTool(value: unknown): value is StoredToolCall {
-  return isRecord(value)
-    && typeof value.id === "string"
-    && typeof value.name === "string"
-    && typeof value.kind === "string"
     && typeof value.status === "string";
 }
 

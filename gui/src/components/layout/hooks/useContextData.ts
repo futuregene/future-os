@@ -108,7 +108,6 @@ export function useContextData({
       // Only chat threads use Artifacts; workspace threads show Review (§14.6).
       const nextArtifacts = activeThreadMode === "workspace" ? [] : await listArtifacts(activeThreadId);
       const toolEntries = await Promise.all(nextRuns.map(async run => [run.id, await listToolCalls(run.id)] as const));
-      const toolCalls = toolEntries.flatMap(([, tools]) => tools);
 
       if (!isCurrentRefresh())
         return;
@@ -121,7 +120,6 @@ export function useContextData({
       upsertContextReferences(activeWorkspaceId, {
         artifacts: nextArtifacts,
         runs: nextRuns,
-        tools: toolCalls,
       });
     }
     catch {
@@ -238,16 +236,13 @@ function upsertContextReferences(
   {
     artifacts,
     runs,
-    tools,
   }: {
     artifacts: StoredArtifact[];
     runs: StoredRun[];
-    tools: StoredToolCall[];
   },
 ) {
   upsertFutureReferenceEntries(workspaceId, [
     ...runs.map(run => ({ data: run, targetId: run.id, targetType: "run" as const })),
-    ...tools.map(tool => ({ data: tool, targetId: tool.id, targetType: "tool" as const })),
     ...artifacts.map(artifact => ({ data: artifact, targetId: artifact.id, targetType: "artifact" as const })),
   ]);
 }

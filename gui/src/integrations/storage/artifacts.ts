@@ -7,20 +7,6 @@ export async function listArtifacts(threadId: string) {
   return invokeCommand<StoredArtifact[]>("list_artifacts", { threadId });
 }
 
-export async function createArtifact(input: {
-  workspaceId: string;
-  threadId?: string | null;
-  runId?: string | null;
-  title: string;
-  artifactType: string;
-  path?: string | null;
-  content?: string | null;
-  contentStorage?: string | null;
-  summary?: string | null;
-}) {
-  return invokeCommand<StoredArtifact>("create_artifact", { input });
-}
-
 export async function importAttachmentArtifact(input: { threadId: string; path: string }) {
   return invokeCommand<StoredArtifact>("import_attachment_artifact", { input });
 }

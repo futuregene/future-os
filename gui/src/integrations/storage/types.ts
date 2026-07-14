@@ -138,15 +138,6 @@ export interface ApprovalAction {
   };
 }
 
-// P2: sandbox boundary info (parsed from sandboxBoundary JSON)
-export interface SandboxBoundary {
-  mode: string;
-  insideSandbox: boolean;
-  violation?: string | null;
-  cwd: string;
-  writableRoots?: string[];
-}
-
 export interface StoredReviewChangeset {
   id: string;
   threadId: string;

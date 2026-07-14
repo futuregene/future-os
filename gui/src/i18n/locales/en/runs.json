@@ -54,14 +54,6 @@
     "cancelled": "cancelled",
     "queued": "queued"
   },
-  "statusLabel": {
-    "success": "Success",
-    "failed": "Failed",
-    "cancelled": "Cancelled",
-    "waiting": "Waiting",
-    "queued": "Queued",
-    "running": "Running"
-  },
   "toolStatus": {
     "completed": "Completed",
     "failed": "Failed",

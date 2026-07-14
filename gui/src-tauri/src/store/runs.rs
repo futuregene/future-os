@@ -74,10 +74,8 @@ sql_record!(pub(super) RUN_COLUMNS, run_from_row -> RunRecord {
     started_at, ended_at, error_message, error_type, created_at, updated_at,
 });
 
-sql_record!(pub(super) TOOL_CALL_COLUMNS, tool_call_from_row -> ToolCallRecord {
-    id, run_id, name, kind, input, status, started_at, ended_at, created_at,
-});
-
+// TOOL_CALL_COLUMNS & tool_call_from_row removed — table dropped; ToolCallRecord
+// is now reconstructed from run events in `list_tool_calls`.
 // TOOL_OUTPUT_COLUMNS & tool_output_from_row removed — table dropped
 
 pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::AppError> {

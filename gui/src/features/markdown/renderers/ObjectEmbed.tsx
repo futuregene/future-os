@@ -2,15 +2,13 @@ import type { ReactNode } from "react";
 import type {
   StoredApprovalRequest,
   StoredReviewChangeset,
-  StoredToolCall,
 } from "../../../integrations/storage/types";
 import type { FutureReference } from "../futureMarkdownTypes";
-import { AlertTriangle, Beaker, FileDiff, Maximize2 } from "lucide-react";
+import { AlertTriangle, FileDiff, Maximize2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "../../../components/ui/Badge";
 import { Button } from "../../../components/ui/Button";
 import { emitFutureEvent } from "../../../lib/futureEvents";
-import { toolCommand } from "../../runs/toolInput";
 
 export function ApprovalEmbed({
   approval,
@@ -66,47 +64,6 @@ export function ReviewEmbed({
         variant="toolbar"
       >
         {t("objectEmbed.openReview")}
-      </Button>
-    </ObjectFrame>
-  );
-}
-
-export function ToolEmbed({
-  reference,
-  tool,
-}: {
-  reference: FutureReference;
-  tool: StoredToolCall;
-}) {
-  const { t } = useTranslation("markdown");
-  function inspectRun() {
-    emitFutureEvent("inspect-run", { runId: tool.runId });
-  }
-
-  const command = toolCommand(tool.input);
-
-  return (
-    <ObjectFrame
-      icon={<Beaker className="mt-0.5 size-4 shrink-0 text-accent" />}
-      meta={tool.kind}
-      status={tool.status}
-      title={tool.name || reference.label || tool.id}
-    >
-      {tool.input
-        ? (
-            <pre className="max-h-32 overflow-auto rounded-md bg-surface-subtle p-2 text-xs leading-5 text-ink-soft">
-              <code>{command ?? tool.input}</code>
-            </pre>
-          )
-        : null}
-      <Button
-        className="mt-2"
-        leftIcon={<Maximize2 className="size-3.5" />}
-        onClick={inspectRun}
-        size="xs"
-        variant="toolbar"
-      >
-        {t("objectEmbed.inspectRun")}
       </Button>
     </ObjectFrame>
   );

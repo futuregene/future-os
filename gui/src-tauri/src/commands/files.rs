@@ -260,6 +260,9 @@ pub fn generate_image_thumbnail(
         return Err("invalid thread id.".to_string().into());
     }
     let source = source_path.trim();
+    // Never read a protected credential file as an image source — otherwise a
+    // compromised webview could launder auth.json bytes out through the copy.
+    ensure_path_allowed(Path::new(source))?;
     let size = std::fs::metadata(source)?.len();
     if size > MAX_ATTACHMENT_IMAGE_BYTES {
         return Err(format!(
@@ -316,6 +319,10 @@ pub fn import_ephemeral_image(
     if source.is_empty() {
         return Err("sourcePath cannot be empty.".to_string().into());
     }
+    // Guard the source: a copy-out of a protected credential file (e.g.
+    // auth.json) would otherwise defeat `ensure_path_allowed` — the copy lands
+    // under a non-credential name/dir and becomes readable via read_file_base64.
+    ensure_path_allowed(Path::new(source))?;
     let dir = crate::store::thread_images_dir(&thread_id)?.join("origin");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{}_{}", unique_stamp(), safe_file_name(&name)));
