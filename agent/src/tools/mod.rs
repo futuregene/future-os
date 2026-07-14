@@ -478,12 +478,16 @@ async fn run_bash(
 }
 
 /// Extract the exit code and output tail from a formatted run_bash result, for
-/// the sandbox-denial heuristic. Results are formatted "[exit code: N]\n...".
+/// the sandbox-denial heuristic. Exit code is now at the end as "[exit: N]".
 fn parse_result_failure(result: &str) -> (i32, String) {
     let exit_code = result
-        .strip_prefix("[exit code: ")
-        .and_then(|rest| rest.split(']').next())
-        .and_then(|code| code.trim().parse::<i32>().ok())
+        .lines()
+        .rev()
+        .find_map(|line| {
+            line.strip_prefix("[exit: ")
+                .and_then(|rest| rest.strip_suffix(']'))
+                .and_then(|code| code.parse::<i32>().ok())
+        })
         .unwrap_or(0);
     let tail_start = result.len().saturating_sub(2000);
     let tail = result.get(tail_start..).unwrap_or(result).to_string();
@@ -499,7 +503,12 @@ async fn spawn_bash(
     escalated: bool,
 ) -> Result<String> {
     let cwd = active_workspace()?;
-    let mut child = sandbox.build_bash_command(command, escalated);
+    // Wrap in a subshell to merge stderr into stdout, preserving the original
+    // interleaving order that separate pipes lose. Internal redirections in the
+    // user's command are respected inside the subshell; only the subshell's own
+    // stderr (empty after the merge) goes to /dev/null.
+    let merged_cmd = format!("( {} ) 2>&1", command);
+    let mut child = sandbox.build_bash_command(&merged_cmd, escalated);
     child.current_dir(&cwd).env("PWD", &cwd);
     // Prepend the agent binary's directory to PATH so bundled tools in the same
     // directory are discoverable by shell commands.
@@ -512,7 +521,7 @@ async fn spawn_bash(
     }
     child
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stderr(std::process::Stdio::null());
     child.kill_on_drop(true);
     // Run bash as the leader of its own process group so abort/timeout can kill
     // the whole tree. kill_on_drop alone only SIGKILLs bash itself, leaving
@@ -526,16 +535,11 @@ async fn spawn_bash(
         .try_with(|scope| scope.interrupt_flag.clone())
         .unwrap_or_else(|_| Arc::new(AtomicBool::new(false)));
 
-    // Spawn (rather than `output()`) so we hold the PID for group teardown.
-    // With process_group(0) the child's PID equals its process-group ID.
-    let spawned = child
+    let mut spawned = child
         .spawn()
         .map_err(|e| anyhow!("Failed to run bash command: {}", e))?;
     #[cfg(unix)]
     let pgid = spawned.id().map(|id| id as i32);
-    // Windows has no process groups; a Job Object with KILL_ON_JOB_CLOSE is the
-    // equivalent tree-teardown. Assign the fresh PID so abort/timeout kills bash
-    // and its grandchildren (e.g. a background `sleep`), not just bash itself.
     #[cfg(windows)]
     let job = {
         let job = crate::sandbox::windows::Job::create().ok();
@@ -545,35 +549,31 @@ async fn spawn_bash(
         job
     };
 
-    // Use tokio::select! to race between:
-    // 1. Command completion
-    // 2. Timeout
-    // 3. Interrupt signal (abort)
-    let output = tokio::select! {
-        result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs.max(1)),
-            spawned.wait_with_output(),
-        ) => {
-            match result {
-                Ok(Ok(output)) => output,
-                Ok(Err(e)) => return Err(anyhow!("Failed to run bash command: {}", e)),
-                Err(_) => {
-                    #[cfg(unix)]
-                    kill_process_group(pgid);
-                    #[cfg(windows)]
-                    if let Some(job) = &job {
-                        job.terminate();
-                    }
-                    return Err(anyhow!(
-                        "Bash command timed out after {} seconds",
-                        timeout_secs.max(1)
-                    ));
+    // Read stdout incrementally — on timeout we keep whatever was captured.
+    let mut stdout = spawned
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("Failed to capture stdout"))?;
+    let mut output_buf = Vec::new();
+    let mut read_buf = [0u8; 8192];
+    let timeout_dur = std::time::Duration::from_secs(timeout_secs.max(1));
+
+    // Race: read loop vs timeout vs interrupt
+    let read_result = tokio::select! {
+        result = tokio::time::timeout(timeout_dur, async {
+            use tokio::io::AsyncReadExt;
+            loop {
+                match stdout.read(&mut read_buf).await {
+                    Ok(0) => break, // EOF
+                    Ok(n) => output_buf.extend_from_slice(&read_buf[..n]),
+                    Err(e) => return Err(anyhow!("Failed to read bash output: {}", e)),
                 }
             }
+            Ok(spawned.wait().await)
+        }) => {
+            result
         }
         _ = wait_for_interrupt(interrupt_flag.clone()) => {
-            // Kill the whole group; dropping the wait future also kills bash via
-            // kill_on_drop, but only killpg reaches grandchildren.
             #[cfg(unix)]
             kill_process_group(pgid);
             #[cfg(windows)]
@@ -584,35 +584,96 @@ async fn spawn_bash(
         }
     };
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let exit_code = output.status.code().unwrap_or(-1);
+    match read_result {
+        Ok(Ok(Ok(status))) => {
+            // Drain any leftover bytes (rare: process exited but pipe still has data).
+            use tokio::io::AsyncReadExt;
+            loop {
+                match stdout.read(&mut read_buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => output_buf.extend_from_slice(&read_buf[..n]),
+                }
+            }
+            let combined = String::from_utf8_lossy(&output_buf);
+            let exit_code = status.code().unwrap_or(-1);
+            Ok(format_bash_output(&combined, combined.len(), exit_code))
+        }
+        Ok(Ok(Err(e))) => Err(anyhow!("Failed to run bash command: {}", e)),
+        Ok(Err(e)) => Err(e),
+        Err(_elapsed) => {
+            // Timeout — kill process tree, drain remaining pipe content.
+            #[cfg(unix)]
+            kill_process_group(pgid);
+            #[cfg(windows)]
+            if let Some(job) = &job {
+                job.terminate();
+            }
+            // Drain whatever the process wrote before the kill took effect.
+            use tokio::io::AsyncReadExt;
+            loop {
+                match stdout.read(&mut read_buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => output_buf.extend_from_slice(&read_buf[..n]),
+                }
+            }
+            let combined = String::from_utf8_lossy(&output_buf);
+            let total = combined.len();
+            if total == 0 {
+                return Err(anyhow!(
+                    "Bash command timed out after {} seconds (no output captured)",
+                    timeout_secs.max(1)
+                ));
+            }
+            let formatted = format_bash_output(&combined, total, -1);
+            Err(anyhow!(
+                "Bash command timed out after {} seconds.\nPartial output ({} total):\n{}",
+                timeout_secs.max(1),
+                human_size(total),
+                formatted,
+            ))
+        }
+    }
+}
 
-    let combined = if stderr.is_empty() {
-        stdout.to_string()
-    } else {
-        format!("{}\n{}", stdout, stderr)
-    };
+/// Format bash output with truncation info and exit code footer.
+/// Kept out of the hot path so the timeout branch can reuse it.
+fn format_bash_output(raw: &str, total_bytes: usize, exit_code: i32) -> String {
+    const MAX_KEEP: usize = 500_000;
 
-    // Truncate to last 500000 bytes, respecting UTF-8 char boundaries
-    let combined = if combined.len() > 500000 {
-        let start = combined.ceil_char_boundary(combined.len() - 500000);
+    let body = if total_bytes > MAX_KEEP {
+        let truncated = total_bytes - MAX_KEEP;
+        // Keep the LAST MAX_KEEP bytes (most relevant output is at the end).
+        let start = raw.ceil_char_boundary(raw.len() - MAX_KEEP);
         format!(
-            "...(truncated, showing last 500000 chars)\n{}",
-            &combined[start..]
+            "[output: {} total, showing last {}; {} truncated]\n{}",
+            human_size(total_bytes),
+            human_size(MAX_KEEP),
+            human_size(truncated),
+            &raw[start..],
         )
     } else {
-        combined
+        raw.to_string()
     };
 
-    let result = if exit_code != 0 {
-        format!("[exit code: {}]\n{}", exit_code, combined)
+    let footer = if exit_code >= 0 {
+        format!("[exit: {}]", exit_code)
     } else {
-        combined
+        "[exit: signal]".to_string()
     };
-    // Strip trailing blank lines
+
+    let result = format!("{}\n{}", body, footer);
     let trimmed = result.trim_end().to_string();
-    Ok(if trimmed.is_empty() { result } else { trimmed })
+    if trimmed.is_empty() { result } else { trimmed }
+}
+
+fn human_size(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{}B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{}KB", bytes / 1024)
+    } else {
+        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+    }
 }
 
 async fn run_read(path: &str, offset: Option<usize>, limit: Option<usize>) -> Result<String> {
@@ -651,9 +712,11 @@ async fn run_edit(
     let current = tokio::fs::read_to_string(&path).await?;
 
     let final_content = if let Some(edits) = edits {
-        // Multi-edit mode
+        // Multi-edit mode — all-or-nothing: if any edit fails to match,
+        // the file is not modified and the error lists every failed edit.
         let mut result = current.clone();
-        for edit in edits.iter().rev() {
+        let mut failures: Vec<String> = Vec::new();
+        for (i, edit) in edits.iter().enumerate() {
             if let Some(pos) = result.rfind(&edit.old_text) {
                 result = format!(
                     "{}{}{}",
@@ -661,7 +724,21 @@ async fn run_edit(
                     edit.new_text,
                     &result[pos + edit.old_text.len()..]
                 );
+            } else {
+                failures.push(format!(
+                    "edit {}: could not find \"{}\"",
+                    i + 1,
+                    truncate_for_error(&edit.old_text),
+                ));
             }
+        }
+        if !failures.is_empty() {
+            return Err(anyhow!(
+                "Edit failed: {} of {} edit(s) could not be applied.\n{}",
+                failures.len(),
+                edits.len(),
+                failures.join("\n"),
+            ));
         }
         result
     } else if let (Some(old), Some(new)) = (old_text, new_text) {
@@ -684,6 +761,16 @@ async fn run_edit(
 
     tokio::fs::write(path, &final_content).await?;
     Ok(())
+}
+
+/// Truncate a string for error messages — keeps the first 80 chars so the
+/// error is readable without dumping an entire file into the log.
+fn truncate_for_error(s: &str) -> String {
+    if s.len() <= 80 {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..80])
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
