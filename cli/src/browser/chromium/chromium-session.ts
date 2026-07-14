@@ -258,8 +258,8 @@ export class ChromiumSession implements BrowserSession {
         throw new Error(`Navigation failed: ${result.errorText}`);
       }
 
-      const title = await this.evaluateExpression<string>(ps.session, "document.title");
-      const finalUrl = await this.evaluateExpression<string>(ps.session, "location.href");
+      const title = await this.evaluateExpression<string>(ps.session, "document.title").catch(() => "");
+      const finalUrl = await this.evaluateExpression<string>(ps.session, "location.href").catch(() => "");
 
       const { pageMgr } = await this.init();
       const page = pageMgr.getPage(ps.pageId);
