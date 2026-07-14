@@ -164,7 +164,11 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
 
   if (await endpointReachable(endpoint)) {
     const config = await loadBrowserConfig();
-    config.connection.endpoint = endpoint;
+    config.connection = {
+      protocol: "cdp",
+      browserKind: "chromium",
+      endpoint,
+    };
     await saveBrowserConfig(config);
     return { structuredContent: { endpoint, status: "already_running" } };
   }
@@ -197,7 +201,11 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
   while (Date.now() < deadline) {
     if (await endpointReachable(endpoint)) {
       const cfg = await loadBrowserConfig();
-      cfg.connection.endpoint = endpoint;
+      cfg.connection = {
+        protocol: "cdp",
+        browserKind: "chromium",
+        endpoint,
+      };
       cfg.activeUrl = url;
       await saveBrowserConfig(cfg);
       return {
@@ -215,7 +223,11 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
   }
 
   const cfg2 = await loadBrowserConfig();
-  cfg2.connection.endpoint = endpoint;
+  cfg2.connection = {
+    protocol: "cdp",
+    browserKind: "chromium",
+    endpoint,
+  };
   cfg2.activeUrl = url;
   await saveBrowserConfig(cfg2);
   return {
