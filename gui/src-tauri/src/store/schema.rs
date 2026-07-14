@@ -303,9 +303,19 @@ pub(super) const RENAMED_COLUMNS: &[(&str, &str, &str)] = &[
 /// Indexes that reference columns from `ADDED_COLUMNS`. These must run *after*
 /// the `ALTER`s, not inside `SCHEMA`, or they fail with "no such column" on a
 /// database created before those columns existed.
-pub(super) const ADDED_INDEXES: &[&str] =
-    &["CREATE INDEX IF NOT EXISTS idx_review_changesets_thread \
-     ON review_changesets(thread_id, source_kind, created_at)"];
+pub(super) const ADDED_INDEXES: &[&str] = &[
+    "CREATE INDEX IF NOT EXISTS idx_review_changesets_thread \
+     ON review_changesets(thread_id, source_kind, created_at)",
+    // One live artifact row per file per thread (see `ensure_artifact`). Kept
+    // out of `SCHEMA` on purpose: development databases written by older builds
+    // hold one row per write/edit of the same file, and this index cannot be
+    // created until `dedupe_file_artifacts` has folded them — `SCHEMA` runs
+    // first, before any migration step, so creating it there would fail on
+    // exactly those DBs. PRE-RELEASE ONLY: when that migration is deleted before
+    // release, move this into `SCHEMA` next to the other artifact index.
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_thread_path \
+     ON artifacts(thread_id, path) WHERE deleted_at IS NULL AND path IS NOT NULL",
+];
 
 /// Tables removed from the schema that must be dropped from pre-existing
 /// databases. All four were created but never used (zero CRUD), so dropping them

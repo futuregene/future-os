@@ -108,6 +108,9 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
             }
         }
     }
+    // Fold duplicate file artifacts before the unique index over them is
+    // created; on DBs written by older builds it would otherwise fail.
+    dedupe_file_artifacts(conn)?;
     // Indexes over added columns run last, once those columns are guaranteed.
     for statement in ADDED_INDEXES {
         conn.execute(statement, [])?;
@@ -137,6 +140,56 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
             }
         }
     }
+    Ok(())
+}
+
+/// Collapse the artifact rows older builds inserted one-per-write/edit of the
+/// same file down to the one row per (thread_id, path) that `ensure_artifact`
+/// now maintains and `idx_artifacts_thread_path` enforces.
+///
+/// PRE-RELEASE ONLY — delete this before release, with its tests, its call in
+/// `apply_schema`, and the `ADDED_INDEXES` carve-out that exists to sequence it
+/// (move `idx_artifacts_thread_path` into `SCHEMA` then). It exists solely to
+/// fold the duplicates sitting in already-populated development databases; no
+/// database that has only ever seen a post-change build can hold them, so once
+/// none is in play this is dead weight that deletes user rows on every launch.
+///
+/// The survivor is the group's most recently touched row — it already carries
+/// the latest run_id/summary/content — and it inherits the group's earliest
+/// `created_at` so the Panel still shows when the file was first produced. The
+/// rows it replaces are derived records of that same file, re-derivable from the
+/// agent's tool events, so they're deleted outright rather than tombstoned.
+///
+/// Rows with a NULL `thread_id` or NULL `path` are left alone: neither has a file
+/// identity to collapse, and the partial unique index excludes them as well.
+fn dedupe_file_artifacts(conn: &Connection) -> Result<(), crate::AppError> {
+    const SCOPE: &str = "deleted_at IS NULL AND thread_id IS NOT NULL AND path IS NOT NULL";
+    const SURVIVOR: &str = "SELECT k.id
+           FROM artifacts k
+           WHERE k.thread_id = artifacts.thread_id
+             AND k.path = artifacts.path
+             AND k.deleted_at IS NULL
+           ORDER BY k.updated_at DESC, k.rowid DESC
+           LIMIT 1";
+
+    conn.execute(
+        &format!(
+            "UPDATE artifacts
+             SET created_at = (
+                 SELECT MIN(d.created_at)
+                 FROM artifacts d
+                 WHERE d.thread_id = artifacts.thread_id
+                   AND d.path = artifacts.path
+                   AND d.deleted_at IS NULL
+             )
+             WHERE {SCOPE} AND id = ({SURVIVOR})"
+        ),
+        [],
+    )?;
+    conn.execute(
+        &format!("DELETE FROM artifacts WHERE {SCOPE} AND id <> ({SURVIVOR})"),
+        [],
+    )?;
     Ok(())
 }
 
@@ -196,6 +249,129 @@ mod tests {
     fn apply_schema_on_fresh_db_succeeds() {
         let conn = Connection::open_in_memory().unwrap();
         apply_schema(&conn).unwrap();
+    }
+
+    /// A migrated DB holding artifact rows, with FKs off — `dedupe_file_artifacts`
+    /// only reads `artifacts`, so workspace/thread/run fixtures would be noise.
+    fn artifact_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_schema(&conn).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn
+    }
+
+    /// The same, minus the unique index — a database as an older build left it,
+    /// free to hold one artifact row per write/edit of a file. Re-running
+    /// `apply_schema` on it is what a user's first launch after this change does.
+    fn legacy_artifact_db() -> Connection {
+        let conn = artifact_db();
+        conn.execute("DROP INDEX idx_artifacts_thread_path", [])
+            .unwrap();
+        conn
+    }
+
+    fn insert_artifact(
+        conn: &Connection,
+        id: &str,
+        thread_id: Option<&str>,
+        path: Option<&str>,
+        created_at: i64,
+        updated_at: i64,
+        summary: &str,
+    ) -> rusqlite::Result<usize> {
+        conn.execute(
+            "INSERT INTO artifacts (
+                 id, workspace_id, thread_id, run_id, title, artifact_type, path,
+                 content, content_storage, summary, created_at, updated_at
+             ) VALUES (?1, 'ws', ?2, ?3, 'report.md', 'document', ?4, NULL, 'file', ?5, ?6, ?7)",
+            params![
+                id,
+                thread_id,
+                format!("run_{id}"),
+                path,
+                summary,
+                created_at,
+                updated_at
+            ],
+        )
+    }
+
+    fn live_artifact_count(conn: &Connection) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM artifacts WHERE deleted_at IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn dedupe_folds_repeat_touches_of_one_file() {
+        // One file written then edited twice — three rows, as older builds wrote.
+        let conn = legacy_artifact_db();
+        let file = Some("/ws/report.md");
+        insert_artifact(&conn, "a1", Some("t1"), file, 100, 100, "Written by Agent.").unwrap();
+        insert_artifact(&conn, "a2", Some("t1"), file, 200, 200, "Edited by Agent.").unwrap();
+        insert_artifact(&conn, "a3", Some("t1"), file, 300, 300, "Edited by Agent.").unwrap();
+
+        apply_schema(&conn).unwrap();
+
+        assert_eq!(live_artifact_count(&conn), 1);
+        let (id, created_at, updated_at): (String, i64, i64) = conn
+            .query_row(
+                "SELECT id, created_at, updated_at FROM artifacts",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(id, "a3", "the latest touch survives");
+        assert_eq!(created_at, 100, "carrying the first sighting");
+        assert_eq!(updated_at, 300);
+    }
+
+    #[test]
+    fn dedupe_keeps_rows_with_no_shared_file_identity() {
+        let conn = legacy_artifact_db();
+        insert_artifact(&conn, "a1", Some("t1"), Some("/ws/a.md"), 100, 100, "").unwrap();
+        insert_artifact(&conn, "a2", Some("t1"), Some("/ws/b.md"), 100, 100, "").unwrap();
+        // Same file, but a different thread is a different work product.
+        insert_artifact(&conn, "a3", Some("t2"), Some("/ws/a.md"), 100, 100, "").unwrap();
+        // Path-less inline artifacts have no file identity to fold on.
+        insert_artifact(&conn, "a4", Some("t1"), None, 100, 100, "").unwrap();
+        insert_artifact(&conn, "a5", Some("t1"), None, 100, 100, "").unwrap();
+
+        apply_schema(&conn).unwrap();
+
+        assert_eq!(live_artifact_count(&conn), 5);
+    }
+
+    #[test]
+    fn dedupe_and_index_ignore_tombstoned_rows() {
+        // A user-deleted artifact must survive the fold, and must not block the
+        // Agent from recording that same file again afterwards.
+        let conn = legacy_artifact_db();
+        let file = Some("/ws/report.md");
+        insert_artifact(&conn, "a1", Some("t1"), file, 100, 100, "").unwrap();
+        conn.execute("UPDATE artifacts SET deleted_at = 150 WHERE id = 'a1'", [])
+            .unwrap();
+        insert_artifact(&conn, "a2", Some("t1"), file, 200, 200, "").unwrap();
+
+        apply_schema(&conn).unwrap();
+
+        assert_eq!(live_artifact_count(&conn), 1);
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM artifacts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total, 2, "the tombstone is left alone");
+    }
+
+    #[test]
+    fn unique_index_rejects_a_second_live_row_for_one_file() {
+        let conn = artifact_db();
+        let file = Some("/ws/report.md");
+        insert_artifact(&conn, "a1", Some("t1"), file, 100, 100, "").unwrap();
+        let duplicate = insert_artifact(&conn, "a2", Some("t1"), file, 200, 200, "");
+        assert!(duplicate.is_err(), "idx_artifacts_thread_path must hold");
     }
 
     #[test]
