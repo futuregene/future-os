@@ -338,7 +338,7 @@ describe("Safari WebDriver", () => {
         );
         expect.unreachable("Should have thrown");
       } catch (e) {
-        expect((e as Error).message).toContain("not found");
+        expect((e as Error).message).toMatch(/not found|no such element/i);
         console.log(`  ✅ click missing element → throws as expected`);
       }
     } finally {
