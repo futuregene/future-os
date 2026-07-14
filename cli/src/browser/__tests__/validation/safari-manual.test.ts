@@ -78,15 +78,24 @@ describe("Safari WebDriver", () => {
       ready = false;
       return;
     }
-    const data = await resp.json() as { sessionId: string };
+    const data = await resp.json() as { value?: { sessionId?: string }; sessionId?: string };
+    const sid = data.value?.sessionId ?? data.sessionId;
+    if (!sid) {
+      console.log(`  Failed to extract sessionId from: ${JSON.stringify(data).slice(0, 200)}`);
+      console.log("  Skipping Safari tests.");
+      ready = false;
+      return;
+    }
     sharedSession = new SafariSession({
       protocol: "webdriver",
       browserKind: "safari",
       endpoint: driverEndpoint,
-      sessionId: data.sessionId,
+      sessionId: sid,
       timeouts: DEFAULT_TIMEOUTS,
     });
-    console.log(`  Safari session ready: ${data.sessionId}`);
+    // Store for cleanup
+    (sharedSession as unknown as { _sid: string })._sid = sid;
+    console.log(`  Safari session ready: ${sid}`);
   }, 20_000);
 
   afterAll(async () => {
@@ -94,7 +103,6 @@ describe("Safari WebDriver", () => {
       const sid = (sharedSession as unknown as { _sid?: string })._sid;
       if (sid) await fetch(`${driverEndpoint}/session/${sid}`, { method: "DELETE" }).catch(() => {});
       await sharedSession.disconnect().catch(() => {});
-      sharedSession = null;
     }
     if (iso) await iso.cleanup();
   });
