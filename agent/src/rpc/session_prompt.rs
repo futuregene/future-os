@@ -73,6 +73,39 @@ impl ServerSession {
         );
         self.messages.write().unwrap().push(user_message);
 
+        // Persist immediately so the GUI can see the user message (and any
+        // tool entries from prior turns) during streaming. Without this, a
+        // thread switch mid-stream loses the question until the run settles
+        // because get_session_entries reads from disk.
+        {
+            let msgs = self.messages.read().unwrap();
+            let entries: Vec<crate::session::SessionEntry> = msgs
+                .iter()
+                .map(crate::session::agent_message_to_entry)
+                .collect();
+            let parent_session_id = self
+                .session_manager
+                .load(&self.session_id)
+                .map(|s| s.parent_session_id)
+                .unwrap_or_default();
+            let session = crate::session::Session {
+                id: self.session_id.clone(),
+                version: crate::session::CURRENT_SESSION_VERSION,
+                cwd: self.cwd.clone(),
+                model: self.model.clone(),
+                base_url: String::new(),
+                name: self.session_name.clone(),
+                parent_session_id,
+                leaf_id: String::new(),
+                entries,
+                created_at: chrono::Local::now(),
+                updated_at: chrono::Local::now(),
+            };
+            if let Err(e) = self.session_manager.save(&session) {
+                tracing::error!("Failed to persist user message: {}", e);
+            }
+        }
+
         // Set streaming flag + start a new run. P1: run_id is assigned once per
         // user run at the is_streaming false→true edge (resets idx + event buffer);
         // every event this run then carries the same run_id.
