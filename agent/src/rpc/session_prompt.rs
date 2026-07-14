@@ -523,10 +523,15 @@ impl ServerSession {
                                 .and_then(|e| e.content.as_ref())
                                 .map(|c| {
                                     if let Some(arr) = c.as_array() {
+                                        // Only the user's own text (first text block);
+                                        // a later text block is the agent-injected
+                                        // attachment-path list, which must not leak
+                                        // into the auto-generated session name.
                                         arr.iter()
                                             .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                                            .collect::<Vec<_>>()
-                                            .join(" ")
+                                            .next()
+                                            .unwrap_or("")
+                                            .to_string()
                                     } else {
                                         c.as_str().unwrap_or("").to_string()
                                     }

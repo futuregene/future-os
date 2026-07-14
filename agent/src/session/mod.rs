@@ -491,10 +491,13 @@ impl Manager {
                     if first_message.is_none() {
                         if let Some(ref content_val) = entry.content {
                             let text: String = if let Some(arr) = content_val.as_array() {
+                                // First text block only — a later one is the agent-
+                                // injected attachment-path list, not the user's message.
                                 arr.iter()
                                     .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                                    .collect::<Vec<_>>()
-                                    .join(" ")
+                                    .next()
+                                    .unwrap_or("")
+                                    .to_string()
                             } else if let Some(s) = content_val.as_str() {
                                 s.to_string()
                             } else {
