@@ -27,7 +27,10 @@ export class WebDriverClient {
   async createSession(capabilities?: Record<string, unknown>): Promise<string> {
     const caps = capabilities ?? { browserName: "safari" };
     const data = await this.post("/session", { capabilities: { alwaysMatch: caps } });
-    return data.sessionId as string;
+    // W3C: sessionId is at root level, but safaridriver puts it under value
+    const sid = (data.sessionId ?? (data.value as Record<string, unknown>)?.sessionId) as string;
+    if (!sid) throw new Error(`No sessionId in createSession response: ${JSON.stringify(data)}`);
+    return sid;
   }
 
   async deleteSession(sessionId: string): Promise<void> {
