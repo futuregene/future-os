@@ -303,6 +303,7 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
         event_bus: event_bus.clone(),
         approval_gate,
         verbose: cli.verbose,
+        shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     future_agent::grpc::serve(app_state, grpc_host, grpc_port).await?;

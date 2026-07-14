@@ -8,6 +8,7 @@ mod session_prompt;
 
 use crate::events::EventBus;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
 pub use approval::{ApprovalDecision, ApprovalDecisionStatus, ApprovalGate};
@@ -35,6 +36,10 @@ pub struct AppState {
     pub event_bus: Arc<EventBus>,
     pub approval_gate: ApprovalGate,
     pub verbose: bool,
+    /// When true, new prompt/steer/follow_up requests are rejected.  Existing
+    /// streaming runs continue to completion.  Read-only and control commands
+    /// (abort, status, etc.) are still accepted.
+    pub shutting_down: Arc<AtomicBool>,
 }
 
 impl AppState {
