@@ -195,26 +195,23 @@ fn persist_tool_end(run_id: &str, value: &serde_json::Value, sequence: i64) {
     let final_output = error.or(output_content);
 
     if !failed {
-        persist_written_file_artifact(run_id, &tool_name, &tool_call_id, final_output.as_deref());
+        persist_file_artifact(run_id, &tool_name, &tool_call_id, final_output.as_deref());
     }
 }
 
-fn persist_written_file_artifact(
-    run_id: &str,
-    tool_name: &str,
-    tool_call_id: &str,
-    output: Option<&str>,
-) {
-    if tool_name != "write" {
-        return;
-    }
+fn persist_file_artifact(run_id: &str, tool_name: &str, tool_call_id: &str, output: Option<&str>) {
+    let summary = match tool_name {
+        "write" => "Written by Agent.",
+        "edit" => "Edited by Agent.",
+        _ => return,
+    };
 
     // Prefer the structured `tool_args` persisted at tool_start — the output
-    // prose ("Written to …") is display text, not a contract, and a reworded
-    // agent message would otherwise silently stop artifact recording. The
-    // prose parse stays as a fallback for rows without a stored input.
-    let Some(path) = written_path_from_tool_input(run_id, tool_call_id)
-        .or_else(|| output.and_then(written_path_from_tool_output))
+    // prose ("Written to …" / "Edited …") is display text, not a contract, and a
+    // reworded agent message would otherwise silently stop artifact recording.
+    // The prose parse stays as a fallback for rows without a stored input.
+    let Some(path) = file_path_from_tool_input(run_id, tool_call_id)
+        .or_else(|| output.and_then(file_path_from_tool_output))
     else {
         return;
     };
@@ -222,7 +219,7 @@ fn persist_written_file_artifact(
         Ok(true) => {}
         Ok(false) => return,
         Err(error) => {
-            eprintln!("FutureOS write artifact workspace check failed: {error}");
+            eprintln!("FutureOS {tool_name} artifact workspace check failed: {error}");
             return;
         }
     }
@@ -243,17 +240,17 @@ fn persist_written_file_artifact(
         path: Some(path),
         content: None,
         content_storage: Some("file".to_string()),
-        summary: Some("Written by Agent.".to_string()),
+        summary: Some(summary.to_string()),
     }) {
-        eprintln!("FutureOS write artifact persistence failed: {error}");
+        eprintln!("FutureOS {tool_name} artifact persistence failed: {error}");
     }
 }
 
-/// Extract the write target from the tool call's stored `input` (the agent's
-/// `tool_args`). The stored value may be a JSON object or a JSON-encoded string
-/// of one (the agent serializes args to a string field), so unwrap up to two
-/// string layers before reading `path`.
-fn written_path_from_tool_input(run_id: &str, tool_call_id: &str) -> Option<String> {
+/// Extract the write/edit target from the tool call's stored `input` (the
+/// agent's `tool_args`). The stored value may be a JSON object or a JSON-encoded
+/// string of one (the agent serializes args to a string field), so unwrap up to
+/// two string layers before reading `path`.
+fn file_path_from_tool_input(run_id: &str, tool_call_id: &str) -> Option<String> {
     let input = store::get_tool_call_input(run_id, tool_call_id).ok()??;
     let mut value: serde_json::Value = serde_json::from_str(&input).ok()?;
     for _ in 0..2 {
@@ -270,10 +267,13 @@ fn written_path_from_tool_input(run_id: &str, tool_call_id: &str) -> Option<Stri
         .map(str::to_string)
 }
 
-fn written_path_from_tool_output(output: &str) -> Option<String> {
+/// Fallback parse of the agent's write/edit success prose: "Written to <path>"
+/// (`tools::run_write`) or "Edited <path>" (`tools::run_edit`).
+fn file_path_from_tool_output(output: &str) -> Option<String> {
+    let output = output.trim();
     output
-        .trim()
         .strip_prefix("Written to ")
+        .or_else(|| output.strip_prefix("Edited "))
         .map(str::trim)
         .filter(|path| !path.is_empty())
         .map(str::to_string)
@@ -420,7 +420,31 @@ fn compact_json(value: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_soft_fail_command, nonzero_exit_code};
+    use super::{file_path_from_tool_output, is_soft_fail_command, nonzero_exit_code};
+
+    #[test]
+    fn parses_write_and_edit_success_prose() {
+        assert_eq!(
+            file_path_from_tool_output("Written to /ws/report.md"),
+            Some("/ws/report.md".to_string())
+        );
+        assert_eq!(
+            file_path_from_tool_output("Edited /ws/report.md"),
+            Some("/ws/report.md".to_string())
+        );
+        assert_eq!(
+            file_path_from_tool_output(r"Edited C:\ws\report.md"),
+            Some(r"C:\ws\report.md".to_string())
+        );
+    }
+
+    #[test]
+    fn ignores_output_without_a_path() {
+        assert_eq!(file_path_from_tool_output("Written to "), None);
+        assert_eq!(file_path_from_tool_output("Edited"), None);
+        assert_eq!(file_path_from_tool_output("Read 40 lines"), None);
+        assert_eq!(file_path_from_tool_output(""), None);
+    }
 
     #[test]
     fn parses_nonzero_exit_prefix() {
