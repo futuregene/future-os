@@ -9,7 +9,7 @@ import { PreviewNotice } from "./PreviewNotice";
  * larger (`max-h/w-full`) and never upscaling. Bytes come through the backend
  * (`read_file_base64`, 25MB cap) rather than the asset protocol, so paths
  * outside the workspace still preview; a read failure (missing/too large) routes
- * back to `onError` for the open-externally fallback.
+ * back to `onError`.
  */
 export function ImagePreview({
   path,
