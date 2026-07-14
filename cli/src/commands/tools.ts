@@ -234,7 +234,8 @@ function toolArgCandidates(raw: string): string[] {
 }
 
 /** Parse the simple key/value object produced when cmd.exe strips JSON quotes.
- * Values stay strings unless they are unambiguously JSON primitives. */
+ * Values stay strings unless they are unambiguously JSON primitives.
+ * Supports nested objects/arrays via recursive parsing. */
 function parseCmdObject(raw: string): Record<string, unknown> | null {
   const text = raw.trim();
   if (!text.startsWith("{") || !text.endsWith("}")) return null;
@@ -243,19 +244,61 @@ function parseCmdObject(raw: string): Record<string, unknown> | null {
   const body = text.slice(1, -1).trim();
   if (!body) return result;
 
-  for (const field of body.split(",")) {
+  // Split only on top-level commas — commas nested inside braces/brackets
+  // are part of a value and must not be treated as field separators.
+  for (const field of splitTopLevel(body, ",")) {
     const colon = field.indexOf(":");
     if (colon <= 0) return null;
     const key = field.slice(0, colon).trim().replace(/^['"]|['"]$/g, "");
-    const rawValue = field.slice(colon + 1).trim().replace(/^['"]|['"]$/g, "");
+    const rawValue = field.slice(colon + 1).trim();
     if (!key) return null;
-    if (rawValue === "true") result[key] = true;
-    else if (rawValue === "false") result[key] = false;
-    else if (rawValue === "null") result[key] = null;
-    else if (/^-?\d+(?:\.\d+)?$/.test(rawValue)) result[key] = Number(rawValue);
-    else result[key] = rawValue;
+    result[key] = parseCmdValue(rawValue);
   }
   return result;
+}
+
+/** Split text on separator only at brace/bracket depth 0.
+ *  Commas inside nested {…} or […] are left intact. */
+function splitTopLevel(text: string, separator: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "{" || ch === "[") depth++;
+    else if (ch === "}" || ch === "]") depth--;
+    else if (ch === separator && depth === 0) {
+      parts.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(text.slice(start));
+  return parts;
+}
+
+/** Parse a single value from cmd.exe-mangled JSON.
+ *  Primitive detection first, then recursive object/array parsing. */
+function parseCmdValue(raw: string): unknown {
+  const text = raw.trim().replace(/^['"]|['"]$/g, "");
+  if (text === "true") return true;
+  if (text === "false") return false;
+  if (text === "null") return null;
+  if (/^-?\d+(?:\.\d+)?$/.test(text)) return Number(text);
+
+  // Recursively parse nested objects
+  if (text.startsWith("{") && text.endsWith("}")) {
+    const nested = parseCmdObject(text);
+    if (nested) return nested;
+  }
+  // Recursively parse nested arrays
+  if (text.startsWith("[") && text.endsWith("]")) {
+    const inner = text.slice(1, -1).trim();
+    if (!inner) return [];
+    const items = splitTopLevel(inner, ",");
+    return items.map((item) => parseCmdValue(item.trim()));
+  }
+
+  return text;
 }
 
 function stripOuterQuotes(input: string): string {
@@ -359,7 +402,14 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
       }
       toolArgs = parseToolArgs(Buffer.concat(chunks).toString());
     } else if (argsIdx !== -1 && argsIdx + 1 < args.length) {
-      toolArgs = parseToolArgs(args[argsIdx + 1]);
+      // cmd.exe strips double quotes from JSON, which turns spaces inside
+      // string values into argument boundaries. Rejoin adjacent fragments
+      // that belong to the same JSON argument (stopping at the next --flag).
+      let raw = args[argsIdx + 1];
+      for (let i = argsIdx + 2; i < args.length && !args[i].startsWith("--"); i++) {
+        raw += " " + args[i];
+      }
+      toolArgs = parseToolArgs(raw);
     }
 
     // Resolve image_path / doc_path → base64 before sending to API
