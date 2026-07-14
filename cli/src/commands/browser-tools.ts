@@ -503,7 +503,7 @@ async function browserClick(ctx: SessionContext, args: Record<string, unknown>):
   const target = await resolveTargetFromArgs(args, ctx.config);
   const result = await ctx.session.click(target);
   await saveActivePage(result.url, result.pageId);
-  return { structuredContent: { clicked: target.selector, title: result.title, url: result.url } };
+  return { structuredContent: { clicked: target.original, selector: target.selector, title: result.title, url: result.url } };
 }
 
 // ── Browser Type ───────────────────────────────────────────────────
