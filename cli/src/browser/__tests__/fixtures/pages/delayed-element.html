@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Delayed Element</title></head>
+<body>
+  <h1>Delayed Element</h1>
+  <p>Button will appear in 2 seconds...</p>
+  <div id="container"></div>
+  <script>
+    setTimeout(() => {
+      const btn = document.createElement("button");
+      btn.id = "btn-late";
+      btn.textContent = "I'm late";
+      btn.onclick = () => { btn.textContent = "Clicked!"; };
+      document.getElementById("container").appendChild(btn);
+    }, 2000);
+  </script>
+</body>
+</html>

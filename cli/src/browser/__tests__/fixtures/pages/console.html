@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Console Test</title></head>
+<body>
+  <h1>Console Test</h1>
+  <button id="btn-log">Log something</button>
+  <button id="btn-error">Error something</button>
+  <script>
+    console.log("page-loaded");
+    document.getElementById("btn-log").onclick = () => {
+      console.log("button-clicked", { detail: 42 });
+    };
+    document.getElementById("btn-error").onclick = () => {
+      console.error("button-error", "something went wrong");
+    };
+  </script>
+</body>
+</html>
