@@ -12,7 +12,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tokio_stream::StreamExt;
 
-use super::{Loop, C_MAGENTA, C_RESET, DEFAULT_MAX_TURNS};
+use super::{Loop, C_GREEN, C_MAGENTA, C_RESET, DEFAULT_MAX_TURNS};
 
 const STREAM_EVENT_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
 const COMPLETE_TOOL_CALL_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -343,15 +343,6 @@ impl Loop {
                 };
                 on_event(event.clone());
 
-                if self.verbose
-                    && !matches!(
-                        event.event_type.as_str(),
-                        "thinking_delta" | "text_delta" | "toolcall_delta"
-                    )
-                {
-                    tracing::debug!("[EVENT] {} len={}", event.event_type, event.text.len());
-                }
-
                 match event.event_type.as_str() {
                     "thinking_start" => {
                         if self.verbose {
@@ -382,6 +373,10 @@ impl Loop {
                         assistant_text.push_str(&event.text);
                         if self.verbose && !output_started {
                             output_started = true;
+                            eprint!("\n{}[output]{} ", C_GREEN, C_RESET);
+                        }
+                        if self.verbose {
+                            eprint!("{}", event.text);
                         }
                         on_text(event.text.clone());
                         if let Some(ref bus) = self.event_bus {
@@ -394,6 +389,9 @@ impl Loop {
                         }
                     }
                     "text_end" => {
+                        if self.verbose {
+                            eprintln!(); // blank line after output
+                        }
                         if let Some(ref bus) = self.event_bus {
                             bus.emit(text_end());
                         }
@@ -542,11 +540,17 @@ impl Loop {
                         }
                     }
                     "tool_start" => {
+                        if self.verbose {
+                            tracing::info!("[tool] {} → starting", event.tool_name);
+                        }
                         if let Some(ref bus) = self.event_bus {
                             bus.emit(tool_start(&event.tool_name, &event.tool_id));
                         }
                     }
                     "tool_end" => {
+                        if self.verbose {
+                            tracing::info!("[tool] {} ← done", event.tool_name);
+                        }
                         if let Some(ref bus) = self.event_bus {
                             bus.emit(tool_end(&event.tool_name));
                         }
