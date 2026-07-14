@@ -303,7 +303,7 @@ pub fn generate_image_thumbnail(
 /// so the durable copy lives here (persistent, in the asset-protocol scope)
 /// instead of the temp dir, which the OS may purge.
 #[tauri::command]
-pub fn import_workspace_image(
+pub fn import_ephemeral_image(
     thread_id: String,
     source_path: String,
     name: String,

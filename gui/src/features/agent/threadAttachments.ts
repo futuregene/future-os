@@ -1,6 +1,6 @@
 import type { MessageAttachment } from "./agentThreadTypes";
 import i18n from "../../i18n";
-import { deleteTempAttachment, generateImageThumbnail, importWorkspaceImage } from "../../integrations/storage/files";
+import { deleteTempAttachment, generateImageThumbnail, importEphemeralImage, validateImageAttachment } from "../../integrations/storage/files";
 
 /**
  * A pasted/downloaded image lives in our temp dir (`futureos-attachments`) and
@@ -30,25 +30,34 @@ export async function persistImageAttachments(attachments: MessageAttachment[], 
       if (attachment.kind !== "image") {
         return { attachment, thumbnail: null };
       }
-      // Thumbnail generation doubles as the authoritative decode/readability
-      // check. Never claim an image was sent when the agent will later skip it.
-      const thumbnail = await generateImageThumbnail({ sourcePath: attachment.path, threadId }).catch(() => null);
-      if (!thumbnail) {
+      // Authoritative readability gate: a pure decode with no side effects. If
+      // it can't be decoded the agent would later skip it, so reject the whole
+      // send rather than claim the image was attached.
+      try {
+        await validateImageAttachment(attachment.path);
+      }
+      catch {
         throw new Error(i18n.t("agent:attachment.imageUnreadable", { name: attachment.name }));
       }
+      // The thumbnail is a best-effort nicety for the bubble. A write failure
+      // (disk full, permissions) must not block an already-validated image —
+      // degrade to no thumbnail instead of rejecting the batch.
+      const thumbnail = await generateImageThumbnail({ sourcePath: attachment.path, threadId }).catch(() => null);
       return { attachment, thumbnail };
     }),
   );
 
   // Phase 2 may persist ephemeral originals now that the whole batch is valid.
+  // A missing thumbnail no longer skips persistence — the image is valid and
+  // must still get a durable path before its temp original is reclaimed.
   return Promise.all(
     prepared.map(async ({ attachment, thumbnail }) => {
-      if (attachment.kind !== "image" || !thumbnail)
+      if (attachment.kind !== "image")
         return attachment;
       let path = attachment.path;
       if (isEphemeralImagePath(path)) {
         try {
-          const origin = await importWorkspaceImage({ name: attachment.name, path, threadId });
+          const origin = await importEphemeralImage({ name: attachment.name, path, threadId });
           await deleteTempAttachment(path).catch(() => {});
           path = origin;
         }
@@ -56,7 +65,7 @@ export async function persistImageAttachments(attachments: MessageAttachment[], 
           // Best-effort: keep the temp path if the durable copy fails.
         }
       }
-      return { ...attachment, path, thumbnail };
+      return thumbnail ? { ...attachment, path, thumbnail } : { ...attachment, path };
     }),
   );
 }

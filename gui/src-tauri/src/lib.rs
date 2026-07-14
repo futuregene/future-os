@@ -202,7 +202,7 @@ pub fn run() {
             validate_image_attachment,
             read_file_base64,
             generate_image_thumbnail,
-            import_workspace_image,
+            import_ephemeral_image,
             delete_temp_attachment,
             export_artifact_file,
             initialize_app_store,

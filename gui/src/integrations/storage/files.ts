@@ -102,8 +102,8 @@ export async function generateImageThumbnail(input: { threadId: string; sourcePa
  * Copy an ephemeral pasted-image original into the thread's persistent image dir
  * (`~/.future/app/images/<threadId>/origin`) and return the durable path.
  */
-export async function importWorkspaceImage(input: { threadId: string; path: string; name: string }) {
-  return invokeCommand<string>("import_workspace_image", {
+export async function importEphemeralImage(input: { threadId: string; path: string; name: string }) {
+  return invokeCommand<string>("import_ephemeral_image", {
     name: input.name,
     sourcePath: input.path,
     threadId: input.threadId,
