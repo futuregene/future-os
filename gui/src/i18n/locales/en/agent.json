@@ -129,7 +129,7 @@
     "headerTitle": "New conversation",
     "chatSubtitle": "Chat",
     "welcome": "Welcome",
-    "placeholder": "Type anything",
+    "placeholder": "Ask Future Copilot to plan, research, analyze, edit, or prepare a workflow...",
     "workspace": "Workspace",
     "noWorkspaces": "No workspaces yet.",
     "openExisting": "Open workspace",
