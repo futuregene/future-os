@@ -37,13 +37,22 @@ export class SafariManager implements BrowserManager {
 
     // Check if safaridriver is already running on this port
     if (await this.endpointReachable(driverEndpoint)) {
+      // Try to create a session — may fail if remote automation is not enabled
+      let sessionId: string;
+      try {
+        const client = new WebDriverClient(driverEndpoint);
+        sessionId = await client.createSession();
+      } catch (e) {
+        throw this.translateError(e);
+      }
+
       return {
         connection: {
           protocol: "webdriver",
           browserKind: "safari",
           endpoint: driverEndpoint,
-          sessionId: "", // Will be created on first use
-          driverPid: undefined, // Unknown
+          sessionId,
+          driverPid: undefined,
         },
         launcher: SAFARIDRIVER_PATH,
         port,
@@ -70,15 +79,7 @@ export class SafariManager implements BrowserManager {
         try {
           sessionId = await client.createSession();
         } catch (e) {
-          const msg = (e as Error).message;
-          // Check for permission error
-          if (msg.includes("Allow Remote Automation") || msg.includes("unknown error")) {
-            throw new BrowserPermissionError(
-              "Safari",
-              'Enable "Allow Remote Automation" in Safari → Develop, or run: safaridriver --enable',
-            );
-          }
-          throw e;
+          throw this.translateError(e);
         }
 
         return {
@@ -127,6 +128,28 @@ export class SafariManager implements BrowserManager {
   }
 
   // ── Helpers ────────────────────────────────────────────────────────
+
+  /**
+   * Translate WebDriver/launch errors into user-actionable messages.
+   * Permission errors (safaridriver --enable required) get a clear
+   * single-line remedy.
+   */
+  private translateError(e: unknown): Error {
+    const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
+    if (msg.includes("allow remote automation") || msg.includes("remote automation")) {
+      return new BrowserPermissionError(
+        "Safari",
+        "safaridriver --enable",
+      );
+    }
+    if (msg.includes("session not created")) {
+      return new BrowserPermissionError(
+        "Safari",
+        "safaridriver --enable",
+      );
+    }
+    return e instanceof Error ? e : new Error(String(e));
+  }
 
   private async endpointReachable(url: string): Promise<boolean> {
     try {
