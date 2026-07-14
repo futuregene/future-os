@@ -38,7 +38,7 @@ export const BROWSER_TOOL_CATALOG: Record<string, BrowserToolEntry> = {
   browser: {
     description: "Control a local visible Chrome/Edge/Safari browser. Sub-commands: start, status, tabs, open, snapshot, click, type, press, screenshot, console.",
     args: {
-      command: '"start" | "status" | "tabs" | "open" | "snapshot" | "click" | "type" | "press" | "screenshot" | "console"',
+      command: '"start" | "status" | "tabs" | "open" | "snapshot" | "click" | "type" | "press" | "scroll" | "screenshot" | "console"',
       // start
       browser: 'string (default: auto, for start: "chrome" | "edge" | "safari")',
       port: "integer (default: 9222)",
@@ -67,6 +67,9 @@ export const BROWSER_TOOL_CATALOG: Record<string, BrowserToolEntry> = {
       fullPage: "boolean",
       path: "string (optional)",
       output: "string (optional alias for path)",
+      // scroll
+      direction: '"up" | "down" (default: "down")',
+      amount: "integer (default: 300, pixels to scroll)",
       // console
       level: '"log" | "info" | "warn" | "error" (optional)',
     },
@@ -101,10 +104,12 @@ export async function callBrowserTool(_name: string, args: Record<string, unknow
       return withSession(args, (ctx) => browserPress(ctx, args));
     case "screenshot":
       return withSession(args, (ctx) => browserScreenshot(ctx, args));
+    case "scroll":
+      return withSession(args, (ctx) => browserScroll(ctx, args));
     case "console":
       return withSession(args, (ctx) => browserConsole(ctx, args));
     default:
-      throw new Error(`Unknown browser command: "${command}". Use: start, status, tabs, open, snapshot, click, type, press, screenshot, console.`);
+      throw new Error(`Unknown browser command: "${command}". Use: start, status, tabs, open, snapshot, click, type, press, scroll, screenshot, console.`);
   }
 }
 
@@ -164,13 +169,22 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
 
   if (await endpointReachable(endpoint)) {
     const config = await loadBrowserConfig();
+    const existingEndpoint = config.connection.endpoint;
     config.connection = {
       protocol: "cdp",
       browserKind: "chromium",
       endpoint,
     };
     await saveBrowserConfig(config);
-    return { structuredContent: { endpoint, status: "already_running" } };
+    return {
+      structuredContent: {
+        endpoint,
+        status: "already_running",
+        note: existingEndpoint && existingEndpoint !== endpoint
+          ? `Browser endpoint was updated (was ${existingEndpoint}). Subsequent commands will use this browser.`
+          : "Browser is already running at this endpoint.",
+      },
+    };
   }
 
   const executablePath = stringArg(args, "executablePath");
@@ -368,14 +382,16 @@ async function browserTabs(ctx: SessionContext, args: Record<string, unknown>): 
 
   if (action === "list") {
     const result = await session.tabs({ action: "list" });
+    const tabs = result.kind === "list" ? result.tabs.map(tab => ({
+      index: tab.index,
+      title: tab.title,
+      url: tab.url,
+      active: tab.active,
+    })) : [];
     return {
       structuredContent: {
-        tabs: result.kind === "list" ? result.tabs.map(tab => ({
-          index: tab.index,
-          title: tab.title,
-          url: tab.url,
-          active: tab.active,
-        })) : [],
+        tabs,
+        tabCount: tabs.length,
       },
     };
   }
@@ -385,8 +401,16 @@ async function browserTabs(ctx: SessionContext, args: Record<string, unknown>): 
     const result = await session.tabs({ action: "new", url });
     if (result.kind !== "new") throw new Error("Unexpected tabs result");
     await saveActivePage(result.page.url, result.page.pageId);
+    // Refresh full tab list so the response shape matches "list"
+    const fresh = await session.tabs({ action: "list" });
+    const tabs = fresh.kind === "list" ? fresh.tabs.map(tab => ({
+      index: tab.index,
+      title: tab.title,
+      url: tab.url,
+      active: tab.active,
+    })) : [];
     return {
-      structuredContent: { index: result.index, url: result.page.url, title: result.page.title },
+      structuredContent: { tabs, tabCount: tabs.length, created: { index: result.index, url: result.page.url } },
     };
   }
 
@@ -399,15 +423,31 @@ async function browserTabs(ctx: SessionContext, args: Record<string, unknown>): 
     const result = await session.tabs({ action: "select", index });
     if (result.kind !== "select") throw new Error("Unexpected tabs result");
     await saveActivePage(result.page.url, result.page.pageId);
+    const fresh = await session.tabs({ action: "list" });
+    const tabs = fresh.kind === "list" ? fresh.tabs.map(tab => ({
+      index: tab.index,
+      title: tab.title,
+      url: tab.url,
+      active: tab.active,
+    })) : [];
     return {
-      structuredContent: { selected: index, url: result.page.url, title: result.page.title },
+      structuredContent: { tabs, tabCount: tabs.length, selected: { index, url: result.page.url } },
     };
   }
 
   if (action === "close") {
     const result = await session.tabs({ action: "close", index });
     if (result.kind !== "close") throw new Error("Unexpected tabs result");
-    return { structuredContent: { closed: index, url: result.url } };
+    const fresh = await session.tabs({ action: "list" });
+    const tabs = fresh.kind === "list" ? fresh.tabs.map(tab => ({
+      index: tab.index,
+      title: tab.title,
+      url: tab.url,
+      active: tab.active,
+    })) : [];
+    return {
+      structuredContent: { tabs, tabCount: tabs.length, closed: { index, url: result.url } },
+    };
   }
 
   throw new Error('browser command tabs: action must be "list", "new", "select", or "close".');
@@ -475,7 +515,7 @@ async function browserType(ctx: SessionContext, args: Record<string, unknown>): 
   const clear = booleanArg(args, "clear") ?? true;
   const submit = booleanArg(args, "submit") ?? false;
   const result = await ctx.session.type(target, text, { clear, submit });
-  return { structuredContent: { typed: target.selector, submitted: result.submitted } };
+  return { structuredContent: { typed: target.original, selector: target.selector, submitted: result.submitted } };
 }
 
 // ── Browser Press ──────────────────────────────────────────────────
@@ -502,6 +542,36 @@ async function browserScreenshot(ctx: SessionContext, args: Record<string, unkno
   const title = await ctx.session.evaluate<string>({ kind: "expression", expression: "document.title" }).catch(() => "");
   const url = await ctx.session.evaluate<string>({ kind: "expression", expression: "location.href" }).catch(() => "");
   return { structuredContent: { path: finalPath, filename, title, url } };
+}
+
+// ── Browser Scroll ────────────────────────────────────────────────
+
+async function browserScroll(ctx: SessionContext, args: Record<string, unknown>): Promise<LocalToolResult> {
+  const direction = stringArg(args, "direction") ?? "down";
+  const amount = numberArg(args, "amount") ?? 300;
+  const target = stringArg(args, "ref") ?? stringArg(args, "selector");
+
+  const px = direction === "down" || direction === "up" ? 0 : amount;
+  const py = direction === "down" ? amount : direction === "up" ? -amount : 0;
+
+  if (target) {
+    // Scroll a specific element
+    const resolved = await resolveTargetFromArgsOptional(args, ctx.config);
+    await ctx.session.evaluate({
+      kind: "function",
+      functionDeclaration: `function(sel, x, y) { var el = document.querySelector(sel); if (el) el.scrollBy({ left: x, top: y, behavior: 'smooth' }); }`,
+      arguments: [resolved?.selector ?? target, px, py],
+    });
+  } else {
+    // Scroll the page
+    await ctx.session.evaluate({
+      kind: "function",
+      functionDeclaration: `function(x, y) { window.scrollBy({ left: x, top: y, behavior: 'smooth' }); }`,
+      arguments: [px, py],
+    });
+  }
+
+  return { structuredContent: { scrolled: { direction, amount, target: target ?? "page" } } };
 }
 
 // ── Browser Console ────────────────────────────────────────────────
