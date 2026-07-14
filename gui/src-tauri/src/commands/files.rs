@@ -35,26 +35,22 @@ fn best_effort_canonical(path: &Path) -> PathBuf {
     base
 }
 
-/// Reject file access to FutureOS's own config/credential root (`~/.future`).
-/// These commands are reachable from the webview, which renders agent-produced
-/// markdown/artifacts — without this guard an XSS could read `auth.json` or
-/// overwrite `approval_rule.json`, escalating to the very secrets the
-/// approval/sandbox system protects. User-chosen files elsewhere stay allowed.
+/// Reject file access to FutureOS's own credential files. These commands are
+/// reachable from the webview, which renders agent-produced markdown/artifacts —
+/// without this guard an XSS could read `auth.json` and exfiltrate API keys.
 ///
-/// Chat-workspace artifacts live *inside* this root
-/// (`~/.future/workspaces/chat/<id>/…`) and must stay previewable, so
-/// that subtree is carved back out — EXCEPT any nested `.future/` segment, which
-/// is where each workspace keeps its own `approval_rule.json`. The carve-out
-/// therefore preserves the invariant "sensitive config lives in a `.future/`
-/// dir": a workspace's product files open, its `.future/*` secrets don't.
+/// This is a **denylist of credential files only** (`auth.json` / `models.json`
+/// in the agent config dirs). Everything else — attachment images, workspace
+/// files, the app DB, session history, settings, run logs, and any user-chosen
+/// file elsewhere — is allowed: the webview already reaches all of that through
+/// typed store/session commands, so the raw bytes aren't a new exposure. The
+/// only thing it never legitimately needs as raw bytes is the credentials.
 fn ensure_path_allowed(path: &Path) -> Result<(), crate::AppError> {
     let resolved = best_effort_canonical(path);
     if let Some(home) = crate::home_dir() {
         if let Ok(future_dir) = PathBuf::from(home).join(".future").canonicalize() {
-            if resolved.starts_with(&future_dir)
-                && !is_allowed_workspace_artifact(&future_dir, &resolved)
-            {
-                return Err("Refusing to access a protected FutureOS directory."
+            if is_protected_credential(&future_dir, &resolved) {
+                return Err("Refusing to access a protected FutureOS credential file."
                     .to_string()
                     .into());
             }
@@ -63,25 +59,24 @@ fn ensure_path_allowed(path: &Path) -> Result<(), crate::AppError> {
     Ok(())
 }
 
-/// True when `resolved` (already canonical) is a chat-workspace product file:
-/// under `~/.future/workspaces/` and not traversing any `.future/` segment.
-fn is_allowed_workspace_artifact(future_dir: &Path, resolved: &Path) -> bool {
-    // Workspace artifacts under ~/.future/workspaces/… (but not a nested .future).
-    let workspaces_root = future_dir.join("workspaces");
-    let workspaces_root = workspaces_root.canonicalize().unwrap_or(workspaces_root);
-    if let Ok(tail) = resolved.strip_prefix(&workspaces_root) {
-        if !tail
-            .components()
-            .any(|component| component.as_os_str() == ".future")
-        {
-            return true;
-        }
+/// True when `resolved` (already canonical) is a FutureOS credential file:
+/// `auth.json` / `models.json` sitting directly in an agent config dir
+/// (`~/.future/agent/` or `~/.future/agent-app/`). Scoped to those dirs so a
+/// user's own file that merely shares the name (e.g. a workspace `models.json`)
+/// stays readable.
+fn is_protected_credential(future_dir: &Path, resolved: &Path) -> bool {
+    let is_credential_name = resolved
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "auth.json" || name == "models.json");
+    if !is_credential_name {
+        return false;
     }
-    // Per-thread attachment images (origins + thumbnails) under
-    // ~/.future/app/images/… — read to preview a message's image attachment.
-    let images_root = future_dir.join("app").join("images");
-    let images_root = images_root.canonicalize().unwrap_or(images_root);
-    resolved.starts_with(&images_root)
+    ["agent", "agent-app"].iter().any(|dir| {
+        let cred_dir = future_dir.join(dir);
+        let cred_dir = cred_dir.canonicalize().unwrap_or(cred_dir);
+        resolved.parent() == Some(cred_dir.as_path())
+    })
 }
 
 #[derive(serde::Serialize)]
@@ -569,47 +564,39 @@ mod tests {
     }
 
     #[test]
-    fn workspace_product_file_is_allowed() {
-        let future_dir = future_root("allow");
-        let artifact = write_under(&future_dir, "workspaces/chat/thread_x/长诗.md");
-        assert!(is_allowed_workspace_artifact(&future_dir, &artifact));
-    }
-
-    #[test]
-    fn nested_dot_future_secrets_stay_blocked() {
-        let future_dir = future_root("block_nested");
-        let rule = write_under(
-            &future_dir,
-            "app/workspaces/chat/thread_x/.future/approval_rule.json",
-        );
-        assert!(!is_allowed_workspace_artifact(&future_dir, &rule));
-    }
-
-    #[test]
-    fn config_roots_outside_workspaces_stay_blocked() {
-        let future_dir = future_root("block_roots");
-        // The app database and credential files stay blocked; only the images
-        // subtree is opened (see thread_attachment_images_are_allowed).
-        for rel in ["agent/auth.json", "app/app.db"] {
-            let secret = write_under(&future_dir, rel);
+    fn credential_files_are_protected() {
+        let future_dir = future_root("block_creds");
+        for rel in [
+            "agent/auth.json",
+            "agent/models.json",
+            "agent-app/auth.json",
+        ] {
+            let cred = write_under(&future_dir, rel);
             assert!(
-                !is_allowed_workspace_artifact(&future_dir, &secret),
-                "{rel} must stay blocked"
+                is_protected_credential(&future_dir, &cred),
+                "{rel} must be blocked"
             );
         }
     }
 
     #[test]
-    fn thread_attachment_images_are_allowed() {
-        let future_dir = future_root("allow_images");
-        // Origins + thumbnails an image attachment previews through read_file_base64.
+    fn content_and_config_are_readable() {
+        let future_dir = future_root("allow_content");
+        // Attachment images, the app DB, session history, settings, workspace
+        // files — none are credentials, so all stay readable.
         for rel in [
             "app/images/thread_x/origin/1-pic.png",
             "app/images/thread_x/thumb/2.jpg",
+            "app/app.db",
+            "agent/sessions/s.jsonl",
+            "agent/settings.json",
+            "workspaces/chat/thread_x/长诗.md",
+            // Same filename as a credential but not in an agent config dir.
+            "workspaces/chat/thread_x/models.json",
         ] {
-            let image = write_under(&future_dir, rel);
+            let file = write_under(&future_dir, rel);
             assert!(
-                is_allowed_workspace_artifact(&future_dir, &image),
+                !is_protected_credential(&future_dir, &file),
                 "{rel} must be readable"
             );
         }
