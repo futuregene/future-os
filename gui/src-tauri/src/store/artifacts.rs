@@ -36,13 +36,16 @@ sql_record!(pub(super) ARTIFACT_COLUMNS, artifact_from_row -> ArtifactRecord {
 pub fn list_artifacts(thread_id: &str) -> Result<Vec<ArtifactRecord>, crate::AppError> {
     let thread = loaded(get_thread(thread_id)?, "Thread")?;
     let conn = connect()?;
+    // Newest touch first: a row now folds every write/edit of one file (see
+    // `ensure_artifact`), so `created_at` would pin a file the Agent just
+    // reworked to wherever it first appeared.
     let mut stmt = conn.prepare(&format!(
         "SELECT {ARTIFACT_COLUMNS}
              FROM artifacts
              WHERE deleted_at IS NULL
                AND workspace_id = ?1
                AND (?2 = 'workspace' OR thread_id = ?3)
-             ORDER BY created_at DESC"
+             ORDER BY updated_at DESC"
     ))?;
     let rows = stmt.query_map(
         params![thread.workspace_id, thread.mode, thread.id],
@@ -130,10 +133,18 @@ pub fn import_attachment_artifact(
     })
 }
 
+/// Record a file (or inline) artifact produced by a Run, folding repeat touches
+/// of the same file into one row.
+///
+/// A file artifact's identity is its `path` within the Thread: one file written
+/// then edited again across several Runs is a single work product, so the Panel
+/// must show one row carrying its latest state — not one row per touch. Row
+/// identity is enforced by `idx_artifacts_thread_path`. Path-less (inline)
+/// artifacts have no such identity and stay keyed by (run_id, title).
 pub fn ensure_artifact(input: EnsureArtifactInput) -> Result<(), crate::AppError> {
-    // BEGIN IMMEDIATE so the existence check and the insert are one atomic write;
-    // concurrent agent events for the same artifact would otherwise both pass the
-    // check and insert duplicates.
+    // BEGIN IMMEDIATE so the lookup and the write are one atomic transaction;
+    // concurrent agent events for the same artifact would otherwise both miss
+    // the existing row and insert duplicates.
     let mut conn = connect()?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let thread_id = run_thread_id(&tx, &input.run_id)?;
@@ -142,43 +153,74 @@ pub fn ensure_artifact(input: EnsureArtifactInput) -> Result<(), crate::AppError
         params![thread_id],
         |row| row.get(0),
     )?;
-    let existing: Option<String> = tx
-        .query_row(
-            "SELECT id
-             FROM artifacts
-             WHERE run_id = ?1
-               AND title = ?2
-               AND COALESCE(path, '') = COALESCE(?3, '')
-               AND deleted_at IS NULL
-             LIMIT 1",
-            params![input.run_id, input.title, input.path],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if existing.is_some() {
-        return Ok(());
-    }
+    let existing: Option<String> = match input.path.as_deref() {
+        Some(path) => tx
+            .query_row(
+                "SELECT id
+                 FROM artifacts
+                 WHERE thread_id = ?1
+                   AND path = ?2
+                   AND deleted_at IS NULL
+                 LIMIT 1",
+                params![thread_id, path],
+                |row| row.get(0),
+            )
+            .optional()?,
+        None => tx
+            .query_row(
+                "SELECT id
+                 FROM artifacts
+                 WHERE run_id = ?1
+                   AND title = ?2
+                   AND path IS NULL
+                   AND deleted_at IS NULL
+                 LIMIT 1",
+                params![input.run_id, input.title],
+                |row| row.get(0),
+            )
+            .optional()?,
+    };
 
     let now = now_millis();
-    tx.execute(
-        "INSERT INTO artifacts (
-             id, workspace_id, thread_id, run_id, title, artifact_type, path, content,
-             content_storage, summary, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
-        params![
-            create_id("artifact"),
-            workspace_id,
-            thread_id,
-            input.run_id,
-            input.title,
-            input.artifact_type,
-            input.path,
-            input.content,
-            input.content_storage,
-            input.summary,
-            now
-        ],
-    )?;
+    match existing {
+        // Fold this touch into the row: `created_at` keeps the first sighting,
+        // `run_id`/`updated_at` move to the latest one.
+        Some(id) => tx.execute(
+            "UPDATE artifacts
+             SET run_id = ?1, title = ?2, artifact_type = ?3, content = ?4,
+                 content_storage = ?5, summary = ?6, updated_at = ?7
+             WHERE id = ?8",
+            params![
+                input.run_id,
+                input.title,
+                input.artifact_type,
+                input.content,
+                input.content_storage,
+                input.summary,
+                now,
+                id
+            ],
+        )?,
+        None => tx.execute(
+            "INSERT INTO artifacts (
+                 id, workspace_id, thread_id, run_id, title, artifact_type, path, content,
+                 content_storage, summary, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+            params![
+                create_id("artifact"),
+                workspace_id,
+                thread_id,
+                input.run_id,
+                input.title,
+                input.artifact_type,
+                input.path,
+                input.content,
+                input.content_storage,
+                input.summary,
+                now
+            ],
+        )?,
+    };
     tx.commit()?;
     Ok(())
 }

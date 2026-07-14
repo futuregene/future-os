@@ -475,6 +475,16 @@ Artifact 表示工作过程中产生的可复用产物。
 - 一个 Artifact 可以来源于一个 Thread 或 Run。
 - 一个 Artifact 可以成为引用对象。
 
+身份与去重（`idx_artifacts_thread_path`）：
+
+- **文件型 Artifact 的身份是 (`thread_id`, `path`)，不是 Run**。同一个文件被 write 之后又在后续 Run 里 edit，是同一件工作成果，面板必须只显示一行、且是最新状态——而不是每次改动一行。由 partial unique index `idx_artifacts_thread_path ON artifacts(thread_id, path) WHERE deleted_at IS NULL AND path IS NOT NULL` 强制。
+- `store::ensure_artifact` 据此 upsert：命中则更新 `run_id` / `summary` / `content` / `updated_at`（指向最新一次改动），`created_at` 保留首次生成时间；未命中才插入。
+- 无 `path` 的 inline artifact 没有文件身份，仍按 (`run_id`, `title`) 去重，也被上述 partial index 排除。
+- 用户软删（`deleted_at`）的行不参与去重：Agent 事后重新写同一个文件会新起一行，符合直觉。
+- 该索引暂不在 `SCHEMA` 里，只在 `ADDED_INDEXES`——旧版本写入的**开发库**存在重复行，必须先由 `db::dedupe_file_artifacts` 折叠（保留组内最近改动的一行，并继承组内最早的 `created_at`）才能建索引，而 `SCHEMA` 跑在所有迁移步骤之前。
+- **`dedupe_file_artifacts` 是发布前的临时迁移**：项目尚未发布，它只为折叠开发机上已有库的重复行而存在。发布前连同其测试、`apply_schema` 中的调用一起删除，并把 `idx_artifacts_thread_path` 移回 `SCHEMA`——留着它等于每次启动都对用户数据跑一遍删除。
+- 面板排序按 `updated_at DESC`：一行已折叠该文件的全部改动，用 `created_at` 会把刚被 Agent 重写的文件钉在它首次出现的位置。
+
 说明：
 
 - Artifact 的 `content` 只存小内容。
