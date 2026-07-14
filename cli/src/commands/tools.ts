@@ -157,7 +157,19 @@ async function callRemoteTool(apiKey: string, name: string, args: Record<string,
     arguments: args,
   }, apiKey, sessionId, 2, timeoutMs);
 
-  if (body.error) throw new Error(`tools/call failed: ${JSON.stringify(body.error)}`);
+  if (body.error) {
+    const err = body.error as Record<string, unknown>;
+    // Upstream errors often nest a JSON string inside data.body — parse it
+    // so the error is readable without a second JSON.decode pass.
+    if (err.data && typeof err.data === "object") {
+      const data = err.data as Record<string, unknown>;
+      if (typeof data.body === "string") {
+        try { data.body = JSON.parse(data.body as string); }
+        catch { /* keep raw string */ }
+      }
+    }
+    throw new Error(`tools/call failed: ${JSON.stringify(err)}`);
+  }
 
   const result = getRecord(body.result);
   const content = Array.isArray(result?.content) ? result!.content : [];
@@ -392,7 +404,11 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     const timeoutSec = timeoutIdx !== -1 && timeoutIdx + 1 < args.length
       ? parseInt(args[timeoutIdx + 1], 10) || 0
       : 0;
-    const timeoutMs = timeoutSec > 0 ? timeoutSec * 1000 : undefined;
+    const timeoutMs = timeoutSec > 0
+      ? timeoutSec * 1000
+      : ["image_gen", "image_edit"].includes(toolName)
+        ? 600_000   // image generation can take 2-10 minutes
+        : undefined; // other tools use mcpPost's default 60s
 
     if (stdinFlag) {
       // Read from stdin

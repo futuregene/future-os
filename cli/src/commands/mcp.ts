@@ -38,8 +38,9 @@ export async function mcpPost(
   };
   if (sessionId) headers["Mcp-Session-Id"] = sessionId;
 
+  const effectiveTimeout = timeoutMs ?? 60_000;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs ?? 60_000);
+  const timeout = setTimeout(() => controller.abort(), effectiveTimeout);
 
   try {
     const response = await fetch(url, {
@@ -73,8 +74,15 @@ export async function mcpPost(
       }
     }
     return { body: {}, sessionId: sid ?? null };
-  } finally {
+  } catch (error) {
     clearTimeout(timeout);
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(
+        `Request timed out after ${effectiveTimeout / 1000}s.\n` +
+        `Use --timeout <seconds> to extend (e.g. --timeout 600 for image generation).`,
+      );
+    }
+    throw error;
   }
 }
 
