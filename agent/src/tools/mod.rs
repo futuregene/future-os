@@ -322,15 +322,15 @@ fn edit_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<S
         #[serde(rename_all = "camelCase")]
         struct EditParams {
             path: String,
+            #[serde(alias = "old_text", alias = "old_string")]
             old_text: Option<String>,
+            #[serde(alias = "new_text", alias = "new_string")]
             new_text: Option<String>,
-            old_string: Option<String>,
-            new_string: Option<String>,
             edits: Option<Vec<EditOp>>,
         }
         let params: EditParams = serde_json::from_value(args)?;
-        let old_text = params.old_text.or(params.old_string);
-        let new_text = params.new_text.or(params.new_string);
+        let old_text = params.old_text;
+        let new_text = params.new_text;
         let edits: Option<Vec<EditOp>> = params.edits.map(|es| {
             es.into_iter()
                 .map(|e| EditOp {
@@ -687,8 +687,11 @@ async fn run_edit(
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct EditOp {
+    #[serde(alias = "old_text", alias = "old_string")]
     old_text: String,
+    #[serde(alias = "new_text", alias = "new_string")]
     new_text: String,
 }
 
