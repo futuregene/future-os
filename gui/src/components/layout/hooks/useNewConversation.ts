@@ -6,6 +6,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import i18n from "../../../i18n";
 import { updateCachedAgentState } from "../../../integrations/agent/agentStateCache";
+import { validateImageAttachment } from "../../../integrations/storage/files";
 import { createThread } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
 import { emitFutureEvent } from "../../../lib/futureEvents";
@@ -53,6 +54,20 @@ export function useNewConversation({
 
   async function startNewConversation(input: NewConversationStart) {
     try {
+      // Revalidate image sources immediately before creating the thread. The
+      // composer validated them when added, but a file can be moved or replaced
+      // while the draft is open. Rejecting here keeps the new-conversation
+      // composer and its draft intact instead of creating an empty thread.
+      for (const attachment of input.attachments ?? []) {
+        if (attachment.kind !== "image")
+          continue;
+        try {
+          await validateImageAttachment(attachment.path);
+        }
+        catch {
+          throw new Error(i18n.t("agent:attachment.imageUnreadable", { name: attachment.name }));
+        }
+      }
       const title = deriveThreadTitle(input.content);
       const thread = await createThread({
         mode: input.mode,

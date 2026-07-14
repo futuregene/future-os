@@ -113,6 +113,9 @@
   "attachment": {
     "readFailed": "无法读取",
     "directoryUnsupported": "不支持文件夹",
+    "imageTooLarge": "图片过大（最大 {{max}}）",
+    "imageUnreadable": "无法读取或解析图片：{{name}}",
+    "fileMissing": "文件已移动或删除：{{name}}",
     "binaryUnsupported": "不支持二进制文件",
     "typeUnsupported": "不支持的文件类型",
     "originalMissing": "原图已损坏或缺失"

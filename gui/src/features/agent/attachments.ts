@@ -1,5 +1,6 @@
 import i18n from "../../i18n";
-import { inspectAttachment } from "../../integrations/storage/files";
+import { inspectAttachment, validateImageAttachment } from "../../integrations/storage/files";
+import { formatBytes } from "../../lib/format";
 import { pathBasename } from "../../lib/workspacePath";
 
 /**
@@ -64,7 +65,7 @@ export function isDraggableAttachment(path: string, allowImages: boolean): boole
 export async function classifyAttachment(
   path: string,
 ): Promise<{ kind: AttachmentKind } | { kind: null; reason: string }> {
-  let info: { isDir: boolean } | null = null;
+  let info: { isDir: boolean; size: number } | null = null;
   try {
     info = await inspectAttachment(path);
   }
@@ -73,5 +74,22 @@ export async function classifyAttachment(
   }
   if (info.isDir)
     return { kind: null, reason: i18n.t("agent:attachment.directoryUnsupported") };
+  if (isImageExtension(path) && info.size > READ_SOURCE_MAX_BYTES) {
+    return {
+      kind: null,
+      reason: i18n.t("agent:attachment.imageTooLarge", { max: formatBytes(READ_SOURCE_MAX_BYTES) }),
+    };
+  }
+  if (isImageExtension(path)) {
+    try {
+      await validateImageAttachment(path);
+    }
+    catch {
+      return {
+        kind: null,
+        reason: i18n.t("agent:attachment.imageUnreadable", { name: fileNameFromPath(path) }),
+      };
+    }
+  }
   return { kind: isImageExtension(path) ? "image" : "file" };
 }

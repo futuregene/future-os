@@ -199,6 +199,7 @@ pub fn run() {
             resolve_preview_link_path,
             read_text_file_preview,
             inspect_attachment,
+            validate_image_attachment,
             read_file_base64,
             generate_image_thumbnail,
             import_workspace_image,

@@ -13,9 +13,10 @@ import { modelKey, modelLabel, modelOption, normalizeThinkingLevel, thinkingLeve
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { savePastedImage } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
+import { formatBytes } from "../../lib/format";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { isMacOS } from "../../lib/platform";
-import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, isDraggableAttachment, MAX_IMAGES_PER_TURN } from "./attachments";
+import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, isDraggableAttachment, MAX_IMAGES_PER_TURN, READ_SOURCE_MAX_BYTES } from "./attachments";
 import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "./composerDraft";
 import { MentionEditor } from "./MentionEditor";
 
@@ -222,7 +223,10 @@ export function Composer({
     // Compute next/rejected against the current attachments, then call both
     // setters — never call setAttachError inside a setAttachments updater
     // (updaters must be pure; StrictMode/concurrent React may run them twice).
-    const next = [...attachments];
+    // Classification is asynchronous and several sources (picker, paste, drag)
+    // may finish out of order. Merge into the live ref, not the render-time
+    // closure, so a later completion cannot overwrite an earlier one.
+    const next = [...attachmentsRef.current];
     const rejected: string[] = [];
     for (const { path, result } of classified) {
       if (next.some(attachment => attachment.path === path))
@@ -246,9 +250,10 @@ export function Composer({
       }
       next.push({ kind: result.kind, name: fileNameFromPath(path), path });
     }
+    attachmentsRef.current = next;
     setAttachments(next);
     setAttachError(rejected.length > 0 ? t("composer.attachIgnored", { items: rejected.join("，") }) : null);
-  }, [allowImages, attachments, t]);
+  }, [allowImages, t]);
 
   async function attachImageFiles(files: File[]) {
     // Save every file first, then attach in ONE addAttachmentPaths call:
@@ -257,6 +262,15 @@ export function Composer({
     // the previous one and only the last image survives.
     const saved: string[] = [];
     for (const file of files) {
+      if (file.size > READ_SOURCE_MAX_BYTES) {
+        setAttachError(t("composer.attachIgnored", {
+          items: t("composer.attachRejectedReason", {
+            name: file.name,
+            reason: t("attachment.imageTooLarge", { max: formatBytes(READ_SOURCE_MAX_BYTES) }),
+          }),
+        }));
+        continue;
+      }
       try {
         const buffer = await file.arrayBuffer();
         const result = await savePastedImage({
@@ -292,7 +306,9 @@ export function Composer({
   }
 
   function removeAttachment(path: string) {
-    setAttachments(current => current.filter(attachment => attachment.path !== path));
+    const next = attachmentsRef.current.filter(attachment => attachment.path !== path);
+    attachmentsRef.current = next;
+    setAttachments(next);
   }
 
   // Held in a ref so the webview drag listener below doesn't re-subscribe on

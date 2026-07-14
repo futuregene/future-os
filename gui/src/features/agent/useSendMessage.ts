@@ -4,6 +4,7 @@ import type { AgentMessage } from "./agentThreadTypes";
 import type { ComposerSendPayload } from "./Composer";
 import { useCallback, useEffect, useRef } from "react";
 import i18n from "../../i18n";
+import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { runSendPipeline } from "./sendPipeline";
 
@@ -69,6 +70,10 @@ export function useSendMessage({
         { isCurrentSend, modelId, onThreadActivity, refreshRecentRun, setMessages, setRecentRun, thinkingLevel, thread },
         payload,
       );
+    }
+    catch (error) {
+      emitFutureEvent("toast", { message: errorMessage(error), tone: "error" });
+      throw error;
     }
     finally {
       // Release the in-flight lock — but only if a newer send/thread switch

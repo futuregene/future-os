@@ -5,10 +5,13 @@ import { memo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CopyButton } from "../../components/ui/CopyButton";
 import { useCopyState } from "../../components/ui/useCopyState";
+import { openPath } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { formatDateTime, formatMessageTimestamp } from "../../lib/date";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { useNow } from "../../lib/useNow";
 import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
+import { previewKindForPath } from "../filepreview/previewKind";
 import { MarkdownContent } from "../markdown/MarkdownContent";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
 import { parseMentionSegments } from "./mentionMarkdown";
@@ -319,12 +322,25 @@ function AttachmentChip({ attachment }: { attachment: MessageAttachment }) {
   const { t } = useTranslation("agent");
   const [failed, setFailed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const previewKind = previewKindForPath(attachment.path);
+  const missingMessage = t("attachment.fileMissing", { name: attachment.name });
+
+  function handleOpen() {
+    if (previewKind) {
+      setPreviewOpen(true);
+      return;
+    }
+    void openPath(attachment.path).catch(() => {
+      emitFutureEvent("toast", { message: missingMessage, tone: "error" });
+    });
+  }
+
   if (attachment.thumbnail && !failed) {
     return (
       <>
         <button
           className="inline-flex items-center overflow-hidden rounded-md ring-1 ring-line-soft transition-shadow hover:ring-line"
-          onClick={() => setPreviewOpen(true)}
+          onClick={handleOpen}
           title={attachment.name}
           type="button"
         >
@@ -338,25 +354,41 @@ function AttachmentChip({ attachment }: { attachment: MessageAttachment }) {
         {/* Preview the full-size original. If it's gone (moved/reclaimed), toast
             that it's damaged and close — the 96px thumbnail isn't worth previewing. */}
         <FilePreviewOverlay
-          kind="image"
+          kind={previewKind ?? "image"}
           name={attachment.name}
           onClose={() => setPreviewOpen(false)}
           open={previewOpen}
           path={attachment.path}
-          unavailableMessage={t("attachment.originalMissing")}
+          unavailableMessage={missingMessage}
         />
       </>
     );
   }
   return (
-    <span
-      className="inline-flex max-w-72 items-center gap-1.5 rounded-md bg-surface px-2 py-1 text-xs text-ink-soft ring-1 ring-line-soft"
-      title={attachment.path}
-    >
-      {attachment.kind === "file"
-        ? <FileText className="size-3 shrink-0" />
-        : <Paperclip className="size-3 shrink-0" />}
-      <span className="truncate">{attachment.name}</span>
-    </span>
+    <>
+      <button
+        className="inline-flex max-w-72 items-center gap-1.5 rounded-md bg-surface px-2 py-1 text-xs text-ink-soft ring-1 ring-line-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+        onClick={handleOpen}
+        title={attachment.path}
+        type="button"
+      >
+        {attachment.kind === "file"
+          ? <FileText className="size-3 shrink-0" />
+          : <Paperclip className="size-3 shrink-0" />}
+        <span className="truncate">{attachment.name}</span>
+      </button>
+      {previewKind
+        ? (
+            <FilePreviewOverlay
+              kind={previewKind}
+              name={attachment.name}
+              onClose={() => setPreviewOpen(false)}
+              open={previewOpen}
+              path={attachment.path}
+              unavailableMessage={missingMessage}
+            />
+          )
+        : null}
+    </>
   );
 }

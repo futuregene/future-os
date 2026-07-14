@@ -118,6 +118,9 @@
   "attachment": {
     "readFailed": "Unable to read",
     "directoryUnsupported": "Folders are not supported",
+    "imageTooLarge": "Image is too large (maximum {{max}})",
+    "imageUnreadable": "{{name}} cannot be read or decoded as an image",
+    "fileMissing": "File has been moved or deleted: {{name}}",
     "binaryUnsupported": "Binary files are not supported",
     "typeUnsupported": "Unsupported file type",
     "originalMissing": "Original image is missing or damaged"

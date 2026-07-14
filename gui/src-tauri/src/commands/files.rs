@@ -4,7 +4,7 @@
 use std::{
     ffi::OsString,
     fs::File,
-    io::Read,
+    io::{BufReader, Read},
     path::{Path, PathBuf},
 };
 
@@ -111,6 +111,8 @@ pub struct AttachmentInfo {
     is_binary: bool,
 }
 
+const MAX_ATTACHMENT_IMAGE_BYTES: u64 = 25 * 1024 * 1024;
+
 /// Inspect a local file for attachment classification. The webview can't read
 /// arbitrary paths, so directory + binary detection must happen here in Rust.
 #[tauri::command]
@@ -143,6 +145,36 @@ pub fn inspect_attachment(path: String) -> Result<AttachmentInfo, crate::AppErro
         size: meta.len(),
         is_binary,
     })
+}
+
+/// Fully decode a user-selected image before it enters the composer. Extension
+/// classification alone is insufficient: a corrupt or renamed file would be
+/// shown as attached but later skipped by the multimodal request builder.
+#[tauri::command]
+pub fn validate_image_attachment(path: String) -> Result<(), crate::AppError> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("path cannot be empty.".to_string().into());
+    }
+    ensure_path_allowed(Path::new(trimmed))?;
+    let size = std::fs::metadata(trimmed)?.len();
+    if size > MAX_ATTACHMENT_IMAGE_BYTES {
+        return Err(format!(
+            "Image is too large ({size} bytes; limit {MAX_ATTACHMENT_IMAGE_BYTES})."
+        )
+        .into());
+    }
+    let file = File::open(trimmed)?;
+    let mut reader = image::ImageReader::new(BufReader::new(file))
+        .with_guessed_format()
+        .map_err(|error| format!("unreadable image: {error}"))?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(512 * 1024 * 1024);
+    reader.limits(limits);
+    reader
+        .decode()
+        .map_err(|error| format!("undecodable image: {error}"))?;
+    Ok(())
 }
 
 /// Hard ceiling for [`read_file_base64`]: the whole file is buffered in memory
@@ -215,7 +247,7 @@ fn safe_file_name(name: &str) -> String {
 /// Done entirely in Rust so the full-size image (up to tens of MB) never crosses
 /// the IPC bridge to a webview canvas — only the tiny thumbnail is produced. The
 /// decoder's allocation is capped to reject decompression bombs. Returns an error
-/// the caller treats as "no thumbnail" (it falls back to a named pill).
+/// that rejects the send while leaving the composer draft intact.
 #[tauri::command]
 pub fn generate_image_thumbnail(
     thread_id: String,
@@ -227,8 +259,15 @@ pub fn generate_image_thumbnail(
     if thread_id.is_empty() {
         return Err("invalid thread id.".to_string().into());
     }
-    let bytes = std::fs::read(source_path.trim())
-        .map_err(|error| format!("unable to read image: {error}"))?;
+    let source = source_path.trim();
+    let size = std::fs::metadata(source)?.len();
+    if size > MAX_ATTACHMENT_IMAGE_BYTES {
+        return Err(format!(
+            "Image is too large ({size} bytes; limit {MAX_ATTACHMENT_IMAGE_BYTES})."
+        )
+        .into());
+    }
+    let bytes = std::fs::read(source).map_err(|error| format!("unable to read image: {error}"))?;
     let mut reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
         .with_guessed_format()
         .map_err(|error| format!("unreadable image: {error}"))?;
@@ -258,10 +297,10 @@ pub fn generate_image_thumbnail(
     Ok(path.display().to_string())
 }
 
-/// Copy a workspace-mode image original into
+/// Copy an ephemeral pasted-image original into
 /// `~/.future/app/images/<thread_id>/origin/<stamp>_<name>` and return the new
-/// path. Workspace conversations don't save attachments into the user's project
-/// dir, so the durable copy lives here (persistent, in the asset-protocol scope)
+/// path. Conversations don't save attachments into the workspace/project dir,
+/// so the durable copy lives here (persistent, in the asset-protocol scope)
 /// instead of the temp dir, which the OS may purge.
 #[tauri::command]
 pub fn import_workspace_image(
@@ -493,6 +532,14 @@ pub fn save_pasted_image(
     if bytes.is_empty() {
         return Err("Pasted image is empty.".to_string().into());
     }
+    if bytes.len() as u64 > MAX_ATTACHMENT_IMAGE_BYTES {
+        return Err(format!(
+            "Pasted image is too large ({} bytes; limit {}).",
+            bytes.len(),
+            MAX_ATTACHMENT_IMAGE_BYTES
+        )
+        .into());
+    }
     let ext = extension
         .map(|value| value.trim().trim_start_matches('.').to_ascii_lowercase())
         .filter(|value| !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric()))
@@ -623,5 +670,19 @@ mod tests {
     #[test]
     fn preview_link_rejects_empty_target() {
         assert!(resolve_preview_link_path("/docs/index.md".into(), "  ".into()).is_err());
+    }
+
+    #[test]
+    fn image_validation_accepts_decodable_image_and_rejects_fake_image() {
+        let root = future_root("validate_image");
+        let valid = root.join("valid.png");
+        image::RgbImage::from_pixel(2, 2, image::Rgb([1, 2, 3]))
+            .save(&valid)
+            .unwrap();
+        assert!(validate_image_attachment(valid.display().to_string()).is_ok());
+
+        let invalid = root.join("invalid.png");
+        fs::write(&invalid, b"not an image").unwrap();
+        assert!(validate_image_attachment(invalid.display().to_string()).is_err());
     }
 }

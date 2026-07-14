@@ -74,6 +74,11 @@ export async function inspectAttachment(path: string) {
   });
 }
 
+/** Fully decode a candidate image so unreadable/corrupt files are rejected before send. */
+export async function validateImageAttachment(path: string) {
+  return invokeCommand<void>("validate_image_attachment", { path });
+}
+
 export async function readFileBase64(input: { path: string; maxBytes?: number | null }) {
   return invokeCommand<string>("read_file_base64", {
     maxBytes: input.maxBytes ?? null,
@@ -94,7 +99,7 @@ export async function generateImageThumbnail(input: { threadId: string; sourcePa
 }
 
 /**
- * Copy a workspace-mode image original into the thread's persistent image dir
+ * Copy an ephemeral pasted-image original into the thread's persistent image dir
  * (`~/.future/app/images/<threadId>/origin`) and return the durable path.
  */
 export async function importWorkspaceImage(input: { threadId: string; path: string; name: string }) {
