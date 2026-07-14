@@ -12,8 +12,10 @@ import { MarkdownPreview } from "./MarkdownPreview";
  * Fullscreen preview for a local image / markdown file: a dimmed backdrop
  * (click or Esc dismisses, via `Overlay`) with a close button pinned top-right,
  * and the auto-sized content centered. When a preview can't load (missing,
- * too large, unreadable) it toasts and falls back to opening the file with the
- * OS default handler through `onOpenExternal`.
+ * too large, unreadable) it toasts and closes; if `onOpenExternal` is given it
+ * also falls back to opening the file with the OS default handler.
+ * `unavailableMessage` overrides the default toast (e.g. an attachment whose
+ * original is gone, where there's nothing to open externally).
  */
 export function FilePreviewOverlay({
   path,
@@ -22,21 +24,26 @@ export function FilePreviewOverlay({
   open,
   onClose,
   onOpenExternal,
+  unavailableMessage,
 }: {
   path: string;
   name: string;
   kind: PreviewKind;
   open: boolean;
   onClose: () => void;
-  onOpenExternal: () => void;
+  onOpenExternal?: () => void;
+  unavailableMessage?: string;
 }) {
   const { t } = useTranslation("markdown");
 
   const handleError = useCallback(() => {
-    emitFutureEvent("toast", { message: t("filePreview.unavailable", { name }), tone: "error" });
+    emitFutureEvent("toast", {
+      message: unavailableMessage ?? t("filePreview.unavailable", { name }),
+      tone: "error",
+    });
     onClose();
-    onOpenExternal();
-  }, [name, onClose, onOpenExternal, t]);
+    onOpenExternal?.();
+  }, [name, onClose, onOpenExternal, t, unavailableMessage]);
 
   if (!open)
     return null;

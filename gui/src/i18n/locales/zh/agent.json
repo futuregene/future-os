@@ -114,7 +114,8 @@
     "readFailed": "无法读取",
     "directoryUnsupported": "不支持文件夹",
     "binaryUnsupported": "不支持二进制文件",
-    "typeUnsupported": "不支持的文件类型"
+    "typeUnsupported": "不支持的文件类型",
+    "originalMissing": "原图已损坏或缺失"
   },
   "newConversation": {
     "headerTitle": "新对话",

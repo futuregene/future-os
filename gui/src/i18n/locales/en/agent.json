@@ -119,7 +119,8 @@
     "readFailed": "Unable to read",
     "directoryUnsupported": "Folders are not supported",
     "binaryUnsupported": "Binary files are not supported",
-    "typeUnsupported": "Unsupported file type"
+    "typeUnsupported": "Unsupported file type",
+    "originalMissing": "Original image is missing or damaged"
   },
   "newConversation": {
     "headerTitle": "New conversation",
