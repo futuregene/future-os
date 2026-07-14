@@ -28,6 +28,13 @@ type AgentLoadResult
 /** Max cached threads before evicting the oldest. */
 const CACHE_MAX = 20;
 
+// Flash-free loading indicator (mirrors the right-context panel, useContextData):
+// a thread load usually resolves in tens of ms, so hold off showing the "loading"
+// text until the load has run this long...
+const LOADING_INDICATOR_DELAY_MS = 200;
+// ...and once shown, keep it visible at least this long so it can't itself flash.
+const LOADING_INDICATOR_MIN_MS = 200;
+
 /**
  * Owns a thread's message list + recent-run status: loads/restores messages on
  * thread switch, keeps a live run polling while one is active, and caches
@@ -35,7 +42,15 @@ const CACHE_MAX = 20;
  */
 export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesInput) {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
+  // Truthful data-loading state: gates pendingPrompt delivery (useAgentThreadState)
+  // and must flip the instant a load starts/ends. The UI reads the debounced
+  // `loadingIndicator` below instead, so this can stay honest without flashing.
   const [loadingThread, setLoadingThread] = useState(true);
+  // Debounced projection of `loadingThread` for the "loading" indicator: only
+  // turns on if a load outlasts the delay, and once on stays for a minimum so a
+  // fast switch-back can't flash it. Purely presentational.
+  const [loadingIndicator, setLoadingIndicator] = useState(false);
+  const indicatorShownAtRef = useRef<number | null>(null);
   const [recentRun, setRecentRun] = useState<StoredRun | null>(null);
 
   // In-memory cache of recently loaded threads. Switching back to a cached
@@ -196,6 +211,36 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     // eslint-disable-next-line react/exhaustive-deps
   }, [refreshRecentRun, workspaceId, threadId]);
 
+  // Derive the flash-free indicator from the truthful `loadingThread`: show it
+  // only if loading outlasts LOADING_INDICATOR_DELAY_MS, and once shown hold it
+  // for at least LOADING_INDICATOR_MIN_MS so it can't flash off immediately.
+  useEffect(() => {
+    if (loadingThread) {
+      const showTimer = setTimeout(() => {
+        indicatorShownAtRef.current = performance.now();
+        setLoadingIndicator(true);
+      }, LOADING_INDICATOR_DELAY_MS);
+      return () => clearTimeout(showTimer);
+    }
+    // Loading finished. If the indicator never appeared, just keep it hidden.
+    if (indicatorShownAtRef.current === null) {
+      setLoadingIndicator(false);
+      return;
+    }
+    // It's showing — hold it for the remainder of its minimum visible duration.
+    const remaining = LOADING_INDICATOR_MIN_MS - (performance.now() - indicatorShownAtRef.current);
+    if (remaining <= 0) {
+      indicatorShownAtRef.current = null;
+      setLoadingIndicator(false);
+      return;
+    }
+    const hideTimer = setTimeout(() => {
+      indicatorShownAtRef.current = null;
+      setLoadingIndicator(false);
+    }, remaining);
+    return () => clearTimeout(hideTimer);
+  }, [loadingThread]);
+
   const isRunActive = Boolean(recentRun && !matchesSettledRun(recentRun.status));
 
   // Poll the run's status while it's in flight so a background settle is picked
@@ -212,6 +257,7 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
 
   return {
     loadingThread,
+    loadingIndicator,
     messages,
     recentRun,
     reloadMessagesQuiet,

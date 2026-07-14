@@ -76,6 +76,7 @@ export function AgentThread({
     handleAbort,
     handleSend,
     loadingThread,
+    loadingIndicator,
     messages,
   } = useAgentThreadState({
     thread,
@@ -200,7 +201,7 @@ export function AgentThread({
           onScroll={handleScroll}
         >
           <div className="mx-auto w-full max-w-4xl">
-            {loadingThread
+            {loadingIndicator
               ? (
                   <div className="py-8 text-sm text-ink-soft">{t("thread.loading")}</div>
                 )

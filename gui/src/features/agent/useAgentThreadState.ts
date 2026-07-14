@@ -45,6 +45,7 @@ export function useAgentThreadState({
 
   const {
     loadingThread,
+    loadingIndicator,
     messages,
     recentRun,
     reloadMessagesQuiet,
@@ -136,6 +137,7 @@ export function useAgentThreadState({
     handleAbort,
     handleSend,
     loadingThread,
+    loadingIndicator,
     messages,
     recentRun,
   };
