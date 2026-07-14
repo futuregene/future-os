@@ -156,6 +156,36 @@ message RpcCommand {
   // Session sandbox + approval policy (typed sub-message, not JSON-in-string).
   // Read when type == "set_sandbox_policy".
   SandboxPolicy sandbox_policy = 150;
+
+  // ── Attachments (GUI) ──────────────────────────────────────────────────
+  // Structured attachments referenced by absolute local path. The agent
+  // injects each file's path into the model-visible message (so the model can
+  // read it with its own tools) and records the list in the user entry's meta.
+  // Images additionally carry base64 and are sent as image_url when the active
+  // model accepts image input; otherwise they degrade to a path reference.
+  repeated Attachment attachments = 151;
+}
+
+// ── Attachment ───────────────────────────────────────────────────────────────
+// A local file the user attached to a prompt. Files are NOT copied — the path
+// is the original on-disk location, read on demand by the agent's tools.
+
+message Attachment {
+  // Absolute local filesystem path (original, not a workspace copy). For images
+  // the agent reads + (down)encodes this to base64 itself — base64 never travels
+  // over the wire.
+  string path = 1;
+  // "image" | "file".
+  string kind = 2;
+  // Display name (basename), for UI + the injected path block.
+  string name = 3;
+
+  reserved 4;  // was \`base64\` — images are now read from \`path\` on the agent
+
+  // Optional absolute path to a cached thumbnail (images only). Not model-facing
+  // — carried through to the user entry's meta so the GUI can render the chip
+  // after a reload (messages are reconstructed from the agent JSONL).
+  string thumbnail = 5;
 }
 
 // ── SandboxPolicy ────────────────────────────────────────────────────────────

@@ -12,7 +12,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const protoPath = path.resolve(__dirname, "..", "..", "proto", "future.proto");
 const clientPath = path.resolve(__dirname, "..", "src", "rpc", "grpc-client.ts");
 
-const proto = fs.readFileSync(protoPath, "utf-8");
+const proto = fs.readFileSync(protoPath, "utf-8")
+  .replace(/`/g, "\\`")
+  .replace(/\$\{/g, "\\${");
 
 let client = fs.readFileSync(clientPath, "utf-8");
 
