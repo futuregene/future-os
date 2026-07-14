@@ -34,8 +34,25 @@ const gitTabs = [
   { value: "review", labelKey: "contextPanel.review" },
 ] satisfies Array<{ value: ContextTab; labelKey: string }>;
 
+// Artifacts is hidden pending a decision on what the tab is for (PRODUCT.md
+// §4.8). Chat's workspace is a per-thread empty directory, so every file in it
+// is by definition this conversation's output — Files already lists exactly
+// that, from the same `activeWorkspace.path`, and it can't miss the ones bash
+// produced. The artifacts table instead records write/edit tool calls, which is
+// a strictly smaller, lossier view of the same directory, and the three things
+// that once justified it are all gone: `@`-referencing artifacts is disabled
+// (`isFutureReferenceType`), the cards deliberately show no summary or type
+// badge, and Research (the "reusable output" consumer) is deferred.
+//
+// Scanning the directory instead would close the gap on recall, but the deeper
+// problem is that "output" is a semantic claim and a filesystem only carries
+// syntax (path, extension, mtime) — no scan can assert *this one matters*. If
+// this tab comes back, it likely belongs on roadmap item 4 next to unified `@`
+// references, and curated (the Agent or the user marks a deliverable) rather
+// than scanned. Everything below it — panel, detail view, store, upload — is
+// left intact and reachable only from here.
+//   { value: "artifacts", labelKey: "contextPanel.artifacts" },
 const fileTabs = [
-  { value: "artifacts", labelKey: "contextPanel.artifacts" },
   { value: "files", labelKey: "contextPanel.files" },
   { value: "runs", labelKey: "contextPanel.runs" },
 ] satisfies Array<{ value: ContextTab; labelKey: string }>;
@@ -196,10 +213,12 @@ export function ContextPanel({
     if (activeThreadId === null || workspaceKindPending || seededForOpenRef.current)
       return;
     seededForOpenRef.current = true;
-    const preferred: ContextTab = isWorkspaceThread ? "files" : "artifacts";
+    // Both modes seed to Files while Artifacts is hidden (was "artifacts" for
+    // chat); seeding a tab that isn't in `fileTabs` would leave no tab active.
+    const preferred: ContextTab = "files";
     if (activeTab !== preferred)
       onTabChange(preferred);
-  }, [expanded, activeThreadId, isWorkspaceThread, workspaceKindPending, activeTab, onTabChange]);
+  }, [expanded, activeThreadId, workspaceKindPending, activeTab, onTabChange]);
 
   useEffect(() => {
     const unsubscribers = [
@@ -339,6 +358,10 @@ export function ContextPanel({
               />
             )
           : null}
+        {/* Unreachable while Artifacts is hidden: no tab selects it, and the
+            only other way in — `inspect-artifact` from ArtifactEmbed — needs the
+            disabled `@`-reference renderer. Kept wired so restoring the tab is a
+            one-line change. */}
         {!showInitialLoading && activeThread && activeTab === "artifacts"
           ? selectedArtifact
             ? (

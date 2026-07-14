@@ -449,6 +449,8 @@ Review File Change 表示某个文件或 artifact 的具体变更。
 
 ### 4.11 Artifact
 
+> **面板已暂时隐藏（见 PRODUCT.md §4.8），但表仍在正常写入**——`persist_file_artifact` 每次 write / edit 成功后照常登记，历史数据继续积累，恢复面板时数据是连续的。以下身份与去重规则因此仍然有效。
+
 Artifact 表示工作过程中产生的可复用产物。
 
 字段草案：
