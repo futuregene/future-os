@@ -137,12 +137,21 @@ function validateV2Config(raw: Record<string, unknown>): BrowserConfig {
     };
   }
 
-  // webdriver
+  // Early Safari builds read only the root-level WebDriver sessionId, while
+  // safaridriver returns it under value.sessionId. JSON serialization omitted
+  // that undefined field, leaving a config no browser command could load.
+  // Recover only that historical missing-field shape; malformed values should
+  // still fail validation instead of being silently discarded.
+  const browserKind = validateEnum(conn.browserKind, ["safari"] as const, "browser kind");
+  if (conn.sessionId === undefined) {
+    return defaultBrowserConfig();
+  }
+
   return {
     version: CURRENT_CONFIG_VERSION,
     connection: {
       protocol: "webdriver",
-      browserKind: validateEnum(conn.browserKind, ["safari"] as const, "browser kind"),
+      browserKind,
       endpoint,
       sessionId: requireNonEmptyString(conn.sessionId, "connection.sessionId"),
       driverPid: optionalPositiveInteger(conn.driverPid),

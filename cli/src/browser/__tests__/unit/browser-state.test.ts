@@ -114,6 +114,39 @@ describe("parseBrowserConfig", () => {
     }
   });
 
+  test("v2 Safari config missing sessionId recovers to CDP defaults", () => {
+    const config = parseBrowserConfig({
+      version: 2,
+      connection: {
+        protocol: "webdriver",
+        browserKind: "safari",
+        endpoint: "http://127.0.0.1:4444",
+        driverPid: 45678,
+      },
+      activePageId: "stale-safari-window",
+    });
+    expect(config).toEqual({
+      version: 2,
+      connection: {
+        protocol: "cdp",
+        browserKind: "chromium",
+        endpoint: "http://127.0.0.1:9222",
+      },
+    });
+  });
+
+  test("v2 Safari config with blank sessionId still throws", () => {
+    expect(() => parseBrowserConfig({
+      version: 2,
+      connection: {
+        protocol: "webdriver",
+        browserKind: "safari",
+        endpoint: "http://127.0.0.1:4444",
+        sessionId: "  ",
+      },
+    })).toThrow(/sessionId/i);
+  });
+
   test("v2 missing endpoint throws", () => {
     expect(() => parseBrowserConfig({
       version: 2,
