@@ -1,4 +1,3 @@
-import type { AttachmentInput } from "../../features/agent/messageContent";
 import { invokeCommand } from "../tauri/invoke";
 
 export const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
@@ -12,6 +11,15 @@ export interface AgentModelOption {
   thinkingLevel?: ThinkingLevel | string | null;
   contextWindow?: number | null;
   isDefault?: boolean;
+}
+
+/** Attachment wire shape accepted by the agent_prompt Tauri command. */
+export interface AttachmentInput {
+  path: string;
+  kind: "image" | "file";
+  name: string;
+  /** Cached-thumbnail path persisted in entry metadata for message reload. */
+  thumbnail?: string;
 }
 
 interface AgentPromptResponse {

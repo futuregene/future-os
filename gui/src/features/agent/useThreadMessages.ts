@@ -20,6 +20,11 @@ interface ThreadCacheEntry {
   recentRun: StoredRun | null;
 }
 
+type AgentLoadResult
+  = | { status: "loaded"; messages: AgentMessage[] }
+    | { status: "empty" }
+    | { status: "failed"; error: string };
+
 /** Max cached threads before evicting the oldest. */
 const CACHE_MAX = 20;
 
@@ -94,11 +99,11 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
   // streaming bubble for the persisted assistant message once a background run
   // settles. Keeps the current messages if the agent has nothing (never blanks).
   const reloadMessagesQuiet = useCallback(async (targetThreadId: string) => {
-    const restored = await loadFromAgent(targetThreadId);
-    if (!restored || targetThreadId !== activeThreadIdRef.current)
+    const result = await loadFromAgent(targetThreadId);
+    if (result.status !== "loaded" || targetThreadId !== activeThreadIdRef.current)
       return;
-    setMessages(restored);
-    cachePut(targetThreadId, { messages: restored, recentRun: null });
+    setMessages(result.messages);
+    cachePut(targetThreadId, { messages: result.messages, recentRun: null });
     // loadFromAgent is a hoisted inner function; this reload fires only on
     // explicit call, so it's intentionally excluded from the deps.
     // eslint-disable-next-line react/exhaustive-deps
@@ -106,15 +111,16 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
 
   // Reconstruct a thread's messages from the agent session JSONL
   // (get_session_entries) — the only message store (the SQLite messages table
-  // was removed). Returns null when the agent has no entries for the thread.
-  async function loadFromAgent(tid: string, wid?: string | null) {
+  // was removed). Empty and failed loads stay distinct so a transient Agent
+  // error never masquerades as an empty conversation and clears valid cache.
+  async function loadFromAgent(tid: string, wid?: string | null): Promise<AgentLoadResult> {
     try {
       const result = await getSessionEntries(tid);
       if (!result?.entries?.length)
-        return null;
+        return { status: "empty" };
       const messages = entriesToMessages(result.entries as unknown as import("./entryProjection").SessionEntry[]);
       if (!messages.length)
-        return null;
+        return { status: "empty" };
       // Agent JSONL doesn't record a run's GUI-side outcome (failed/cancelled/
       // model) — backfill it from the SQLite `runs` table so a reload keeps the
       // Retry/Continue button, the "stopped" marker, and the model badge.
@@ -124,10 +130,10 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
       // text the model streamed (persisted as run events) so it isn't lost.
       const recovered = await recoverAbortedTurns(withRunMeta);
       await refreshRecentRun(tid, wid).catch(() => {});
-      return recovered;
+      return { status: "loaded", messages: recovered };
     }
-    catch {
-      return null;
+    catch (error) {
+      return { status: "failed", error: errorMessage(error) };
     }
   }
 
@@ -148,45 +154,35 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
         setRecentRun(cached.recentRun);
         setLoadingThread(false);
         // Background refresh from the agent session (empty when it has none).
-        try {
-          const restored = await loadFromAgent(threadId, workspaceId) ?? [];
-          if (!cancelled && threadId === activeThreadIdRef.current) {
-            setMessages(restored);
-            cachePut(threadId, { messages: restored, recentRun: null });
-          }
-        }
-        catch {
-          // Best-effort: keep the cached version on refresh failure.
+        const result = await loadFromAgent(threadId, workspaceId);
+        if (!cancelled && threadId === activeThreadIdRef.current && result.status !== "failed") {
+          const restored = result.status === "loaded" ? result.messages : [];
+          setMessages(restored);
+          cachePut(threadId, { messages: restored, recentRun: null });
         }
         return;
       }
 
       setLoadingThread(true);
-      try {
-        const restoredMessages = await loadFromAgent(threadId, workspaceId) ?? [];
-        if (!cancelled) {
-          setMessages(restoredMessages);
-          cachePut(threadId, { messages: restoredMessages, recentRun: null });
-        }
-      }
-      catch (error) {
-        const message = errorMessage(error);
-        if (!cancelled) {
+      const result = await loadFromAgent(threadId, workspaceId);
+      if (!cancelled) {
+        if (result.status === "failed") {
           setMessages([
             {
               id: "store_error",
               role: "assistant",
               authorKey: "author.system",
-              content: i18n.t("agent:thread.messagesLoadFailed", { message }),
+              content: i18n.t("agent:thread.messagesLoadFailed", { message: result.error }),
               createdAt: new Date().toISOString(),
             },
           ]);
         }
-      }
-      finally {
-        if (!cancelled) {
-          setLoadingThread(false);
+        else {
+          const restoredMessages = result.status === "loaded" ? result.messages : [];
+          setMessages(restoredMessages);
+          cachePut(threadId, { messages: restoredMessages, recentRun: null });
         }
+        setLoadingThread(false);
       }
     }
 

@@ -52,45 +52,43 @@ pub fn get_app_settings() -> Result<AppSettings, crate::AppError> {
 }
 
 pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings, crate::AppError> {
-    let conn = connect()?;
+    let mut conn = connect()?;
+    let tx = conn.transaction()?;
     let now = now_millis();
 
     if let Some(approval_tier) = input.approval_tier {
-        write_value(
-            &conn,
-            KEY_APPROVAL_TIER,
-            &normalize_tier(&approval_tier),
-            now,
-        )?;
+        write_value(&tx, KEY_APPROVAL_TIER, &normalize_tier(&approval_tier), now)?;
     }
     if let Some(hidden_models) = input.hidden_models {
         let json = serde_json::to_string(&hidden_models)?;
-        write_value(&conn, KEY_HIDDEN_MODELS, &json, now)?;
+        write_value(&tx, KEY_HIDDEN_MODELS, &json, now)?;
     }
     if let Some(remote_enabled) = input.remote_enabled {
         write_value(
-            &conn,
+            &tx,
             KEY_REMOTE_ENABLED,
             if remote_enabled { "true" } else { "false" },
             now,
         )?;
     }
     if let Some(remote_pair_id) = input.remote_pair_id {
-        write_value(&conn, KEY_REMOTE_PAIR_ID, &remote_pair_id, now)?;
+        write_value(&tx, KEY_REMOTE_PAIR_ID, &remote_pair_id, now)?;
     }
     if let Some(remote_nats_url) = input.remote_nats_url {
-        write_value(&conn, KEY_REMOTE_NATS_URL, &remote_nats_url, now)?;
+        write_value(&tx, KEY_REMOTE_NATS_URL, &remote_nats_url, now)?;
     }
     if let Some(show_thinking) = input.show_thinking {
         write_value(
-            &conn,
+            &tx,
             KEY_SHOW_THINKING,
             if show_thinking { "true" } else { "false" },
             now,
         )?;
     }
 
-    read_app_settings(&conn)
+    let settings = read_app_settings(&tx)?;
+    tx.commit()?;
+    Ok(settings)
 }
 
 fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> {

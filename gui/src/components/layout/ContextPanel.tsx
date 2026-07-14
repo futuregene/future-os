@@ -1,5 +1,5 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
-import type { ReviewBase } from "../../features/review/ReviewPanel";
+import type { ReviewBase } from "../../integrations/storage/review";
 import type { StoredRun, StoredThread, StoredToolCall, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ContextTab } from "./hooks/useContextData";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";

@@ -50,10 +50,9 @@ pub use review_snapshots::{
 };
 pub use runs::{
     active_run_sessions, append_run_event, clear_all_run_events_files, clear_run_event_buffer,
-    complete_tool_call, create_run, delete_run_events_file, fail_run_if_active,
-    get_tool_call_input, list_run_events, list_run_events_bulk, list_runs, list_tool_calls,
-    list_tool_outputs, update_run_status_if_active, upsert_tool_call, RunEventRecord, RunRecord,
-    ToolCallRecord, ToolOutputRecord,
+    create_run, delete_run_events_file, fail_run_if_active, get_tool_call_input, list_run_events,
+    list_run_events_bulk, list_runs, list_tool_calls, list_tool_outputs,
+    update_run_status_if_active, RunEventRecord, RunRecord, ToolCallRecord, ToolOutputRecord,
 };
 pub use threads::{
     archive_thread, create_thread, delete_thread, find_thread_by_agent_session, get_recent_thread,

@@ -1,5 +1,5 @@
 //! Cross-domain DTOs shared across store modules: command-input types, the
-//! markdown-reference resolution types, and the P2 approval-config scaffolding.
+//! markdown-reference resolution types, and approval command inputs.
 //!
 //! Output record structs and their `*_COLUMNS` / `*_from_row` mappers live
 //! beside the queries that build them, in each domain module (`threads.rs`,
@@ -48,28 +48,6 @@ pub struct ResolvedMarkdownReference {
     pub status: String,
     pub data: Option<serde_json::Value>,
     pub error: Option<String>,
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub struct UpsertToolCallInput {
-    pub run_id: String,
-    pub tool_call_id: String,
-    pub name: String,
-    pub kind: String,
-    pub input: Option<String>,
-    pub status: String,
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub struct CompleteToolCallInput {
-    pub run_id: String,
-    pub tool_call_id: String,
-    pub name: String,
-    pub status: String,
-    pub output_kind: String,
-    pub output_content: Option<String>,
 }
 
 #[derive(Debug)]

@@ -17,15 +17,35 @@ interface TreeState {
   loading: Set<string>;
   /** Directory paths whose last load failed. */
   errored: Set<string>;
+  /** Latest load generation per directory; prevents stale response overwrite. */
+  generations: Map<string, number>;
 }
 
 const cache = new Map<string, TreeState>();
+const CACHE_MAX_ROOTS = 20;
 
 function stateFor(root: string): TreeState {
   let state = cache.get(root);
   if (!state) {
-    state = { expanded: new Set(), children: new Map(), loading: new Set(), errored: new Set() };
+    state = {
+      expanded: new Set(),
+      children: new Map(),
+      loading: new Set(),
+      errored: new Set(),
+      generations: new Map(),
+    };
     cache.set(root, state);
+  }
+  else {
+    // Refresh insertion order so the module cache behaves as an LRU.
+    cache.delete(root);
+    cache.set(root, state);
+  }
+  while (cache.size > CACHE_MAX_ROOTS) {
+    const oldest = cache.keys().next().value;
+    if (!oldest)
+      break;
+    cache.delete(oldest);
   }
   return state;
 }
@@ -68,19 +88,25 @@ export function useFileTree(root: string | null, showHidden = false): FileTree {
   const load = useCallback(async (path: string) => {
     if (!state)
       return;
+    const generation = (state.generations.get(path) ?? 0) + 1;
+    state.generations.set(path, generation);
     state.loading.add(path);
     state.errored.delete(path);
     bump();
     try {
       const entries = await listDirectory(path);
-      state.children.set(path, entries);
+      if (state.generations.get(path) === generation)
+        state.children.set(path, entries);
     }
     catch {
-      state.errored.add(path);
+      if (state.generations.get(path) === generation)
+        state.errored.add(path);
     }
     finally {
-      state.loading.delete(path);
-      bump();
+      if (state.generations.get(path) === generation) {
+        state.loading.delete(path);
+        bump();
+      }
     }
   }, [state]);
 

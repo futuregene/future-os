@@ -1,5 +1,5 @@
+import type { ReviewBase } from "../../integrations/storage/review";
 import type { GitReview, GitReviewFile } from "../../integrations/storage/types";
-import type { ReviewBase } from "./ReviewPanel";
 import { GitBranch } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { DiffView } from "../../components/ui/DiffView";

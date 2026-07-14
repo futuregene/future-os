@@ -1,4 +1,4 @@
-import type { ReviewBase } from "../../../features/review/ReviewPanel";
+import type { ReviewBase } from "../../../integrations/storage/review";
 import type { GitReview, StoredArtifact, StoredRun, StoredThread, StoredToolCall } from "../../../integrations/storage/threadStore";
 import type { WorkspaceReviewCapabilities } from "../../../integrations/storage/types";
 import { useCallback, useEffect, useRef, useState } from "react";

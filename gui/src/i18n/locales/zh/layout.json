@@ -2,6 +2,9 @@
   "model": {
     "updateFailed": "更新模型失败：{{message}}"
   },
+  "settings": {
+    "updateFailed": "保存设置失败：{{message}}"
+  },
   "activityRail": {
     "settings": "设置",
     "newChat": "新对话",
