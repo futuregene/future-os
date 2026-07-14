@@ -884,6 +884,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn edit_handler_accepts_camel_case_batch_edits() {
+        let path = test_path("batch-edit");
+        std::fs::write(&path, "alpha beta gamma").unwrap();
+
+        let result = edit_handler(serde_json::json!({
+            "path": path.to_string_lossy(),
+            "edits": [
+                { "oldText": "alpha", "newText": "one" },
+                { "oldText": "gamma", "newText": "three" }
+            ]
+        }))
+        .await;
+
+        assert!(result.is_ok(), "camelCase batch edit failed: {result:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one beta three");
+        std::fs::remove_file(path).ok();
+    }
+
+    #[tokio::test]
     async fn scoped_workspace_writes_inside_workspace() {
         let workspace = test_path("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
