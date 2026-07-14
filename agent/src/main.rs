@@ -306,6 +306,52 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
         shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
-    future_agent::grpc::serve(app_state, grpc_host, grpc_port).await?;
+    // Graceful shutdown on Ctrl+C: set the shutting_down flag so new prompts
+    // are rejected, then wait up to 30 s for active streams to finish.
+    let shutting_down = app_state.shutting_down.clone();
+    let sessions = app_state.sessions.clone();
+    let default_session = app_state.session.clone();
+    let shutdown_timeout = std::time::Duration::from_secs(30);
+
+    let server = future_agent::grpc::serve(app_state, grpc_host, grpc_port);
+
+    tokio::select! {
+        result = server => result?,
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("SIGINT received — graceful shutdown (max 30s)");
+            shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
+
+            // Wait for active streams to settle
+            let deadline = tokio::time::Instant::now() + shutdown_timeout;
+            loop {
+                let any_streaming = {
+                    let active = default_session
+                        .read().unwrap()
+                        .is_streaming
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    if active { true } else {
+                        sessions.read().unwrap()
+                            .values()
+                            .any(|s| s.read().unwrap()
+                                .is_streaming
+                                .load(std::sync::atomic::Ordering::Relaxed))
+                    }
+                };
+                if !any_streaming {
+                    tracing::info!("All streams finished — exiting");
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    tracing::warn!("Shutdown timeout (30s) — forcing exit with {} active stream(s)",
+                        if default_session.read().unwrap().is_streaming.load(std::sync::atomic::Ordering::Relaxed) { 1 } else { 0 }
+                        + sessions.read().unwrap().values()
+                            .filter(|s| s.read().unwrap().is_streaming.load(std::sync::atomic::Ordering::Relaxed))
+                            .count());
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        }
+    }
     Ok(())
 }
