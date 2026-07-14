@@ -761,15 +761,14 @@ export class App extends Container {
     if (this.state.streaming) {
       this.client.abort();
       this.state.streaming = false;
-      this.chat.addMessage({
-        id: crypto.randomUUID(),
-        role: "system",
-        content: "(aborted)",
-      });
+      // Mark the in-progress assistant message as stopped so the partial
+      // content (thinking, text, tool calls) is preserved and visible —
+      // matching the GUI's behaviour of keeping the aborted reply.
+      this.chat.markLastAssistantStopped();
       this.requestRender();
       return;
     }
-    // Not streaming: exit the app 
+    // Not streaming: exit the app
     this.running = false;
     setImmediate(async () => {
       await this.stop();
