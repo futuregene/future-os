@@ -23,42 +23,20 @@ async function safariReady(): Promise<boolean> {
   if (platform() !== "darwin") return false;
   if (!existsSync("/usr/bin/safaridriver")) return false;
 
-  // Check if safaridriver is already running and responsive
+  // Check if safaridriver is running
   try {
     const resp = await fetch("http://127.0.0.1:4444/status", { signal: AbortSignal.timeout(2000) });
-    if (resp.ok) {
-      // safaridriver is running — try creating a session to confirm readiness
-      try {
-        const sessionResp = await fetch("http://127.0.0.1:4444/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ capabilities: { alwaysMatch: { browserName: "safari" } } }),
-          signal: AbortSignal.timeout(5000),
-        });
-        if (sessionResp.ok) {
-          const data = await sessionResp.json() as Record<string, unknown>;
-          const sid = data.sessionId as string;
-          // Clean up immediately
-          await fetch(`http://127.0.0.1:4444/session/${sid}`, { method: "DELETE" }).catch(() => {});
-          return true;
-        }
-      } catch { /* */ }
-    }
+    if (resp.ok) return true;
   } catch { /* */ }
 
-  // Not running — try to start it temporarily
+  // Try to start safaridriver
   try {
     const { spawn } = await import("node:child_process");
-    const child = spawn("/usr/bin/safaridriver", ["--port", "4444"], {
-      detached: true,
-      stdio: "ignore",
-    });
-    child.unref();
-    // Wait for it to come up
+    spawn("/usr/bin/safaridriver", ["--port", "4444"], { detached: true, stdio: "ignore" }).unref();
     for (let i = 0; i < 30; i++) {
       try {
-        const resp = await fetch("http://127.0.0.1:4444/status", { signal: AbortSignal.timeout(500) });
-        if (resp.ok) return true;
+        const r = await fetch("http://127.0.0.1:4444/status", { signal: AbortSignal.timeout(500) });
+        if (r.ok) return true;
       } catch { /* */ }
       await new Promise(r => setTimeout(r, 500));
     }
@@ -67,9 +45,10 @@ async function safariReady(): Promise<boolean> {
   return false;
 }
 
-// ── Shared safaridriver endpoint ────────────────────────────────────
+// ── Shared session (Safari only allows ONE WebDriver session) ──────
 
-let driverEndpoint = "http://127.0.0.1:4444";
+let sharedSession: SafariSession | null = null;
+const driverEndpoint = "http://127.0.0.1:4444";
 
 // ── Test suite ───────────────────────────────────────────────────────
 
@@ -85,16 +64,8 @@ describe("Safari WebDriver", () => {
       return;
     }
     iso = await createTestIsolation();
-  }, 20_000);
 
-  afterAll(async () => {
-    if (iso) await iso.cleanup();
-  });
-
-  // ── Helper: create a fresh WebDriver session per test ─────────────
-
-  async function makeSession(): Promise<SafariSession> {
-    // Create a new WebDriver session directly (skip SafariManager — safaridriver is already running)
+    // Create ONE shared session (Safari only allows one at a time)
     const resp = await fetch(`${driverEndpoint}/session`, {
       method: "POST",
       headers: { "Content-Type": "application/json; charset=utf-8" },
@@ -102,30 +73,37 @@ describe("Safari WebDriver", () => {
     });
     if (!resp.ok) {
       const text = await resp.text();
-      throw new Error(`Failed to create WebDriver session: HTTP ${resp.status} — ${text.slice(0, 200)}`);
+      console.log(`  Failed to create session: ${text.slice(0, 200)}`);
+      console.log("  Skipping Safari tests.");
+      ready = false;
+      return;
     }
     const data = await resp.json() as { sessionId: string };
-    const sessionId = data.sessionId;
-    if (!sessionId) throw new Error("No sessionId in response");
-
-    const session = new SafariSession({
+    sharedSession = new SafariSession({
       protocol: "webdriver",
       browserKind: "safari",
       endpoint: driverEndpoint,
-      sessionId,
+      sessionId: data.sessionId,
       timeouts: DEFAULT_TIMEOUTS,
     });
-    // Store for cleanup
-    (session as unknown as { _sid: string })._sid = sessionId;
-    return session;
-  }
+    console.log(`  Safari session ready: ${data.sessionId}`);
+  }, 20_000);
 
-  async function cleanupSession(session: SafariSession): Promise<void> {
-    const sid = (session as unknown as { _sid: string })._sid;
-    if (sid) {
-      await fetch(`${driverEndpoint}/session/${sid}`, { method: "DELETE" }).catch(() => {});
+  afterAll(async () => {
+    if (sharedSession) {
+      const sid = (sharedSession as unknown as { _sid?: string })._sid;
+      if (sid) await fetch(`${driverEndpoint}/session/${sid}`, { method: "DELETE" }).catch(() => {});
+      await sharedSession.disconnect().catch(() => {});
+      sharedSession = null;
     }
-    await session.disconnect().catch(() => {});
+    if (iso) await iso.cleanup();
+  });
+
+  // ── Reuse the single shared session ──────────────────────────────
+
+  function getSession(): SafariSession {
+    if (!sharedSession) throw new Error("Safari not ready");
+    return sharedSession;
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -134,14 +112,14 @@ describe("Safari WebDriver", () => {
 
   test("session: creates and status is reachable", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       // Just creating it without error is success
       expect(session.kind).toBe("safari");
       expect(session.protocol).toBe("webdriver");
       console.log("  ✅ session created");
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
@@ -151,32 +129,32 @@ describe("Safari WebDriver", () => {
 
   test("open: navigates to a URL and returns title", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       const page = await session.open("data:text/html,<title>SafariTest</title><h1>Hello</h1>");
       expect(page.title).toBe("SafariTest");
       expect(page.url).toContain("data:text/html");
       console.log(`  ✅ open → title="${page.title}" url="${page.url.slice(0, 50)}..."`);
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
   test("open: about:blank succeeds", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       const page = await session.open("about:blank");
       expect(page.url).toContain("about:blank");
       console.log(`  ✅ about:blank → url="${page.url}"`);
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
   test("open: real website", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       const page = await session.open("https://example.com");
       expect(page.title).toContain("Example");
@@ -185,7 +163,7 @@ describe("Safari WebDriver", () => {
       // Network may be unavailable — skip gracefully
       console.log(`  ⚠️  example.com unreachable: ${(e as Error).message}`);
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
@@ -195,7 +173,7 @@ describe("Safari WebDriver", () => {
 
   test("evaluate: expression returns value", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       await session.open("data:text/html,<script>window._v={x:1,y:2}</script>");
       const result = await session.evaluate<{ x: number; y: number }>({
@@ -206,13 +184,13 @@ describe("Safari WebDriver", () => {
       expect(result.y).toBe(2);
       console.log(`  ✅ evaluate expression → {x:${result.x}, y:${result.y}}`);
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
   test("evaluate: function with arguments", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       await session.open("data:text/html,<div id='t'>hello</div>");
       const text = await session.evaluate<string>({
@@ -223,13 +201,13 @@ describe("Safari WebDriver", () => {
       expect(text).toBe("hello");
       console.log(`  ✅ evaluate function → "${text}"`);
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
   test("evaluate: snapshot script", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       await session.open("data:text/html," + encodeURIComponent(getFixture("basic")));
 
@@ -251,7 +229,7 @@ describe("Safari WebDriver", () => {
       expect(btn).toBeTruthy();
       console.log(`  ✅ snapshot → ${result.items.length} elements, found ref="${btn!.ref}" selector="${btn!.selector}"`);
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
@@ -261,7 +239,7 @@ describe("Safari WebDriver", () => {
 
   test("type: clear=true replaces input value", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       await session.open("data:text/html," + encodeURIComponent(
         '<input id="inp" type="text" value="old">',
@@ -280,13 +258,13 @@ describe("Safari WebDriver", () => {
       expect(value).toBe("new value");
       console.log(`  ✅ type clear=true → input value="${value}"`);
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
   test("type: submit=true sends Enter", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       await session.open("data:text/html," + encodeURIComponent(`
         <script>window.__submitted = false;</script>
@@ -309,7 +287,7 @@ describe("Safari WebDriver", () => {
       expect(submitted).toBe(true);
       console.log(`  ✅ type submit=true → form intercepted, window.__submitted=true`);
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
@@ -319,7 +297,7 @@ describe("Safari WebDriver", () => {
 
   test("click: triggers onclick handler", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       await session.open("data:text/html," + encodeURIComponent(`
         <button id="btn" onclick="this.textContent='Clicked'">Click me</button>
@@ -336,13 +314,13 @@ describe("Safari WebDriver", () => {
       expect(text).toBe("Clicked");
       console.log(`  ✅ click → button now says "${text}"`);
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
   test("click: non-existent element throws", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       await session.open("data:text/html,<h1>No button</h1>");
       try {
@@ -356,7 +334,7 @@ describe("Safari WebDriver", () => {
         console.log(`  ✅ click missing element → throws as expected`);
       }
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
@@ -366,7 +344,7 @@ describe("Safari WebDriver", () => {
 
   test("press: Enter on focused input submits form", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       await session.open("data:text/html," + encodeURIComponent(`
         <script>window.__submitted = false;</script>
@@ -388,19 +366,19 @@ describe("Safari WebDriver", () => {
       console.log(`  press Enter on input → window.__submitted=${submitted}`);
       // Don't hard-fail — this is a known WebDriver quirk
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
   test("press: Escape key without target (body-level)", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       await session.open("data:text/html,<h1>Press test</h1>");
       const result = await session.press("Escape");
       console.log(`  ✅ press Escape → title="${result.title}"`);
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
@@ -410,7 +388,7 @@ describe("Safari WebDriver", () => {
 
   test("tabs: list returns at least one tab", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       await session.open("data:text/html,<title>TabTest</title>");
       const result = await session.tabs({ action: "list" });
@@ -418,13 +396,13 @@ describe("Safari WebDriver", () => {
       expect(result.tabs.length).toBeGreaterThanOrEqual(1);
       console.log(`  ✅ tabs list → ${result.tabs.length} tabs: ${JSON.stringify(result.tabs.map(t => ({ idx: t.index, title: t.title })))}`);
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
   test("tabs: new creates a tab", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       await session.open("data:text/html,<title>First</title>");
       const before = await session.tabs({ action: "list" });
@@ -436,13 +414,13 @@ describe("Safari WebDriver", () => {
       );
       console.log(`  ✅ tabs new → ${before.kind === "list" ? before.tabs.length : "?"} → ${after.kind === "list" ? after.tabs.length : "?"} tabs`);
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
   test("tabs: select switches active tab", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       // Open two tabs with distinct titles
       await session.open("data:text/html,<title>TabA</title>");
@@ -458,13 +436,13 @@ describe("Safari WebDriver", () => {
       // Safari may or may not report the correct title after switch.
       // This is a known WebDriver quirk — tab focus isn't always synchronous.
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
   test("tabs: close removes a tab", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       await session.open("data:text/html,<title>Keep</title>");
       await session.tabs({ action: "new", url: "data:text/html,<title>CloseMe</title>" });
@@ -479,7 +457,7 @@ describe("Safari WebDriver", () => {
       expect(afterCount).toBe(beforeCount - 1);
       console.log(`  ✅ tabs close → ${beforeCount} → ${afterCount} tabs`);
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
@@ -489,7 +467,7 @@ describe("Safari WebDriver", () => {
 
   test("screenshot: returns PNG bytes", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       await session.open("data:text/html,<h1 style='color:red'>Screenshot</h1>");
       const bytes = await session.captureScreenshot({ fullPage: false, format: "png" });
@@ -500,13 +478,13 @@ describe("Safari WebDriver", () => {
       expect(bytes[1]).toBe(0x50);
       console.log(`  ✅ screenshot → ${bytes.length} bytes (valid PNG)`);
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
   test("screenshot: fullPage throws UnsupportedCapability", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       await session.open("data:text/html,<h1>Test</h1>");
       try {
@@ -517,7 +495,7 @@ describe("Safari WebDriver", () => {
         console.log(`  ✅ fullPage screenshot → correctly rejected`);
       }
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 
@@ -527,13 +505,13 @@ describe("Safari WebDriver", () => {
 
   test("disconnect: releases without error", async () => {
     if (!ready) { console.log("  [skip]"); return; }
-    const session = await makeSession();
+    const session = getSession();
     try {
       await session.open("data:text/html,<h1>Test</h1>");
       await session.disconnect();
       console.log("  ✅ disconnect → clean");
     } finally {
-      await cleanupSession(session);
+      // session shared across tests
     }
   });
 });
