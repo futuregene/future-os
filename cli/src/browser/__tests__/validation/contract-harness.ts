@@ -1,8 +1,11 @@
 /**
- * Shared test helper: launch Chrome and create sessions for contract validation.
+ * Shared test helper: launch Chrome for contract validation.
  *
- * Creates both a Playwright connection (for baseline) and a ChromiumSession
- * (for candidate), using the same Chrome process.
+ * Each call to createContractHarness() starts a FRESH Chrome process
+ * on a free port. Caller is responsible for cleanup.
+ *
+ * Chrome only supports ONE browser-level CDP WebSocket connection.
+ * We create separate Chrome instances for Playwright baseline and CDP tests.
  */
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -11,34 +14,20 @@ import { join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 
-import type { BrowserSession } from "../../backend.js";
-import { DEFAULT_TIMEOUTS } from "../../types.js";
-import { ChromiumSession } from "../../chromium/chromium-session.js";
-import { PlaywrightAdapterSession } from "./playwright-adapter.js";
-
-// ── Types ────────────────────────────────────────────────────────────
-
-export interface ContractTestHarness {
+export interface SingleBrowser {
   endpoint: string;
   port: number;
   pid: number;
   profileDir: string;
-  /** Create a Playwright adapter (baseline). */
-  makePlaywrightSession(): Promise<BrowserSession>;
-  /** Create a ChromiumSession (candidate). */
-  makeChromiumSession(): Promise<BrowserSession>;
-  /** Kill browser process. */
+  /** Kill the Chrome process and clean up the profile. */
   cleanup(): void;
 }
 
-// ── Chrome discovery ─────────────────────────────────────────────────
-
 function findChrome(): string | null {
   if (platform() === "darwin") {
-    const apps = ["Google Chrome", "Microsoft Edge", "Chromium"];
-    for (const app of apps) {
-      const path = `/Applications/${app}.app/Contents/MacOS/${app}`;
-      if (existsSync(path)) return path;
+    for (const app of ["Google Chrome", "Microsoft Edge", "Chromium"]) {
+      const p = `/Applications/${app}.app/Contents/MacOS/${app}`;
+      if (existsSync(p)) return p;
     }
     return null;
   }
@@ -70,14 +59,13 @@ async function waitForEndpoint(endpoint: string, timeoutMs: number): Promise<voi
   throw new Error(`CDP endpoint ${endpoint} not reachable within ${timeoutMs}ms`);
 }
 
-// ── Harness ──────────────────────────────────────────────────────────
-
-export async function createContractHarness(tempDir: string): Promise<ContractTestHarness> {
+/** Start a fresh headless Chrome and return its endpoint info. */
+export async function startTestChrome(tempDir: string): Promise<SingleBrowser> {
   const chromePath = findChrome();
   if (!chromePath) throw new Error("No Chrome found. Install Chrome to run contract tests.");
 
   const port = parseInt(process.env["TEST_BROWSER_PORT"] ?? "0", 10) || await findFreePort();
-  const profileDir = join(tempDir, "contract-chrome-profile");
+  const profileDir = join(tempDir, `chrome-profile-${port}`);
   await mkdir(profileDir, { recursive: true });
   const endpoint = `http://127.0.0.1:${port}`;
 
@@ -98,37 +86,12 @@ export async function createContractHarness(tempDir: string): Promise<ContractTe
   child.unref();
   await waitForEndpoint(endpoint, 15_000);
 
-  // Shared Playwright browser (reused across tests via adapters)
-  let pwBrowser: import("playwright-core").Browser | null = null;
-  const getPwBrowser = async (): Promise<import("playwright-core").Browser> => {
-    if (pwBrowser?.isConnected()) return pwBrowser;
-    const { chromium } = await import("playwright-core");
-    pwBrowser = await chromium.connectOverCDP(endpoint, { timeout: 10_000 });
-    return pwBrowser;
-  };
-
   return {
     endpoint,
     port,
     pid,
     profileDir,
-    async makePlaywrightSession(): Promise<BrowserSession> {
-      return new PlaywrightAdapterSession(await getPwBrowser());
-    },
-    async makeChromiumSession(): Promise<BrowserSession> {
-      // Each session is independent (fresh CDP connection)
-      return new ChromiumSession({
-        protocol: "cdp",
-        browserKind: "chrome",
-        endpoint,
-        timeouts: DEFAULT_TIMEOUTS,
-      });
-    },
-    cleanup(): void {
-      if (pwBrowser) {
-        pwBrowser.close().catch(() => {});
-        pwBrowser = null;
-      }
+    cleanup() {
       if (pid > 0) {
         try {
           if (platform() === "win32") {
