@@ -41,7 +41,6 @@ export class SafariSession implements BrowserSession {
 
   private client: WebDriverClient;
   private sessionId: string;
-  private timeouts: { action: number; navigation: number };
 
   constructor(params: BrowserSessionParams) {
     if (params.protocol !== "webdriver") {
@@ -49,10 +48,6 @@ export class SafariSession implements BrowserSession {
     }
     this.client = new WebDriverClient(params.endpoint);
     this.sessionId = params.sessionId;
-    this.timeouts = {
-      action: params.timeouts.actionTimeoutMs,
-      navigation: params.timeouts.navigationTimeoutMs,
-    };
   }
 
   // ── Helpers ────────────────────────────────────────────────────────
@@ -62,10 +57,7 @@ export class SafariSession implements BrowserSession {
   }
 
   /** Resolve a CSS selector to a WebDriver element ID. */
-  private async findOne(
-    selector: string,
-    timeoutMs: number,
-  ): Promise<string> {
+  private async findOne(selector: string): Promise<string> {
     let using = "css selector";
     let value = selector;
 
@@ -80,25 +72,14 @@ export class SafariSession implements BrowserSession {
       value = `//*[contains(text(),"${text}")]`;
     }
 
-    const deadline = Date.now() + timeoutMs;
-    let lastError: Error | null = null;
-
-    while (Date.now() < deadline) {
-      try {
-        return await this.client.findElement(this.sessionId, using, value);
-      } catch (e) {
-        lastError = e as Error;
-        if (e instanceof WebDriverErrorResponse) {
-          if (e.wd.error === "no such element") {
-            await sleep(100);
-            continue;
-          }
-          throw new ElementNotFoundError(selector);
-        }
-        throw e;
+    try {
+      return await this.client.findElement(this.sessionId, using, value);
+    } catch (e) {
+      if (e instanceof WebDriverErrorResponse && e.wd.error === "no such element") {
+        throw new ElementNotFoundError(selector);
       }
+      throw e;
     }
-    throw lastError ?? new ElementNotFoundError(selector);
   }
 
   /** Get current active page ID (window handle). */
@@ -129,10 +110,9 @@ export class SafariSession implements BrowserSession {
 
   async click(
     target: ResolvedTarget,
-    options: ClickOptions = {},
+    _options: ClickOptions = {},
   ): Promise<InternalActionResult> {
-    const timeoutMs = options.timeoutMs ?? this.timeouts.action;
-    const elementId = await this.findOne(target.selector, timeoutMs);
+    const elementId = await this.findOne(target.selector);
 
     const handle = await this.client.getCurrentWindowHandle(this.sessionId);
     const currentUrl = await this.client.getCurrentUrl(this.sessionId);
@@ -165,8 +145,7 @@ export class SafariSession implements BrowserSession {
     text: string,
     options: TypeOptions = {},
   ): Promise<InternalTypeResult> {
-    const timeoutMs = options.timeoutMs ?? this.timeouts.action;
-    const elementId = await this.findOne(target.selector, timeoutMs);
+    const elementId = await this.findOne(target.selector);
 
     const shouldClear = options.clear ?? true;
     if (shouldClear) {
@@ -213,7 +192,7 @@ export class SafariSession implements BrowserSession {
     const webdriverKey = keyMap[key] ?? key;
 
     if (target) {
-      const elementId = await this.findOne(target.selector, this.timeouts.action);
+      const elementId = await this.findOne(target.selector);
       await this.client.sendKeysToElement(this.sessionId, elementId, webdriverKey);
     } else {
       // Send key to the active element
