@@ -586,6 +586,17 @@ async fn spawn_bash(
 
     match read_result {
         Ok(Ok(Ok(status))) => {
+            // Normal completion. On unix a successful command never kills the
+            // process group, so intentionally detached grandchildren survive.
+            // Match that on Windows: disarm the job's KILL_ON_JOB_CLOSE before
+            // `job` drops, otherwise closing the handle would terminate the
+            // whole tree — including a browser just launched by
+            // `future-cli browser start`, which would then die immediately even
+            // though it was spawned detached.
+            #[cfg(windows)]
+            if let Some(job) = &job {
+                job.disarm();
+            }
             // Drain any leftover bytes (rare: process exited but pipe still has data).
             use tokio::io::AsyncReadExt;
             loop {
@@ -663,7 +674,11 @@ fn format_bash_output(raw: &str, total_bytes: usize, exit_code: i32) -> String {
 
     let result = format!("{}\n{}", body, footer);
     let trimmed = result.trim_end().to_string();
-    if trimmed.is_empty() { result } else { trimmed }
+    if trimmed.is_empty() {
+        result
+    } else {
+        trimmed
+    }
 }
 
 fn human_size(bytes: usize) -> String {

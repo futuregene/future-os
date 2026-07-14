@@ -76,6 +76,28 @@ impl Job {
         // SAFETY: FFI on an owned job handle.
         unsafe { TerminateJobObject(self.0, 1) };
     }
+
+    /// Clear `KILL_ON_JOB_CLOSE` so dropping the job handle no longer kills its
+    /// members. Call this on the normal-completion path: on unix a successful
+    /// command never triggers a process-group kill, so intentionally detached
+    /// grandchildren (e.g. a browser launched by `future-cli browser start`)
+    /// keep running. Without disarming, closing this job handle on drop would
+    /// terminate that whole tree and the just-launched browser would die.
+    /// Best-effort — a failure just leaves the kill-on-close behaviour intact.
+    pub fn disarm(&self) {
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        info.BasicLimitInformation.LimitFlags = 0;
+        // SAFETY: `info` is a correctly-sized, zero-initialized struct for this
+        // class; clearing LimitFlags removes JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
+        unsafe {
+            SetInformationJobObject(
+                self.0,
+                JobObjectExtendedLimitInformation,
+                std::ptr::addr_of!(info).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+        }
+    }
 }
 
 impl Drop for Job {
