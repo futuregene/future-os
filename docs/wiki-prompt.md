@@ -137,7 +137,7 @@ docs/wiki/
 **代码入口(先读再写):** `gui/src/features/settings/FutureLoginDialog.tsx`(设备码登录流程)、`gui/src/features/settings/ProvidersPage.tsx`、`gui/src/features/agent/NewConversation.tsx`、`gui/src/features/agent/Composer.tsx`(发送、模型选择器、附件)、`gui/src/components/layout/ActivityRail.tsx`(New Chat / Workspace 入口)。
 - **打开并登录**:Settings(左下齿轮)→ Providers → 内置 FutureGene → Connect → 浏览器授权(不自动打开时用应用给出的验证码 + 可复制链接)。提一句也可改用自己的 provider(见 Settings)。
 - **开始对话**:两种方式 —— **New Chat**(最快,适合提问和一次性任务)、**Workspace**(绑定电脑上的文件夹,适合真实项目)。
-- **发第一条消息**:底部输入框发送;会看到流式回复、工具调用展示、风险操作时**暂停等你批准**;每轮最多可附 4 个图片文件(按钮/粘贴/拖拽)。
+- **发第一条消息**:底部输入框发送;会看到流式回复、工具调用展示、风险操作时**暂停等你批准**;支持任意本地文件，每轮最多 4 张图片（单张 25 MiB），非图片不限数量。
 - **选模型(可选)**:模型选择器就在输入框里;也可在 Settings → Models 管理。
 - **查看工作**:右侧面板 —— Runs(后台任务)、Review(Workspace 的文件改动)、Artifacts(Chat 的产出)。
 
@@ -145,7 +145,7 @@ docs/wiki/
 **代码入口(先读再写):** `gui/src/components/layout/AppShell.tsx`(三栏布局)、`gui/src/components/layout/ActivityRail.tsx`(左侧导航,以此为准确认到底有哪些入口)、`gui/src/components/layout/ContextPanel.tsx`(右侧面板)、`gui/src/features/agent/ApprovalPrompt.tsx`(批准机制)、`gui/src/features/runs/RunsPanel.tsx` + `gui/src/features/review/ReviewPanel.tsx` + `gui/src/features/artifacts/ArtifactsPanel.tsx`(右侧三种视图)。
 - **三栏布局**:左=导航(以 `ActivityRail.tsx` 实际渲染的入口为准:New Chat、你的 Workspaces 及其会话、Chats、Settings);中=对话(消息、流式回复、计划、工具活动、命令预览、错误、批准卡片,输入框固定底部);右=上下文(查看 agent 在做什么,可折叠)。
 - **Chat vs Workspace**:用表格对比(建立方式、适用场景、右侧面板显示的内容)。强调每个会话是独立 agent session,互不干扰。
-- **和 agent 对话**:输入框发送;模型选择器可逐会话切换;附件最多 4 个。
+- **和 agent 对话**:输入框发送;模型选择器可逐会话切换;每轮最多 4 张图片，非图片附件不限数量。
 - **批准机制 —— 你掌控**:风险操作会停下来在输入框上方弹批准卡片并等待(不超时);Allow 继续、Reject 取消并告知 agent 以便调整。
 - **右侧面板核对工作**:Runs(运行中/已完成,可停止/清理,每张卡显示真实命令)、Review(Workspace 文件改动:文件列表、统计、diff;版本控制下还有"上一轮改动"视图)、Artifacts(Chat 产出)。
 - (不要写 Research / Data 入口——当前已从导航隐藏。)

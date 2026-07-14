@@ -1,4 +1,5 @@
 import type { MessageAttachment } from "./agentThreadTypes";
+import i18n from "../../i18n";
 import { deleteTempAttachment, generateImageThumbnail, importWorkspaceImage } from "../../integrations/storage/files";
 
 /**
@@ -21,11 +22,29 @@ function isEphemeralImagePath(path: string) {
  * are referenced by their original path and read by the agent on demand.
  */
 export async function persistImageAttachments(attachments: MessageAttachment[], threadId: string) {
-  return Promise.all(
+  // Phase 1 is read-only: every image must validate before phase 2 moves or
+  // deletes any pasted temp original. This keeps a rejected multi-image draft
+  // fully retryable instead of leaving some of its paths stale.
+  const prepared = await Promise.all(
     attachments.map(async (attachment) => {
       if (attachment.kind !== "image") {
-        return attachment;
+        return { attachment, thumbnail: null };
       }
+      // Thumbnail generation doubles as the authoritative decode/readability
+      // check. Never claim an image was sent when the agent will later skip it.
+      const thumbnail = await generateImageThumbnail({ sourcePath: attachment.path, threadId }).catch(() => null);
+      if (!thumbnail) {
+        throw new Error(i18n.t("agent:attachment.imageUnreadable", { name: attachment.name }));
+      }
+      return { attachment, thumbnail };
+    }),
+  );
+
+  // Phase 2 may persist ephemeral originals now that the whole batch is valid.
+  return Promise.all(
+    prepared.map(async ({ attachment, thumbnail }) => {
+      if (attachment.kind !== "image" || !thumbnail)
+        return attachment;
       let path = attachment.path;
       if (isEphemeralImagePath(path)) {
         try {
@@ -37,8 +56,7 @@ export async function persistImageAttachments(attachments: MessageAttachment[], 
           // Best-effort: keep the temp path if the durable copy fails.
         }
       }
-      const thumbnail = await generateImageThumbnail({ sourcePath: path, threadId }).catch(() => null);
-      return thumbnail ? { ...attachment, path, thumbnail } : { ...attachment, path };
+      return { ...attachment, path, thumbnail };
     }),
   );
 }

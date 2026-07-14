@@ -51,6 +51,11 @@ export async function runSendPipeline(
   { thread, modelId, thinkingLevel, setMessages, setRecentRun, refreshRecentRun, onThreadActivity, isCurrentSend }: SendPipelineDeps,
   { attachments, content }: ComposerSendPayload,
 ): Promise<void> {
+  // Validate and prepare images before adding optimistic messages. A failed
+  // decode rejects the send, leaves the composer draft intact, and surfaces a
+  // concrete error instead of showing an attachment the model never received.
+  const importedAttachments = await persistImageAttachments(attachments, thread.id);
+
   // Timer handle is local to this send, not a shared ref: a prior fix regression
   // let one thread's send clear another thread's stream timer, freezing the live
   // bubble. Ownership stays with the closure.
@@ -71,7 +76,7 @@ export async function runSendPipeline(
     content,
     status: "complete",
     createdAt: new Date().toISOString(),
-    attachments,
+    attachments: importedAttachments,
   };
   const assistantMessage: AgentMessage = {
     id: pendingId,
@@ -92,12 +97,6 @@ export async function runSendPipeline(
   let run: StoredRun | null = null;
 
   try {
-    // Non-image files are referenced by their original path — never copied.
-    // Images get a cached thumbnail; pasted/downloaded ones are also persisted to
-    // the thread's origin dir (they have no durable original). See
-    // persistImageAttachments.
-    const importedAttachments = await persistImageAttachments(attachments, thread.id);
-
     const messageContent = importedAttachments.length > 0
       ? stringifyMessageContent(content, importedAttachments)
       : content;

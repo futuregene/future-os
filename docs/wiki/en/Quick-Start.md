@@ -42,7 +42,7 @@ Type in the input box at the bottom and press **Enter** to send. You'll see:
 - **Tool activity** shown as the agent reads files, runs commands, and so on.
 - A **pause for your approval** whenever the agent wants to do something risky (like writing a file or running a command). Nothing risky happens without your OK.
 
-You can attach up to **4 image files** per message — use the paperclip button, paste an image, or drag files onto the input box.
+You can attach local files with the paperclip button or drag-and-drop, and paste images directly. Each message supports up to **4 images** (25 MiB each); other file types are not count-limited.
 
 ---
 

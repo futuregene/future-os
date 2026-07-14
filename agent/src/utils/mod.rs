@@ -81,6 +81,7 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
 
     const MAX_DIM: u32 = 2000;
     const MAX_BASE64_BYTES: usize = 5 * 1024 * 1024;
+    const MAX_SOURCE_BYTES: u64 = 25 * 1024 * 1024;
 
     let data_url = |mime: &str, bytes: &[u8]| {
         format!(
@@ -91,6 +92,9 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
     // Projected base64 length is ~4/3 of the raw byte count.
     let fits_base64 = |len: usize| len.div_ceil(3) * 4 <= MAX_BASE64_BYTES;
 
+    if std::fs::metadata(path).ok()?.len() > MAX_SOURCE_BYTES {
+        return None;
+    }
     let bytes = std::fs::read(path).ok()?;
     // Cap the decoder's allocation so a decompression bomb (a tiny file that
     // decodes to a huge bitmap) can't OOM the agent. 512MB comfortably fits any

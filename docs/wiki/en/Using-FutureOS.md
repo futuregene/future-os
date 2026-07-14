@@ -35,7 +35,7 @@ You can rename, pin, or delete conversations from the menu next to each one in t
 
 - Type in the input box and press **Enter** to send. Use **Shift+Enter** for a new line.
 - The **model selector** and **thinking level** control sit inside the input box — you can switch models per conversation.
-- Attach up to **4 images** per message with the paperclip button, by pasting, or by dragging files onto the box.
+- Attach local files with the paperclip button, by pasting images, or by dragging files onto the box. Each message supports up to **4 images** (25 MiB each); other file types are not count-limited.
 - While a reply is streaming, the send button becomes a **stop** button so you can interrupt.
 
 ---
