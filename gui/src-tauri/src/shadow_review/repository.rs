@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::AppError;
 
@@ -26,15 +26,18 @@ fn review_root() -> Result<PathBuf, AppError> {
 
 // ── per-Workspace serialization (§12.1) ─────────────────────────────────────
 
-static WORKSPACE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+static WORKSPACE_LOCKS: OnceLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> = OnceLock::new();
 
 fn workspace_lock(workspace_id: &str) -> Arc<Mutex<()>> {
     let map = WORKSPACE_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = map.lock().unwrap_or_else(|poison| poison.into_inner());
-    guard
-        .entry(workspace_id.to_string())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone()
+    guard.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = guard.get(workspace_id).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    guard.insert(workspace_id.to_string(), Arc::downgrade(&lock));
+    lock
 }
 
 /// Run `f` while holding the Workspace's shadow lock. Snapshot writes for the

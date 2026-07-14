@@ -1,3 +1,4 @@
+import type { ReviewBase } from "../../integrations/storage/review";
 import type { GitReview, LastRunReviewData, WorkspaceReviewCapabilities } from "../../integrations/storage/types";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -7,8 +8,6 @@ import { onFutureEvent } from "../../lib/futureEvents";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { ReviewHeader, WorkingTreeReview } from "./GitChangesReview";
 import { LastRunReview } from "./LastRunReview";
-
-export type ReviewBase = "custom" | "head" | "merge-base" | "upstream";
 
 type ReviewView = "git_changes" | "last_run";
 

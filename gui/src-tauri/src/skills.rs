@@ -258,6 +258,24 @@ fn flatten_single_subdir(dir: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Extract the `version:` field from a SKILL.md YAML frontmatter block, if any.
+fn read_skill_md_version(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let after = text.trim_start().strip_prefix("---")?;
+    let end = after.find("\n---")?;
+    for line in after[..end].lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("version:") {
+            let value = value.trim().trim_matches(|c| c == '"' || c == '\'').trim();
+            return (!value.is_empty()).then(|| value.to_string());
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,22 +314,4 @@ mod tests {
         assert_eq!(dest, base.join("core"));
         assert!(skill_dir_in_scope(SkillScope::App, "../escape").is_err());
     }
-}
-
-/// Extract the `version:` field from a SKILL.md YAML frontmatter block, if any.
-fn read_skill_md_version(path: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let after = text.trim_start().strip_prefix("---")?;
-    let end = after.find("\n---")?;
-    for line in after[..end].lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if let Some(value) = line.strip_prefix("version:") {
-            let value = value.trim().trim_matches(|c| c == '"' || c == '\'').trim();
-            return (!value.is_empty()).then(|| value.to_string());
-        }
-    }
-    None
 }

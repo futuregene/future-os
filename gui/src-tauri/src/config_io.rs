@@ -19,21 +19,26 @@ use std::collections::HashMap;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use serde_json::Value;
 
 use crate::AppError;
 
-/// Intern a `&'static Mutex<()>` per config path. The set of config paths is tiny
-/// and fixed, so the leaked boxes are bounded.
-fn path_lock(path: &Path) -> &'static Mutex<()> {
-    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, &'static Mutex<()>>>> = OnceLock::new();
+/// Reuse a lock while a config operation for the path is alive. Weak entries are
+/// pruned on access, so visiting many Workspace approval files does not grow a
+/// process-lifetime registry or require leaking boxed mutexes.
+fn path_lock(path: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
     let registry = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = registry.lock().unwrap_or_else(|poison| poison.into_inner());
-    guard
-        .entry(path.to_path_buf())
-        .or_insert_with(|| &*Box::leak(Box::new(Mutex::new(()))))
+    guard.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = guard.get(path).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    guard.insert(path.to_path_buf(), Arc::downgrade(&lock));
+    lock
 }
 
 /// Serialize a read-modify-write of `path` within this process. Holds a per-path

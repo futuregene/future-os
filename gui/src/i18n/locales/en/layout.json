@@ -2,6 +2,9 @@
   "model": {
     "updateFailed": "Couldn't update the model: {{message}}"
   },
+  "settings": {
+    "updateFailed": "Couldn't save the setting: {{message}}"
+  },
   "activityRail": {
     "settings": "Settings",
     "newChat": "New Chat",

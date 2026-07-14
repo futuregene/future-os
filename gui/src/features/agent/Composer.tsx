@@ -11,7 +11,7 @@ import { Trans, useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
 import { modelKey, modelLabel, modelOption, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
-import { savePastedImage } from "../../integrations/storage/threadStore";
+import { deleteTempAttachment, savePastedImage } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { formatBytes } from "../../lib/format";
 import { onFutureEvent } from "../../lib/futureEvents";
@@ -283,8 +283,13 @@ export function Composer({
         // Ignore a single failed paste; other clipboard items still attach.
       }
     }
-    if (saved.length > 0)
+    if (saved.length > 0) {
       await addAttachmentPaths(saved);
+      const accepted = new Set(attachmentsRef.current.map(attachment => attachment.path));
+      // Files written for this paste but rejected by classification/model limits
+      // are no longer referenced by the draft and can be reclaimed immediately.
+      await Promise.all(saved.filter(path => !accepted.has(path)).map(path => deleteTempAttachment(path).catch(() => {})));
+    }
   }
 
   async function handleAttachFiles() {
@@ -309,6 +314,8 @@ export function Composer({
     const next = attachmentsRef.current.filter(attachment => attachment.path !== path);
     attachmentsRef.current = next;
     setAttachments(next);
+    if (path.includes("futureos-attachments"))
+      void deleteTempAttachment(path).catch(() => {});
   }
 
   // Held in a ref so the webview drag listener below doesn't re-subscribe on

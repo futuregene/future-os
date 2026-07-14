@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -73,10 +72,6 @@ pub struct ToolOutputRecord {
 sql_record!(pub(super) RUN_COLUMNS, run_from_row -> RunRecord {
     id, thread_id, trigger_message_id, status, model_provider, model_id,
     started_at, ended_at, error_message, error_type, created_at, updated_at,
-});
-
-sql_record!(pub(super) RUN_EVENT_COLUMNS, run_event_from_row -> RunEventRecord {
-    id, run_id, event_type, payload, sequence, created_at,
 });
 
 sql_record!(pub(super) TOOL_CALL_COLUMNS, tool_call_from_row -> ToolCallRecord {
@@ -681,16 +676,6 @@ pub fn list_tool_outputs(
         }]);
     }
     Ok(vec![])
-}
-
-#[allow(dead_code)]
-pub fn upsert_tool_call(_input: UpsertToolCallInput) -> Result<(), crate::AppError> {
-    Ok(())
-}
-
-#[allow(dead_code)]
-pub fn complete_tool_call(_input: CompleteToolCallInput) -> Result<(), crate::AppError> {
-    Ok(())
 }
 
 #[cfg(test)]

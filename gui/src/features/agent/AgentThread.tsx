@@ -180,7 +180,7 @@ export function AgentThread({
     catch (error) {
       emitFutureEvent("toast", { message: t("message.forkFailed", { message: errorMessage(error) }), tone: "error" });
     }
-  }, [thread, messages, onForked]);
+  }, [thread, messages, onForked, t]);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">

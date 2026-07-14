@@ -18,8 +18,13 @@ interface CacheEntry {
 
 /** TTL for cached agent state (30s). Agent restarts invalidate the cache. */
 const CACHE_TTL_MS = 30_000;
+const CACHE_MAX = 100;
 
 const cache = new Map<string, CacheEntry>();
+const inFlight = new Map<string, Promise<AgentSessionState>>();
+// Incremented by optimistic updates/invalidation. A request may populate the
+// cache only if no newer local mutation happened while it was in flight.
+const versions = new Map<string, number>();
 
 // Subscribers (React components via useCachedAgentState) notified on every cache
 // mutation, so a background fetch updates the UI immediately instead of waiting
@@ -45,21 +50,38 @@ export async function getAgentState(threadId: string): Promise<AgentSessionState
   const now = Date.now();
   const cached = cache.get(threadId);
   if (cached && now - cached.fetchedAt < CACHE_TTL_MS) {
+    touchCache(threadId, cached);
     return cached.state;
   }
 
-  const raw = await invokeCommand<Record<string, unknown>>("get_thread_agent_state", { threadId });
-  const state: AgentSessionState = {
-    model: typeof raw.model === "string" ? raw.model : null,
-    thinkingLevel: typeof raw.thinkingLevel === "string" ? raw.thinkingLevel : null,
-    sessionName: typeof raw.sessionName === "string" ? raw.sessionName : null,
-    cwd: typeof raw.cwd === "string" ? raw.cwd : null,
-    parentSessionId: typeof raw.parentSessionId === "string" ? raw.parentSessionId : null,
-  };
+  const pending = inFlight.get(threadId);
+  if (pending)
+    return pending;
 
-  cache.set(threadId, { state, fetchedAt: now });
-  notify();
-  return state;
+  const requestVersion = versions.get(threadId) ?? 0;
+  const request = invokeCommand<Record<string, unknown>>("get_thread_agent_state", { threadId })
+    .then((raw) => {
+      const state: AgentSessionState = {
+        model: typeof raw.model === "string" ? raw.model : null,
+        thinkingLevel: typeof raw.thinkingLevel === "string" ? raw.thinkingLevel : null,
+        sessionName: typeof raw.sessionName === "string" ? raw.sessionName : null,
+        cwd: typeof raw.cwd === "string" ? raw.cwd : null,
+        parentSessionId: typeof raw.parentSessionId === "string" ? raw.parentSessionId : null,
+      };
+      if ((versions.get(threadId) ?? 0) === requestVersion) {
+        cache.set(threadId, { state, fetchedAt: Date.now() });
+        pruneCache();
+        notify();
+        return state;
+      }
+      return cache.get(threadId)?.state ?? state;
+    })
+    .finally(() => {
+      if (inFlight.get(threadId) === request)
+        inFlight.delete(threadId);
+    });
+  inFlight.set(threadId, request);
+  return request;
 }
 
 /**
@@ -68,6 +90,8 @@ export async function getAgentState(threadId: string): Promise<AgentSessionState
  * Object.is snapshot comparison detects the change and re-renders subscribers.
  */
 export function updateCachedAgentState(threadId: string, patch: Partial<AgentSessionState>) {
+  versions.set(threadId, (versions.get(threadId) ?? 0) + 1);
+  inFlight.delete(threadId);
   const cached = cache.get(threadId);
   cache.set(threadId, {
     state: cached ? { ...cached.state, ...patch } : (patch as AgentSessionState),
@@ -76,6 +100,7 @@ export function updateCachedAgentState(threadId: string, patch: Partial<AgentSes
     // getCachedAgentState treat it as expired immediately.
     fetchedAt: Date.now(),
   });
+  pruneCache();
   notify();
 }
 
@@ -92,8 +117,26 @@ export function getCachedAgentState(threadId: string | undefined | null): AgentS
 
 /** Invalidate a thread's cached state (force re-fetch on next access). */
 export function invalidateAgentState(threadId: string) {
+  versions.set(threadId, (versions.get(threadId) ?? 0) + 1);
+  inFlight.delete(threadId);
   if (cache.delete(threadId))
     notify();
+}
+
+function touchCache(threadId: string, entry: CacheEntry) {
+  cache.delete(threadId);
+  cache.set(threadId, entry);
+}
+
+function pruneCache() {
+  while (cache.size > CACHE_MAX) {
+    const oldest = cache.keys().next().value;
+    if (!oldest)
+      return;
+    cache.delete(oldest);
+    versions.delete(oldest);
+    inFlight.delete(oldest);
+  }
 }
 
 /** Pre-fetch agent state for a thread in the background. */

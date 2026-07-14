@@ -50,7 +50,6 @@ fn persist_agent_tool_projection(run_id: &str, event_type: &str, payload: &str, 
     match event_type {
         "approval_request" => persist_approval_request(run_id, &value),
         "approval_decision" => persist_approval_decision(run_id, &value),
-        "tool_start" | "toolcall_start" => persist_tool_start(run_id, &value, sequence),
         "tool_end" | "tool_result" => persist_tool_end(run_id, &value, sequence),
         "artifact_created" | "artifact.created" => persist_artifact(run_id, &value),
         _ => {}
@@ -179,33 +178,6 @@ fn persist_approval_decision(run_id: &str, value: &serde_json::Value) {
     }
 }
 
-fn persist_tool_start(run_id: &str, value: &serde_json::Value, sequence: i64) {
-    let tool_name =
-        value_string(value, &["tool_name", "toolName"]).unwrap_or_else(|| "tool".to_string());
-    let tool_call_id = value_string(value, &["tool_id", "toolID", "tool_call_id"])
-        .unwrap_or_else(|| format!("{run_id}_tool_{sequence}"));
-    let input = value
-        .get("tool_args")
-        .or_else(|| value.get("toolArgs"))
-        .or_else(|| value.get("arguments"))
-        .map(compact_json);
-
-    if let Err(error) = store::upsert_tool_call(store::UpsertToolCallInput {
-        run_id: run_id.to_string(),
-        tool_call_id: tool_call_id.clone(),
-        name: tool_name.clone(),
-        kind: "agent_tool".to_string(),
-        input: input.clone(),
-        status: "running".to_string(),
-    }) {
-        eprintln!("FutureOS tool call persistence failed: {error}");
-    }
-
-    // Review changesets are no longer guessed from write/edit tool-start events
-    // (a `bash` call could bypass them). "Previous turn changes" now come from real
-    // before/after shadow snapshots — see agent_bridge/review.rs (§14.3).
-}
-
 fn persist_tool_end(run_id: &str, value: &serde_json::Value, sequence: i64) {
     let tool_name =
         value_string(value, &["tool_name", "toolName"]).unwrap_or_else(|| "tool".to_string());
@@ -220,31 +192,10 @@ fn persist_tool_end(run_id: &str, value: &serde_json::Value, sequence: i64) {
     // and inspector don't mark an errored command as completed.
     let failed = !error.as_deref().unwrap_or_default().is_empty()
         || output_is_failure(output_content.as_deref(), run_id, &tool_call_id);
-    let status = if failed {
-        "failed".to_string()
-    } else {
-        "completed".to_string()
-    };
-    let output_kind = if status == "completed" {
-        "text".to_string()
-    } else {
-        "error".to_string()
-    };
     let final_output = error.or(output_content);
 
-    if status == "completed" {
+    if !failed {
         persist_written_file_artifact(run_id, &tool_name, &tool_call_id, final_output.as_deref());
-    }
-
-    if let Err(error) = store::complete_tool_call(store::CompleteToolCallInput {
-        run_id: run_id.to_string(),
-        tool_call_id,
-        name: tool_name,
-        status,
-        output_kind,
-        output_content: final_output,
-    }) {
-        eprintln!("FutureOS tool output persistence failed: {error}");
     }
 }
 

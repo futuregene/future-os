@@ -6,15 +6,18 @@
 //! The composer's `@`-mention picker searches workspace files, not objects —
 //! see [`super::workspace_files`].
 
-#![allow(dead_code)]
+#[cfg(test)]
 mod extract;
+#[cfg(test)]
 mod metadata;
 mod resolve;
+#[cfg(test)]
 mod sync;
 
 pub use self::resolve::resolve_markdown_references;
 
 /// First eight characters of an id, used to label runs in sync output.
+#[cfg(test)]
 fn short_id(id: &str) -> String {
     id.chars().take(8).collect()
 }

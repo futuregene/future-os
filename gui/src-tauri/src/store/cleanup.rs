@@ -356,6 +356,13 @@ pub fn clear_finished_runs(thread_id: &str) -> Result<usize, crate::AppError> {
         params![thread_id],
     )?;
     tx.commit()?;
+    // Event logs live outside SQLite, so remove them only after the database
+    // transaction commits. Keeping this paired with run deletion prevents the
+    // "clear finished" action from leaving orphaned JSONL files indefinitely.
+    for run_id in &terminal_run_ids {
+        super::delete_run_events_file(run_id);
+        super::clear_run_event_buffer(run_id);
+    }
     Ok(deleted_runs)
 }
 
@@ -366,7 +373,12 @@ mod tests {
     use rusqlite::Connection;
 
     use super::*;
+    use crate::auth_store::test_support::HomeGuard;
     use crate::store::schema::SCHEMA;
+    use crate::store::{
+        AppendRunEventInput, CreateRunInput, CreateThreadInput, CreateWorkspaceInput,
+        UpdateRunStatusInput,
+    };
 
     fn test_conn() -> Connection {
         let conn = Connection::open_in_memory().expect("open in-memory database");
@@ -499,6 +511,66 @@ mod tests {
         assert_eq!(ap_status, "cancelled");
         // (tool_calls cascade dropped — the table no longer exists; converge
         // only cancels the run + its pending approvals now.)
+    }
+
+    #[test]
+    fn clear_finished_runs_removes_event_log() {
+        let _home = HomeGuard::new("clear-finished-run-events");
+        crate::store::initialize_app_store().expect("initialize store");
+        let workspace = crate::store::create_workspace(CreateWorkspaceInput {
+            name: Some("test".to_string()),
+            path: PathBuf::from(std::env::var("HOME").expect("test home"))
+                .join("workspace")
+                .display()
+                .to_string(),
+            description: None,
+            create_directory: Some(true),
+        })
+        .expect("create workspace");
+        let thread = crate::store::create_thread(CreateThreadInput {
+            mode: "workspace".to_string(),
+            title: Some("test".to_string()),
+            workspace_id: Some(workspace.id),
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .expect("create thread");
+        let run = crate::store::create_run(CreateRunInput {
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create run");
+        crate::store::append_run_event(AppendRunEventInput {
+            run_id: run.id.clone(),
+            event_type: "text_chunk".to_string(),
+            payload: Some(r#"{"text":"hello"}"#.to_string()),
+            sequence: 1,
+        })
+        .expect("append event");
+        let log_path = PathBuf::from(
+            crate::store::app_data_path()
+                .expect("app data path")
+                .app_dir,
+        )
+        .join("run_events")
+        .join(format!("{}.jsonl", run.id));
+        assert!(log_path.exists(), "event log should exist before cleanup");
+
+        crate::store::update_run_status_if_active(UpdateRunStatusInput {
+            run_id: run.id,
+            status: "completed".to_string(),
+            error_message: None,
+            error_type: None,
+        })
+        .expect("complete run");
+        assert_eq!(clear_finished_runs(&thread.id).expect("clear runs"), 1);
+        assert!(
+            !log_path.exists(),
+            "event log should be removed with its run"
+        );
     }
 
     #[test]
