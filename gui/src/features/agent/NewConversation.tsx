@@ -200,7 +200,7 @@ export function NewConversation({
               onSend={handleSend}
               disabled={catalogLoading}
               placeholder={t("newConversation.placeholder")}
-              textareaClassName="h-16 text-base leading-6"
+              textareaClassName="h-16 text-sm leading-5"
               workspaceId={mode === "workspace" ? activeWorkspace?.id : null}
               draftKey="new"
             />
