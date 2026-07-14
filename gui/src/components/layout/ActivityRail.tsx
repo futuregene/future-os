@@ -104,6 +104,10 @@ export function ActivityRail({
   const [openThreadMenuId, setOpenThreadMenuId] = useState<string | null>(null);
   const [openWorkspaceMenuId, setOpenWorkspaceMenuId] = useState<string | null>(null);
   const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Set<string>>(() => new Set());
+  // Collapse state for the two top-level list sections (Workspace / Chat),
+  // independent of the per-workspace group collapse above.
+  const [workspaceSectionCollapsed, setWorkspaceSectionCollapsed] = useState(false);
+  const [chatSectionCollapsed, setChatSectionCollapsed] = useState(false);
 
   function toggleWorkspaceCollapsed(workspaceId: string) {
     setCollapsedWorkspaces((current) => {
@@ -129,6 +133,8 @@ export function ActivityRail({
       workspace,
       threads: workspaceThreads.filter(thread => thread.workspaceId === workspace.id),
     }));
+  const visibleWorkspaceGroups = workspaceSectionCollapsed ? [] : workspaceGroups;
+  const visibleChatThreads = chatSectionCollapsed ? [] : chatThreads;
   const toggleLabel = floating
     ? t("activityRail.pinSidebar")
     : expanded
@@ -235,22 +241,31 @@ export function ActivityRail({
                     <div className="space-y-0.5">
                       <div className="sticky top-0 z-10 flex h-6 items-center justify-between bg-surface px-2 text-xs font-medium text-ink-muted">
                         <span>{t("activityRail.workspace")}</span>
-                        <button
-                          aria-label={t("activityRail.newWorkspace")}
-                          className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
-                          onClick={onNewWorkspace}
-                          title={t("activityRail.newWorkspace")}
-                          type="button"
-                        >
-                          <Plus className="size-3.5" />
-                        </button>
+                        <div className="flex items-center gap-0.5">
+                          <SectionToggle
+                            collapsed={workspaceSectionCollapsed}
+                            label={workspaceSectionCollapsed
+                              ? t("activityRail.expandWorkspaceSection")
+                              : t("activityRail.collapseWorkspaceSection")}
+                            onToggle={() => setWorkspaceSectionCollapsed(value => !value)}
+                          />
+                          <button
+                            aria-label={t("activityRail.newWorkspace")}
+                            className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                            onClick={onNewWorkspace}
+                            title={t("activityRail.newWorkspace")}
+                            type="button"
+                          >
+                            <Plus className="size-3.5" />
+                          </button>
+                        </div>
                       </div>
-                      {workspaceGroups.length === 0
+                      {!workspaceSectionCollapsed && workspaceGroups.length === 0
                         ? (
                             <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noWorkspaceThreads")}</div>
                           )
                         : null}
-                      {workspaceGroups.map(({ workspace, threads: groupThreads }) => {
+                      {visibleWorkspaceGroups.map(({ workspace, threads: groupThreads }) => {
                         const collapsed = collapsedWorkspaces.has(workspace.id);
                         return (
                           <div key={workspace.id} className="space-y-0.5">
@@ -330,18 +345,29 @@ export function ActivityRail({
                     <div className="mt-3 space-y-0.5">
                       <div className="sticky top-0 z-10 flex h-6 items-center justify-between bg-surface px-2 text-xs font-medium text-ink-muted">
                         <span>{t("activityRail.chatHeader")}</span>
-                        <button
-                          aria-label={t("activityRail.newChatShort")}
-                          className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
-                          onClick={() => onNewChat()}
-                          title={t("activityRail.newChatShort")}
-                          type="button"
-                        >
-                          <Plus className="size-3.5" />
-                        </button>
+                        <div className="flex items-center gap-0.5">
+                          <SectionToggle
+                            collapsed={chatSectionCollapsed}
+                            label={chatSectionCollapsed
+                              ? t("activityRail.expandChatSection")
+                              : t("activityRail.collapseChatSection")}
+                            onToggle={() => setChatSectionCollapsed(value => !value)}
+                          />
+                          <button
+                            aria-label={t("activityRail.newChatShort")}
+                            className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                            onClick={() => onNewChat()}
+                            title={t("activityRail.newChatShort")}
+                            type="button"
+                          >
+                            <Plus className="size-3.5" />
+                          </button>
+                        </div>
                       </div>
-                      {chatThreads.length === 0 ? <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noChats")}</div> : null}
-                      {chatThreads.map(thread => (
+                      {!chatSectionCollapsed && chatThreads.length === 0
+                        ? <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noChats")}</div>
+                        : null}
+                      {visibleChatThreads.map(thread => (
                         <ThreadListItem
                           active={thread.id === activeThreadId && active === "chat"}
                           archived={thread.status === "archived"}
@@ -459,6 +485,33 @@ function sortThreads(items: StoredThread[]) {
 
 function threadSortTime(thread: StoredThread) {
   return thread.lastMessageAt ?? thread.lastOpenedAt ?? thread.updatedAt ?? thread.createdAt;
+}
+
+/**
+ * Collapse/expand chevron for a top-level list section header (Workspace / Chat),
+ * sized to sit next to that header's `+` button.
+ */
+function SectionToggle({
+  collapsed,
+  label,
+  onToggle,
+}: {
+  collapsed: boolean;
+  label: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      aria-expanded={!collapsed}
+      aria-label={label}
+      className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+      onClick={onToggle}
+      title={label}
+      type="button"
+    >
+      {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+    </button>
+  );
 }
 
 /**
