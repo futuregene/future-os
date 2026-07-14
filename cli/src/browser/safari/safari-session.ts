@@ -139,10 +139,10 @@ export class SafariSession implements BrowserSession {
 
     await this.client.clickElement(this.sessionId, elementId);
 
-    // Wait for potential navigation
-    const deadline = Date.now() + this.timeouts.navigation;
+    // Check if navigation happened (short window — no point waiting 15s)
+    const navDeadline = Date.now() + 500;
     let newUrl = currentUrl;
-    while (Date.now() < deadline) {
+    while (Date.now() < navDeadline) {
       newUrl = await this.client.getCurrentUrl(this.sessionId);
       if (newUrl !== currentUrl) break;
       await sleep(100);
