@@ -113,6 +113,20 @@ export class ChatArea implements Component {
     }
   }
 
+  /** Mark the streaming assistant message as interrupted (stopped).
+   *  Partial content (text, thinking, tool calls) stays visible. */
+  markLastAssistantStopped(): void {
+    const idx = this.findAssistantIndex();
+    if (idx >= 0) {
+      const msg = this.messages[idx];
+      msg.pending = false;
+      if (msg) {
+        (msg as unknown as Record<string, unknown>).stopped = true;
+      }
+      this.rerenderMessage(idx);
+    }
+  }
+
   markLastMessageComplete(): void {
     const idx = this.findAssistantIndex();
     if (idx >= 0) {
