@@ -189,7 +189,7 @@ impl ResolvedSandbox {
         }
         #[cfg(target_os = "windows")]
         {
-            let command = rewrite_cli_tools_args(command);
+            let command = Self::rewrite_cli_tools_args(command);
             let mut child = tokio::process::Command::new("cmd");
             child.args(["/c", &command]);
             child
@@ -219,7 +219,7 @@ impl ResolvedSandbox {
         let after = command[args_pos + "--args".len()..].trim_start();
 
         // Extract the JSON from the --args value
-        let (json, rest) = match extract_json_arg(after) {
+        let (json, rest) = match Self::extract_json_arg(after) {
             Some(v) => v,
             None => return Cow::Borrowed(command),
         };
