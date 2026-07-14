@@ -182,6 +182,5 @@ export class PlaywrightAdapterSession implements BrowserSession {
 
   async disconnect(): Promise<void> {
     this.page = null;
-    // Don't close browser — just release our reference
   }
 }
