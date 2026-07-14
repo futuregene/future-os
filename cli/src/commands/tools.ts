@@ -374,7 +374,11 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
         await writeStdout(`${output}\n`);
         process.exit(0);
       } catch (error) {
-        await writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
+        const msg = error instanceof Error ? error.message
+          : (typeof error === "object" && error !== null && "message" in error)
+            ? String((error as Record<string, unknown>).message)
+            : String(error);
+        await writeStderr(`${msg}\n`);
         process.exit(1);
       }
     }

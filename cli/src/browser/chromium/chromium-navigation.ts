@@ -72,22 +72,37 @@ export class ActionNavigationObserver {
     });
   }
 
+  /**
+   * Wait for navigation triggered by a user action (click, press, type).
+   *
+   * Most actions do NOT cause navigation — a click on a button that runs JS,
+   * a Tab press, or typing into a field.  For those we must return quickly so
+   * the tool doesn't block for the full 15 s navigation timeout.
+   *
+   * Strategy: poll for a new loaderId for at most 500 ms.  If one appears the
+   * page IS navigating — wait for DOMContentLoaded on the new loader.  If
+   * nothing appears within 500 ms the action did not navigate; return
+   * immediately so the caller can proceed.
+   */
   async wait(
     session: CdpSession,
     deadline: { remainingMs(): number; expired: boolean },
   ): Promise<NavigationResult> {
     if (this.disposed) return { didNavigate: false };
 
-    // Wait briefly for a new loader or same-document navigation
-    while (!deadline.expired) {
+    // Phase 1 — wait for navigation to *start* (max 500 ms)
+    const navStartMs = Math.min(deadline.remainingMs(), 500);
+    const navStartAt = Date.now();
+    while (Date.now() - navStartAt < navStartMs) {
       if (this.newLoaderId) {
+        // Phase 2 — navigation started; wait for it to finish
         await waitForLifecycleEvent(session, "DOMContentLoaded", this.newLoaderId, deadline);
         return { didNavigate: true };
       }
       await sleep(50);
     }
 
-    // Timeout — no navigation detected
+    // No navigation started — action was a non-navigating interaction
     return { didNavigate: false };
   }
 

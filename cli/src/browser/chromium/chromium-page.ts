@@ -4,7 +4,7 @@
  * Uses Target.setDiscoverTargets + Target.targetCreated (NOT Target.setAutoAttach).
  * Only attaches to type="page" targets.
  */
-import type { CdpConnection, CdpSession } from "./cdp-connection.js";
+import { CdpConnection, CdpError, type CdpSession } from "./cdp-connection.js";
 import { reconcilePageOrder, insertNewPage, removePage } from "../tab-order.js";
 
 export interface ChromiumPage {
@@ -51,9 +51,7 @@ export class ChromiumPageManager {
       const { targetId } = event as { targetId: string };
       const attached = this.connection.detachTargetByTargetId(targetId);
       if (attached) {
-        this.connection.rejectPendingForSession(attached.sessionId, {
-          code: -1, message: `Target ${targetId} destroyed`,
-        });
+        this.connection.rejectPendingForSession(attached.sessionId, new CdpError(-1, `Target ${targetId} destroyed`));
       }
       this.pages.delete(targetId);
       this.tabOrder = removePage(this.tabOrder, targetId);

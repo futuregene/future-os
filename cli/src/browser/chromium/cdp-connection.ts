@@ -15,10 +15,15 @@ import { TargetSessionRegistry, type AttachedTarget } from "./chromium-target-re
 
 // ── Types ───────────────────────────────────────────────────────────
 
-export interface CdpError {
-  code: number;
-  message: string;
-  data?: unknown;
+export class CdpError extends Error {
+  constructor(
+    public code: number,
+    message: string,
+    public data?: unknown,
+  ) {
+    super(message);
+    this.name = "CdpError";
+  }
 }
 
 interface PendingRequest {
@@ -199,7 +204,7 @@ export class CdpConnection {
     this._isConnected = false;
 
     // Reject all pending requests
-    const closeError: CdpError = { code: -1, message: "Connection closed" };
+    const closeError = new CdpError(-1, "Connection closed");
     for (const [_id, pending] of this.pending) {
       clearTimeout(pending.timer);
       pending.reject(closeError);
@@ -238,11 +243,11 @@ export class CdpConnection {
 
       if (message.error) {
         const err = message.error as Record<string, unknown>;
-        pending.reject({
-          code: typeof err.code === "number" ? err.code : -1,
-          message: typeof err.message === "string" ? err.message : "Unknown CDP error",
-          data: err.data,
-        });
+        pending.reject(new CdpError(
+          typeof err.code === "number" ? err.code : -1,
+          typeof err.message === "string" ? err.message : "Unknown CDP error",
+          err.data,
+        ));
       } else {
         pending.resolve(message.result);
       }
@@ -260,7 +265,7 @@ export class CdpConnection {
   }
 
   private handleClose(): void {
-    const error: CdpError = { code: -1, message: "Connection closed" };
+    const error = new CdpError(-1, "Connection closed");
     for (const [_id, pending] of this.pending) {
       clearTimeout(pending.timer);
       pending.reject(error);
