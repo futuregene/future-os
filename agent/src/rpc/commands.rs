@@ -551,10 +551,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                             let content_text = e.content.as_ref()
                                 .map(|c| {
                                     if let Some(arr) = c.as_array() {
+                                        // First text block only — later text blocks are
+                                        // the agent-injected attachment-path list.
                                         arr.iter()
                                             .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                                            .collect::<Vec<_>>()
-                                            .join(" ")
+                                            .next()
+                                            .unwrap_or("")
+                                            .to_string()
                                     } else {
                                         c.as_str().unwrap_or("").to_string()
                                     }
