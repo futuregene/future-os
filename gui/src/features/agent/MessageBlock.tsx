@@ -8,6 +8,7 @@ import { useCopyState } from "../../components/ui/useCopyState";
 import { cn } from "../../lib/cn";
 import { formatDateTime, formatMessageTimestamp } from "../../lib/date";
 import { useNow } from "../../lib/useNow";
+import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
 import { MarkdownContent } from "../markdown/MarkdownContent";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
 import { parseMentionSegments } from "./mentionMarkdown";
@@ -315,20 +316,36 @@ function AttachmentChip({ attachment }: { attachment: MessageAttachment }) {
   // A thumbnail (images now; PDF page previews later) renders as a small preview.
   // If it's absent (generation failed, or the thread's image dir was reclaimed)
   // or fails to load, fall back to the named pill instead of a blank box.
+  const { t } = useTranslation("agent");
   const [failed, setFailed] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   if (attachment.thumbnail && !failed) {
     return (
-      <span
-        className="inline-flex items-center overflow-hidden rounded-md ring-1 ring-line-soft"
-        title={attachment.name}
-      >
-        <img
-          alt={attachment.name}
-          className="size-16 object-cover"
-          onError={() => setFailed(true)}
-          src={convertFileSrc(attachment.thumbnail)}
+      <>
+        <button
+          className="inline-flex items-center overflow-hidden rounded-md ring-1 ring-line-soft transition-shadow hover:ring-line"
+          onClick={() => setPreviewOpen(true)}
+          title={attachment.name}
+          type="button"
+        >
+          <img
+            alt={attachment.name}
+            className="size-16 object-cover"
+            onError={() => setFailed(true)}
+            src={convertFileSrc(attachment.thumbnail)}
+          />
+        </button>
+        {/* Preview the full-size original. If it's gone (moved/reclaimed), toast
+            that it's damaged and close — the 96px thumbnail isn't worth previewing. */}
+        <FilePreviewOverlay
+          kind="image"
+          name={attachment.name}
+          onClose={() => setPreviewOpen(false)}
+          open={previewOpen}
+          path={attachment.path}
+          unavailableMessage={t("attachment.originalMissing")}
         />
-      </span>
+      </>
     );
   }
   return (
