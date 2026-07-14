@@ -64,6 +64,12 @@ describe("matchesInstalledSkill", () => {
     // Mismatched category.
     expect(matchesInstalledSkill(skill, { category: "other", query: "" }, "core")).toBe(false);
   });
+
+  it("matches localized fields regardless of current language", () => {
+    const skill = installed({ nameZh: "文献", descriptionZh: "多源信息综合" });
+    expect(matchesInstalledSkill(skill, { category: allCategoriesValue, query: "文献" })).toBe(true);
+    expect(matchesInstalledSkill(skill, { category: allCategoriesValue, query: "综合" })).toBe(true);
+  });
 });
 
 describe("matchesAvailableSkill", () => {

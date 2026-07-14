@@ -15,7 +15,9 @@ export function matchesInstalledSkill(skill: InstalledSkill, filters: SkillFilte
   return matchesQuery(filters.query, [
     skill.id,
     skill.name,
+    skill.nameZh,
     skill.description,
+    skill.descriptionZh,
     skill.version,
   ]);
 }
