@@ -24,7 +24,6 @@ import { CdpConnection, CdpSession } from "./cdp-connection.js";
 import { resolveCdpEndpoint } from "./chromium-endpoint.js";
 import { ChromiumPageManager } from "./chromium-page.js";
 import { installConsoleHook, withTemporaryPreload } from "./chromium-console-hook.js";
-import { ExecutionContextTracker } from "./chromium-execution-context.js";
 import {
   waitForExplicitNavigation,
   ActionNavigationObserver,
@@ -74,7 +73,6 @@ interface PageSession {
   session: CdpSession;
   pageId: string;
   mainFrameId: string;
-  ecTracker: ExecutionContextTracker;
 }
 
 // ── ChromiumSession ────────────────────────────────────────────────
@@ -86,7 +84,6 @@ export class ChromiumSession implements BrowserSession {
   private connection: CdpConnection | null = null;
   private browserSess: CdpSession | null = null;
   private pageMgr: ChromiumPageManager | null = null;
-  /** Active page session per command — disposed after each command. */
   private activePs: PageSession | null = null;
   private timeouts: { action: number; navigation: number };
   private initTabOrder?: string[];
@@ -142,15 +139,6 @@ export class ChromiumSession implements BrowserSession {
     };
   }
 
-  /**
-   * Get or create a page, attach via CDP, enable domains,
-   * create an ExecutionContextTracker.
-   *
-   * ⚠️ ExecutionContextTracker MUST be created BEFORE Runtime.enable
-   * so it receives executionContextCreated events.
-   *
-   * The returned PageSession MUST be disposed via disposePageSession().
-   */
   private async activePageSession(): Promise<PageSession> {
     const { connection, browserSess, pageMgr } = await this.init();
 
@@ -172,12 +160,8 @@ export class ChromiumSession implements BrowserSession {
       session = new CdpSession(attachResult.sessionId, connection);
     }
 
-    // EC tracker BEFORE domain enable
-    const ecTracker = new ExecutionContextTracker(session);
-
     await session.send("Page.enable");
     await session.send("Runtime.enable");
-    // Lifecycle events for navigation tracking
     await session.send("Page.setLifecycleEventsEnabled", { enabled: true });
 
     connection.registerTarget({
@@ -186,24 +170,19 @@ export class ChromiumSession implements BrowserSession {
       type: "page",
     });
 
-    // Resolve main frame info
     const mainFrame = await getMainFrameState(session);
 
     this.activePs = {
       session,
       pageId: page.targetId,
       mainFrameId: mainFrame.frameId,
-      ecTracker,
     };
 
     return this.activePs;
   }
 
   private disposePageSession(): void {
-    if (this.activePs) {
-      this.activePs.ecTracker.dispose();
-      this.activePs = null;
-    }
+    this.activePs = null;
   }
 
   // ── Evaluate helpers ──────────────────────────────────────────────
@@ -219,21 +198,17 @@ export class ChromiumSession implements BrowserSession {
     return result.result?.value as T;
   }
 
+  /** Evaluate a function by wrapping it in an IIFE (avoids executionContextId requirement). */
   private async evaluateFunction<T>(
-    ps: PageSession,
+    _ps: PageSession,
     functionDeclaration: string,
     args: unknown[],
   ): Promise<T> {
-    const deadline = createDeadline(this.timeouts.action);
-    const contextId = await ps.ecTracker.getMainWorldContextId(
-      ps.mainFrameId,
-      deadline,
-    );
+    const argsJson = args.map(a => JSON.stringify(a)).join(",");
+    const expression = `((${functionDeclaration})(${argsJson}))`;
 
-    const result = await ps.session.send("Runtime.callFunctionOn", {
-      functionDeclaration,
-      executionContextId: contextId,
-      arguments: args.map(v => ({ value: v })),
+    const result = await _ps.session.send("Runtime.evaluate", {
+      expression,
       returnByValue: true,
       awaitPromise: true,
     }) as { result: { value: T } };
@@ -348,14 +323,7 @@ export class ChromiumSession implements BrowserSession {
       await ps.session.send("Input.insertText", { text });
 
       if (options.submit) {
-        await ps.session.send("Input.dispatchKeyEvent", {
-          type: "keyDown", key: "Enter", code: "Enter",
-          windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 36,
-        });
-        await ps.session.send("Input.dispatchKeyEvent", {
-          type: "keyUp", key: "Enter", code: "Enter",
-          windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 36,
-        });
+        await this.dispatchEnter(ps.session);
       }
 
       return { pageId: ps.pageId, typed: target.selector, submitted: Boolean(options.submit) };
@@ -390,13 +358,29 @@ export class ChromiumSession implements BrowserSession {
       const keys = parseKey(key);
       for (const k of keys) {
         await withTemporaryPreload(ps.session, async () => {
-          await ps.session.send("Input.dispatchKeyEvent", {
-            type: k.type, key: k.key, code: k.code,
-            text: k.text || undefined,
-            windowsVirtualKeyCode: k.windowsVirtualKeyCode,
-            nativeVirtualKeyCode: k.nativeVirtualKeyCode || undefined,
-            modifiers: k.modifiers,
-          });
+          // For Enter key, use rawKeyDown + char to trigger form submission
+          if (k.key === "Enter" && k.type === "keyDown") {
+            await ps.session.send("Input.dispatchKeyEvent", {
+              type: "rawKeyDown", key: k.key, code: k.code,
+              windowsVirtualKeyCode: k.windowsVirtualKeyCode,
+              nativeVirtualKeyCode: k.nativeVirtualKeyCode || undefined,
+              modifiers: k.modifiers,
+            });
+            await ps.session.send("Input.dispatchKeyEvent", {
+              type: "char", key: k.key, code: k.code, text: "\r",
+              windowsVirtualKeyCode: k.windowsVirtualKeyCode,
+              nativeVirtualKeyCode: k.nativeVirtualKeyCode || undefined,
+              modifiers: k.modifiers,
+            });
+          } else {
+            await ps.session.send("Input.dispatchKeyEvent", {
+              type: k.type, key: k.key, code: k.code,
+              text: k.text || undefined,
+              windowsVirtualKeyCode: k.windowsVirtualKeyCode,
+              nativeVirtualKeyCode: k.nativeVirtualKeyCode || undefined,
+              modifiers: k.modifiers,
+            });
+          }
         });
       }
 
@@ -525,6 +509,22 @@ export class ChromiumSession implements BrowserSession {
   private async focusAndClear(session: CdpSession, selector: string): Promise<void> {
     await session.send("Runtime.evaluate", {
       expression: `(function(){var el=document.querySelector(${JSON.stringify(selector)});if(el){el.focus();el.select()}})()`,
+    });
+  }
+
+  /** Send Enter as rawKeyDown + char(\r) to trigger form submission. */
+  private async dispatchEnter(session: CdpSession): Promise<void> {
+    await session.send("Input.dispatchKeyEvent", {
+      type: "rawKeyDown", key: "Enter", code: "Enter",
+      windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 36,
+    });
+    await session.send("Input.dispatchKeyEvent", {
+      type: "char", key: "Enter", code: "Enter", text: "\r",
+      windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 36,
+    });
+    await session.send("Input.dispatchKeyEvent", {
+      type: "keyUp", key: "Enter", code: "Enter",
+      windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 36,
     });
   }
 
