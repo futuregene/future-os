@@ -27,7 +27,7 @@ install-gui:
 	@mkdir -p gui/src-tauri/binaries
 	cd agent && cargo build
 	cp agent/target/debug/future-agent gui/src-tauri/binaries/future-agent-aarch64-apple-darwin
-	cd cli && npm run build && bun build --compile dist/index.js --outfile dist/future --external chromium-bidi
+	cd cli && npm run build && bun build --compile dist/index.js --outfile dist/future
 	cp cli/dist/future gui/src-tauri/binaries/future-aarch64-apple-darwin
 
 # Release builds of agent + CLI sidecars (for packaging). Separate from
@@ -37,7 +37,7 @@ install-gui-release:
 	@mkdir -p gui/src-tauri/binaries
 	cd agent && cargo build --release
 	cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-aarch64-apple-darwin
-	cd cli && npm run build && bun build --compile dist/index.js --outfile dist/future --external chromium-bidi
+	cd cli && npm run build && bun build --compile dist/index.js --outfile dist/future
 	cp cli/dist/future gui/src-tauri/binaries/future-aarch64-apple-darwin
 
 # Symlink the built-in skill bundles into the agent's app-skills directory

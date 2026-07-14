@@ -257,15 +257,13 @@ jobs:
           New-Item -ItemType Directory -Force -Path gui/src-tauri/binaries | Out-Null
           Copy-Item "agent/target/release/future-agent.exe" "gui/src-tauri/binaries/future-agent-$triple.exe"
 
-      # Compile the CLI into a standalone binary. chromium-bidi is a lazily
-      # required optional dep of playwright-core (only the WebDriver-BiDi path,
-      # never the default CDP path) — mark it external so the bundle resolves.
+      # Compile the CLI into a standalone binary.
       - name: Build CLI binary (Unix)
         if: runner.os != 'Windows'
         working-directory: cli
         run: |
           npm run build
-          bun build --compile dist/index.js --outfile dist/future --external chromium-bidi
+          bun build --compile dist/index.js --outfile dist/future
           # Stage it as a Tauri sidecar too (bundle.externalBin) so the CLI ships
           # inside the installers, not just the portable packages.
           triple=$(rustc -Vv | sed -n 's/^host: //p')
@@ -278,7 +276,7 @@ jobs:
         shell: powershell
         run: |
           npm run build
-          bun build --compile dist/index.js --outfile dist/future.exe --external chromium-bidi
+          bun build --compile dist/index.js --outfile dist/future.exe
           # Stage it as a Tauri sidecar too (bundle.externalBin) so the CLI ships
           # inside the msi/nsis installers, not just the portable zip.
           $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]

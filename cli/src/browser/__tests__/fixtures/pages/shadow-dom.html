@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Shadow DOM Test</title></head>
+<body>
+  <h1>Shadow DOM Test</h1>
+  <div id="shadow-host"></div>
+  <script>
+    customElements.define("shadow-button", class extends HTMLElement {
+      constructor() {
+        super();
+        const shadow = this.attachShadow({ mode: "open" });
+        shadow.innerHTML = `
+          <style>
+            button { padding: 8px 16px; cursor: pointer; }
+          </style>
+          <button id="shadow-btn">Shadow Button</button>
+        `;
+      }
+    });
+    const host = document.getElementById("shadow-host");
+    const el = document.createElement("shadow-button");
+    host.appendChild(el);
+  </script>
+</body>
+</html>

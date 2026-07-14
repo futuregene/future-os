@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Form Test</title></head>
+<body>
+  <h1>Form Test</h1>
+  <script>
+    // Initialize event log
+    window.__events = [];
+    window.__values = {};
+
+    function logEvent(type, targetId) {
+      window.__events.push({ type, targetId, time: Date.now() });
+    }
+
+    function hookInput(element, id) {
+      for (const evt of ["focus", "blur", "keydown", "beforeinput", "input", "keyup", "change", "click"]) {
+        element.addEventListener(evt, () => {
+          logEvent(evt, id);
+          if (evt === "input" || evt === "change") {
+            window.__values[id] = element.value || element.textContent || "";
+          }
+        });
+      }
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+      const elements = document.querySelectorAll("input, textarea, [contenteditable]");
+      elements.forEach((el) => {
+        const id = el.id || el.tagName.toLowerCase();
+        hookInput(el, id);
+      });
+      // Pre-populate pre-filled input
+      const prefilled = document.getElementById("input-prefilled");
+      if (prefilled) {
+        prefilled.value = "old value";
+        window.__values["input-prefilled"] = "old value";
+      }
+    });
+  </script>
+
+  <form id="test-form">
+    <label>Text: <input type="text" id="input-text" name="text"></label><br>
+    <label>Prefilled: <input type="text" id="input-prefilled" name="prefilled" value="old value"></label><br>
+    <label>Email: <input type="email" id="input-email" name="email"></label><br>
+    <label>Password: <input type="password" id="input-password" name="password"></label><br>
+    <label>Textarea: <textarea id="textarea" name="textarea"></textarea></label><br>
+    <div contenteditable="true" id="contenteditable" style="border:1px solid #ccc; min-height:30px;"></div><br>
+    <select id="select" name="select">
+      <option value="a">A</option>
+      <option value="b">B</option>
+    </select><br>
+    <label><input type="checkbox" id="checkbox" name="checkbox"> Check me</label><br>
+    <button type="submit" id="btn-submit-form">Submit Form</button>
+  </form>
+</body>
+</html>
