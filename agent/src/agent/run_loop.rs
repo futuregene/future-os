@@ -281,6 +281,7 @@ impl Loop {
             let mut total_usage: Option<crate::types::Usage> = None;
             let mut current_tool_calls: Vec<Option<AgentToolCall>> = vec![];
             let mut output_started = false;
+            let mut was_outputting = false;
             let mut stream_error = None;
             // Set when the LLM layer signals the stream was cut off (idle
             // timeout or premature EOF without a finish_reason / `[DONE]`).
@@ -342,6 +343,17 @@ impl Loop {
                     }
                 };
                 on_event(event.clone());
+
+                // Close the text-output block before switching to a different
+                // event type — text_end may never arrive from the LLM.
+                let is_text = matches!(event.event_type.as_str(), "text" | "text_delta");
+                if self.verbose && was_outputting && !is_text {
+                    eprintln!();
+                    was_outputting = false;
+                }
+                if is_text && self.verbose {
+                    was_outputting = true;
+                }
 
                 match event.event_type.as_str() {
                     "thinking_start" => {
@@ -631,6 +643,11 @@ impl Loop {
                     }
                     messages = self.drain_steering(messages);
                 }
+            }
+
+            // Close any open output block (text_end may not have been emitted).
+            if self.verbose && output_started {
+                eprintln!();
             }
 
             // Emit message_end
