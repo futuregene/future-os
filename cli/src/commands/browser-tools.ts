@@ -36,10 +36,11 @@ interface BrowserToolEntry {
 
 export const BROWSER_TOOL_CATALOG: Record<string, BrowserToolEntry> = {
   browser: {
-    description: "Control a local visible Chrome/Edge browser. Sub-commands: start, status, tabs, open, snapshot, click, type, press, screenshot, console.",
+    description: "Control a local visible Chrome/Edge/Safari browser. Sub-commands: start, status, tabs, open, snapshot, click, type, press, screenshot, console.",
     args: {
       command: '"start" | "status" | "tabs" | "open" | "snapshot" | "click" | "type" | "press" | "screenshot" | "console"',
       // start
+      browser: 'string (default: auto, for start: "chrome" | "edge" | "safari")',
       port: "integer (default: 9222)",
       profileDir: "string (default: ~/.future/agent/browser/profile)",
       executablePath: "string (optional)",
@@ -109,6 +110,34 @@ export async function callBrowserTool(_name: string, args: Record<string, unknow
 
 async function browserStart(args: Record<string, unknown>): Promise<LocalToolResult> {
   const requestedPort = numberArg(args, "port") ?? 9222;
+  const browserArg = stringArg(args, "browser");
+
+  // Safari path — delegate to SafariManager
+  if (browserArg === "safari") {
+    const { SafariManager } = await import("../browser/safari/safari-manager.js");
+    const mgr = new SafariManager();
+    const result = await mgr.start({ port: requestedPort, url: stringArg(args, "url") });
+
+    // Persist connection config
+    if (result.connection.protocol === "webdriver") {
+      const config = await loadBrowserConfig();
+      config.connection = result.connection;
+      config.activeUrl = stringArg(args, "url");
+      await saveBrowserConfig(config);
+    }
+
+    return {
+      structuredContent: {
+        endpoint: result.connection.endpoint,
+        launcher: result.launcher,
+        port: result.port,
+        status: result.status,
+        browserKind: "safari",
+      },
+    };
+  }
+
+  // Chrome/Edge/Chromium path
   const port = await resolveBrowserPort(requestedPort);
   const endpoint = `http://127.0.0.1:${port}`;
 
