@@ -66,14 +66,22 @@ fn ensure_path_allowed(path: &Path) -> Result<(), crate::AppError> {
 /// True when `resolved` (already canonical) is a chat-workspace product file:
 /// under `~/.future/workspaces/` and not traversing any `.future/` segment.
 fn is_allowed_workspace_artifact(future_dir: &Path, resolved: &Path) -> bool {
+    // Workspace artifacts under ~/.future/workspaces/… (but not a nested .future).
     let workspaces_root = future_dir.join("workspaces");
     let workspaces_root = workspaces_root.canonicalize().unwrap_or(workspaces_root);
-    match resolved.strip_prefix(&workspaces_root) {
-        Ok(tail) => !tail
+    if let Ok(tail) = resolved.strip_prefix(&workspaces_root) {
+        if !tail
             .components()
-            .any(|component| component.as_os_str() == ".future"),
-        Err(_) => false,
+            .any(|component| component.as_os_str() == ".future")
+        {
+            return true;
+        }
     }
+    // Per-thread attachment images (origins + thumbnails) under
+    // ~/.future/app/images/… — read to preview a message's image attachment.
+    let images_root = future_dir.join("app").join("images");
+    let images_root = images_root.canonicalize().unwrap_or(images_root);
+    resolved.starts_with(&images_root)
 }
 
 #[derive(serde::Serialize)]
@@ -580,11 +588,29 @@ mod tests {
     #[test]
     fn config_roots_outside_workspaces_stay_blocked() {
         let future_dir = future_root("block_roots");
-        for rel in ["agent/auth.json", "app/app.db", "app/images/pic.png"] {
+        // The app database and credential files stay blocked; only the images
+        // subtree is opened (see thread_attachment_images_are_allowed).
+        for rel in ["agent/auth.json", "app/app.db"] {
             let secret = write_under(&future_dir, rel);
             assert!(
                 !is_allowed_workspace_artifact(&future_dir, &secret),
                 "{rel} must stay blocked"
+            );
+        }
+    }
+
+    #[test]
+    fn thread_attachment_images_are_allowed() {
+        let future_dir = future_root("allow_images");
+        // Origins + thumbnails an image attachment previews through read_file_base64.
+        for rel in [
+            "app/images/thread_x/origin/1-pic.png",
+            "app/images/thread_x/thumb/2.jpg",
+        ] {
+            let image = write_under(&future_dir, rel);
+            assert!(
+                is_allowed_workspace_artifact(&future_dir, &image),
+                "{rel} must be readable"
             );
         }
     }
