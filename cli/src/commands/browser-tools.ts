@@ -1,23 +1,27 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir as fsMkdir } from "node:fs/promises";
 import { createConnection } from "node:net";
-import { homedir, platform } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 import { isRecord } from "../utils/object.js";
+import { findBrowser } from "../browser/browser-discovery.js";
+import type {
+  BrowserSessionFactory,
+  BrowserSession,
+} from "../browser/backend.js";
+import type { BrowserConfig } from "../browser/types.js";
+import { DEFAULT_TIMEOUTS } from "../browser/types.js";
+import { defaultSessionFactory } from "../browser/default-factory.js";
+import { loadBrowserConfig, saveBrowserConfig } from "../browser/browser-state.js";
+import { resolveTarget } from "../browser/selector-resolver.js";
+import { SNAPSHOT_FUNCTION_SOURCE, type SnapshotResult } from "../browser/scripts/snapshot-script.js";
+import { resolveScreenshotPath, writeScreenshot } from "../browser/artifacts/screenshot-writer.js";
+import { resolveCdpEndpoint } from "../browser/chromium/chromium-endpoint.js";
 
 const DEFAULT_ENDPOINT = "http://127.0.0.1:9222";
 const BROWSER_DIR = join(homedir(), ".future", "agent", "browser");
-const CONFIG_FILE = join(BROWSER_DIR, "config.json");
 const DEFAULT_PROFILE_DIR = join(BROWSER_DIR, "profile");
-const ARTIFACTS_DIR = join(BROWSER_DIR, "artifacts");
-
-interface BrowserConfig {
-  endpoint?: string;
-  activeUrl?: string;
-  refs?: Record<string, string>;
-}
 
 interface LocalToolResult {
   text?: string;
@@ -83,21 +87,21 @@ export async function callBrowserTool(_name: string, args: Record<string, unknow
     case "status":
       return browserStatus(args);
     case "tabs":
-      return withBrowser(args, (ctx) => browserTabs(ctx, args));
+      return withSession(args, (ctx) => browserTabs(ctx, args));
     case "open":
-      return withBrowser(args, (ctx) => browserOpen(ctx, args));
+      return withSession(args, (ctx) => browserOpen(ctx, args));
     case "snapshot":
-      return withBrowser(args, (ctx) => browserSnapshot(ctx, args));
+      return withSession(args, (ctx) => browserSnapshot(ctx, args));
     case "click":
-      return withBrowser(args, (ctx) => browserClick(ctx, args));
+      return withSession(args, (ctx) => browserClick(ctx, args));
     case "type":
-      return withBrowser(args, (ctx) => browserType(ctx, args));
+      return withSession(args, (ctx) => browserType(ctx, args));
     case "press":
-      return withBrowser(args, (ctx) => browserPress(ctx, args));
+      return withSession(args, (ctx) => browserPress(ctx, args));
     case "screenshot":
-      return withBrowser(args, (ctx) => browserScreenshot(ctx, args));
+      return withSession(args, (ctx) => browserScreenshot(ctx, args));
     case "console":
-      return withBrowser(args, (ctx) => browserConsole(ctx, args));
+      return withSession(args, (ctx) => browserConsole(ctx, args));
     default:
       throw new Error(`Unknown browser command: "${command}". Use: start, status, tabs, open, snapshot, click, type, press, screenshot, console.`);
   }
@@ -109,7 +113,9 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
   const endpoint = `http://127.0.0.1:${port}`;
 
   if (await endpointReachable(endpoint)) {
-    await saveConfig({ ...(await loadConfig()), endpoint });
+    const config = await loadBrowserConfig();
+    config.connection.endpoint = endpoint;
+    await saveBrowserConfig(config);
     return { structuredContent: { endpoint, status: "already_running" } };
   }
 
@@ -121,8 +127,8 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
 
   const profileDir = stringArg(args, "profileDir") ?? (port === requestedPort ? DEFAULT_PROFILE_DIR : join(BROWSER_DIR, `profile-${port}`));
   const url = stringArg(args, "url") ?? "about:blank";
-  await mkdir(profileDir, { recursive: true });
-  await mkdir(BROWSER_DIR, { recursive: true });
+  await fsMkdir(profileDir, { recursive: true });
+  await fsMkdir(BROWSER_DIR, { recursive: true });
 
   const chromeArgs = [
     `--remote-debugging-port=${port}`,
@@ -140,7 +146,10 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     if (await endpointReachable(endpoint)) {
-      await saveConfig({ ...(await loadConfig()), endpoint, activeUrl: url });
+      const cfg = await loadBrowserConfig();
+      cfg.connection.endpoint = endpoint;
+      cfg.activeUrl = url;
+      await saveBrowserConfig(cfg);
       return {
         structuredContent: {
           endpoint,
@@ -155,7 +164,10 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
     await sleep(250);
   }
 
-  await saveConfig({ ...(await loadConfig()), endpoint, activeUrl: url });
+  const cfg2 = await loadBrowserConfig();
+  cfg2.connection.endpoint = endpoint;
+  cfg2.activeUrl = url;
+  await saveBrowserConfig(cfg2);
   return {
     structuredContent: {
       endpoint,
@@ -195,300 +207,251 @@ async function browserStatus(args: Record<string, unknown>): Promise<LocalToolRe
   }
 }
 
-interface BrowserContext {
-  browser: import("playwright-core").Browser;
-  page: import("playwright-core").Page;
+// ── BrowserSession context ──────────────────────────────────────────
+
+interface SessionContext {
+  session: BrowserSession;
   config: BrowserConfig;
 }
 
-async function withBrowser(
+// ── Session factory (module-level default, overridable per-call for tests) ──
+
+let _sessionFactory: BrowserSessionFactory = defaultSessionFactory;
+
+/**
+ * Replace the default session factory. Call once at startup, or from
+ * tests to inject a fake. NOT exported to CLI users.
+ */
+export function __setSessionFactoryForTest(factory: BrowserSessionFactory): void {
+  _sessionFactory = factory;
+}
+
+// ── Session lifecycle ──────────────────────────────────────────────
+
+async function createSession(
+  config: BrowserConfig,
+  endpoint: string,
+): Promise<BrowserSession> {
+  const conn = config.connection;
+
+  if (conn.protocol === "cdp") {
+    // Refine browserKind from /json/version
+    let browserKind = conn.browserKind;
+    if (browserKind === "chromium") {
+      try {
+        const info = await resolveCdpEndpoint(endpoint);
+        browserKind = info.browserKind;
+        // Atomically update config
+        const fresh = await loadBrowserConfig();
+        if (fresh.connection.protocol === "cdp" && fresh.connection.browserKind === "chromium") {
+          fresh.connection.browserKind = browserKind;
+          await saveBrowserConfig(fresh);
+        }
+      } catch { /* keep "chromium" */ }
+    }
+
+    return _sessionFactory({
+      protocol: "cdp",
+      browserKind: browserKind as "chrome" | "edge" | "chromium",
+      endpoint,
+      timeouts: DEFAULT_TIMEOUTS,
+      activePageId: config.activePageId,
+      initTabOrder: config.tabOrder,
+    });
+  }
+
+  if (!conn.sessionId) throw new Error("sessionId required for webdriver");
+  return _sessionFactory({
+    protocol: "webdriver",
+    browserKind: "safari",
+    endpoint,
+    sessionId: conn.sessionId,
+    timeouts: DEFAULT_TIMEOUTS,
+    activePageId: config.activePageId,
+  });
+}
+
+async function withSession(
   args: Record<string, unknown>,
-  fn: (ctx: BrowserContext) => Promise<LocalToolResult>,
+  fn: (ctx: SessionContext) => Promise<LocalToolResult>,
 ): Promise<LocalToolResult> {
-  const { chromium } = await import("playwright-core");
+  const config = await loadBrowserConfig();
+
   let endpoint = await ensureBrowser(args);
-  let browser: import("playwright-core").Browser;
+  let session: BrowserSession;
+
   try {
-    browser = await chromium.connectOverCDP(endpoint, { timeout: 5000 });
+    session = await createSession(config, endpoint);
   } catch (error) {
     if (stringArg(args, "endpoint")) throw error;
+    // Auto-start and retry
     const fallbackPort = (portFromEndpoint(endpoint) ?? 9222) + 1;
     await browserStart({ ...args, port: fallbackPort });
     endpoint = await waitForSavedEndpoint(`http://127.0.0.1:${fallbackPort}`, 10_000);
-    browser = await chromium.connectOverCDP(endpoint, { timeout: 5000 });
+    session = await createSession(config, endpoint);
   }
-  const config = await loadConfig();
-  const page = await activePage(browser, config);
-  page.setDefaultTimeout(5000);
-  page.setDefaultNavigationTimeout(15_000);
-  await installConsoleHook(page);
 
-  return fn({ browser, page, config });
+  try {
+    return await fn({ session, config });
+  } finally {
+    await session.disconnect().catch(() => {});
+  }
 }
 
-async function browserTabs(ctx: BrowserContext, args: Record<string, unknown>): Promise<LocalToolResult> {
+// ── Browser Tabs ───────────────────────────────────────────────────
+
+async function browserTabs(ctx: SessionContext, args: Record<string, unknown>): Promise<LocalToolResult> {
   const action = stringArg(args, "action") ?? "list";
-  const pages = allPages(ctx.browser);
+  const session = ctx.session;
 
   if (action === "list") {
+    const result = await session.tabs({ action: "list" });
     return {
       structuredContent: {
-        tabs: await Promise.all(pages.map(async (page, index) => ({
-          index,
-          title: await page.title().catch(() => ""),
-          url: page.url(),
-          active: page.url() === ctx.config.activeUrl,
-        }))),
+        tabs: result.kind === "list" ? result.tabs.map(tab => ({
+          index: tab.index,
+          title: tab.title,
+          url: tab.url,
+          active: tab.active,
+        })) : [],
       },
     };
   }
 
   if (action === "new") {
-    const context = ctx.browser.contexts()[0] ?? await ctx.browser.newContext();
-    const page = await context.newPage();
     const url = stringArg(args, "url");
-    if (url) await page.goto(url, { waitUntil: "domcontentloaded" });
-    await saveConfig({ ...(await loadConfig()), activeUrl: page.url() });
-    return { structuredContent: { index: allPages(ctx.browser).indexOf(page), url: page.url(), title: await page.title() } };
+    const result = await session.tabs({ action: "new", url });
+    if (result.kind !== "new") throw new Error("Unexpected tabs result");
+    await saveActivePage(result.page.url, result.page.pageId);
+    return {
+      structuredContent: { index: result.index, url: result.page.url, title: result.page.title },
+    };
   }
 
   const index = numberArg(args, "index");
-  if (index == null || index < 0 || index >= pages.length) {
+  if (index == null || index < 0) {
     throw new Error(`browser command tabs: action "${action}" requires a valid 0-based index.`);
   }
 
   if (action === "select") {
-    const page = pages[index]!;
-    await page.bringToFront().catch(() => undefined);
-    await saveConfig({ ...(await loadConfig()), activeUrl: page.url() });
-    return { structuredContent: { selected: index, url: page.url(), title: await page.title().catch(() => "") } };
+    const result = await session.tabs({ action: "select", index });
+    if (result.kind !== "select") throw new Error("Unexpected tabs result");
+    await saveActivePage(result.page.url, result.page.pageId);
+    return {
+      structuredContent: { selected: index, url: result.page.url, title: result.page.title },
+    };
   }
 
   if (action === "close") {
-    const page = pages[index]!;
-    const url = page.url();
-    await page.close();
-    return { structuredContent: { closed: index, url } };
+    const result = await session.tabs({ action: "close", index });
+    if (result.kind !== "close") throw new Error("Unexpected tabs result");
+    return { structuredContent: { closed: index, url: result.url } };
   }
 
   throw new Error('browser command tabs: action must be "list", "new", "select", or "close".');
 }
 
-async function browserOpen(ctx: BrowserContext, args: Record<string, unknown>): Promise<LocalToolResult> {
+// ── Browser Open ───────────────────────────────────────────────────
+
+async function browserOpen(ctx: SessionContext, args: Record<string, unknown>): Promise<LocalToolResult> {
   const url = stringArg(args, "url");
   if (!url) throw new Error("browser command open requires url.");
-  await ctx.page.goto(url, { waitUntil: "domcontentloaded" });
-  await installConsoleHook(ctx.page);
-  await saveConfig({ ...(await loadConfig()), activeUrl: ctx.page.url(), refs: {} });
-  return {
-    structuredContent: {
-      title: await ctx.page.title().catch(() => ""),
-      url: ctx.page.url(),
-    },
-  };
+  const page = await ctx.session.open(url);
+  await clearRefs();
+  await saveActivePage(page.url, page.pageId);
+  return { structuredContent: { title: page.title, url: page.url } };
 }
 
-async function browserSnapshot(ctx: BrowserContext, args: Record<string, unknown>): Promise<LocalToolResult> {
+// ── Browser Snapshot ───────────────────────────────────────────────
+
+async function browserSnapshot(ctx: SessionContext, args: Record<string, unknown>): Promise<LocalToolResult> {
   const limit = numberArg(args, "limit") ?? 80;
-  const snapshot = await ctx.page.evaluate((maxItems) => {
-    type Item = {
-      ref: string;
-      selector: string;
-      role: string;
-      name: string;
-      tag: string;
-      disabled: boolean;
-      checked: boolean | null;
-      href: string | null;
-    };
-
-    const escapeCss = (value: string) => {
-      const css = globalThis.CSS as { escape?: (input: string) => string } | undefined;
-      return css?.escape ? css.escape(value) : value.replace(/["\\]/g, "\\$&");
-    };
-    const textOf = (element: Element) => {
-      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-        return element.getAttribute("aria-label") ||
-          element.getAttribute("placeholder") ||
-          element.name ||
-          element.value ||
-          "";
-      }
-      if (element instanceof HTMLImageElement) return element.alt || element.title || "";
-      return element.getAttribute("aria-label") ||
-        element.getAttribute("title") ||
-        (element.textContent || "").replace(/\s+/g, " ").trim();
-    };
-    const roleOf = (element: Element) => {
-      const explicit = element.getAttribute("role");
-      if (explicit) return explicit;
-      const tag = element.tagName.toLowerCase();
-      if (tag === "a") return "link";
-      if (tag === "button") return "button";
-      if (tag === "select") return "combobox";
-      if (tag === "textarea") return "textbox";
-      if (tag === "summary") return "button";
-      if (tag === "input") {
-        const type = (element.getAttribute("type") || "text").toLowerCase();
-        if (["button", "submit", "reset"].includes(type)) return "button";
-        if (type === "checkbox") return "checkbox";
-        if (type === "radio") return "radio";
-        return "textbox";
-      }
-      return tag;
-    };
-    const uniqueSelector = (element: Element) => {
-      const id = element.getAttribute("id");
-      if (id && document.querySelectorAll(`#${escapeCss(id)}`).length === 1) return `#${escapeCss(id)}`;
-      for (const attr of ["data-testid", "data-test", "data-cy", "name", "aria-label"]) {
-        const value = element.getAttribute(attr);
-        if (!value) continue;
-        const selector = `${element.tagName.toLowerCase()}[${attr}="${escapeCss(value)}"]`;
-        if (document.querySelectorAll(selector).length === 1) return selector;
-      }
-      const parts: string[] = [];
-      let current: Element | null = element;
-      while (current && current !== document.documentElement) {
-        const tag = current.tagName.toLowerCase();
-        const currentTag = current.tagName;
-        const parent: Element | null = current.parentElement;
-        if (!parent) break;
-        const siblings = Array.from(parent.children).filter((child: Element) => child.tagName === currentTag);
-        const index = siblings.indexOf(current) + 1;
-        parts.unshift(siblings.length > 1 ? `${tag}:nth-of-type(${index})` : tag);
-        const selector = parts.join(" > ");
-        if (document.querySelectorAll(selector).length === 1) return selector;
-        current = parent;
-      }
-      return parts.join(" > ");
-    };
-    const isVisible = (element: Element) => {
-      const rect = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      return rect.width > 0 &&
-        rect.height > 0 &&
-        style.visibility !== "hidden" &&
-        style.display !== "none" &&
-        Number(style.opacity || "1") > 0;
-    };
-
-    const candidates = Array.from(document.querySelectorAll(
-      "a[href],button,input,textarea,select,summary,[role],[contenteditable='true'],[tabindex]",
-    ));
-    const items: Item[] = [];
-    let counter = 1;
-    for (const element of candidates) {
-      if (items.length >= maxItems) break;
-      if (!isVisible(element)) continue;
-      const tag = element.tagName.toLowerCase();
-      const role = roleOf(element);
-      const name = textOf(element).slice(0, 120);
-      if (!name && !["input", "textarea", "select"].includes(tag)) continue;
-      const prefix = role === "button" ? "b" : role === "textbox" ? "i" : role === "link" ? "a" : "e";
-      items.push({
-        ref: `${prefix}${counter++}`,
-        selector: uniqueSelector(element),
-        role,
-        name,
-        tag,
-        disabled: Boolean((element as HTMLButtonElement | HTMLInputElement).disabled),
-        checked: element instanceof HTMLInputElement && ["checkbox", "radio"].includes(element.type)
-          ? element.checked
-          : null,
-        href: element instanceof HTMLAnchorElement ? element.href : null,
-      });
-    }
-    return {
-      title: document.title,
-      url: location.href,
-      items,
-    };
-  }, limit);
+  const snapshot = await ctx.session.evaluate<SnapshotResult>({
+    kind: "function",
+    functionDeclaration: SNAPSHOT_FUNCTION_SOURCE,
+    arguments: [limit],
+  });
 
   const refs: Record<string, string> = {};
   const lines = snapshot.items.map((item) => {
     refs[item.ref] = item.selector;
     const state = [
       item.disabled ? "disabled" : "",
-      item.checked == null ? "" : `checked=${item.checked}`,
+      item.checked != null ? `checked=${item.checked}` : "",
       item.href ? `href=${item.href}` : "",
     ].filter(Boolean).join(" ");
     return `- ${item.role} "${item.name}" [ref=${item.ref}]${state ? ` ${state}` : ""}`;
   });
 
-  await saveConfig({ ...(await loadConfig()), activeUrl: snapshot.url, refs });
+  await saveRefsAndUrl(refs, snapshot.url);
 
   return {
     text: [`Page: ${snapshot.title}`, `URL: ${snapshot.url}`, "", ...lines].join("\n"),
     structuredContent: {
       title: snapshot.title,
       url: snapshot.url,
-      elements: snapshot.items.map(({ selector: _selector, ...item }) => item),
+      elements: snapshot.items.map(({ selector: _s, ...item }) => item),
     },
   };
 }
 
-async function browserClick(ctx: BrowserContext, args: Record<string, unknown>): Promise<LocalToolResult> {
-  const selector = await selectorFor(args);
-  const locator = ctx.page.locator(selector);
-  const count = await locator.count();
-  if (count !== 1) throw new Error(`browser click target resolved to ${count} elements; run browser command snapshot and use a unique ref.`);
-  await locator.click();
-  await ctx.page.waitForLoadState("domcontentloaded", { timeout: 3000 }).catch(() => undefined);
-  await saveConfig({ ...(await loadConfig()), activeUrl: ctx.page.url() });
-  return { structuredContent: { clicked: selector, title: await ctx.page.title().catch(() => ""), url: ctx.page.url() } };
+// ── Browser Click ──────────────────────────────────────────────────
+
+async function browserClick(ctx: SessionContext, args: Record<string, unknown>): Promise<LocalToolResult> {
+  const target = await resolveTargetFromArgs(args, ctx.config);
+  const result = await ctx.session.click(target);
+  await saveActivePage(result.url, result.pageId);
+  return { structuredContent: { clicked: target.selector, title: result.title, url: result.url } };
 }
 
-async function browserType(ctx: BrowserContext, args: Record<string, unknown>): Promise<LocalToolResult> {
+// ── Browser Type ───────────────────────────────────────────────────
+
+async function browserType(ctx: SessionContext, args: Record<string, unknown>): Promise<LocalToolResult> {
   const text = stringArg(args, "text");
   if (text == null) throw new Error("browser command type requires text.");
-  const selector = await selectorFor(args);
-  const locator = ctx.page.locator(selector);
-  const count = await locator.count();
-  if (count !== 1) throw new Error(`browser type target resolved to ${count} elements; run browser command snapshot and use a unique ref.`);
-  if (booleanArg(args, "clear") ?? true) {
-    await locator.fill(text);
-  } else {
-    await locator.type(text);
-  }
-  if (booleanArg(args, "submit")) await locator.press("Enter");
-  return { structuredContent: { typed: selector, submitted: Boolean(booleanArg(args, "submit")) } };
+  const target = await resolveTargetFromArgs(args, ctx.config);
+  const clear = booleanArg(args, "clear") ?? true;
+  const submit = booleanArg(args, "submit") ?? false;
+  const result = await ctx.session.type(target, text, { clear, submit });
+  return { structuredContent: { typed: target.selector, submitted: result.submitted } };
 }
 
-async function browserPress(ctx: BrowserContext, args: Record<string, unknown>): Promise<LocalToolResult> {
+// ── Browser Press ──────────────────────────────────────────────────
+
+async function browserPress(ctx: SessionContext, args: Record<string, unknown>): Promise<LocalToolResult> {
   const key = stringArg(args, "key");
   if (!key) throw new Error("browser command press requires key.");
-  await ctx.page.keyboard.press(key);
-  await ctx.page.waitForLoadState("domcontentloaded", { timeout: 3000 }).catch(() => undefined);
-  await saveConfig({ ...(await loadConfig()), activeUrl: ctx.page.url() });
-  return { structuredContent: { key, title: await ctx.page.title().catch(() => ""), url: ctx.page.url() } };
+  const target = await resolveTargetFromArgsOptional(args, ctx.config);
+  const result = await ctx.session.press(key, target);
+  await saveActivePage(result.url, result.pageId);
+  return { structuredContent: { key, title: result.title, url: result.url } };
 }
 
-async function browserScreenshot(ctx: BrowserContext, args: Record<string, unknown>): Promise<LocalToolResult> {
+// ── Browser Screenshot ─────────────────────────────────────────────
+
+async function browserScreenshot(ctx: SessionContext, args: Record<string, unknown>): Promise<LocalToolResult> {
   const explicitPath = stringArg(args, "path") ?? stringArg(args, "output");
-  const path = explicitPath ?? join(ARTIFACTS_DIR, `browser-${new Date().toISOString().replace(/[:.]/g, "-")}.png`);
-  await mkdir(dirname(path), { recursive: true }).catch(async () => mkdir(ARTIFACTS_DIR, { recursive: true }));
-  await ctx.page.screenshot({ path, fullPage: Boolean(booleanArg(args, "fullPage")) });
-  return {
-    structuredContent: {
-      path,
-      filename: basename(path),
-      title: await ctx.page.title().catch(() => ""),
-      url: ctx.page.url(),
-    },
-  };
+  const path = resolveScreenshotPath(explicitPath);
+  const bytes = await ctx.session.captureScreenshot({
+    fullPage: Boolean(booleanArg(args, "fullPage")),
+    format: "png",
+  });
+  const { path: finalPath, filename } = await writeScreenshot(bytes, path);
+  const title = await ctx.session.evaluate<string>({ kind: "expression", expression: "document.title" }).catch(() => "");
+  const url = await ctx.session.evaluate<string>({ kind: "expression", expression: "location.href" }).catch(() => "");
+  return { structuredContent: { path: finalPath, filename, title, url } };
 }
 
-async function browserConsole(ctx: BrowserContext, args: Record<string, unknown>): Promise<LocalToolResult> {
+// ── Browser Console ────────────────────────────────────────────────
+
+async function browserConsole(ctx: SessionContext, args: Record<string, unknown>): Promise<LocalToolResult> {
   const level = stringArg(args, "level");
-  const logs = await ctx.page.evaluate(() => {
-    const value = (globalThis as unknown as { __futureConsoleLogs?: unknown }).__futureConsoleLogs;
-    return Array.isArray(value) ? value : [];
+  const raw = await ctx.session.evaluate<unknown>({
+    kind: "expression",
+    expression: "(globalThis.__futureConsoleLogs) || []",
   });
-  const filtered = logs
-    .filter(isRecord)
-    .map((entry) => entry as Record<string, unknown>)
-    .filter((entry) => !level || entry.level === level);
+  const logs = Array.isArray(raw) ? raw.filter(isRecord).map(e => e as Record<string, unknown>) : [];
+  const filtered = logs.filter(e => !level || e.level === level);
   return {
     structuredContent: {
       logs: filtered,
@@ -499,69 +462,58 @@ async function browserConsole(ctx: BrowserContext, args: Record<string, unknown>
   };
 }
 
-async function activePage(browser: import("playwright-core").Browser, config: BrowserConfig): Promise<import("playwright-core").Page> {
-  const pages = allPages(browser);
-  const byUrl = config.activeUrl ? pages.find((page) => page.url() === config.activeUrl) : undefined;
-  if (byUrl) return byUrl;
-  if (pages.length > 0) return pages[pages.length - 1]!;
-  const context = browser.contexts()[0] ?? await browser.newContext();
-  return context.newPage();
+// ── Helpers ─────────────────────────────────────────────────────────
+
+async function resolveTargetFromArgs(
+  args: Record<string, unknown>,
+  config: BrowserConfig,
+): Promise<{ original: string; source: "ref" | "selector"; selector: string; ref?: string }> {
+  const input = stringArg(args, "selector")
+    ?? stringArg(args, "target")
+    ?? stringArg(args, "ref");
+  if (!input) throw new Error("Expected ref, selector, or target.");
+  return resolveTarget(input, config);
 }
 
-function allPages(browser: import("playwright-core").Browser): import("playwright-core").Page[] {
-  return browser.contexts().flatMap((context) => context.pages());
-}
-
-async function selectorFor(args: Record<string, unknown>): Promise<string> {
-  const selector = stringArg(args, "selector");
-  if (selector) return selector;
-
-  const target = stringArg(args, "target");
-  const ref = stringArg(args, "ref") ?? (target && /^[a-z]\d+$/i.test(target) ? target : undefined);
-  if (ref) {
-    const config = await loadConfig();
-    const resolved = config.refs?.[ref];
-    if (!resolved) throw new Error(`Unknown browser ref "${ref}". Run browser command snapshot first.`);
-    return resolved;
+async function resolveTargetFromArgsOptional(
+  args: Record<string, unknown>,
+  config: BrowserConfig,
+): Promise<{ original: string; source: "ref" | "selector"; selector: string; ref?: string } | undefined> {
+  const input = stringArg(args, "selector")
+    ?? stringArg(args, "target")
+    ?? stringArg(args, "ref");
+  if (!input) return undefined;
+  // If it's a ref but optional, just use as selector (for press on page body)
+  try {
+    return resolveTarget(input, config);
+  } catch {
+    return undefined;
   }
-
-  if (target) return target;
-  throw new Error("Expected ref, selector, or target.");
 }
 
-async function installConsoleHook(page: import("playwright-core").Page): Promise<void> {
-  await page.evaluate(() => {
-    const target = globalThis as unknown as {
-      __futureConsoleHookInstalled?: boolean;
-      __futureConsoleLogs?: Array<{ level: string; text: string; time: string }>;
-      console: Console;
-    };
-    if (target.__futureConsoleHookInstalled) return;
-    target.__futureConsoleHookInstalled = true;
-    target.__futureConsoleLogs = target.__futureConsoleLogs ?? [];
-    for (const level of ["log", "info", "warn", "error"] as const) {
-      const original = target.console[level].bind(target.console);
-      target.console[level] = (...values: unknown[]) => {
-        target.__futureConsoleLogs!.push({
-          level,
-          text: values.map((value) => {
-            try {
-              return typeof value === "string" ? value : JSON.stringify(value);
-            } catch {
-              return String(value);
-            }
-          }).join(" "),
-          time: new Date().toISOString(),
-        });
-        if (target.__futureConsoleLogs!.length > 200) target.__futureConsoleLogs!.shift();
-        original(...values);
-      };
-    }
-  }).catch(() => undefined);
+async function saveActivePage(url: string, pageId?: string): Promise<void> {
+  const config = await loadBrowserConfig();
+  config.activeUrl = url;
+  if (pageId) config.activePageId = pageId;
+  await saveBrowserConfig(config);
+}
+
+async function clearRefs(): Promise<void> {
+  const config = await loadBrowserConfig();
+  config.refs = {};
+  await saveBrowserConfig(config);
+}
+
+async function saveRefsAndUrl(refs: Record<string, string>, url: string): Promise<void> {
+  const config = await loadBrowserConfig();
+  config.refs = refs;
+  config.activeUrl = url;
+  await saveBrowserConfig(config);
 }
 
 async function endpointFor(args: Record<string, unknown>): Promise<string> {
-  return stringArg(args, "endpoint") ?? (await loadConfig()).endpoint ?? DEFAULT_ENDPOINT;
+  const config = await loadBrowserConfig();
+  return stringArg(args, "endpoint") ?? config.connection.endpoint ?? DEFAULT_ENDPOINT;
 }
 
 function portFromEndpoint(endpoint: string): number | null {
@@ -589,7 +541,8 @@ async function ensureBrowser(args: Record<string, unknown>): Promise<string> {
 }
 
 async function waitForSavedEndpoint(fallbackEndpoint: string, timeoutMs: number): Promise<string> {
-  const startedEndpoint = (await loadConfig()).endpoint ?? fallbackEndpoint;
+  const config = await loadBrowserConfig();
+  const startedEndpoint = config.connection.endpoint ?? fallbackEndpoint;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await endpointReachable(startedEndpoint)) return startedEndpoint;
@@ -636,54 +589,10 @@ function portHasListener(port: number): Promise<boolean> {
   });
 }
 
-async function loadConfig(): Promise<BrowserConfig> {
-  try {
-    const raw = await readFile(CONFIG_FILE, "utf8");
-    const parsed = JSON.parse(raw) as unknown;
-    return isRecord(parsed) ? parsed as BrowserConfig : {};
-  } catch {
-    return {};
-  }
-}
-
-async function saveConfig(config: BrowserConfig): Promise<void> {
-  await mkdir(BROWSER_DIR, { recursive: true });
-  await writeFile(CONFIG_FILE, `${JSON.stringify(config, null, 2)}\n`);
-}
-
-interface BrowserLauncher {
-  command: string;
-  args: string[];
-}
-
-function findBrowserLauncher(executablePath?: string): BrowserLauncher | null {
-  if (executablePath) return { command: executablePath, args: [] };
-
-  if (platform() === "darwin") {
-    const apps = [
-      ["Google Chrome", "Google Chrome"],
-      ["Microsoft Edge", "Microsoft Edge"],
-      ["Chromium", "Chromium"],
-    ];
-    for (const [appName, executableName] of apps) {
-      const executable = `/Applications/${appName}.app/Contents/MacOS/${executableName}`;
-      if (existsSync(executable)) return { command: executable, args: [] };
-    }
-    return null;
-  }
-  if (platform() === "win32") {
-    const local = process.env["LOCALAPPDATA"];
-    const programFiles = process.env["PROGRAMFILES"];
-    const programFilesX86 = process.env["PROGRAMFILES(X86)"];
-    const command = [
-      local ? join(local, "Google", "Chrome", "Application", "chrome.exe") : "",
-      programFiles ? join(programFiles, "Google", "Chrome", "Application", "chrome.exe") : "",
-      programFilesX86 ? join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe") : "",
-      programFiles ? join(programFiles, "Microsoft", "Edge", "Application", "msedge.exe") : "",
-    ].filter(Boolean).find((candidate) => existsSync(candidate));
-    return command ? { command, args: [] } : null;
-  }
-  return { command: process.env["CHROME_PATH"] ?? "google-chrome", args: [] };
+function findBrowserLauncher(executablePath?: string): { command: string; args: string[] } | null {
+  const discovered = findBrowser(executablePath);
+  if (!discovered) return null;
+  return { command: discovered.executablePath, args: [] };
 }
 
 function stringArg(args: Record<string, unknown>, key: string): string | undefined {

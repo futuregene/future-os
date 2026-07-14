@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>SPA Page</title></head>
+<body>
+  <h1>SPA Page</h1>
+  <div id="content"><p>Initial content</p></div>
+  <button id="btn-spa-update">Update Content</button>
+  <script>
+    document.getElementById("btn-spa-update").onclick = () => {
+      document.getElementById("content").innerHTML = "<p id='updated'>Content was updated!</p>";
+    };
+  </script>
+</body>
+</html>
