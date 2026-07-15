@@ -59,7 +59,7 @@ cd future-os
 make install   # build everything and install to system path
 ```
 
-Binaries are installed to: macOS `/opt/homebrew/bin`, Linux `~/.local/bin`, Windows `%USERPROFILE%\.future\bin`.
+Binaries are installed to: macOS `/opt/homebrew/bin`, Linux `/usr/local/bin`, Windows `%USERPROFILE%\.future\bin`.
 
 > **Terminal-only?** Skip the GUI toolchain: `make install-nogui`
 

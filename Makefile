@@ -19,10 +19,13 @@ TARGET := $(ARCH)-$(OS)
 
 ifeq ($(OS),darwin)
   PREFIX := /opt/homebrew/bin
+  SUDO :=
 else ifeq ($(OS),linux)
-  PREFIX := $(HOME)/.local/bin
+  PREFIX := /usr/local/bin
+  SUDO := sudo
 else
   PREFIX := $(USERPROFILE)/.future/bin
+  SUDO :=
 endif
 
 # ─── Install ──────────────────────────────────────────────────────────────────
@@ -32,17 +35,17 @@ install: install-agent install-tui install-cli install-gui install-channels inst
 install-nogui: install-agent install-tui install-cli install-channels install-skills
 
 uninstall:
-	rm -f $(PREFIX)/future-agent $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
+	$(SUDO) rm -f $(PREFIX)/future-agent $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
 	@echo "Removed: future-agent, future, future-tui, future-gui, future-channel"
 
 install-agent: build-agent
-	cp agent/target/release/future-agent $(PREFIX)/future-agent
+	$(SUDO) cp agent/target/release/future-agent $(PREFIX)/future-agent
 
 install-tui: build-tui
-	cp tui/dist/future-tui $(PREFIX)/future-tui
+	$(SUDO) cp tui/dist/future-tui $(PREFIX)/future-tui
 
 install-cli: build-cli
-	cp cli/dist/future $(PREFIX)/future
+	$(SUDO) cp cli/dist/future $(PREFIX)/future
 
 install-gui: install-cli
 	cd gui && npm install
@@ -51,11 +54,11 @@ install-gui: install-cli
 	cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
 	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET)
 	cd gui/src-tauri && cargo build --release
-	cp gui/src-tauri/target/release/futureos $(PREFIX)/future-gui
+	$(SUDO) cp gui/src-tauri/target/release/futureos $(PREFIX)/future-gui
 
 install-channels:
 	cd channels && cargo build --release
-	cp channels/target/release/future-channel $(PREFIX)/
+	$(SUDO) cp channels/target/release/future-channel $(PREFIX)/
 
 # Symlink the built-in skill bundles into the agent's app-skills directory
 # so the agent discovers them on startup.  Pulls the latest from the skills
@@ -174,7 +177,7 @@ clean:
 	rm -f tui/future-tui
 	rm -rf cli/dist
 	rm -rf cli/node_modules
-	rm -f $(PREFIX)/future-agent $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
+	$(SUDO) rm -f $(PREFIX)/future-agent $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
 	rm -rf gui/dist
 	rm -rf gui/node_modules
 	rm -rf gui/src-tauri/target
