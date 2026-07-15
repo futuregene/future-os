@@ -133,30 +133,12 @@ export function ContextPanel({
         if (found)
           return found;
         const tool = tools.find(entry => entry.id === selectedToolId);
-        if (!tool) {
-          if (tools.length > 0) {
-            // Log available tool IDs for the run so we can debug the mismatch.
-            // eslint-disable-next-line no-console
-            console.debug(
-              "[inspect-tool] tool %s not found in run %s — available ids: %o",
-              selectedToolId, runId, tools.map(t => t.id),
-            );
-          }
+        if (!tool)
           return null;
-        }
         const run = runs.find(entry => entry.id === runId);
         return run ? { run, tool } : null;
       }, null)
     : null;
-  // Log when a tool search fails completely across all runs.
-  if (selectedToolId && !selectedTool && Object.keys(toolsByRun).length > 0) {
-    // eslint-disable-next-line no-console
-    console.debug(
-      "[inspect-tool] tool %s not found in any of %d runs — %d total tools",
-      selectedToolId, Object.keys(toolsByRun).length,
-      Object.values(toolsByRun).reduce((sum, t) => sum + t.length, 0),
-    );
-  }
 
   useEffect(() => {
     if (!tabs.some(tab => tab.value === activeTab)) {
