@@ -35,8 +35,58 @@ pub async fn abort_run(
 }
 
 #[tauri::command]
-pub fn list_run_events(run_id: String) -> Result<Vec<store::RunEventRecord>, crate::AppError> {
-    store::list_run_events(&run_id)
+pub async fn list_run_events(run_id: String) -> Result<Vec<store::RunEventRecord>, crate::AppError> {
+    let local = store::list_run_events(&run_id)?;
+    // After a GUI restart the in-memory RUN_EVENT_BUFFER is empty — the agent
+    // (still running in the background) holds the authoritative events.  Pull
+    // them from the agent for active runs with no local events.
+    if !local.is_empty() {
+        return Ok(local);
+    }
+    let Some(run) = store::get_run(&run_id).ok().flatten() else {
+        return Ok(local);
+    };
+    if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+        return Ok(local);
+    }
+    // Active run — pull events from the agent
+    let Some(thread) = store::get_thread(&run.thread_id).ok().flatten() else {
+        return Ok(local);
+    };
+    let sid = thread
+        .agent_session_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| run.thread_id.clone());
+    let agent_json = match agent_bridge::get_events_since(sid, run_id.clone(), -1).await {
+        Ok(v) => v,
+        Err(_) => return Ok(local),
+    };
+    let Some(events) = agent_json.get("events").and_then(|v| v.as_array()) else {
+        return Ok(local);
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let records: Vec<store::RunEventRecord> = events
+        .iter()
+        .enumerate()
+        .map(|(i, e)| store::RunEventRecord {
+            id: format!("agent_{run_id}_{i}"),
+            run_id: run_id.clone(),
+            event_type: e.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            payload: e.get("data").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            sequence: e.get("idx").and_then(|v| v.as_i64()).unwrap_or(i as i64),
+            created_at: now,
+        })
+        .collect();
+    if records.is_empty() {
+        Ok(local)
+    } else {
+        Ok(records)
+    }
 }
 
 #[tauri::command]
