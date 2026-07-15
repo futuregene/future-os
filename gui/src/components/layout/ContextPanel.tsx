@@ -252,7 +252,7 @@ export function ContextPanel({
       }),
     ];
     return () => unsubscribers.forEach(unsubscribe => unsubscribe());
-  }, [expanded, handleSelectArtifact, handleSelectRun, onTabChange, onToggleExpanded]);
+  }, [expanded, handleSelectArtifact, handleSelectRun, handleSelectTool, onTabChange, onToggleExpanded]);
 
   if (!expanded) {
     return (
