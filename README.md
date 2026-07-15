@@ -164,15 +164,10 @@ future --help                                # full command list
                          │   127.0.0.1:50051        │
                          └──────────┬───────────────┘
                                     │
-          ┌─────────────────────────┼─────────────────────────┐
-          │                         │                         │
-   TypeScript TUI            Tauri / React GUI         TypeScript CLI
-   (terminal, bun)          (desktop, WebView)       auth · MCP · skills
-          │                         │                         │
-          └─────────────────────────┼─────────────────────────┘
-                                    │
-                            Channel Bridge
-                            Feishu · DingTalk
+       ┌────────────────────────────┼────────────────────────────┐
+       │                            │                            │
+TypeScript TUI              Tauri / React GUI         TypeScript CLI · Channel Bridge
+(terminal, bun)            (desktop, WebView)          auth · MCP · Feishu · DingTalk
 ```
 
 All clients connect to the agent independently over gRPC — no client depends on another.
