@@ -687,9 +687,21 @@ impl ServerSession {
                             tracing::error!("Failed to save session: {}", e);
                         }
                     }
+                    // Carry this run's output-token total on the terminal event so
+                    // the client can show the token stat the instant the run settles.
+                    // The run loop's rich usage (usage events + agent_end usage) only
+                    // reaches the internal EventBus, which is never bridged to this SSE
+                    // broadcaster — so without this the count is 0 until a reload reads
+                    // it from the session entry. Same figure persisted at line ~574.
+                    let run_output_tokens =
+                        (tokens_out.load(std::sync::atomic::Ordering::Relaxed) - out_start).max(0);
                     broadcaster.broadcast(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),
-                        data: serde_json::json!({"type": "agent_end"}).to_string(),
+                        data: serde_json::json!({
+                            "type": "agent_end",
+                            "usage": { "output_tokens": run_output_tokens }
+                        })
+                        .to_string(),
                         ..Default::default()
                     });
                     is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -702,10 +714,16 @@ impl ServerSession {
                         data: serde_json::json!({"error": &full_error}).to_string(),
                         ..Default::default()
                     });
+                    let run_output_tokens =
+                        (tokens_out.load(std::sync::atomic::Ordering::Relaxed) - out_start).max(0);
                     broadcaster.broadcast(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),
-                        data: serde_json::json!({"type": "agent_end", "error": &full_error})
-                            .to_string(),
+                        data: serde_json::json!({
+                            "type": "agent_end",
+                            "error": &full_error,
+                            "usage": { "output_tokens": run_output_tokens }
+                        })
+                        .to_string(),
                         ..Default::default()
                     });
                     is_streaming.store(false, std::sync::atomic::Ordering::Relaxed);
