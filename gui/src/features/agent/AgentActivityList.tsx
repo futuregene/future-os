@@ -46,11 +46,8 @@ function AgentActivitySingleLine({ item, workspacePath, runId }: { item: AgentAc
   const Chevron = open ? ChevronLeft : ChevronRight;
 
   const handleInspect = useCallback(() => {
-    if (runId) {
-      // eslint-disable-next-line no-console
-      console.debug("[inspect-tool] emit", { runId, toolId: item.id });
+    if (runId)
       emitFutureEvent("inspect-tool", { runId, toolId: item.id });
-    }
   }, [runId, item.id]);
 
   return (
@@ -67,7 +64,7 @@ function AgentActivitySingleLine({ item, workspacePath, runId }: { item: AgentAc
         ? (
             <button
               type="button"
-              onClick={(e) => { e.stopPropagation(); setOpen(value => !value); }}
+              onClick={() => setOpen(value => !value)}
               className="flex shrink-0 cursor-pointer items-center gap-2"
               aria-expanded={open}
             >
@@ -115,11 +112,8 @@ function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentAct
   const Chevron = open ? ChevronLeft : ChevronRight;
 
   const handleInspect = useCallback(() => {
-    if (runId) {
-      // eslint-disable-next-line no-console
-      console.debug("[inspect-tool] emit", { runId, toolId: item.id });
+    if (runId)
       emitFutureEvent("inspect-tool", { runId, toolId: item.id });
-    }
   }, [runId, item.id]);
 
   return (
@@ -131,7 +125,7 @@ function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentAct
     >
       <button
         type="button"
-        onClick={(e) => { e.stopPropagation(); setOpen(value => !value); }}
+        onClick={() => setOpen(value => !value)}
         className="flex min-w-0 cursor-pointer items-center gap-2 text-left"
         aria-expanded={open}
       >

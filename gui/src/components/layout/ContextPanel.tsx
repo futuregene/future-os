@@ -229,8 +229,6 @@ export function ContextPanel({
       onFutureEvent("inspect-tool", (detail) => {
         handleSelectTool(detail.toolId);
         setSelectedRunId(detail.runId);
-        // eslint-disable-next-line no-console
-        console.debug("[inspect-tool] toggle, expanded was", expanded, "onToggleExpanded=", onToggleExpanded);
         if (!expanded) {
           onToggleExpanded();
         }
