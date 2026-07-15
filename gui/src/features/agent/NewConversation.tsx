@@ -2,7 +2,7 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { MessageAttachment } from "./agentThreadTypes";
-import type { ComposerSendPayload } from "./Composer";
+import type { ComposerDragState, ComposerSendPayload } from "./Composer";
 import type { WorkspaceCreateRequest, WorkspaceFormMode } from "./useWorkspaceForm";
 import {
   Check,
@@ -93,6 +93,9 @@ export function NewConversation({
   );
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [selectedWorkspace, setSelectedWorkspace] = useState(initialWorkspace?.id ?? workspaceOptions[0]?.id ?? "");
+  // The composer + quick-start footer form one card; the composer reports the
+  // drag verdict so the ring wraps the whole card, not just its top half.
+  const [dragState, setDragState] = useState<ComposerDragState>(null);
   const workspaceForm = useWorkspaceForm({
     initialWorkspaceForm,
     workspaces,
@@ -186,9 +189,16 @@ export function NewConversation({
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-8">
         <div className="flex w-full max-w-4xl flex-col items-center">
           <h1 className="mb-8 text-center text-3xl font-semibold tracking-normal text-ink">{t("newConversation.welcome")}</h1>
-          <div className="w-full max-w-3xl">
+          <div
+            className={cn(
+              "w-full max-w-3xl rounded-lg",
+              dragState === "accept" && "ring-2 ring-focus",
+              dragState === "reject" && "ring-2 ring-danger-line",
+            )}
+          >
             <Composer
               className="w-full rounded-b-none bg-surface"
+              onDragStateChange={setDragState}
               modelId={modelId}
               modelOptions={modelOptions}
               modelsEmptyReason={modelsEmptyReason}
