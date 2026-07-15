@@ -1,6 +1,6 @@
 import type { StoredRunEvent } from "../../integrations/storage/threadStore";
 import { describe, expect, it } from "vitest";
-import { buildAssistantRunProjection } from "./agentActivity";
+import { buildAssistantRunProjection, isSoftExit, nonZeroExitCode } from "./agentActivity";
 
 function events(list: Array<[string, Record<string, unknown>]>): StoredRunEvent[] {
   return list.map(([eventType, payload], index) => ({
@@ -273,5 +273,39 @@ describe("buildAssistantRunProjection output tokens", () => {
     );
 
     expect(projection.outputTokens).toBe(0);
+  });
+});
+
+// The agent appends the exit code as a "[exit: N]" footer on the LAST line, not
+// a "[exit code: N]" prefix. Parsing the wrong shape silently dropped every
+// failure to exit 0 → a failed shell command rendered as "completed".
+describe("nonZeroExitCode", () => {
+  it("reads the [exit: N] footer even with leading output and blank lines", () => {
+    // The exact real-world capture: command-not-found on bash (macOS/Linux).
+    expect(nonZeroExitCode("bash: future: command not found\n\n[exit: 127]")).toBe(127);
+  });
+
+  it("detects the Windows form of the same failure (PowerShell exit 1)", () => {
+    // On Windows the wrapper reports command-not-found via $Error as exit 1, not
+    // 127 — the footer parser keys on any non-zero, so both platforms are caught.
+    expect(nonZeroExitCode(
+      "future : The term 'future' is not recognized as the name of a cmdlet.\n[exit: 1]",
+    )).toBe(1);
+  });
+
+  it("returns null for exit 0 and for output with no footer", () => {
+    expect(nonZeroExitCode("all good\n[exit: 0]")).toBeNull();
+    expect(nonZeroExitCode("no footer here")).toBeNull();
+    expect(nonZeroExitCode(undefined)).toBeNull();
+    // A "[exit code: N]" prefix is the OLD format and must NOT be mistaken for one.
+    expect(nonZeroExitCode("[exit code: 127]\nfutre: command not found")).toBeNull();
+  });
+
+  it("keeps the soft-fail exemption keyed to bare grep/findstr exit 1", () => {
+    // findstr is the Windows no-match case (native, exit 1) — exempt.
+    expect(isSoftExit(1, "findstr foo bar.txt")).toBe(true);
+    expect(isSoftExit(1, "grep foo file")).toBe(true);
+    // A real command-not-found (exit 1, first token not a soft-fail program) stays a failure.
+    expect(isSoftExit(1, "future tools call parse_doc")).toBe(false);
   });
 });
