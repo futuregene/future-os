@@ -64,25 +64,36 @@ export function MessageList({ messages, showThinking, onContinue, onFork, onRetr
     }, HIDE_DELAY_MS);
   }, [cancelPendingHide]);
 
+  // Only the LAST message can be a recovery target — computing the previous
+  // user message for every row is O(n²) and causes scroll jank during
+  // streaming (every 220 ms tick rescans the whole list).
+  const lastUserMessage = messages.length > 0
+    ? previousUserMessageBefore(messages, messages.length - 1)
+    : null;
+
   return (
     <div className="space-y-5" onPointerLeave={handleListLeave}>
-      {messages.map((message, index) => (
-        <MessageBlock
-          key={message.id}
-          message={message}
-          hovered={hoveredId === message.id}
-          isLast={index === messages.length - 1}
-          recoverySource={previousUserMessageBefore(messages, index - 1)}
-          showThinking={showThinking}
-          workspaceId={workspaceId}
-          workspacePath={workspacePath}
-          onContinue={onContinue}
-          onFork={onFork}
-          onHover={handleHover}
-          onLeave={handleLeave}
-          onRetry={onRetry}
-        />
-      ))}
+      {messages.map((message, index) => {
+        const isLast = index === messages.length - 1;
+        const recoverySource = isLast ? lastUserMessage : null;
+        return (
+          <MessageBlock
+            key={message.id}
+            message={message}
+            hovered={hoveredId === message.id}
+            isLast={isLast}
+            recoverySource={recoverySource}
+            showThinking={showThinking}
+            workspaceId={workspaceId}
+            workspacePath={workspacePath}
+            onContinue={onContinue}
+            onFork={onFork}
+            onHover={handleHover}
+            onLeave={handleLeave}
+            onRetry={onRetry}
+          />
+        );
+      })}
     </div>
   );
 }
