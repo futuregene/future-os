@@ -280,9 +280,10 @@ pub fn toolcall_end() -> AgentEvent {
     AgentEvent::new("toolcall_end")
 }
 
-pub fn tool_result(tool_name: &str, result: &str, err: &str, duration_ms: i64) -> AgentEvent {
+pub fn tool_result(tool_name: &str, tool_id: &str, result: &str, err: &str, duration_ms: i64) -> AgentEvent {
     AgentEvent::new("tool_result")
         .with_str("tool_name", tool_name)
+        .with_str("tool_id", tool_id)
         .with_str("result", result)
         .with_str("error", err)
         .with_i64("duration_ms", duration_ms)
@@ -294,8 +295,10 @@ pub fn tool_start(tool_name: &str, tool_id: &str) -> AgentEvent {
         .with_str("tool_id", tool_id)
 }
 
-pub fn tool_end(tool_name: &str) -> AgentEvent {
-    AgentEvent::new("tool_end").with_str("tool_name", tool_name)
+pub fn tool_end(tool_name: &str, tool_id: &str) -> AgentEvent {
+    AgentEvent::new("tool_end")
+        .with_str("tool_name", tool_name)
+        .with_str("tool_id", tool_id)
 }
 
 pub fn error_event(msg: &str) -> AgentEvent {

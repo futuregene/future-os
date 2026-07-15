@@ -564,7 +564,7 @@ impl Loop {
                             tracing::info!("[tool] {} ← done", event.tool_name);
                         }
                         if let Some(ref bus) = self.event_bus {
-                            bus.emit(tool_end(&event.tool_name));
+                            bus.emit(tool_end(&event.tool_name, &event.tool_id));
                         }
                     }
                     "usage" => {
