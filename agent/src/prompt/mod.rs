@@ -264,9 +264,13 @@ fn os_hint() -> String {
 
     match std::env::consts::OS {
         "macos" => {
+            // Name the shell actually resolved at runtime ($SHELL — often zsh on
+            // macOS). bash and zsh share command-line syntax, so no separate
+            // syntax rules are needed — only the accurate name.
+            let shell = crate::sandbox::shell_display_name();
             format!(
-                "Host platform: macOS. Shell commands are interpreted by bash; \
-                 macOS command-line tools (BSD variants) apply. \
+                "Host platform: macOS. Shell commands are interpreted by {shell} \
+                 (POSIX shell syntax); macOS command-line tools (BSD variants) apply. \
                  {skills_hint} (Example: ~/.agents/skills/my-skill/SKILL.md)"
             )
         }
@@ -294,8 +298,10 @@ fn os_hint() -> String {
             )
         }
         "linux" => {
+            let shell = crate::sandbox::shell_display_name();
             format!(
-                "Host platform: Linux. \
+                "Host platform: Linux. Shell commands are interpreted by {shell} \
+                 (POSIX shell syntax). \
                  {skills_hint} (Example: ~/.agents/skills/my-skill/SKILL.md)"
             )
         }

@@ -312,7 +312,7 @@ impl Default for ResolvedSandbox {
 pub fn shell_invocation(command: &str) -> (&'static str, Vec<String>) {
     #[cfg(not(target_os = "windows"))]
     {
-        ("bash", vec!["-c".to_string(), command.to_string()])
+        (unix_shell(), vec!["-c".to_string(), command.to_string()])
     }
     #[cfg(target_os = "windows")]
     {
@@ -428,6 +428,148 @@ fn pwsh_on_path() -> bool {
     std::env::split_paths(&path).any(|dir| dir.join("pwsh.exe").is_file())
 }
 
+/// The shell used to execute commands on Unix, resolved once. Honors the
+/// user's `$SHELL` when it is bash or zsh (both POSIX-compatible with the
+/// `( … ) 2>&1` wrapper the caller applies); otherwise probes for bash then
+/// zsh on PATH, falling back to `sh`. Never fish/nu — their syntax would break
+/// the wrapper. Returns a program name or absolute path for `Command::new`.
+#[cfg(not(target_os = "windows"))]
+pub fn unix_shell() -> &'static str {
+    use std::sync::OnceLock;
+    static SHELL: OnceLock<String> = OnceLock::new();
+    SHELL.get_or_init(|| {
+        // $SHELL, but only if it is a bash/zsh we can actually run.
+        if let Some(raw) = std::env::var_os("SHELL") {
+            let path = PathBuf::from(&raw);
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if (name == "bash" || name == "zsh") && path.is_file() {
+                return raw.to_string_lossy().into_owned();
+            }
+        }
+        for cand in ["bash", "zsh"] {
+            if on_path(cand) {
+                return cand.to_string();
+            }
+        }
+        // Last resort: POSIX sh is guaranteed present, and our wrapper is
+        // POSIX-safe.
+        "sh".to_string()
+    })
+}
+
+/// Basename of the resolved Unix shell for prompt text ("bash" / "zsh" / "sh").
+#[cfg(not(target_os = "windows"))]
+fn unix_shell_display_name() -> &'static str {
+    let shell = unix_shell();
+    shell.rsplit('/').next().unwrap_or(shell)
+}
+
+/// Whether an executable named `name` resolves on PATH. Pure env scan.
+#[cfg(not(target_os = "windows"))]
+fn on_path(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(name).is_file())
+}
+
+/// Load the user's login-shell environment into this process at startup, so
+/// commands find tools the user installed via their shell rc (nvm/pyenv/conda,
+/// Homebrew, npm-global) — not just the minimal PATH a GUI launched from the
+/// Finder/dock inherits. Mirrors what VS Code and similar tools do.
+///
+/// Runs `$SHELL -l -i -c` once to dump `env` between markers (rc noise on
+/// stderr is discarded; a 5s timeout guards against a hanging rc). PATH is
+/// always taken from the login shell; other vars are merged only when absent,
+/// so intentional launcher overrides are never clobbered. No-op on Windows,
+/// where GUI processes already inherit the full registry PATH.
+#[cfg(not(target_os = "windows"))]
+pub fn hydrate_from_login_shell() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    // The shell whose rc files define the user's real env — their actual login
+    // shell ($SHELL), even if it is fish/nu (we only harvest the resulting env,
+    // we don't run shell-specific syntax beyond printf + the env binary).
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| unix_shell().to_string());
+    let marker = "__future_env_boundary_9c4f__";
+    let script = format!("printf '%s' '{marker}'; /usr/bin/env; printf '%s' '{marker}'");
+
+    let mut child = match Command::new(&shell)
+        .args(["-l", "-i", "-c", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!("login-shell env hydration skipped: spawn {shell} failed: {e}");
+            return;
+        }
+    };
+
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        return;
+    };
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = stdout.read_to_string(&mut buf);
+        let _ = tx.send(buf);
+    });
+
+    let dump = match rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(buf) => {
+            let _ = child.wait();
+            buf
+        }
+        Err(_) => {
+            tracing::debug!("login-shell env hydration timed out; using inherited env");
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
+    };
+
+    // Content strictly between the two markers is the env dump (rc scripts may
+    // print before the first marker; we ignore that).
+    let Some(start) = dump.find(marker) else {
+        return;
+    };
+    let after = &dump[start + marker.len()..];
+    let body = after.split(marker).next().unwrap_or("");
+
+    let mut applied_path = false;
+    let mut merged = 0usize;
+    for line in body.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.is_empty() {
+            continue;
+        }
+        if key == "PATH" {
+            std::env::set_var("PATH", value);
+            applied_path = true;
+        } else if std::env::var_os(key).is_none() {
+            // Additive only: never overwrite a var the launcher set on purpose.
+            std::env::set_var(key, value);
+            merged += 1;
+        }
+    }
+    if applied_path {
+        tracing::info!("hydrated PATH from login shell ({shell}); merged {merged} env vars");
+    }
+}
+
+/// No-op on Windows — GUI processes already inherit the full registry PATH.
+#[cfg(target_os = "windows")]
+pub fn hydrate_from_login_shell() {}
+
 /// Runtime hint for prompt text: does the host's shell support `&&`/`||`
 /// chaining? True for any POSIX shell and for pwsh 7 on Windows; false for
 /// Windows PowerShell 5.1. Callable on every target so prompt code that runs
@@ -456,7 +598,7 @@ pub fn shell_display_name() -> &'static str {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        "bash"
+        unix_shell_display_name()
     }
 }
 
@@ -565,10 +707,16 @@ mod tests {
 
     #[test]
     #[cfg(not(target_os = "windows"))]
-    fn shell_invocation_unix_is_bash_c_passthrough() {
+    fn shell_invocation_unix_passes_command_through_to_the_resolved_shell() {
         let (program, args) = shell_invocation("echo hi; false");
-        assert_eq!(program, "bash");
+        // The command is passed verbatim to `-c`; the program is the resolved
+        // shell (bash/zsh/sh or an absolute $SHELL path), never fish/nu.
         assert_eq!(args, vec!["-c".to_string(), "echo hi; false".to_string()]);
+        let name = program.rsplit('/').next().unwrap_or(program);
+        assert!(
+            matches!(name, "bash" | "zsh" | "sh"),
+            "unexpected shell: {program}"
+        );
     }
 
     #[test]

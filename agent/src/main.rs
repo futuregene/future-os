@@ -33,6 +33,12 @@ fn main() -> Result<()> {
         )
         .init();
 
+    // Load the user's login-shell PATH/env BEFORE spawning any threads or the
+    // tokio runtime — set_var is only sound while single-threaded. Fixes
+    // "command not found" for user-installed tools (nvm/Homebrew/npm-global)
+    // when the agent is launched from a GUI with a minimal inherited PATH.
+    future_agent::sandbox::hydrate_from_login_shell();
+
     // Build model registry BEFORE tokio runtime starts.
     // Registry::new() uses reqwest::blocking::Client internally,
     // which creates a nested runtime that cannot be dropped in async context.
