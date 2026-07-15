@@ -36,6 +36,18 @@ export function fileNameFromPath(path: string) {
   return pathBasename(path) || path;
 }
 
+/**
+ * Split a filename into its stem and extension (".png", dot included) so the UI
+ * can middle-truncate the stem while keeping the suffix visible. A dotfile or a
+ * name without an extension returns the whole name as the stem.
+ */
+export function splitFileName(name: string): { stem: string; ext: string } {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0)
+    return { stem: name, ext: "" };
+  return { stem: name.slice(0, dot), ext: name.slice(dot) };
+}
+
 export function extOf(path: string) {
   const name = fileNameFromPath(path);
   const dot = name.lastIndexOf(".");
