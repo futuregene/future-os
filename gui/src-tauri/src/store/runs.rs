@@ -420,10 +420,15 @@ pub fn list_tool_calls(run_id: &str) -> Result<Vec<ToolCallRecord>, crate::AppEr
     for event in &events {
         match event.event_type.as_str() {
             "tool_start" | "toolcall_start" => {
-                // Stable agent tool id (not the ephemeral event id) so the
-                // inspector's `list_tool_outputs(run_id, tool.id)` can correlate
-                // this call with its `tool_end` output.
-                let id = event_tool_id(event).unwrap_or_else(|| event.id.clone());
+                // Use the same fallback as the frontend (agentActivity.ts:445):
+                // `${toolName}_${sequence}`.  When the payload lacks an explicit
+                // tool_id, the front-end generates this synthetic id — we must
+                // match it so the tool detail lookup succeeds.
+                let id = event_tool_id(event).unwrap_or_else(|| {
+                    let (name, _, _) = parse_tool_start_payload(event.payload.as_deref());
+                    let seq = event.sequence;
+                    if name.is_empty() { event.id.clone() } else { format!("{name}_{seq}") }
+                });
                 let (name, kind, input) = parse_tool_start_payload(event.payload.as_deref());
                 if let Some(&idx) = index_by_id.get(&id) {
                     // The same call announced twice: `toolcall_start` fires first
@@ -624,7 +629,12 @@ pub fn list_tool_outputs(
         if !matches!(event.event_type.as_str(), "tool_end" | "tool_result") {
             continue;
         }
-        if event_tool_id(event).as_deref() != Some(tool_call_id) {
+        let resolved_id = event_tool_id(event).unwrap_or_else(|| {
+            let (name, _, _) = parse_tool_start_payload(event.payload.as_deref());
+            let seq = event.sequence;
+            if name.is_empty() { event.id.clone() } else { format!("{name}_{seq}") }
+        });
+        if resolved_id != tool_call_id {
             continue;
         }
         let v: serde_json::Value = event
