@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-tui-single build-cli build-gui build-channels build-channels-release test test-agent lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean clean-gui run run-agent run-tui run-cli run-gui run-channels package-gui install install-tui install-tui-deps install-cli-deps install-cli install-gui install-channels install-skills install-gui-release fmt generate-models generate-proto help
+.PHONY: version build build-agent build-tui build-tui-single build-cli build-gui build-channels build-channels-release test test-agent lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean clean-gui run run-agent run-tui run-cli run-gui run-channels package-gui install uninstall install-tui install-tui-deps install-cli-deps install-cli install-gui install-channels install-skills install-gui-release fmt generate-models generate-proto help
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -12,6 +12,10 @@ version:
 # ─── Install ──────────────────────────────────────────────────────────────────
 
 install: install-tui install-cli install-gui install-channels install-skills
+
+uninstall:
+	rm -f $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
+	@echo "Removed: future, future-tui, future-gui, future-channel"
 
 install-tui:
 	cd tui && npm install && npm run build && bun build --compile dist/index.js --outfile $(PREFIX)/future-tui
@@ -220,4 +224,5 @@ help:
 	@echo "  generate-models    Fetch model data and regenerate models_generated.rs"
 	@echo "  generate-proto     Compile proto/future.proto to Rust gRPC code"
 	@echo "  install            Install standalone binaries to $(PREFIX)/"
+	@echo "  uninstall          Remove installed binaries from $(PREFIX)/"
 	@echo "  clean              Remove build artifacts + installed binaries"
