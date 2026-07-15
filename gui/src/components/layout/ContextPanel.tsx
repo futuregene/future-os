@@ -228,6 +228,12 @@ export function ContextPanel({
           onToggleExpanded();
         }
       }),
+      onFutureEvent("inspect-tool", (detail) => {
+        handleSelectTool(detail.toolId);
+        if (!expanded) {
+          onToggleExpanded();
+        }
+      }),
       onFutureEvent("inspect-artifact", (detail) => {
         handleSelectArtifact(detail.artifactId);
         if (!expanded) {
