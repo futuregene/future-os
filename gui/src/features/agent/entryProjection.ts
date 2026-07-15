@@ -9,7 +9,7 @@ export interface SessionEntry {
   name?: string;
   tool_args?: string;
   thinking?: string;
-  tool_calls?: Array<{ function: { name: string; arguments: unknown } }>;
+  tool_calls?: Array<{ id: string; function: { name: string; arguments: unknown } }>;
   /** RFC3339 entry time; preserved across re-saves so history keeps real times. */
   timestamp?: string;
   /** Output tokens for the reply — only the final assistant entry of a run. */
@@ -273,7 +273,9 @@ export function entriesToMessages(entries: SessionEntry[]): AgentMessage[] {
           const kind = asToolKind(tc.function.name);
           const target = targetFromToolArgs(kind, tc.function.arguments);
           const item: AgentActivityItem = {
-            id: segId(),
+            // Use the LLM's tool call id (call_00_xxx) so it matches the
+            // stored tool call records in the runs panel.
+            id: tc.id || segId(),
             kind,
             status: "completed",
             target,
