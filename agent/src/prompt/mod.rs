@@ -177,12 +177,12 @@ fn build_dynamic_tool_guidelines(tool_names: &[&str]) -> Vec<String> {
         // PowerShell 5.1 on Windows (see sandbox::shell_invocation).
         #[cfg(not(target_os = "windows"))]
         guidelines.push(
-            "Use the shell tool for command-line exploration such as ls, rg, and find; prefer write/edit tools for ordinary file writes."
+            "Use the shell tool for command-line exploration such as ls, rg, and find; but to read a known file's contents use the read tool, not cat. Prefer write/edit tools for ordinary file writes."
                 .to_string(),
         );
         #[cfg(target_os = "windows")]
         guidelines.push(
-            "Use the shell tool (PowerShell) for command-line exploration such as Get-ChildItem and Select-String; prefer write/edit tools for ordinary file writes."
+            "Use the shell tool (PowerShell) for command-line exploration such as Get-ChildItem and Select-String; but to read a known file's contents use the read tool, not Get-Content. Prefer write/edit tools for ordinary file writes."
                 .to_string(),
         );
     }
