@@ -280,7 +280,13 @@ pub fn toolcall_end() -> AgentEvent {
     AgentEvent::new("toolcall_end")
 }
 
-pub fn tool_result(tool_name: &str, tool_id: &str, result: &str, err: &str, duration_ms: i64) -> AgentEvent {
+pub fn tool_result(
+    tool_name: &str,
+    tool_id: &str,
+    result: &str,
+    err: &str,
+    duration_ms: i64,
+) -> AgentEvent {
     AgentEvent::new("tool_result")
         .with_str("tool_name", tool_name)
         .with_str("tool_id", tool_id)

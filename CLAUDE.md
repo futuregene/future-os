@@ -107,7 +107,7 @@ Entry point: `main.rs` — only CLI flag is `--grpc-addr`. Resolves model from s
 | `types/mod.rs` | Core types: `Message`, `StreamEvent`, `AgentTool`, `ToolDef`, `AgentConfig`, `LLMProvider` trait, `ContentBlock` (polymorphic text/image/tool_result) |
 | `sandbox/mod.rs` | OS-level sandbox for tool execution: `ResolvedSandbox` (tier: off/manual/seatbelt), `EscalationRequest`/`EscalationRequester` for post-hoc approval of out-of-sandbox operations. macOS Seatbelt via `seatbelt.rs`, cross-platform path rules via `rules.rs` |
 | `rpc/approval.rs` | Approval system: file-path access requests, sandbox boundary checks, escalation flow. Approval rules stored in `${WS}/.future/approval_rule.json` and `~/.future/approval_rule.json` |
-| `tools/mod.rs` | 6 tools: bash, read, write, edit, grep, ls. Each tool runs within `ToolExecutionScope` (workspace boundary, sandbox tier, interrupt flag). `coding_tools()` returns default 4 (read, bash, edit, write), `readonly_tools()` returns search tools, `all_tools()` returns all 6 |
+| `tools/mod.rs` | 6 tools: shell, read, write, edit, grep, ls. Each tool runs within `ToolExecutionScope` (workspace boundary, sandbox tier, interrupt flag). `coding_tools()` returns default 4 (read, shell, edit, write), `readonly_tools()` returns search tools, `all_tools()` returns all 6 |
 | `compaction/mod.rs` | Context compaction: estimates tokens (chars/4 heuristic), finds safe cut points, summarizes file ops |
 | `models/mod.rs` | Model registry: generated built-in catalog (`generated/`, 906 models) + user `models.json` overrides, resolution, fuzzy matching. Default model from settings.json |
 | `config/mod.rs` | Settings struct (7 fields: steering_mode, follow_up_mode, compaction, retry, max_turns, default_permission_level). Loads from `~/.future/agent/settings.json` (global) and `.future/agent/settings.json` (project), deep-merged |
@@ -129,7 +129,7 @@ The `FutureAgent` service has two RPCs:
 - `ExecuteCommand(RpcCommand) → RpcResponse` — unary, 30+ command types
 - `StreamEvents(StreamRequest) → stream StreamEvent` — server-side streaming for SSE events
 
-Commands include: prompt, steer, followUp, abort, new_session, switch_session, set_model, set_thinking_level, compact, fork, clone, export_html, cycle_model, cycle_thinking_level, list_sessions, delete_session, get_available_models, set_enabled_models, bash, abort_bash, and more.
+Commands include: prompt, steer, followUp, abort, new_session, switch_session, set_model, set_thinking_level, compact, fork, clone, export_html, cycle_model, cycle_thinking_level, list_sessions, delete_session, get_available_models, set_enabled_models, shell, abort_shell, and more.
 
 ### TUI architecture (`tui/src/`)
 
@@ -143,7 +143,7 @@ Follows a `Component`/`Container`/`Focusable` pattern with overlay stack:
 
 **14 components**: AutocompleteManager, Box, ChatArea, Container, Editor, Footer, Image, Input, Loader, MarkdownRenderer, ScopedModelsSelector, SelectList, Spacer, Text.
 
-**RPC** (`rpc/`): gRPC client (`grpc-client.ts`) connecting to the Rust backend. 30+ methods: session management (newSession, switchSession, clone, fork, listSessions, deleteSession, setSessionName), prompting (prompt, steer, followUp, abort), model control (setModel, cycleModel, getAvailableModels, setEnabledModels, setThinkingLevel, cycleThinkingLevel), session operations (compact, getState, getMessages, getForkMessages, getLastAssistantText, getSessionStats, exportHtml), and tool control (bash, abortBash, setSteeringMode, setFollowUpMode, setAutoCompaction, setAutoRetry, abortRetry).
+**RPC** (`rpc/`): gRPC client (`grpc-client.ts`) connecting to the Rust backend. 30+ methods: session management (newSession, switchSession, clone, fork, listSessions, deleteSession, setSessionName), prompting (prompt, steer, followUp, abort), model control (setModel, cycleModel, getAvailableModels, setEnabledModels, setThinkingLevel, cycleThinkingLevel), session operations (compact, getState, getMessages, getForkMessages, getLastAssistantText, getSessionStats, exportHtml), and tool control (shell, abortShell, setSteeringMode, setFollowUpMode, setAutoCompaction, setAutoRetry, abortRetry).
 
 ### TypeScript CLI (`cli/src/`)
 

@@ -2,7 +2,7 @@
 //!
 //! W1b lands in slices so each can be compiled/verified on Windows:
 //!   1. **Job Object** (this file so far) — process-tree teardown, the Windows
-//!      analog of the unix process-group kill. Needed for every bash run, not
+//!      analog of the unix process-group kill. Needed for every shell run, not
 //!      just sandboxed ones, so it ships before the enforcement layer.
 //!   2. restricted token ({Users, RESTRICTED}) — later slice.
 //!   3. ACE guard from [`super::windows_plan::WindowsSandboxPlan`] — later slice.
@@ -19,8 +19,8 @@ use windows_sys::Win32::System::JobObjects::{
 use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
 
 /// A job object configured to kill every member process when the handle closes.
-/// Assign a freshly-spawned bash PID; dropping the job (or calling
-/// [`Job::terminate`]) then kills bash and all of its descendants as a tree.
+/// Assign a freshly-spawned shell PID; dropping the job (or calling
+/// [`Job::terminate`]) then kills the shell and all of its descendants as a tree.
 pub struct Job(HANDLE);
 
 // A raw job HANDLE is safe to move/hand across the spawn future.

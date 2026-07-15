@@ -40,15 +40,15 @@ function attachmentsFromMeta(entry: SessionEntry): MessageAttachment[] | undefin
   }));
 }
 
-const TOOL_NAMES = new Set(["read", "bash", "edit", "write"]);
+const TOOL_NAMES = new Set(["read", "shell", "edit", "write"]);
 
-function asToolKind(name: string): "read" | "bash" | "edit" | "write" {
-  return TOOL_NAMES.has(name) ? (name as "read" | "bash" | "edit" | "write") : "bash";
+function asToolKind(name: string): "read" | "shell" | "edit" | "write" {
+  return TOOL_NAMES.has(name) ? (name as "read" | "shell" | "edit" | "write") : "shell";
 }
 
 /**
  * The activity's display target from a tool call's arguments: the command for
- * bash, else the file path. Without this a reloaded write/read/edit row shows
+ * shell, else the file path. Without this a reloaded write/read/edit row shows
  * its label ("写入") with no path. Args are the agent's arguments value — a JSON
  * string (usual) or an already-parsed object.
  */
@@ -70,7 +70,7 @@ function targetFromToolArgs(kind: string, args: unknown): string | undefined {
   if (!obj)
     return undefined;
   const str = (key: string) => (typeof obj[key] === "string" ? (obj[key] as string) : undefined);
-  return kind === "bash" ? str("command") : (str("path") ?? str("file_path") ?? str("filePath"));
+  return kind === "shell" ? str("command") : (str("path") ?? str("file_path") ?? str("filePath"));
 }
 
 interface TurnAcc {
@@ -92,8 +92,8 @@ interface TurnAcc {
 
 /**
  * Whether a tool result's content marks a failure: the agent prefixes a tool
- * error with "Error: ", and a bash non-zero exit bakes "[exit code: N]" into the
- * output text (with the bare grep/diff/test exit-1 soft-fail exemption).
+ * error with "Error: ", and a shell non-zero exit puts an "[exit: N]" footer at the end of the
+ * output (with the bare grep/diff/test exit-1 soft-fail exemption).
  */
 function toolResultFailed(content: string, command: string | undefined): boolean {
   if (!content)
@@ -106,7 +106,7 @@ function toolResultFailed(content: string, command: string | undefined): boolean
   return !isSoftExit(code, command);
 }
 
-const COLLAPSIBLE_KINDS = new Set(["bash", "edit", "write", "read"]);
+const COLLAPSIBLE_KINDS = new Set(["shell", "edit", "write", "read"]);
 
 /** Distinct-by-target (file tools count files, not touches). */
 function dedupeByTarget(items: AgentActivityItem[]): AgentActivityItem[] {
@@ -146,7 +146,7 @@ function collapseActivitySegments(segments: MessageSegment[]): MessageSegment[] 
         }
       }
       if (group.length > 1) {
-        const children = seg.item.kind === "bash" ? group : dedupeByTarget(group);
+        const children = seg.item.kind === "shell" ? group : dedupeByTarget(group);
         out.push({
           id: segId(),
           kind: "activity",
@@ -295,7 +295,7 @@ export function entriesToMessages(entries: SessionEntry[]): AgentMessage[] {
       // tool_calls in order (the agent executes and appends results in order).
       const item = acc?.pendingTools.shift();
       if (item) {
-        const command = item.kind === "bash" ? item.target : undefined;
+        const command = item.kind === "shell" ? item.target : undefined;
         if (toolResultFailed(entry.content, command))
           item.status = "failed";
       }

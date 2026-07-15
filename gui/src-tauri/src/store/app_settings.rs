@@ -10,7 +10,7 @@ use super::util::*;
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     /// Approval tier: `"off"` (fully open, default), `"manual"` (ask), or
-    /// `"sandbox"` (macOS Seatbelt wraps bash; tools ask).
+    /// `"sandbox"` (macOS Seatbelt wraps shell commands; tools ask).
     pub approval_tier: String,
     /// Model identifiers (`provider/id`) hidden from the model picker.
     pub hidden_models: Vec<String>,

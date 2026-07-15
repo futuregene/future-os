@@ -19,7 +19,7 @@
     "write": "{{prefix}}写入",
     "edit": "{{prefix}}编辑",
     "failed": {
-      "bash": "运行失败",
+      "shell": "运行失败",
       "edit": "编辑失败",
       "read": "读取失败",
       "write": "写入失败"

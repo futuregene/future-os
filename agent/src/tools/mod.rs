@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::sandbox::{EscalationDecision, EscalationRequest, EscalationRequester, ResolvedSandbox};
 
-/// Callback invoked when a bash command is about to run inside the OS
+/// Callback invoked when a shell command is about to run inside the OS
 /// sandbox (the RPC layer wires this to a `tool_sandboxed` SSE event).
 pub type SandboxedNotifier = Arc<dyn Fn(&str) + Send + Sync>;
 
@@ -20,17 +20,17 @@ pub struct ToolExecutionScope {
     /// "all" | "workspace" | "none" — controls workspace boundary enforcement
     permission_level: String,
     /// Interrupt flag for cooperative cancellation of long-running tool operations
-    /// (e.g., bash commands). When set, in-flight tool work returns an "interrupted"
+    /// (e.g., shell commands). When set, in-flight tool work returns an "interrupted"
     /// error promptly and child processes are dropped (kill_on_drop).
     interrupt_flag: Arc<AtomicBool>,
-    /// Resolved sandbox boundary: OS sandbox wrapping for bash, writable-roots
+    /// Resolved sandbox boundary: OS sandbox wrapping for shell runs, writable-roots
     /// boundary for write/edit. Shared with the approval layer so both reach
     /// the same verdicts.
     sandbox: Arc<ResolvedSandbox>,
-    /// Post-hoc approval hook for escalated (out-of-sandbox) bash runs.
+    /// Post-hoc approval hook for escalated (out-of-sandbox) shell runs.
     /// Injected by the RPC layer; None means escalation is unavailable.
     escalation: Option<EscalationRequester>,
-    /// Notifier for sandboxed bash executions (progress/event plumbing).
+    /// Notifier for sandboxed shell executions (progress/event plumbing).
     on_sandboxed: Option<SandboxedNotifier>,
 }
 
@@ -147,9 +147,9 @@ fn make_tool(
     }
 }
 
-// ─── Bash Tool ───────────────────────────────────────────────────────────────
+// ─── Shell Tool ───────────────────────────────────────────────────────────────
 
-fn bash_schema() -> serde_json::Value {
+fn shell_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "properties": {
@@ -174,18 +174,18 @@ fn bash_schema() -> serde_json::Value {
     })
 }
 
-fn bash_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
+fn shell_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
     Box::pin(async move {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
-        struct BashParams {
+        struct ShellParams {
             command: String,
             timeout: Option<u64>,
             escalated: Option<bool>,
             justification: Option<String>,
         }
-        let params: BashParams = serde_json::from_value(args)?;
-        run_bash(
+        let params: ShellParams = serde_json::from_value(args)?;
+        run_shell(
             &params.command,
             params.timeout.unwrap_or(120),
             params.escalated.unwrap_or(false),
@@ -195,16 +195,32 @@ fn bash_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<S
     })
 }
 
-pub fn bash_tool() -> AgentTool {
+pub fn shell_tool() -> AgentTool {
+    // The description tells the model which shell actually interprets the
+    // command on this platform — it is the model's only reliable signal for
+    // generating syntax that will parse (see sandbox::shell_invocation).
+    #[cfg(not(target_os = "windows"))]
+    let description = "Execute a shell command in the current working directory. Commands are interpreted by bash. Use this for exploration and command-line programs. For ordinary file creation or edits, prefer write/edit tools, but shell redirection and heredocs may be used when they are the better fit. Returns stdout and stderr merged. Output is truncated to last 500000 bytes.";
+    #[cfg(target_os = "windows")]
+    let description = "Execute a shell command in the current working directory. Commands are interpreted by Windows PowerShell 5.1 — use PowerShell syntax: chain commands with `;` (NOT `&&` or `||`, which PowerShell 5.1 does not support), environment variables as $env:VAR (never %VAR%), single quotes for literal strings. Use this for exploration and command-line programs. For ordinary file creation or edits, prefer write/edit tools. Returns stdout and stderr merged. Output is truncated to last 500000 bytes.";
+
+    #[cfg(not(target_os = "windows"))]
+    let guidelines = vec![
+        "Prefer one shell command per turn",
+        "Prefer write/edit for ordinary file writes; use shell redirection, heredocs, tee, or cat > file only when they are more appropriate for the task.",
+    ];
+    #[cfg(target_os = "windows")]
+    let guidelines = vec![
+        "Prefer one shell command per turn",
+        "Prefer write/edit for ordinary file writes; use PowerShell redirection (> or Out-File) only when it is more appropriate for the task.",
+    ];
+
     make_tool(
-        "bash",
-        "Execute a shell command in the current working directory. Use this for exploration and command-line programs. For ordinary file creation or edits, prefer write/edit tools, but shell redirection and heredocs may be used when they are the better fit. Returns stdout and stderr. Output is truncated to last 500000 bytes.",
-        bash_schema(),
-        bash_handler,
-        vec![
-            "Prefer one bash command per turn",
-            "Prefer write/edit for ordinary file writes; use shell redirection, heredocs, tee, or cat > file only when they are more appropriate for the task.",
-        ],
+        "shell",
+        description,
+        shell_schema(),
+        shell_handler,
+        guidelines,
     )
 }
 
@@ -362,20 +378,20 @@ pub fn edit_tool() -> AgentTool {
 
 // ─── Tool sets ─────────────────────────────────────────────────────────────
 
-/// Core coding tools (default set): read, write, edit, bash
+/// Core coding tools (default set): read, write, edit, shell
 pub fn coding_tools() -> Vec<AgentTool> {
-    vec![read_tool(), write_tool(), edit_tool(), bash_tool()]
+    vec![read_tool(), write_tool(), edit_tool(), shell_tool()]
 }
 
 /// All built-in tools
 pub fn all_tools() -> Vec<AgentTool> {
-    vec![read_tool(), write_tool(), edit_tool(), bash_tool()]
+    vec![read_tool(), write_tool(), edit_tool(), shell_tool()]
 }
 
 // ─── Tool runners (async, using tokio) ─────────────────────────────────────
 
 /// SIGKILL an entire process group by its group-leader PID. Used to tear down a
-/// bash command's full process tree on abort/timeout, since `kill_on_drop` only
+/// shell command's full process tree on abort/timeout, since `kill_on_drop` only
 /// reaps the direct child and leaves grandchildren (e.g. `sleep`) orphaned.
 #[cfg(unix)]
 fn kill_process_group(pgid: Option<i32>) {
@@ -399,7 +415,7 @@ async fn wait_for_interrupt(flag: Arc<AtomicBool>) {
     }
 }
 
-async fn run_bash(
+async fn run_shell(
     command: &str,
     timeout_secs: u64,
     escalated: bool,
@@ -416,7 +432,7 @@ async fn run_bash(
     // Only honored when the command would actually run sandboxed — in degraded
     // or full-access modes the pre-execution approval flow already covered it,
     // and escalating would double-prompt the user.
-    if escalated && sandbox.wraps_bash() {
+    if escalated && sandbox.wraps_shell() {
         if let Some(requester) = &escalation {
             let request = EscalationRequest {
                 command: command.to_string(),
@@ -425,7 +441,7 @@ async fn run_bash(
             };
             match requester(&request) {
                 EscalationDecision::Approved => {
-                    return spawn_bash(command, timeout_secs, &sandbox, true).await;
+                    return spawn_shell(command, timeout_secs, &sandbox, true).await;
                 }
                 EscalationDecision::Denied(note) => {
                     return Err(anyhow!(
@@ -438,13 +454,13 @@ async fn run_bash(
         // No escalation channel: fall through to a normal sandboxed run.
     }
 
-    let sandboxed = sandbox.wraps_bash();
+    let sandboxed = sandbox.wraps_shell();
     if sandboxed {
         if let Ok(Some(notify)) = TOOL_SCOPE.try_with(|scope| scope.on_sandboxed.clone()) {
             notify(command);
         }
     }
-    let result = spawn_bash(command, timeout_secs, &sandbox, false).await?;
+    let result = spawn_shell(command, timeout_secs, &sandbox, false).await?;
 
     // Post-hoc escalation: only when the failure narrowly looks like a sandbox
     // denial (conservative heuristic — ordinary failures go back to the model).
@@ -461,7 +477,7 @@ async fn run_bash(
                 };
                 match requester(&request) {
                     EscalationDecision::Approved => {
-                        return spawn_bash(command, timeout_secs, &sandbox, true).await;
+                        return spawn_shell(command, timeout_secs, &sandbox, true).await;
                     }
                     EscalationDecision::Denied(note) => {
                         return Ok(format!(
@@ -477,7 +493,7 @@ async fn run_bash(
     Ok(result)
 }
 
-/// Extract the exit code and output tail from a formatted run_bash result, for
+/// Extract the exit code and output tail from a formatted run_shell result, for
 /// the sandbox-denial heuristic. Exit code is now at the end as "[exit: N]".
 fn parse_result_failure(result: &str) -> (i32, String) {
     let exit_code = result
@@ -494,21 +510,28 @@ fn parse_result_failure(result: &str) -> (i32, String) {
     (exit_code, tail)
 }
 
-/// Spawn a bash command (sandbox-wrapped unless `escalated`) and wait for it
+/// Spawn a shell command (sandbox-wrapped unless `escalated`) and wait for it
 /// with timeout + interrupt handling. Returns the formatted combined output.
-async fn spawn_bash(
+async fn spawn_shell(
     command: &str,
     timeout_secs: u64,
     sandbox: &ResolvedSandbox,
     escalated: bool,
 ) -> Result<String> {
     let cwd = active_workspace()?;
-    // Wrap in a subshell to merge stderr into stdout, preserving the original
-    // interleaving order that separate pipes lose. Internal redirections in the
-    // user's command are respected inside the subshell; only the subshell's own
-    // stderr (empty after the merge) goes to /dev/null.
+    // Unix: wrap in a subshell to merge stderr into stdout, preserving the
+    // original interleaving order that separate pipes lose. Internal
+    // redirections in the user's command are respected inside the subshell;
+    // only the subshell's own stderr (empty after the merge) goes to /dev/null.
+    #[cfg(not(windows))]
     let merged_cmd = format!("( {} ) 2>&1", command);
-    let mut child = sandbox.build_bash_command(&merged_cmd, escalated);
+    // Windows: `( … ) 2>&1` is a bash-ism — PowerShell's `( … )` rejects
+    // multi-statement commands. The PowerShell wrapper built by
+    // `sandbox::shell_invocation` does the stderr merge and exit-code capture
+    // itself, so the command passes through unmodified.
+    #[cfg(windows)]
+    let merged_cmd = command.to_string();
+    let mut child = sandbox.build_shell_command(&merged_cmd, escalated);
     child.current_dir(&cwd).env("PWD", &cwd);
     // Prepend the agent binary's directory to PATH so bundled tools in the same
     // directory are discoverable by shell commands.
@@ -519,12 +542,18 @@ async fn spawn_bash(
             child.env("PATH", format!("{}{}{}", dir.display(), sep, existing));
         }
     }
-    child
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
+    child.stdout(std::process::Stdio::piped());
+    // Unix: the subshell already merged stderr into stdout, so the outer pipe
+    // carries nothing. Windows: PowerShell's own failures (a parse error in the
+    // -Command string never executes the 2>&1 merge) surface only on the
+    // process's stderr — capture it so those errors aren't silently dropped.
+    #[cfg(not(windows))]
+    child.stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    child.stderr(std::process::Stdio::piped());
     child.kill_on_drop(true);
-    // Run bash as the leader of its own process group so abort/timeout can kill
-    // the whole tree. kill_on_drop alone only SIGKILLs bash itself, leaving
+    // Run the shell as the leader of its own process group so abort/timeout can kill
+    // the whole tree. kill_on_drop alone only SIGKILLs the shell itself, leaving
     // grandchildren (e.g. a `sleep` spawned by the command) running as orphans.
     // sandbox-exec execs its child, so the group covers the wrapped tree too.
     #[cfg(unix)]
@@ -537,7 +566,7 @@ async fn spawn_bash(
 
     let mut spawned = child
         .spawn()
-        .map_err(|e| anyhow!("Failed to run bash command: {}", e))?;
+        .map_err(|e| anyhow!("Failed to run shell command: {}", e))?;
     #[cfg(unix)]
     let pgid = spawned.id().map(|id| id as i32);
     #[cfg(windows)]
@@ -548,6 +577,18 @@ async fn spawn_bash(
         }
         job
     };
+
+    // Windows: drain stderr concurrently so a PowerShell parse error can't
+    // deadlock the pipe, and its text can be appended to the output below.
+    #[cfg(windows)]
+    let stderr_task = spawned.stderr.take().map(|mut err| {
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut buf = Vec::new();
+            let _ = err.read_to_end(&mut buf).await;
+            buf
+        })
+    });
 
     // Read stdout incrementally — on timeout we keep whatever was captured.
     let mut stdout = spawned
@@ -566,7 +607,7 @@ async fn spawn_bash(
                 match stdout.read(&mut read_buf).await {
                     Ok(0) => break, // EOF
                     Ok(n) => output_buf.extend_from_slice(&read_buf[..n]),
-                    Err(e) => return Err(anyhow!("Failed to read bash output: {}", e)),
+                    Err(e) => return Err(anyhow!("Failed to read shell output: {}", e)),
                 }
             }
             Ok(spawned.wait().await)
@@ -580,7 +621,7 @@ async fn spawn_bash(
             if let Some(job) = &job {
                 job.terminate();
             }
-            return Err(anyhow!("Bash command interrupted by abort"));
+            return Err(anyhow!("Shell command interrupted by abort"));
         }
     };
 
@@ -605,11 +646,24 @@ async fn spawn_bash(
                     Ok(n) => output_buf.extend_from_slice(&read_buf[..n]),
                 }
             }
+            // Windows: append PowerShell's own stderr (parse/startup errors that
+            // never reached the in-script 2>&1 merge). Empty on a normal run.
+            #[cfg(windows)]
+            if let Some(task) = stderr_task {
+                if let Ok(err_buf) = task.await {
+                    if !err_buf.is_empty() {
+                        if !output_buf.is_empty() && !output_buf.ends_with(b"\n") {
+                            output_buf.push(b'\n');
+                        }
+                        output_buf.extend_from_slice(&err_buf);
+                    }
+                }
+            }
             let combined = String::from_utf8_lossy(&output_buf);
             let exit_code = status.code().unwrap_or(-1);
-            Ok(format_bash_output(&combined, combined.len(), exit_code))
+            Ok(format_shell_output(&combined, combined.len(), exit_code))
         }
-        Ok(Ok(Err(e))) => Err(anyhow!("Failed to run bash command: {}", e)),
+        Ok(Ok(Err(e))) => Err(anyhow!("Failed to run shell command: {}", e)),
         Ok(Err(e)) => Err(e),
         Err(_elapsed) => {
             // Timeout — kill process tree, drain remaining pipe content.
@@ -631,13 +685,13 @@ async fn spawn_bash(
             let total = combined.len();
             if total == 0 {
                 return Err(anyhow!(
-                    "Bash command timed out after {} seconds (no output captured)",
+                    "Shell command timed out after {} seconds (no output captured)",
                     timeout_secs.max(1)
                 ));
             }
-            let formatted = format_bash_output(&combined, total, -1);
+            let formatted = format_shell_output(&combined, total, -1);
             Err(anyhow!(
-                "Bash command timed out after {} seconds.\nPartial output ({} total):\n{}",
+                "Shell command timed out after {} seconds.\nPartial output ({} total):\n{}",
                 timeout_secs.max(1),
                 human_size(total),
                 formatted,
@@ -646,9 +700,9 @@ async fn spawn_bash(
     }
 }
 
-/// Format bash output with truncation info and exit code footer.
+/// Format shell output with truncation info and exit code footer.
 /// Kept out of the hot path so the timeout branch can reuse it.
-fn format_bash_output(raw: &str, total_bytes: usize, exit_code: i32) -> String {
+fn format_shell_output(raw: &str, total_bytes: usize, exit_code: i32) -> String {
     const MAX_KEEP: usize = 500_000;
 
     let body = if total_bytes > MAX_KEEP {
@@ -1083,7 +1137,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn escalated_bash_denied_returns_error_without_running() {
+    async fn escalated_shell_denied_returns_error_without_running() {
         let workspace = test_path("escalate-denied");
         std::fs::create_dir_all(&workspace).unwrap();
         let marker = workspace.join("ran.marker");
@@ -1097,7 +1151,7 @@ mod tests {
                 calls.clone(),
             ),
             async {
-                run_bash(
+                run_shell(
                     &format!("touch {}", marker.to_string_lossy()),
                     30,
                     true,
@@ -1116,7 +1170,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn escalated_bash_approved_runs_unsandboxed() {
+    async fn escalated_shell_approved_runs_unsandboxed() {
         let workspace = test_path("escalate-approved");
         std::fs::create_dir_all(&workspace).unwrap();
         let calls = Arc::new(Mutex::new(vec![]));
@@ -1128,7 +1182,7 @@ mod tests {
                 EscalationDecision::Approved,
                 calls.clone(),
             ),
-            async { run_bash("echo escalated-ok", 30, true, "why").await },
+            async { run_shell("echo escalated-ok", 30, true, "why").await },
         )
         .await;
 
@@ -1151,7 +1205,7 @@ mod tests {
                 EscalationDecision::Denied("should never be asked".to_string()),
                 calls.clone(),
             ),
-            async { run_bash("echo degraded-ok", 30, true, "why").await },
+            async { run_shell("echo degraded-ok", 30, true, "why").await },
         )
         .await;
 
@@ -1180,19 +1234,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_bash_abort_interrupt() {
+    async fn run_shell_abort_interrupt() {
         let workspace = test_path("abort-test");
         std::fs::create_dir_all(&workspace).unwrap();
         let workspace_string = workspace.to_string_lossy().to_string();
         let interrupt_flag = Arc::new(AtomicBool::new(false));
 
         let flag_clone = interrupt_flag.clone();
-        let bash_task = tokio::spawn(async move {
+        let shell_task = tokio::spawn(async move {
             with_workspace_scope_with_interrupt(
                 workspace_string,
                 "all".to_string(),
                 flag_clone,
-                async { run_bash("sleep 30", 60, false, "").await },
+                async { run_shell("sleep 30", 60, false, "").await },
             )
             .await
         });
@@ -1200,10 +1254,10 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         interrupt_flag.store(true, Ordering::SeqCst);
 
-        let result = bash_task.await.unwrap();
+        let result = shell_task.await.unwrap();
         assert!(
             result.is_err(),
-            "run_bash should return Err when interrupted"
+            "run_shell should return Err when interrupted"
         );
         let err = result.unwrap_err().to_string();
         assert!(
@@ -1212,12 +1266,12 @@ mod tests {
         );
     }
 
-    // Aborting a bash command must kill its whole process group, not just bash.
+    // Aborting a shell command must kill its whole process group, not just the shell.
     // The command backgrounds a `sleep` that writes a marker file after it wakes;
     // if the grandchild survived the abort, the marker would appear.
     #[cfg(unix)]
     #[tokio::test]
-    async fn run_bash_abort_kills_grandchildren() {
+    async fn run_shell_abort_kills_grandchildren() {
         let workspace = test_path("abort-grandchild");
         std::fs::create_dir_all(&workspace).unwrap();
         let workspace_string = workspace.to_string_lossy().to_string();
@@ -1225,26 +1279,26 @@ mod tests {
         let marker_string = marker.to_string_lossy().to_string();
         let interrupt_flag = Arc::new(AtomicBool::new(false));
 
-        // `sh -c 'sleep 2; touch MARKER' &` — a grandchild that outlives bash's
+        // `sh -c 'sleep 2; touch MARKER' &` — a grandchild that outlives the shell's
         // own exit unless the process group is killed.
         let command = format!("sh -c 'sleep 2; touch {marker_string}' & wait");
         let flag_clone = interrupt_flag.clone();
-        let bash_task = tokio::spawn(async move {
+        let shell_task = tokio::spawn(async move {
             with_workspace_scope_with_interrupt(
                 workspace_string,
                 "all".to_string(),
                 flag_clone,
-                async move { run_bash(&command, 60, false, "").await },
+                async move { run_shell(&command, 60, false, "").await },
             )
             .await
         });
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         interrupt_flag.store(true, Ordering::SeqCst);
-        let result = bash_task.await.unwrap();
+        let result = shell_task.await.unwrap();
         assert!(
             result.is_err(),
-            "run_bash should return Err when interrupted"
+            "run_shell should return Err when interrupted"
         );
 
         // Wait past the grandchild's sleep; if the group was killed, no marker.

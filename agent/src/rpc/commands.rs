@@ -398,11 +398,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 serde_json::json!({"ephemeral": cmd.ephemeral}),
             )
         }
-        "bash" => {
-            let result = session.write().unwrap().execute_bash(&cmd.command);
+        "shell" => {
+            let result = session.write().unwrap().execute_shell(&cmd.command);
             match result {
-                Ok(r) => RpcResponse::ok(id, "bash", r),
-                Err(e) => RpcResponse::build_fail(id, "bash", &e.to_string()),
+                Ok(r) => RpcResponse::ok(id, "shell", r),
+                Err(e) => RpcResponse::build_fail(id, "shell", &e.to_string()),
             }
         }
         "get_session_stats" => {
@@ -810,9 +810,9 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             session.read().unwrap().abort();
             RpcResponse::ok(id, "abort_retry", serde_json::json!({}))
         }
-        "abort_bash" => {
-            // Bash abort is handled by the agent loop
-            RpcResponse::ok(id, "abort_bash", serde_json::json!({}))
+        "abort_shell" => {
+            // Shell abort is handled by the agent loop
+            RpcResponse::ok(id, "abort_shell", serde_json::json!({}))
         }
         "cycle_model" => {
             // Cycle to next available model.  Scoping is client-side (TUI/GUI).

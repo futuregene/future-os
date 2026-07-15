@@ -1,6 +1,6 @@
 export type MessageRole = "user" | "assistant" | "system";
 
-export type AgentActivityKind = "thinking" | "read" | "bash" | "edit" | "write";
+export type AgentActivityKind = "thinking" | "read" | "shell" | "edit" | "write";
 
 export interface AgentActivityItem {
   id: string;

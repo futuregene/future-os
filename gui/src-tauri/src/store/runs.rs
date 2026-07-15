@@ -462,7 +462,7 @@ pub fn list_tool_calls(run_id: &str) -> Result<Vec<ToolCallRecord>, crate::AppEr
                     .as_deref()
                     .and_then(|id| index_by_id.get(id).copied());
                 if let Some(idx) = idx {
-                    let command = bash_command_from_input(tools[idx].input.as_deref());
+                    let command = shell_command_from_input(tools[idx].input.as_deref());
                     tools[idx].status =
                         tool_end_status(event.payload.as_deref(), command.as_deref());
                     tools[idx].ended_at = Some(event.created_at);
@@ -505,7 +505,7 @@ fn parse_tool_start_payload(payload: Option<&str>) -> (String, String, Option<St
         .and_then(|s| s.as_str())
         .unwrap_or("")
         .to_string();
-    let kind = name.clone(); // tool_name doubles as kind (bash, write, edit, read)
+    let kind = name.clone(); // tool_name doubles as kind (shell, write, edit, read)
     let input = v
         .get("tool_args")
         .or(v.get("input"))
@@ -515,8 +515,8 @@ fn parse_tool_start_payload(payload: Option<&str>) -> (String, String, Option<St
 }
 
 /// Tool-call status from its `tool_end` payload. An explicit `error` is a
-/// failure; so is a bash command that exits non-zero — the agent returns that
-/// as a *successful* result with `[exit code: N]` baked into the output text
+/// failure; so is a shell command that exits non-zero — the agent returns that
+/// as a *successful* result with an `[exit: N]` footer on the last line of the output
 /// (no error field), so the text must be inspected. A bare grep/diff/test
 /// exiting 1 is a normal "no match / differs" signal, not a failure.
 fn tool_end_status(payload: Option<&str>, command: Option<&str>) -> String {
@@ -545,11 +545,11 @@ fn tool_end_status(payload: Option<&str>, command: Option<&str>) -> String {
     }
 }
 
-/// The non-zero code from a `[exit code: N]` bash prefix, or None (exit 0 / not
-/// a bash result). Mirrors the agent-bridge persist logic.
+/// The non-zero code from the `[exit: N]` footer line, or None (exit 0 / not a
+/// shell result). Mirrors the agent-bridge persist logic.
 fn nonzero_exit_code(output: Option<&str>) -> Option<i64> {
-    let rest = output?.trim_start().strip_prefix("[exit code: ")?;
-    let (code, _) = rest.split_once(']')?;
+    let line = output?.trim_end().lines().last()?;
+    let code = line.strip_prefix("[exit: ")?.strip_suffix(']')?;
     code.trim().parse::<i64>().ok().filter(|code| *code != 0)
 }
 
@@ -578,9 +578,9 @@ fn is_soft_fail_command(command: Option<&str>) -> bool {
     )
 }
 
-/// Extract the bash `command` from a tool call's persisted input JSON (used to
+/// Extract the shell `command` from a tool call's persisted input JSON (used to
 /// exempt soft-fail commands). Handles a doubly-encoded JSON string input.
-fn bash_command_from_input(input: Option<&str>) -> Option<String> {
+fn shell_command_from_input(input: Option<&str>) -> Option<String> {
     let mut value: serde_json::Value = serde_json::from_str(input?).ok()?;
     if let serde_json::Value::String(inner) = &value {
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(inner) {
@@ -838,7 +838,7 @@ mod tests {
         insert_run(&conn, "run_live", "running");
         conn.execute(
             "INSERT INTO approval_requests (id, thread_id, run_id, kind, status, title, created_at, updated_at)
-             VALUES ('ap1', 'thread', 'run_live', 'bash', 'pending', 't', 1, 1)",
+             VALUES ('ap1', 'thread', 'run_live', 'shell', 'pending', 't', 1, 1)",
             [],
         )
         .unwrap();
