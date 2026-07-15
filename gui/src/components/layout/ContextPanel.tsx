@@ -231,6 +231,7 @@ export function ContextPanel({
       }),
       onFutureEvent("inspect-tool", (detail) => {
         handleSelectTool(detail.toolId);
+        setSelectedRunId(detail.runId);
         if (!expanded) {
           onToggleExpanded();
         }
@@ -340,9 +341,11 @@ export function ContextPanel({
                     onBack={() => setSelectedRunId(null)}
                   />
                 )
-              : selectedToolId
-                ? <div className="py-4 text-sm text-ink-muted">{t("contextPanel.loading")}</div>
-                : (
+              : (selectedToolId && selectedRun)
+                ? <RunInspectPanel run={selectedRun} tools={toolsByRun[(selectedRun as StoredRun).id] ?? []} onBack={() => { setSelectedToolId(null); setSelectedRunId(null); }} />
+                : selectedToolId
+                  ? <div className="py-4 text-sm text-ink-muted">{t("contextPanel.loading")}</div>
+                  : (
                   <RunsPanel
                     runs={runs}
                     toolsByRun={toolsByRun}
