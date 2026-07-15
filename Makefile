@@ -14,7 +14,7 @@ version:
 install: install-tui install-cli install-gui install-channels install-skills
 
 install-tui:
-	cd tui && npm install
+	cd tui && npm install && npm run build && bun build --compile dist/index.js --outfile /opt/homebrew/bin/future-tui
 
 install-cli-deps:
 	cd cli && npm install
@@ -29,6 +29,8 @@ install-gui:
 	cp agent/target/debug/future-agent gui/src-tauri/binaries/future-agent-aarch64-apple-darwin
 	cd cli && npm run build && bun build --compile dist/index.js --outfile dist/future
 	cp cli/dist/future gui/src-tauri/binaries/future-aarch64-apple-darwin
+	cd gui/src-tauri && cargo build
+	cp gui/src-tauri/target/debug/futureos /opt/homebrew/bin/future-gui
 
 install-channels:
 	cd channels && cargo build
