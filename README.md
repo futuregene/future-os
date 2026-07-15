@@ -59,8 +59,7 @@ make install   # build everything and install to system path
 
 Binaries are installed to: macOS `/opt/homebrew/bin`, Linux `/usr/local/bin`, Windows `%USERPROFILE%\.future\bin`.
 
-> **Terminal-only?** Skip the GUI toolchain:
-> `make install-agent install-tui install-cli install-skills install-channels`
+> **Terminal-only?** Skip the GUI toolchain: `make install-nogui`
 
 ### Run the agent (start this first)
 

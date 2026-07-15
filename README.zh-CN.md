@@ -59,8 +59,7 @@ make install   # 构建全部组件并安装到系统路径
 
 二进制安装路径：macOS `/opt/homebrew/bin`、Linux `/usr/local/bin`、Windows `%USERPROFILE%\.future\bin`。
 
-> **只构建终端版？** 跳过 GUI 工具链：
-> `make install-agent install-tui install-cli install-skills install-channels`
+> **只构建终端版？** 跳过 GUI 工具链：`make install-nogui`
 
 ### 启动 Agent（必须先启动）
 
