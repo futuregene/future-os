@@ -14,7 +14,7 @@ version:
 install: install-tui install-cli install-gui install-channels install-skills
 
 install-tui:
-	cd tui && npm install && npm run build && bun build --compile dist/index.js --outfile /opt/homebrew/bin/future-tui
+	cd tui && npm install && npm run build && bun build --compile dist/index.js --outfile $(PREFIX)/future-tui
 
 install-tui-deps:
 	cd tui && npm install
@@ -23,13 +23,22 @@ install-cli-deps:
 	cd cli && npm install
 
 install-cli: install-cli-deps
-	cd cli && npm run build && bun build --compile dist/index.js --outfile /opt/homebrew/bin/future
+	cd cli && npm run build && bun build --compile dist/index.js --outfile $(PREFIX)/future
 
 ARCH := $(shell uname -m)
 ARCH := $(subst arm64,aarch64,$(ARCH))
 ARCH := $(subst x86_64,x86_64,$(ARCH))
 OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 TARGET := $(ARCH)-$(OS)
+
+# Install prefix — on macOS Homebrew, on Linux /usr/local, on Windows user-local.
+ifeq ($(OS),darwin)
+  PREFIX := /opt/homebrew/bin
+else ifeq ($(OS),linux)
+  PREFIX := /usr/local/bin
+else
+  PREFIX := $(USERPROFILE)/.future/bin
+endif
 
 install-gui: install-cli
 	cd gui && npm install
@@ -38,11 +47,11 @@ install-gui: install-cli
 	cp agent/target/debug/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
 	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET)
 	cd gui/src-tauri && cargo build
-	cp gui/src-tauri/target/debug/futureos /opt/homebrew/bin/future-gui
+	cp gui/src-tauri/target/debug/futureos $(PREFIX)/future-gui
 
 install-channels:
 	cd channels && cargo build
-	cp channels/target/debug/future-channel /opt/homebrew/bin/
+	cp channels/target/debug/future-channel $(PREFIX)/
 
 # Release builds of agent + CLI sidecars (for packaging). Separate from
 # install-gui so run-gui doesn't pay the release compile cost.
@@ -179,7 +188,7 @@ clean:
 	rm -f tui/future-tui
 	rm -rf cli/dist
 	rm -rf cli/node_modules
-	rm -f /opt/homebrew/bin/future /opt/homebrew/bin/future-tui /opt/homebrew/bin/future-gui /opt/homebrew/bin/future-channel
+	rm -f $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
 	$(MAKE) clean-gui
 
 clean-gui:
@@ -210,5 +219,5 @@ help:
 	@echo "  run-channels        Build and run channel bridge"
 	@echo "  generate-models    Fetch model data and regenerate models_generated.rs"
 	@echo "  generate-proto     Compile proto/future.proto to Rust gRPC code"
-	@echo "  install            Install standalone binaries to /opt/homebrew/bin/"
+	@echo "  install            Install standalone binaries to $(PREFIX)/"
 	@echo "  clean              Remove build artifacts + installed binaries"
