@@ -60,24 +60,23 @@ Required for a full `make build` (agent + TUI + CLI + GUI):
 ```bash
 git clone https://github.com/futuregene/future-os.git
 cd future-os
-make install   # build & install standalone binaries (future, future-tui, future-gui, future-channel)
-make build     # dev build — agent + TUI + CLI + GUI (no system install)
+make install   # build everything and install to system path
 ```
 
 ### Run the agent (start this first)
 
-Every client — TUI, GUI, CLI, channels — is a thin gRPC client. **The agent must be running first**, listening on `127.0.0.1:50051`. There are two ways to start it, for two different situations:
+Every client — TUI, GUI, CLI, channels — is a thin gRPC client. **The agent must be running first**, listening on `127.0.0.1:50051`. Two options:
 
 | Mode | Command | Use when |
 |---|---|---|
-| **Dev / foreground** | `make run-agent` | Hacking on the agent. Rebuilds from source, runs in your terminal, logs to stdout, stops on Ctrl-C. |
-| **Background service** | `future agent start` | Daily use. Installed as a managed service (macOS launchctl / Linux systemd / Windows sc), survives reboots, started once. Manage with `future agent stop \| restart \| status`. |
+| **Foreground** | `make run-agent` | Builds and runs agent in terminal. Logs to stdout. Stop with Ctrl-C. |
+| **Background** | `future agent start` | Installs as OS service, survives reboots. Manage with `future agent stop \| restart \| status`. |
 
-Pick one — you don't need both. Then launch a client:
+Then launch a client:
 
 ```bash
-make run-tui     # terminal interface   (or: future tui)
-make run-gui     # desktop app
+future tui     # terminal (requires make install first)
+make run-gui   # desktop app
 ```
 
 > A client that exits with a connection / gRPC error almost always means the agent isn't running yet — see [Troubleshooting](#troubleshooting).
@@ -197,11 +196,11 @@ All config under `~/.future/`:
 ## Development
 
 ```bash
-make build-channels  # channel bridge — built separately; `make install` includes it
-make lint     # lint all (agent clippy + channels clippy + TUI tsc + CLI tsc + GUI eslint)
+make build    # build all components (no system install)
+make lint     # lint all (agent + channels + TUI + CLI + GUI)
 make fmt      # cargo fmt (agent + channels)
 make test     # cargo test (agent)
-make clean    # remove all build artifacts
+make clean    # remove build artifacts + installed binaries
 ```
 
 ### Proto
