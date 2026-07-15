@@ -473,26 +473,47 @@ where
             f.write_str("a number or string representing credit cost")
         }
         fn visit_some<D2>(self, deserializer: D2) -> Result<Self::Value, D2::Error>
-        where D2: de::Deserializer<'de>
+        where
+            D2: de::Deserializer<'de>,
         {
             deserializer.deserialize_any(self)
         }
-        fn visit_none<E>(self) -> Result<Self::Value, E> where E: de::Error {
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
             Ok(None)
         }
-        fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> where E: de::Error {
+        fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
             Ok(Some(v))
         }
-        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> where E: de::Error {
+        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
             Ok(Some(v as f64))
         }
-        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> where E: de::Error {
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
             Ok(Some(v as f64))
         }
-        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> where E: de::Error {
-            v.parse::<f64>().map(Some).map_err(|_| de::Error::custom("invalid float"))
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            v.parse::<f64>()
+                .map(Some)
+                .map_err(|_| de::Error::custom("invalid float"))
         }
-        fn visit_bool<E>(self, _v: bool) -> Result<Self::Value, E> where E: de::Error {
+        fn visit_bool<E>(self, _v: bool) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
             Ok(None)
         }
     }

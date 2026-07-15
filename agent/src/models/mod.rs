@@ -347,7 +347,11 @@ fn derive_thinking_compat(
             "thinkingFormat".into(),
             serde_json::json!("reasoning-split"),
         );
-    } else if has("thinking") || has("reasoning_effort") || has("reasoning") || has("include_reasoning") {
+    } else if has("thinking")
+        || has("reasoning_effort")
+        || has("reasoning")
+        || has("include_reasoning")
+    {
         // DeepSeek / Doubao / Kimi K2.6 / Anthropic Claude:
         // thinking toggle + reasoning_effort for depth
         compat.insert("thinkingFormat".into(), serde_json::json!("deepseek"));
