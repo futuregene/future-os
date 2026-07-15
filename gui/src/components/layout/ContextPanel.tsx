@@ -91,6 +91,9 @@ export function ContextPanel({
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
+  // Synthetic tool data carried by the inspect-tool event so the detail view
+  // renders immediately without needing a toolsByRun lookup.
+  const [syntheticTool, setSyntheticTool] = useState<{ run: StoredRun; tool: StoredToolCall } | null>(null);
   // Guards the once-per-open default-tab seed: armed (false) while the panel is
   // closed, tripped (true) after seeding so a thread switch mid-open never
   // re-seeds. See the seeding effect below.
@@ -229,6 +232,27 @@ export function ContextPanel({
       onFutureEvent("inspect-tool", (detail) => {
         handleSelectTool(detail.toolId);
         setSelectedRunId(detail.runId);
+        // Build a synthetic tool record from the event data so the detail
+        // view renders immediately — no need to wait for toolsByRun lookup.
+        const run = runs.find(r => r.id === detail.runId) ?? {
+          id: detail.runId,
+          threadId: activeThreadId ?? "",
+          status: "completed",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        } as StoredRun;
+        setSyntheticTool({
+          run,
+          tool: {
+            id: detail.toolId,
+            runId: detail.runId,
+            name: detail.toolName ?? "",
+            kind: (detail.toolKind ?? "") as StoredToolCall["kind"],
+            input: detail.toolInput ?? null,
+            status: (detail.toolStatus ?? "completed") as StoredToolCall["status"],
+            createdAt: Date.now(),
+          } as StoredToolCall,
+        });
         if (!expanded) {
           onToggleExpanded();
         }
@@ -321,13 +345,13 @@ export function ContextPanel({
         {showInitialLoading ? <div className="py-4 text-sm text-ink-muted">{t("contextPanel.loading")}</div> : null}
         {!showInitialLoading && !activeThread ? <EmptyState title={t("contextPanel.noThreadSelected")} /> : null}
         {!showInitialLoading && activeThread && activeTab === "runs"
-          ? selectedTool
+          ? selectedTool || syntheticTool
             ? (
                 <RunInspectPanel
                   compact
-                  run={selectedTool.run}
-                  tools={[selectedTool.tool]}
-                  onBack={() => setSelectedToolId(null)}
+                  run={(selectedTool ?? syntheticTool)!.run}
+                  tools={[(selectedTool ?? syntheticTool)!.tool]}
+                  onBack={() => { setSelectedToolId(null); setSyntheticTool(null); }}
                 />
               )
             : selectedToolId
