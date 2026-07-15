@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-tui-single build-cli build-gui build-channels build-channels-release test test-agent lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean clean-gui run run-agent run-tui run-cli run-gui run-channels package-gui install install-tui install-cli-deps install-cli install-gui install-channels install-skills install-gui-release fmt generate-models generate-proto help
+.PHONY: version build build-agent build-tui build-tui-single build-cli build-gui build-channels build-channels-release test test-agent lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean clean-gui run run-agent run-tui run-cli run-gui run-channels package-gui install install-tui install-tui-deps install-cli-deps install-cli install-gui install-channels install-skills install-gui-release fmt generate-models generate-proto help
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -15,6 +15,9 @@ install: install-tui install-cli install-gui install-channels install-skills
 
 install-tui:
 	cd tui && npm install && npm run build && bun build --compile dist/index.js --outfile /opt/homebrew/bin/future-tui
+
+install-tui-deps:
+	cd tui && npm install
 
 install-cli-deps:
 	cd cli && npm install
@@ -83,10 +86,10 @@ build: build-agent build-tui build-cli build-gui
 build-agent:
 	cd agent && cargo build
 
-build-tui: install-tui
+build-tui: install-tui-deps
 	cd tui && npm run build
 
-build-tui-single:
+build-tui-single: install-tui-deps
 	cd tui && npm run build && bun build --compile dist/index.js --outfile dist/future-tui
 
 build-cli: install-cli-deps
@@ -142,7 +145,7 @@ fmt:
 run-agent:
 	cd agent && cargo run -- --verbose
 
-run-tui: install-tui
+run-tui: install-tui-deps
 	cd tui && npm run dev
 
 run-cli: install-cli-deps build-tui
