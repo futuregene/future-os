@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-tui-single build-cli build-gui build-channels build-channels-release test test-agent lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean clean-gui run run-agent run-tui run-cli run-gui run-channels package-gui install uninstall install-tui install-tui-deps install-cli-deps install-cli install-gui install-channels install-skills install-gui-release fmt generate-models generate-proto help
+.PHONY: version build build-agent build-tui build-cli build-gui build-channels build-channels-release test lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean run run-agent run-tui run-cli run-gui run-channels package-gui install uninstall install-tui install-tui-deps install-cli-deps install-cli install-gui install-channels install-skills fmt generate-models generate-proto help
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -47,25 +47,15 @@ endif
 install-gui: install-cli
 	cd gui && npm install
 	@mkdir -p gui/src-tauri/binaries
-	cd agent && cargo build
-	cp agent/target/debug/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
-	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET)
-	cd gui/src-tauri && cargo build
-	cp gui/src-tauri/target/debug/futureos $(PREFIX)/future-gui
-
-install-channels:
-	cd channels && cargo build
-	cp channels/target/debug/future-channel $(PREFIX)/
-
-# Release builds of agent + CLI sidecars (for packaging). Separate from
-# install-gui so run-gui doesn't pay the release compile cost.
-install-gui-release: install-cli-deps
-	cd gui && npm install
-	@mkdir -p gui/src-tauri/binaries
 	cd agent && cargo build --release
 	cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
-	cd cli && npm run build && bun build --compile dist/index.js --outfile dist/future
 	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET)
+	cd gui/src-tauri && cargo build --release
+	cp gui/src-tauri/target/release/futureos $(PREFIX)/future-gui
+
+install-channels:
+	cd channels && cargo build --release
+	cp channels/target/release/future-channel $(PREFIX)/
 
 # Symlink the built-in skill bundles into the agent's app-skills directory
 # so the agent discovers them on startup.  Pulls the latest from the skills
@@ -100,9 +90,6 @@ build-agent:
 	cd agent && cargo build
 
 build-tui: install-tui-deps
-	cd tui && npm run build
-
-build-tui-single: install-tui-deps
 	cd tui && npm run build && bun build --compile dist/index.js --outfile dist/future-tui
 
 build-cli: install-cli-deps
@@ -119,9 +106,7 @@ build-channels-release:
 
 # ─── Test ───────────────────────────────────────────────────────────────────
 
-test: test-agent
-
-test-agent:
+test:
 	cd agent && cargo test
 
 # ─── Lint ───────────────────────────────────────────────────────────────────
@@ -164,10 +149,10 @@ run-tui: install-tui-deps
 run-cli: install-cli-deps build-tui
 	cd cli && npm run dev
 
-run-gui: install-gui
-	cd gui && npm run tauri:dev
+run-gui:
+	cd gui && npm install && npm run tauri:dev
 
-package-gui: install-gui-release
+package-gui: install-gui
 	node scripts/version.mjs --set-bundle
 	cd gui && npm run tauri:build
 
@@ -193,9 +178,6 @@ clean:
 	rm -rf cli/dist
 	rm -rf cli/node_modules
 	rm -f $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
-	$(MAKE) clean-gui
-
-clean-gui:
 	rm -rf gui/dist
 	rm -rf gui/node_modules
 	rm -rf gui/src-tauri/target
@@ -205,14 +187,11 @@ clean-gui:
 help:
 	@echo "  build              Build agent, TUI, CLI, and GUI"
 	@echo "  build-agent        Build Rust agent"
-	@echo "  build-tui          Build TypeScript TUI"
-	@echo "  build-tui-single   Build standalone TUI binary (via bun build --compile)"
+	@echo "  build-tui          Build standalone TUI binary"
 	@echo "  build-cli          Build TypeScript CLI"
 	@echo "  build-gui          Build React/Tauri GUI frontend"
 	@echo "  build-channels      Build channel bridge"
-	@echo "  build-channels-release  Build channel bridge (optimized)"
-	@echo "  install-channels    Build and install channel bridge"
-	@echo "  test               Run Rust tests"
+	@echo "  test               Run Rust tests (agent)"
 	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI)"
 	@echo "  fmt                Format Rust code (agent + channels)"
 	@echo "  run-agent          Build and run Rust agent"
