@@ -141,7 +141,17 @@ function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentAct
         ? (
             <div className="flex flex-col gap-1 pl-6">
               {children.map(child => (
-                <div className="flex min-w-0 items-center gap-2" key={child.id}>
+                <div
+                  className="flex min-w-0 cursor-pointer items-center gap-2 hover:text-ink"
+                  key={child.id}
+                  role="button"
+                  title={i18n.t("agent:activity.inspectRun")}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (runId)
+                      setTimeout(() => emitFutureEvent("inspect-tool", { runId, toolId: child.id }));
+                  }}
+                >
                   {renderActivityIcon(child.kind, false)}
                   <span
                     className="min-w-0 select-text truncate font-mono"
