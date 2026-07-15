@@ -338,8 +338,21 @@ pub fn shell_invocation(command: &str) -> (&'static str, Vec<String>) {
 ///   failure — command not found, cmdlet error — never sets it, and `chcp`
 ///   pollutes it with 0, so it is cleared first and `$Error` catches failures
 ///   where no native command ran at all.
-/// - `chcp 65001` + `[Console]::OutputEncoding` keep non-ASCII output (e.g.
-///   Chinese) from being garbled by the default GBK/ANSI code page.
+/// - Non-ASCII output (e.g. Chinese) survives capture. Three encodings must
+///   line up, and Windows PowerShell 5.1 gets all three wrong by default:
+///   * `chcp 65001` asks native (.exe) children to emit UTF-8.
+///   * `[Console]::OutputEncoding` governs both how PowerShell decodes a native
+///     child's stdout and how it encodes its own stdout (the bytes we capture).
+///   * `$OutputEncoding` governs how PowerShell encodes strings piped INTO a
+///     native command's stdin — it defaults to ASCII in 5.1, mangling non-ASCII
+///     to `?`, so it must be set too.
+///   All three use a BOM-less `UTF8Encoding($false)`: the default
+///   `[Text.Encoding]::UTF8` carries a BOM that, on a redirected stdout, PS 5.1
+///   prepends to the stream as a stray `EF BB BF` (a leading U+FEFF for us).
+///   (pwsh 7 already defaults to BOM-less UTF-8; setting these is a harmless
+///   no-op there.) Native tools that ignore the code page and hard-code OEM/
+///   ANSI output can't be fixed here — those bytes become replacement chars
+///   via `from_utf8_lossy` rather than corrupting the capture.
 #[cfg(target_os = "windows")]
 pub fn windows_wrapper_script(command: &str) -> String {
     // The model may generate bash-style double-quoted-with-escapes content
@@ -348,7 +361,7 @@ pub fn windows_wrapper_script(command: &str) -> String {
     let command = ResolvedSandbox::normalize_shell_quoting(command);
     format!(
         "chcp 65001 > $null; \
-         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; \
+         $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); \
          $global:LASTEXITCODE = $null; \
          & {{ {} }} 2>&1 | ForEach-Object {{ \"$_\" }}; \
          if ($null -ne $LASTEXITCODE) {{ exit $LASTEXITCODE }} \
@@ -565,6 +578,10 @@ mod tests {
         // failures that never set $LASTEXITCODE.
         assert!(script.contains("exit $LASTEXITCODE"));
         assert!(script.contains("$Error.Count"));
+        // BOM-less UTF-8 on both stdout and pipe-to-native-stdin (PS 5.1
+        // defaults leak a BOM / ASCII respectively).
+        assert!(script.contains("[System.Text.UTF8Encoding]::new($false)"));
+        assert!(script.contains("$OutputEncoding = [Console]::OutputEncoding"));
     }
 
     #[test]
