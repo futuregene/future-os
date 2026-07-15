@@ -4,9 +4,9 @@
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 
-// Generated proto code (from future.proto)
+// Generated proto code (from future.proto) — checked into src/generated/
 mod proto {
-    tonic::include_proto!("proto");
+    include!("generated/proto.rs");
 }
 
 use proto::future_agent_client::FutureAgentClient;
