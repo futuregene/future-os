@@ -737,7 +737,15 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     }
 
     const apiKey = await loadApiKey();
-    const result = await callRemoteTool(apiKey, toolName, toolArgs, timeoutMs);
+    let result: CallToolResponse;
+    try {
+      result = await callRemoteTool(apiKey, toolName, toolArgs, timeoutMs);
+    } catch (error) {
+      console.error(
+        `tools/call failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      process.exit(1);
+    }
 
     // --raw: output the original MCP result directly (structured content as JSON, or text).
     // Otherwise: format the result for LLM agent consumption — strip JSON wrappers
