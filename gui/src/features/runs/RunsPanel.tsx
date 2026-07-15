@@ -13,7 +13,7 @@ import { toolCommand, toolTarget } from "./toolInput";
 
 // Only these tool calls are worth a row of their own; `read`/`grep`/`ls` are
 // navigation noise and stay collapsed out of the panel.
-const DISPLAY_TOOLS = new Set(["bash", "write", "edit"]);
+const DISPLAY_TOOLS = new Set(["bash", "write", "edit", "read"]);
 
 interface RunsPanelProps {
   runs: StoredRun[];
