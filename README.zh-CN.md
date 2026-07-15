@@ -182,14 +182,15 @@ future --help                              # 查看全部命令
 
 所有配置位于 `~/.future/` 目录：
 
-| 路径 | 说明 |
-|---|---|
-| `agent/settings.json` | 队列模式、压缩、重试、权限级别 |
-| `agent/auth.json` | API Key（FutureOS + 自定义 Provider） |
-| `agent/models.json` | 自定义模型配置（Base URL、API Key、兼容参数） |
-| `agent/sessions/` | JSONL 会话文件（每个会话一个文件） |
-| `tui/settings.json` | 默认模型、思考级别、模型范围列表 |
-| `channels/config.json` | 飞书/钉钉凭据、Agent 地址、Channel 默认参数 |
+| 路径 | 组件 | 说明 |
+|---|---|---|
+| `agent/settings.json` | Agent | 队列模式、压缩、重试、最大轮次 |
+| `agent/auth.json` | Agent | API Key（按 Provider 索引） |
+| `agent/models.json` | Agent | 自定义模型配置（Base URL、兼容参数） |
+| `agent/sessions/` | Agent | JSONL 会话文件 |
+| `tui/settings.json` | TUI | 默认模型、思考级别、启用的模型列表 |
+| `app/app.db` | GUI | SQLite — 会话、运行、产出、审批、设置 |
+| `channels/config.json` | Channels | Agent gRPC 地址、飞书/钉钉凭据 |
 
 ## 开发
 
