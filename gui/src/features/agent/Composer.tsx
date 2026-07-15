@@ -41,6 +41,9 @@ export interface ComposerSendPayload {
   content: string;
 }
 
+/** Drag-over verdict for the drop zone. */
+export type ComposerDragState = "accept" | "reject" | null;
+
 interface ComposerProps {
   /**
    * Sync send (thread path): the message renders as an optimistic bubble, so
@@ -75,6 +78,13 @@ interface ComposerProps {
    * draft persistence (e.g. no active thread).
    */
   draftKey?: string;
+  /**
+   * Opt out of the built-in drag highlight and report the verdict to the parent
+   * instead. Used where the composer is only the top of a larger card (e.g. the
+   * new-conversation form has a footer bar below it): the parent draws the ring
+   * around the whole card so the highlight isn't cut off at the composer's edge.
+   */
+  onDragStateChange?: (state: ComposerDragState) => void;
 }
 
 export function Composer({
@@ -95,6 +105,7 @@ export function Composer({
   textareaClassName,
   workspaceId,
   draftKey,
+  onDragStateChange,
 }: ComposerProps) {
   const { t } = useTranslation("agent");
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
@@ -102,7 +113,7 @@ export function Composer({
   // Drag-over verdict: null (no drag), "accept" (droppable), "reject"
   // (unsupported type — pre-validated on `enter` so the drop zone shows the
   // rejection before release, and the drop is silently ignored).
-  const [dragState, setDragState] = useState<"accept" | "reject" | null>(null);
+  const [dragState, setDragState] = useState<ComposerDragState>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
   const [approvalMenuOpen, setApprovalMenuOpen] = useState(false);
@@ -324,6 +335,20 @@ export function Composer({
   const addAttachmentPathsRef = useRef(addAttachmentPaths);
   addAttachmentPathsRef.current = addAttachmentPaths;
 
+  // Update the verdict and (when the parent opts in) report it, so the parent
+  // can draw the drag highlight around a larger card. Ref-backed for the same
+  // reason as above: the drag listener must not re-subscribe when the callback
+  // identity changes. `dragStateRef` lets `over` read the current verdict
+  // without a stale closure.
+  const dragStateRef = useRef<ComposerDragState>(null);
+  const onDragStateChangeRef = useRef(onDragStateChange);
+  onDragStateChangeRef.current = onDragStateChange;
+  const setDrag = useCallback((next: ComposerDragState) => {
+    dragStateRef.current = next;
+    setDragState(next);
+    onDragStateChangeRef.current?.(next);
+  }, []);
+
   useEffect(() => {
     if (disabled)
       return;
@@ -336,17 +361,17 @@ export function Composer({
           // Any file is acceptable at drag time (the agent reads paths with its
           // own tools; images degrade to a path for text-only models). Directory
           // drops are caught by classification on release.
-          setDragState(event.payload.paths.length > 0 ? "accept" : "reject");
+          setDrag(event.payload.paths.length > 0 ? "accept" : "reject");
         }
         else if (event.payload.type === "over") {
           // `over` has no paths; keep the verdict decided on `enter`.
-          setDragState(prev => prev ?? "accept");
+          setDrag(dragStateRef.current ?? "accept");
         }
         else if (event.payload.type === "leave") {
-          setDragState(null);
+          setDrag(null);
         }
         else if (event.payload.type === "drop") {
-          setDragState(null);
+          setDrag(null);
           // Forward every dropped path; classification in addAttachmentPaths
           // rejects the unsupported ones (e.g. directories) with a reason.
           if (event.payload.paths.length > 0)
@@ -363,21 +388,25 @@ export function Composer({
     return () => {
       active = false;
       dispose?.();
-      setDragState(null);
+      setDrag(null);
     };
-  }, [disabled]);
+  }, [disabled, setDrag]);
+
+  // When the parent handles the highlight (onDragStateChange), draw neither the
+  // ring nor the reject overlay here — the parent rings the whole card instead.
+  const drawOwnHighlight = !onDragStateChange;
 
   return (
     <form
       className={cn(
         "relative rounded-lg border border-line bg-surface/95 p-2 shadow-panel backdrop-blur",
-        dragState === "accept" && "ring-2 ring-focus",
-        dragState === "reject" && "ring-2 ring-danger-line",
+        drawOwnHighlight && dragState === "accept" && "ring-2 ring-focus",
+        drawOwnHighlight && dragState === "reject" && "ring-2 ring-danger-line",
         className,
       )}
       onSubmit={handleSubmit}
     >
-      {dragState === "reject"
+      {drawOwnHighlight && dragState === "reject"
         ? (
             <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-danger-soft">
               <span className="rounded-md border border-danger-line bg-surface px-2.5 py-1 text-xs font-medium text-danger">
