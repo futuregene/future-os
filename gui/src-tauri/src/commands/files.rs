@@ -528,6 +528,21 @@ pub fn export_artifact_file(
     Ok(())
 }
 
+/// Lowercase base36 encoding of a u128 (compact filename component).
+fn to_base36(mut n: u128) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    if n == 0 {
+        return "0".to_string();
+    }
+    let mut buf = Vec::new();
+    while n > 0 {
+        buf.push(DIGITS[(n % 36) as usize]);
+        n /= 36;
+    }
+    buf.reverse();
+    String::from_utf8(buf).expect("base36 digits are valid ASCII")
+}
+
 /// Persist pasted image bytes to a temp file so the path can be attached and
 /// later read by the multimodal agent. Pasted/dropped clipboard images have no
 /// filesystem path of their own.
@@ -555,11 +570,13 @@ pub fn save_pasted_image(
     let dir = std::env::temp_dir().join("futureos-attachments");
     std::fs::create_dir_all(&dir)?;
 
+    // Base36-encode the nanosecond timestamp: same uniqueness as the raw value
+    // but ~12 chars instead of 19, so the chip label stays short enough to read.
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|value| value.as_nanos())
         .unwrap_or(0);
-    let name = format!("pasted-{nanos}.{ext}");
+    let name = format!("pasted-{}.{ext}", to_base36(nanos));
     let path = dir.join(&name);
     std::fs::write(&path, &bytes)?;
 
