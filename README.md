@@ -42,12 +42,11 @@ Required for a full `make build` (agent + TUI + CLI + GUI):
   - macOS: `brew install protobuf`
   - Linux (Debian/Ubuntu): `sudo apt install protobuf-compiler`
   - Windows: `choco install protoc` (or download from the protobuf releases)
-- **Linux only — mold linker (required)**:
-  - Debian/Ubuntu: `sudo apt install mold`
-  - Or from source: see [mold releases](https://github.com/rui314/mold/releases)
+- **Linux only** (required for all builds):
+  - `sudo apt install mold pkg-config libssl-dev`
 - **Tauri system dependencies** (for the GUI):
   - macOS: `xcode-select --install`
-  - Linux (Debian/Ubuntu): `sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libssl-dev libayatana-appindicator3-dev patchelf`
+  - Linux (Debian/Ubuntu): `sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf`
   - Windows: WebView2 Runtime (ships with Windows 10/11) + MSVC build tools
 - Optional: **Python 3** — only for `make generate-models`
 - Platform: macOS, Linux, or Windows
