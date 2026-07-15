@@ -182,14 +182,15 @@ All clients connect to the agent independently over gRPC — no client depends o
 
 All config under `~/.future/`:
 
-| Path | Purpose |
-|---|---|
-| `agent/settings.json` | Steering/follow-up mode, compaction, retry, permission level |
-| `agent/auth.json` | API keys (FutureOS + custom providers) |
-| `agent/models.json` | Custom model overrides (base URL, API key, compat) |
-| `agent/sessions/` | JSONL session files (one per session) |
-| `tui/settings.json` | Default model, thinking level, scoped model list |
-| `channels/config.json` | Feishu/DingTalk credentials, agent address, channel defaults |
+| Path | Component | Purpose |
+|---|---|---|
+| `agent/settings.json` | Agent | Steering/follow-up mode, compaction, retry, max turns |
+| `agent/auth.json` | Agent | API keys by provider (FutureOS + custom) |
+| `agent/models.json` | Agent | Custom model overrides (base URL, API key, compat) |
+| `agent/sessions/` | Agent | JSONL session files |
+| `tui/settings.json` | TUI | Default model, thinking level, enabled model IDs |
+| `app/app.db` | GUI | SQLite — threads, runs, artifacts, approvals, settings |
+| `channels/config.json` | Channels | Agent gRPC address, Feishu/DingTalk credentials |
 
 ## Development
 
