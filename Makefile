@@ -140,7 +140,7 @@ run-agent: build-agent
 run-tui: build-tui
 	cd tui && npm run dev
 
-run-cli: build-cli build-tui
+run-cli: build-cli
 	cd cli && npm run dev
 
 run-gui: build-gui
