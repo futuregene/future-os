@@ -177,12 +177,12 @@ fn build_dynamic_tool_guidelines(tool_names: &[&str]) -> Vec<String> {
         // PowerShell 5.1 on Windows (see sandbox::shell_invocation).
         #[cfg(not(target_os = "windows"))]
         guidelines.push(
-            "Use the shell tool for command-line exploration such as ls, rg, and find; prefer write/edit tools for ordinary file writes."
+            "Use the shell tool for command-line exploration such as ls, rg, and find; but to read a known file's contents use the read tool, not cat. Prefer write/edit tools for ordinary file writes."
                 .to_string(),
         );
         #[cfg(target_os = "windows")]
         guidelines.push(
-            "Use the shell tool (PowerShell) for command-line exploration such as Get-ChildItem and Select-String; prefer write/edit tools for ordinary file writes."
+            "Use the shell tool (PowerShell) for command-line exploration such as Get-ChildItem and Select-String; but to read a known file's contents use the read tool, not Get-Content. Prefer write/edit tools for ordinary file writes."
                 .to_string(),
         );
     }
@@ -264,9 +264,13 @@ fn os_hint() -> String {
 
     match std::env::consts::OS {
         "macos" => {
+            // Name the shell actually resolved at runtime ($SHELL — often zsh on
+            // macOS). bash and zsh share command-line syntax, so no separate
+            // syntax rules are needed — only the accurate name.
+            let shell = crate::sandbox::shell_display_name();
             format!(
-                "Host platform: macOS. Shell commands are interpreted by bash; \
-                 macOS command-line tools (BSD variants) apply. \
+                "Host platform: macOS. Shell commands are interpreted by {shell} \
+                 (POSIX shell syntax); macOS command-line tools (BSD variants) apply. \
                  {skills_hint} (Example: ~/.agents/skills/my-skill/SKILL.md)"
             )
         }
@@ -278,8 +282,12 @@ fn os_hint() -> String {
             let chaining = if crate::sandbox::shell_supports_chain_operators() {
                 "chain commands with `;`, `&&`, or `||`"
             } else {
-                "chain commands with `;` (never `&&` or `||` — this PowerShell \
-                 version does not support them)"
+                // PowerShell 5.1 rejects `&&`/`||` at parse time. `;` runs the
+                // next command unconditionally; to run one ONLY if the previous
+                // succeeded, use `cmd1; if ($?) { cmd2 }`.
+                "chain commands with `;` (run-if-previous-succeeded is \
+                 `cmd1; if ($?) { cmd2 }`); never use `&&` or `||` — this \
+                 PowerShell version rejects them at parse time"
             };
             format!(
                 "Host platform: Windows. Shell commands are interpreted by \
@@ -290,8 +298,10 @@ fn os_hint() -> String {
             )
         }
         "linux" => {
+            let shell = crate::sandbox::shell_display_name();
             format!(
-                "Host platform: Linux. \
+                "Host platform: Linux. Shell commands are interpreted by {shell} \
+                 (POSIX shell syntax). \
                  {skills_hint} (Example: ~/.agents/skills/my-skill/SKILL.md)"
             )
         }
