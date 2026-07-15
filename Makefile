@@ -20,7 +20,7 @@ install-cli-deps:
 	cd cli && npm install
 
 install-cli: install-cli-deps build-tui
-	cd cli && npm run build && chmod +x dist/index.js && npm link --ignore-scripts
+	cd cli && npm run build && bun build --compile dist/index.js --outfile /opt/homebrew/bin/future
 
 install-gui:
 	cd gui && npm install
