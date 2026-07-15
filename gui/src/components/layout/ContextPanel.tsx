@@ -231,6 +231,9 @@ export function ContextPanel({
       }),
       onFutureEvent("inspect-tool", (detail) => {
         handleSelectTool(detail.toolId);
+        // Also remember the owning run so the tool-detail view can render
+        // immediately (no need to wait for toolsByRun to load and scan).
+        setSelectedRunId(detail.runId);
         if (!expanded) {
           onToggleExpanded();
         }
@@ -340,7 +343,11 @@ export function ContextPanel({
                     onBack={() => setSelectedRunId(null)}
                   />
                 )
-              : (
+              : selectedToolId
+                // Tool selected but data hasn't loaded yet — show loading
+                // instead of the run list.
+                ? <div className="py-4 text-sm text-ink-muted">{t("contextPanel.loading")}</div>
+                : (
                   <RunsPanel
                     runs={runs}
                     toolsByRun={toolsByRun}
