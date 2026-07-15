@@ -5,7 +5,7 @@ import type { MessageAttachment } from "./agentThreadTypes";
 import type { MentionEditorHandle } from "./MentionEditor";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ArrowUp, ChevronDown, Paperclip, ShieldCheck, ShieldOff, ShieldQuestion, Square, X } from "lucide-react";
+import { ArrowUp, ChevronDown, Paperclip, ShieldCheck, ShieldOff, ShieldQuestion, Square, TriangleAlert, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
@@ -16,7 +16,7 @@ import { cn } from "../../lib/cn";
 import { formatBytes } from "../../lib/format";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { isMacOS } from "../../lib/platform";
-import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, isDraggableAttachment, MAX_IMAGES_PER_TURN, READ_SOURCE_MAX_BYTES } from "./attachments";
+import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, MAX_IMAGES_PER_TURN, READ_SOURCE_MAX_BYTES } from "./attachments";
 import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "./composerDraft";
 import { MentionEditor } from "./MentionEditor";
 
@@ -163,9 +163,12 @@ export function Composer({
 
   const activeModelId = modelId || (modelOptions[0] ? modelKey(modelOptions[0]) : "");
   const activeModel = modelOption(activeModelId, modelOptions);
-  // Only offer/accept images when the active model advertises image input.
-  // Unknown model (not in the catalog yet) → allow, to avoid over-restricting.
-  const allowImages = activeModel ? activeModel.supportsImages !== false : true;
+  // Whether the active model consumes images as vision (inline image blocks).
+  // Images are always *accepted* now — a model that can't take them still gets
+  // the file path and can read it with its tools — but when this is false the
+  // attachment chip is flagged so the user knows the image may not be understood.
+  // Unknown model (not in the catalog yet) → treat as vision-capable.
+  const supportsImages = activeModel ? activeModel.supportsImages !== false : true;
   const activeThinkingLevel = normalizeThinkingLevel(thinkingLevel);
   // Localized thinking-level label; unknown levels fall back to the raw value.
   const thinkingLevelLabel = (level: string) => t(`composer.thinkingLevelLabels.${level}`, { defaultValue: level });
@@ -235,13 +238,11 @@ export function Composer({
         rejected.push(t("composer.attachRejectedReason", { name: fileNameFromPath(path), reason: result.reason }));
         continue;
       }
-      // Only images are limited (count + model support). Every other file type
-      // is unlimited — the agent reads local paths on demand with its own tools.
+      // Images carry a per-turn count cap regardless of model (a text-only model
+      // still receives the paths, but keeping the same ceiling avoids surprises
+      // when switching models mid-draft). Every other file type is unlimited —
+      // the agent reads local paths on demand with its own tools.
       if (result.kind === "image") {
-        if (!allowImages) {
-          rejected.push(t("composer.attachRejectedNoImage", { name: fileNameFromPath(path) }));
-          continue;
-        }
         const imageCount = next.filter(attachment => attachment.kind === "image").length;
         if (imageCount >= MAX_IMAGES_PER_TURN) {
           rejected.push(t("composer.attachRejectedLimit", { name: fileNameFromPath(path), count: MAX_IMAGES_PER_TURN }));
@@ -253,7 +254,7 @@ export function Composer({
     attachmentsRef.current = next;
     setAttachments(next);
     setAttachError(rejected.length > 0 ? t("composer.attachIgnored", { items: rejected.join("，") }) : null);
-  }, [allowImages, t]);
+  }, [t]);
 
   async function attachImageFiles(files: File[]) {
     // Save every file first, then attach in ONE addAttachmentPaths call:
@@ -322,10 +323,6 @@ export function Composer({
   // every attachment change (addAttachmentPaths closes over `attachments`).
   const addAttachmentPathsRef = useRef(addAttachmentPaths);
   addAttachmentPathsRef.current = addAttachmentPaths;
-  // Same reason: the drag listener reads the live image-allowance without
-  // re-subscribing when the active model (hence `allowImages`) changes.
-  const allowImagesRef = useRef(allowImages);
-  allowImagesRef.current = allowImages;
 
   useEffect(() => {
     if (disabled)
@@ -336,10 +333,10 @@ export function Composer({
     void getCurrentWebview()
       .onDragDropEvent((event) => {
         if (event.payload.type === "enter") {
-          // `enter` carries the paths — pre-validate by extension so the drop
-          // zone shows accept vs. reject before the user releases.
-          const droppable = event.payload.paths.some(path => isDraggableAttachment(path, allowImagesRef.current));
-          setDragState(droppable ? "accept" : "reject");
+          // Any file is acceptable at drag time (the agent reads paths with its
+          // own tools; images degrade to a path for text-only models). Directory
+          // drops are caught by classification on release.
+          setDragState(event.payload.paths.length > 0 ? "accept" : "reject");
         }
         else if (event.payload.type === "over") {
           // `over` has no paths; keep the verdict decided on `enter`.
@@ -350,12 +347,10 @@ export function Composer({
         }
         else if (event.payload.type === "drop") {
           setDragState(null);
-          // Forward only extension-acceptable files; unsupported ones (e.g.
-          // .xlsx) are silently ignored — no "已忽略" toast for a file the drop
-          // zone already flagged as rejected.
-          const accepted = event.payload.paths.filter(path => isDraggableAttachment(path, allowImagesRef.current));
-          if (accepted.length > 0)
-            void addAttachmentPathsRef.current(accepted);
+          // Forward every dropped path; classification in addAttachmentPaths
+          // rejects the unsupported ones (e.g. directories) with a reason.
+          if (event.payload.paths.length > 0)
+            void addAttachmentPathsRef.current(event.payload.paths);
         }
       })
       .then((unlisten) => {
@@ -394,24 +389,43 @@ export function Composer({
       {attachments.length > 0
         ? (
             <div className="flex flex-wrap gap-1.5 px-1 pb-2">
-              {attachments.map(attachment => (
-                <span
-                  className="inline-flex max-w-64 items-center gap-1.5 rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-soft"
-                  key={attachment.path}
-                  title={attachment.path}
-                >
-                  <Paperclip className="size-3 shrink-0" />
-                  <span className="truncate">{attachment.name}</span>
-                  <button
-                    aria-label={t("composer.removeAttachment", { name: attachment.name })}
-                    className="inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface hover:text-ink"
-                    onClick={() => removeAttachment(attachment.path)}
-                    type="button"
+              {attachments.map((attachment) => {
+                // Image attached to a model that can't see it: still sent (as a
+                // path the agent can read), but flagged amber so the user knows
+                // it may not be understood. Reverts when switching back to a
+                // vision model, since `supportsImages` is recomputed on render.
+                const unsupportedImage = attachment.kind === "image" && !supportsImages;
+                return (
+                  <span
+                    className={cn(
+                      "inline-flex max-w-64 items-center gap-1.5 rounded-md border px-2 py-1 text-xs",
+                      unsupportedImage
+                        ? "border-warning-line bg-warning-soft text-warning"
+                        : "border-transparent bg-surface-subtle text-ink-soft",
+                    )}
+                    key={attachment.path}
+                    title={unsupportedImage ? t("composer.attachImageUnsupportedHint") : attachment.path}
                   >
-                    <X className="size-3" />
-                  </button>
-                </span>
-              ))}
+                    {unsupportedImage
+                      ? <TriangleAlert className="size-3 shrink-0" />
+                      : <Paperclip className="size-3 shrink-0" />}
+                    <span className="truncate">{attachment.name}</span>
+                    <button
+                      aria-label={t("composer.removeAttachment", { name: attachment.name })}
+                      className={cn(
+                        "inline-flex size-4 shrink-0 items-center justify-center rounded transition-colors",
+                        unsupportedImage
+                          ? "text-warning hover:bg-warning-line hover:text-warning"
+                          : "text-ink-muted hover:bg-surface hover:text-ink",
+                      )}
+                      onClick={() => removeAttachment(attachment.path)}
+                      type="button"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </span>
+                );
+              })}
             </div>
           )
         : null}
@@ -437,7 +451,7 @@ export function Composer({
             onClick={() => void handleAttachFiles()}
             type="button"
             aria-label={t("composer.attachFiles")}
-            title={allowImages ? t("composer.attachFilesHint") : t("composer.attachFilesHintNoImage")}
+            title={t("composer.attachFilesHint")}
           >
             <Paperclip className="size-3.5" />
           </button>

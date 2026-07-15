@@ -107,8 +107,7 @@
       "sandbox": "在沙箱中运行，必要时询问",
       "off": "不经过审批，执行<em>任何</em>命令"
     },
-    "attachRejectedNoImage": "{{name}}（当前模型不支持图片）",
-    "attachFilesHintNoImage": "添加附件（PDF、文本）",
+    "attachImageUnsupportedHint": "当前模型不支持图片，可能无法正确理解图片内容",
     "attachDialogFilterNoImage": "支持的文件（PDF、文本）",
     "dropReject": "不支持此文件类型"
   },
