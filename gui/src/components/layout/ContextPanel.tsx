@@ -227,6 +227,8 @@ export function ContextPanel({
         }
       }),
       onFutureEvent("inspect-tool", (detail) => {
+        // eslint-disable-next-line no-console
+        console.debug("[inspect-tool] received", detail, "expanded=", expanded);
         handleSelectTool(detail.toolId);
         setSelectedRunId(detail.runId);
         if (!expanded) {

@@ -46,8 +46,11 @@ function AgentActivitySingleLine({ item, workspacePath, runId }: { item: AgentAc
   const Chevron = open ? ChevronLeft : ChevronRight;
 
   const handleInspect = useCallback(() => {
-    if (runId)
+    if (runId) {
+      // eslint-disable-next-line no-console
+      console.debug("[inspect-tool] emit", { runId, toolId: item.id });
       emitFutureEvent("inspect-tool", { runId, toolId: item.id });
+    }
   }, [runId, item.id]);
 
   return (
@@ -112,8 +115,11 @@ function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentAct
   const Chevron = open ? ChevronLeft : ChevronRight;
 
   const handleInspect = useCallback(() => {
-    if (runId)
+    if (runId) {
+      // eslint-disable-next-line no-console
+      console.debug("[inspect-tool] emit", { runId, toolId: item.id });
       emitFutureEvent("inspect-tool", { runId, toolId: item.id });
+    }
   }, [runId, item.id]);
 
   return (
