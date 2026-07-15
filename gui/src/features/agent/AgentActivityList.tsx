@@ -58,7 +58,7 @@ function AgentActivitySingleLine({ item, workspacePath, runId }: { item: AgentAc
         "flex min-w-0 items-center gap-2 text-[13px] leading-6 text-ink-muted",
         runId && "cursor-pointer hover:text-ink",
       )}
-      onClick={runId ? handleInspect : undefined}
+      onClick={runId ? () => { setOpen(true); handleInspect(); } : undefined}
       title={runId ? i18n.t("agent:activity.inspectRun") : undefined}
       role={runId ? "button" : undefined}
     >
