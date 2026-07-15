@@ -110,7 +110,7 @@ jobs:
             build-essential \
             curl \
             file \
-            lld \
+            mold \
             libayatana-appindicator3-dev \
             libgtk-3-dev \
             librsvg2-dev \
@@ -134,6 +134,26 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: protoc
+
+      # Linking the agent and the (large, WebView-heavy) Tauri binary dominates
+      # the Windows job; lld-link links far faster than MSVC link.exe. Opt into
+      # it for CI ONLY — via the target-specific linker env var, so .cargo/
+      # config.toml is untouched and local Windows devs keep the default linker.
+      # Self-healing: only enabled when lld-link is actually on PATH (it ships
+      # with the LLVM preinstalled on windows-latest), so a future runner-image
+      # change that drops LLVM silently falls back to link.exe instead of failing
+      # the build. lld-link honours the /DEBUG:NONE rustflag from config.toml.
+      - name: Enable lld-link if available (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $lld = Get-Command lld-link -ErrorAction SilentlyContinue
+          if ($lld) {
+            Write-Host "Using lld-link at $($lld.Source)"
+            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=lld-link" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          } else {
+            Write-Host "lld-link not found — falling back to MSVC link.exe"
+          }
 
       - name: Install npm dependencies (GUI)
         working-directory: gui
