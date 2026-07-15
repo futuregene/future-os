@@ -200,11 +200,10 @@ export function ContextPanel({
     setSelectedToolId(null);
   }, [activeThreadId]);
 
-  // Seed the content tab (Review for workspace threads, Artifacts for chat)
-  // each time the panel OPENS — not per thread. So opening the panel lands on
-  // the work-output tab, but while it stays open, switching threads keeps
-  // whatever tab you're on. Only seeds after the workspace kind resolves, so we
-  // pick the real tab (not the runs-only pending set).
+  // Seed the content tab (Review for workspace threads, Files for chat) each
+  // time the panel is OPENED MANUALLY (toggle button). When an inspect-run or
+  // inspect-tool event opens the panel, the event handler already set the tab;
+  // don't override it.
   useEffect(() => {
     if (!expanded) {
       seededForOpenRef.current = false; // Re-arm for the next open.
@@ -213,12 +212,14 @@ export function ContextPanel({
     if (activeThreadId === null || workspaceKindPending || seededForOpenRef.current)
       return;
     seededForOpenRef.current = true;
-    // Both modes seed to Files while Artifacts is hidden (was "artifacts" for
-    // chat); seeding a tab that isn't in `fileTabs` would leave no tab active.
+    // If a tool / run inspection just opened the panel it already picked the
+    // runs tab — leave that choice alone.
+    if (selectedToolId || selectedRunId)
+      return;
     const preferred: ContextTab = "files";
     if (activeTab !== preferred)
       onTabChange(preferred);
-  }, [expanded, activeThreadId, workspaceKindPending, activeTab, onTabChange]);
+  }, [expanded, activeThreadId, workspaceKindPending, activeTab, onTabChange, selectedToolId, selectedRunId]);
 
   useEffect(() => {
     const unsubscribers = [
