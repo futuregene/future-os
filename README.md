@@ -49,7 +49,7 @@ Required for a full `make build` (agent + TUI + CLI + GUI):
 - Optional: **Python 3** — only for `make generate-models`
 - Platform: macOS, Linux, or Windows
 
-### Build
+### Build and Install
 
 ```bash
 git clone https://github.com/futuregene/future-os.git
@@ -60,7 +60,7 @@ make install   # build everything and install to system path
 Binaries are installed to: macOS `/opt/homebrew/bin`, Linux `/usr/local/bin`, Windows `%USERPROFILE%\.future\bin`.
 
 > **Terminal-only?** Skip the GUI toolchain:
-> `make install-tui install-cli install-skills install-channels`
+> `make install-agent install-tui install-cli install-skills install-channels`
 
 ### Run the agent (start this first)
 

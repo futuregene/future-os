@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-cli build-gui build-channels test lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean run run-agent run-tui run-cli run-gui run-channels package-gui install uninstall install-tui install-cli install-gui install-channels install-skills fmt generate-models generate-proto help
+.PHONY: version build build-agent build-tui build-cli build-gui build-channels test lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean run run-agent run-tui run-cli run-gui run-channels package-gui install uninstall install-agent install-tui install-cli install-gui install-channels install-skills fmt generate-models generate-proto help
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -27,11 +27,14 @@ endif
 
 # ─── Install ──────────────────────────────────────────────────────────────────
 
-install: install-tui install-cli install-gui install-channels install-skills
+install: install-agent install-tui install-cli install-gui install-channels install-skills
 
 uninstall:
-	rm -f $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
-	@echo "Removed: future, future-tui, future-gui, future-channel"
+	rm -f $(PREFIX)/future-agent $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
+	@echo "Removed: future-agent, future, future-tui, future-gui, future-channel"
+
+install-agent: build-agent
+	cp agent/target/release/future-agent $(PREFIX)/future-agent
 
 install-tui: build-tui
 	cp tui/dist/future-tui $(PREFIX)/future-tui
@@ -169,7 +172,7 @@ clean:
 	rm -f tui/future-tui
 	rm -rf cli/dist
 	rm -rf cli/node_modules
-	rm -f $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
+	rm -f $(PREFIX)/future-agent $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
 	rm -rf gui/dist
 	rm -rf gui/node_modules
 	rm -rf gui/src-tauri/target
