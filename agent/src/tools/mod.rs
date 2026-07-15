@@ -205,7 +205,7 @@ pub fn shell_tool() -> AgentTool {
     // PowerShell 5.1) and its chaining rules live in the host-platform section
     // of the system prompt (prompt::os_hint), resolved at runtime.
     #[cfg(target_os = "windows")]
-    let description = "Execute a shell command in the current working directory. Commands are interpreted by PowerShell — use PowerShell syntax: environment variables as $env:VAR (never %VAR%), single quotes for literal strings, and see the host-platform note for command chaining. Use this for exploration and command-line programs. For ordinary file creation or edits, prefer write/edit tools. Returns stdout and stderr merged. Output is truncated to last 500000 bytes.";
+    let description = "Execute a shell command in the current working directory. Commands are interpreted by PowerShell — use PowerShell syntax: environment variables as $env:VAR (never %VAR%), single quotes for literal strings, and see the host-platform note for command chaining. To run an executable whose path contains spaces, use the call operator: & \"C:\\Program Files\\app\\tool.exe\" args. Use this for exploration and command-line programs. For ordinary file creation or edits, prefer write/edit tools. Returns stdout and stderr merged. Output is truncated to last 500000 bytes.";
 
     #[cfg(not(target_os = "windows"))]
     let guidelines = vec![
@@ -215,7 +215,7 @@ pub fn shell_tool() -> AgentTool {
     #[cfg(target_os = "windows")]
     let guidelines = vec![
         "Prefer one shell command per turn",
-        "Prefer write/edit for ordinary file writes; use PowerShell redirection (> or Out-File) only when it is more appropriate for the task.",
+        "Prefer write/edit for ordinary file writes; use PowerShell redirection (> or Out-File) only when it is more appropriate for the task. Note: on Windows PowerShell 5.1 these default to UTF-16 with a BOM — pass -Encoding utf8 if another tool must read the file.",
     ];
 
     make_tool(
