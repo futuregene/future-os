@@ -75,7 +75,6 @@ export async function mcpPost(
     }
     return { body: {}, sessionId: sid ?? null };
   } catch (error) {
-    clearTimeout(timeout);
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error(
         `Request timed out after ${effectiveTimeout / 1000}s.\n` +
@@ -83,6 +82,8 @@ export async function mcpPost(
       );
     }
     throw error;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
