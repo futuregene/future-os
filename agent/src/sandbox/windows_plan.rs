@@ -1,4 +1,4 @@
-//! Platform-independent derivation of the Windows bash-sandbox enforcement plan
+//! Platform-independent derivation of the Windows shell-sandbox enforcement plan
 //! from the resolved rule set (SANDBOX_PLAN.md §11).
 //!
 //! The Win32 executor (`windows.rs`, `#[cfg(windows)]`) turns this plan into a
@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use super::rules::{Decision, MatcherSbpl};
 use super::ResolvedSandbox;
 
-/// The enforcement plan for one sandboxed bash run: which subtrees the sandbox
+/// The enforcement plan for one sandboxed shell run: which subtrees the sandbox
 /// principal may write, which paths are denied, and how many glob rules could
 /// not be expressed as ACEs.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -38,7 +38,7 @@ pub struct WindowsSandboxPlan {
     /// Paths denied write (rule files, credentials, in-workspace secrets) — an
     /// explicit deny-write ACE, which wins over the workspace write grant.
     pub deny_write: Vec<PathBuf>,
-    /// Count of glob rules NTFS ACLs cannot express, hence unenforced for bash
+    /// Count of glob rules NTFS ACLs cannot express, hence unenforced for shell runs
     /// (still covered by the in-process tool layer). Surfaced for diagnostics.
     pub skipped_globs: usize,
 }
@@ -76,7 +76,7 @@ pub fn build_plan(sandbox: &ResolvedSandbox) -> WindowsSandboxPlan {
                     }
                 }
                 Decision::Ask | Decision::Deny => {
-                    // `ask` and `deny` both become an OS-level denial for bash
+                    // `ask` and `deny` both become an OS-level denial for shell runs
                     // (it can't prompt mid-syscall) — same as Seatbelt.
                     if access.covers_read() {
                         plan.deny_read.push(base.clone());

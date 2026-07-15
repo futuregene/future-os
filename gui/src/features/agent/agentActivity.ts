@@ -47,7 +47,7 @@ interface ToolActivity {
   order: number;
 }
 
-const SUPPORTED_TOOL_NAMES = new Set(["read", "bash", "edit", "write"]);
+const SUPPORTED_TOOL_NAMES = new Set(["read", "shell", "edit", "write"]);
 
 export function buildAssistantRunProjection(events: StoredRunEvent[]): AssistantRunProjection {
   const sortedEvents = [...events].sort((a, b) => a.sequence - b.sequence);
@@ -357,9 +357,9 @@ function latestRunningToolId(
   return latestRunning[0]?.id;
 }
 
-// bash/edit/write/read collapse into a single summary row when they run in an
+// shell/edit/write/read collapse into a single summary row when they run in an
 // uninterrupted, same-kind, all-completed burst of more than one.
-const COLLAPSIBLE_KINDS = new Set<ToolActivity["kind"]>(["bash", "edit", "write", "read"]);
+const COLLAPSIBLE_KINDS = new Set<ToolActivity["kind"]>(["shell", "edit", "write", "read"]);
 
 function collapseToolActivities(tools: ToolActivity[]): AgentActivityItem[] {
   const items: AgentActivityItem[] = [];
@@ -382,11 +382,11 @@ function collapseToolActivities(tools: ToolActivity[]): AgentActivityItem[] {
       }
 
       if (group.length > 1) {
-        // Bash counts every call (each command stands on its own); file tools
+        // Shell counts every call (each command stands on its own); file tools
         // count distinct files so "Edited 3 files" matches the expanded list
         // even when the same file was touched several times in the burst. The
         // kept children back both the collapsed preview and the expanded rows.
-        const childTools = current.kind === "bash" ? group : dedupeByTarget(group);
+        const childTools = current.kind === "shell" ? group : dedupeByTarget(group);
         items.push({
           id: `${current.kind}_${current.order}_group`,
           kind: current.kind,
@@ -470,7 +470,7 @@ function partialTargetFromArgsText(
   kind: Exclude<AgentActivityKind, "thinking">,
   argsText: string,
 ) {
-  const keys = kind === "bash" ? ["command"] : ["path", "file_path", "filePath"];
+  const keys = kind === "shell" ? ["command"] : ["path", "file_path", "filePath"];
   for (const key of keys) {
     const value = matchJsonStringField(argsText, key);
     if (value)
@@ -498,7 +498,7 @@ function targetFromArgs(
   kind: Exclude<AgentActivityKind, "thinking">,
   args: Record<string, unknown> | null,
 ) {
-  if (kind === "bash")
+  if (kind === "shell")
     return stringValue(args?.command);
 
   return stringValue(args?.path)
@@ -554,7 +554,7 @@ function textFromPayload(payload: unknown) {
 
 // Bare grep/diff/cmp/test exiting 1 is a normal "no match / differs / false"
 // signal, not an error — exempt only that exact case so it isn't shown failed.
-// `findstr` is the Windows grep (bash tool runs via `cmd /c` there); `find` is
+// `findstr` is the Windows grep (the shell tool runs via PowerShell there); `find` is
 // deliberately absent — it means different things on Windows vs Unix.
 const SOFT_FAIL_COMMANDS = new Set(["grep", "egrep", "fgrep", "rg", "findstr", "diff", "cmp", "test", "["]);
 
@@ -564,9 +564,9 @@ function hasToolError(payload: unknown, command: string | undefined) {
   const error = stringValue(payload.error) ?? stringValue(payload.errorText);
   if (error?.trim())
     return true;
-  // A bash command that runs but exits non-zero comes back as a *successful*
-  // tool result (no error field) with the code baked into the output text as
-  // "[exit code: N]\n…". Treat a non-zero code as a failure so the row isn't
+  // A shell command that runs is returned as a *successful* tool result (no
+  // error field) with the exit code in a footer line at the end of the output
+  // ("[exit: N]"). Treat a non-zero code as a failure so the row isn’t
   // shown as completed, except for the soft-fail exemption below.
   const exitCode = nonZeroExitCode(stringValue(payload.text) ?? stringValue(payload.result));
   if (exitCode === null)
@@ -574,11 +574,12 @@ function hasToolError(payload: unknown, command: string | undefined) {
   return !isSoftExit(exitCode, command);
 }
 
-/** The non-zero code from a "[exit code: N]" bash prefix, or null (exit 0 / not bash). */
+/** The non-zero code from the "[exit: N]" footer line, or null (exit 0 / not a shell result). */
 export function nonZeroExitCode(output: string | undefined) {
   if (!output)
     return null;
-  const match = /^\[exit code: (-?\d+)\]/.exec(output.trimStart());
+  const lines = output.trimEnd().split("\n");
+  const match = /^\[exit: (-?\d+)\]$/.exec(lines[lines.length - 1] ?? "");
   if (!match)
     return null;
   const code = Number(match[1]);

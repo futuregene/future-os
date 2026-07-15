@@ -162,10 +162,10 @@ function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentAct
   );
 }
 
-// Bash targets are the command itself, never a path, so they're left as-is;
+// Shell targets are the command itself, never a path, so they're left as-is;
 // file targets get the shared workspace-relative treatment.
 function relativizeTarget(kind: AgentActivityKind, target: string, workspacePath?: string | null) {
-  if (kind === "bash")
+  if (kind === "shell")
     return target;
   return relativizeWorkspacePath(target, workspacePath);
 }
@@ -176,7 +176,7 @@ function renderActivityIcon(kind: AgentActivityKind, running: boolean, failed = 
   if (failed)
     return <TriangleAlert className={className} />;
   switch (kind) {
-    case "bash":
+    case "shell":
       return <TerminalSquare className={className} />;
     case "edit":
     case "write":
@@ -198,7 +198,7 @@ function labelForActivity(item: AgentActivityItem) {
 
   const prefix = statusPrefix(item.status);
   if (count > 1) {
-    if (item.kind === "bash")
+    if (item.kind === "shell")
       return i18n.t("agent:activity.runCommands", { prefix, count });
     if (item.kind === "write")
       return i18n.t("agent:activity.writeFiles", { prefix, count });
@@ -210,7 +210,7 @@ function labelForActivity(item: AgentActivityItem) {
   switch (item.kind) {
     case "read":
       return i18n.t("agent:activity.read", { prefix });
-    case "bash":
+    case "shell":
       return i18n.t("agent:activity.run", { prefix });
     case "write":
       return i18n.t("agent:activity.write", { prefix });
@@ -232,8 +232,8 @@ function statusPrefix(status: AgentActivityItem["status"]) {
 
 function failedLabel(kind: Exclude<AgentActivityKind, "thinking">) {
   switch (kind) {
-    case "bash":
-      return i18n.t("agent:activity.failed.bash");
+    case "shell":
+      return i18n.t("agent:activity.failed.shell");
     case "edit":
       return i18n.t("agent:activity.failed.edit");
     case "read":

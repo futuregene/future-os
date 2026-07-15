@@ -394,7 +394,7 @@ impl Loop {
     }
 
     /// Returns a clone of the Arc-wrapped interrupt flag for sharing
-    /// with cooperative cancellation points (e.g., bash tool).
+    /// with cooperative cancellation points (e.g., shell tool).
     pub fn interrupt_flag(&self) -> Arc<AtomicBool> {
         self.interrupt_flag.clone()
     }

@@ -39,7 +39,7 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
   const menu = useLinkContextMenu();
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Auto-refresh when the agent completes a write/edit/bash tool so newly
+  // Auto-refresh when the agent completes a write/edit/shell tool so newly
   // created or modified files appear without manual intervention. Debounced:
   // at most one refresh per 2 s — the event fires every poll tick (220 ms).
   useEffect(() => {

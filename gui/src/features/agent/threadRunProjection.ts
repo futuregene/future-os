@@ -43,7 +43,7 @@ export async function upsertStreamingPreview(
 
     const projection = buildAssistantRunProjection(events);
     // Notify the file tree whenever tool activity is detected (write, edit,
-    // bash) — the agent may have created or modified files.
+    // shell) — the agent may have created or modified files.
     if (projection.activityItems.length > 0)
       emitFutureEvent("file-tree-refresh", undefined);
     const bubbleId = `stream_${runId}`;

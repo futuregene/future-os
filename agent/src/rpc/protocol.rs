@@ -43,7 +43,7 @@ pub struct RpcCommand {
     #[serde(default)]
     pub enabled: bool,
 
-    // bash
+    // shell
     #[serde(default)]
     pub command: String,
 

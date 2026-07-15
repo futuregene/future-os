@@ -42,7 +42,7 @@ pub(crate) fn classify_run_error(error: &str) -> &'static str {
 
     // LLM / model-side failures. Check before generic `command failed` because
     // some providers report rate limit errors that mention "request" but are
-    // model errors, not bash failures.
+    // model errors, not shell failures.
     if lower.contains("model")
         || lower.contains("llm")
         || lower.contains("provider")
@@ -56,11 +56,11 @@ pub(crate) fn classify_run_error(error: &str) -> &'static str {
         return "model_failed";
     }
 
-    // Tool / shell command failures. We anchor on bash/exit-code phrasing the
+    // Tool / shell command failures. We anchor on the shell/exit-code phrasing the
     // agent itself emits to avoid mis-classifying generic "command" mentions.
-    if lower.contains("bash command")
+    if lower.contains("shell command")
         || lower.contains("exit code")
-        || lower.contains("failed to run bash")
+        || lower.contains("failed to run shell")
         || lower.contains("tool execution")
     {
         return "command_failed";
@@ -76,7 +76,7 @@ mod tests {
     #[test]
     fn test_classify_abort_requested() {
         assert_eq!(
-            classify_run_error("Bash command interrupted by abort"),
+            classify_run_error("Shell command interrupted by abort"),
             "abort_requested"
         );
         assert_eq!(classify_run_error("Interrupted"), "abort_requested");
@@ -89,7 +89,7 @@ mod tests {
     #[test]
     fn test_classify_timeout() {
         assert_eq!(
-            classify_run_error("Bash command timed out after 60 seconds"),
+            classify_run_error("Shell command timed out after 60 seconds"),
             "timeout"
         );
         assert_eq!(classify_run_error("timeout"), "timeout");
@@ -135,11 +135,11 @@ mod tests {
     #[test]
     fn test_classify_command_failed() {
         assert_eq!(
-            classify_run_error("Bash command exited with code 1"),
+            classify_run_error("Shell command exited with code 1"),
             "command_failed"
         );
         assert_eq!(
-            classify_run_error("Failed to run bash command: no such file"),
+            classify_run_error("Failed to run shell command: no such file"),
             "command_failed"
         );
         assert_eq!(classify_run_error("exit code: 127"), "command_failed");
@@ -158,7 +158,7 @@ mod tests {
     fn test_classify_abort_beats_timeout() {
         // Interrupt aborts take priority over timeout mentions
         assert_eq!(
-            classify_run_error("Bash command interrupted: timed out"),
+            classify_run_error("Shell command interrupted: timed out"),
             "abort_requested"
         );
         assert_eq!(

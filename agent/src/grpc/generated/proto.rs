@@ -39,7 +39,7 @@ pub struct RpcCommand {
     /// Toggle flag (true = on, false = off).
     #[prost(bool, tag = "70")]
     pub enabled: bool,
-    /// Shell command string.  Used when cmd_type = "bash".
+    /// Shell command string.  Used when cmd_type = "shell".
     #[prost(string, tag = "80")]
     pub command: ::prost::alloc::string::String,
     /// Target session ID.  Almost every command requires this so the
@@ -60,7 +60,7 @@ pub struct RpcCommand {
     /// Custom system prompt that replaces or appends to the built-in prompt.
     #[prost(string, tag = "100")]
     pub system_prompt: ::prost::alloc::string::String,
-    /// List of tool names to enable (e.g. \["read", "write", "edit", "bash"\]).
+    /// List of tool names to enable (e.g. \["read", "write", "edit", "shell"\]).
     #[prost(string, repeated, tag = "110")]
     pub tools: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// If true, the session is not persisted to disk.
@@ -277,7 +277,7 @@ pub struct StreamEvent {
     ///    tool_start:    {"tool_id": "...", "tool_name": "read"}
     ///    tool_end:      {"tool_id": "...", "text": "output..."}
     ///    tool_delta:    {"tool_id": "...", "text": "partial args..."}
-    ///    approval_request: {"approval_request_id": "...", "tool_name": "bash", ...}
+    ///    approval_request: {"approval_request_id": "...", "tool_name": "shell", ...}
     ///    agent_end:     {"error": "..."}  (error present only on failure)
     #[prost(string, tag = "2")]
     pub data: ::prost::alloc::string::String,
