@@ -4,9 +4,12 @@
 # Windows/Linux CI jobs were dominated by linking and I/O.
 
 [target.x86_64-unknown-linux-gnu]
-# lld links far faster than the default GNU bfd ld. Installed via apt in
-# .github/workflows/build.yml; gcc 11 on ubuntu-22.04 understands -fuse-ld=lld.
-rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+# mold is the fastest linker for ELF — typically 2-5x faster than lld on the
+# final link, which dominates incremental Rust builds. Installed via apt in
+# .github/workflows/build.yml (`mold`); local Linux devs need `apt install mold`
+# too, since this config applies to local builds as well. gcc understands
+# -fuse-ld=mold on ubuntu-22.04+.
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 
 [target.x86_64-pc-windows-msvc]
 # Skip PDB generation at link time. Release ships stripped anyway, so the debug
