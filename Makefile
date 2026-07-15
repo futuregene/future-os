@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-cli build-gui build-channels test lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean run run-agent run-tui run-cli run-gui run-channels package-gui install uninstall install-agent install-tui install-cli install-gui install-channels install-skills fmt generate-models generate-proto help
+.PHONY: version build build-agent build-tui build-cli build-gui build-channels test lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean run run-agent run-tui run-cli run-gui run-channels package-gui install install-nogui uninstall install-agent install-tui install-cli install-gui install-channels install-skills fmt generate-models generate-proto help
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -28,6 +28,8 @@ endif
 # ─── Install ──────────────────────────────────────────────────────────────────
 
 install: install-agent install-tui install-cli install-gui install-channels install-skills
+
+install-nogui: install-agent install-tui install-cli install-channels install-skills
 
 uninstall:
 	rm -f $(PREFIX)/future-agent $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
@@ -197,6 +199,7 @@ help:
 	@echo "  package-gui        Package GUI desktop bundles"
 	@echo "  generate-models    Fetch model data and regenerate models_generated.rs"
 	@echo "  generate-proto     Compile proto/future.proto to Rust gRPC code"
-	@echo "  install            Install standalone binaries to $(PREFIX)/"
+	@echo "  install            Build & install all components"
+	@echo "  install-nogui      Build & install terminal stack (skip GUI)"
 	@echo "  uninstall          Remove installed binaries from $(PREFIX)/"
 	@echo "  clean              Remove build artifacts + installed binaries"
