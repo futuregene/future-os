@@ -71,11 +71,14 @@ make install   # 构建全部组件并安装到系统路径
 | **开发 / 前台** | `make run-agent` | 开发调试 Agent。从源码重新构建,跑在当前终端,日志打到 stdout,Ctrl-C 停止。 |
 | **后台服务** | `future agent start` | 日常使用。安装为托管服务(macOS launchctl / Linux systemd / Windows sc),开机自启,启动一次即可。用 `future agent stop \| restart \| status` 管理。 |
 
-然后启动任意客户端:
+然后启动任意客户端：
 
 ```bash
-future tui     # 终端界面（需先执行 make install）
-make run-gui   # 桌面应用
+future tui           # 终端界面（需先 make install）
+future gui           # 桌面应用（需先 make install）
+# 开发模式下直接运行（会自动构建）：
+make run-tui         # 终端界面
+make run-gui         # 桌面应用
 ```
 
 > 客户端如果报连接 / gRPC 错误,几乎都是 Agent 还没启动——见 [故障排查](#故障排查)。
