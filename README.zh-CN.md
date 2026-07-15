@@ -37,6 +37,9 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
 
 - **Rust** 1.96+（由 `rust-toolchain.toml` 固定）
 - **Node.js** 24+（见 `.nvmrc`）
+  - macOS：`brew install node`
+  - Linux：`curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - && sudo apt install -y nodejs`
+  - Windows：`winget install OpenJS.NodeJS`
 - **Bun** —— 必需项，非可选：TUI 构建和 CLI/GUI 打包均使用 `bun build`
 - **protoc**（Protocol Buffers 编译器）—— GUI 与 channels 的 proto 代码生成必需
   - macOS：`brew install protobuf`
