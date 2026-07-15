@@ -16,7 +16,7 @@ import { cn } from "../../lib/cn";
 import { formatBytes } from "../../lib/format";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { isMacOS } from "../../lib/platform";
-import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, MAX_IMAGES_PER_TURN, READ_SOURCE_MAX_BYTES } from "./attachments";
+import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, MAX_IMAGES_PER_TURN, READ_SOURCE_MAX_BYTES, splitFileName } from "./attachments";
 import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "./composerDraft";
 import { MentionEditor } from "./MentionEditor";
 
@@ -395,6 +395,9 @@ export function Composer({
                 // it may not be understood. Reverts when switching back to a
                 // vision model, since `supportsImages` is recomputed on render.
                 const unsupportedImage = attachment.kind === "image" && !supportsImages;
+                // Middle-truncate: the stem shrinks with an ellipsis while the
+                // extension stays pinned, so "pasted-…0000.png" keeps its suffix.
+                const { stem, ext } = splitFileName(attachment.name);
                 return (
                   <span
                     className={cn(
@@ -409,7 +412,10 @@ export function Composer({
                     {unsupportedImage
                       ? <TriangleAlert className="size-3 shrink-0" />
                       : <Paperclip className="size-3 shrink-0" />}
-                    <span className="truncate">{attachment.name}</span>
+                    <span className="flex min-w-0 items-center">
+                      <span className="truncate">{stem}</span>
+                      {ext ? <span className="shrink-0">{ext}</span> : null}
+                    </span>
                     <button
                       aria-label={t("composer.removeAttachment", { name: attachment.name })}
                       className={cn(
