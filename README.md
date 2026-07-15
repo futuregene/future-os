@@ -74,8 +74,11 @@ Every client — TUI, GUI, CLI, channels — is a thin gRPC client. **The agent 
 Then launch a client:
 
 ```bash
-future tui     # terminal (requires make install first)
-make run-gui   # desktop app
+future tui           # terminal, after make install
+future gui           # desktop, after make install
+# or in dev mode (builds first):
+make run-tui         # terminal
+make run-gui         # desktop
 ```
 
 > A client that exits with a connection / gRPC error almost always means the agent isn't running yet — see [Troubleshooting](#troubleshooting).
