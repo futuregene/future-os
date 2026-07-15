@@ -126,9 +126,6 @@ export function ContextPanel({
   const selectedArtifact = selectedArtifactId
     ? artifacts.find(artifact => artifact.id === selectedArtifactId) ?? null
     : null;
-  const selectedRun = selectedRunId
-    ? runs.find(run => run.id === selectedRunId) ?? null
-    : null;
   // The Runs panel drills into a single tool call; find it (and its owning run)
   // across the per-run tool map so the inspector reuses the run detail view.
   const selectedTool = selectedToolId
@@ -333,19 +330,9 @@ export function ContextPanel({
                   onBack={() => setSelectedToolId(null)}
                 />
               )
-            : selectedRun
-              ? (
-                  <RunInspectPanel
-                    run={selectedRun}
-                    tools={toolsByRun[selectedRun.id] ?? []}
-                    onBack={() => setSelectedRunId(null)}
-                  />
-                )
-              : (selectedToolId && selectedRun)
-                ? <RunInspectPanel run={selectedRun} tools={toolsByRun[(selectedRun as StoredRun).id] ?? []} onBack={() => { setSelectedToolId(null); setSelectedRunId(null); }} />
-                : selectedToolId
-                  ? <div className="py-4 text-sm text-ink-muted">{t("contextPanel.loading")}</div>
-                  : (
+            : selectedToolId
+              ? <div className="py-4 text-sm text-ink-muted">{t("contextPanel.loading")}</div>
+              : (
                   <RunsPanel
                     runs={runs}
                     toolsByRun={toolsByRun}
