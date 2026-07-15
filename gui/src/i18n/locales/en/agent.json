@@ -27,7 +27,8 @@
       "edit": "Edit failed",
       "read": "Read failed",
       "write": "Write failed"
-    }
+    },
+    "inspectRun": "Click to inspect run"
   },
   "thread": {
     "loading": "Loading FutureOS thread...",

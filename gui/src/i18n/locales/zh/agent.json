@@ -23,7 +23,8 @@
       "edit": "编辑失败",
       "read": "读取失败",
       "write": "写入失败"
-    }
+    },
+    "inspectRun": "点击查看运行详情"
   },
   "thread": {
     "loading": "正在加载 FutureOS 对话…",
