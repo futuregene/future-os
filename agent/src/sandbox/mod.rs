@@ -192,7 +192,7 @@ impl ResolvedSandbox {
             // (--args "{\"key\":\"val\"}"). PowerShell handles single quotes
             // natively but breaks on \" because backslash is not an escape
             // character there (PowerShell uses backtick `" instead).
-            let command = normalize_shell_quoting(command);
+            let command = Self::normalize_shell_quoting(command);
             let mut child = tokio::process::Command::new("powershell");
             child.args([
                 "-NoProfile",
@@ -217,7 +217,7 @@ impl ResolvedSandbox {
         while i < chars.len() {
             if chars[i] == '"' && i + 1 < chars.len() && chars[i + 1] == '{' {
                 // Potential JSON argument in double quotes — find closing quote
-                let end = match find_closing_quote(&chars, i) {
+                let end = match Self::find_closing_quote(&chars, i) {
                     Some(e) => e,
                     None => {
                         result.push(chars[i]);
