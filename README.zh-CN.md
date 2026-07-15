@@ -164,10 +164,10 @@ future --help                              # 查看全部命令
                          │   127.0.0.1:50051        │
                          └──────────┬───────────────┘
                                     │
-       ┌────────────────────────────┼────────────────────────────┐
-       │                            │                            │
-TypeScript TUI              Tauri / React GUI       TypeScript CLI · Channel Bridge
-(终端, bun)                (桌面, WebView)           认证 · MCP · 飞书 · 钉钉
+     ┌──────────────┬───────────────┼───────────────┬──────────────┐
+     │              │               │               │              │
+TypeScript TUI  Tauri/React GUI  TypeScript CLI  Channel Bridge
+(终端, bun)    (桌面, WebView)    认证 · MCP      飞书 · 钉钉
 ```
 
 所有客户端独立通过 gRPC 连接 Agent，互不依赖。
