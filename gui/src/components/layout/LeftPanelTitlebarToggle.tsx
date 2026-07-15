@@ -1,4 +1,4 @@
-import { PanelLeftOpen } from "lucide-react";
+import { PanelLeft } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
 import { isMacOS } from "../../lib/platform";
@@ -31,7 +31,7 @@ export function LeftPanelTitlebarToggle({
         title={t("leftPanelTitlebarToggle.showSidebar")}
         type="button"
       >
-        <PanelLeftOpen className="size-3.5" />
+        <PanelLeft className="size-3.5" />
       </button>
     </div>
   );
