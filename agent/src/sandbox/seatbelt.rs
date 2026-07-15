@@ -6,7 +6,7 @@
 //! **lowest** priority to **highest** (layers reversed, and reversed within
 //! each layer) — the last SBPL match then equals the engine's first match.
 //!
-//! `ask` and `deny` both compile to an OS-level denial (bash can't prompt
+//! `ask` and `deny` both compile to an OS-level denial (the shell can’t prompt
 //! mid-syscall); a resulting failure surfaces via the escalation flow. Network
 //! is unrestricted in v2.
 
@@ -42,7 +42,7 @@ fn matcher_filter(rule: &PathRule) -> String {
 }
 
 /// Emit the read/write allow/deny clauses for one rule, if its access covers
-/// that operation. `ask` compiles as `deny` for bash.
+/// that operation. `ask` compiles as `deny` for shell runs.
 fn emit_rule(profile: &mut String, rule: &PathRule) {
     let filter = matcher_filter(rule);
     let access = rule.access();

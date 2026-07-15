@@ -501,7 +501,7 @@ export class ChatArea implements Component {
       const args = JSON.parse(toolArgs);
 
       switch (toolName) {
-        case "bash": {
+        case "shell": {
           const cmd = typeof args.command === "string" ? args.command : "";
           const firstLine = cmd.split("\n")[0] ?? "";
           const cmdText = firstLine ? firstLine : "...";

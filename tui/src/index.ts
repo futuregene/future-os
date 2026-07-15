@@ -335,7 +335,7 @@ Examples:
   node dist/index.js -p --thinking high "Solve this problem"
 
   # Enable only read and bash tools
-  node dist/index.js --tools read,bash -p "Review this code"
+  node dist/index.js --tools read,shell -p "Review this code"
 
   # JSON output mode
   node dist/index.js --mode json -p "What is 2+2?"

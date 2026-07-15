@@ -54,7 +54,7 @@ pub struct ServerSession {
     /// Interrupt flag cloned from the agent loop (Arc<AtomicBool>), settable
     /// **without** the agent_loop lock — which `abort()` cannot acquire while a
     /// run holds `agent_loop.write()`. This is what makes abort actually cancel
-    /// in-flight tools (bash) and break between tool calls, not just the stream.
+    /// in-flight tools (shell) and break between tool calls, not just the stream.
     /// Set alongside `interrupt_tx` in `prompt()`.
     pub interrupt_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub approval_gate: ApprovalGate,
@@ -246,7 +246,7 @@ impl ServerSession {
         // Set the interrupt flag via the lock-free Arc clone captured at prompt
         // start. This is the load-bearing part: a run holds `agent_loop.write()`,
         // so the `try_read()` below fails mid-run and can't set the flag — without
-        // this, abort never cancels an in-flight tool (e.g. a long bash) or breaks
+        // this, abort never cancels an in-flight tool (e.g. a long shell command) or breaks
         // between tool calls; it only stops at the next LLM boundary.
         if let Some(ref flag) = self.interrupt_flag {
             flag.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -561,9 +561,12 @@ impl ServerSession {
         self.ephemeral = ephemeral;
     }
 
-    pub fn execute_bash(&self, command: &str) -> Result<serde_json::Value> {
-        let output = std::process::Command::new("bash")
-            .args(["-c", command])
+    pub fn execute_shell(&self, command: &str) -> Result<serde_json::Value> {
+        // Same platform-shell contract as the shell tool (bash -c on Unix,
+        // the PowerShell wrapper on Windows) so exit codes are reliable.
+        let (program, args) = crate::sandbox::shell_invocation(command);
+        let output = std::process::Command::new(program)
+            .args(&args)
             .current_dir(&self.cwd)
             .env("PWD", &self.cwd)
             .output()?;

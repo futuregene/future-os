@@ -37,7 +37,7 @@ const gitTabs = [
 // Artifacts is hidden pending a decision on what the tab is for (PRODUCT.md
 // §4.8). Chat's workspace is a per-thread empty directory, so every file in it
 // is by definition this conversation's output — Files already lists exactly
-// that, from the same `activeWorkspace.path`, and it can't miss the ones bash
+// that, from the same `activeWorkspace.path`, and it can't miss the ones the shell tool
 // produced. The artifacts table instead records write/edit tool calls, which is
 // a strictly smaller, lossier view of the same directory, and the three things
 // that once justified it are all gone: `@`-referencing artifacts is disabled

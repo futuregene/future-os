@@ -101,9 +101,9 @@ message RpcCommand {
   // Toggle flag (true = on, false = off).
   bool enabled = 70;
 
-  // ── bash (execute shell command via the agent) ─────────────────────────
+  // ── shell (execute shell command via the agent) ─────────────────────────
 
-  // Shell command string.  Used when cmd_type = "bash".
+  // Shell command string.  Used when cmd_type = "shell".
   string command = 80;
 
   // ── Session bookkeeping ────────────────────────────────────────────────
@@ -132,7 +132,7 @@ message RpcCommand {
 
   // ── set_tools / disable_tools ──────────────────────────────────────────
 
-  // List of tool names to enable (e.g. ["read", "write", "edit", "bash"]).
+  // List of tool names to enable (e.g. ["read", "write", "edit", "shell"]).
   repeated string tools = 110;
 
   // ── set_ephemeral ──────────────────────────────────────────────────────
@@ -190,7 +190,7 @@ message Attachment {
 
 // ── SandboxPolicy ────────────────────────────────────────────────────────────
 // OS-sandbox boundary + approval policy for a session. The agent enforces the
-// sandbox on spawned bash commands (Seatbelt on macOS) and uses the approval
+// sandbox on spawned shell commands (Seatbelt on macOS) and uses the approval
 // policy to decide when to raise approval requests. See gui/SANDBOX_PLAN.md.
 
 message SandboxPolicy {
@@ -379,7 +379,7 @@ message StreamEvent {
   //   tool_start:    {"tool_id": "...", "tool_name": "read"}
   //   tool_end:      {"tool_id": "...", "text": "output..."}
   //   tool_delta:    {"tool_id": "...", "text": "partial args..."}
-  //   approval_request: {"approval_request_id": "...", "tool_name": "bash", ...}
+  //   approval_request: {"approval_request_id": "...", "tool_name": "shell", ...}
   //   agent_end:     {"error": "..."}  (error present only on failure)
   string data = 2;
 
@@ -765,12 +765,12 @@ export class GrpcClient {
     await this.call("abort_retry", {});
   }
 
-  async bash(command: string): Promise<unknown> {
-    return this.call("bash", { command });
+  async shell(command: string): Promise<unknown> {
+    return this.call("shell", { command });
   }
 
-  async abortBash(): Promise<void> {
-    await this.call("abort_bash", {});
+  async abortShell(): Promise<void> {
+    await this.call("abort_shell", {});
   }
 
   async getSessionStats(): Promise<unknown> {

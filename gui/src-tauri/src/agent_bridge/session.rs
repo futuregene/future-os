@@ -90,7 +90,7 @@ pub(super) async fn set_agent_permission_level(
 /// Push the session's approval tier to the agent. The agent reads the rule
 /// files (`${WS}/.future/approval_rule.json`, `~/.future/approval_rule.json`)
 /// directly — only the tier travels over the wire (APPROVAL_PLAN.md):
-/// `"manual"` (ask), `"sandbox"` (macOS Seatbelt wraps bash), or `"off"`
+/// `"manual"` (ask), `"sandbox"` (macOS Seatbelt wraps shell commands), or `"off"`
 /// (fully open). The tier is a global app preference, defaulting to `"manual"`.
 pub(super) async fn set_agent_sandbox_policy(
     client: &mut FutureAgentClient<Channel>,

@@ -168,13 +168,21 @@ fn build_identity_section(opts: &PromptOptions) -> String {
 }
 
 fn build_dynamic_tool_guidelines(tool_names: &[&str]) -> Vec<String> {
-    let has_bash = tool_names.contains(&"bash");
+    let has_shell = tool_names.contains(&"shell");
 
     let mut guidelines = vec![];
 
-    if has_bash {
+    if has_shell {
+        // Platform-matched examples: the same tool speaks bash on Unix and
+        // PowerShell 5.1 on Windows (see sandbox::shell_invocation).
+        #[cfg(not(target_os = "windows"))]
         guidelines.push(
-            "Use bash for command-line exploration such as ls, rg, and find; prefer write/edit tools for ordinary file writes."
+            "Use the shell tool for command-line exploration such as ls, rg, and find; prefer write/edit tools for ordinary file writes."
+                .to_string(),
+        );
+        #[cfg(target_os = "windows")]
+        guidelines.push(
+            "Use the shell tool (PowerShell) for command-line exploration such as Get-ChildItem and Select-String; prefer write/edit tools for ordinary file writes."
                 .to_string(),
         );
     }
@@ -257,16 +265,19 @@ fn os_hint() -> String {
     match std::env::consts::OS {
         "macos" => {
             format!(
-                "Host platform: macOS. Use macOS/zsh shell commands. \
+                "Host platform: macOS. Shell commands are interpreted by bash; \
+                 macOS command-line tools (BSD variants) apply. \
                  {skills_hint} (Example: ~/.agents/skills/my-skill/SKILL.md)"
             )
         }
         "windows" => {
             format!(
-                "Host platform: Windows. Use Windows shell commands: \
-                 dir (not ls), type (not cat), path separators \\ (not /). \
-                 PowerShell or cmd syntax is acceptable. \
-                 {skills_hint} (Example: %USERPROFILE%\\.agents\\skills\\my-skill\\SKILL.md)"
+                "Host platform: Windows. Shell commands are interpreted by \
+                 Windows PowerShell 5.1 — NOT cmd and NOT bash. Use PowerShell \
+                 syntax only: chain commands with `;` (never `&&` or `||` — \
+                 PowerShell 5.1 does not support them), environment variables \
+                 as $env:VAR (never %VAR%), path separators \\ (not /). \
+                 {skills_hint} (Example: $env:USERPROFILE\\.agents\\skills\\my-skill\\SKILL.md)"
             )
         }
         "linux" => {

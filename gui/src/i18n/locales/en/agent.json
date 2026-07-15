@@ -23,7 +23,7 @@
     "write": "{{prefix}}write",
     "edit": "{{prefix}}edit",
     "failed": {
-      "bash": "Command failed",
+      "shell": "Command failed",
       "edit": "Edit failed",
       "read": "Read failed",
       "write": "Write failed"

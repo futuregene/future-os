@@ -89,7 +89,7 @@ Examples:
   future run "Explain this codebase"
   future run --model sonnet:high "Review the changes"
   future run --fork abc123 --thinking high "Continue from fork"
-  future run --tools read,bash "Read the README"
+  future run --tools read,shell "Read the README"
   future run --permission workspace --no-tools "Summarize AGENTS.md"
   future run --mode json "What is 2+2?"
   future run @README.md "Summarize this file"
