@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-cli build-gui build-channels build-channels-release test lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean run run-agent run-tui run-cli run-gui run-channels package-gui install uninstall install-tui install-tui-deps install-cli-deps install-cli install-gui install-channels install-skills fmt generate-models generate-proto help
+.PHONY: version build build-agent build-tui build-cli build-gui build-channels test lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean run run-agent run-tui run-cli run-gui run-channels package-gui install uninstall install-tui install-tui-deps install-cli-deps install-cli install-gui install-channels install-skills fmt generate-models generate-proto help
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -87,7 +87,7 @@ install-skills:
 build: build-agent build-tui build-cli build-gui
 
 build-agent:
-	cd agent && cargo build
+	cd agent && cargo build --release
 
 build-tui: install-tui-deps
 	cd tui && npm run build && bun build --compile dist/index.js --outfile dist/future-tui
@@ -99,9 +99,6 @@ build-gui:
 	cd gui && npm install && npm run build
 
 build-channels:
-	cd channels && cargo build
-
-build-channels-release:
 	cd channels && cargo build --release
 
 # ─── Test ───────────────────────────────────────────────────────────────────
