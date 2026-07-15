@@ -471,6 +471,49 @@ const READONLY_PROGRAMS: &[&str] = &[
     "false", "test", "seq", "yes",
 ];
 
+/// Read-only PowerShell cmdlets and their built-in aliases (Windows). Compared
+/// lower-cased since PowerShell resolves command names case-insensitively. The
+/// aliases `ls`/`cat`/`pwd`/`echo`/`type`/`sort` already resolve via
+/// READONLY_PROGRAMS. Deliberately excludes anything that writes (Set-/Add-/
+/// New-/Remove-/Out-File) or runs arbitrary code (Invoke-/Start-/ForEach-Object/
+/// Where-Object — the latter also need a `{ … }` block, which is rejected).
+const WINDOWS_READONLY_PROGRAMS: &[&str] = &[
+    "get-childitem",
+    "gci",
+    "dir",
+    "get-content",
+    "gc",
+    "get-location",
+    "gl",
+    "get-item",
+    "gi",
+    "get-itemproperty",
+    "get-command",
+    "gcm",
+    "get-date",
+    "get-help",
+    "select-string",
+    "sls",
+    "select-object",
+    "select",
+    "sort-object",
+    "measure-object",
+    "measure",
+    "write-output",
+    "write-host",
+    "format-table",
+    "ft",
+    "format-list",
+    "fl",
+    "out-string",
+    "test-path",
+    "resolve-path",
+    "split-path",
+    "compare-object",
+    "findstr",
+    "where",
+];
+
 /// git subcommands that don't mutate the repo or working tree.
 const GIT_READONLY: &[&str] = &[
     "status",
@@ -494,15 +537,18 @@ const GIT_READONLY: &[&str] = &[
 
 /// Read-only shell whitelist for the Manual tier: known-safe commands auto-run,
 /// everything else asks. Conservative — anything with shell operators that could
-/// write, chain, background, or substitute falls through to "ask".
+/// write, chain, background, or substitute falls through to "ask". Covers both
+/// POSIX shells and PowerShell (see WINDOWS_READONLY_PROGRAMS); the operator
+/// guard below (`{`, `` ` ``, `;`, …) also blocks PowerShell script blocks and
+/// subexpressions.
 fn shell_auto_allow(command: &str) -> bool {
     let cmd = command.trim();
     if cmd.is_empty() {
         return false;
     }
     // Reject write / exec / chain / substitution operators outright. `&` also
-    // catches `&&` and backgrounding; `` ` `` and `$(` catch substitution.
-    // Pipes are validated per-segment below (each stage must be read-only).
+    // catches `&&` and backgrounding; `` ` `` and `$(` catch substitution;
+    // `{`/`(` catch PowerShell script blocks and subexpressions.
     const DANGEROUS: &[char] = &['>', '<', '`', ';', '&', '\n', '(', '{'];
     if cmd.contains("$(") || cmd.chars().any(|c| DANGEROUS.contains(&c)) {
         return false;
@@ -516,9 +562,16 @@ fn segment_is_read_only(seg: &str) -> bool {
     let Some(prog) = words.next() else {
         return false;
     };
-    // Reduce a leading path (e.g. /bin/ls) to its basename.
-    let prog = prog.rsplit('/').next().unwrap_or(prog);
-    match prog {
+    // Reduce a leading path to its basename — tolerant of both separators
+    // (`/bin/ls`, `C:\Windows\System32\findstr.exe`), a `.exe` suffix, and
+    // case (PowerShell and Windows resolve command names case-insensitively).
+    let base = prog.rsplit(['/', '\\']).next().unwrap_or(prog);
+    let base = base
+        .strip_suffix(".exe")
+        .or_else(|| base.strip_suffix(".EXE"))
+        .unwrap_or(base);
+    let prog = base.to_ascii_lowercase();
+    match prog.as_str() {
         "git" => {
             // First non-flag token is the subcommand; it must be read-only.
             let sub = words.find(|w| !w.starts_with('-'));
@@ -531,7 +584,7 @@ fn segment_is_read_only(seg: &str) -> bool {
                 && !seg.contains("-fprint")
                 && !seg.contains("-ok")
         }
-        _ => READONLY_PROGRAMS.contains(&prog),
+        other => READONLY_PROGRAMS.contains(&other) || WINDOWS_READONLY_PROGRAMS.contains(&other),
     }
 }
 
@@ -773,6 +826,31 @@ mod tests {
         assert!(!shell_auto_allow("grep foo x | rm y")); // pipe to non-read-only
         assert!(!shell_auto_allow("npm install")); // unknown program
         assert!(!shell_auto_allow(""));
+    }
+
+    #[test]
+    fn shell_whitelist_allows_read_only_powershell() {
+        // Cmdlets and aliases, case-insensitive, with Windows paths / .exe.
+        assert!(shell_auto_allow("Get-ChildItem"));
+        assert!(shell_auto_allow("get-content foo.txt"));
+        assert!(shell_auto_allow("Select-String -Pattern foo bar.txt"));
+        assert!(shell_auto_allow(
+            "Get-ChildItem -Recurse | Select-String foo"
+        ));
+        assert!(shell_auto_allow("gci | measure"));
+        assert!(shell_auto_allow(
+            r"C:\Windows\System32\findstr.exe foo bar.txt"
+        ));
+    }
+
+    #[test]
+    fn shell_whitelist_asks_for_powershell_writes_and_blocks() {
+        assert!(!shell_auto_allow("Remove-Item x")); // mutating cmdlet
+        assert!(!shell_auto_allow("Set-Content foo.txt 'x'")); // writes
+        assert!(!shell_auto_allow("Get-Content x > out.txt")); // redirect
+        assert!(!shell_auto_allow("Get-ChildItem; Remove-Item x")); // chain
+        assert!(!shell_auto_allow("Where-Object { $_.Length -gt 0 }")); // script block
+        assert!(!shell_auto_allow("Invoke-Expression 'rm x'")); // arbitrary exec
     }
 
     #[test]
