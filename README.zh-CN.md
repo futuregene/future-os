@@ -37,14 +37,7 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
 
 - **Rust** 1.96+（由 `rust-toolchain.toml` 固定）
 - **Node.js** 24+（见 `.nvmrc`）
-  - macOS：`brew install node`
-  - Linux：`curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - && sudo apt install -y nodejs`
-  - Windows：`winget install OpenJS.NodeJS`
 - **Bun** —— 必需项，非可选：TUI 构建和 CLI/GUI 打包均使用 `bun build`
-- **protoc**（Protocol Buffers 编译器）—— GUI 与 channels 的 proto 代码生成必需
-  - macOS：`brew install protobuf`
-  - Linux（Debian/Ubuntu）：`sudo apt install protobuf-compiler`
-  - Windows：`choco install protoc`（或从 protobuf releases 下载）
 - **Linux 必需**（所有构建都需要）：
   - `sudo apt install mold pkg-config libssl-dev`
 - **Tauri 系统依赖**（构建 GUI 需要）：
@@ -52,6 +45,7 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
   - Linux（Debian/Ubuntu）：`sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf`
   - Windows：WebView2 Runtime（Win 10/11 自带）+ MSVC 构建工具
 - 可选：**Python 3** —— 仅 `make generate-models` 需要
+- 可选：**protoc**（Protocol Buffers 编译器）—— 仅 `make generate-proto` 需要；生成的代码已提交，正常构建无需安装
 - 平台：macOS / Linux / Windows
 
 ### 构建与安装
@@ -208,11 +202,10 @@ make clean    # 清理构建产物 + 已安装的二进制
 
 ### Proto
 
-权威 API 定义在 `proto/future.proto`。生成代码在构建时通过 `build.rs`（tonic-build）自动更新。手动生成：
+权威 API 定义在 `proto/future.proto`。生成的 Rust/TS 代码已提交到仓库——正常构建不会触碰。修改 `.proto` 文件后，运行：
 
 ```bash
-make generate-proto          # agent + channels
-cd tui && npm run generate-proto  # TUI 内嵌 proto
+make generate-proto          # agent + channels + TUI
 ```
 
 ## 故障排查
@@ -220,7 +213,6 @@ cd tui && npm run generate-proto  # TUI 内嵌 proto
 | 现象 | 解决 |
 |---|---|
 | 客户端报连接 / gRPC 错误退出 | Agent 没启动。先启动它(`make run-agent` 或 `future agent start`),并确认端口没被占用:`lsof -i :50051`。 |
-| 构建时报 `protoc` 找不到 | 安装 Protocol Buffers 编译器——见 [环境要求](#环境要求)。 |
 | Agent 回复鉴权 / "no model" 错误 | 还没配置模型。运行 `future auth login`,或在 `models.json` 里加一个 provider——见 [配置模型](#配置模型)。 |
 | GUI 找不到 Agent 二进制 | `make install-gui` 用你的宿主 target triple 复制 sidecar。如果 triple 与自动检测的不一致，手动复制：`cp agent/target/debug/future-agent gui/src-tauri/binaries/future-agent-$(rustc -vV | sed -n 's/^host: //p')`。 |
 | Linux 上 GUI 构建失败(webkit / gtk 报错) | 安装 Tauri 系统依赖——见 [环境要求](#环境要求)。 |
