@@ -11,10 +11,6 @@ import { relativizeWorkspacePath } from "../../lib/workspacePath";
 import { toolStatusLabel } from "./runDisplayFormatters";
 import { toolCommand, toolTarget } from "./toolInput";
 
-// Tool calls that get a row in the runs panel. `grep`/`ls` are quick-lookup
-// noise and stay collapsed out.
-const DISPLAY_TOOLS = new Set(["bash", "write", "edit", "read"]);
-
 interface RunsPanelProps {
   runs: StoredRun[];
   toolsByRun: Record<string, StoredToolCall[]>;
@@ -270,7 +266,7 @@ function buildToolEntries(runs: StoredRun[], toolsByRun: Record<string, StoredTo
   const active: ToolEntry[] = [];
   const finished: ToolEntry[] = [];
   for (const run of runs) {
-    const tools = (toolsByRun[run.id] ?? []).filter(tool => DISPLAY_TOOLS.has(displayName(tool)));
+    const tools = toolsByRun[run.id] ?? [];
     const runActive = isActiveRun(run);
 
     // Active runs show in the panel even when no tool has started yet —
