@@ -7,8 +7,7 @@ import {
   ChevronRight,
   Folder,
   MessageSquare,
-  PanelLeftClose,
-  PanelLeftOpen,
+  PanelLeft,
   Plus,
   Settings,
   Smartphone,
@@ -172,10 +171,10 @@ export function ActivityRail({
         >
           {expanded && !floating
             ? (
-                <PanelLeftClose className="size-3.5" />
+                <PanelLeft className="size-3.5" />
               )
             : (
-                <PanelLeftOpen className="size-3.5" />
+                <PanelLeft className="size-3.5" />
               )}
         </button>
       </div>
