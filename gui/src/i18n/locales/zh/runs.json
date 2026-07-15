@@ -1,6 +1,6 @@
 {
   "runInspect": {
-    "back": "Runs",
+    "back": "运行",
     "model": "模型",
     "tools": "工具",
     "retry": "重试",
