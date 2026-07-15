@@ -37,6 +37,9 @@ Required for a full `make build` (agent + TUI + CLI + GUI):
 
 - **Rust** 1.96+ (pinned via `rust-toolchain.toml`)
 - **Node.js** 24+ (see `.nvmrc`)
+  - macOS: `brew install node`
+  - Linux: `curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - && sudo apt install -y nodejs`
+  - Windows: `winget install OpenJS.NodeJS`
 - **Bun** — required, not optional: the TUI build and CLI/GUI packaging use `bun build`
 - **protoc** (Protocol Buffers compiler) — required by the GUI and channels proto codegen
   - macOS: `brew install protobuf`
