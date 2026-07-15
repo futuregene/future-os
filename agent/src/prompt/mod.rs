@@ -271,12 +271,21 @@ fn os_hint() -> String {
             )
         }
         "windows" => {
+            // The interpreter is resolved at runtime (pwsh 7 when present, else
+            // Windows PowerShell 5.1); only pwsh 7 supports `&&`/`||`, so the
+            // chaining guidance tracks the actual shell rather than guessing.
+            let shell = crate::sandbox::shell_display_name();
+            let chaining = if crate::sandbox::shell_supports_chain_operators() {
+                "chain commands with `;`, `&&`, or `||`"
+            } else {
+                "chain commands with `;` (never `&&` or `||` — this PowerShell \
+                 version does not support them)"
+            };
             format!(
                 "Host platform: Windows. Shell commands are interpreted by \
-                 Windows PowerShell 5.1 — NOT cmd and NOT bash. Use PowerShell \
-                 syntax only: chain commands with `;` (never `&&` or `||` — \
-                 PowerShell 5.1 does not support them), environment variables \
-                 as $env:VAR (never %VAR%), path separators \\ (not /). \
+                 {shell} — NOT cmd and NOT bash. Use PowerShell syntax only: \
+                 {chaining}, environment variables as $env:VAR (never %VAR%), \
+                 path separators \\ (not /). \
                  {skills_hint} (Example: $env:USERPROFILE\\.agents\\skills\\my-skill\\SKILL.md)"
             )
         }

@@ -51,7 +51,17 @@ impl ServerSession {
                 agent_content,
                 memory_content,
                 prompt_guidelines: vec![
-                    "When asked to create, save, write, or modify a file, ALWAYS use the write or edit tool — including for absolute paths and paths outside the current working directory (both tools accept any path). Do NOT use shell redirection (`>`, `>>`, tee, heredocs, `cat > file`) to write files: shell file writes bypass file tracking and the approval flow. Reserve shell redirection for piping between commands, not for creating files. Only describe file changes after the tool succeeds.".to_string(),
+                    // The write-via-shell prohibition is platform-neutral, but its
+                    // examples must name the redirection forms the host's shell
+                    // actually has, or a PowerShell model won't map "don't use
+                    // `cat > file`" onto "don't use Out-File".
+                    {
+                        #[cfg(not(target_os = "windows"))]
+                        let forms = "`>`, `>>`, tee, heredocs, `cat > file`";
+                        #[cfg(target_os = "windows")]
+                        let forms = "`>`, `>>`, Out-File, Set-Content, Add-Content";
+                        format!("When asked to create, save, write, or modify a file, ALWAYS use the write or edit tool — including for absolute paths and paths outside the current working directory (both tools accept any path). Do NOT use shell redirection ({forms}) to write files: shell file writes bypass file tracking and the approval flow. Reserve shell redirection for piping between commands, not for creating files. Only describe file changes after the tool succeeds.")
+                    },
                     "You maintain a workspace memory file named FUTURE.md in the working directory. Its content is loaded into this system prompt (see \"Workspace Memory\" above) — do NOT read FUTURE.md to discover your capabilities, available skills, or the workspace memory contents; they are already provided here. Only read FUTURE.md when you need to verify its current on-disk state before editing it. Record a memory when the user explicitly asks you to remember something, and also proactively when you learn a durable, high-value fact about this workspace: a verified build/test/run/lint command, a stated user preference, a correction the user made (especially a repeated one), or a stable project convention. Do not record one-off task details, transient state, secrets, unverified guesses, or anything already derivable from the repo. Use the write or edit tool; keep entries short and grouped under markdown headers; update or remove stale entries instead of duplicating; keep the file concise (aim under ~200 lines). Whenever you write to memory, tell the user in one short line what you recorded. Memory may only be written to FUTURE.md — never to CLAUDE.md, AGENTS.md, or GEMINI.md.".to_string(),
                 ],
                 ..Default::default()

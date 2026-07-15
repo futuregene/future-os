@@ -303,8 +303,34 @@ impl Default for ResolvedSandbox {
 /// Unix: `bash -c <command>` — the command arrives pre-wrapped by the caller
 /// when stderr merging is wanted (`( … ) 2>&1`).
 ///
-/// Windows: a PowerShell 5.1 wrapper that handles merging and exit capture
-/// itself, because both differ from bash semantics:
+/// Windows: the resolved PowerShell (pwsh 7+ when available, else Windows
+/// PowerShell 5.1 — see [`windows_shell`]) with a wrapper script delivered via
+/// `-EncodedCommand`. Base64/UTF-16LE encoding sidesteps the fragile
+/// Rust→CreateProcess→PowerShell quote re-parsing that plain `-Command` is
+/// subject to; the wrapper itself ([`windows_wrapper_script`]) handles stderr
+/// merging and exit-code capture, which both differ from bash semantics.
+pub fn shell_invocation(command: &str) -> (&'static str, Vec<String>) {
+    #[cfg(not(target_os = "windows"))]
+    {
+        ("bash", vec!["-c".to_string(), command.to_string()])
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let script = windows_wrapper_script(command);
+        (
+            windows_shell().program,
+            vec![
+                "-NoProfile".to_string(),
+                "-EncodedCommand".to_string(),
+                encode_powershell_command(&script),
+            ],
+        )
+    }
+}
+
+/// Build the PowerShell wrapper script for one user command. Split out from
+/// [`shell_invocation`] so it can be asserted on directly (the encoded form is
+/// opaque). The wrapper differs from a bash `( … ) 2>&1`:
 /// - `& { … }` runs the command in a script block (accepts multi-statement
 ///   commands, unlike `( … )`), with `2>&1` merging the error stream and
 ///   `ForEach-Object { "$_" }` stringifying error records to plain text.
@@ -314,33 +340,104 @@ impl Default for ResolvedSandbox {
 ///   where no native command ran at all.
 /// - `chcp 65001` + `[Console]::OutputEncoding` keep non-ASCII output (e.g.
 ///   Chinese) from being garbled by the default GBK/ANSI code page.
-pub fn shell_invocation(command: &str) -> (&'static str, Vec<String>) {
-    #[cfg(not(target_os = "windows"))]
-    {
-        ("bash", vec!["-c".to_string(), command.to_string()])
-    }
+#[cfg(target_os = "windows")]
+pub fn windows_wrapper_script(command: &str) -> String {
+    // The model may generate bash-style double-quoted-with-escapes content
+    // (`{\"key\":\"val\"}`); PowerShell does not treat `\"` as an escape, so
+    // reshape it to a form PowerShell parses (see `normalize_shell_quoting`).
+    let command = ResolvedSandbox::normalize_shell_quoting(command);
+    format!(
+        "chcp 65001 > $null; \
+         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; \
+         $global:LASTEXITCODE = $null; \
+         & {{ {} }} 2>&1 | ForEach-Object {{ \"$_\" }}; \
+         if ($null -ne $LASTEXITCODE) {{ exit $LASTEXITCODE }} \
+         elseif ($Error.Count -gt 0) {{ exit 1 }} \
+         else {{ exit 0 }}",
+        command
+    )
+}
+
+/// Encode a script for PowerShell's `-EncodedCommand`: base64 of UTF-16LE.
+#[cfg(target_os = "windows")]
+fn encode_powershell_command(script: &str) -> String {
+    use base64::Engine;
+    let utf16: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect();
+    base64::engine::general_purpose::STANDARD.encode(utf16)
+}
+
+/// The resolved Windows shell for command execution. pwsh (PowerShell 7+) is
+/// preferred when on PATH: it supports `&&`/`||` chain operators, defaults to
+/// UTF-8, and parses `-EncodedCommand` identically to 5.1. Falls back to the
+/// always-present `powershell` (Windows PowerShell 5.1). Probed once.
+#[cfg(target_os = "windows")]
+pub struct WindowsShell {
+    pub program: &'static str,
+    /// pwsh 7+ supports `&&` / `||`; Windows PowerShell 5.1 does not.
+    pub supports_chain_operators: bool,
+}
+
+#[cfg(target_os = "windows")]
+pub fn windows_shell() -> &'static WindowsShell {
+    use std::sync::OnceLock;
+    static SHELL: OnceLock<WindowsShell> = OnceLock::new();
+    SHELL.get_or_init(|| {
+        if pwsh_on_path() {
+            WindowsShell {
+                program: "pwsh",
+                supports_chain_operators: true,
+            }
+        } else {
+            WindowsShell {
+                program: "powershell",
+                supports_chain_operators: false,
+            }
+        }
+    })
+}
+
+/// Whether `pwsh.exe` (PowerShell 7+) resolves on PATH. A pure env scan — no
+/// process spawn — so it is cheap and side-effect-free.
+#[cfg(target_os = "windows")]
+fn pwsh_on_path() -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join("pwsh.exe").is_file())
+}
+
+/// Runtime hint for prompt text: does the host's shell support `&&`/`||`
+/// chaining? True for any POSIX shell and for pwsh 7 on Windows; false for
+/// Windows PowerShell 5.1. Callable on every target so prompt code that runs
+/// per-host (not `#[cfg]`-gated) can consult it.
+pub fn shell_supports_chain_operators() -> bool {
     #[cfg(target_os = "windows")]
     {
-        // The model may generate either single-quoted JSON args
-        // (--args '{"key":"val"}') or bash-style double-quoted-with-escapes
-        // (--args "{\"key\":\"val\"}"). PowerShell handles single quotes
-        // natively but breaks on \" because backslash is not an escape
-        // character there (PowerShell uses backtick `" instead).
-        let command = ResolvedSandbox::normalize_shell_quoting(command);
-        let script = format!(
-            "chcp 65001 > $null; \
-             [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; \
-             $global:LASTEXITCODE = $null; \
-             & {{ {} }} 2>&1 | ForEach-Object {{ \"$_\" }}; \
-             if ($null -ne $LASTEXITCODE) {{ exit $LASTEXITCODE }} \
-             elseif ($Error.Count -gt 0) {{ exit 1 }} \
-             else {{ exit 0 }}",
-            command
-        );
-        (
-            "powershell",
-            vec!["-NoProfile".to_string(), "-Command".to_string(), script],
-        )
+        windows_shell().supports_chain_operators
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        true
+    }
+}
+
+/// Display name of the host shell for prompt text (e.g. "bash",
+/// "PowerShell 7 (pwsh)", "Windows PowerShell 5.1"). Callable on every target.
+pub fn shell_display_name() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        if windows_shell().supports_chain_operators {
+            "PowerShell 7 (pwsh)"
+        } else {
+            "Windows PowerShell 5.1"
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "bash"
     }
 }
 
@@ -457,12 +554,8 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "windows")]
-    fn shell_invocation_windows_wrapper_captures_exit_state() {
-        let (program, args) = shell_invocation("Get-ChildItem");
-        assert_eq!(program, "powershell");
-        assert_eq!(args[0], "-NoProfile");
-        assert_eq!(args[1], "-Command");
-        let script = &args[2];
+    fn windows_wrapper_script_captures_exit_state() {
+        let script = windows_wrapper_script("Get-ChildItem");
         // chcp pollutes $LASTEXITCODE with 0 — it must be cleared before the
         // user command so a PowerShell-level failure can't masquerade as exit 0.
         assert!(script.contains("$global:LASTEXITCODE = $null"));
@@ -472,6 +565,28 @@ mod tests {
         // failures that never set $LASTEXITCODE.
         assert!(script.contains("exit $LASTEXITCODE"));
         assert!(script.contains("$Error.Count"));
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn shell_invocation_windows_uses_encoded_command() {
+        let (program, args) = shell_invocation("Get-ChildItem");
+        // pwsh when present, else Windows PowerShell 5.1 — both accept these args.
+        assert!(program == "pwsh" || program == "powershell");
+        assert_eq!(args[0], "-NoProfile");
+        assert_eq!(args[1], "-EncodedCommand");
+        // The payload is base64 of the UTF-16LE wrapper script; decode and
+        // confirm it round-trips to the readable wrapper.
+        use base64::Engine;
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(&args[2])
+            .expect("valid base64");
+        let utf16: Vec<u16> = raw
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        let decoded = String::from_utf16(&utf16).expect("valid utf-16");
+        assert!(decoded.contains("& { Get-ChildItem } 2>&1"));
     }
 
     #[test]

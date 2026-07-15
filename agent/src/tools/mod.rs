@@ -201,8 +201,11 @@ pub fn shell_tool() -> AgentTool {
     // generating syntax that will parse (see sandbox::shell_invocation).
     #[cfg(not(target_os = "windows"))]
     let description = "Execute a shell command in the current working directory. Commands are interpreted by bash. Use this for exploration and command-line programs. For ordinary file creation or edits, prefer write/edit tools, but shell redirection and heredocs may be used when they are the better fit. Returns stdout and stderr merged. Output is truncated to last 500000 bytes.";
+    // Version-neutral on Windows: the precise interpreter (pwsh 7 vs Windows
+    // PowerShell 5.1) and its chaining rules live in the host-platform section
+    // of the system prompt (prompt::os_hint), resolved at runtime.
     #[cfg(target_os = "windows")]
-    let description = "Execute a shell command in the current working directory. Commands are interpreted by Windows PowerShell 5.1 — use PowerShell syntax: chain commands with `;` (NOT `&&` or `||`, which PowerShell 5.1 does not support), environment variables as $env:VAR (never %VAR%), single quotes for literal strings. Use this for exploration and command-line programs. For ordinary file creation or edits, prefer write/edit tools. Returns stdout and stderr merged. Output is truncated to last 500000 bytes.";
+    let description = "Execute a shell command in the current working directory. Commands are interpreted by PowerShell — use PowerShell syntax: environment variables as $env:VAR (never %VAR%), single quotes for literal strings, and see the host-platform note for command chaining. Use this for exploration and command-line programs. For ordinary file creation or edits, prefer write/edit tools. Returns stdout and stderr merged. Output is truncated to last 500000 bytes.";
 
     #[cfg(not(target_os = "windows"))]
     let guidelines = vec![
