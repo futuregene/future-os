@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-cli build-gui build-channels test lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean run run-agent run-tui run-cli run-gui run-channels package-gui install uninstall install-tui install-tui-deps install-cli-deps install-cli install-gui install-channels install-skills fmt generate-models generate-proto help
+.PHONY: version build build-agent build-tui build-cli build-gui build-channels test lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean run run-agent run-tui run-cli run-gui run-channels package-gui install uninstall install-tui install-cli-deps install-cli install-gui install-channels install-skills fmt generate-models generate-proto help
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -17,11 +17,8 @@ uninstall:
 	rm -f $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
 	@echo "Removed: future, future-tui, future-gui, future-channel"
 
-install-tui:
-	cd tui && npm install && npm run build && bun build --compile dist/index.js --outfile $(PREFIX)/future-tui
-
-install-tui-deps:
-	cd tui && npm install
+install-tui: build-tui
+	cp tui/dist/future-tui $(PREFIX)/future-tui
 
 install-cli-deps:
 	cd cli && npm install
@@ -89,8 +86,8 @@ build: build-agent build-tui build-cli build-gui
 build-agent:
 	cd agent && cargo build --release
 
-build-tui: install-tui-deps
-	cd tui && npm run build && bun build --compile dist/index.js --outfile dist/future-tui
+build-tui:
+	cd tui && npm install && npm run build && bun build --compile dist/index.js --outfile dist/future-tui
 
 build-cli: install-cli-deps
 	cd cli && npm run build
