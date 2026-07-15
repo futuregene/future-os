@@ -49,8 +49,8 @@ function AgentActivitySingleLine({ item, workspacePath, runId }: { item: AgentAc
     if (runId)
       // Defer so the click returns immediately and panel expansion /
       // data loading runs off the React event path.
-      setTimeout(() => emitFutureEvent("inspect-tool", { runId, toolId: item.id }));
-  }, [runId, item.id]);
+      setTimeout(() => emitFutureEvent("inspect-run", { runId }));
+  }, [runId]);
 
   return (
     <div
@@ -117,8 +117,8 @@ function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentAct
     if (runId)
       // Defer so the click returns immediately and panel expansion /
       // data loading runs off the React event path.
-      setTimeout(() => emitFutureEvent("inspect-tool", { runId, toolId: item.id }));
-  }, [runId, item.id]);
+      setTimeout(() => emitFutureEvent("inspect-run", { runId }));
+  }, [runId]);
 
   return (
     <div
@@ -149,7 +149,7 @@ function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentAct
                   onClick={(e) => {
                     e.stopPropagation();
                     if (runId)
-                      setTimeout(() => emitFutureEvent("inspect-tool", { runId, toolId: child.id }));
+                      setTimeout(() => emitFutureEvent("inspect-run", { runId }));
                   }}
                 >
                   {renderActivityIcon(child.kind, false)}
