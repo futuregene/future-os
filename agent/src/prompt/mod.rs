@@ -278,8 +278,12 @@ fn os_hint() -> String {
             let chaining = if crate::sandbox::shell_supports_chain_operators() {
                 "chain commands with `;`, `&&`, or `||`"
             } else {
-                "chain commands with `;` (never `&&` or `||` — this PowerShell \
-                 version does not support them)"
+                // PowerShell 5.1 rejects `&&`/`||` at parse time. `;` runs the
+                // next command unconditionally; to run one ONLY if the previous
+                // succeeded, use `cmd1; if ($?) { cmd2 }`.
+                "chain commands with `;` (run-if-previous-succeeded is \
+                 `cmd1; if ($?) { cmd2 }`); never use `&&` or `||` — this \
+                 PowerShell version rejects them at parse time"
             };
             format!(
                 "Host platform: Windows. Shell commands are interpreted by \

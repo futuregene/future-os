@@ -320,7 +320,13 @@ pub fn shell_invocation(command: &str) -> (&'static str, Vec<String>) {
         (
             windows_shell().program,
             vec![
+                // -NoProfile: skip profile scripts (speed + no stray output).
+                // -NonInteractive: fail fast instead of hanging on a prompt —
+                //   there is no console for the agent to answer one.
+                // -NoLogo: suppress the startup banner on 5.1.
                 "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-NoLogo".to_string(),
                 "-EncodedCommand".to_string(),
                 encode_powershell_command(&script),
             ],
@@ -590,13 +596,20 @@ mod tests {
         let (program, args) = shell_invocation("Get-ChildItem");
         // pwsh when present, else Windows PowerShell 5.1 — both accept these args.
         assert!(program == "pwsh" || program == "powershell");
-        assert_eq!(args[0], "-NoProfile");
-        assert_eq!(args[1], "-EncodedCommand");
+        // Non-interactive so a prompt can't hang the agent; profile/logo off.
+        assert!(args.contains(&"-NoProfile".to_string()));
+        assert!(args.contains(&"-NonInteractive".to_string()));
+        // The command is the base64 payload right after -EncodedCommand.
+        let enc = args
+            .iter()
+            .position(|a| a == "-EncodedCommand")
+            .expect("has -EncodedCommand");
+        let payload = &args[enc + 1];
         // The payload is base64 of the UTF-16LE wrapper script; decode and
         // confirm it round-trips to the readable wrapper.
         use base64::Engine;
         let raw = base64::engine::general_purpose::STANDARD
-            .decode(&args[2])
+            .decode(payload)
             .expect("valid base64");
         let utf16: Vec<u16> = raw
             .chunks_exact(2)
