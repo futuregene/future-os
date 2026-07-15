@@ -52,17 +52,16 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
 > **只构建终端版？** 跳过 GUI/Tauri 工具链，只构建终端相关组件：
 > `make build-agent && make build-tui && make build-cli`。
 >
-> **注意：** `make install` 目前仅面向 Apple Silicon macOS 暂存 GUI 的 agent/CLI sidecar
-> （target triple 是硬编码的）。在 Linux 或 Intel macOS 上，请分别构建各组件，
-> 或将 sidecar 名称改为你的宿主 triple（`rustc -vV | grep host`）。
+> **注意：** `make install` 构建独立二进制并安装到系统路径：
+> macOS `/opt/homebrew/bin`、Linux `/usr/local/bin`、Windows `%USERPROFILE%\.future\bin`。
 
 ### 构建
 
 ```bash
 git clone https://github.com/futuregene/future-os.git
 cd future-os
-make install   # 安装 JS 依赖、link `future` CLI、暂存 GUI sidecar
-make build     # 构建 agent + TUI + CLI + GUI
+make install   # 构建并安装独立二进制（future, future-tui, future-gui, future-channel）
+make build     # 开发构建 —— agent + TUI + CLI + GUI（不安装到系统）
 ```
 
 ### 启动 Agent（必须先启动）
@@ -87,7 +86,7 @@ make run-gui     # 桌面应用
 
 Agent 至少需要一个带 API key 的模型才能回复。两种方式:
 
-**A —— FutureGene 托管模型。** 设备码登录会自动配好 key 和模型列表:
+**A —— FutureOS 托管模型。** 设备码登录会自动配好 key 和模型列表:
 
 ```bash
 future auth login
@@ -125,8 +124,10 @@ future auth login
 future auth login                          # 登录托管模型
 future run "用 Python 写个排序函数"         # 单次对话（需 Agent 已启动）
 future tui                                 # 打开 TUI
+future gui                                 # 启动桌面应用
 future agent start                         # 将 Agent 作为后台服务运行
-future --help                              # 查看全部命令（account、tools、skills、channel、mcp…）
+future channel start                       # 启动 Channel Bridge
+future --help                              # 查看全部命令
 ```
 
 ### 常用斜杠命令（TUI）
@@ -187,7 +188,7 @@ future --help                              # 查看全部命令（account、tool
 | 路径 | 说明 |
 |---|---|
 | `agent/settings.json` | 队列模式、压缩、重试、权限级别 |
-| `agent/auth.json` | API Key（FutureGene + 自定义 Provider） |
+| `agent/auth.json` | API Key（FutureOS + 自定义 Provider） |
 | `agent/models.json` | 自定义模型配置（Base URL、API Key、兼容参数） |
 | `agent/sessions/` | JSONL 会话文件（每个会话一个文件） |
 | `tui/settings.json` | 默认模型、思考级别、模型范围列表 |
@@ -196,7 +197,7 @@ future --help                              # 查看全部命令（account、tool
 ## 开发
 
 ```bash
-make build-channels  # channel bridge —— 不在 `make build` 内，需单独构建
+make build-channels  # channel bridge —— 单独构建；`make install` 已包含
 make lint     # 全量检查（agent clippy + channels clippy + TUI tsc + CLI tsc + GUI eslint）
 make fmt      # cargo fmt（agent + channels）
 make test     # cargo test（agent）
@@ -219,7 +220,7 @@ cd tui && npm run generate-proto  # TUI 内嵌 proto
 | 客户端报连接 / gRPC 错误退出 | Agent 没启动。先启动它(`make run-agent` 或 `future agent start`),并确认端口没被占用:`lsof -i :50051`。 |
 | 构建时报 `protoc` 找不到 | 安装 Protocol Buffers 编译器——见 [环境要求](#环境要求)。 |
 | Agent 回复鉴权 / "no model" 错误 | 还没配置模型。运行 `future auth login`,或在 `models.json` 里加一个 provider——见 [配置模型](#配置模型)。 |
-| Linux / Intel macOS 上 GUI 找不到 Agent | `make install` 只按 Apple Silicon 的 triple 暂存 sidecar。把 release 二进制拷到你的宿主 triple:`cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-$(rustc -Vv | sed -n 's/^host: //p')`。 |
+| GUI 找不到 Agent 二进制 | `make install-gui` 用你的宿主 target triple 复制 sidecar。如果 triple 与自动检测的不一致，手动复制：`cp agent/target/debug/future-agent gui/src-tauri/binaries/future-agent-$(rustc -vV | sed -n 's/^host: //p')`。 |
 | Linux 上 GUI 构建失败(webkit / gtk 报错) | 安装 Tauri 系统依赖——见 [环境要求](#环境要求)。 |
 
 ## License

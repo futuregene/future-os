@@ -52,17 +52,16 @@ Required for a full `make build` (agent + TUI + CLI + GUI):
 > **Terminal-only build?** To skip the GUI/Tauri toolchain, build just the terminal stack:
 > `make build-agent && make build-tui && make build-cli`.
 >
-> **Note:** `make install` currently stages the GUI agent/CLI sidecars for Apple Silicon macOS only
-> (the target triple is hardcoded). On Linux or Intel macOS, build the pieces individually or adjust
-> the sidecar names to your host triple (`rustc -vV | grep host`).
+> **Note:** `make install` builds standalone binaries and installs them to your system path:
+> macOS `/opt/homebrew/bin`, Linux `/usr/local/bin`, Windows `%USERPROFILE%\.future\bin`.
 
 ### Build
 
 ```bash
 git clone https://github.com/futuregene/future-os.git
 cd future-os
-make install   # install JS deps, link the `future` CLI, stage GUI sidecars
-make build     # build agent + TUI + CLI + GUI
+make install   # build & install standalone binaries (future, future-tui, future-gui, future-channel)
+make build     # dev build — agent + TUI + CLI + GUI (no system install)
 ```
 
 ### Run the agent (start this first)
@@ -87,7 +86,7 @@ make run-gui     # desktop app
 
 The agent needs at least one model with an API key before it can answer. Two options:
 
-**A — FutureGene hosted models.** Device-flow sign-in provisions keys and a model list automatically:
+**A — FutureOS hosted models.** Device-flow sign-in provisions keys and a model list automatically:
 
 ```bash
 future auth login
@@ -125,8 +124,10 @@ Switch the active model any time with `/model <id>` in the TUI, or `ctrl+p` to c
 future auth login                            # sign in to hosted models
 future run "Write a Python sort function"    # one-shot prompt (needs the agent running)
 future tui                                   # open the TUI
+future gui                                   # launch the desktop app
 future agent start                           # run the agent as a background service
-future --help                                # full command list (account, tools, skills, channel, mcp, …)
+future channel start                         # start the channel bridge
+future --help                                # full command list
 ```
 
 ### Essential Slash Commands (TUI)
@@ -187,7 +188,7 @@ All config under `~/.future/`:
 | Path | Purpose |
 |---|---|
 | `agent/settings.json` | Steering/follow-up mode, compaction, retry, permission level |
-| `agent/auth.json` | API keys (FutureGene + custom providers) |
+| `agent/auth.json` | API keys (FutureOS + custom providers) |
 | `agent/models.json` | Custom model overrides (base URL, API key, compat) |
 | `agent/sessions/` | JSONL session files (one per session) |
 | `tui/settings.json` | Default model, thinking level, scoped model list |
@@ -196,7 +197,7 @@ All config under `~/.future/`:
 ## Development
 
 ```bash
-make build-channels  # channel bridge — NOT built by `make build`, build it separately
+make build-channels  # channel bridge — built separately; `make install` includes it
 make lint     # lint all (agent clippy + channels clippy + TUI tsc + CLI tsc + GUI eslint)
 make fmt      # cargo fmt (agent + channels)
 make test     # cargo test (agent)
@@ -219,7 +220,7 @@ cd tui && npm run generate-proto  # TUI embedded proto
 | Client exits with a connection / gRPC error | The agent isn't running. Start it (`make run-agent` or `future agent start`) and check nothing else holds the port: `lsof -i :50051`. |
 | Build fails with a `protoc` not-found error | Install the Protocol Buffers compiler — see [Prerequisites](#prerequisites). |
 | Agent replies with an auth / "no model" error | No model configured yet. Run `future auth login`, or add a provider to `models.json` — see [Configure a model](#configure-a-model). |
-| GUI can't find the agent on Linux / Intel macOS | `make install` stages the sidecar under an Apple-Silicon triple only. Copy the release binary to your host triple: `cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-$(rustc -Vv | sed -n 's/^host: //p')`. |
+| GUI can't find the agent binary | `make install-gui` copies the agent sidecar using your host target triple. If your triple differs from the auto-detected one, copy it manually: `cp agent/target/debug/future-agent gui/src-tauri/binaries/future-agent-$(rustc -vV | sed -n 's/^host: //p')`. |
 | GUI build fails on Linux (webkit / gtk errors) | Install the Tauri system dependencies — see [Prerequisites](#prerequisites). |
 
 ## License
