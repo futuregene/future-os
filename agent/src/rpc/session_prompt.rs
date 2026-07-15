@@ -44,7 +44,7 @@ impl ServerSession {
             let memory_content = std::fs::read_to_string(&memory_path).unwrap_or_default();
 
             let system_prompt = crate::prompt::build_prompt(&crate::prompt::PromptOptions {
-                working_directory: self.cwd.clone(),
+                working_directory: self.cwd.replace('\\', "/"),
                 date: today,
                 tools: r#loop.tools.clone(),
                 skills,
