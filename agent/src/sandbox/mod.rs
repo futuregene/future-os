@@ -207,13 +207,40 @@ impl ResolvedSandbox {
     }
 
     /// Convert bash-style escaped double quotes (\") to single-quoted form
-    /// so PowerShell can parse the arguments correctly.
-    /// PowerShell uses backtick (`) as its escape character; backslash has
-    /// no special meaning. The model generates either form:
-    ///   --args '{"key":"val"}'   ← already valid in PowerShell
-    ///   --args "{\"key\":\"val\"}" ← needs conversion
+    /// so PowerShell can parse the arguments correctly. Also handles
+    /// PowerShell backtick escapes (`", `{, `}) and strips any explicit
+    /// powershell -Command wrapper the model may have generated (the agent
+    /// already wraps commands in PowerShell).
     #[cfg(windows)]
     fn normalize_shell_quoting(command: &str) -> String {
+        let command = command.trim();
+
+        // Strip explicit powershell -Command "..." wrapper if the model
+        // generated it — the agent already wraps commands in PowerShell.
+        let command = if command.starts_with("powershell ") {
+            let inner = command["powershell ".len()..].trim();
+            let inner = inner
+                .trim_start_matches("-Command ")
+                .trim_start_matches("-c ")
+                .trim();
+            if (inner.starts_with('"') && inner.ends_with('"'))
+                || (inner.starts_with('\'') && inner.ends_with('\''))
+            {
+                &inner[1..inner.len() - 1]
+            } else {
+                inner
+            }
+        } else {
+            command
+        };
+
+        // Unescape PowerShell backtick escapes (backtick is PowerShell's
+        // escape character; the model sometimes generates `" instead of \").
+        let command = command
+            .replace("`\"", "\"")
+            .replace("`{", "{")
+            .replace("`}", "}");
+
         let chars: Vec<char> = command.chars().collect();
         let mut result = String::with_capacity(command.len());
         let mut i = 0;
