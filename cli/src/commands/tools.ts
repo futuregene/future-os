@@ -672,6 +672,26 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
       toolArgs = parseToolArgs(raw);
     }
 
+    // Accept --<param> <value> sugar as an alternative to --args JSON.
+    // The model sometimes generates individual flags (e.g. --query "..."
+    // --count 8) instead of --args '{"query":"...","count":8}'.
+    const knownFlags = new Set([
+      "--args", "--stdin", "--input", "--mask",
+      "--output", "--timeout", "--raw",
+    ]);
+    for (let i = 2; i < args.length - 1; i++) {
+      const arg = args[i];
+      if (arg.startsWith("--") && !knownFlags.has(arg)) {
+        const val = args[i + 1];
+        // Don't consume a value that looks like another flag
+        if (!val.startsWith("--")) {
+          const key = arg.slice(2); // strip "--" prefix
+          toolArgs[key] = parseCmdValue(val);
+          i++; // skip the value
+        }
+      }
+    }
+
     // Resolve image_path / doc_path → base64 before sending to API
     toolArgs = await resolveLocalPaths(toolArgs);
 
