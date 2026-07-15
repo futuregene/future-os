@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-tui-single build-cli build-gui test test-agent lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean clean-gui run run-agent run-tui run-cli run-gui package-gui install install-tui install-cli-deps install-cli install-gui
+.PHONY: version build build-agent build-tui build-tui-single build-cli build-gui build-channels build-channels-release test test-agent lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean clean-gui run run-agent run-tui run-cli run-gui run-channels package-gui install install-tui install-cli-deps install-cli install-gui install-channels install-skills install-gui-release fmt generate-models generate-proto help
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -19,16 +19,19 @@ install-tui:
 install-cli-deps:
 	cd cli && npm install
 
-install-cli: install-cli-deps build-tui
+install-cli: install-cli-deps
 	cd cli && npm run build && bun build --compile dist/index.js --outfile /opt/homebrew/bin/future
 
-install-gui:
+UNAME_M := $(shell uname -m)
+UNAME_S := $(shell uname -s | tr '[:upper:]' '[:lower:]')
+TARGET_TRIPLE := $(UNAME_M)-$(UNAME_S)
+
+install-gui: install-cli
 	cd gui && npm install
 	@mkdir -p gui/src-tauri/binaries
 	cd agent && cargo build
-	cp agent/target/debug/future-agent gui/src-tauri/binaries/future-agent-aarch64-apple-darwin
-	cd cli && npm run build && bun build --compile dist/index.js --outfile dist/future
-	cp cli/dist/future gui/src-tauri/binaries/future-aarch64-apple-darwin
+	cp agent/target/debug/future-agent gui/src-tauri/binaries/future-agent-$(TARGET_TRIPLE)
+	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET_TRIPLE)
 	cd gui/src-tauri && cargo build
 	cp gui/src-tauri/target/debug/futureos /opt/homebrew/bin/future-gui
 
@@ -38,13 +41,13 @@ install-channels:
 
 # Release builds of agent + CLI sidecars (for packaging). Separate from
 # install-gui so run-gui doesn't pay the release compile cost.
-install-gui-release:
+install-gui-release: install-cli-deps
 	cd gui && npm install
 	@mkdir -p gui/src-tauri/binaries
 	cd agent && cargo build --release
-	cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-aarch64-apple-darwin
+	cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET_TRIPLE)
 	cd cli && npm run build && bun build --compile dist/index.js --outfile dist/future
-	cp cli/dist/future gui/src-tauri/binaries/future-aarch64-apple-darwin
+	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET_TRIPLE)
 
 # Symlink the built-in skill bundles into the agent's app-skills directory
 # so the agent discovers them on startup.  Pulls the latest from the skills
@@ -87,8 +90,8 @@ build-tui-single:
 build-cli: install-cli-deps
 	cd cli && npm run build
 
-build-gui: install-gui
-	cd gui && npm run build
+build-gui:
+	cd gui && npm install && npm run build
 
 build-channels:
 	cd channels && cargo build
@@ -140,7 +143,7 @@ run-agent:
 run-tui: install-tui
 	cd tui && npm run dev
 
-run-cli: install-cli
+run-cli: install-cli-deps build-tui
 	cd cli && npm run dev
 
 run-gui: install-gui
@@ -171,6 +174,7 @@ clean:
 	rm -f tui/future-tui
 	rm -rf cli/dist
 	rm -rf cli/node_modules
+	rm -f /opt/homebrew/bin/future /opt/homebrew/bin/future-tui /opt/homebrew/bin/future-gui /opt/homebrew/bin/future-channel
 	$(MAKE) clean-gui
 
 clean-gui:
@@ -201,5 +205,5 @@ help:
 	@echo "  run-channels        Build and run channel bridge"
 	@echo "  generate-models    Fetch model data and regenerate models_generated.rs"
 	@echo "  generate-proto     Compile proto/future.proto to Rust gRPC code"
-	@echo "  install            Install all dependencies (TUI + CLI + GUI)"
-	@echo "  clean              Remove build artifacts"
+	@echo "  install            Install standalone binaries to /opt/homebrew/bin/"
+	@echo "  clean              Remove build artifacts + installed binaries"
