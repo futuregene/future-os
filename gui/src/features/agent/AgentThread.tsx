@@ -41,6 +41,7 @@ interface AgentThreadProps {
   onRetryAgentConnection: () => void;
   onOpenAccount: () => void;
   onOpenModels: () => void;
+  onOpenProviders: () => void;
   onForked: (threadId: string) => void;
   onThreadActivity: () => void;
   onToggleLeftPanel: () => void;
@@ -67,6 +68,7 @@ export function AgentThread({
   onRetryAgentConnection,
   onOpenAccount,
   onOpenModels,
+  onOpenProviders,
   onForked,
   onThreadActivity,
   onToggleLeftPanel,
@@ -242,6 +244,7 @@ export function AgentThread({
                     connection={agentConnection}
                     onOpenModels={onOpenModels}
                     onOpenAccount={onOpenAccount}
+                    onOpenProviders={onOpenProviders}
                     onRetry={onRetryAgentConnection}
                   />
                 )
@@ -302,14 +305,16 @@ function AgentConnectionNotice({
   onRetry,
   onOpenAccount,
   onOpenModels,
+  onOpenProviders,
 }: {
   connection: AgentConnectionState;
   onRetry: () => void;
   onOpenAccount: () => void;
   onOpenModels: () => void;
+  onOpenProviders: () => void;
 }) {
   const { t } = useTranslation("agent");
-  const notice = agentNotice(connection, { onOpenModels, onOpenAccount, onRetry }, t);
+  const notice = agentNotice(connection, { onOpenModels, onOpenAccount, onOpenProviders, onRetry }, t);
   return (
     <div className="pointer-events-auto mx-auto w-full max-w-3xl rounded-md border border-warning-line bg-warning-soft px-3 py-2 text-xs leading-5 text-warning shadow-xs">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -329,7 +334,7 @@ function AgentConnectionNotice({
 
 function agentNotice(
   connection: AgentConnectionState,
-  actions: { onRetry: () => void; onOpenAccount: () => void; onOpenModels: () => void },
+  actions: { onRetry: () => void; onOpenAccount: () => void; onOpenModels: () => void; onOpenProviders: () => void },
   t: (key: string) => string,
 ): AgentNotice {
   const retry = { label: t("notice.retry"), onClick: actions.onRetry };
@@ -362,7 +367,7 @@ function agentNotice(
     return {
       title: t("notice.needsLogin.title"),
       detail: t("notice.needsLogin.detail"),
-      action: { label: t("notice.needsLogin.action"), onClick: actions.onOpenAccount },
+      action: { label: t("notice.needsLogin.action"), onClick: actions.onOpenProviders },
     };
   }
   // Models loaded, but the user disabled every one — steer them to re-enable.
