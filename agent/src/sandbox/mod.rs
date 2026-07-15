@@ -194,10 +194,13 @@ impl ResolvedSandbox {
             // character there (PowerShell uses backtick `" instead).
             let command = Self::normalize_shell_quoting(command);
             let mut child = tokio::process::Command::new("powershell");
+            // chcp 65001 sets the console code page to UTF-8 so Chinese
+            // characters and other non-ASCII text survive output capture
+            // without being garbled by the default GBK/ANSI code page.
             child.args([
                 "-NoProfile",
                 "-Command",
-                &format!("{}; exit $LASTEXITCODE", command),
+                &format!("chcp 65001 > $null; {}; exit $LASTEXITCODE", command),
             ]);
             child
         }
