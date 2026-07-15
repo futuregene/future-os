@@ -11,7 +11,7 @@ version:
 
 # ─── Install ──────────────────────────────────────────────────────────────────
 
-install: install-tui install-cli install-gui install-channels
+install: install-tui install-cli install-gui install-channels install-skills
 
 install-tui:
 	cd tui && npm install
