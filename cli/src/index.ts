@@ -60,6 +60,12 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (group === "gui") {
+    const { gui } = await import("./commands/gui.js");
+    await gui();
+    return;
+  }
+
   if (group === "tui") {
     await tui(args.slice(1));
     return;

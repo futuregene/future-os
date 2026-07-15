@@ -25,6 +25,7 @@ Usage:
   future skills install-builtin [--scope <app|project|global>]
   future doctor [--fix]
   future tui [tui options]
+  future gui
 
 Run 'future run --help' for run command options.
 `);
