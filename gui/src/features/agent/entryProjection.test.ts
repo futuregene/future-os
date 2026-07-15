@@ -78,7 +78,7 @@ describe("entriesToMessages", () => {
         content: "done",
         timestamp: "2026-07-01T10:00:05+08:00",
         tool_calls: [
-          { function: { name: "write", arguments: JSON.stringify({ path: "poem.md", content: "..." }) } },
+          { id: "call_00_test", function: { name: "write", arguments: JSON.stringify({ path: "poem.md", content: "..." }) } },
         ],
       },
     ];
@@ -96,7 +96,7 @@ describe("entriesToMessages", () => {
         role: "assistant",
         content: "",
         timestamp: "2026-07-01T10:00:03+08:00",
-        tool_calls: [{ function: { name: "write", arguments: JSON.stringify({ path: "poem.md" }) } }],
+        tool_calls: [{ id: "call_00_test", function: { name: "write", arguments: JSON.stringify({ path: "poem.md" }) } }],
       },
       // The agent's tool result entry for the same call — must not add a second row.
       { id: "t1", role: "tool", name: "write", content: "Written to poem.md", timestamp: "2026-07-01T10:00:04+08:00" },
@@ -116,7 +116,7 @@ describe("entriesToMessages", () => {
         role: "assistant",
         content: "",
         timestamp: "2026-07-01T10:00:03+08:00",
-        tool_calls: [{ function: { name: "bash", arguments: JSON.stringify({ command: "futre --version" }) } }],
+        tool_calls: [{ id: "call_00_test", function: { name: "bash", arguments: JSON.stringify({ command: "futre --version" }) } }],
       },
       { id: "t1", role: "tool", name: "bash", content: "[exit code: 127]\nfutre: command not found", timestamp: "2026-07-01T10:00:04+08:00" },
       { id: "a2", role: "assistant", content: "that failed", timestamp: "2026-07-01T10:00:05+08:00" },
@@ -135,7 +135,7 @@ describe("entriesToMessages", () => {
         role: "assistant",
         content: "",
         timestamp: "2026-07-01T10:00:03+08:00",
-        tool_calls: [{ function: { name: "bash", arguments: JSON.stringify({ command: "grep foo file.txt" }) } }],
+        tool_calls: [{ id: "call_00_test", function: { name: "bash", arguments: JSON.stringify({ command: "grep foo file.txt" }) } }],
       },
       { id: "t1", role: "tool", name: "bash", content: "[exit code: 1]\n", timestamp: "2026-07-01T10:00:04+08:00" },
     ];
@@ -153,7 +153,7 @@ describe("entriesToMessages", () => {
         role: "assistant",
         content: "Let me check the config.",
         timestamp: "2026-07-01T10:00:03+08:00",
-        tool_calls: [{ function: { name: "read", arguments: JSON.stringify({ path: "config.toml" }) } }],
+        tool_calls: [{ id: "call_00_test", function: { name: "read", arguments: JSON.stringify({ path: "config.toml" }) } }],
       },
     ];
 
@@ -162,7 +162,7 @@ describe("entriesToMessages", () => {
   });
 
   it("collapses a burst of same-kind tools into one row with a count", () => {
-    const editCall = (path: string) => ({ function: { name: "edit", arguments: JSON.stringify({ path }) } });
+    const editCall = (path: string) => ({ id: "call_00_test", function: { name: "edit", arguments: JSON.stringify({ path }) } });
     const entries: SessionEntry[] = [
       { id: "u1", role: "user", content: "edit files", timestamp: "2026-07-01T10:00:00+08:00" },
       {
