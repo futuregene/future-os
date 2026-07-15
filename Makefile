@@ -34,7 +34,7 @@ install-gui:
 
 install-channels:
 	cd channels && cargo build
-	cp channels/target/debug/future-channels /opt/homebrew/bin/
+	cp channels/target/debug/future-channel /opt/homebrew/bin/
 
 # Release builds of agent + CLI sidecars (for packaging). Separate from
 # install-gui so run-gui doesn't pay the release compile cost.
