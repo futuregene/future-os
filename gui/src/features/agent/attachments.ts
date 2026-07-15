@@ -47,16 +47,6 @@ export function isImageExtension(path: string) {
 }
 
 /**
- * Fast, path-only check used during drag-over to decide accept vs. reject
- * before the file is dropped — the OS drag flow only hands us paths, not
- * content. Any file is acceptable; images are gated by `allowImages` (dropped
- * for text-only models). Directories are caught by `classifyAttachment` on drop.
- */
-export function isDraggableAttachment(path: string, allowImages: boolean): boolean {
-  return isImageExtension(path) ? allowImages : true;
-}
-
-/**
  * Classify a local attachment by path into `image` | `file`. Only the directory
  * check needs Rust (`inspect_attachment`) — the webview can't stat arbitrary
  * paths. Non-image files are never restricted by type or content: the agent

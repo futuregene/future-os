@@ -111,8 +111,7 @@
       "sandbox": "Asks when needed",
       "off": "<em>ANY</em> command, no approval"
     },
-    "attachRejectedNoImage": "{{name}} (current model doesn't support images)",
-    "attachFilesHintNoImage": "Attach files (PDF, text)",
+    "attachImageUnsupportedHint": "The current model doesn't support images and may not read this image correctly",
     "attachDialogFilterNoImage": "Supported (PDF, text)",
     "dropReject": "Unsupported file type"
   },
