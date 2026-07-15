@@ -119,7 +119,12 @@ export async function initializeSession(apiKey: string): Promise<string> {
     clientInfo: { name: "future", version: "1.0" },
   }, apiKey, undefined, 1);
 
-  if (body.error) throw new Error(`MCP initialize failed: ${JSON.stringify(body.error)}`);
+  if (body.error) {
+    const err = body.error as Record<string, unknown>;
+    const code = typeof err.code === "number" ? String(err.code) : String(err.code ?? "unknown");
+    const message = typeof err.message === "string" ? err.message : "unknown error";
+    throw new Error(`MCP initialize failed: code=${code}, message=${message}`);
+  }
   if (!sessionId) throw new Error("No session ID received from MCP server");
 
   await mcpNotify(url, "notifications/initialized", {}, apiKey, sessionId);

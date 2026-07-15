@@ -51,33 +51,29 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     example: '{"prompt": "A photograph of a red fox in an autumn forest, golden hour", "size": "1024x1024"}',
   },
   image_edit: {
-    description: "Edit an existing image using text instructions.",
+    description: "Edit an existing image using text instructions. Use --input <path> to provide the source image, --mask <path> for an optional mask.",
     args: {
       prompt: "string (required)",
-      image_b64: "string (required, base64-encoded image)",
-      mask_b64: "string (optional, base64-encoded mask)",
       size: 'string (default: "1024x1024")',
       quality: 'string (default: "medium")',
     },
-    example: '{"prompt": "Convert to watercolor painting", "image_b64": "<base64>"}',
+    example: '--input photo.png --args \'{"prompt": "Convert to watercolor painting"}\'',
   },
   read_image: {
-    description: "Read and analyze an image. Provide a base64-encoded image and a question — supports OCR, object recognition, and visual Q&A.",
+    description: "Read and analyze an image. Use --input <path> to provide the image file — supports OCR, object recognition, and visual Q&A.",
     args: {
-      image_b64: "string (required, base64-encoded image)",
       question: "string (required, e.g. 'Extract text' or 'Describe this image')",
       mime_type: 'string (default: "image/png")',
       max_tokens: "integer (default: 2000)",
     },
-    example: '{"image_b64": "<base64>", "question": "What text is in this image?"}',
+    example: '--input photo.png --args \'{"question": "What text is in this image?"}\'',
   },
   parse_doc: {
-    description: "Parse PDF and Word documents into markdown. Upload a base64-encoded document and get structured markdown with text, tables, and formulas preserved.",
+    description: "Parse PDF and Word documents into markdown. Use --input <path> to provide the document — get structured markdown with text, tables, and formulas preserved.",
     args: {
-      doc_b64: "string (required, base64-encoded document content)",
       file_type: 'string (optional, "pdf" or "docx", default: "pdf")',
     },
-    example: '{"doc_b64": "<base64>", "file_type": "pdf"}',
+    example: '--input report.pdf --args \'{"file_type": "pdf"}\'',
   },
   web_search: {
     description: "Search the web. Returns titles, links, and snippets.",
@@ -135,7 +131,12 @@ async function listRemoteTools(apiKey: string): Promise<Array<{ name: string; de
   const sessionId = await initializeSession(apiKey);
   const { body } = await mcpPost(await mcpUrl(), "tools/list", {}, apiKey, sessionId, 2);
 
-  if (body.error) throw new Error(`tools/list failed: ${JSON.stringify(body.error)}`);
+  if (body.error) {
+    const err = body.error as Record<string, unknown>;
+    const code = typeof err.code === "number" ? String(err.code) : String(err.code ?? "unknown");
+    const message = typeof err.message === "string" ? err.message : "unknown error";
+    throw new Error(`tools/list failed: code=${code}, message=${message}`);
+  }
   const result = getRecord(body.result);
   const tools = Array.isArray(result?.tools) ? result!.tools : [];
   return tools.filter(isRecord).map((t) => {
@@ -160,17 +161,12 @@ async function callRemoteTool(apiKey: string, name: string, args: Record<string,
   }, apiKey, sessionId, 2, timeoutMs);
 
   if (body.error) {
+    // Sanitize: only expose code and message — never leak upstream internals
+    // (RequestId, HostId, nested data bodies, troubleshooting URLs, etc.).
     const err = body.error as Record<string, unknown>;
-    // Upstream errors often nest a JSON string inside data.body — parse it
-    // so the error is readable without a second JSON.decode pass.
-    if (err.data && typeof err.data === "object") {
-      const data = err.data as Record<string, unknown>;
-      if (typeof data.body === "string") {
-        try { data.body = JSON.parse(data.body as string); }
-        catch { /* keep raw string */ }
-      }
-    }
-    throw new Error(`tools/call failed: ${JSON.stringify(err)}`);
+    const code = typeof err.code === "number" ? String(err.code) : String(err.code ?? "unknown");
+    const message = typeof err.message === "string" ? err.message : "unknown error";
+    throw new Error(`tools/call failed: code=${code}, message=${message}`);
   }
 
   const result = getRecord(body.result);
@@ -624,7 +620,7 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
   if (command === "call") {
     const toolName = args[0];
     if (!toolName) {
-      console.error("Usage: future tools call <tool_name> [--args '<json>' | --stdin] [--raw] [--output <path>] [--timeout <seconds>]");
+      console.error("Usage: future tools call <tool_name> [--args '<json>' | --stdin] [--input <path>] [--mask <path>] [--raw] [--output <path>] [--timeout <seconds>]");
       process.exitCode = 1;
       return;
     }
@@ -635,6 +631,16 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     const outputIdx = args.indexOf("--output");
     const outputPath = outputIdx !== -1 && outputIdx + 1 < args.length
       ? args[outputIdx + 1]
+      : null;
+    // --input and --mask: read local files and inject as base64 to MCP,
+    // so base64 strings never appear in user-facing args or output.
+    const inputIdx = args.indexOf("--input");
+    const inputPath = inputIdx !== -1 && inputIdx + 1 < args.length && !args[inputIdx + 1].startsWith("--")
+      ? args[inputIdx + 1]
+      : null;
+    const maskIdx = args.indexOf("--mask");
+    const maskPath = maskIdx !== -1 && maskIdx + 1 < args.length && !args[maskIdx + 1].startsWith("--")
+      ? args[maskIdx + 1]
       : null;
     const timeoutIdx = args.indexOf("--timeout");
     const timeoutSec = timeoutIdx !== -1 && timeoutIdx + 1 < args.length
@@ -668,6 +674,29 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
 
     // Resolve image_path / doc_path → base64 before sending to API
     toolArgs = await resolveLocalPaths(toolArgs);
+
+    // Resolve --input / --mask flags to base64, tool-aware:
+    //   image_edit, read_image → image_b64 / mask_b64
+    //   parse_doc              → doc_b64
+    if (inputPath) {
+      try {
+        const buf = await readFile(inputPath);
+        const b64Key = toolName === "parse_doc" ? "doc_b64" : "image_b64";
+        toolArgs[b64Key] = buf.toString("base64");
+      } catch {
+        console.error(`Error: cannot read input file: ${inputPath}`);
+        process.exit(1);
+      }
+    }
+    if (maskPath) {
+      try {
+        const buf = await readFile(maskPath);
+        toolArgs["mask_b64"] = buf.toString("base64");
+      } catch {
+        console.error(`Error: cannot read mask file: ${maskPath}`);
+        process.exit(1);
+      }
+    }
 
     if (isBrowserTool(toolName)) {
       try {
