@@ -11,8 +11,8 @@ import { relativizeWorkspacePath } from "../../lib/workspacePath";
 import { toolStatusLabel } from "./runDisplayFormatters";
 import { toolCommand, toolTarget } from "./toolInput";
 
-// Only these tool calls are worth a row of their own; `read`/`grep`/`ls` are
-// navigation noise and stay collapsed out of the panel.
+// Tool calls that get a row in the runs panel. `grep`/`ls` are quick-lookup
+// noise and stay collapsed out.
 const DISPLAY_TOOLS = new Set(["bash", "write", "edit", "read"]);
 
 interface RunsPanelProps {
