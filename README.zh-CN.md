@@ -42,12 +42,11 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
   - macOS：`brew install protobuf`
   - Linux（Debian/Ubuntu）：`sudo apt install protobuf-compiler`
   - Windows：`choco install protoc`（或从 protobuf releases 下载）
-- **Linux 必需 —— mold 链接器**：
-  - Debian/Ubuntu：`sudo apt install mold`
-  - 源码安装：见 [mold releases](https://github.com/rui314/mold/releases)
+- **Linux 必需**（所有构建都需要）：
+  - `sudo apt install mold pkg-config libssl-dev`
 - **Tauri 系统依赖**（构建 GUI 需要）：
   - macOS：`xcode-select --install`
-  - Linux（Debian/Ubuntu）：`sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libssl-dev libayatana-appindicator3-dev patchelf`
+  - Linux（Debian/Ubuntu）：`sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf`
   - Windows：WebView2 Runtime（Win 10/11 自带）+ MSVC 构建工具
 - 可选：**Python 3** —— 仅 `make generate-models` 需要
 - 平台：macOS / Linux / Windows
