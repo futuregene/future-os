@@ -61,7 +61,15 @@ fn parse_skill(skill_md: &Path) -> Result<Option<Skill>> {
     let name_zh = extract_frontmatter_field(&content, "name_zh");
     let description_zh = extract_frontmatter_field(&content, "description_zh");
     let version = extract_frontmatter_field(&content, "version");
-    let location = skill_md.to_string_lossy().to_string();
+    // Normalize to forward slashes so the path survives transport through
+    // the system prompt without backslash escape-sequence corruption
+    // (e.g. \f, \a interpreted by the model on non-Windows hosts).
+    let location = skill_md
+        .to_string_lossy()
+        .replace('\\', "/")
+        // Strip the Windows extended-length prefix (\\?\) if present.
+        .trim_start_matches("//?/")
+        .to_string();
     let disable =
         content.contains("disableModelInvocation") || content.contains("disable_model_invocation");
 

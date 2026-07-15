@@ -19,7 +19,6 @@ pub mod windows;
 mod windows_plan;
 
 #[cfg(windows)]
-use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -172,8 +171,8 @@ impl ResolvedSandbox {
 
     /// Build the bash invocation: Seatbelt-wrapped when enabled+available and
     /// not escalated; otherwise the platform-appropriate shell (`bash -c` on
-    /// Unix, `cmd /c` on Windows). `escalated` forces an unsandboxed run for
-    /// one approved command.
+    /// Unix, `powershell -Command` on Windows). `escalated` forces an
+    /// unsandboxed run for one approved command.
     pub fn build_bash_command(&self, command: &str, escalated: bool) -> tokio::process::Command {
         if !escalated && self.wraps_bash() {
             #[cfg(target_os = "macos")]
@@ -189,97 +188,18 @@ impl ResolvedSandbox {
         }
         #[cfg(target_os = "windows")]
         {
-            let command = Self::rewrite_cli_tools_args(command);
-            let mut child = tokio::process::Command::new("cmd");
-            child.args(["/c", &command]);
+            // PowerShell handles single-quoted strings correctly
+            // (unlike cmd.exe where single quotes are literal characters),
+            // matching the model's natural quoting style.
+            // -NoProfile speeds up startup; ; exit $LASTEXITCODE
+            // propagates the child process exit code.
+            let mut child = tokio::process::Command::new("powershell");
+            child.args([
+                "-NoProfile",
+                "-Command",
+                &format!("{}; exit $LASTEXITCODE", command),
+            ]);
             child
-        }
-    }
-
-    /// On Windows, cmd.exe strips double quotes from the command string, which
-    /// corrupts JSON passed via `future-cli tools call --args`. Rewrite the
-    /// invocation to pipe JSON through a temp file and use `--stdin` instead,
-    /// avoiding the shell quoting problem entirely.
-    #[cfg(windows)]
-    fn rewrite_cli_tools_args(command: &str) -> Cow<'_, str> {
-        // Quick rejection: must contain --args, tools call, and a future binary name
-        if !command.contains("--args")
-            || !command.contains("tools call")
-            || !(command.contains("future-cli") || command.contains("future "))
-        {
-            return Cow::Borrowed(command);
-        }
-
-        let args_pos = match command.find("--args") {
-            Some(p) => p,
-            None => return Cow::Borrowed(command),
-        };
-
-        let before = &command[..args_pos];
-        let after = command[args_pos + "--args".len()..].trim_start();
-
-        // Extract the JSON from the --args value
-        let (json, rest) = match Self::extract_json_arg(after) {
-            Some(v) => v,
-            None => return Cow::Borrowed(command),
-        };
-
-        // Write JSON to a temp file that survives the pipe
-        let tmp =
-            std::env::temp_dir().join(format!("future-tool-args-{}.json", std::process::id()));
-        if std::fs::write(&tmp, &json).is_err() {
-            return Cow::Borrowed(command);
-        }
-
-        // Pipe the file content into --stdin. The rewritten command never
-        // puts JSON on the command line, so cmd.exe cannot mangle it.
-        // Clean up the temp file after the pipeline completes.
-        let new_cmd = format!(
-            "(type \"{}\" | {} --stdin {}) & del \"{}\"",
-            tmp.display(),
-            before.trim_end(),
-            rest.trim_start(),
-            tmp.display(),
-        );
-
-        Cow::Owned(new_cmd)
-    }
-
-    /// Extract a JSON argument value from the start of `s`.
-    /// Returns `(json_string, rest_of_command)` on success.
-    /// Handles single-quoted, double-quoted, and bare `{...}` JSON.
-    #[cfg(windows)]
-    fn extract_json_arg(s: &str) -> Option<(String, &str)> {
-        let first = s.chars().next()?;
-
-        match first {
-            '\'' => {
-                let inner = &s[1..];
-                let end = inner.find('\'')?;
-                Some((inner[..end].to_string(), &inner[end + 1..]))
-            }
-            '"' => {
-                let inner = &s[1..];
-                let end = inner.find('"')?;
-                Some((inner[..end].to_string(), &inner[end + 1..]))
-            }
-            '{' => {
-                let mut depth = 0i32;
-                for (i, ch) in s.char_indices() {
-                    match ch {
-                        '{' | '[' => depth += 1,
-                        '}' | ']' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                return Some((s[..=i].to_string(), &s[i + 1..]));
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                None
-            }
-            _ => None,
         }
     }
 
