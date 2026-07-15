@@ -146,7 +146,7 @@ function MessageBlockImpl({
                     if (segment.kind === "compaction") {
                       return <CompactionDivider key={segment.id} tokensBefore={segment.tokensBefore} />;
                     }
-                    return <AgentActivityLine item={segment.item} key={segment.id} workspacePath={workspacePath} />;
+                    return <AgentActivityLine item={segment.item} key={segment.id} workspacePath={workspacePath} runId={message.runId} />;
                   })}
                 </div>
               )
@@ -164,7 +164,11 @@ function MessageBlockImpl({
                 </div>
               )
             : null}
-          {!isUser && !segments ? <AgentActivityList items={message.activityItems} workspacePath={workspacePath} /> : null}
+          {!isUser && !segments && message.runId
+            ? <AgentActivityList items={message.activityItems} workspacePath={workspacePath} runId={message.runId} />
+            : !isUser && !segments
+              ? <AgentActivityList items={message.activityItems} workspacePath={workspacePath} />
+              : null}
           {canRecover
             ? (
                 <div className="mt-3 flex flex-wrap gap-2">

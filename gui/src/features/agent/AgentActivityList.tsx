@@ -1,16 +1,18 @@
 import type { AgentActivityItem, AgentActivityKind } from "./agentThreadTypes";
 import { Brain, ChevronLeft, ChevronRight, FileText, Pencil, TerminalSquare, TriangleAlert } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import i18n from "../../i18n";
 import { cn } from "../../lib/cn";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { relativizeWorkspacePath } from "../../lib/workspacePath";
 
 interface AgentActivityListProps {
   items?: AgentActivityItem[];
   workspacePath?: string | null;
+  runId?: string | null;
 }
 
-export function AgentActivityList({ items, workspacePath }: AgentActivityListProps) {
+export function AgentActivityList({ items, workspacePath, runId }: AgentActivityListProps) {
   const visibleItems = items?.filter(item => item.status === "running" || item.status === "completed" || item.status === "failed") ?? [];
   if (visibleItems.length === 0)
     return null;
@@ -18,7 +20,7 @@ export function AgentActivityList({ items, workspacePath }: AgentActivityListPro
   return (
     <div className="my-4 space-y-3">
       {visibleItems.map(item => (
-        <AgentActivityLine item={item} key={item.id} workspacePath={workspacePath} />
+        <AgentActivityLine item={item} key={item.id} workspacePath={workspacePath} runId={runId} />
       ))}
     </div>
   );
@@ -26,13 +28,13 @@ export function AgentActivityList({ items, workspacePath }: AgentActivityListPro
 
 // Pure dispatcher (no hooks) so the leaf and group branches can each own their
 // expand state without breaking the rules-of-hooks.
-export function AgentActivityLine({ item, workspacePath }: { item: AgentActivityItem; workspacePath?: string | null }) {
+export function AgentActivityLine({ item, workspacePath, runId }: { item: AgentActivityItem; workspacePath?: string | null; runId?: string | null }) {
   if ((item.children?.length ?? 0) > 0)
-    return <AgentActivityGroupLine item={item} workspacePath={workspacePath} />;
-  return <AgentActivitySingleLine item={item} workspacePath={workspacePath} />;
+    return <AgentActivityGroupLine item={item} workspacePath={workspacePath} runId={runId} />;
+  return <AgentActivitySingleLine item={item} workspacePath={workspacePath} runId={runId} />;
 }
 
-function AgentActivitySingleLine({ item, workspacePath }: { item: AgentActivityItem; workspacePath?: string | null }) {
+function AgentActivitySingleLine({ item, workspacePath, runId }: { item: AgentActivityItem; workspacePath?: string | null; runId?: string | null }) {
   const label = labelForActivity(item);
   const failed = item.status === "failed";
   const running = item.status === "running";
@@ -43,20 +45,26 @@ function AgentActivitySingleLine({ item, workspacePath }: { item: AgentActivityI
   const [open, setOpen] = useState(false);
   const Chevron = open ? ChevronLeft : ChevronRight;
 
+  const handleInspect = useCallback(() => {
+    if (runId)
+      emitFutureEvent("inspect-run", { runId });
+  }, [runId]);
+
   return (
     <div
       className={cn(
-        // One uniform size for icon + label + target so the row reads as a
-        // single line; `items-center` keeps the mono target vertically centred
-        // against the sans label.
         "flex min-w-0 items-center gap-2 text-[13px] leading-6 text-ink-muted",
+        runId && "cursor-pointer hover:text-ink",
       )}
+      onClick={runId ? handleInspect : undefined}
+      title={runId ? i18n.t("agent:activity.inspectRun") : undefined}
+      role={runId ? "button" : undefined}
     >
       {displayTarget
         ? (
             <button
               type="button"
-              onClick={() => setOpen(value => !value)}
+              onClick={(e) => { e.stopPropagation(); setOpen(value => !value); }}
               className="flex shrink-0 cursor-pointer items-center gap-2"
               aria-expanded={open}
             >
@@ -97,17 +105,27 @@ function AgentActivitySingleLine({ item, workspacePath }: { item: AgentActivityI
 // no inline preview, since a truncated command reads as noise. Clicking expands
 // it into every child call as an indented, selectable sub-line. Grouping only
 // happens for completed bursts, so a group is never running or failed.
-function AgentActivityGroupLine({ item, workspacePath }: { item: AgentActivityItem; workspacePath?: string | null }) {
+function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentActivityItem; workspacePath?: string | null; runId?: string | null }) {
   const label = labelForActivity(item);
   const children = item.children ?? [];
   const [open, setOpen] = useState(false);
   const Chevron = open ? ChevronLeft : ChevronRight;
 
+  const handleInspect = useCallback(() => {
+    if (runId)
+      emitFutureEvent("inspect-run", { runId });
+  }, [runId]);
+
   return (
-    <div className="flex min-w-0 flex-col gap-1 text-[13px] leading-6 text-ink-muted">
+    <div
+      className="flex min-w-0 flex-col gap-1 text-[13px] leading-6 text-ink-muted"
+      role={runId ? "button" : undefined}
+      title={runId ? i18n.t("agent:activity.inspectRun") : undefined}
+      onClick={runId ? handleInspect : undefined}
+    >
       <button
         type="button"
-        onClick={() => setOpen(value => !value)}
+        onClick={(e) => { e.stopPropagation(); setOpen(value => !value); }}
         className="flex min-w-0 cursor-pointer items-center gap-2 text-left"
         aria-expanded={open}
       >
