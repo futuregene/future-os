@@ -165,7 +165,9 @@ generate-models:
 	cd agent && python3 scripts/generate_models.py
 
 generate-proto:
-	cd agent && cargo build
+	REGENERATE_PROTO=1 cd agent && cargo build
+	REGENERATE_PROTO=1 cd channels && cargo build
+	cd tui && npm run generate-proto
 
 # ─── Clean ──────────────────────────────────────────────────────────────────
 

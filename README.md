@@ -37,14 +37,7 @@ Required for a full `make build` (agent + TUI + CLI + GUI):
 
 - **Rust** 1.96+ (pinned via `rust-toolchain.toml`)
 - **Node.js** 24+ (see `.nvmrc`)
-  - macOS: `brew install node`
-  - Linux: `curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - && sudo apt install -y nodejs`
-  - Windows: `winget install OpenJS.NodeJS`
 - **Bun** — required, not optional: the TUI build and CLI/GUI packaging use `bun build`
-- **protoc** (Protocol Buffers compiler) — required by the GUI and channels proto codegen
-  - macOS: `brew install protobuf`
-  - Linux (Debian/Ubuntu): `sudo apt install protobuf-compiler`
-  - Windows: `choco install protoc` (or download from the protobuf releases)
 - **Linux only** (required for all builds):
   - `sudo apt install mold pkg-config libssl-dev`
 - **Tauri system dependencies** (for the GUI):
@@ -52,6 +45,7 @@ Required for a full `make build` (agent + TUI + CLI + GUI):
   - Linux (Debian/Ubuntu): `sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf`
   - Windows: WebView2 Runtime (ships with Windows 10/11) + MSVC build tools
 - Optional: **Python 3** — only for `make generate-models`
+- Optional: **protoc** (Protocol Buffers compiler) — only for `make generate-proto`; generated code is checked in so normal builds don't need it
 - Platform: macOS, Linux, or Windows
 
 ### Build and Install
@@ -208,11 +202,10 @@ make clean    # remove build artifacts + installed binaries
 
 ### Proto
 
-The canonical API is `proto/future.proto`. Generated code updates automatically on build via `build.rs` (tonic-build). For manual regeneration:
+The canonical API is `proto/future.proto`. Generated Rust/TS code is checked into the repo — normal builds don't touch it. After editing a `.proto` file, regenerate:
 
 ```bash
-make generate-proto          # agent + channels
-cd tui && npm run generate-proto  # TUI embedded proto
+make generate-proto          # agent + channels + TUI
 ```
 
 ## Troubleshooting
@@ -220,7 +213,6 @@ cd tui && npm run generate-proto  # TUI embedded proto
 | Symptom | Fix |
 |---|---|
 | Client exits with a connection / gRPC error | The agent isn't running. Start it (`make run-agent` or `future agent start`) and check nothing else holds the port: `lsof -i :50051`. |
-| Build fails with a `protoc` not-found error | Install the Protocol Buffers compiler — see [Prerequisites](#prerequisites). |
 | Agent replies with an auth / "no model" error | No model configured yet. Run `future auth login`, or add a provider to `models.json` — see [Configure a model](#configure-a-model). |
 | GUI can't find the agent binary | `make install-gui` copies the agent sidecar using your host target triple. If your triple differs from the auto-detected one, copy it manually: `cp agent/target/debug/future-agent gui/src-tauri/binaries/future-agent-$(rustc -vV | sed -n 's/^host: //p')`. |
 | GUI build fails on Linux (webkit / gtk errors) | Install the Tauri system dependencies — see [Prerequisites](#prerequisites). |
