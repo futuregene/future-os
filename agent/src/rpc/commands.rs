@@ -25,7 +25,9 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
 
     match cmd_type.as_str() {
         "shutdown" => {
-            state.shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
+            state
+                .shutting_down
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             RpcResponse::ok(
                 id,
                 "shutdown",
@@ -33,7 +35,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             )
         }
         "prompt" => {
-            if state.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+            if state
+                .shutting_down
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
                 return RpcResponse::build_fail(
                     id,
                     "prompt",
@@ -72,7 +77,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "steer", serde_json::json!({}))
         }
         "follow_up" => {
-            if state.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+            if state
+                .shutting_down
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
                 return RpcResponse::build_fail(
                     id,
                     "follow_up",

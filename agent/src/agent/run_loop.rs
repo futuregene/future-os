@@ -619,30 +619,31 @@ impl Loop {
             // Build a partial assistant message from whatever was accumulated
             // before the interrupt — reasoning, text, and tool calls should
             // survive an abort so the user doesn't lose generated content.
-            let build_partial_assistant = |messages: &mut Vec<AgentMessage>,
-                                           assistant_text: &str,
-                                           reasoning_text: &str,
-                                           tool_calls: &[ToolCall]| {
-                let mut msg = AgentMessage {
-                    role: "assistant".to_string(),
-                    content: if !assistant_text.is_empty() {
-                        vec![ContentBlock::text(assistant_text)]
-                    } else {
-                        vec![]
-                    },
-                    thinking: reasoning_text.to_string(),
-                    tool_calls: vec![],
-                    ..Default::default()
+            let build_partial_assistant =
+                |messages: &mut Vec<AgentMessage>,
+                 assistant_text: &str,
+                 reasoning_text: &str,
+                 tool_calls: &[ToolCall]| {
+                    let mut msg = AgentMessage {
+                        role: "assistant".to_string(),
+                        content: if !assistant_text.is_empty() {
+                            vec![ContentBlock::text(assistant_text)]
+                        } else {
+                            vec![]
+                        },
+                        thinking: reasoning_text.to_string(),
+                        tool_calls: vec![],
+                        ..Default::default()
+                    };
+                    for tc in tool_calls {
+                        msg.tool_calls.push(AgentToolCall {
+                            id: tc.id.clone(),
+                            name: tc.function.name.clone(),
+                            args: tc.function.arguments.clone(),
+                        });
+                    }
+                    messages.push(msg);
                 };
-                for tc in tool_calls {
-                    msg.tool_calls.push(AgentToolCall {
-                        id: tc.id.clone(),
-                        name: tc.function.name.clone(),
-                        args: tc.function.arguments.clone(),
-                    });
-                }
-                messages.push(msg);
-            };
 
             // Check for stream errors before processing results
             if let Some(_err) = stream_error {
@@ -655,7 +656,10 @@ impl Loop {
                     bus.emit(agent_end("interrupted", None));
                 }
                 build_partial_assistant(
-                    &mut messages, &assistant_text, &reasoning_text, &tool_calls,
+                    &mut messages,
+                    &assistant_text,
+                    &reasoning_text,
+                    &tool_calls,
                 );
                 return Ok((String::new(), messages));
             }
@@ -671,7 +675,10 @@ impl Loop {
                             bus.emit(agent_end("interrupted", None));
                         }
                         build_partial_assistant(
-                            &mut messages, &assistant_text, &reasoning_text, &tool_calls,
+                            &mut messages,
+                            &assistant_text,
+                            &reasoning_text,
+                            &tool_calls,
                         );
                         return Ok((String::new(), messages));
                     }
