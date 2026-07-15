@@ -49,8 +49,15 @@ function AgentActivitySingleLine({ item, workspacePath, runId }: { item: AgentAc
     if (runId)
       // Defer so the click returns immediately and panel expansion /
       // data loading runs off the React event path.
-      setTimeout(() => emitFutureEvent("inspect-tool", { runId, toolId: item.id }));
-  }, [runId, item.id]);
+      setTimeout(() => emitFutureEvent("inspect-tool", {
+        runId,
+        toolId: item.id,
+        toolName: labelForActivity(item),
+        toolKind: item.kind,
+        toolInput: item.target ?? item.detail ?? "",
+        toolStatus: item.status,
+      }));
+  }, [runId, item.id, item.kind, item.target, item.detail, item.status]);
 
   return (
     <div
@@ -117,8 +124,15 @@ function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentAct
     if (runId)
       // Defer so the click returns immediately and panel expansion /
       // data loading runs off the React event path.
-      setTimeout(() => emitFutureEvent("inspect-tool", { runId, toolId: item.id }));
-  }, [runId, item.id]);
+      setTimeout(() => emitFutureEvent("inspect-tool", {
+        runId,
+        toolId: item.id,
+        toolName: labelForActivity(item),
+        toolKind: item.kind,
+        toolInput: item.target ?? item.detail ?? "",
+        toolStatus: item.status,
+      }));
+  }, [runId, item.id, item.kind, item.target, item.detail, item.status]);
 
   return (
     <div
@@ -149,7 +163,14 @@ function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentAct
                   onClick={(e) => {
                     e.stopPropagation();
                     if (runId)
-                      setTimeout(() => emitFutureEvent("inspect-tool", { runId, toolId: child.id }));
+                      setTimeout(() => emitFutureEvent("inspect-tool", {
+                      runId,
+                      toolId: child.id,
+                      toolName: labelForActivity(child),
+                      toolKind: child.kind,
+                      toolInput: child.target ?? child.detail ?? "",
+                      toolStatus: child.status,
+                    }));
                   }}
                 >
                   {renderActivityIcon(child.kind, false)}
