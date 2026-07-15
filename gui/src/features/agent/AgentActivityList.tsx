@@ -56,7 +56,7 @@ function AgentActivitySingleLine({ item, workspacePath, runId }: { item: AgentAc
         "flex min-w-0 items-center gap-2 text-[13px] leading-6 text-ink-muted",
         runId && "cursor-pointer hover:text-ink",
       )}
-      onClick={runId ? () => { setOpen(true); handleInspect(); } : undefined}
+      onClick={runId ? () => { setOpen(value => !value); handleInspect(); } : undefined}
       title={runId ? i18n.t("agent:activity.inspectRun") : undefined}
       role={runId ? "button" : undefined}
     >
@@ -64,8 +64,7 @@ function AgentActivitySingleLine({ item, workspacePath, runId }: { item: AgentAc
         ? (
             <button
               type="button"
-              onClick={() => setOpen(value => !value)}
-              className="flex shrink-0 cursor-pointer items-center gap-2"
+              className="pointer-events-none flex shrink-0 cursor-pointer items-center gap-2"
               aria-expanded={open}
             >
               {renderActivityIcon(item.kind, running, failed)}
@@ -121,12 +120,11 @@ function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentAct
       className="flex min-w-0 flex-col gap-1 text-[13px] leading-6 text-ink-muted"
       role={runId ? "button" : undefined}
       title={runId ? i18n.t("agent:activity.inspectRun") : undefined}
-      onClick={runId ? () => { setOpen(true); handleInspect(); } : undefined}
+      onClick={runId ? () => { setOpen(value => !value); handleInspect(); } : undefined}
     >
       <button
         type="button"
-        onClick={() => setOpen(value => !value)}
-        className="flex min-w-0 cursor-pointer items-center gap-2 text-left"
+        className="pointer-events-none flex min-w-0 cursor-pointer items-center gap-2 text-left"
         aria-expanded={open}
       >
         {renderActivityIcon(item.kind, false)}
