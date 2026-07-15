@@ -22,16 +22,18 @@ install-cli-deps:
 install-cli: install-cli-deps
 	cd cli && npm run build && bun build --compile dist/index.js --outfile /opt/homebrew/bin/future
 
-UNAME_M := $(shell uname -m)
-UNAME_S := $(shell uname -s | tr '[:upper:]' '[:lower:]')
-TARGET_TRIPLE := $(UNAME_M)-$(UNAME_S)
+ARCH := $(shell uname -m)
+ARCH := $(subst arm64,aarch64,$(ARCH))
+ARCH := $(subst x86_64,x86_64,$(ARCH))
+OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
+TARGET := $(ARCH)-$(OS)
 
 install-gui: install-cli
 	cd gui && npm install
 	@mkdir -p gui/src-tauri/binaries
 	cd agent && cargo build
-	cp agent/target/debug/future-agent gui/src-tauri/binaries/future-agent-$(TARGET_TRIPLE)
-	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET_TRIPLE)
+	cp agent/target/debug/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
+	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET)
 	cd gui/src-tauri && cargo build
 	cp gui/src-tauri/target/debug/futureos /opt/homebrew/bin/future-gui
 
@@ -45,9 +47,9 @@ install-gui-release: install-cli-deps
 	cd gui && npm install
 	@mkdir -p gui/src-tauri/binaries
 	cd agent && cargo build --release
-	cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET_TRIPLE)
+	cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
 	cd cli && npm run build && bun build --compile dist/index.js --outfile dist/future
-	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET_TRIPLE)
+	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET)
 
 # Symlink the built-in skill bundles into the agent's app-skills directory
 # so the agent discovers them on startup.  Pulls the latest from the skills
