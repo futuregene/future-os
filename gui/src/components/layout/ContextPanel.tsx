@@ -331,7 +331,16 @@ export function ContextPanel({
                 />
               )
             : selectedToolId
-              ? <div className="py-4 text-sm text-ink-muted">{t("contextPanel.loading")}</div>
+              ? (runs.length > 0
+                  ? <RunsPanel
+                      runs={runs}
+                      toolsByRun={toolsByRun}
+                      workspacePath={activeWorkspace?.path ?? null}
+                      onClearFinished={handleClearFinishedRuns}
+                      onInspectTool={handleSelectTool}
+                      onTerminateRun={handleTerminateRun}
+                    />
+                  : <div className="py-4 text-sm text-ink-muted">{t("contextPanel.loading")}</div>)
               : (
                   <RunsPanel
                     runs={runs}
