@@ -58,9 +58,9 @@
       "detail": "Check FUTURE_AGENT_GRPC_ADDR and try again."
     },
     "needsLogin": {
-      "title": "Not signed in",
-      "detail": "Connected to Future Agent, but no models are available yet. Sign in with FutureOS, or add a custom provider.",
-      "action": "Sign in"
+      "title": "No model configured",
+      "detail": "Connected to Future Agent, but no models are available yet. Sign in with FutureOS, or configure your own API provider (OpenAI, DeepSeek, etc.).",
+      "action": "Configure providers"
     },
     "noModels": {
       "title": "No models available",

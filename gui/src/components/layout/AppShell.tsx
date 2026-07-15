@@ -211,6 +211,11 @@ export function AppShell() {
     setSettingsOpen(true);
   }
 
+  function handleOpenProviders() {
+    setSettingsTab("providers");
+    setSettingsOpen(true);
+  }
+
   function handleSelectThread(thread: StoredThread) {
     setSection(thread.mode === "workspace" ? "workspace" : "chat");
     setActiveThreadId(thread.id);
@@ -402,6 +407,7 @@ export function AppShell() {
                         onRetryAgentConnection={() => void refreshAgentModels()}
                         onOpenAccount={handleOpenAccount}
                         onOpenModels={handleOpenModels}
+                        onOpenProviders={handleOpenProviders}
                         onToggleLeftPanel={handleToggleLeftPanel}
                         onPromptConsumed={consumePendingPrompt}
                         onForked={(forkedThreadId: string) => {
