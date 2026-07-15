@@ -160,9 +160,14 @@ impl Client {
                     });
                     if has_content {
                         obj.insert("content".to_string(), Self::extract_content(msg.content));
-                    } else {
-                        obj.insert("content".to_string(), Value::Null);
                     }
+                    // When there is no content (assistant has tool_calls but no
+                    // text), omit the "content" key entirely rather than setting
+                    // it to null.  Setting null works with the standard OpenAI
+                    // schema but breaks strict providers (e.g. "gpt5.6") that
+                    // require content to be a string.  Omitting the field is
+                    // also compatible with providers like kimi-k2.7-code that
+                    // reject empty text content.
                     if let Some(tcs) = msg.tool_calls {
                         let tools: Vec<Value> = tcs
                             .into_iter()
