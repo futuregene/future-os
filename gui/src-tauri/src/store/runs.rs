@@ -497,8 +497,11 @@ fn parse_tool_start_payload(payload: Option<&str>) -> (String, String, Option<St
     let Ok(v): Result<serde_json::Value, _> = serde_json::from_str(payload) else {
         return default;
     };
+    // Match the frontend's toolFromPayload precedence (agentActivity.ts:435-437)
     let name = v
         .get("tool_name")
+        .or_else(|| v.get("toolName"))
+        .or_else(|| v.get("name"))
         .and_then(|s| s.as_str())
         .unwrap_or("")
         .to_string();
