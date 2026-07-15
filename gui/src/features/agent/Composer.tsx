@@ -407,7 +407,7 @@ export function Composer({
                         : "border-transparent bg-surface-subtle text-ink-soft",
                     )}
                     key={attachment.path}
-                    title={unsupportedImage ? t("composer.attachImageUnsupportedHint") : attachment.path}
+                    title={unsupportedImage ? t("composer.attachImageUnsupportedHint") : attachment.name}
                   >
                     {unsupportedImage
                       ? <TriangleAlert className="size-3 shrink-0" />
