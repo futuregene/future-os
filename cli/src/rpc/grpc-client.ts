@@ -164,7 +164,7 @@ message FunctionCall {
   string arguments = 2;
 }
 
-message BashResult {
+message ShellResult {
   string output = 1;
   int32 exit_code = 2;
 }

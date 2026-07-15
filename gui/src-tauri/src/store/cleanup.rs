@@ -485,7 +485,7 @@ mod tests {
 
         conn.execute(
             "INSERT INTO approval_requests (id, thread_id, run_id, kind, status, title, created_at, updated_at)
-             VALUES ('ap', 'T', 'run_waiting', 'bash', 'pending', 't', 1, 1)",
+             VALUES ('ap', 'T', 'run_waiting', 'shell', 'pending', 't', 1, 1)",
             [],
         )
         .unwrap();

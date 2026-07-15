@@ -30,7 +30,7 @@ export interface RpcCommand {
   enabled?: boolean;
   // set_enabled_models
   enabledModels?: string[];
-  // bash
+  // shell
   command?: string;
   // Session
   sessionPath?: string;

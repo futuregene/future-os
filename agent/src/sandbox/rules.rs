@@ -287,7 +287,7 @@ pub fn builtin_overrides(workspace: &Path, home: Option<&Path>) -> Vec<PathRule>
         // those skill flows fail during testing.
         //
         // We WANT to trust `future` specifically without opening auth.json to
-        // arbitrary bash commands — but a shared sandbox can't distinguish
+        // arbitrary shell commands — but a shared sandbox can't distinguish
         // `future` from a sibling `cat` in the same command, so per-binary
         // trust isn't expressible here. The proper fix is a dedicated
         // credential channel (agent injects a short-lived scoped token via env,
@@ -295,7 +295,7 @@ pub fn builtin_overrides(workspace: &Path, home: Option<&Path>) -> Vec<PathRule>
         // with peer-credential verification), not a path allow-hole. That's a
         // larger, cross-platform effort — deferred.
         //
-        // NOTE: while auth.json is allowed, any bash command can read/write it
+        // NOTE: while auth.json is allowed, any shell command can read/write it
         // — acceptable for local testing only. models.json stays denied.
         for cred in [
             // ".future/agent/auth.json",      // TEMPORARILY allowed — see above

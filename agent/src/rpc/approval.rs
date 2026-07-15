@@ -56,19 +56,19 @@ impl ApprovalGate {
         if !sandbox.enabled() {
             return None;
         }
-        // bash. Sandbox tier wraps it in Seatbelt (no pre-approval; boundary
+        // shell. Sandbox tier wraps it in Seatbelt (no pre-approval; boundary
         // hits surface via escalation). Manual tier gates it with a read-only
         // whitelist (Option B): known-safe commands auto-run, everything else
-        // asks. bash approvals are allow-once only (no persisted command rule).
-        if tool_name == "bash" {
-            if sandbox.wraps_bash() {
+        // asks. shell approvals are allow-once only (no persisted command rule).
+        if tool_name == "shell" {
+            if sandbox.wraps_shell() {
                 return None;
             }
             let command = arguments
                 .get("command")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if bash_auto_allow(command) {
+            if shell_auto_allow(command) {
                 return None;
             }
             let shape = shell_command_shape(command, sandbox);
@@ -83,13 +83,13 @@ impl ApprovalGate {
             return match outcome {
                 AskOutcome::Approved => None,
                 AskOutcome::Cancelled(_) => Some(crate::types::ToolCallResult {
-                    result: "Tool call `bash` was cancelled because the approval request ended."
+                    result: "Tool call `shell` was cancelled because the approval request ended."
                         .to_string(),
                     is_error: true,
                 }),
                 AskOutcome::Rejected(note) => Some(crate::types::ToolCallResult {
                     result: format!(
-                        "Tool call `bash` was rejected by the user{}.",
+                        "Tool call `shell` was rejected by the user{}.",
                         if note.is_empty() {
                             String::new()
                         } else {
@@ -165,7 +165,7 @@ impl ApprovalGate {
         }
     }
 
-    /// Post-hoc approval for running a bash command outside the sandbox
+    /// Post-hoc approval for running a shell command outside the sandbox
     /// (SANDBOX_PLAN.md §2.6). Approval means the single re-run happens
     /// unsandboxed — "this exact command, once".
     pub fn request_escalation(
@@ -179,11 +179,11 @@ impl ApprovalGate {
         let blocked_paths: Vec<String> = raw_blocked.iter().map(|p| shorten_home(p)).collect();
         // Offer "allow in this workspace" (a path rule) when the blocked paths
         // are non-secret — a persisted rule then makes that dir writable in the
-        // sandbox, so future bash runs there don't re-escalate. Secrets stay
+        // sandbox, so future shell runs there don't re-escalate. Secrets stay
         // one-time-only (None → GUI shows only "allow once").
         let save_suggestion = escalation_save_suggestion(&raw_blocked, sandbox);
         let action = serde_json::json!({
-            "tool": "bash",
+            "tool": "shell",
             "category": "sandbox_escalation",
             "summary": command_summary(&request.command),
             "command": request.command,
@@ -219,7 +219,7 @@ impl ApprovalGate {
             broadcaster,
             session_id,
             "",
-            "bash",
+            "shell",
             &shape,
             requested_action,
         ) {
@@ -471,6 +471,49 @@ const READONLY_PROGRAMS: &[&str] = &[
     "false", "test", "seq", "yes",
 ];
 
+/// Read-only PowerShell cmdlets and their built-in aliases (Windows). Compared
+/// lower-cased since PowerShell resolves command names case-insensitively. The
+/// aliases `ls`/`cat`/`pwd`/`echo`/`type`/`sort` already resolve via
+/// READONLY_PROGRAMS. Deliberately excludes anything that writes (Set-/Add-/
+/// New-/Remove-/Out-File) or runs arbitrary code (Invoke-/Start-/ForEach-Object/
+/// Where-Object — the latter also need a `{ … }` block, which is rejected).
+const WINDOWS_READONLY_PROGRAMS: &[&str] = &[
+    "get-childitem",
+    "gci",
+    "dir",
+    "get-content",
+    "gc",
+    "get-location",
+    "gl",
+    "get-item",
+    "gi",
+    "get-itemproperty",
+    "get-command",
+    "gcm",
+    "get-date",
+    "get-help",
+    "select-string",
+    "sls",
+    "select-object",
+    "select",
+    "sort-object",
+    "measure-object",
+    "measure",
+    "write-output",
+    "write-host",
+    "format-table",
+    "ft",
+    "format-list",
+    "fl",
+    "out-string",
+    "test-path",
+    "resolve-path",
+    "split-path",
+    "compare-object",
+    "findstr",
+    "where",
+];
+
 /// git subcommands that don't mutate the repo or working tree.
 const GIT_READONLY: &[&str] = &[
     "status",
@@ -492,17 +535,20 @@ const GIT_READONLY: &[&str] = &[
     "grep",
 ];
 
-/// Read-only bash whitelist for the Manual tier: known-safe commands auto-run,
+/// Read-only shell whitelist for the Manual tier: known-safe commands auto-run,
 /// everything else asks. Conservative — anything with shell operators that could
-/// write, chain, background, or substitute falls through to "ask".
-fn bash_auto_allow(command: &str) -> bool {
+/// write, chain, background, or substitute falls through to "ask". Covers both
+/// POSIX shells and PowerShell (see WINDOWS_READONLY_PROGRAMS); the operator
+/// guard below (`{`, `` ` ``, `;`, …) also blocks PowerShell script blocks and
+/// subexpressions.
+fn shell_auto_allow(command: &str) -> bool {
     let cmd = command.trim();
     if cmd.is_empty() {
         return false;
     }
     // Reject write / exec / chain / substitution operators outright. `&` also
-    // catches `&&` and backgrounding; `` ` `` and `$(` catch substitution.
-    // Pipes are validated per-segment below (each stage must be read-only).
+    // catches `&&` and backgrounding; `` ` `` and `$(` catch substitution;
+    // `{`/`(` catch PowerShell script blocks and subexpressions.
     const DANGEROUS: &[char] = &['>', '<', '`', ';', '&', '\n', '(', '{'];
     if cmd.contains("$(") || cmd.chars().any(|c| DANGEROUS.contains(&c)) {
         return false;
@@ -516,9 +562,16 @@ fn segment_is_read_only(seg: &str) -> bool {
     let Some(prog) = words.next() else {
         return false;
     };
-    // Reduce a leading path (e.g. /bin/ls) to its basename.
-    let prog = prog.rsplit('/').next().unwrap_or(prog);
-    match prog {
+    // Reduce a leading path to its basename — tolerant of both separators
+    // (`/bin/ls`, `C:\Windows\System32\findstr.exe`), a `.exe` suffix, and
+    // case (PowerShell and Windows resolve command names case-insensitively).
+    let base = prog.rsplit(['/', '\\']).next().unwrap_or(prog);
+    let base = base
+        .strip_suffix(".exe")
+        .or_else(|| base.strip_suffix(".EXE"))
+        .unwrap_or(base);
+    let prog = base.to_ascii_lowercase();
+    match prog.as_str() {
         "git" => {
             // First non-flag token is the subcommand; it must be read-only.
             let sub = words.find(|w| !w.starts_with('-'));
@@ -531,11 +584,11 @@ fn segment_is_read_only(seg: &str) -> bool {
                 && !seg.contains("-fprint")
                 && !seg.contains("-ok")
         }
-        _ => READONLY_PROGRAMS.contains(&prog),
+        other => READONLY_PROGRAMS.contains(&other) || WINDOWS_READONLY_PROGRAMS.contains(&other),
     }
 }
 
-/// Approval card for a bash command that isn't auto-allowed (Manual tier).
+/// Approval card for a shell command that isn't auto-allowed (Manual tier).
 fn shell_command_shape(command: &str, sandbox: &ResolvedSandbox) -> ApprovalShape {
     ApprovalShape {
         kind: "shell_command",
@@ -543,7 +596,7 @@ fn shell_command_shape(command: &str, sandbox: &ResolvedSandbox) -> ApprovalShap
         title: "Approve shell command".to_string(),
         summary: "Agent wants to run a shell command.".to_string(),
         action: serde_json::json!({
-            "tool": "bash",
+            "tool": "shell",
             "category": "shell_command",
             "summary": command_summary(command),
             "command": command,
@@ -554,7 +607,7 @@ fn shell_command_shape(command: &str, sandbox: &ResolvedSandbox) -> ApprovalShap
             }
         }),
         sandbox_boundary: sandbox.boundary_json(Some("shell_command"), false),
-        // bash approvals are one-time only — v2 rules are path-based, not command-based.
+        // shell approvals are one-time only — v2 rules are path-based, not command-based.
         save_suggestion: None,
     }
 }
@@ -752,27 +805,52 @@ mod tests {
     use crate::sandbox::SandboxPolicy;
 
     #[test]
-    fn bash_whitelist_allows_read_only_commands() {
-        assert!(bash_auto_allow("ls -la"));
-        assert!(bash_auto_allow("cat README.md"));
-        assert!(bash_auto_allow("git status"));
-        assert!(bash_auto_allow("git log --oneline"));
-        assert!(bash_auto_allow("grep -rn foo src | head -20"));
-        assert!(bash_auto_allow("/bin/ls"));
-        assert!(bash_auto_allow("find . -name '*.rs'"));
+    fn shell_whitelist_allows_read_only_commands() {
+        assert!(shell_auto_allow("ls -la"));
+        assert!(shell_auto_allow("cat README.md"));
+        assert!(shell_auto_allow("git status"));
+        assert!(shell_auto_allow("git log --oneline"));
+        assert!(shell_auto_allow("grep -rn foo src | head -20"));
+        assert!(shell_auto_allow("/bin/ls"));
+        assert!(shell_auto_allow("find . -name '*.rs'"));
     }
 
     #[test]
-    fn bash_whitelist_asks_for_writes_and_chains() {
-        assert!(!bash_auto_allow("rm -rf build"));
-        assert!(!bash_auto_allow("echo hi > file.txt")); // redirect
-        assert!(!bash_auto_allow("git commit -m x")); // mutating subcommand
-        assert!(!bash_auto_allow("ls && rm x")); // chain
-        assert!(!bash_auto_allow("cat $(whoami)")); // substitution
-        assert!(!bash_auto_allow("find . -delete")); // find mutation
-        assert!(!bash_auto_allow("grep foo x | rm y")); // pipe to non-read-only
-        assert!(!bash_auto_allow("npm install")); // unknown program
-        assert!(!bash_auto_allow(""));
+    fn shell_whitelist_asks_for_writes_and_chains() {
+        assert!(!shell_auto_allow("rm -rf build"));
+        assert!(!shell_auto_allow("echo hi > file.txt")); // redirect
+        assert!(!shell_auto_allow("git commit -m x")); // mutating subcommand
+        assert!(!shell_auto_allow("ls && rm x")); // chain
+        assert!(!shell_auto_allow("cat $(whoami)")); // substitution
+        assert!(!shell_auto_allow("find . -delete")); // find mutation
+        assert!(!shell_auto_allow("grep foo x | rm y")); // pipe to non-read-only
+        assert!(!shell_auto_allow("npm install")); // unknown program
+        assert!(!shell_auto_allow(""));
+    }
+
+    #[test]
+    fn shell_whitelist_allows_read_only_powershell() {
+        // Cmdlets and aliases, case-insensitive, with Windows paths / .exe.
+        assert!(shell_auto_allow("Get-ChildItem"));
+        assert!(shell_auto_allow("get-content foo.txt"));
+        assert!(shell_auto_allow("Select-String -Pattern foo bar.txt"));
+        assert!(shell_auto_allow(
+            "Get-ChildItem -Recurse | Select-String foo"
+        ));
+        assert!(shell_auto_allow("gci | measure"));
+        assert!(shell_auto_allow(
+            r"C:\Windows\System32\findstr.exe foo bar.txt"
+        ));
+    }
+
+    #[test]
+    fn shell_whitelist_asks_for_powershell_writes_and_blocks() {
+        assert!(!shell_auto_allow("Remove-Item x")); // mutating cmdlet
+        assert!(!shell_auto_allow("Set-Content foo.txt 'x'")); // writes
+        assert!(!shell_auto_allow("Get-Content x > out.txt")); // redirect
+        assert!(!shell_auto_allow("Get-ChildItem; Remove-Item x")); // chain
+        assert!(!shell_auto_allow("Where-Object { $_.Length -gt 0 }")); // script block
+        assert!(!shell_auto_allow("Invoke-Expression 'rm x'")); // arbitrary exec
     }
 
     #[test]
@@ -886,28 +964,28 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
     }
 
     #[test]
-    fn bash_read_only_auto_allowed_in_manual() {
+    fn shell_read_only_auto_allowed_in_manual() {
         // Manual tier: read-only whitelist commands run without a prompt.
-        let ws = temp_ws("bash-ro");
+        let ws = temp_ws("shell-ro");
         let sandbox = enabled(&ws);
         let gate = ApprovalGate::default();
         let b = SseBroadcaster::new();
         let args = serde_json::json!({ "command": "ls -la" });
         assert!(gate
-            .request(&b, "s", &ws, "bash", "t", &args, &sandbox)
+            .request(&b, "s", &ws, "shell", "t", &args, &sandbox)
             .is_none());
     }
 
     #[test]
-    fn bash_never_gated_when_disabled() {
+    fn shell_never_gated_when_disabled() {
         // Off tier: no approval at all, even for a dangerous command.
-        let ws = temp_ws("bash-off");
+        let ws = temp_ws("shell-off");
         let sandbox = ResolvedSandbox::disabled(&ws);
         let gate = ApprovalGate::default();
         let b = SseBroadcaster::new();
         let args = serde_json::json!({ "command": "rm -rf /" });
         assert!(gate
-            .request(&b, "s", &ws, "bash", "t", &args, &sandbox)
+            .request(&b, "s", &ws, "shell", "t", &args, &sandbox)
             .is_none());
     }
 

@@ -149,15 +149,15 @@ function ToolRow({
   const { t } = useTranslation("runs");
   const { run, terminable, tool } = entry;
   const name = displayName(tool);
-  const isBash = name === "bash";
-  const rawPrimary = (isBash ? toolCommand(tool.input) : toolTarget(tool.input))
+  const isShell = name === "shell";
+  const rawPrimary = (isShell ? toolCommand(tool.input) : toolTarget(tool.input))
     ?? toolCommand(tool.input)
     ?? toolTarget(tool.input)
     ?? tool.input
     ?? toolLabel(tool);
-  // Bash rows show the command verbatim; file rows (write/edit) get the
+  // Shell rows show the command verbatim; file rows (write/edit) get the
   // workspace-relative path, absolute kept for files outside the workspace.
-  const primary = isBash ? rawPrimary : relativizeWorkspacePath(rawPrimary, workspacePath);
+  const primary = isShell ? rawPrimary : relativizeWorkspacePath(rawPrimary, workspacePath);
   // Show the tool's own status, never the run's. A tool still marked "running"
   // after its run has ended was interrupted — we can't tell a user abort from a
   // real failure, so treat it as failed rather than a perpetual "running".
@@ -172,7 +172,7 @@ function ToolRow({
             center within it, so both stay level with the text's first line
             whether the command wraps to one line or many. */}
         <span className="flex h-5 shrink-0 items-center">
-          {isBash
+          {isShell
             ? <TerminalSquare className={cn("size-4", running ? "text-accent" : "text-ink-muted")} />
             : <Pencil className={cn("size-4", running ? "text-accent" : "text-ink-muted")} />}
         </span>
@@ -181,7 +181,7 @@ function ToolRow({
             <div
               className={cn(
                 "min-w-0 flex-1 wrap-break-word text-xs font-normal leading-5 text-ink",
-                isBash ? "whitespace-pre-wrap" : "truncate font-mono",
+                isShell ? "whitespace-pre-wrap" : "truncate font-mono",
               )}
               title={rawPrimary}
             >
@@ -258,7 +258,7 @@ function compareToolTimeDesc(left: StoredToolCall, right: StoredToolCall) {
 }
 
 /**
- * Flatten every run's bash/write/edit tool calls into one chronological list —
+ * Flatten every run's shell/write/edit tool calls into one chronological list —
  * active runs' tools first, then finished ones — so each command is its own row
  * instead of collapsing a run into a single card.
  */

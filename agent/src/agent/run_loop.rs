@@ -817,7 +817,7 @@ impl Loop {
     /// either signalled on `interrupt_rx` or via the shared interrupt flag.
     /// Returns `false` if the full duration elapsed without interruption.
     ///
-    /// The flag is polled every 50ms (matching the bash tool) so an `abort()`
+    /// The flag is polled every 50ms (matching the shell tool) so an `abort()`
     /// that only sets the flag — without a channel send — is still caught
     /// promptly.
     async fn sleep_or_interrupt(
@@ -944,7 +944,7 @@ fn repair_partial_tool_args(args: &mut serde_json::Value) {
     };
     // Empty string is never valid tool-call arguments — treat as empty object
     // so the tool handler gets a proper "missing field" error instead of
-    // "invalid type: string \"\", expected struct BashParams".
+    // "invalid type: string \"\", expected struct ShellParams".
     if raw.is_empty() {
         *raw = String::from("{}");
         return;

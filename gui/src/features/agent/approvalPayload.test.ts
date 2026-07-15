@@ -18,12 +18,12 @@ describe("parseAction", () => {
 
   it("requires string tool and category", () => {
     expect(parseAction(JSON.stringify({ category: "shell_command" }))).toBeNull();
-    expect(parseAction(JSON.stringify({ tool: "bash" }))).toBeNull();
-    expect(parseAction(JSON.stringify({ category: 1, tool: "bash" }))).toBeNull();
+    expect(parseAction(JSON.stringify({ tool: "shell" }))).toBeNull();
+    expect(parseAction(JSON.stringify({ category: 1, tool: "shell" }))).toBeNull();
   });
 
   it("parses a minimal valid action", () => {
-    expect(parseAction(JSON.stringify({ category: "shell_command", tool: "bash" }))).toEqual({
+    expect(parseAction(JSON.stringify({ category: "shell_command", tool: "shell" }))).toEqual({
       blockedPaths: undefined,
       category: "shell_command",
       command: undefined,
@@ -32,7 +32,7 @@ describe("parseAction", () => {
       paths: undefined,
       scope: undefined,
       summary: undefined,
-      tool: "bash",
+      tool: "shell",
       writes: undefined,
     });
   });
@@ -74,7 +74,7 @@ describe("parseAction", () => {
       paths: ["/read/a"],
       scope: { cwd: "/w", estimatedBlastRadius: "high", insideWorkspace: false },
       summary: "does a thing",
-      tool: "bash",
+      tool: "shell",
       writes: [{ path: "/w/a", preview: "hi" }, { path: "/w/b" }],
     }));
     expect(action).toEqual({
@@ -86,7 +86,7 @@ describe("parseAction", () => {
       paths: ["/read/a"],
       scope: { cwd: "/w", estimatedBlastRadius: "high", insideWorkspace: false },
       summary: "does a thing",
-      tool: "bash",
+      tool: "shell",
       writes: [{ path: "/w/a", preview: "hi" }, { path: "/w/b" }],
     });
   });

@@ -116,9 +116,9 @@ describe("entriesToMessages", () => {
         role: "assistant",
         content: "",
         timestamp: "2026-07-01T10:00:03+08:00",
-        tool_calls: [{ id: "call_00_test", function: { name: "bash", arguments: JSON.stringify({ command: "futre --version" }) } }],
+        tool_calls: [{ id: "call_00_test", function: { name: "shell", arguments: JSON.stringify({ command: "futre --version" }) } }],
       },
-      { id: "t1", role: "tool", name: "bash", content: "[exit code: 127]\nfutre: command not found", timestamp: "2026-07-01T10:00:04+08:00" },
+      { id: "t1", role: "tool", name: "shell", content: "futre: command not found\n[exit: 127]", timestamp: "2026-07-01T10:00:04+08:00" },
       { id: "a2", role: "assistant", content: "that failed", timestamp: "2026-07-01T10:00:05+08:00" },
     ];
 
@@ -135,9 +135,9 @@ describe("entriesToMessages", () => {
         role: "assistant",
         content: "",
         timestamp: "2026-07-01T10:00:03+08:00",
-        tool_calls: [{ id: "call_00_test", function: { name: "bash", arguments: JSON.stringify({ command: "grep foo file.txt" }) } }],
+        tool_calls: [{ id: "call_00_test", function: { name: "shell", arguments: JSON.stringify({ command: "grep foo file.txt" }) } }],
       },
-      { id: "t1", role: "tool", name: "bash", content: "[exit code: 1]\n", timestamp: "2026-07-01T10:00:04+08:00" },
+      { id: "t1", role: "tool", name: "shell", content: "[exit: 1]", timestamp: "2026-07-01T10:00:04+08:00" },
     ];
 
     const assistant = entriesToMessages(entries)[1];

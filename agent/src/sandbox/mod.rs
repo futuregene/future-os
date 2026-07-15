@@ -4,7 +4,7 @@
 //! path + op to `Ask | Allow | Deny`. That verdict is enforced two ways:
 //!   - read/write/edit tools: the approval layer prompts (Ask) / proceeds
 //!     (Allow) / errors (Deny) before the in-process op runs.
-//!   - bash: the rules compile into a Seatbelt profile (macOS); Ask and Deny
+//!   - shell: the rules compile into a Seatbelt profile (macOS); Ask and Deny
 //!     both become an OS-level read/write denial, and a resulting failure
 //!     surfaces via the escalation flow.
 //!
@@ -28,11 +28,11 @@ use rules::{Decision, Op, RuleSet};
 pub enum SandboxTier {
     /// Off — no approval, no sandbox, everything runs.
     Off,
-    /// Manual — approval rules on; bash asks (read-only allowlist bypass); no OS
+    /// Manual — approval rules on; shell asks (read-only allowlist bypass); no OS
     /// sandbox. The default, all platforms.
     #[default]
     Manual,
-    /// Sandbox — approval rules on; bash runs inside the OS sandbox (macOS
+    /// Sandbox — approval rules on; shell runs inside the OS sandbox (macOS
     /// only; the GUI hides this option elsewhere).
     Sandbox,
 }
@@ -106,11 +106,11 @@ impl ResolvedSandbox {
         self.tier != SandboxTier::Off
     }
 
-    /// Whether bash runs pre-approval-gated (manual tier, or a sandbox tier on a
-    /// platform without the OS sandbox). When true, bash asks (allowlist bypass);
-    /// when false and enabled, bash is OS-sandboxed instead.
-    pub fn bash_needs_approval(&self) -> bool {
-        self.enabled() && !self.wraps_bash()
+    /// Whether shell commands run pre-approval-gated (manual tier, or a sandbox tier on a
+    /// platform without the OS sandbox). When true, the shell asks (allowlist bypass);
+    /// when false and enabled, the shell is OS-sandboxed instead.
+    pub fn shell_needs_approval(&self) -> bool {
+        self.enabled() && !self.wraps_shell()
     }
 
     /// Whether `path` (canonicalized internally) is a built-in secret — used to
@@ -157,9 +157,9 @@ impl ResolvedSandbox {
             .add_session_rule(abs_pattern, access, Decision::Allow);
     }
 
-    /// Whether bash commands run wrapped in the OS sandbox (Sandbox tier on a
+    /// Whether shell commands run wrapped in the OS sandbox (Sandbox tier on a
     /// platform where sandbox-exec is available).
-    pub fn wraps_bash(&self) -> bool {
+    pub fn wraps_shell(&self) -> bool {
         self.tier == SandboxTier::Sandbox && self.available
     }
 
@@ -168,42 +168,20 @@ impl ResolvedSandbox {
         &self.rules
     }
 
-    /// Build the bash invocation: Seatbelt-wrapped when enabled+available and
-    /// not escalated; otherwise the platform-appropriate shell (`bash -c` on
-    /// Unix, `powershell -Command` on Windows). `escalated` forces an
-    /// unsandboxed run for one approved command.
-    pub fn build_bash_command(&self, command: &str, escalated: bool) -> tokio::process::Command {
-        if !escalated && self.wraps_bash() {
+    /// Build the shell invocation: Seatbelt-wrapped when enabled+available and
+    /// not escalated; otherwise the platform shell via [`shell_invocation`].
+    /// `escalated` forces an unsandboxed run for one approved command.
+    pub fn build_shell_command(&self, command: &str, escalated: bool) -> tokio::process::Command {
+        if !escalated && self.wraps_shell() {
             #[cfg(target_os = "macos")]
             {
                 return seatbelt::build_command(self, command);
             }
         }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let mut child = tokio::process::Command::new("bash");
-            child.args(["-c", command]);
-            child
-        }
-        #[cfg(target_os = "windows")]
-        {
-            // The model may generate either single-quoted JSON args
-            // (--args '{"key":"val"}') or bash-style double-quoted-with-escapes
-            // (--args "{\"key\":\"val\"}"). PowerShell handles single quotes
-            // natively but breaks on \" because backslash is not an escape
-            // character there (PowerShell uses backtick `" instead).
-            let command = Self::normalize_shell_quoting(command);
-            let mut child = tokio::process::Command::new("powershell");
-            // chcp 65001 sets the console code page to UTF-8 so Chinese
-            // characters and other non-ASCII text survive output capture
-            // without being garbled by the default GBK/ANSI code page.
-            child.args([
-                "-NoProfile",
-                "-Command",
-                &format!("chcp 65001 > $null; {}; exit $LASTEXITCODE", command),
-            ]);
-            child
-        }
+        let (program, args) = shell_invocation(command);
+        let mut child = tokio::process::Command::new(program);
+        child.args(&args);
+        child
     }
 
     /// Convert bash-style escaped double quotes (\") to single-quoted form
@@ -319,6 +297,163 @@ impl Default for ResolvedSandbox {
     }
 }
 
+/// The platform shell invocation for one command string — the single source of
+/// truth for how a shell command is executed on this OS.
+///
+/// Unix: `bash -c <command>` — the command arrives pre-wrapped by the caller
+/// when stderr merging is wanted (`( … ) 2>&1`).
+///
+/// Windows: the resolved PowerShell (pwsh 7+ when available, else Windows
+/// PowerShell 5.1 — see [`windows_shell`]) with a wrapper script delivered via
+/// `-EncodedCommand`. Base64/UTF-16LE encoding sidesteps the fragile
+/// Rust→CreateProcess→PowerShell quote re-parsing that plain `-Command` is
+/// subject to; the wrapper itself ([`windows_wrapper_script`]) handles stderr
+/// merging and exit-code capture, which both differ from bash semantics.
+pub fn shell_invocation(command: &str) -> (&'static str, Vec<String>) {
+    #[cfg(not(target_os = "windows"))]
+    {
+        ("bash", vec!["-c".to_string(), command.to_string()])
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let script = windows_wrapper_script(command);
+        (
+            windows_shell().program,
+            vec![
+                "-NoProfile".to_string(),
+                "-EncodedCommand".to_string(),
+                encode_powershell_command(&script),
+            ],
+        )
+    }
+}
+
+/// Build the PowerShell wrapper script for one user command. Split out from
+/// [`shell_invocation`] so it can be asserted on directly (the encoded form is
+/// opaque). The wrapper differs from a bash `( … ) 2>&1`:
+/// - `& { … }` runs the command in a script block (accepts multi-statement
+///   commands, unlike `( … )`), with `2>&1` merging the error stream and
+///   `ForEach-Object { "$_" }` stringifying error records to plain text.
+/// - `$LASTEXITCODE` only reflects native (.exe) processes. A PowerShell-level
+///   failure — command not found, cmdlet error — never sets it, and `chcp`
+///   pollutes it with 0, so it is cleared first and `$Error` catches failures
+///   where no native command ran at all.
+/// - Non-ASCII output (e.g. Chinese) survives capture. Three encodings must
+///   line up, and Windows PowerShell 5.1 gets all three wrong by default:
+///   * `chcp 65001` asks native (.exe) children to emit UTF-8.
+///   * `[Console]::OutputEncoding` governs both how PowerShell decodes a native
+///     child's stdout and how it encodes its own stdout (the bytes we capture).
+///   * `$OutputEncoding` governs how PowerShell encodes strings piped INTO a
+///     native command's stdin — it defaults to ASCII in 5.1, mangling non-ASCII
+///     to `?`, so it must be set too.
+///   All three use a BOM-less `UTF8Encoding($false)`: the default
+///   `[Text.Encoding]::UTF8` carries a BOM that, on a redirected stdout, PS 5.1
+///   prepends to the stream as a stray `EF BB BF` (a leading U+FEFF for us).
+///   (pwsh 7 already defaults to BOM-less UTF-8; setting these is a harmless
+///   no-op there.) Native tools that ignore the code page and hard-code OEM/
+///   ANSI output can't be fixed here — those bytes become replacement chars
+///   via `from_utf8_lossy` rather than corrupting the capture.
+#[cfg(target_os = "windows")]
+pub fn windows_wrapper_script(command: &str) -> String {
+    // The model may generate bash-style double-quoted-with-escapes content
+    // (`{\"key\":\"val\"}`); PowerShell does not treat `\"` as an escape, so
+    // reshape it to a form PowerShell parses (see `normalize_shell_quoting`).
+    let command = ResolvedSandbox::normalize_shell_quoting(command);
+    format!(
+        "chcp 65001 > $null; \
+         $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); \
+         $global:LASTEXITCODE = $null; \
+         & {{ {} }} 2>&1 | ForEach-Object {{ \"$_\" }}; \
+         if ($null -ne $LASTEXITCODE) {{ exit $LASTEXITCODE }} \
+         elseif ($Error.Count -gt 0) {{ exit 1 }} \
+         else {{ exit 0 }}",
+        command
+    )
+}
+
+/// Encode a script for PowerShell's `-EncodedCommand`: base64 of UTF-16LE.
+#[cfg(target_os = "windows")]
+fn encode_powershell_command(script: &str) -> String {
+    use base64::Engine;
+    let utf16: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect();
+    base64::engine::general_purpose::STANDARD.encode(utf16)
+}
+
+/// The resolved Windows shell for command execution. pwsh (PowerShell 7+) is
+/// preferred when on PATH: it supports `&&`/`||` chain operators, defaults to
+/// UTF-8, and parses `-EncodedCommand` identically to 5.1. Falls back to the
+/// always-present `powershell` (Windows PowerShell 5.1). Probed once.
+#[cfg(target_os = "windows")]
+pub struct WindowsShell {
+    pub program: &'static str,
+    /// pwsh 7+ supports `&&` / `||`; Windows PowerShell 5.1 does not.
+    pub supports_chain_operators: bool,
+}
+
+#[cfg(target_os = "windows")]
+pub fn windows_shell() -> &'static WindowsShell {
+    use std::sync::OnceLock;
+    static SHELL: OnceLock<WindowsShell> = OnceLock::new();
+    SHELL.get_or_init(|| {
+        if pwsh_on_path() {
+            WindowsShell {
+                program: "pwsh",
+                supports_chain_operators: true,
+            }
+        } else {
+            WindowsShell {
+                program: "powershell",
+                supports_chain_operators: false,
+            }
+        }
+    })
+}
+
+/// Whether `pwsh.exe` (PowerShell 7+) resolves on PATH. A pure env scan — no
+/// process spawn — so it is cheap and side-effect-free.
+#[cfg(target_os = "windows")]
+fn pwsh_on_path() -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join("pwsh.exe").is_file())
+}
+
+/// Runtime hint for prompt text: does the host's shell support `&&`/`||`
+/// chaining? True for any POSIX shell and for pwsh 7 on Windows; false for
+/// Windows PowerShell 5.1. Callable on every target so prompt code that runs
+/// per-host (not `#[cfg]`-gated) can consult it.
+pub fn shell_supports_chain_operators() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        windows_shell().supports_chain_operators
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        true
+    }
+}
+
+/// Display name of the host shell for prompt text (e.g. "bash",
+/// "PowerShell 7 (pwsh)", "Windows PowerShell 5.1"). Callable on every target.
+pub fn shell_display_name() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        if windows_shell().supports_chain_operators {
+            "PowerShell 7 (pwsh)"
+        } else {
+            "Windows PowerShell 5.1"
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "bash"
+    }
+}
+
 /// Whether the OS-level sandbox is usable on this platform.
 pub fn platform_sandbox_available() -> bool {
     #[cfg(target_os = "macos")]
@@ -340,7 +475,7 @@ pub fn seatbelt_profile(sandbox: &ResolvedSandbox) -> String {
 // ─── Escalation (post-hoc approval, carried into the tools layer) ──────────
 
 /// A request to re-run a command outside the sandbox, raised from inside the
-/// bash tool after a sandbox denial or when the model asks for it explicitly.
+/// shell tool after a sandbox denial or when the model asks for it explicitly.
 #[derive(Debug, Clone)]
 pub struct EscalationRequest {
     pub command: String,
@@ -354,7 +489,7 @@ pub enum EscalationDecision {
     Denied(String),
 }
 
-/// Callback the RPC layer injects so `run_bash` can raise a `sandbox_escalation`
+/// Callback the RPC layer injects so `run_shell` can raise a `sandbox_escalation`
 /// approval without touching RPC/UI internals. Blocks until the user decides.
 pub type EscalationRequester = Arc<dyn Fn(&EscalationRequest) -> EscalationDecision + Send + Sync>;
 
@@ -395,13 +530,13 @@ mod tests {
     }
 
     #[test]
-    fn tier_maps_bash_handling() {
+    fn tier_maps_shell_handling() {
         let ws = temp_workspace("tiers");
         let mut manual = enabled(&ws);
         manual.available = true;
-        // Manual: bash needs approval, never OS-wrapped, even where available.
-        assert!(!manual.wraps_bash());
-        assert!(manual.bash_needs_approval());
+        // Manual: shell needs approval, never OS-wrapped, even where available.
+        assert!(!manual.wraps_shell());
+        assert!(manual.shell_needs_approval());
 
         let mut sandbox = ResolvedSandbox::resolve(
             &SandboxPolicy {
@@ -410,16 +545,65 @@ mod tests {
             &ws,
         );
         sandbox.available = true;
-        assert!(sandbox.wraps_bash());
-        assert!(!sandbox.bash_needs_approval());
-        // Sandbox tier without the OS sandbox falls back to bash approval.
+        assert!(sandbox.wraps_shell());
+        assert!(!sandbox.shell_needs_approval());
+        // Sandbox tier without the OS sandbox falls back to shell approval.
         sandbox.available = false;
-        assert!(!sandbox.wraps_bash());
-        assert!(sandbox.bash_needs_approval());
+        assert!(!sandbox.wraps_shell());
+        assert!(sandbox.shell_needs_approval());
 
         let off = ResolvedSandbox::disabled(&ws);
         assert!(!off.enabled());
-        assert!(!off.bash_needs_approval());
+        assert!(!off.shell_needs_approval());
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn shell_invocation_unix_is_bash_c_passthrough() {
+        let (program, args) = shell_invocation("echo hi; false");
+        assert_eq!(program, "bash");
+        assert_eq!(args, vec!["-c".to_string(), "echo hi; false".to_string()]);
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_wrapper_script_captures_exit_state() {
+        let script = windows_wrapper_script("Get-ChildItem");
+        // chcp pollutes $LASTEXITCODE with 0 — it must be cleared before the
+        // user command so a PowerShell-level failure can't masquerade as exit 0.
+        assert!(script.contains("$global:LASTEXITCODE = $null"));
+        // Script block (not `( … )`) so multi-statement commands parse.
+        assert!(script.contains("& { Get-ChildItem } 2>&1"));
+        // Native exit code passes through; $Error catches cmdlet/not-found
+        // failures that never set $LASTEXITCODE.
+        assert!(script.contains("exit $LASTEXITCODE"));
+        assert!(script.contains("$Error.Count"));
+        // BOM-less UTF-8 on both stdout and pipe-to-native-stdin (PS 5.1
+        // defaults leak a BOM / ASCII respectively).
+        assert!(script.contains("[System.Text.UTF8Encoding]::new($false)"));
+        assert!(script.contains("$OutputEncoding = [Console]::OutputEncoding"));
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn shell_invocation_windows_uses_encoded_command() {
+        let (program, args) = shell_invocation("Get-ChildItem");
+        // pwsh when present, else Windows PowerShell 5.1 — both accept these args.
+        assert!(program == "pwsh" || program == "powershell");
+        assert_eq!(args[0], "-NoProfile");
+        assert_eq!(args[1], "-EncodedCommand");
+        // The payload is base64 of the UTF-16LE wrapper script; decode and
+        // confirm it round-trips to the readable wrapper.
+        use base64::Engine;
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(&args[2])
+            .expect("valid base64");
+        let utf16: Vec<u16> = raw
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        let decoded = String::from_utf16(&utf16).expect("valid utf-16");
+        assert!(decoded.contains("& { Get-ChildItem } 2>&1"));
     }
 
     #[test]
@@ -430,7 +614,7 @@ mod tests {
             s.evaluate(Path::new("/etc/hosts"), Op::Write),
             Decision::Allow
         );
-        assert!(!s.wraps_bash());
+        assert!(!s.wraps_shell());
     }
 
     #[test]
