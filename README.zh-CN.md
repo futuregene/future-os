@@ -49,12 +49,6 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
 - 可选：**Python 3** —— 仅 `make generate-models` 需要
 - 平台：macOS / Linux / Windows
 
-> **只构建终端版？** 跳过 GUI/Tauri 工具链，只构建终端相关组件：
-> `make build-agent && make build-tui && make build-cli`。
->
-> **注意：** `make install` 构建独立二进制并安装到系统路径：
-> macOS `/opt/homebrew/bin`、Linux `/usr/local/bin`、Windows `%USERPROFILE%\.future\bin`。
-
 ### 构建
 
 ```bash
@@ -62,6 +56,11 @@ git clone https://github.com/futuregene/future-os.git
 cd future-os
 make install   # 构建全部组件并安装到系统路径
 ```
+
+二进制安装路径：macOS `/opt/homebrew/bin`、Linux `/usr/local/bin`、Windows `%USERPROFILE%\.future\bin`。
+
+> **只构建终端版？** 跳过 GUI 工具链：
+> `make build-agent && make build-tui && make build-cli`
 
 ### 启动 Agent（必须先启动）
 

@@ -49,12 +49,6 @@ Required for a full `make build` (agent + TUI + CLI + GUI):
 - Optional: **Python 3** — only for `make generate-models`
 - Platform: macOS, Linux, or Windows
 
-> **Terminal-only build?** To skip the GUI/Tauri toolchain, build just the terminal stack:
-> `make build-agent && make build-tui && make build-cli`.
->
-> **Note:** `make install` builds standalone binaries and installs them to your system path:
-> macOS `/opt/homebrew/bin`, Linux `/usr/local/bin`, Windows `%USERPROFILE%\.future\bin`.
-
 ### Build
 
 ```bash
@@ -62,6 +56,11 @@ git clone https://github.com/futuregene/future-os.git
 cd future-os
 make install   # build everything and install to system path
 ```
+
+Binaries are installed to: macOS `/opt/homebrew/bin`, Linux `/usr/local/bin`, Windows `%USERPROFILE%\.future\bin`.
+
+> **Terminal-only?** Skip the GUI toolchain:
+> `make build-agent && make build-tui && make build-cli`
 
 ### Run the agent (start this first)
 
