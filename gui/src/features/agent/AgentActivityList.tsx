@@ -47,7 +47,9 @@ function AgentActivitySingleLine({ item, workspacePath, runId }: { item: AgentAc
 
   const handleInspect = useCallback(() => {
     if (runId)
-      emitFutureEvent("inspect-tool", { runId, toolId: item.id });
+      // Defer so the click returns immediately and panel expansion /
+      // data loading runs off the React event path.
+      setTimeout(() => emitFutureEvent("inspect-tool", { runId, toolId: item.id }));
   }, [runId, item.id]);
 
   return (
@@ -113,7 +115,9 @@ function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentAct
 
   const handleInspect = useCallback(() => {
     if (runId)
-      emitFutureEvent("inspect-tool", { runId, toolId: item.id });
+      // Defer so the click returns immediately and panel expansion /
+      // data loading runs off the React event path.
+      setTimeout(() => emitFutureEvent("inspect-tool", { runId, toolId: item.id }));
   }, [runId, item.id]);
 
   return (
