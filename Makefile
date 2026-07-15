@@ -140,23 +140,23 @@ fmt:
 
 # ─── Run ────────────────────────────────────────────────────────────────────
 
-run-agent:
+run-agent: build-agent
 	cd agent && cargo run -- --verbose
 
-run-tui: install-tui-deps
+run-tui: build-tui
 	cd tui && npm run dev
 
-run-cli: install-cli-deps build-tui
+run-cli: build-cli build-tui
 	cd cli && npm run dev
 
-run-gui:
-	cd gui && npm install && npm run tauri:dev
+run-gui: build-gui
+	cd gui && npm run tauri:dev
 
 package-gui: install-gui
 	node scripts/version.mjs --set-bundle
 	cd gui && npm run tauri:build
 
-run-channels:
+run-channels: build-channels
 	cd channels && cargo run
 
 # ─── Generate ───────────────────────────────────────────────────────────────
@@ -194,12 +194,12 @@ help:
 	@echo "  test               Run Rust tests (agent)"
 	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI)"
 	@echo "  fmt                Format Rust code (agent + channels)"
-	@echo "  run-agent          Build and run Rust agent"
-	@echo "  run-tui            Run TUI in dev mode"
-	@echo "  run-cli            Run CLI in dev mode"
-	@echo "  run-gui            Run GUI in Tauri dev mode"
-	@echo "  package-gui        Build GUI desktop bundles"
-	@echo "  run-channels        Build and run channel bridge"
+	@echo "  run-agent          Build & run Rust agent"
+	@echo "  run-tui            Build & run TUI"
+	@echo "  run-cli            Build & run CLI"
+	@echo "  run-gui            Build & run GUI"
+	@echo "  run-channels        Build & run channel bridge"
+	@echo "  package-gui        Package GUI desktop bundles"
 	@echo "  generate-models    Fetch model data and regenerate models_generated.rs"
 	@echo "  generate-proto     Compile proto/future.proto to Rust gRPC code"
 	@echo "  install            Install standalone binaries to $(PREFIX)/"
