@@ -18,7 +18,6 @@ mod seatbelt;
 pub mod windows;
 mod windows_plan;
 
-#[cfg(windows)]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
