@@ -11,7 +11,7 @@ version:
 
 # ─── Install ──────────────────────────────────────────────────────────────────
 
-install: install-tui install-cli install-gui
+install: install-tui install-cli install-gui install-channels
 
 install-tui:
 	cd tui && npm install
@@ -29,6 +29,10 @@ install-gui:
 	cp agent/target/debug/future-agent gui/src-tauri/binaries/future-agent-aarch64-apple-darwin
 	cd cli && npm run build && bun build --compile dist/index.js --outfile dist/future
 	cp cli/dist/future gui/src-tauri/binaries/future-aarch64-apple-darwin
+
+install-channels:
+	cd channels && cargo build
+	cp channels/target/debug/future-channels /opt/homebrew/bin/
 
 # Release builds of agent + CLI sidecars (for packaging). Separate from
 # install-gui so run-gui doesn't pay the release compile cost.
@@ -183,6 +187,7 @@ help:
 	@echo "  build-gui          Build React/Tauri GUI frontend"
 	@echo "  build-channels      Build channel bridge"
 	@echo "  build-channels-release  Build channel bridge (optimized)"
+	@echo "  install-channels    Build and install channel bridge"
 	@echo "  test               Run Rust tests"
 	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI)"
 	@echo "  fmt                Format Rust code (agent + channels)"
