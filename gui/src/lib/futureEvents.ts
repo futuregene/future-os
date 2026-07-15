@@ -7,6 +7,8 @@
  */
 export interface FutureEventMap {
   "inspect-run": { runId: string };
+  /** Open the Runs panel and select a specific tool call by id. */
+  "inspect-tool": { runId: string; toolId: string };
   "inspect-artifact": { artifactId: string };
   "open-review": { reviewId: string };
   "review-updated": { threadId: string };
