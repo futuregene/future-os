@@ -1,4 +1,4 @@
-.PHONY: version build build-agent build-tui build-cli build-gui build-channels test lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean run run-agent run-tui run-cli run-gui run-channels package-gui install uninstall install-tui install-cli-deps install-cli install-gui install-channels install-skills fmt generate-models generate-proto help
+.PHONY: version build build-agent build-tui build-cli build-gui build-channels test lint lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui check-gui clean run run-agent run-tui run-cli run-gui run-channels package-gui install uninstall install-tui install-cli install-gui install-channels install-skills fmt generate-models generate-proto help
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (see scripts/version.mjs).
@@ -8,6 +8,22 @@ export FUTURE_VERSION ?= $(shell node scripts/version.mjs)
 
 version:
 	@node scripts/version.mjs --json
+
+# ─── Platform ────────────────────────────────────────────────────────────────
+
+ARCH := $(shell uname -m)
+ARCH := $(subst arm64,aarch64,$(ARCH))
+ARCH := $(subst x86_64,x86_64,$(ARCH))
+OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
+TARGET := $(ARCH)-$(OS)
+
+ifeq ($(OS),darwin)
+  PREFIX := /opt/homebrew/bin
+else ifeq ($(OS),linux)
+  PREFIX := /usr/local/bin
+else
+  PREFIX := $(USERPROFILE)/.future/bin
+endif
 
 # ─── Install ──────────────────────────────────────────────────────────────────
 
@@ -20,26 +36,8 @@ uninstall:
 install-tui: build-tui
 	cp tui/dist/future-tui $(PREFIX)/future-tui
 
-install-cli-deps:
-	cd cli && npm install
-
-install-cli: install-cli-deps
-	cd cli && npm run build && bun build --compile dist/index.js --outfile $(PREFIX)/future
-
-ARCH := $(shell uname -m)
-ARCH := $(subst arm64,aarch64,$(ARCH))
-ARCH := $(subst x86_64,x86_64,$(ARCH))
-OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
-TARGET := $(ARCH)-$(OS)
-
-# Install prefix — on macOS Homebrew, on Linux /usr/local, on Windows user-local.
-ifeq ($(OS),darwin)
-  PREFIX := /opt/homebrew/bin
-else ifeq ($(OS),linux)
-  PREFIX := /usr/local/bin
-else
-  PREFIX := $(USERPROFILE)/.future/bin
-endif
+install-cli: build-cli
+	cp cli/dist/future $(PREFIX)/future
 
 install-gui: install-cli
 	cd gui && npm install
@@ -89,8 +87,8 @@ build-agent:
 build-tui:
 	cd tui && npm install && npm run build && bun build --compile dist/index.js --outfile dist/future-tui
 
-build-cli: install-cli-deps
-	cd cli && npm run build
+build-cli:
+	cd cli && npm install && npm run build && bun build --compile dist/index.js --outfile dist/future
 
 build-gui:
 	cd gui && npm install && npm run build
