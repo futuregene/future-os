@@ -12,9 +12,9 @@ use tokio::time::{interval, Duration, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 use tracing::{debug, info, warn};
 
-// Generated from proto/feishu_ws.proto
+// Generated from proto/feishu_ws.proto — checked into src/generated/
 mod feishu_pb {
-    include!(concat!(env!("OUT_DIR"), "/feishu_ws.rs"));
+    include!("../generated/feishu_ws.rs");
 }
 
 use feishu_pb::{Header, WsFrame};
