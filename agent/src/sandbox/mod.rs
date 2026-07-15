@@ -188,11 +188,12 @@ impl ResolvedSandbox {
         }
         #[cfg(target_os = "windows")]
         {
-            // PowerShell handles single-quoted strings correctly
-            // (unlike cmd.exe where single quotes are literal characters),
-            // matching the model's natural quoting style.
-            // -NoProfile speeds up startup; ; exit $LASTEXITCODE
-            // propagates the child process exit code.
+            // The model may generate either single-quoted JSON args
+            // (--args '{"key":"val"}') or bash-style double-quoted-with-escapes
+            // (--args "{\"key\":\"val\"}"). PowerShell handles single quotes
+            // natively but breaks on \" because backslash is not an escape
+            // character there (PowerShell uses backtick `" instead).
+            let command = normalize_shell_quoting(command);
             let mut child = tokio::process::Command::new("powershell");
             child.args([
                 "-NoProfile",
@@ -201,6 +202,66 @@ impl ResolvedSandbox {
             ]);
             child
         }
+    }
+
+    /// Convert bash-style escaped double quotes (\") to single-quoted form
+    /// so PowerShell can parse the arguments correctly.
+    /// PowerShell uses backtick (`) as its escape character; backslash has
+    /// no special meaning. The model generates either form:
+    ///   --args '{"key":"val"}'   ← already valid in PowerShell
+    ///   --args "{\"key\":\"val\"}" ← needs conversion
+    #[cfg(windows)]
+    fn normalize_shell_quoting(command: &str) -> String {
+        let chars: Vec<char> = command.chars().collect();
+        let mut result = String::with_capacity(command.len());
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '"' && i + 1 < chars.len() && chars[i + 1] == '{' {
+                // Potential JSON argument in double quotes — find closing quote
+                let end = match find_closing_quote(&chars, i) {
+                    Some(e) => e,
+                    None => {
+                        result.push(chars[i]);
+                        i += 1;
+                        continue;
+                    }
+                };
+                let inner: String = chars[i + 1..end].iter().collect();
+                if inner.contains("\\\"") {
+                    // Bash-style: unescape and re-wrap in single quotes
+                    result.push('\'');
+                    result.push_str(&inner.replace("\\\"", "\""));
+                    result.push('\'');
+                } else {
+                    // No escapes, pass through
+                    for j in i..=end {
+                        result.push(chars[j]);
+                    }
+                }
+                i = end + 1;
+            } else {
+                result.push(chars[i]);
+                i += 1;
+            }
+        }
+        result
+    }
+
+    /// Find the closing double quote for a JSON-like argument starting at
+    /// `start`, skipping over bash-style \" escaped quotes inside.
+    #[cfg(windows)]
+    fn find_closing_quote(chars: &[char], start: usize) -> Option<usize> {
+        let mut i = start + 1;
+        while i < chars.len() {
+            if chars[i] == '\\' && i + 1 < chars.len() && chars[i + 1] == '"' {
+                i += 2; // skip \"
+            } else if chars[i] == '"' {
+                return Some(i);
+            } else {
+                i += 1;
+            }
+        }
+        None
     }
 
     /// Structured `sandbox_boundary` payload for approval events.
