@@ -20,7 +20,7 @@ TARGET := $(ARCH)-$(OS)
 ifeq ($(OS),darwin)
   PREFIX := /opt/homebrew/bin
 else ifeq ($(OS),linux)
-  PREFIX := /usr/local/bin
+  PREFIX := $(HOME)/.local/bin
 else
   PREFIX := $(USERPROFILE)/.future/bin
 endif
