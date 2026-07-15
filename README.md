@@ -123,10 +123,9 @@ Switch the active model any time with `/model <id>` in the TUI, or `ctrl+p` to c
 
 ```bash
 future auth login                            # sign in to hosted models
-future run "Write a Python sort function"    # one-shot prompt (needs the agent running)
+future run "Write a Python sort function"    # one-shot prompt
 future tui                                   # open the TUI
 future gui                                   # launch the desktop app
-future agent start                           # run the agent as a background service
 future channel start                         # start the channel bridge
 future --help                                # full command list
 ```

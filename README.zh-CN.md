@@ -123,10 +123,9 @@ future auth login
 
 ```bash
 future auth login                          # 登录托管模型
-future run "用 Python 写个排序函数"         # 单次对话（需 Agent 已启动）
+future run "用 Python 写个排序函数"         # 单次对话
 future tui                                 # 打开 TUI
 future gui                                 # 启动桌面应用
-future agent start                         # 将 Agent 作为后台服务运行
 future channel start                       # 启动 Channel Bridge
 future --help                              # 查看全部命令
 ```
