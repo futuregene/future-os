@@ -195,8 +195,8 @@ impl ResolvedSandbox {
 
         // Strip explicit powershell -Command "..." wrapper if the model
         // generated it — the agent already wraps commands in PowerShell.
-        let command = if command.starts_with("powershell ") {
-            let inner = command["powershell ".len()..].trim();
+        let command = if let Some(rest) = command.strip_prefix("powershell ") {
+            let inner = rest.trim();
             let inner = inner
                 .trim_start_matches("-Command ")
                 .trim_start_matches("-c ")
@@ -241,9 +241,7 @@ impl ResolvedSandbox {
                     result.push('\'');
                 } else {
                     // No escapes, pass through
-                    for j in i..=end {
-                        result.push(chars[j]);
-                    }
+                    result.extend(&chars[i..=end]);
                 }
                 i = end + 1;
             } else {
@@ -352,6 +350,7 @@ pub fn shell_invocation(command: &str) -> (&'static str, Vec<String>) {
 ///   * `$OutputEncoding` governs how PowerShell encodes strings piped INTO a
 ///     native command's stdin — it defaults to ASCII in 5.1, mangling non-ASCII
 ///     to `?`, so it must be set too.
+///
 ///   All three use a BOM-less `UTF8Encoding($false)`: the default
 ///   `[Text.Encoding]::UTF8` carries a BOM that, on a redirected stdout, PS 5.1
 ///   prepends to the stream as a stray `EF BB BF` (a leading U+FEFF for us).
