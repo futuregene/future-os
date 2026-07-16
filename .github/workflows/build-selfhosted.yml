@@ -1,5 +1,7 @@
 name: Build FutureOS app (self-hosted)
 
+permissions: read-all
+
 # Self-hosted variant of build.yml, made to avoid consuming GitHub Actions
 # minutes/storage. Differences from build.yml:
 #   1. Runs on the self-hosted runners (Linux / macOS / Windows).
