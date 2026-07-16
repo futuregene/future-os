@@ -9,7 +9,7 @@ use crate::types::AgentTool;
 /// Section ordering matches 's BuildPrompt():
 ///   1. Identity (who you are + tool list + behavior rules)
 ///   2. Skills (available capabilities — only if read tool is present)
-///   3. Project context (CLAUDE.md / AGENTS.md / GEMINI.md)
+///   3. Project context (AGENTS.md / CLAUDE.md / GEMINI.md)
 ///   4. Workspace memory (FUTURE.md)
 ///   5. Append prompt (user override — placed late so it can override earlier rules)
 ///   6. Environment (date, cwd, platform)

@@ -550,9 +550,9 @@ impl ServerSession {
         ];
         let skills = crate::skills::discover_skills(&skill_dirs).unwrap_or_default();
 
-        // Load project context (CLAUDE.md / AGENTS.md / GEMINI.md)
+        // Load project context (AGENTS.md / CLAUDE.md / GEMINI.md)
         let mut agent_content = String::new();
-        for fname in &["CLAUDE.md", "AGENTS.md", "GEMINI.md"] {
+        for fname in &["AGENTS.md", "CLAUDE.md", "GEMINI.md"] {
             let p = std::path::Path::new(&self.cwd).join(fname);
             if p.exists() {
                 if let Ok(content) = std::fs::read_to_string(&p) {
