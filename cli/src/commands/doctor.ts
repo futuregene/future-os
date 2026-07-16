@@ -383,7 +383,7 @@ async function checkSkills(): Promise<CheckResult> {
       const upToDate: string[] = [];
       const needsUpdate: string[] = [];
 
-      for (const id of installed) {
+      for (const id of [...installed].sort()) {
         const skill = catalog.get(id);
         const localVer = await readSkillMdVersion(path.join(SKILLS_DIR, id, "SKILL.md"));
         if (localVer && skill?.latest_version && localVer !== skill.latest_version) {
