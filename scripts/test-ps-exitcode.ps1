@@ -181,17 +181,22 @@ try {
     -RedirectStandardOutput $tmp -NoNewWindow -Wait | Out-Null
   $raw = [System.IO.File]::ReadAllBytes($tmp)
   $hex = ($raw | ForEach-Object { $_.ToString('X2') }) -join ' '
-  $want = [System.Text.Encoding]::UTF8.GetBytes([string]([char]0x4E2D + [char]0x6587))
+  # Build the CJK sample from code points, NOT a file literal: Windows
+  # PowerShell 5.1 reads a BOM-less .ps1 as the ANSI code page (GBK), which
+  # would garble a literal here. All printed strings below stay ASCII for the
+  # same reason.
+  $cjk = [string]([char]0x4E2D + [char]0x6587)   # 中文
+  $want = [System.Text.Encoding]::UTF8.GetBytes($cjk)
   $wantHex = ($want | ForEach-Object { $_.ToString('X2') }) -join ' '
-  $gbkHex = 'D6 D0 CE C4'   # 中文 in GBK/CP936, for reference if it's wrong
-  Write-Host "  child stdout bytes : $hex"
-  Write-Host "  want (UTF-8 of 中文): $wantHex"
+  $gbkHex = 'D6 D0 CE C4'   # the CJK sample in GBK/CP936, for reference if wrong
+  Write-Host "  child stdout bytes  : $hex"
+  Write-Host "  want (UTF-8 of $cjk): $wantHex"
   if ($hex -like "*$wantHex*") {
-    Write-Host "  VERDICT: OK — wrapper emits UTF-8; production renders 中文 correctly."
+    Write-Host "  VERDICT: OK -- wrapper emits UTF-8; production renders $cjk correctly."
   } elseif ($hex -like "*$gbkHex*") {
-    Write-Host "  VERDICT: BROKEN — wrapper emitted GBK ($gbkHex), not UTF-8. Encoding fix is not taking effect."
+    Write-Host "  VERDICT: BROKEN -- wrapper emitted GBK ($gbkHex), not UTF-8. Encoding fix is not taking effect."
   } else {
-    Write-Host "  VERDICT: UNEXPECTED — neither UTF-8 nor GBK; inspect the bytes above."
+    Write-Host "  VERDICT: UNEXPECTED -- neither UTF-8 nor GBK; inspect the bytes above."
   }
 }
 finally {
