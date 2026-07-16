@@ -143,7 +143,7 @@
 
 ### 302ai
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -171,7 +171,7 @@
 
 ### abacus
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -197,7 +197,7 @@
 
 ### abliteration-ai
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -205,7 +205,7 @@
 
 ### aihubmix
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -237,7 +237,7 @@
 
 ### alibaba
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -263,7 +263,7 @@
 
 ### alibaba-cn
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -295,7 +295,7 @@
 
 ### alibaba-coding-plan-cn
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -419,7 +419,7 @@
 
 ### ambient
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -440,7 +440,7 @@
 
 ### anyapi
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -454,7 +454,7 @@
 
 ### atomic-chat
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -464,7 +464,7 @@
 
 ### auriko
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -472,7 +472,7 @@
 
 ### azure
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -480,7 +480,7 @@
 
 ### azure-cognitive-services
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -512,7 +512,7 @@
 
 ### bailing
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -520,7 +520,7 @@
 
 ### baseten
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -528,7 +528,7 @@
 
 ### blueclaw
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -546,7 +546,7 @@
 
 ### chutes
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -565,7 +565,7 @@
 
 ### clarifai
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -582,7 +582,7 @@
 
 ### claudinio
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -591,7 +591,7 @@
 
 ### cloudferro-sherlock
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -600,7 +600,7 @@
 
 ### cloudflare-ai-gateway
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -636,7 +636,7 @@
 
 ### Cohere
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -652,7 +652,7 @@
 
 ### cortecs
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -675,7 +675,7 @@
 
 ### crof
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -687,7 +687,7 @@
 
 ### crossmodel
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -704,7 +704,7 @@
 
 ### databricks
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -741,7 +741,7 @@
 
 ### deepinfra
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -764,7 +764,7 @@
 
 ### digitalocean
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -822,7 +822,7 @@
 
 ### drun
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -832,7 +832,7 @@
 
 ### ebcloud
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -843,7 +843,7 @@
 
 ### empiriolabs
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -879,7 +879,7 @@
 
 ### evroc
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -891,7 +891,7 @@
 
 ### fastrouter
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -903,7 +903,7 @@
 
 ### fireworks-ai
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -926,7 +926,7 @@
 
 ### frogbot
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -965,7 +965,7 @@
 
 ### github-models
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1014,7 +1014,7 @@
 
 ### gitlab
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1043,7 +1043,7 @@
 
 ### gmicloud
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1116,7 +1116,7 @@
 
 ### helicone
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1204,7 +1204,7 @@
 
 ### iflowcn
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1213,7 +1213,7 @@
 
 ### inceptron
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1221,7 +1221,7 @@
 
 ### inference
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1235,7 +1235,7 @@
 
 ### inferx
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1248,7 +1248,7 @@
 
 ### io-net
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1260,7 +1260,7 @@
 
 ### jiekou
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1277,7 +1277,7 @@
 
 ### kilo
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1319,7 +1319,7 @@
 
 ### kimi-for-coding
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1330,7 +1330,7 @@
 
 ### lilac
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1339,7 +1339,7 @@
 
 ### llama
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1353,7 +1353,7 @@
 
 ### llmgateway
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1411,7 +1411,7 @@
 
 ### llmtr
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1419,7 +1419,7 @@
 
 ### lmstudio
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1428,7 +1428,7 @@
 
 ### longcat
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1436,7 +1436,7 @@
 
 ### lucidquery
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1447,7 +1447,7 @@
 
 ### lynkr
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1455,7 +1455,7 @@
 
 ### meganova
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1468,7 +1468,7 @@
 
 ### merge-gateway
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1563,7 +1563,7 @@
 
 ### moark
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1571,7 +1571,7 @@
 
 ### modelscope
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1597,7 +1597,7 @@
 
 ### nano-gpt
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1727,7 +1727,7 @@
 
 ### nearai
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1735,7 +1735,7 @@
 
 ### nebius
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1756,7 +1756,7 @@
 
 ### neon
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1777,7 +1777,7 @@
 
 ### neuralwatt
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1797,7 +1797,7 @@
 
 ### nova
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1806,7 +1806,7 @@
 
 ### novita-ai
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1829,7 +1829,7 @@
 
 ### nvidia
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1860,7 +1860,7 @@
 
 ### ollama-cloud
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2263,7 +2263,7 @@
 
 ### orcarouter
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2276,7 +2276,7 @@
 
 ### ovhcloud
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2285,7 +2285,7 @@
 
 ### perplexity-agent
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2295,7 +2295,7 @@
 
 ### pioneer
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2330,7 +2330,7 @@
 
 ### poe
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2412,7 +2412,7 @@
 
 ### qiniu-ai
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2457,7 +2457,7 @@
 
 ### regolo-ai
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2467,7 +2467,7 @@
 
 ### requesty
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2479,7 +2479,7 @@
 
 ### routing-run
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2491,7 +2491,7 @@
 
 ### sakana
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2500,7 +2500,7 @@
 
 ### sap-ai-core
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2528,7 +2528,7 @@
 
 ### scaleway
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2540,7 +2540,7 @@
 
 ### siliconflow
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2562,7 +2562,7 @@
 
 ### siliconflow-cn
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2579,7 +2579,7 @@
 
 ### snowflake-cortex
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2592,7 +2592,7 @@
 
 ### stackit
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2601,7 +2601,7 @@
 
 ### stepfun-ai
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2610,7 +2610,7 @@
 
 ### stepfun-step-plan
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2621,7 +2621,7 @@
 
 ### subconscious
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2630,7 +2630,7 @@
 
 ### submodel
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2639,7 +2639,7 @@
 
 ### synthetic
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2653,7 +2653,7 @@
 
 ### tencent-coding-plan
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2665,7 +2665,7 @@
 
 ### tencent-token-plan
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2673,7 +2673,7 @@
 
 ### tencent-tokenhub
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2681,7 +2681,7 @@
 
 ### the-grid-ai
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2697,7 +2697,7 @@
 
 ### tinfoil
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2707,7 +2707,7 @@
 
 ### togetherai
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2720,7 +2720,7 @@
 
 ### trustedrouter
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2734,7 +2734,7 @@
 
 ### umans-ai
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2746,7 +2746,7 @@
 
 ### umans-ai-coding-plan
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2754,7 +2754,7 @@
 
 ### unorouter
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2772,7 +2772,7 @@
 
 ### upstage
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2782,7 +2782,7 @@
 
 ### v0
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2792,7 +2792,7 @@
 
 ### venice
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2853,7 +2853,7 @@
 
 ### vercel
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2932,7 +2932,7 @@
 
 ### vultr
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2942,7 +2942,7 @@
 
 ### wafer.ai
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2951,7 +2951,7 @@
 
 ### wandb
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2989,7 +2989,7 @@
 
 ### xpersona
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -3014,7 +3014,7 @@
 
 ### zeldoc
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -3022,7 +3022,7 @@
 
 ### zenifra
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -3030,7 +3030,7 @@
 
 ### zenmux
 
-**Base URL:** `.into()`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
