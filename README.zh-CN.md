@@ -22,7 +22,7 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
 | **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、命令行 (CLI)、飞书机器人、钉钉机器人——一个 Agent，无处不在 |
 | **模型灵活** | 内置 1000+ 模型，覆盖 100+ Provider（[完整目录](docs/wiki/zh/Models.md)）；通过 `models.json` 自定义 Provider；支持模型范围限定 |
 | **流式输出与思考链** | 实时 token 流式传输，可折叠的思考链展示；可配置思考深度（off ↔ xhigh） |
-| **工具执行** | 读写、编辑、bash，带审批控制和沙箱保护（关闭 / 手动 / macOS Seatbelt）；上下文超 90% 自动压缩 |
+| **工具执行** | read, write, edit, shell，带审批控制和沙箱保护（关闭 / 手动 / macOS Seatbelt）；上下文超 90% 自动压缩 |
 | **会话持久化** | JSONL 格式存储，支持 fork、clone、树形导航和问答计数 |
 | **自动压缩与重试** | 上下文自动压缩；上下文超长时指数退避自动重试 |
 | **Channel Bridge** | 飞书和钉钉机器人——markdown 流式输出、斜杠命令、通过聊天管理会话 |
@@ -104,18 +104,18 @@ future auth login
 
 ### 启动 Agent
 
-所有客户端——TUI、GUI、CLI、channels——都只是轻量 gRPC 客户端。**必须先启动 Agent**,监听 `127.0.0.1:50051`。启动方式有两种,对应两种场景:
+所有客户端——TUI、GUI、CLI、channels——都只是轻量 gRPC 客户端。**必须先启动 Agent**,监听 `127.0.0.1:50051`：
 
 | 模式 | 命令 | 适用场景 |
 |---|---|---|
-| **开发 / 前台** | `make run-agent` | 开发调试 Agent。从源码重新构建,跑在当前终端,日志打到 stdout,Ctrl-C 停止。 |
-| **后台服务** | `future agent start` | 日常使用。安装为托管服务(macOS launchctl / Linux systemd / Windows sc),开机自启,启动一次即可。用 `future agent stop \| restart \| status` 管理。 |
+| **前台** | `make run-agent` | 从源码构建并运行，日志打到 stdout，Ctrl-C 停止 |
+| **前台** | `future-agent` | 直接运行已构建好的 Agent，日志打到 stdout，Ctrl-C 停止 |
 
 然后启动任意客户端：
 
 ```bash
-future tui           # 终端界面（需先 make install）
-future gui           # 桌面应用（需先 make install）
+future-tui           # 终端界面（需先 make install）
+future-gui           # 桌面应用（需先 make install）
 # 开发模式下直接运行（会自动构建）：
 make run-tui         # 终端界面
 make run-gui         # 桌面应用
@@ -127,9 +127,9 @@ make run-gui         # 桌面应用
 
 ```bash
 future run "用 Python 写个排序函数"         # 单次对话
-future tui                                 # 打开 TUI
-future gui                                 # 启动桌面应用
-future channel start                       # 启动 Channel Bridge
+future-tui                                 # 打开 TUI
+future-gui                                 # 启动桌面应用
+future-channel                             # 启动 Channel Bridge
 future --help                              # 查看全部命令
 ```
 
@@ -178,7 +178,7 @@ future --help                              # 查看全部命令
 - **Agent** (`agent/`) — Rust，tokio，tonic。LLM 客户端（OpenAI 兼容 HTTP+SSE），工具执行，JSONL 会话持久化，gRPC 服务。
 - **TUI** (`tui/`) — TypeScript，bun。差分渲染，Markdown，Kitty 图片协议，14 个 UI 组件。
 - **GUI** (`gui/`) — Tauri 2 + React + TypeScript。三栏布局（导航 / 对话 / 上下文），审批提示，技能浏览，设置。
-- **CLI** (`cli/`) — TypeScript。设备码 OAuth 登录，服务管理，MCP 工具调用，TUI/GUI 启动器。
+- **CLI** (`cli/`) — TypeScript。设备码 OAuth 登录，单次对话（`run`），MCP 工具调用，技能管理，环境诊断（`doctor`）。
 - **Channel Bridge** (`channels/`) — Rust。飞书（pbbp2 WebSocket + CardKit 流式）和钉钉（Stream Mode）。
 
 ## 配置
@@ -217,7 +217,7 @@ make generate-proto          # agent + channels + TUI
 
 | 现象 | 解决 |
 |---|---|
-| 客户端报连接 / gRPC 错误退出 | Agent 没启动。先启动它(`make run-agent` 或 `future agent start`),并确认端口没被占用:`lsof -i :50051`。 |
+| 客户端报连接 / gRPC 错误退出 | Agent 没启动。先启动它(`future-agent` 或 `make run-agent`),并确认端口没被占用:`lsof -i :50051`。 |
 | Agent 回复鉴权 / "no model" 错误 | 还没配置模型。运行 `future auth login`,或在 `models.json` 里加一个 provider——见 [配置模型](#配置模型)。 |
 | GUI 找不到 Agent 二进制 | `make install-gui` 用你的宿主 target triple 复制 sidecar。如果 triple 与自动检测的不一致，手动复制：`cp agent/target/debug/future-agent gui/src-tauri/binaries/future-agent-$(rustc -vV | sed -n 's/^host: //p')`。 |
 | 构建时报 "unable to find linker 'mold'" | 安装 mold：`sudo apt install mold`（仅限 Linux x86_64，ARM Linux 不需要）。 |

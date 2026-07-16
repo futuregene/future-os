@@ -178,7 +178,7 @@ All clients connect to the agent independently over gRPC — no client depends o
 - **Agent** (`agent/`) — Rust, tokio, tonic. LLM client (OpenAI-compatible HTTP+SSE), tool execution, session JSONL persistence, gRPC server.
 - **TUI** (`tui/`) — TypeScript, bun. Differential rendering, markdown, Kitty image protocol, 14 UI components.
 - **GUI** (`gui/`) — Tauri 2 + React + TypeScript. Three-panel layout (nav / chat / context), approval prompts, skill browser, settings.
-- **CLI** (`cli/`) — TypeScript. Auth (device-flow OAuth), service management, MCP tool calls, TUI/GUI launcher.
+- **CLI** (`cli/`) — TypeScript. Auth (device-flow OAuth), one-shot prompts (`run`), MCP tool calls, skills management, environment diagnostics (`doctor`).
 - **Channel Bridge** (`channels/`) — Rust. Feishu (pbbp2 WebSocket + CardKit streaming) and DingTalk (Stream Mode).
 
 ## Configuration
