@@ -550,8 +550,12 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 );
             }
 
-            // Add to sessions map
-            let new_sess = ServerSession::new_with_shared_loop(
+            // Add to sessions map.  Load the forked entries into
+            // in-memory messages so the first prompt doesn't overwrite
+            // the saved history on disk — session_prompt.rs saves
+            // self.messages back to disk (via File::create), truncating
+            // anything not held in memory.
+            let mut new_sess = ServerSession::new_with_shared_loop(
                 forked_id.clone(),
                 agent_loop,
                 session_manager,
@@ -560,6 +564,15 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 broadcaster,
                 state.approval_gate.clone(),
             );
+            let supports_images =
+                crate::models::model_accepts_images(&forked.model);
+            let msgs =
+                crate::session::entries_to_agent_messages(&forked.entries, supports_images);
+            *new_sess.messages.write().unwrap() = msgs;
+            if !forked.model.is_empty() {
+                new_sess.model = forked.model.clone();
+                *new_sess.compaction_model.write().unwrap() = forked.model.clone();
+            }
             state.create_session(new_sess);
 
             RpcResponse::ok(id, "fork", serde_json::json!({"sessionId": forked_id}))
@@ -934,8 +947,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 );
             }
 
-            // Add to sessions map
-            let new_sess = ServerSession::new_with_shared_loop(
+            // Add to sessions map.  Load the cloned entries into
+            // in-memory messages (same reason as fork — prevents
+            // the first prompt from truncating history on disk).
+            let mut new_sess = ServerSession::new_with_shared_loop(
                 forked_id.clone(),
                 agent_loop,
                 session_manager,
@@ -944,6 +959,15 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 broadcaster,
                 state.approval_gate.clone(),
             );
+            let supports_images =
+                crate::models::model_accepts_images(&forked.model);
+            let msgs =
+                crate::session::entries_to_agent_messages(&forked.entries, supports_images);
+            *new_sess.messages.write().unwrap() = msgs;
+            if !forked.model.is_empty() {
+                new_sess.model = forked.model.clone();
+                *new_sess.compaction_model.write().unwrap() = forked.model.clone();
+            }
             state.create_session(new_sess);
 
             RpcResponse::ok(id, "clone", serde_json::json!({"cancelled": false}))
