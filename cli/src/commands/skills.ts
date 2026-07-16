@@ -326,7 +326,7 @@ export async function installBuiltinSkills(scope: Scope = "app"): Promise<void> 
  * Checks every scope, compares against the platform catalog, and upgrades stale skills.
  */
 async function updateSkills(args: string[]): Promise<void> {
-  const scope = parseScope(args);
+  const scope = args.includes("--scope") ? parseScope(args) : null;
 
   const platformUrl = await getPlatformUrl();
   console.log(`Fetching skill catalog from ${platformUrl}...`);
