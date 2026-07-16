@@ -70,7 +70,7 @@ The agent needs at least one model with an API key before it can answer. Three o
 future auth login
 ```
 
-**B — Use a known provider.** Put your API key in `~/.future/agent/auth.json`, keyed by provider name. See the [built-in model catalog](docs/wiki/en/Models.md) for all supported providers — most have built-in base URLs and auto-discover their models:
+**B — Use a known provider.** Put your API key in `~/.future/agent/auth.json`, keyed by provider name:
 
 ```json
 {
