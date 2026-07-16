@@ -377,36 +377,41 @@ async function checkSkills(): Promise<CheckResult> {
     lines.push(`  ${SKILLS_DIR}${marker}`);
   }
 
-  // Check installed skills for updates against platform catalog
   if (installed.size > 0) {
-    // Always show local versions first
-    for (const id of [...installed].sort()) {
-      const localVer = await readSkillMdVersion(path.join(SKILLS_DIR, id, "SKILL.md"));
-      const verStr = localVer ? ` ${C.dim}(v${localVer})${C.reset}` : "";
-      lines.push(`  ${id}${verStr}`);
-    }
+    // Categorise: up-to-date vs needs-update
+    const upToDate: string[] = [];
+    const needsUpdate: string[] = [];
 
-    // Then compare against platform for updates
     try {
       const platformUrl = await getPlatformUrl();
       const allSkills = await fetchSkills(platformUrl);
       const catalog = new Map(allSkills.map(s => [s.id, s]));
-      const needsUpdate: string[] = [];
 
       for (const id of [...installed].sort()) {
         const skill = catalog.get(id);
         const localVer = await readSkillMdVersion(path.join(SKILLS_DIR, id, "SKILL.md"));
         if (localVer && skill?.latest_version && localVer !== skill.latest_version) {
-          needsUpdate.push(`  ${id}: ${localVer} ${C.dim}→${C.reset} ${skill.latest_version}`);
+          needsUpdate.push(`${id}: ${localVer} ${C.dim}→${C.reset} ${skill.latest_version}`);
+        } else {
+          const ver = localVer ? ` (v${localVer})` : "";
+          upToDate.push(`${id}${ver}`);
         }
       }
-
-      if (needsUpdate.length > 0) {
-        for (const u of needsUpdate) lines.push(u);
-        lines.push(`  Run ${C.bold}future skills update${C.reset} to upgrade`);
-      }
     } catch {
-      // offline or not logged in — local versions shown above are enough
+      // offline — show all as up-to-date without version comparison
+      for (const id of [...installed].sort()) {
+        const localVer = await readSkillMdVersion(path.join(SKILLS_DIR, id, "SKILL.md"));
+        const ver = localVer ? ` (v${localVer})` : "";
+        upToDate.push(`${id}${ver}`);
+      }
+    }
+
+    if (upToDate.length > 0) {
+      lines.push(`  Up to date: ${upToDate.join(", ")}`);
+    }
+    if (needsUpdate.length > 0) {
+      lines.push(`  Updates available: ${needsUpdate.join(", ")}`);
+      lines.push(`  Run ${C.bold}future skills update${C.reset} to upgrade`);
     }
   }
 
