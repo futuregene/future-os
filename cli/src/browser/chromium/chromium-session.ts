@@ -275,6 +275,35 @@ export class ChromiumSession implements BrowserSession {
       const navObserver = new ActionNavigationObserver(ps.mainFrameId, await this.getLoaderId(ps.session));
       navObserver.arm(ps.session);
 
+      // Capture default-action metadata before mouse dispatch. A successful
+      // navigation destroys the element and its execution context.
+      const clickStateKey = `__futureClickState_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const meta = await this.evaluateExpression<{ href: string | null; hasSubmitter: boolean }>(
+        ps.session,
+        `(() => {
+          const el = document.querySelector(${JSON.stringify(target.selector)});
+          const anchor = el?.closest?.('a[href]');
+          const submitter = el?.closest?.('button, input[type="submit"], input[type="image"]');
+          const state = { defaultPrevented: false, submitSeen: false };
+          Object.defineProperty(window, ${JSON.stringify(clickStateKey)}, {
+            value: state,
+            configurable: true,
+          });
+          window.addEventListener('click', (event) => {
+            if (el && (event.target === el || el.contains(event.target))) {
+              state.defaultPrevented = event.defaultPrevented;
+            }
+          }, { once: true });
+          submitter?.form?.addEventListener('submit', () => {
+            state.submitSeen = true;
+          }, { capture: true, once: true });
+          return {
+            href: anchor?.href || null,
+            hasSubmitter: Boolean(submitter?.form && submitter?.type !== 'button'),
+          };
+        })()`,
+      ).catch(() => ({ href: null as string | null, hasSubmitter: false }));
+
       await withTemporaryPreload(ps.session, async () => {
         await ps.session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: center.x, y: center.y });
         await ps.session.send("Input.dispatchMouseEvent", {
@@ -285,7 +314,48 @@ export class ChromiumSession implements BrowserSession {
         });
       });
 
-      const navResult = await navObserver.wait(ps.session, navDeadline).catch(() => ({ didNavigate: false }));
+      // First accept the browser's native default action. On affected Windows
+      // CDP paths the mouse events reach page handlers but the anchor/form
+      // default action is sometimes omitted, so fall back explicitly only when
+      // no navigation was observed.
+      let navResult = await navObserver.wait(ps.session, navDeadline)
+        .catch(() => ({ didNavigate: false }));
+
+      const eventState = navResult.didNavigate
+        ? { defaultPrevented: false, submitSeen: false }
+        : await this.evaluateExpression<{ defaultPrevented: boolean; submitSeen: boolean }>(
+          ps.session,
+          `(() => {
+            const state = window[${JSON.stringify(clickStateKey)}] || {};
+            delete window[${JSON.stringify(clickStateKey)}];
+            return {
+              defaultPrevented: Boolean(state.defaultPrevented),
+              submitSeen: Boolean(state.submitSeen),
+            };
+          })()`,
+        ).catch(() => ({ defaultPrevented: false, submitSeen: false }));
+
+      if (!navResult.didNavigate && meta.href && !eventState.defaultPrevented) {
+        navResult = await waitForExplicitNavigation(ps.session, meta.href, navDeadline)
+          .catch(() => ({ didNavigate: false }));
+      } else if (!navResult.didNavigate && meta.hasSubmitter && !eventState.submitSeen) {
+        await this.evaluateExpression(
+          ps.session,
+          `(() => {
+            const el = document.querySelector(${JSON.stringify(target.selector)});
+            const submitter = el?.closest?.('button, input[type="submit"], input[type="image"]');
+            const form = submitter?.form;
+            if (!form || submitter?.type === 'button') return;
+            if (typeof form.requestSubmit === 'function') {
+              form.requestSubmit(submitter);
+            } else {
+              form.submit();
+            }
+          })()`,
+        );
+        navResult = await navObserver.wait(ps.session, navDeadline)
+          .catch(() => ({ didNavigate: false }));
+      }
       navObserver.dispose();
 
       const title = await this.evaluateExpression<string>(ps.session, "document.title").catch(() => "");

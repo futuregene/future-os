@@ -67,6 +67,101 @@ register("open: about:blank succeeds", async (ctx) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// click — default navigation and form submission
+// ═══════════════════════════════════════════════════════════════════
+
+register("click: anchor navigation reaches its target", async (ctx) => {
+  const targetUrl = "data:text/html," + encodeURIComponent("<title>clicked-target</title>");
+  const html = `<html><body><a id="link" href="${targetUrl}">Go</a></body></html>`;
+  if (ctx.playwrightPage) {
+    await ctx.playwrightPage.setContent(html);
+  } else {
+    await ctx.session.open("data:text/html," + encodeURIComponent(html));
+  }
+
+  const target: ResolvedTarget = { original: "#link", source: "selector", selector: "#link" };
+  const result = await ctx.session.click(target);
+  if (result.title !== "clicked-target") {
+    throw new Error(`Expected clicked-target title, got "${result.title}"`);
+  }
+});
+
+register("click: submit-button child runs the form submit chain", async (ctx) => {
+  const html = `<html><body>
+    <script>window.__submitCount = 0;</script>
+    <form onsubmit="event.preventDefault(); window.__submitCount += 1; document.title='submitted'">
+      <button id="submit" type="submit"><span id="submit-label">Submit</span></button>
+    </form>
+  </body></html>`;
+  if (ctx.playwrightPage) {
+    await ctx.playwrightPage.setContent(html);
+  } else {
+    await ctx.session.open("data:text/html," + encodeURIComponent(html));
+  }
+
+  const target: ResolvedTarget = {
+    original: "#submit-label",
+    source: "selector",
+    selector: "#submit-label",
+  };
+  await ctx.session.click(target);
+  const title = await ctx.session.evaluate<string>({ kind: "expression", expression: "document.title" });
+  if (title !== "submitted") {
+    throw new Error(`Expected submitted title, got "${title}"`);
+  }
+  const submitCount = await ctx.session.evaluate<number>({
+    kind: "expression",
+    expression: "window.__submitCount",
+  });
+  if (submitCount !== 1) {
+    throw new Error(`Expected one submit event, got ${submitCount}`);
+  }
+});
+
+register("click: preventDefault on an anchor is respected", async (ctx) => {
+  const html = `<html><body>
+    <a id="blocked" href="data:text/html,<title>should-not-open</title>"
+       onclick="event.preventDefault(); document.title='blocked'">Blocked</a>
+  </body></html>`;
+  if (ctx.playwrightPage) {
+    await ctx.playwrightPage.setContent(html);
+  } else {
+    await ctx.session.open("data:text/html," + encodeURIComponent(html));
+  }
+
+  const target: ResolvedTarget = { original: "#blocked", source: "selector", selector: "#blocked" };
+  await ctx.session.click(target);
+  const title = await ctx.session.evaluate<string>({ kind: "expression", expression: "document.title" });
+  if (title !== "blocked") {
+    throw new Error(`Expected blocked title, got "${title}"`);
+  }
+});
+
+register("click: type=button inside a form does not submit", async (ctx) => {
+  const html = `<html><body>
+    <script>window.__submitted = 0; window.__clicked = 0;</script>
+    <form onsubmit="event.preventDefault(); window.__submitted += 1">
+      <button id="plain" type="button" onclick="window.__clicked += 1">Plain</button>
+    </form>
+  </body></html>`;
+  if (ctx.playwrightPage) {
+    await ctx.playwrightPage.setContent(html);
+  } else {
+    await ctx.session.open("data:text/html," + encodeURIComponent(html));
+  }
+
+  const target: ResolvedTarget = { original: "#plain", source: "selector", selector: "#plain" };
+  await ctx.session.click(target);
+  const state = await ctx.session.evaluate<{ submitted: number; clicked: number }>({
+    kind: "expression",
+    expression: "({ submitted: window.__submitted, clicked: window.__clicked })",
+  });
+  if (state.submitted !== 0 || state.clicked !== 1) {
+    throw new Error(`Unexpected form state: ${JSON.stringify(state)}`);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // evaluate — expression and function evaluation
 // ═══════════════════════════════════════════════════════════════════
 

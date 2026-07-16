@@ -20,25 +20,38 @@ export async function waitForExplicitNavigation(
   url: string,
   deadline: { remainingMs(): number; expired: boolean },
 ): Promise<NavigationResult> {
-  // Navigate (lifecycle events already enabled by activePageSession)
-  const response = await session.send("Page.navigate", {
-    url,
-    frameId: undefined, // main frame
-  }) as { frameId?: string; loaderId?: string; errorText?: string };
+  // Subscribe before Page.navigate so a fast DOMContentLoaded event cannot be
+  // lost between the command response and listener registration.
+  const loaded = new Set<string>();
+  const unsub = session.on("Page.lifecycleEvent", (event: unknown) => {
+    const e = event as { loaderId?: string; name?: string };
+    if (e.loaderId && e.name === "DOMContentLoaded") loaded.add(e.loaderId);
+  });
 
-  if (response.errorText) {
-    return { didNavigate: false, errorText: response.errorText };
+  try {
+    const response = await session.send("Page.navigate", {
+      url,
+      frameId: undefined, // main frame
+    }) as { frameId?: string; loaderId?: string; errorText?: string };
+
+    if (response.errorText) {
+      return { didNavigate: false, errorText: response.errorText };
+    }
+
+    if (!response.loaderId) {
+      // Same-document navigation
+      return { didNavigate: true, sameDocument: true };
+    }
+
+    await waitUntil(
+      () => loaded.has(response.loaderId!),
+      Math.min(Math.max(deadline.remainingMs(), 0), 5_000),
+    );
+
+    return { didNavigate: true };
+  } finally {
+    unsub();
   }
-
-  if (!response.loaderId) {
-    // Same-document navigation
-    return { didNavigate: true, sameDocument: true };
-  }
-
-  // Wait for DOMContentLoaded for this loader
-  await waitForLifecycleEvent(session, "DOMContentLoaded", response.loaderId, deadline);
-
-  return { didNavigate: true };
 }
 
 // ── Action-triggered navigation ─────────────────────────────────────
@@ -47,6 +60,7 @@ export class ActionNavigationObserver {
   private mainFrameId: string;
   private currentLoaderId: string;
   private newLoaderId: string | null = null;
+  private loaded = new Set<string>();
   private disposed = false;
   private unsub?: () => void;
 
@@ -66,6 +80,9 @@ export class ActionNavigationObserver {
       };
       // Only track main frame navigations — ignore iframes
       if (e.frameId !== this.mainFrameId) return;
+      if (e.loaderId && e.name === "DOMContentLoaded") {
+        this.loaded.add(e.loaderId);
+      }
       if (e.loaderId && e.loaderId !== this.currentLoaderId) {
         this.newLoaderId = e.loaderId;
       }
@@ -85,7 +102,7 @@ export class ActionNavigationObserver {
    * immediately so the caller can proceed.
    */
   async wait(
-    session: CdpSession,
+    _session: CdpSession,
     deadline: { remainingMs(): number; expired: boolean },
   ): Promise<NavigationResult> {
     if (this.disposed) return { didNavigate: false };
@@ -95,8 +112,13 @@ export class ActionNavigationObserver {
     const navStartAt = Date.now();
     while (Date.now() - navStartAt < navStartMs) {
       if (this.newLoaderId) {
-        // Phase 2 — navigation started; wait for it to finish
-        await waitForLifecycleEvent(session, "DOMContentLoaded", this.newLoaderId, deadline);
+        // Phase 2 — navigation started; wait for the listener armed before the
+        // action to observe DOMContentLoaded. Redirects may replace loaderId,
+        // so read the current value inside the predicate.
+        await waitUntil(
+          () => Boolean(this.newLoaderId && this.loaded.has(this.newLoaderId)),
+          Math.min(Math.max(deadline.remainingMs(), 0), 5_000),
+        );
         return { didNavigate: true };
       }
       await sleep(50);
@@ -114,27 +136,11 @@ export class ActionNavigationObserver {
 
 // ── Internal ────────────────────────────────────────────────────────
 
-async function waitForLifecycleEvent(
-  session: CdpSession,
-  targetName: string,
-  loaderId: string,
-  deadline: { remainingMs(): number; expired: boolean },
-): Promise<void> {
-  return new Promise<void>((resolve) => {
-    const unsub = session.on("Page.lifecycleEvent", (event: unknown) => {
-      const e = event as { loaderId: string; name: string };
-      if (e.loaderId === loaderId && e.name === targetName) {
-        unsub();
-        resolve();
-      }
-    });
-
-    // Fallback: resolve on timeout (matches current .catch(() => undefined) behavior)
-    setTimeout(() => {
-      unsub();
-      resolve();
-    }, deadline.remainingMs());
-  });
+async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<void> {
+  const end = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < end) {
+    await sleep(Math.min(50, Math.max(end - Date.now(), 1)));
+  }
 }
 
 function sleep(ms: number): Promise<void> {

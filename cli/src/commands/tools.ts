@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { writeFile } from "node:fs/promises";
 import { mkdir } from "node:fs/promises";
+import { closeSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { resolve as pathResolve, dirname as pathDirname } from "node:path";
 import { homedir } from "node:os";
@@ -719,21 +720,30 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     }
 
     if (isBrowserTool(toolName)) {
+      let output: string;
+      let exitCode = 0;
       try {
         const result = await callBrowserTool(toolName, toolArgs);
-        const output = result.structuredContent && Object.keys(result.structuredContent).length > 0
+        output = result.structuredContent && Object.keys(result.structuredContent).length > 0
           ? JSON.stringify(result.structuredContent, null, 2)
           : result.text ?? "";
-        await writeStdout(`${output}\n`);
-        process.exit(0);
       } catch (error) {
-        const msg = error instanceof Error ? error.message
+        exitCode = 1;
+        output = error instanceof Error ? error.message
           : (typeof error === "object" && error !== null && "message" in error)
             ? String((error as Record<string, unknown>).message)
             : String(error);
-        await writeStderr(`${msg}\n`);
-        process.exit(1);
       }
+
+      // Browser commands are short-lived subprocesses of the Rust shell tool.
+      // Flush synchronously, then close inherited pipes on Windows so the
+      // agent can observe completion even if the JS runtime still has handles.
+      writeSync(exitCode === 0 ? 1 : 2, `${output}\n`);
+      if (process.platform === "win32") {
+        try { closeSync(1); } catch { /* already closed */ }
+        try { closeSync(2); } catch { /* already closed */ }
+      }
+      process.exit(exitCode);
     }
 
     const apiKey = await loadApiKey();
@@ -763,12 +773,4 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
 
     return;
   }
-}
-
-function writeStdout(text: string): Promise<void> {
-  return new Promise((resolve) => process.stdout.write(text, () => resolve()));
-}
-
-function writeStderr(text: string): Promise<void> {
-  return new Promise((resolve) => process.stderr.write(text, () => resolve()));
 }
