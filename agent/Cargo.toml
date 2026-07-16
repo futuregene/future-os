@@ -12,6 +12,7 @@ name = "future_agent"
 path = "src/lib.rs"
 
 [dependencies]
+future-agent-models = { path = "../agent-models" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -78,14 +79,10 @@ tonic-build = "0.12"
 [dev-dependencies]
 tokio-test = "0.4"
 
-# Drop debug info and strip symbols so release links faster and ships smaller
-# (the agent is an I/O-bound gRPC server — no runtime cost). See ../.cargo/config.toml.
-# codegen-units=16 parallelises codegen across more LLVM threads; the generated
-# model catalog (3800+ entries) dominates compile time and optimising it heavily
-# gives negligible runtime benefit.
+# Drop debug info and strip symbols so release links faster and ships smaller.
+# The 72K-line model catalog has been moved to the future-agent-models crate
+# which compiles with opt-level=1 — so the agent itself can keep normal
+# optimisation without slowing the build.
 [profile.release]
 debug = false
 strip = true
-opt-level = 1
-lto = false
-codegen-units = 16
