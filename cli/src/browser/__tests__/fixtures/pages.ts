@@ -9,10 +9,9 @@
  * unique paths to allow `page.goto()`-style navigation.
  */
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
-const pagesDir = join(dirname(fileURLToPath(import.meta.url)), "pages");
+const pagesDir = join(import.meta.dirname, "pages");
 
 // Load all fixture pages at import time
 const FIXTURES: Record<string, string> = {};

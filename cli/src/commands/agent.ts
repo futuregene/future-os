@@ -201,10 +201,8 @@ async function resolveAgentBinary(): Promise<string> {
   const colocated = await colocatedBinary("future-agent");
   if (colocated) return colocated;
 
-  // Dev fallback — not reached in SEA builds where colocatedBinary succeeds.
-  let cliRoot: string;
-  try { cliRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", ".."); }
-  catch { cliRoot = resolve(dirname(process.execPath), ".."); }
+  const currentFile = fileURLToPath(import.meta.url);
+  const cliRoot = resolve(dirname(currentFile), "..", "..");
   const repoRoot = resolve(cliRoot, "..");
   const candidates = [
     resolve(repoRoot, "agent", "target", "release", "future-agent"),
