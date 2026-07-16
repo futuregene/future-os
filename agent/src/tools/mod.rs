@@ -522,18 +522,13 @@ async fn spawn_shell(
     escalated: bool,
 ) -> Result<String> {
     let cwd = active_workspace()?;
-    // Unix: wrap in a subshell to merge stderr into stdout, preserving the
-    // original interleaving order that separate pipes lose. Internal
-    // redirections in the user's command are respected inside the subshell;
-    // only the subshell's own stderr (empty after the merge) goes to /dev/null.
-    #[cfg(not(windows))]
+    // Merge stderr into stdout so the agent reads both through a single pipe.
+    // Unix: subshell for correct interleaving.
+    // Windows: `cmd /c command 2>&1` merges without subshell overhead.
+    #[cfg(not(target_os = "windows"))]
     let merged_cmd = format!("( {} ) 2>&1", command);
-    // Windows: `( … ) 2>&1` is a bash-ism — PowerShell's `( … )` rejects
-    // multi-statement commands. The PowerShell wrapper built by
-    // `sandbox::shell_invocation` does the stderr merge and exit-code capture
-    // itself, so the command passes through unmodified.
-    #[cfg(windows)]
-    let merged_cmd = command.to_string();
+    #[cfg(target_os = "windows")]
+    let merged_cmd = format!("{} 2>&1", command);
     let mut child = sandbox.build_shell_command(&merged_cmd, escalated);
     child.current_dir(&cwd).env("PWD", &cwd);
     // Prepend the agent binary's directory to PATH so bundled tools in the same
@@ -546,14 +541,9 @@ async fn spawn_shell(
         }
     }
     child.stdout(std::process::Stdio::piped());
-    // Unix: the subshell already merged stderr into stdout, so the outer pipe
-    // carries nothing. Windows: PowerShell's own failures (a parse error in the
-    // -Command string never executes the 2>&1 merge) surface only on the
-    // process's stderr — capture it so those errors aren't silently dropped.
-    #[cfg(not(windows))]
+    // stderr is merged into stdout via 2>&1 on all platforms — null the
+    // separate stderr pipe so it doesn't need draining.
     child.stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    child.stderr(std::process::Stdio::piped());
     child.kill_on_drop(true);
     // Run the shell as the leader of its own process group so abort/timeout can kill
     // the whole tree. kill_on_drop alone only SIGKILLs the shell itself, leaving
@@ -581,18 +571,6 @@ async fn spawn_shell(
         job
     };
 
-    // Windows: drain stderr concurrently so a PowerShell parse error can't
-    // deadlock the pipe, and its text can be appended to the output below.
-    #[cfg(windows)]
-    let stderr_task = spawned.stderr.take().map(|mut err| {
-        tokio::spawn(async move {
-            use tokio::io::AsyncReadExt;
-            let mut buf = Vec::new();
-            let _ = err.read_to_end(&mut buf).await;
-            buf
-        })
-    });
-
     // Read stdout incrementally — on timeout we keep whatever was captured.
     let mut stdout = spawned
         .stdout
@@ -602,7 +580,56 @@ async fn spawn_shell(
     let mut read_buf = [0u8; 8192];
     let timeout_dur = std::time::Duration::from_secs(timeout_secs.max(1));
 
-    // Race: read loop vs timeout vs interrupt
+    // Race: read loop vs timeout vs interrupt.
+    //
+    // On Windows the CLI terminates itself via TerminateProcess (through
+    // process.abort).  The intermediate shell (cmd /c) cannot see this exit
+    // and spawned.wait() would hang forever.  Because 2>&1 merges stderr
+    // into stdout, EOF on the pipe means all output has been produced and
+    // fd 1 is closed — disarm the Job and return immediately.
+    #[cfg(windows)]
+    {
+        let result = tokio::select! {
+            result = tokio::time::timeout(timeout_dur, async {
+                use tokio::io::AsyncReadExt;
+                loop {
+                    match stdout.read(&mut read_buf).await {
+                        Ok(0) => break,
+                        Ok(n) => output_buf.extend_from_slice(&read_buf[..n]),
+                        Err(e) => return Err(anyhow!("Failed to read shell output: {}", e)),
+                    }
+                }
+                Ok(()) // EOF — return immediately
+            }) => { result }
+            _ = wait_for_interrupt(interrupt_flag.clone()) => {
+                if let Some(job) = &job { job.terminate(); }
+                return Err(anyhow!("Shell command interrupted by abort"));
+            }
+        };
+        if let Some(job) = &job { job.disarm(); }
+        return match result {
+            Ok(Ok(())) => {
+                let combined = String::from_utf8_lossy(&output_buf);
+                Ok(format_shell_output(&combined, combined.len(), 0))
+            }
+            Ok(Err(e)) => Err(e),
+            Err(_elapsed) => {
+                let combined = String::from_utf8_lossy(&output_buf);
+                let total = combined.len();
+                if total == 0 {
+                    Err(anyhow!(
+                        "Shell command timed out after {}s (no output captured)",
+                        timeout_secs.max(1)
+                    ))
+                } else {
+                    spawned.kill().await.ok();
+                    Ok(format_shell_output(&combined, combined.len(), 0))
+                }
+            }
+        };
+    }
+
+    #[cfg(not(windows))]
     let read_result = tokio::select! {
         result = tokio::time::timeout(timeout_dur, async {
             use tokio::io::AsyncReadExt;
@@ -618,52 +645,22 @@ async fn spawn_shell(
             result
         }
         _ = wait_for_interrupt(interrupt_flag.clone()) => {
-            #[cfg(unix)]
             kill_process_group(pgid);
-            #[cfg(windows)]
-            if let Some(job) = &job {
-                job.terminate();
-            }
             return Err(anyhow!("Shell command interrupted by abort"));
         }
     };
 
+    #[cfg(not(windows))]
     match read_result {
         Ok(Ok(Ok(status))) => {
             // Normal completion. On unix a successful command never kills the
             // process group, so intentionally detached grandchildren survive.
-            // Match that on Windows: disarm the job's KILL_ON_JOB_CLOSE before
-            // `job` drops, otherwise closing the handle would terminate the
-            // whole tree — including a browser just launched by
-            // `future-cli browser start`, which would then die immediately even
-            // though it was spawned detached.
-            #[cfg(windows)]
-            if let Some(job) = &job {
-                job.disarm();
-            }
             // Drain any leftover bytes (rare: process exited but pipe still has data).
             use tokio::io::AsyncReadExt;
             loop {
                 match stdout.read(&mut read_buf).await {
                     Ok(0) | Err(_) => break,
                     Ok(n) => output_buf.extend_from_slice(&read_buf[..n]),
-                }
-            }
-            // Windows: append PowerShell's own stderr (parse/startup errors that
-            // never reached the in-script 2>&1 merge). Empty on a normal run.
-            // Strip any CLIXML the PS host serialized onto its stderr (the
-            // wrapper suppresses progress, but be defensive against other
-            // non-output records leaking as `#< CLIXML …`).
-            #[cfg(windows)]
-            if let Some(task) = stderr_task {
-                if let Ok(err_buf) = task.await {
-                    let err = strip_powershell_clixml(&String::from_utf8_lossy(&err_buf));
-                    if !err.trim().is_empty() {
-                        if !output_buf.is_empty() && !output_buf.ends_with(b"\n") {
-                            output_buf.push(b'\n');
-                        }
-                        output_buf.extend_from_slice(err.as_bytes());
-                    }
                 }
             }
             let combined = String::from_utf8_lossy(&output_buf);
@@ -712,6 +709,7 @@ async fn spawn_shell(
 /// followed by a `<Objs …>…</Objs>` XML payload). Line-based so it never eats
 /// genuine error text. No-op when there is no CLIXML marker.
 #[cfg(windows)]
+#[allow(dead_code)]
 fn strip_powershell_clixml(text: &str) -> String {
     if !text.contains("#< CLIXML") {
         return text.to_string();

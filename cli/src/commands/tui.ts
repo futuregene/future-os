@@ -38,8 +38,9 @@ async function resolveTuiTarget(): Promise<TuiTarget> {
   if (colocated) return { kind: "binary", path: colocated };
 
   // Dev / source checkout: run the TUI's JS entry with the current runtime.
-  const currentFile = fileURLToPath(import.meta.url);
-  const cliRoot = resolve(dirname(currentFile), "..", "..");
+  let cliRoot: string;
+  try { cliRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", ".."); }
+  catch { cliRoot = resolve(dirname(process.execPath), ".."); }
   const entry = resolve(cliRoot, "..", "tui", "dist", "index.js");
   await assertReadableFile(
     entry,

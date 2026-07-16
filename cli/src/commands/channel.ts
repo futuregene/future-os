@@ -193,8 +193,10 @@ async function resolveChannelBinary(): Promise<string> {
     return override;
   }
 
-  const currentFile = fileURLToPath(import.meta.url);
-  const cliRoot = resolve(dirname(currentFile), "..", "..");
+  // Dev fallback — not reached in SEA builds.
+  let cliRoot: string;
+  try { cliRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", ".."); }
+  catch { cliRoot = resolve(dirname(process.execPath), ".."); }
   const repoRoot = resolve(cliRoot, "..");
   const candidates = [
     resolve(repoRoot, "channel", "target", "release", "future-channel"),

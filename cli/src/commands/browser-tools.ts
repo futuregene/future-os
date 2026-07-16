@@ -205,11 +205,25 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
     "--no-default-browser-check",
     url,
   ];
-  const child = spawn(launcher.command, [...launcher.args, ...chromeArgs], {
-    detached: true,
-    stdio: "ignore",
-  });
-  child.unref();
+  // On Windows, use cmd /c start (ShellExecute) to launch Chrome as a
+  // truly independent process.  ShellExecute does NOT inherit handles
+  // from the parent chain, so Chrome won't keep the agent's stdout pipe
+  // open.  Direct spawn would pass inheritable handles to Chrome via
+  // bInheritHandles, causing the agent to wait forever for EOF.
+  if (process.platform === "win32") {
+    const startArgs = ["/c", "start", "", launcher.command, ...launcher.args, ...chromeArgs];
+    const child = spawn("cmd", startArgs, {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+  } else {
+    const child = spawn(launcher.command, [...launcher.args, ...chromeArgs], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+  }
 
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
@@ -370,6 +384,8 @@ async function withSession(
   try {
     return await fn({ session, config });
   } finally {
+    // disconnect() has a 2s timeout on the WebSocket close handshake,
+    // so it won't hang even if Chrome CDP never replies.
     await session.disconnect().catch(() => {});
   }
 }

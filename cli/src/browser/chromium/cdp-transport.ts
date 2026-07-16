@@ -74,6 +74,11 @@ export class WebSocketTransport implements CdpTransport {
     if (this.closed) return this.closePromise;
     this.closed = true;
     this.ws.close(1000, "client disconnect");
+    // Don't wait for Chrome CDP's close frame — it may never arrive on
+    // Windows (or take long enough to cause a hang).  The OS reclaims
+    // the TCP connection when the process exits; the close event handler
+    // is still registered for cleanup if the frame does arrive.
+    this.resolveClose();
     return this.closePromise;
   }
 

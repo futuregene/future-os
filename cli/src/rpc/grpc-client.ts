@@ -26,8 +26,18 @@ import Long from "long";
 (globalThis as Record<string, unknown>).Long = Long;
 (globalThis as Record<string, unknown>).dcodeIO = { Long };
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+// __dirname is derived from import.meta.url in dev, and falls back
+// to the binary directory in single-executable (SEA) builds where
+// import.meta.url is unavailable.
+let __filename: string;
+let __dirname: string;
+try {
+  __filename = fileURLToPath(import.meta.url);
+  __dirname = dirname(__filename);
+} catch {
+  __filename = process.execPath;
+  __dirname = dirname(__filename);
+}
 
 // ─── Embedded Proto ──────────────────────────────────────────────────────
 

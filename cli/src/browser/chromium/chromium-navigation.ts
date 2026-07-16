@@ -20,25 +20,43 @@ export async function waitForExplicitNavigation(
   url: string,
   deadline: { remainingMs(): number; expired: boolean },
 ): Promise<NavigationResult> {
-  // Navigate (lifecycle events already enabled by activePageSession)
-  const response = await session.send("Page.navigate", {
-    url,
-    frameId: undefined, // main frame
-  }) as { frameId?: string; loaderId?: string; errorText?: string };
+  // Subscribe BEFORE Page.navigate so we don't miss fast-firing
+  // DOMContentLoaded events.  If the page loads between the navigate
+  // response and the subscription, the event is lost and the caller
+  // hangs for the full deadline (15 s).
+  let sawDomContentLoaded = false;
+  const unsub = session.on("Page.lifecycleEvent", (event: unknown) => {
+    const e = event as { loaderId: string; name: string };
+    if (e.name === "DOMContentLoaded") sawDomContentLoaded = true;
+  });
 
-  if (response.errorText) {
-    return { didNavigate: false, errorText: response.errorText };
+  try {
+    const response = (await session.send("Page.navigate", {
+      url,
+      frameId: undefined, // main frame
+    })) as { frameId?: string; loaderId?: string; errorText?: string };
+
+    if (response.errorText) {
+      return { didNavigate: false, errorText: response.errorText };
+    }
+
+    if (!response.loaderId) {
+      // Same-document navigation
+      return { didNavigate: true, sameDocument: true };
+    }
+
+    // Race: the event may have already fired, or it may fire soon.
+    // Use a short poll instead of the full deadline fallback inside
+    // waitForLifecycleEvent.
+    const pollEnd = Date.now() + Math.min(deadline.remainingMs(), 5_000);
+    while (!sawDomContentLoaded && Date.now() < pollEnd) {
+      await sleep(50);
+    }
+
+    return { didNavigate: true };
+  } finally {
+    unsub();
   }
-
-  if (!response.loaderId) {
-    // Same-document navigation
-    return { didNavigate: true, sameDocument: true };
-  }
-
-  // Wait for DOMContentLoaded for this loader
-  await waitForLifecycleEvent(session, "DOMContentLoaded", response.loaderId, deadline);
-
-  return { didNavigate: true };
 }
 
 // ── Action-triggered navigation ─────────────────────────────────────
@@ -68,9 +86,16 @@ export class ActionNavigationObserver {
       if (e.frameId !== this.mainFrameId) return;
       if (e.loaderId && e.loaderId !== this.currentLoaderId) {
         this.newLoaderId = e.loaderId;
+        // Also capture DOMContentLoaded for the new loader so the wait()
+        // poll below doesn't miss it if it fires before we check.
+        if (e.name === "DOMContentLoaded" && e.loaderId === this.newLoaderId) {
+          this._sawDomContentLoaded = true;
+        }
       }
     });
   }
+
+  private _sawDomContentLoaded = false;
 
   /**
    * Wait for navigation triggered by a user action (click, press, type).
@@ -85,7 +110,7 @@ export class ActionNavigationObserver {
    * immediately so the caller can proceed.
    */
   async wait(
-    session: CdpSession,
+    _session: CdpSession,
     deadline: { remainingMs(): number; expired: boolean },
   ): Promise<NavigationResult> {
     if (this.disposed) return { didNavigate: false };
@@ -95,8 +120,13 @@ export class ActionNavigationObserver {
     const navStartAt = Date.now();
     while (Date.now() - navStartAt < navStartMs) {
       if (this.newLoaderId) {
-        // Phase 2 — navigation started; wait for it to finish
-        await waitForLifecycleEvent(session, "DOMContentLoaded", this.newLoaderId, deadline);
+        // Phase 2 — navigation started; wait for it to finish.
+        // Don't call waitForLifecycleEvent (same race as explicit nav).
+        // Poll the flag set by arm()'s lifecycle listener instead.
+        const pollEnd = Date.now() + Math.min(deadline.remainingMs(), 5_000);
+        while (!this._sawDomContentLoaded && Date.now() < pollEnd) {
+          await sleep(50);
+        }
         return { didNavigate: true };
       }
       await sleep(50);
@@ -113,29 +143,6 @@ export class ActionNavigationObserver {
 }
 
 // ── Internal ────────────────────────────────────────────────────────
-
-async function waitForLifecycleEvent(
-  session: CdpSession,
-  targetName: string,
-  loaderId: string,
-  deadline: { remainingMs(): number; expired: boolean },
-): Promise<void> {
-  return new Promise<void>((resolve) => {
-    const unsub = session.on("Page.lifecycleEvent", (event: unknown) => {
-      const e = event as { loaderId: string; name: string };
-      if (e.loaderId === loaderId && e.name === targetName) {
-        unsub();
-        resolve();
-      }
-    });
-
-    // Fallback: resolve on timeout (matches current .catch(() => undefined) behavior)
-    setTimeout(() => {
-      unsub();
-      resolve();
-    }, deadline.remainingMs());
-  });
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));

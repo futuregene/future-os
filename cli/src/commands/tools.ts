@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { writeFile } from "node:fs/promises";
 import { mkdir } from "node:fs/promises";
+import { closeSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { resolve as pathResolve, dirname as pathDirname } from "node:path";
 import { homedir } from "node:os";
@@ -719,21 +720,33 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     }
 
     if (isBrowserTool(toolName)) {
+      let output = "";
+      let exitCode = 0;
       try {
         const result = await callBrowserTool(toolName, toolArgs);
-        const output = result.structuredContent && Object.keys(result.structuredContent).length > 0
+        output = (result.structuredContent && Object.keys(result.structuredContent).length > 0
           ? JSON.stringify(result.structuredContent, null, 2)
-          : result.text ?? "";
-        await writeStdout(`${output}\n`);
-        process.exit(0);
+          : result.text ?? "") + "\n";
       } catch (error) {
-        const msg = error instanceof Error ? error.message
+        exitCode = 1;
+        output = (error instanceof Error ? error.message
           : (typeof error === "object" && error !== null && "message" in error)
             ? String((error as Record<string, unknown>).message)
-            : String(error);
-        await writeStderr(`${msg}\n`);
-        process.exit(1);
+            : String(error)) + "\n";
       }
+
+      // Synchronous write to stdout — guaranteed flush before exit.
+      writeSync(1, output);
+
+      // Close stdout so the agent sees EOF immediately and returns.
+      // The agent does not wait for process exit on Windows, so even
+      // if process.exit() is blocked by undrained IOCP ports the
+      // output has already been delivered.
+      if (process.platform === "win32") {
+        try { closeSync(1); } catch { /* already closed */ }
+      }
+
+      process.exit(exitCode);
     }
 
     const apiKey = await loadApiKey();
@@ -763,12 +776,4 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
 
     return;
   }
-}
-
-function writeStdout(text: string): Promise<void> {
-  return new Promise((resolve) => process.stdout.write(text, () => resolve()));
-}
-
-function writeStderr(text: string): Promise<void> {
-  return new Promise((resolve) => process.stderr.write(text, () => resolve()));
 }
