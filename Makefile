@@ -184,15 +184,13 @@ generate-proto:
 clean:
 	rm -rf agent/target
 	rm -rf channels/target
-	rm -rf tui/dist
-	rm -rf tui/node_modules
-	rm -f tui/future-tui
-	rm -rf cli/dist
-	rm -rf cli/node_modules
+	rm -rf remote/target
+	rm -rf tui/dist tui/node_modules
+	rm -f tui/future-tui tui/src/version.generated.ts
+	rm -rf cli/dist cli/node_modules
+	rm -f cli/src/version.generated.ts
+	rm -rf gui/dist gui/node_modules gui/src-tauri/target gui/src-tauri/binaries
 	$(SUDO) rm -f $(PREFIX)/future-agent $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
-	rm -rf gui/dist
-	rm -rf gui/node_modules
-	rm -rf gui/src-tauri/target
 
 # ─── Help ───────────────────────────────────────────────────────────────────
 
