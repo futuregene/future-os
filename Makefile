@@ -167,6 +167,7 @@ generate-models:
 generate-proto:
 	REGENERATE_PROTO=1 cd agent && cargo build
 	REGENERATE_PROTO=1 cd channels && cargo build
+	REGENERATE_PROTO=1 cd gui/src-tauri && cargo build
 	cd tui && npm run generate-proto
 
 # ─── Clean ──────────────────────────────────────────────────────────────────
