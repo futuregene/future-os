@@ -275,19 +275,6 @@ export class ChromiumSession implements BrowserSession {
       const navObserver = new ActionNavigationObserver(ps.mainFrameId, await this.getLoaderId(ps.session));
       navObserver.arm(ps.session);
 
-      // Read element metadata BEFORE dispatching mouse events — once
-      // the page navigates, the element is gone.
-      const meta = await this.evaluateExpression<{ href: string | null; inForm: boolean }>(
-        ps.session,
-        `(() => {
-          const el = document.querySelector(${JSON.stringify(target.selector)});
-          return {
-            href: el?.href || el?.closest?.('a')?.href || null,
-            inForm: Boolean(el?.closest?.('form')),
-          };
-        })()`,
-      ).catch(() => ({ href: null as string | null, inForm: false }));
-
       await withTemporaryPreload(ps.session, async () => {
         await ps.session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: center.x, y: center.y });
         await ps.session.send("Input.dispatchMouseEvent", {
@@ -298,52 +285,13 @@ export class ChromiumSession implements BrowserSession {
         });
       });
 
-      // CDP Input.dispatchMouseEvent produces untrusted synthetic events
-      // that Chrome blocks from triggering default navigation / form
-      // submission.  Work around this at the protocol level:
-      //
-      //   <a href="...">  →  Page.navigate(href)
-      //   <button> in form →  form.submit() via JS
-      //   everything else  →  mouse events may trigger JS handlers
-      let didNavigate = false;
-      if (meta.href) {
-        const baseUrl = await this.evaluateExpression<string>(ps.session, "location.href").catch(() => "");
-        const resolved = baseUrl ? new URL(meta.href, baseUrl).href : meta.href;
-        await ps.session.send("Page.navigate", { url: resolved });
-        didNavigate = true;
-      } else if (meta.inForm) {
-        // form.submit() bypasses onsubmit handlers, breaking sites
-        // like Baidu that validate/fix-up the form on submit.
-        // requestSubmit(button) fires the submit event chain and
-        // respects preventDefault() from on-page JS.
-        await this.evaluateExpression(
-          ps.session,
-          `(() => {
-            const el = document.querySelector(${JSON.stringify(target.selector)});
-            const form = el?.closest?.('form');
-            if (form) {
-              if (typeof form.requestSubmit === 'function') {
-                form.requestSubmit(el);
-              } else {
-                form.submit();
-              }
-            }
-          })()`,
-        );
-        // Wait for navigation after submit.
-        const navResult = await navObserver.wait(ps.session, navDeadline).catch(() => ({ didNavigate: false }));
-        didNavigate = navResult.didNavigate;
-      } else {
-        // Non-link, non-form element — mouse events may trigger JS handlers.
-        const navResult = await navObserver.wait(ps.session, navDeadline).catch(() => ({ didNavigate: false }));
-        didNavigate = navResult.didNavigate;
-      }
+      const navResult = await navObserver.wait(ps.session, navDeadline).catch(() => ({ didNavigate: false }));
       navObserver.dispose();
 
       const title = await this.evaluateExpression<string>(ps.session, "document.title").catch(() => "");
       const url = await this.evaluateExpression<string>(ps.session, "location.href").catch(() => "");
 
-      return { pageId: ps.pageId, title, url, didNavigate };
+      return { pageId: ps.pageId, title, url, didNavigate: navResult.didNavigate };
     } finally {
       this.disposePageSession();
     }

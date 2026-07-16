@@ -47,15 +47,6 @@ install-tui: build-tui
 install-cli: build-cli
 	$(SUDO) cp cli/dist/future $(PREFIX)/future
 
-uninstall-cli:
-	-cd cli && npm unlink --ignore-scripts 2>/dev/null; true
-	rm -f "$${HOME}/AppData/Roaming/npm/future"
-	rm -f "$${HOME}/AppData/Roaming/npm/future.cmd"
-	rm -f "$${HOME}/AppData/Roaming/npm/future.ps1"
-	rm -rf "$${HOME}/AppData/Roaming/npm/node_modules/@future-os/cli"
-	rm -f $(PREFIX)/future
-	@echo "CLI uninstalled"
-
 install-gui: install-cli
 	cd gui && npm install
 	@mkdir -p gui/src-tauri/binaries
