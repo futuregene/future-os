@@ -78,7 +78,7 @@ future auth login
 }
 ```
 
-Providers not in the [built-in catalog](docs/wiki/en/Models.md) (e.g. Azure) need an extra `baseUrl` field:
+Some providers in the [built-in catalog](docs/wiki/en/Models.md) have template base URLs with placeholders (e.g. Azure's `YOUR_RESOURCE`, Google Vertex's `PROJECT_ID`). These need an extra `baseUrl` field with your actual values:
 
 ```json
 {
