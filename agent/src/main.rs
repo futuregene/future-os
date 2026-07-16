@@ -47,6 +47,7 @@ fn main() -> Result<()> {
     // Launch async portion
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .thread_stack_size(4 * 1024 * 1024)
         .build()?
         .block_on(async_main(model_registry))
 }
