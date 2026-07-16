@@ -5,7 +5,7 @@ import { tools, isToolsCommand } from "./commands/tools.js";
 import { skills, isSkillsCommand } from "./commands/skills.js";
 import { account, isAccountCommand } from "./commands/account.js";
 import { run as runCommand } from "./commands/run.js";
-import { docker } from "./commands/docker.js";
+import { doctor } from "./commands/doctor.js";
 import { printHelp } from "./help.js";
 import { VERSION } from "./version.generated.js";
 
@@ -70,7 +70,7 @@ async function main(): Promise<void> {
   if (group === "doctor") {
     const restArgs = args.slice(1);
     const fix = restArgs.includes("--fix");
-    await docker(fix);
+    await doctor(fix);
     return;
   }
 
