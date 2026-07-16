@@ -456,20 +456,41 @@ def main():
         print(f"    found {len(models)} models from vercel")
         all_models.extend(models)
     
-    # Sort and dedupe by id.  Known providers (ones with a non-empty base URL)
-    # come first so their models win over reseller/aggregator copies of the
-    # same model ID.
+    # Sort and dedupe by id.  Primary providers (the actual model developers)
+    # get tier-0 priority; other known providers (resellers/gateways) get tier-1;
+    # providers without base URLs come last and are effectively skipped.
+    PRIMARY_PROVIDERS = {
+        "openai", "anthropic", "google", "google-vertex", "deepseek",
+        "mistral", "cohere", "meta", "amazon-bedrock", "groq", "xai",
+        "cerebras", "huggingface", "cloudflare-workers-ai",
+        "moonshotai", "moonshotai-cn", "minimax", "minimax-cn",
+        "zai", "zhipuai", "github-copilot", "xiaomi",
+        "alibaba", "alibaba-cn", "alibaba-coding-plan", "alibaba-coding-plan-cn",
+        "alibaba-token-plan", "alibaba-token-plan-cn",
+        "tencent-coding-plan", "tencent-token-plan", "tencent-tokenhub",
+        "stepfun", "stepfun-ai",
+        "siliconflow", "siliconflow-cn",
+        "novita-ai", "fireworks-ai", "upstage",
+        "perplexity", "snowflake-cortex",
+    }
     def provider_rank(m):
-        has_url = 1 if m.get("base_url") else 0
-        return -has_url  # negative so known providers sort first
+        p = m.get("provider", "")
+        if p in PRIMARY_PROVIDERS:
+            return 0  # tier 0: primary (model developer)
+        if m.get("base_url"):
+            return 1  # tier 1: known reseller with base URL
+        return 2      # tier 2: no base URL (skipped)
 
     all_models.sort(key=provider_rank)
 
+    # Dedupe by provider + model_id (not model_id alone).  The same model ID
+    # appears under 50+ resellers — each one is a distinct way to access it.
     seen = set()
     unique_models = []
     for m in all_models:
-        if m["id"] not in seen:
-            seen.add(m["id"])
+        key = f"{m['provider']}:{m['id']}"
+        if key not in seen:
+            seen.add(key)
             unique_models.append(m)
     
     print(f"\nTotal unique models: {len(unique_models)}")
