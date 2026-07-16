@@ -325,11 +325,14 @@ async function checkProviders(): Promise<CheckResult> {
       lines.push(`  ${id} ${C.dim}(${label})${C.reset}`);
     }
     lines.unshift(`${allProviders.size} provider(s) configured`);
-  } else {
-    lines.push("No providers configured — run `future auth login`");
+    return { name: "Providers", status: "ok", lines };
   }
 
-  return { name: "Providers & models", status: allProviders.size > 0 ? "ok" : "warn", lines };
+  return {
+    name: "Providers",
+    status: "warn",
+    lines: ["No providers configured — run `future auth login` to get started."],
+  };
 }
 
 // ── 5. Sessions ────────────────────────────────────────────────────────────
@@ -376,33 +379,34 @@ async function checkSkills(): Promise<CheckResult> {
 
   // Check installed skills for updates against platform catalog
   if (installed.size > 0) {
+    // Always show local versions first
+    for (const id of [...installed].sort()) {
+      const localVer = await readSkillMdVersion(path.join(SKILLS_DIR, id, "SKILL.md"));
+      const verStr = localVer ? ` ${C.dim}(v${localVer})${C.reset}` : "";
+      lines.push(`  ${id}${verStr}`);
+    }
+
+    // Then compare against platform for updates
     try {
       const platformUrl = await getPlatformUrl();
       const allSkills = await fetchSkills(platformUrl);
       const catalog = new Map(allSkills.map(s => [s.id, s]));
-      const upToDate: string[] = [];
       const needsUpdate: string[] = [];
 
       for (const id of [...installed].sort()) {
         const skill = catalog.get(id);
         const localVer = await readSkillMdVersion(path.join(SKILLS_DIR, id, "SKILL.md"));
         if (localVer && skill?.latest_version && localVer !== skill.latest_version) {
-          needsUpdate.push(`${id}: ${localVer} ${C.dim}→${C.reset} ${skill.latest_version}`);
-        } else {
-          const ver = localVer ? ` ${C.dim}(v${localVer})${C.reset}` : "";
-          upToDate.push(`${id}${ver}`);
+          needsUpdate.push(`  ${id}: ${localVer} ${C.dim}→${C.reset} ${skill.latest_version}`);
         }
       }
 
-      if (upToDate.length > 0) {
-        lines.push(`  Up to date: ${upToDate.join(", ")}`);
-      }
       if (needsUpdate.length > 0) {
-        for (const u of needsUpdate) lines.push(`  ${u}`);
+        for (const u of needsUpdate) lines.push(u);
         lines.push(`  Run ${C.bold}future skills update${C.reset} to upgrade`);
       }
     } catch {
-      // offline or not logged in
+      // offline or not logged in — local versions shown above are enough
     }
   }
 
