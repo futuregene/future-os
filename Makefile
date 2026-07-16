@@ -48,7 +48,7 @@ install-cli: build-cli
 	$(SUDO) cp cli/dist/future $(PREFIX)/future
 
 install-gui: install-cli
-	cd gui && npm install
+	cd gui && npm install && npm run build
 	@mkdir -p gui/src-tauri/binaries
 	cd agent && cargo build --release
 	cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
