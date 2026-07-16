@@ -319,23 +319,24 @@ function InstalledTab({
   const anyBusy = skills.some(skill => busy[skill.id]);
   return (
     <>
-      <div className="flex justify-end">
-        <Button
-          disabled={upgradeCount === 0 || anyBusy}
-          leftIcon={<ArrowUpCircle className="size-3.5" />}
-          onClick={onUpgradeAll}
-          size="sm"
-          variant="secondary"
-        >
-          {upgradeCount > 0 ? t("upgrade.upgradeAllCount", { count: upgradeCount }) : t("upgrade.upgradeAll")}
-        </Button>
-      </div>
       <SkillFiltersBar
         categories={categories}
         filters={filters}
         onChange={onFiltersChange}
         resultCount={resultCount}
         totalCount={totalCount}
+        trailing={(
+          <Button
+            className="shrink-0"
+            disabled={upgradeCount === 0 || anyBusy}
+            leftIcon={<ArrowUpCircle className="size-3.5" />}
+            onClick={onUpgradeAll}
+            size="sm"
+            variant="secondary"
+          >
+            {upgradeCount > 0 ? t("upgrade.upgradeAllCount", { count: upgradeCount }) : t("upgrade.upgradeAll")}
+          </Button>
+        )}
       />
       {skills.length === 0
         ? <EmptyState title={t("filter.emptyTitle")} detail={t("filter.emptyDetail")} />
@@ -499,6 +500,7 @@ function SkillFiltersBar({
   resultCount,
   showCategory = true,
   totalCount,
+  trailing,
 }: {
   categories: string[];
   filters: SkillFilters;
@@ -506,6 +508,8 @@ function SkillFiltersBar({
   resultCount: number;
   showCategory?: boolean;
   totalCount: number;
+  /** Optional action rendered at the end of the row (e.g. "Upgrade all"). */
+  trailing?: React.ReactNode;
 }) {
   const { t } = useTranslation("skills");
   const hasActiveFilters = (showCategory && filters.category !== allCategoriesValue) || filters.query.trim().length > 0;
@@ -550,6 +554,7 @@ function SkillFiltersBar({
             )
           : null}
       </div>
+      {trailing}
     </div>
   );
 }
