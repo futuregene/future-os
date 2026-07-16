@@ -2,7 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Rust (agent, channel) + TypeScript (TUI, CLI) + Tauri/React GUI. The Rust agent is the backend; the TS TUI provides the terminal interface. The TS CLI (`future`) handles auth, service management, MCP tool calls, and skill bundle discovery. The GUI module (`gui/`) is a desktop app that connects to the agent over gRPC via its Tauri backend. The channel binary bridges external messaging platforms (Feishu, DingTalk) to the agent via gRPC.
+Rust (agent, channel, remote) + TypeScript (TUI, CLI) + Tauri/React GUI. The Rust agent is the backend; the TS TUI provides the terminal interface. The TS CLI (`future`) handles auth, one-shot prompts (`run`), MCP tool calls, skills management, environment diagnostics (`doctor`), and account management. The GUI module (`gui/`) is a desktop app that connects to the agent over gRPC via its Tauri backend. The channel binary bridges external messaging platforms (Feishu, DingTalk) to the agent via gRPC. The remote binary (`remote/`) is a NATS bridge for desktop-to-agent relay.
+
+After `make install`, five independent binaries are available: `future-agent`, `future-channel`, `future-tui`, `future-gui`, `future`. Start components directly (e.g. `future-agent`) rather than through the CLI.
 
 ## Build/Run/Test
 
@@ -13,11 +15,9 @@ Prefer `make` targets from repo root. For more control, use cargo/npm directly.
 make build              # Build agent, TUI, CLI, and GUI frontend
 make build-agent        # Build Rust agent only
 make build-tui          # Build TypeScript TUI only
-make build-tui-single   # Build standalone TUI binary (via bun build --compile)
 make build-cli          # Build TypeScript CLI only
 make build-gui          # Build React GUI frontend
 make build-channels      # Build channel bridge
-make build-channels-release  # Build channel bridge (optimized)
 make test               # Run all Rust tests
 make lint               # Lint Rust + TypeScript + GUI
 make lint-agent         # cargo fmt --check && cargo clippy
@@ -113,11 +113,14 @@ Entry point: `main.rs` — only CLI flag is `--grpc-addr`. Resolves model from s
 | `config/mod.rs` | Settings struct (7 fields: steering_mode, follow_up_mode, compaction, retry, max_turns, default_permission_level). Loads from `~/.future/agent/settings.json` (global) and `.future/agent/settings.json` (project), deep-merged |
 | `auth/mod.rs` | Reads API credentials from `~/.future/agent/auth.json` or `~/.future/agent-app/auth.json`, keyed by provider |
 | `skills/mod.rs` | Discovers skills from `~/.future/agent/skills/`, `.future/agent/skills/`, `~/.agents/skills/` — parses YAML frontmatter from SKILL.md |
-| `prompt/mod.rs` | Builds system prompt from identity, project context (CLAUDE.md/AGENTS.md), skills, and metadata |
+| `prompt/mod.rs` | Builds system prompt in 6 sections: Identity (tools + guidelines) → Skills → Project Context (AGENTS.md > CLAUDE.md > GEMINI.md) → Workspace Memory (FUTURE.md) → Append prompt → Environment (date/cwd/platform). All sections deterministic for prompt cache hits |
 | `events/mod.rs` | `EventBus` with pub/sub for bridging agent streaming events to frontends (thinking, tool calls, usage stats) |
 | `utils/mod.rs` | Session ID generation, cwd path encoding (base32), image MIME type detection |
 
 Provider model: `LLMProvider` trait (`stream_chat`). Uses OpenAI-compatible HTTP+SSE. Thinking/reasoning extraction via compat format parameters (deepseek, openrouter, zai, qwen).
+
+Additional Rust crates:
+- `remote/` — NATS bridge: subscribes to `p.{pairId}.cmd.>` → forwards to agent gRPC → publishes responses. Pumps agent SSE events to NATS `p.{pairId}.evt.{session}` subjects.
 
 API key resolution order: `auth.json` (by model ID) → `auth.json` (by provider) → model built-in key → `auth.json` default key.
 
@@ -147,28 +150,35 @@ Follows a `Component`/`Container`/`Focusable` pattern with overlay stack:
 
 ### TypeScript CLI (`cli/src/`)
 
-Entry point: `index.ts` — subcommand dispatcher. The CLI is installed via `npm link` as `future`.
+Entry point: `index.ts` — subcommand dispatcher. The CLI is installed via `make install` as `future`.
 
 | Command group | Subcommands | Role |
 |---------------|-------------|------|
-| `auth` | `login`, `status`, `logout` | Device-flow OAuth against Future API. Saves API key to `~/.future/agent/auth.json` and model list to `~/.future/agent/models.json` |
-| `agent` | `start`, `stop`, `restart`, `status` | Manage the Rust agent as a background service (launchctl on macOS, systemctl on Linux, sc.exe on Windows) |
-| `channel` | `start`, `stop`, `restart`, `status` | Manage the channel bridge as a background service |
-| `tools` | `list`, `call` | MCP client — lists and calls tools from a remote MCP server (defaults to `{platform}/api/v1/mcp`, or `https://future-os.cn/api/v1/mcp`). Override with `FUTURE_MCP_URL`. |
-| `skills` | `list`, `get` | Skill bundle discovery — groups related tools into named workflows (`core`, `rare-disease`, `gene-variant`, `literature`). Outputs SKILL.md format for agent consumption |
-| `tui` | (forwards args) | Launches the TUI, forwarding all remaining arguments |
+| `auth` | `login`, `status`, `logout`, `credential` | Device-flow OAuth against Future API. Saves API key to `~/.future/agent/auth.json`. `credential` outputs the API key for scripting |
+| `run` | `[options] [@files...] [message...]` | One-shot agent prompt. Supports `--model`, `--thinking`, `--fork`, `--session`, `--tools`, `--cwd`, `--mode json`, `--verbose` |
+| `skills` | `list`, `install`, `uninstall`, `install-builtin`, `update` | Manage skills in `~/.future/agent/skills/`. `install` with no name = install all builtins. `update` upgrades installed skills to latest |
+| `tools` | `list`, `call` | MCP client — lists and calls tools from a remote MCP server |
+| `doctor` | (no args) | Environment diagnostic: login, components, config, sessions, skills, providers |
+| `account` | `profile`, `balance`, `recharge` | Future platform account management |
 
 Key files:
 - `commands/auth.ts` — device code flow, API key persistence
-- `commands/agent.ts` — cross-platform service management
-- `commands/channel.ts` — channel bridge service management
-- `commands/tools.ts` — MCP JSON-RPC client with SSE parsing, tool catalog
-- `commands/skills.ts` — skill bundle definitions and SKILL.md generation
-- `commands/tui.ts` — TUI launcher
+- `commands/run.ts` — one-shot prompt execution via gRPC RunClient
+- `commands/skills.ts` — skill discovery, install, update (reads YAML frontmatter)
+- `commands/doctor.ts` — environment diagnostic (components, config, sessions, skills)
+- `commands/tools.ts` — MCP JSON-RPC client
+- `commands/account.ts` — platform account management
+- `rpc/grpc-client.ts` — minimal gRPC client using @grpc/grpc-js with embedded proto
 
 ### GUI (`gui/`)
 
 Tauri 2 + React + TypeScript desktop app. See `gui/CLAUDE.md` for detailed development guide. Architecture docs under `gui/DEV_MD/`: PRODUCT.md (product semantics), ER.md (data model), COLOR.md (design tokens), plus planning docs for approvals, sandbox, attachments, memory, and remote control.
+
+Key backend modules (`gui/src-tauri/src/`):
+- `agent_providers/` — Provider configuration UI: built-in catalog + custom providers. Tests reference dynamic catalog providers (not hardcoded names). Split into `catalog.rs`, `validate.rs`, `write.rs`, `tests.rs`
+- `agent_bridge/` — gRPC client for GUI→agent communication (session management, import)
+- `store/` — SQLite persistence (threads, runs, approvals, settings)
+- `auth_store.rs` — API key persistence in `~/.future/agent/auth.json`
 
 ### Channel bridge (`channels/src/`)
 
