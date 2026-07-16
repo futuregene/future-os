@@ -62,7 +62,7 @@ Binaries are installed to: macOS `/opt/homebrew/bin`, Linux `/usr/local/bin`, Wi
 
 ### Configure a model
 
-The agent needs at least one model with an API key before it can answer. Two options:
+The agent needs at least one model with an API key before it can answer. Four options:
 
 **A — FutureOS hosted models.** Device-flow sign-in provisions keys and a model list automatically:
 
@@ -70,7 +70,7 @@ The agent needs at least one model with an API key before it can answer. Two opt
 future auth login
 ```
 
-**B — Use a known provider.** Put your API key in `~/.future/agent/auth.json`, keyed by provider name. Most providers have built-in base URLs and models are auto-discovered:
+**B — Use a known provider.** Put your API key in `~/.future/agent/auth.json`, keyed by provider name. Built-in base URLs and models are auto-discovered for providers in the [catalog](docs/wiki/en/Models.md):
 
 ```json
 {
@@ -78,19 +78,20 @@ future auth login
 }
 ```
 
-Some providers in the [built-in catalog](docs/wiki/en/Models.md) have template base URLs with placeholders (e.g. Azure's `YOUR_RESOURCE`, Google Vertex's `PROJECT_ID`). These need an extra `baseUrl` field with your actual values:
+**C — Known provider, custom base URL.** For providers whose base URL requires user-specific values (e.g. Azure's `YOUR_RESOURCE`, Google Vertex's `PROJECT_ID`), add a provider entry with `apiKey` + `baseUrl` in `~/.future/agent/models.json`. Models are still auto-discovered from the built-in catalog:
 
 ```json
 {
-  "azure": {
-    "type": "api_key",
-    "key": "sk-...",
-    "baseUrl": "https://YOUR_RESOURCE.openai.azure.com/openai/v1"
+  "providers": {
+    "azure": {
+      "apiKey": "sk-...",
+      "baseUrl": "https://my-resource.openai.azure.com/openai/v1"
+    }
   }
 }
 ```
 
-**C — Custom provider.** For providers that need a manually specified model list, use `~/.future/agent/models.json`:
+**D — Custom provider.** For providers not in the built-in catalog, specify the full model list in `models.json` as well:
 
 ```json
 {
