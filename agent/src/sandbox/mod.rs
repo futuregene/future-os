@@ -316,21 +316,14 @@ pub fn shell_invocation(command: &str) -> (&'static str, Vec<String>) {
     }
     #[cfg(target_os = "windows")]
     {
-        let script = windows_wrapper_script(command);
-        (
-            windows_shell().program,
-            vec![
-                // -NoProfile: skip profile scripts (speed + no stray output).
-                // -NonInteractive: fail fast instead of hanging on a prompt —
-                //   there is no console for the agent to answer one.
-                // -NoLogo: suppress the startup banner on 5.1.
-                "-NoProfile".to_string(),
-                "-NonInteractive".to_string(),
-                "-NoLogo".to_string(),
-                "-EncodedCommand".to_string(),
-                encode_powershell_command(&script),
-            ],
-        )
+        // Use cmd /c instead of PowerShell.  PowerShell tracks the
+        // entire sub-process tree and will not exit until all child
+        // processes (including Chrome auto-started by the CLI via
+        // cmd /c start) have closed their handles.  cmd /c passes
+        // through the exit code directly and terminates regardless.
+        // The CLI's args parser handles cmd-quoting via multiple
+        // parse strategies in parseToolArgs.
+        ("cmd", vec!["/c".to_string(), command.to_string()])
     }
 }
 
