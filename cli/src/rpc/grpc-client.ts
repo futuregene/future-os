@@ -303,10 +303,14 @@ export class RunClient {
   private client: any;
   private address: string;
 
-  constructor(address = "localhost:50051") {
+  constructor(
+    address = "localhost:50051",
+    credentials?: grpc.ChannelCredentials,
+  ) {
     this.address = address;
-    const credentials = grpc.credentials.createInsecure();
-    this.client = new proto.FutureAgent(address, credentials);
+    const channelCredentials =
+      credentials ?? grpc.credentials.createInsecure();
+    this.client = new proto.FutureAgent(address, channelCredentials);
   }
 
   // ─── Low-level RPC ───────────────────────────────────────────────────
