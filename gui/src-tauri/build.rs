@@ -1,11 +1,6 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Inject the build version (see scripts/version.mjs) as a compile-time env
-    // so code can read it via env!("FUTURE_VERSION"). CI/`make` set it (the tag
-    // release or online hash); a bare `tauri dev` / IDE / `cargo build` does not,
-    // so we mirror version.mjs's local scheme here from git directly.
+    // Inject the build version (see scripts/version.mjs) as a compile-time env.
     let base = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string());
-    // Treat an empty FUTURE_VERSION as unset (matches scripts/version.mjs), so a
-    // failed `$(shell …)` in the Makefile can't inject an empty version string.
     let version = std::env::var("FUTURE_VERSION")
         .ok()
         .filter(|v| !v.is_empty())
@@ -15,11 +10,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tauri_build::build();
 
-    let proto_path = std::path::Path::new("../../proto/future.proto");
-    println!("cargo:rerun-if-changed={}", proto_path.display());
-    tonic_build::configure()
-        .build_server(false)
-        .compile_protos(&[proto_path], &[proto_path.parent().unwrap()])?;
+    // Proto regeneration is opt-in via `make generate-proto` (sets REGENERATE_PROTO=1).
+    // Generated files are checked into src/generated/ so normal builds never need protoc.
+    if std::env::var("REGENERATE_PROTO").is_ok() {
+        let proto_path = std::path::Path::new("../../proto/future.proto");
+        println!("cargo:rerun-if-changed={}", proto_path.display());
+        tonic_build::configure()
+            .build_server(false)
+            .build_client(true)
+            .out_dir("src/generated")
+            .compile_protos(&[proto_path], &[proto_path.parent().unwrap()])?;
+    }
 
     Ok(())
 }
