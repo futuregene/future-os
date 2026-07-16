@@ -59,9 +59,11 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
         }
     }
 
-    // 6. Date and working directory
-    if !opts.date.is_empty() || !opts.working_directory.is_empty() {
-        let mut info = vec![];
+    // 6. Environment: date, working directory, and host platform — always
+    //    included so the model generates platform-appropriate shell commands
+    //    and paths.
+    {
+        let mut info = vec!["# Environment".to_string(), String::new()];
         if !opts.date.is_empty() {
             info.push(format!("Current date: {}", opts.date));
         }
@@ -77,12 +79,9 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
                     .to_string(),
             );
         }
+        info.push(os_hint());
         sections.push(info.join("\n"));
     }
-
-    // 7. Host platform — always included so the model generates
-    //    platform-appropriate shell commands and paths.
-    sections.push(os_hint());
 
     sections.join("\n\n")
 }
