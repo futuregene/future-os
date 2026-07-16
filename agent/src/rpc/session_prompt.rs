@@ -13,56 +13,7 @@ impl ServerSession {
     ) -> Result<()> {
         std::fs::create_dir_all(&self.cwd)?;
         if let Ok(mut r#loop) = self.agent_loop.try_write() {
-            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-
-            // Discover skills so they appear in the system prompt's <available_skills> block.
-            let skill_dirs = vec![
-                crate::skills::APP_SKILLS_DIR.to_string(),
-                format!("{}/{}", self.cwd, crate::skills::PROJECT_SKILLS_DIR),
-                crate::skills::AGENTS_SKILLS_DIR.to_string(),
-            ];
-            let skills = crate::skills::discover_skills(&skill_dirs).unwrap_or_default();
-
-            // Load project context (CLAUDE.md / AGENTS.md / GEMINI.md)
-            let mut agent_content = String::new();
-            for fname in &["CLAUDE.md", "AGENTS.md", "GEMINI.md"] {
-                let p = std::path::Path::new(&self.cwd).join(fname);
-                if p.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&p) {
-                        agent_content = content;
-                        break;
-                    }
-                }
-            }
-
-            // Load workspace memory (FUTURE.md) — a separate layer from project
-            // context, read fresh each turn (cwd only; workspace-scoped).
-            let memory_path = std::path::Path::new(&self.cwd).join("FUTURE.md");
-            let memory_content = std::fs::read_to_string(&memory_path).unwrap_or_default();
-
-            let system_prompt = crate::prompt::build_prompt(&crate::prompt::PromptOptions {
-                working_directory: self.cwd.replace('\\', "/"),
-                date: today,
-                tools: r#loop.tools.clone(),
-                skills,
-                agent_content,
-                memory_content,
-                prompt_guidelines: vec![
-                    // The write-via-shell prohibition is platform-neutral, but its
-                    // examples must name the redirection forms the host's shell
-                    // actually has, or a PowerShell model won't map "don't use
-                    // `cat > file`" onto "don't use Out-File".
-                    {
-                        #[cfg(not(target_os = "windows"))]
-                        let forms = "`>`, `>>`, tee, heredocs, `cat > file`";
-                        #[cfg(target_os = "windows")]
-                        let forms = "`>`, `>>`, Out-File, Set-Content, Add-Content";
-                        format!("When asked to create, save, write, or modify a file, ALWAYS use the write or edit tool — including for absolute paths and paths outside the current working directory (both tools accept any path). Do NOT use shell redirection ({forms}) to write files: shell file writes bypass file tracking and the approval flow. Reserve shell redirection for piping between commands, not for creating files. Only describe file changes after the tool succeeds.")
-                    },
-                    "You maintain a workspace memory file named FUTURE.md in the working directory. Its content is loaded into this system prompt (see \"Workspace Memory\" above) — do NOT read FUTURE.md to discover your capabilities, available skills, or the workspace memory contents; they are already provided here. Only read FUTURE.md when you need to verify its current on-disk state before editing it. Record a memory when the user explicitly asks you to remember something, and also proactively when you learn a durable, high-value fact about this workspace: a verified build/test/run/lint command, a stated user preference, a correction the user made (especially a repeated one), or a stable project convention. Do not record one-off task details, transient state, secrets, unverified guesses, or anything already derivable from the repo. Use the write or edit tool; keep entries short and grouped under markdown headers; update or remove stale entries instead of duplicating; keep the file concise (aim under ~200 lines). Whenever you write to memory, tell the user in one short line what you recorded. Memory may only be written to FUTURE.md — never to CLAUDE.md, AGENTS.md, or GEMINI.md.".to_string(),
-                ],
-                ..Default::default()
-            });
+            let system_prompt = self.build_system_prompt(r#loop.tools.clone());
             r#loop.system_prompt = system_prompt.clone();
             r#loop.config.system_prompt = system_prompt;
         }
@@ -84,53 +35,7 @@ impl ServerSession {
         // tool entries from prior turns) during streaming. Without this, a
         // thread switch mid-stream loses the question until the run settles
         // because get_session_entries reads from disk.
-        {
-            let msgs = self.messages.read().unwrap();
-            let mut entries: Vec<crate::session::SessionEntry> = msgs
-                .iter()
-                .map(crate::session::agent_message_to_entry)
-                .collect();
-            let parent_session_id = self
-                .session_manager
-                .load(&self.session_id)
-                .map(|s| s.parent_session_id)
-                .unwrap_or_default();
-            // Prepend session_info so token counts and other metadata survive
-            // a crash — without this, a restarted session starts with zeroed
-            // token counters and may skip needed compaction.
-            {
-                use std::sync::atomic::Ordering;
-                let info = serde_json::json!({
-                    "cwd": self.cwd,
-                    "tokens_in": self.tokens_in.load(Ordering::Relaxed),
-                    "tokens_out": self.tokens_out.load(Ordering::Relaxed),
-                    "tokens_cache_r": self.tokens_cache_r.load(Ordering::Relaxed),
-                    "tokens_cache_w": self.tokens_cache_w.load(Ordering::Relaxed),
-                    "last_prompt_tokens": self.last_prompt_tokens.load(Ordering::Relaxed),
-                    "total_cost": *self.cumulative_cost.lock().unwrap(),
-                    "session_name": self.session_name,
-                    "auto_compaction": self.auto_compaction,
-                    "parent_session_id": parent_session_id,
-                });
-                let info_entry = crate::session::SessionEntry::session_info(
-                    info,
-                    self.model.clone(),
-                    self.thinking_level.clone(),
-                );
-                entries.insert(0, info_entry);
-            }
-            let session = crate::session::Session::snapshot(
-                self.session_id.clone(),
-                self.cwd.clone(),
-                self.model.clone(),
-                self.session_name.clone(),
-                parent_session_id,
-                entries,
-            );
-            if let Err(e) = self.session_manager.save(&session) {
-                tracing::error!("Failed to persist user message: {}", e);
-            }
-        }
+        self.persist_user_message();
 
         // Set streaming flag + start a new run. P1: run_id is assigned once per
         // user run at the is_streaming false→true edge (resets idx + event buffer);
@@ -140,60 +45,10 @@ impl ServerSession {
         self.broadcaster.start_run(crate::utils::generate_id());
 
         // Swap per-session token counters into the agent loop so updates are tracked per-session
-        {
-            if let Ok(mut r#loop) = self.agent_loop.try_write() {
-                r#loop.cumulative_input_tokens = self.tokens_in.clone();
-                r#loop.cumulative_output_tokens = self.tokens_out.clone();
-                r#loop.cumulative_cache_read_tokens = self.tokens_cache_r.clone();
-                r#loop.cumulative_cache_write_tokens = self.tokens_cache_w.clone();
-                r#loop.cumulative_cost = self.cumulative_cost.clone();
-                r#loop.last_prompt_tokens = self.last_prompt_tokens.clone();
-            }
-        }
+        self.swap_token_counters_into_loop();
 
         // Wire auto-compaction transform (checked before each turn)
-        if self.auto_compaction {
-            if let Ok(mut r#loop) = self.agent_loop.try_write() {
-                let comp_tokens = self.last_prompt_tokens.clone();
-                let comp_model = self.compaction_model.clone();
-                let comp_result = r#loop.last_compaction_result.clone();
-                r#loop.config.transform_context = Some(Arc::new(move |msgs, _| {
-                    use std::sync::atomic::Ordering;
-                    let api_tokens = comp_tokens.load(Ordering::Relaxed) as i32;
-                    // Fall back to heuristic estimate when API doesn't report usage.
-                    let context_tokens = if api_tokens > 0 {
-                        api_tokens
-                    } else {
-                        crate::compaction::estimate_context_tokens(&msgs)
-                    };
-                    if context_tokens == 0 {
-                        return msgs; // Truly empty — nothing to compact
-                    }
-                    let model = comp_model.read().unwrap().clone();
-                    let context_window = crate::models::Registry::new()
-                        .resolve(&model)
-                        .map(|m| m.context_window)
-                        .unwrap_or(200000);
-                    // Compact when context usage exceeds 90% (10% reserve, min 16K)
-                    let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
-                    let (compacted, result) = crate::compaction::compact(
-                        msgs,
-                        &crate::compaction::CompactOptions {
-                            reserve_tokens,
-                            keep_recent_tokens: reserve_tokens,
-                            context_window,
-                            tokens_before: context_tokens,
-                        },
-                    );
-                    if let Some(r) = result {
-                        *comp_result.lock().unwrap() = Some(r);
-                        compacted
-                    } else {
-                        compacted
-                    }
-                }));
-            }
-        }
+        self.wire_auto_compaction();
 
         // Clone shared state for the background task
         let messages_arc = self.messages.clone();
@@ -619,6 +474,173 @@ impl ServerSession {
         });
 
         Ok(())
+    }
+    /// Build this turn's system prompt: project context (CLAUDE.md/AGENTS.md/
+    /// GEMINI.md), workspace memory (FUTURE.md), discovered skills, and the
+    /// write/memory guidelines. Read fresh each turn (cwd-scoped).
+    /// Point the agent loop's cumulative token/cost counters at this session's
+    /// shared atomics so streaming updates are tracked per-session.
+    fn swap_token_counters_into_loop(&self) {
+        if let Ok(mut r#loop) = self.agent_loop.try_write() {
+            r#loop.cumulative_input_tokens = self.tokens_in.clone();
+            r#loop.cumulative_output_tokens = self.tokens_out.clone();
+            r#loop.cumulative_cache_read_tokens = self.tokens_cache_r.clone();
+            r#loop.cumulative_cache_write_tokens = self.tokens_cache_w.clone();
+            r#loop.cumulative_cost = self.cumulative_cost.clone();
+            r#loop.last_prompt_tokens = self.last_prompt_tokens.clone();
+        }
+    }
+
+    /// Install the pre-turn auto-compaction transform on the agent loop (a
+    /// no-op when auto-compaction is off), compacting context once usage
+    /// crosses ~90% of the model's window.
+    fn wire_auto_compaction(&self) {
+        if self.auto_compaction {
+            if let Ok(mut r#loop) = self.agent_loop.try_write() {
+                let comp_tokens = self.last_prompt_tokens.clone();
+                let comp_model = self.compaction_model.clone();
+                let comp_result = r#loop.last_compaction_result.clone();
+                r#loop.config.transform_context = Some(Arc::new(move |msgs, _| {
+                    use std::sync::atomic::Ordering;
+                    let api_tokens = comp_tokens.load(Ordering::Relaxed) as i32;
+                    // Fall back to heuristic estimate when API doesn't report usage.
+                    let context_tokens = if api_tokens > 0 {
+                        api_tokens
+                    } else {
+                        crate::compaction::estimate_context_tokens(&msgs)
+                    };
+                    if context_tokens == 0 {
+                        return msgs; // Truly empty — nothing to compact
+                    }
+                    let model = comp_model.read().unwrap().clone();
+                    let context_window = crate::models::Registry::new()
+                        .resolve(&model)
+                        .map(|m| m.context_window)
+                        .unwrap_or(200000);
+                    // Compact when context usage exceeds 90% (10% reserve, min 16K)
+                    let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
+                    let (compacted, result) = crate::compaction::compact(
+                        msgs,
+                        &crate::compaction::CompactOptions {
+                            reserve_tokens,
+                            keep_recent_tokens: reserve_tokens,
+                            context_window,
+                            tokens_before: context_tokens,
+                        },
+                    );
+                    if let Some(r) = result {
+                        *comp_result.lock().unwrap() = Some(r);
+                        compacted
+                    } else {
+                        compacted
+                    }
+                }));
+            }
+        }
+    }
+
+    fn build_system_prompt(&self, tools: Vec<crate::types::AgentTool>) -> String {
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+        // Discover skills so they appear in the system prompt's <available_skills> block.
+        let skill_dirs = vec![
+            crate::skills::APP_SKILLS_DIR.to_string(),
+            format!("{}/{}", self.cwd, crate::skills::PROJECT_SKILLS_DIR),
+            crate::skills::AGENTS_SKILLS_DIR.to_string(),
+        ];
+        let skills = crate::skills::discover_skills(&skill_dirs).unwrap_or_default();
+
+        // Load project context (CLAUDE.md / AGENTS.md / GEMINI.md)
+        let mut agent_content = String::new();
+        for fname in &["CLAUDE.md", "AGENTS.md", "GEMINI.md"] {
+            let p = std::path::Path::new(&self.cwd).join(fname);
+            if p.exists() {
+                if let Ok(content) = std::fs::read_to_string(&p) {
+                    agent_content = content;
+                    break;
+                }
+            }
+        }
+
+        // Load workspace memory (FUTURE.md) — a separate layer from project
+        // context, read fresh each turn (cwd only; workspace-scoped).
+        let memory_path = std::path::Path::new(&self.cwd).join("FUTURE.md");
+        let memory_content = std::fs::read_to_string(&memory_path).unwrap_or_default();
+
+        crate::prompt::build_prompt(&crate::prompt::PromptOptions {
+                working_directory: self.cwd.replace('\\', "/"),
+                date: today,
+                tools,
+                skills,
+                agent_content,
+                memory_content,
+                prompt_guidelines: vec![
+                    // The write-via-shell prohibition is platform-neutral, but its
+                    // examples must name the redirection forms the host's shell
+                    // actually has, or a PowerShell model won't map "don't use
+                    // `cat > file`" onto "don't use Out-File".
+                    {
+                        #[cfg(not(target_os = "windows"))]
+                        let forms = "`>`, `>>`, tee, heredocs, `cat > file`";
+                        #[cfg(target_os = "windows")]
+                        let forms = "`>`, `>>`, Out-File, Set-Content, Add-Content";
+                        format!("When asked to create, save, write, or modify a file, ALWAYS use the write or edit tool — including for absolute paths and paths outside the current working directory (both tools accept any path). Do NOT use shell redirection ({forms}) to write files: shell file writes bypass file tracking and the approval flow. Reserve shell redirection for piping between commands, not for creating files. Only describe file changes after the tool succeeds.")
+                    },
+                    "You maintain a workspace memory file named FUTURE.md in the working directory. Its content is loaded into this system prompt (see \"Workspace Memory\" above) — do NOT read FUTURE.md to discover your capabilities, available skills, or the workspace memory contents; they are already provided here. Only read FUTURE.md when you need to verify its current on-disk state before editing it. Record a memory when the user explicitly asks you to remember something, and also proactively when you learn a durable, high-value fact about this workspace: a verified build/test/run/lint command, a stated user preference, a correction the user made (especially a repeated one), or a stable project convention. Do not record one-off task details, transient state, secrets, unverified guesses, or anything already derivable from the repo. Use the write or edit tool; keep entries short and grouped under markdown headers; update or remove stale entries instead of duplicating; keep the file concise (aim under ~200 lines). Whenever you write to memory, tell the user in one short line what you recorded. Memory may only be written to FUTURE.md — never to CLAUDE.md, AGENTS.md, or GEMINI.md.".to_string(),
+                ],
+                ..Default::default()
+            })
+    }
+
+    /// Persist the current session snapshot (entries + prepended session_info)
+    /// so the GUI sees the just-pushed user message mid-stream. Best-effort:
+    /// a save failure is logged, not propagated.
+    fn persist_user_message(&self) {
+        let msgs = self.messages.read().unwrap();
+        let mut entries: Vec<crate::session::SessionEntry> = msgs
+            .iter()
+            .map(crate::session::agent_message_to_entry)
+            .collect();
+        let parent_session_id = self
+            .session_manager
+            .load(&self.session_id)
+            .map(|s| s.parent_session_id)
+            .unwrap_or_default();
+        // Prepend session_info so token counts and other metadata survive
+        // a crash — without this, a restarted session starts with zeroed
+        // token counters and may skip needed compaction.
+        {
+            use std::sync::atomic::Ordering;
+            let info = serde_json::json!({
+                "cwd": self.cwd,
+                "tokens_in": self.tokens_in.load(Ordering::Relaxed),
+                "tokens_out": self.tokens_out.load(Ordering::Relaxed),
+                "tokens_cache_r": self.tokens_cache_r.load(Ordering::Relaxed),
+                "tokens_cache_w": self.tokens_cache_w.load(Ordering::Relaxed),
+                "last_prompt_tokens": self.last_prompt_tokens.load(Ordering::Relaxed),
+                "total_cost": *self.cumulative_cost.lock().unwrap(),
+                "session_name": self.session_name,
+                "auto_compaction": self.auto_compaction,
+                "parent_session_id": parent_session_id,
+            });
+            let info_entry = crate::session::SessionEntry::session_info(
+                info,
+                self.model.clone(),
+                self.thinking_level.clone(),
+            );
+            entries.insert(0, info_entry);
+        }
+        let session = crate::session::Session::snapshot(
+            self.session_id.clone(),
+            self.cwd.clone(),
+            self.model.clone(),
+            self.session_name.clone(),
+            parent_session_id,
+            entries,
+        );
+        if let Err(e) = self.session_manager.save(&session) {
+            tracing::error!("Failed to persist user message: {}", e);
+        }
     }
 }
 
