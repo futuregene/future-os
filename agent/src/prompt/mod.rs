@@ -196,6 +196,7 @@ fn build_dynamic_tool_guidelines(tool_names: &[&str]) -> Vec<String> {
 /// Matches 's formatSkillsSection() exactly.
 fn format_skills_section(skills: &[&Skill]) -> String {
     let mut sb = String::new();
+    sb.push_str("# Available Skills\n\n");
     sb.push_str("The following skills provide specialized instructions for specific tasks.\n");
     sb.push_str(
         "Use the read tool to load a skill's file when the task matches its description.\n",
