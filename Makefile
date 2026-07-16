@@ -88,7 +88,7 @@ build: build-agent build-tui build-cli build-gui
 
 # Only run npm install when package.json is newer than node_modules.
 define npm-install-if-needed
-	@if [ ! -d "$(1)/node_modules" ] || [ "$(1)/package.json" -nt "$(1)/node_modules" ]; then \
+	@if [ ! -f "$(1)/node_modules/.package-lock.json" ] || [ "$(1)/package.json" -nt "$(1)/node_modules/.package-lock.json" ]; then \
 		echo "  npm install $(1)/"; \
 		cd $(1) && npm install; \
 	fi
