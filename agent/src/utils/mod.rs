@@ -1,5 +1,6 @@
 //! Utility functions — matching Go internal/utils
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 /// GenerateID creates a unique session ID with timestamp and random hex.
