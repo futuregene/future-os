@@ -587,7 +587,7 @@ fn load_user_models_with_overrides(
         let provider_base_url = provider
             .base_url
             .clone()
-            .unwrap_or_else(|| default_base_url_for_provider(&provider_name));
+            .unwrap_or_default();
 
         // Load explicit models
         for model in provider.models.unwrap_or_default() {
@@ -655,20 +655,6 @@ fn load_user_models_with_overrides(
     }
 
     Ok((models, overrides))
-}
-
-fn default_base_url_for_provider(provider: &str) -> String {
-    match provider {
-        "openai" => "https://api.openai.com/v1".to_string(),
-        "anthropic" => "https://api.anthropic.com".to_string(),
-        "google" => "https://generativelanguage.googleapis.com/v1beta".to_string(),
-        "deepseek" => "https://api.deepseek.com".to_string(),
-        "openrouter" => "https://openrouter.ai/api/v1".to_string(),
-        "dashscope" | "dashscope-coding" => {
-            "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()
-        }
-        _ => "".to_string(),
-    }
 }
 
 /// ModelsConfig mirrors Go internal/models/models.go
