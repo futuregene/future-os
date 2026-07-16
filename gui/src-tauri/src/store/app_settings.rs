@@ -24,6 +24,9 @@ pub struct AppSettings {
     pub remote_nats_url: String,
     /// Show the model's thinking/reasoning content in the chat. On by default.
     pub show_thinking: bool,
+    /// Silently upgrade installed skills to their latest catalogue version on
+    /// app open (and immediately when toggled on). Off by default.
+    pub auto_upgrade_skills: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,6 +38,7 @@ pub struct UpdateAppSettingsInput {
     pub remote_pair_id: Option<String>,
     pub remote_nats_url: Option<String>,
     pub show_thinking: Option<bool>,
+    pub auto_upgrade_skills: Option<bool>,
 }
 
 const KEY_APPROVAL_TIER: &str = "approval_tier";
@@ -43,6 +47,7 @@ const KEY_REMOTE_ENABLED: &str = "remote_enabled";
 const KEY_REMOTE_PAIR_ID: &str = "remote_pair_id";
 const KEY_REMOTE_NATS_URL: &str = "remote_nats_url";
 const KEY_SHOW_THINKING: &str = "show_thinking";
+const KEY_AUTO_UPGRADE_SKILLS: &str = "auto_upgrade_skills";
 const DEFAULT_REMOTE_PAIR_ID: &str = "DEVPAIR";
 const DEFAULT_REMOTE_NATS_URL: &str = "nats://localhost:4222";
 
@@ -85,6 +90,14 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
             now,
         )?;
     }
+    if let Some(auto_upgrade_skills) = input.auto_upgrade_skills {
+        write_value(
+            &tx,
+            KEY_AUTO_UPGRADE_SKILLS,
+            if auto_upgrade_skills { "true" } else { "false" },
+            now,
+        )?;
+    }
 
     let settings = read_app_settings(&tx)?;
     tx.commit()?;
@@ -110,6 +123,9 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
     let show_thinking = read_value(conn, KEY_SHOW_THINKING)?
         .map(|value| value == "true")
         .unwrap_or(true);
+    let auto_upgrade_skills = read_value(conn, KEY_AUTO_UPGRADE_SKILLS)?
+        .map(|value| value == "true")
+        .unwrap_or(false);
     Ok(AppSettings {
         approval_tier,
         hidden_models,
@@ -117,6 +133,7 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
         remote_pair_id,
         remote_nats_url,
         show_thinking,
+        auto_upgrade_skills,
     })
 }
 

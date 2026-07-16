@@ -11,11 +11,15 @@ export function GeneralPage({
   onChangeApprovalTier,
   showThinking,
   onToggleShowThinking,
+  autoUpgradeSkills,
+  onToggleAutoUpgradeSkills,
 }: {
   approvalTier: ApprovalTier;
   onChangeApprovalTier: (value: ApprovalTier) => void;
   showThinking: boolean;
   onToggleShowThinking: (value: boolean) => void;
+  autoUpgradeSkills: boolean;
+  onToggleAutoUpgradeSkills: (value: boolean) => void;
 }) {
   const { t } = useTranslation("settings");
 
@@ -59,6 +63,12 @@ export function GeneralPage({
           description={t("showThinking.description")}
         >
           <Switch checked={showThinking} label={t("showThinking.title")} onChange={onToggleShowThinking} />
+        </SettingsRow>
+        <SettingsRow
+          title={t("autoUpgradeSkills.title")}
+          description={t("autoUpgradeSkills.description")}
+        >
+          <Switch checked={autoUpgradeSkills} label={t("autoUpgradeSkills.title")} onChange={onToggleAutoUpgradeSkills} />
         </SettingsRow>
       </SettingsList>
     </SettingsSection>

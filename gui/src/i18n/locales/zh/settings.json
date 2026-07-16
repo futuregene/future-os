@@ -18,6 +18,10 @@
     "title": "显示思考过程",
     "description": "在对话中显示模型的推理内容"
   },
+  "autoUpgradeSkills": {
+    "title": "自动升级技能",
+    "description": "每次打开 App 时静默将已安装技能升级到最新版本"
+  },
   "update": {
     "sectionTitle": "软件更新",
     "title": "检查更新",

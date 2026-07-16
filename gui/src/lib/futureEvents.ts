@@ -25,6 +25,11 @@ export interface FutureEventMap {
   /** Emitted when the agent completes a write/edit/shell tool — the file tree
    * should re-read so newly created or modified files appear. */
   "file-tree-refresh": void;
+  /**
+   * Emitted when installed skills change out-of-band (e.g. the silent
+   * auto-upgrade) — an open Skills view should reload its lists.
+   */
+  "skills-changed": void;
 }
 
 type FutureEventName = keyof FutureEventMap;

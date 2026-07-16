@@ -35,7 +35,9 @@
   "upgrade": {
     "upgrade": "升级",
     "upgrading": "升级中…",
-    "available": "升级到 v{{version}}"
+    "available": "升级到 v{{version}}",
+    "upgradeAll": "全部升级",
+    "upgradeAllCount": "全部升级（{{count}}）"
   },
   "uninstall": {
     "uninstalling": "卸载中…",
