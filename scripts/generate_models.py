@@ -383,7 +383,7 @@ def main():
     timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S%z")
     json_data = generate_models_json(unique_models)
 
-    json_path = repo_path("agent/models/models.json")
+    json_path = repo_path("agent/src/models/builtin/models.json")
     with open(json_path, "w") as f:
         f.write(json_data)
     print(f"\nWritten {len(unique_models)} models to {json_path} ({len(json_data):,} bytes)")
@@ -429,7 +429,7 @@ if __name__ == "__main__":
     import sys
 
     if "--wiki-only" in sys.argv:
-        json_path = repo_path("agent/models/models.json")
+        json_path = repo_path("agent/src/models/builtin/models.json")
         print(f"Loading models from {json_path}...")
         with open(json_path) as f:
             models = json.load(f)

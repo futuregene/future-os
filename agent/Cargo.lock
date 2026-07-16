@@ -623,7 +623,6 @@ dependencies = [
  "clap",
  "dirs",
  "fd-lock",
- "future-agent-models",
  "futures",
  "futures-util",
  "image",
@@ -654,14 +653,6 @@ dependencies = [
  "uuid",
  "walkdir",
  "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "future-agent-models"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
 ]
 
 [[package]]
