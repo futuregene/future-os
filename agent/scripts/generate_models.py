@@ -194,46 +194,47 @@ def process_openrouter(data: Dict) -> List[Dict]:
 
 
 def process_vercel_ai(data: Dict) -> List[Dict]:
-    """Process Vercel AI Gateway API response."""
+    """Process Vercel AI Gateway API response.
+
+    The API now returns OpenAI-compatible format: {"data": [...], "object": "list"}.
+    Each model has: id, name, owned_by, context_window, max_tokens, pricing, etc.
+    Vercel models are all assumed to support tool calling (the gateway proxies
+    them with tool support).
+    """
     models = []
-    
-    for provider, provider_models in data.items():
-        if not isinstance(provider_models, dict):
+
+    for model in data.get("data", []):
+        if not isinstance(model, dict):
             continue
-            
-        for model_id, model in provider_models.items():
-            if not isinstance(model, dict):
-                continue
-                
-            # Check if supports tools
-            capabilities = model.get("capabilities", {})
-            if not capabilities.get("tools", False):
-                continue
-                
-            name = model.get("name", model_id)
-            context_window = model.get("contextWindow", model.get("context_length", 4096))
-            
-            pricing = model.get("pricing", {})
-            
-            models.append({
-                "id": model_id,
-                "name": name,
-                "provider": "vercel-ai",
-                "api": "chat",
-                "base_url": PROVIDER_BASE_URLS["vercel-ai"],
-                "reasoning": False,
-                "input": model.get("modalities", ["text"]),
-                "context_window": context_window,
-                "max_tokens": model.get("maxOutputTokens", 4096),
-                "cost_input": float(pricing.get("input", 0)),
-                "cost_output": float(pricing.get("output", 0)),
-                "cost_cache_read": 0.0,
-                "cost_cache_write": 0.0,
-                "compat_json": "{}",
-                "tlm_json": "{}",
-                "headers_json": "{}",
-            })
-    
+
+        model_id = model.get("id", "")
+        if not model_id:
+            continue
+
+        name = model.get("name") or model_id
+        context_window = model.get("context_window", 4096)
+        max_tokens = model.get("max_tokens", 4096)
+        pricing = model.get("pricing", {})
+
+        models.append({
+            "id": model_id,
+            "name": name,
+            "provider": "vercel-ai",
+            "api": "chat",
+            "base_url": PROVIDER_BASE_URLS["vercel-ai"],
+            "reasoning": False,
+            "input": ["text"],
+            "context_window": context_window,
+            "max_tokens": max_tokens,
+            "cost_input": float(pricing.get("input", 0)),
+            "cost_output": float(pricing.get("output", 0)),
+            "cost_cache_read": 0.0,
+            "cost_cache_write": 0.0,
+            "compat_json": "{}",
+            "tlm_json": "{}",
+            "headers_json": "{}",
+        })
+
     return models
 
 
