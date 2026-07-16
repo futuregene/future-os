@@ -8,10 +8,14 @@ export interface SkillFilters {
   query: string;
 }
 
-export function matchesInstalledSkill(skill: InstalledSkill, filters: SkillFilters, category?: string) {
-  if (!matchesCategory(category, filters.category))
+export function matchesInstalledSkill(skill: InstalledSkill, filters: SkillFilters, catalogue?: AvailableSkill) {
+  if (!matchesCategory(catalogue?.category, filters.category))
     return false;
 
+  // The Installed row shows the catalogue's localized name/description when the
+  // agent-reported skill lacks them (its `*Zh` fields are usually null), so the
+  // filter must search the catalogue text too — otherwise a query matching the
+  // visible Chinese name would filter the row out.
   return matchesQuery(filters.query, [
     skill.id,
     skill.name,
@@ -19,6 +23,11 @@ export function matchesInstalledSkill(skill: InstalledSkill, filters: SkillFilte
     skill.description,
     skill.descriptionZh,
     skill.version,
+    catalogue?.name,
+    catalogue?.nameZh,
+    catalogue?.description,
+    catalogue?.descriptionZh,
+    catalogue?.category,
   ]);
 }
 

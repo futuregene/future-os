@@ -54,21 +54,31 @@ describe("uniqueSorted", () => {
 describe("matchesInstalledSkill", () => {
   it("filters by query and category", () => {
     const skill = installed({ name: "Literature", id: "lit" });
+    const cat = available({ id: "lit", category: "core" });
     // No category filter (allCategoriesValue) — matches by query.
     expect(matchesInstalledSkill(skill, { category: allCategoriesValue, query: "lit" })).toBe(true);
     expect(matchesInstalledSkill(skill, { category: allCategoriesValue, query: "missing" })).toBe(false);
-    // Uncategorized skill filtered out when a specific category is selected.
+    // Uncategorized skill (no catalogue entry) filtered out when a specific category is selected.
     expect(matchesInstalledSkill(skill, { category: "other", query: "" })).toBe(false);
-    // Matching category with no query filter.
-    expect(matchesInstalledSkill(skill, { category: "core", query: "" }, "core")).toBe(true);
+    // Matching category (from catalogue) with no query filter.
+    expect(matchesInstalledSkill(skill, { category: "core", query: "" }, cat)).toBe(true);
     // Mismatched category.
-    expect(matchesInstalledSkill(skill, { category: "other", query: "" }, "core")).toBe(false);
+    expect(matchesInstalledSkill(skill, { category: "other", query: "" }, cat)).toBe(false);
   });
 
   it("matches localized fields regardless of current language", () => {
     const skill = installed({ nameZh: "文献", descriptionZh: "多源信息综合" });
     expect(matchesInstalledSkill(skill, { category: allCategoriesValue, query: "文献" })).toBe(true);
     expect(matchesInstalledSkill(skill, { category: allCategoriesValue, query: "综合" })).toBe(true);
+  });
+
+  it("matches the catalogue's localized text when the installed skill lacks it", () => {
+    // Agent-reported skills usually have null *Zh fields; the Chinese name shown
+    // on the row comes from the catalogue and must still be searchable.
+    const skill = installed({ id: "lit", nameZh: null, descriptionZh: null });
+    const cat = available({ id: "lit", nameZh: "文献综述", descriptionZh: "多源信息综合" });
+    expect(matchesInstalledSkill(skill, { category: allCategoriesValue, query: "文献" }, cat)).toBe(true);
+    expect(matchesInstalledSkill(skill, { category: allCategoriesValue, query: "综合" }, cat)).toBe(true);
   });
 });
 
