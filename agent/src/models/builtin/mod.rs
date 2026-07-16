@@ -1,8 +1,8 @@
-//! Generated model catalog.
+//! Built-in model catalog.
 //!
 //! Models are stored as JSON and embedded with include_str!, so the compiler
-//! only sees a &str — no 72K lines of struct literals to type-check.
-//! Run `make generate-models` to update.
+//! only sees a &str — near-zero compile cost.  Run `make generate-models` to
+//! update.
 
 use serde::{Deserialize, Serialize};
 
@@ -28,8 +28,8 @@ pub struct Model {
     pub hide: bool,
 }
 
-/// INIT_BUILTIN_MODELS returns the complete built-in model catalog.
+/// Returns the complete built-in model catalog.
 pub fn init_builtin_models() -> Vec<Model> {
-    let data = include_str!("../models.json");
+    let data = include_str!("models.json");
     serde_json::from_str(data).unwrap_or_default()
 }

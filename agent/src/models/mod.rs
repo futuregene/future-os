@@ -3,6 +3,8 @@
 //! Handles model catalog (built-in + user-provided) and model resolution.
 
 use serde::{Deserialize, Serialize};
+
+pub mod builtin;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -124,7 +126,7 @@ pub struct Cost {
 /// BuiltinModels returns the generated model catalog from models_generated.rs.
 /// All models are maintained by: make generate-models
 pub fn builtin_models() -> Vec<Model> {
-    future_agent_models::init_builtin_models()
+    builtin::init_builtin_models()
         .into_iter()
         .map(|m| Model {
             id: m.id,
