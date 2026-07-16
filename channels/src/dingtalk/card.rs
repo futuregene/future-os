@@ -49,7 +49,7 @@ pub async fn create_ai_card(
     );
     let api = format!("https://{}/v1.0/card/instances", domain);
 
-    let client = reqwest::Client::new();
+    let client = crate::tls::http_client();
 
     // Step 1: Create card instance
     let create_body = json!({
@@ -117,7 +117,7 @@ pub async fn stream_ai_card(
     finished: bool,
 ) -> Result<()> {
     let api = format!("https://{}/v1.0/card", domain);
-    let client = reqwest::Client::new();
+    let client = crate::tls::http_client();
 
     // Set INPUTING state on first call
     if !card.inputing_started {
@@ -205,7 +205,7 @@ pub async fn stream_ai_card(
 /// Close/cleanup a card that failed to create or was interrupted.
 pub async fn close_ai_card(domain: &str, card: &AiCard, error_msg: &str) {
     let api = format!("https://{}/v1.0/card/instances", domain);
-    let client = reqwest::Client::new();
+    let client = crate::tls::http_client();
 
     let body = json!({
         "outTrackId": card.card_instance_id,

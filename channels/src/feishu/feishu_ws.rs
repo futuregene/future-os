@@ -9,7 +9,9 @@ use prost::Message;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration, Instant};
-use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
+use tokio_tungstenite::{
+    connect_async_tls_with_config, tungstenite::Message as WsMessage,
+};
 use tracing::{debug, info, warn};
 
 // Generated from proto/feishu_ws.proto — checked into src/generated/
@@ -100,7 +102,7 @@ impl FeishuWsClient {
 
     /// Call POST /callback/ws/endpoint to get the WebSocket URL.
     async fn bootstrap_ws(&self) -> Result<(String, Option<ClientConfig>)> {
-        let client = reqwest::Client::new();
+        let client = crate::tls::http_client();
         let url = format!("{}/callback/ws/endpoint", self.domain);
         let resp: BootstrapResponse = client
             .post(&url)
@@ -154,9 +156,10 @@ impl FeishuWsClient {
 
         info!("Connecting to Feishu WebSocket...");
 
-        let (mut ws_stream, _response) = connect_async(&ws_url)
-            .await
-            .map_err(|e| anyhow!("WebSocket connection failed: {}", e))?;
+        let (mut ws_stream, _response) =
+            connect_async_tls_with_config(&ws_url, None, false, Some(crate::tls::ws_connector()))
+                .await
+                .map_err(|e| anyhow!("WebSocket connection failed: {}", e))?;
 
         info!("WebSocket connected. Waiting for events...");
 

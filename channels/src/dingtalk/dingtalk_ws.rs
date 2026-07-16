@@ -7,7 +7,9 @@ use futures::{SinkExt, StreamExt};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::time::Duration;
-use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
+use tokio_tungstenite::{
+    connect_async_tls_with_config, tungstenite::Message as WsMessage,
+};
 use tracing::{debug, info, warn};
 
 /// Event received from DingTalk stream.
@@ -51,7 +53,7 @@ impl DingtalkWsClient {
     /// Open a Stream Mode connection by POSTing credentials directly
     /// (no OAuth2 token). Returns the WebSocket endpoint and ticket.
     async fn open_connection(&self) -> Result<(String, String)> {
-        let client = reqwest::Client::new();
+        let client = crate::tls::http_client();
         let url = format!("https://{}/v1.0/gateway/connections/open", self.domain);
 
         let body = serde_json::json!({
@@ -110,9 +112,10 @@ impl DingtalkWsClient {
         let ws_url = format!("{}?ticket={}", endpoint, urlencoding(&ticket));
         info!("DingTalk WebSocket connecting: {}", ws_url);
 
-        let (ws_stream, _response) = connect_async(&ws_url)
-            .await
-            .map_err(|e| anyhow!("DingTalk WebSocket connection failed: {}", e))?;
+        let (ws_stream, _response) =
+            connect_async_tls_with_config(&ws_url, None, false, Some(crate::tls::ws_connector()))
+                .await
+                .map_err(|e| anyhow!("DingTalk WebSocket connection failed: {}", e))?;
 
         info!("DingTalk WebSocket connected.");
 
