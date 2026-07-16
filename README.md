@@ -39,7 +39,7 @@ Required for a full `make build` (agent + TUI + CLI + GUI):
 - **Node.js** 24+ (see `.nvmrc`)
 - **Bun** — required, not optional: the TUI build and CLI/GUI packaging use `bun build`
 - **Linux only** (required for all builds):
-  - `sudo apt install mold pkg-config libssl-dev`
+  - `sudo apt install mold`
 - **Tauri system dependencies** (for the GUI):
   - macOS: `xcode-select --install`
   - Linux (Debian/Ubuntu): `sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf`
