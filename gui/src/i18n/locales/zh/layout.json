@@ -49,10 +49,6 @@
     "storeInitFailed": "FutureOS 本地存储初始化失败：",
     "startConversationFailed": "创建对话失败：{{error}}",
     "noWorkspaceSelected": "未选择工作区",
-    "data": "数据",
-    "skill": "技能",
-    "dataPlaceholder": "数据源与凭据将作为下一个资源模块提供。",
-    "skillPlaceholder": "技能将管理内置及工作区级别的 Agent 能力。",
     "newChat": "新对话"
   },
   "appShellDialogs": {

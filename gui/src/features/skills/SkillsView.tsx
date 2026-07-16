@@ -498,7 +498,6 @@ function SkillFiltersBar({
   filters,
   onChange,
   resultCount,
-  showCategory = true,
   totalCount,
   trailing,
 }: {
@@ -506,32 +505,27 @@ function SkillFiltersBar({
   filters: SkillFilters;
   onChange: (filters: SkillFilters) => void;
   resultCount: number;
-  showCategory?: boolean;
   totalCount: number;
   /** Optional action rendered at the end of the row (e.g. "Upgrade all"). */
   trailing?: React.ReactNode;
 }) {
   const { t } = useTranslation("skills");
-  const hasActiveFilters = (showCategory && filters.category !== allCategoriesValue) || filters.query.trim().length > 0;
+  const hasActiveFilters = filters.category !== allCategoriesValue || filters.query.trim().length > 0;
 
   return (
     <div className="flex flex-col gap-2 rounded-md border border-line-soft bg-surface p-3 sm:flex-row sm:items-center">
-      {showCategory
-        ? (
-            <Select
-              aria-label={t("filter.categoryLabel")}
-              onChange={event => onChange({ ...filters, category: event.target.value })}
-              size="sm"
-              value={filters.category}
-              wrapperClassName="w-full sm:w-48"
-            >
-              <option value={allCategoriesValue}>{t("filter.allCategories")}</option>
-              {categories.map(category => (
-                <option key={category} value={category}>{category}</option>
-              ))}
-            </Select>
-          )
-        : null}
+      <Select
+        aria-label={t("filter.categoryLabel")}
+        onChange={event => onChange({ ...filters, category: event.target.value })}
+        size="sm"
+        value={filters.category}
+        wrapperClassName="w-full sm:w-48"
+      >
+        <option value={allCategoriesValue}>{t("filter.allCategories")}</option>
+        {categories.map(category => (
+          <option key={category} value={category}>{category}</option>
+        ))}
+      </Select>
       <div className="relative min-w-0 flex-1">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-ink-muted" />
         <TextInput

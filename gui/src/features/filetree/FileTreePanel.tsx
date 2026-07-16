@@ -42,16 +42,24 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
   // Auto-refresh when the agent completes a write/edit/shell tool so newly
   // created or modified files appear without manual intervention. Debounced:
   // at most one refresh per 2 s — the event fires every poll tick (220 ms).
+  const { refresh: refreshTree } = tree;
   useEffect(() => {
-    return onFutureEvent("file-tree-refresh", () => {
+    const unsubscribe = onFutureEvent("file-tree-refresh", () => {
       if (refreshTimerRef.current)
         return; // already scheduled
       refreshTimerRef.current = setTimeout(() => {
         refreshTimerRef.current = null;
-        void tree.refresh();
+        void refreshTree();
       }, 2000);
     });
-  }, [tree.refresh]);
+    return () => {
+      unsubscribe();
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+  }, [refreshTree]);
   const [refreshing, setRefreshing] = useState(false);
   const [previewTarget, setPreviewTarget] = useState<DirEntry | null>(null);
   const [menuTarget, setMenuTarget] = useState<DirEntry | null>(null);

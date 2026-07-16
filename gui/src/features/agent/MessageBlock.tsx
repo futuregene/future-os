@@ -167,8 +167,8 @@ function MessageBlockImpl({
           {!isUser && !segments && message.runId
             ? <AgentActivityList items={message.activityItems} workspacePath={workspacePath} runId={message.runId} />
             : !isUser && !segments
-              ? <AgentActivityList items={message.activityItems} workspacePath={workspacePath} />
-              : null}
+                ? <AgentActivityList items={message.activityItems} workspacePath={workspacePath} />
+                : null}
           {canRecover
             ? (
                 <div className="mt-3 flex flex-wrap gap-2">

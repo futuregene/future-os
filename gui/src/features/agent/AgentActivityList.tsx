@@ -50,13 +50,18 @@ function AgentActivitySingleLine({ item, workspacePath, runId }: { item: AgentAc
       emitFutureEvent("inspect-tool", { runId, toolId: item.id });
   }, [runId, item.id]);
 
+  const handleToggle = () => {
+    setOpen(value => !value);
+    handleInspect();
+  };
+
   return (
     <div
       className={cn(
         "flex min-w-0 items-center gap-2 text-[13px] leading-6 text-ink-muted",
         runId && "cursor-pointer hover:text-ink",
       )}
-      onClick={runId ? () => { setOpen(value => !value); handleInspect(); } : undefined}
+      onClick={runId ? handleToggle : undefined}
       title={runId ? i18n.t("agent:activity.inspectRun") : undefined}
       role={runId ? "button" : undefined}
     >
@@ -115,12 +120,17 @@ function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentAct
       emitFutureEvent("inspect-tool", { runId, toolId: item.id });
   }, [runId, item.id]);
 
+  const handleToggle = () => {
+    setOpen(value => !value);
+    handleInspect();
+  };
+
   return (
     <div
       className="flex min-w-0 flex-col gap-1 text-[13px] leading-6 text-ink-muted"
       role={runId ? "button" : undefined}
       title={runId ? i18n.t("agent:activity.inspectRun") : undefined}
-      onClick={runId ? () => { setOpen(value => !value); handleInspect(); } : undefined}
+      onClick={runId ? handleToggle : undefined}
     >
       <button
         type="button"

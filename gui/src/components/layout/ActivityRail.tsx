@@ -27,7 +27,7 @@ import { IconButton } from "../ui/IconButton";
 import { WorkspaceHeaderMenu } from "./ActivityRailMenus";
 import { ThreadListItem } from "./ThreadListItem";
 
-export type ActivitySection = "chat" | "workspace" | "data" | "skill" | "remote" | "settings";
+export type ActivitySection = "chat" | "workspace" | "skill" | "remote" | "settings";
 
 interface ActivityRailProps {
   active: ActivitySection;
@@ -169,13 +169,7 @@ export function ActivityRail({
           onClick={onToggleExpanded}
           type="button"
         >
-          {expanded && !floating
-            ? (
-                <PanelLeft className="size-3.5" />
-              )
-            : (
-                <PanelLeft className="size-3.5" />
-              )}
+          <PanelLeft className="size-3.5" />
         </button>
       </div>
       <div className={cn("flex min-h-0 flex-1 flex-col p-2", expanded ? "w-full" : "items-center gap-2")}>

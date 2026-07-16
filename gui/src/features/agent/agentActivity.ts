@@ -2,6 +2,14 @@ import type { StoredRunEvent } from "../../integrations/storage/threadStore";
 import type { AgentActivityItem, AgentActivityKind, MessageSegment } from "./agentThreadTypes";
 import { isRecord, singleLine } from "../../lib/objects";
 import { pathBasename } from "../../lib/workspacePath";
+import {
+  COLLAPSIBLE_KINDS,
+  dedupeByTarget,
+  foldCollapsibleRuns,
+  isToolKind,
+  normalizeArgs,
+  targetFromArgs,
+} from "./toolActivityModel";
 
 interface AssistantRunProjection {
   activityItems: AgentActivityItem[];
@@ -46,8 +54,6 @@ interface ToolActivity {
   argsText?: string;
   order: number;
 }
-
-const SUPPORTED_TOOL_NAMES = new Set(["read", "shell", "edit", "write"]);
 
 export function buildAssistantRunProjection(events: StoredRunEvent[]): AssistantRunProjection {
   const sortedEvents = [...events].sort((a, b) => a.sequence - b.sequence);
@@ -357,65 +363,31 @@ function latestRunningToolId(
   return latestRunning[0]?.id;
 }
 
-// shell/edit/write/read collapse into a single summary row when they run in an
-// uninterrupted, same-kind, all-completed burst of more than one.
-const COLLAPSIBLE_KINDS = new Set<ToolActivity["kind"]>(["shell", "edit", "write", "read"]);
-
 function collapseToolActivities(tools: ToolActivity[]): AgentActivityItem[] {
   const items: AgentActivityItem[] = [];
-  let index = 0;
+  const runs = foldCollapsibleRuns(tools, tool =>
+    tool.status === "completed" && COLLAPSIBLE_KINDS.has(tool.kind) ? tool.kind : null);
 
-  while (index < tools.length) {
-    const current = tools[index];
-    if (!current)
-      break;
-
-    if (current.status === "completed" && COLLAPSIBLE_KINDS.has(current.kind)) {
-      const group = [current];
-      let cursor = index + 1;
-      while (cursor < tools.length) {
-        const next = tools[cursor];
-        if (!next || next.status !== "completed" || next.kind !== current.kind)
-          break;
-        group.push(next);
-        cursor += 1;
-      }
-
-      if (group.length > 1) {
-        // Shell counts every call (each command stands on its own); file tools
-        // count distinct files so "Edited 3 files" matches the expanded list
-        // even when the same file was touched several times in the burst. The
-        // kept children back both the collapsed preview and the expanded rows.
-        const childTools = current.kind === "shell" ? group : dedupeByTarget(group);
-        items.push({
-          id: `${current.kind}_${current.order}_group`,
-          kind: current.kind,
-          status: "completed",
-          count: childTools.length,
-          children: childTools.map(toActivityItem),
-        });
-        index = cursor;
-        continue;
-      }
+  for (const run of runs) {
+    if (!run.collapsed) {
+      items.push(toActivityItem(run.item));
+      continue;
     }
-
-    items.push(toActivityItem(current));
-    index += 1;
+    // Shell counts every call (each command stands on its own); file tools count
+    // distinct files so "Edited 3 files" matches the expanded list even when the
+    // same file was touched several times in the burst. The kept children back
+    // both the collapsed preview and the expanded rows.
+    const childTools = run.kind === "shell" ? run.group : dedupeByTarget(run.group);
+    items.push({
+      id: `${run.kind}_${run.group[0]!.order}_group`,
+      kind: run.kind,
+      status: "completed",
+      count: childTools.length,
+      children: childTools.map(toActivityItem),
+    });
   }
 
   return items;
-}
-
-// Keep the first call per target, preserving order. Falls back to id for the
-// rare targetless call so it isn't silently merged away.
-function dedupeByTarget(group: ToolActivity[]): ToolActivity[] {
-  const seen = new Map<string, ToolActivity>();
-  for (const tool of group) {
-    const key = tool.target ?? tool.id;
-    if (!seen.has(key))
-      seen.set(key, tool);
-  }
-  return [...seen.values()];
 }
 
 function toActivityItem(tool: ToolActivity): AgentActivityItem {
@@ -435,15 +407,15 @@ function toolFromPayload(payload: unknown, sequence: number): ToolActivity | nul
   const name = stringValue(payload.tool_name)
     ?? stringValue(payload.toolName)
     ?? stringValue(payload.name);
-  if (!name || !SUPPORTED_TOOL_NAMES.has(name))
+  if (!name || !isToolKind(name))
     return null;
 
   const args = normalizeArgs(payload.tool_args ?? payload.toolArgs ?? payload.arguments);
-  const target = targetFromArgs(name as Exclude<AgentActivityKind, "thinking">, args);
+  const target = targetFromArgs(name, args);
 
   return {
     id: explicitToolId(payload) ?? `${name}_${sequence}`,
-    kind: name as Exclude<AgentActivityKind, "thinking">,
+    kind: name,
     status: "running",
     target: target ? singleLine(target) : undefined,
     detail: target,
@@ -494,18 +466,6 @@ function matchJsonStringField(text: string, key: string) {
   }
 }
 
-function targetFromArgs(
-  kind: Exclude<AgentActivityKind, "thinking">,
-  args: Record<string, unknown> | null,
-) {
-  if (kind === "shell")
-    return stringValue(args?.command);
-
-  return stringValue(args?.path)
-    ?? stringValue(args?.file_path)
-    ?? stringValue(args?.filePath);
-}
-
 function explicitToolId(payload: unknown) {
   if (!isRecord(payload))
     return undefined;
@@ -513,21 +473,6 @@ function explicitToolId(payload: unknown) {
   return stringValue(payload.tool_id)
     ?? stringValue(payload.toolID)
     ?? stringValue(payload.tool_call_id);
-}
-
-function normalizeArgs(value: unknown): Record<string, unknown> | null {
-  if (isRecord(value))
-    return value;
-  if (typeof value !== "string")
-    return null;
-
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return isRecord(parsed) ? parsed : null;
-  }
-  catch {
-    return null;
-  }
 }
 
 function parseEventPayload(payload?: string | null): unknown {

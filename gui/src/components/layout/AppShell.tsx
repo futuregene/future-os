@@ -377,49 +377,45 @@ export function AppShell() {
               ? (
                   <RemoteView appSettings={appSettings} onChangeSettings={patch => void changeSettings(patch)} />
                 )
-              : section === "data"
+              : storeError
                 ? (
-                    <ModulePlaceholder section="data" />
+                    <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
+                      {t("appShell.storeInitFailed")}
+                      {storeError}
+                    </div>
                   )
-                : storeError
-                  ? (
-                      <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
-                        {t("appShell.storeInitFailed")}
-                        {storeError}
-                      </div>
-                    )
-                  : (
-                      <AgentThread
-                        activeApproval={activeApproval}
-                        agentConnection={agentConnection}
-                        approvalTier={appSettings.approvalTier}
-                        showThinking={appSettings.showThinking}
-                        loadingStore={loadingStore}
-                        modelId={activeThreadModelId}
-                        modelOptions={visibleModelOptions}
-                        onModelChange={changeModel}
-                        onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
-                        thinkingLevel={activeThinkingLevel}
-                        onThinkingLevelChange={changeThinkingLevel}
-                        pendingPrompt={pendingPrompt}
-                        thread={activeThread}
-                        workspacePath={activeWorkspace?.path ?? null}
-                        onApprovalDecision={handleApprovalDecision}
-                        leftPanelExpanded={leftExpanded}
-                        onRetryAgentConnection={() => void refreshAgentModels()}
-                        onOpenAccount={handleOpenAccount}
-                        onOpenModels={handleOpenModels}
-                        onOpenProviders={handleOpenProviders}
-                        onToggleLeftPanel={handleToggleLeftPanel}
-                        onPromptConsumed={consumePendingPrompt}
-                        onForked={(forkedThreadId: string) => {
-                          void refreshStore(forkedThreadId);
-                        }}
-                        onThreadActivity={() => {
-                          void refreshStore(activeThread?.id ?? undefined);
-                        }}
-                      />
-                    )}
+                : (
+                    <AgentThread
+                      activeApproval={activeApproval}
+                      agentConnection={agentConnection}
+                      approvalTier={appSettings.approvalTier}
+                      showThinking={appSettings.showThinking}
+                      loadingStore={loadingStore}
+                      modelId={activeThreadModelId}
+                      modelOptions={visibleModelOptions}
+                      onModelChange={changeModel}
+                      onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
+                      thinkingLevel={activeThinkingLevel}
+                      onThinkingLevelChange={changeThinkingLevel}
+                      pendingPrompt={pendingPrompt}
+                      thread={activeThread}
+                      workspacePath={activeWorkspace?.path ?? null}
+                      onApprovalDecision={handleApprovalDecision}
+                      leftPanelExpanded={leftExpanded}
+                      onRetryAgentConnection={() => void refreshAgentModels()}
+                      onOpenAccount={handleOpenAccount}
+                      onOpenModels={handleOpenModels}
+                      onOpenProviders={handleOpenProviders}
+                      onToggleLeftPanel={handleToggleLeftPanel}
+                      onPromptConsumed={consumePendingPrompt}
+                      onForked={(forkedThreadId: string) => {
+                        void refreshStore(forkedThreadId);
+                      }}
+                      onThreadActivity={() => {
+                        void refreshStore(activeThread?.id ?? undefined);
+                      }}
+                    />
+                  )}
       </main>
       {/* Views without thread context hide the right panel entirely, including
           the collapsed expand affordance. */}
@@ -470,22 +466,5 @@ export function AppShell() {
       />
       <ToastHost />
     </div>
-  );
-}
-
-function ModulePlaceholder({ section }: { section: "data" | "skill" }) {
-  const { t } = useTranslation("layout");
-  const title = section === "data" ? t("appShell.data") : t("appShell.skill");
-  const detail = section === "data"
-    ? t("appShell.dataPlaceholder")
-    : t("appShell.skillPlaceholder");
-
-  return (
-    <section className="flex h-full min-h-0 items-center justify-center bg-surface p-8">
-      <div className="max-w-md rounded-lg border border-line-soft bg-surface-subtle p-6 text-center">
-        <div className="text-base font-semibold text-ink">{title}</div>
-        <p className="mt-2 text-sm leading-6 text-ink-muted">{detail}</p>
-      </div>
-    </section>
   );
 }
