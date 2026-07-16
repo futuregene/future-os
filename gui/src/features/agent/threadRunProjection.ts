@@ -22,6 +22,25 @@ export function patchMessage(
 }
 
 /**
+ * Fetch a run's events and project them for a live preview, honoring the
+ * `shouldApply` guard (a stale async result is dropped by returning null). Emits
+ * `file-tree-refresh` when tool activity appears — the agent may have created or
+ * modified files. Shared prologue of the two live-preview writers below.
+ */
+async function projectRunForLivePreview(
+  runId: string,
+  shouldApply: () => boolean,
+): Promise<ReturnType<typeof buildAssistantRunProjection> | null> {
+  const events = await listRunEvents(runId);
+  if (!shouldApply())
+    return null;
+  const projection = buildAssistantRunProjection(events);
+  if (projection.activityItems.length > 0)
+    emitFutureEvent("file-tree-refresh", undefined);
+  return projection;
+}
+
+/**
  * Render an in-flight run's live events as a streaming assistant bubble, keyed by
  * a stable `stream_<runId>` id. Unlike {@link updatePendingMessageFromRunEvents}
  * (which patches an existing optimistic bubble), this UPSERTS: it inserts the
@@ -37,15 +56,9 @@ export async function upsertStreamingPreview(
   shouldApply: () => boolean = () => true,
 ) {
   try {
-    const events = await listRunEvents(runId);
-    if (!shouldApply())
+    const projection = await projectRunForLivePreview(runId, shouldApply);
+    if (!projection)
       return;
-
-    const projection = buildAssistantRunProjection(events);
-    // Notify the file tree whenever tool activity is detected (write, edit,
-    // shell) — the agent may have created or modified files.
-    if (projection.activityItems.length > 0)
-      emitFutureEvent("file-tree-refresh", undefined);
     const bubbleId = `stream_${runId}`;
 
     setMessages((current) => {
@@ -104,13 +117,9 @@ export async function updatePendingMessageFromRunEvents(
   shouldApply: () => boolean = () => true,
 ) {
   try {
-    const events = await listRunEvents(runId);
-    if (!shouldApply())
+    const projection = await projectRunForLivePreview(runId, shouldApply);
+    if (!projection)
       return;
-
-    const projection = buildAssistantRunProjection(events);
-    if (projection.activityItems.length > 0)
-      emitFutureEvent("file-tree-refresh", undefined);
 
     // Nothing renderable yet: no answer text, no tool activity, and no inline
     // segments. Reasoning-only turns DO carry a thinking segment, so this must

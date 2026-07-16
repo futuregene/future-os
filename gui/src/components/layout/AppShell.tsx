@@ -2,7 +2,6 @@ import type { SettingsTab } from "../../features/settings/SettingsDialog";
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { ContextTab } from "./ContextPanel";
-import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AgentThread } from "../../features/agent/AgentThread";
@@ -16,6 +15,7 @@ import {
   restoreThread,
 } from "../../integrations/storage/threadStore";
 import { emitFutureEvent } from "../../lib/futureEvents";
+import { useTauriEvent } from "../../lib/useTauriEvent";
 import { ToastHost } from "../ui/ToastHost";
 import { ActivityRail } from "./ActivityRail";
 import { AppShellDialogs } from "./AppShellDialogs";
@@ -160,37 +160,22 @@ export function AppShell() {
 
   // Bridge the backend's deferred shadow-review notification (C1) onto the
   // typed event bus so the Review panel refreshes when the changeset lands.
-  useEffect(() => {
-    const unlisten = listen<string>("review-updated", (event) => {
-      emitFutureEvent("review-updated", { threadId: event.payload });
-    });
-    return () => {
-      void unlisten.then(stop => stop());
-    };
-  }, []);
+  useTauriEvent<string>("review-updated", (threadId) => {
+    emitFutureEvent("review-updated", { threadId });
+  });
 
   // macOS app menu "About FutureOS" opens the in-app About page (there is no
   // native About dialog). The backend emits this event from the menu handler.
-  useEffect(() => {
-    const unlisten = listen("open-settings", () => {
-      setSettingsTab("about");
-      setSettingsOpen(true);
-    });
-    return () => {
-      void unlisten.then(stop => stop());
-    };
-  }, []);
+  useTauriEvent("open-settings", () => {
+    setSettingsTab("about");
+    setSettingsOpen(true);
+  });
 
   // Remote (phone) activity: a phone client created or drove a thread. Refresh
   // the thread list + runs so it appears and updates live in the GUI.
-  useEffect(() => {
-    const unlisten = listen("remote-activity", () => {
-      void refreshStore();
-    });
-    return () => {
-      void unlisten.then(stop => stop());
-    };
-  }, [refreshStore]);
+  useTauriEvent("remote-activity", () => {
+    void refreshStore();
+  });
 
   function handleSectionChange(nextSection: ActivitySection) {
     if (nextSection === "settings") {
