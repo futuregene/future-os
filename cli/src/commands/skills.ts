@@ -365,34 +365,50 @@ export async function readSkillMdVersion(skillMdPath: string): Promise<string | 
 
   const frontmatter = rest.slice(0, endIdx);
 
-  for (const line of frontmatter.split("\n")) {
-    const t = line.trim();
+  const lines = frontmatter.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
     if (!t || t.startsWith("#")) continue;
 
     // Direct version field: version: 1.0.0
     const vm = t.match(/^version:\s*(.+)$/);
-    if (vm) {
-      let val = vm[1].trim();
-      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-        val = val.slice(1, -1);
-      }
-      return val || null;
-    }
+    if (vm) return unquote(vm[1].trim());
 
-    // Metadata JSON: metadata: {"version": "1.0", ...}
-    const mm = t.match(/^metadata:\s*(.+)$/);
+    // Metadata JSON (single line): metadata: {"version": "1.0", ...}
+    // or YAML block: metadata:\n  version: "1.0"
+    const mm = t.match(/^metadata:\s*(.*)$/);
     if (mm) {
-      try {
-        const meta = JSON.parse(mm[1]);
-        if (meta.version) return String(meta.version);
-      } catch {
-        // not valid JSON — ignore
+      const rest = mm[1];
+      if (rest) {
+        // Try JSON first
+        try {
+          const meta = JSON.parse(rest);
+          if (meta.version) return String(meta.version);
+        } catch {
+          // not JSON, maybe inline YAML like metadata: version: "1.0"
+          const inline = rest.match(/version:\s*(.+)$/);
+          if (inline) return unquote(inline[1].trim());
+        }
+      }
+      // YAML block: scan indented lines for version:
+      for (let j = i + 1; j < lines.length; j++) {
+        const sub = lines[j];
+        if (sub.trim().startsWith("#")) continue;
+        if (!sub.startsWith(" ") && !sub.startsWith("\t")) break; // end of block
+        const sv = sub.match(/version:\s*(.+)$/);
+        if (sv) return unquote(sv[1].trim());
       }
     }
   }
   return null;
 }
 
+function unquote(val: string): string {
+  if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+    val = val.slice(1, -1);
+  }
+  return val || "";
+}
 function unzip(zipPath: string, destDir: string): Promise<void> {
   return new Promise((resolve, reject) => {
     execFile("unzip", ["-o", zipPath, "-d", destDir], (err, _stdout, stderr) => {
