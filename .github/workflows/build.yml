@@ -122,6 +122,8 @@ jobs:
 
       - name: Install macOS system dependencies
         if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
         run: brew install protobuf
 
       # protoc for the cargo/Tauri proto codegen (only re-runs on a rust-cache

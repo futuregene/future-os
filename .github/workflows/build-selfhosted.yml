@@ -191,6 +191,8 @@ jobs:
 
       - name: Install macOS protoc
         if: runner.os == 'macOS' && steps.detect.outputs.protoc == 'false'
+        env:
+          HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
         run: brew install protobuf
 
       - name: Install Windows protoc
