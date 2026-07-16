@@ -1,6 +1,6 @@
 import type { AvailableSkill, InstalledSkill } from "../../integrations/skills/skillsClient";
 import type { SkillFilters } from "./skillsFilter";
-import { Blocks, Download, RotateCcw, Search, Trash2 } from "lucide-react";
+import { ArrowUpCircle, Blocks, Download, RotateCcw, Search, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
@@ -23,6 +23,7 @@ import {
   matchesInstalledSkill,
   uniqueSorted,
 } from "./skillsFilter";
+import { isUpgradeAvailable } from "./skillVersion";
 
 type SkillsTab = "installed" | "all";
 
@@ -47,6 +48,13 @@ export function SkillsView() {
 
   const installedIds = useMemo(
     () => new Set(installed.map(skill => skill.id)),
+    [installed],
+  );
+
+  // Installed skill by id, so the "All" tab can compare the installed version
+  // against the catalogue's latest to decide whether to offer an upgrade.
+  const installedById = useMemo(
+    () => new Map(installed.map(skill => [skill.id, skill] as const)),
     [installed],
   );
 
@@ -172,6 +180,7 @@ export function SkillsView() {
                   busy={busy}
                   catalogue={available}
                   onUninstall={id => void runAction(id, () => uninstallSkill(id))}
+                  onUpgrade={(id, version) => void runAction(id, () => installSkill(id, version))}
                   onRetry={() => void refresh()}
                 />
               )
@@ -185,10 +194,12 @@ export function SkillsView() {
                   skills={filteredAvailable}
                   totalCount={available.length}
                   installedIds={installedIds}
+                  installedById={installedById}
                   error={availableError}
                   busy={busy}
                   onInstall={(id, version) => void runAction(id, () => installSkill(id, version))}
                   onUninstall={id => void runAction(id, () => uninstallSkill(id))}
+                  onUpgrade={(id, version) => void runAction(id, () => installSkill(id, version))}
                   onRetry={() => void refresh()}
                 />
               )}
@@ -223,6 +234,7 @@ function InstalledTab({
   onFiltersChange,
   onRetry,
   onUninstall,
+  onUpgrade,
   resultCount,
   skills,
   totalCount,
@@ -236,6 +248,7 @@ function InstalledTab({
   onFiltersChange: (filters: SkillFilters) => void;
   onRetry: () => void;
   onUninstall: (id: string) => void;
+  onUpgrade: (id: string, version: string) => void;
   resultCount: number;
   skills: InstalledSkill[];
   totalCount: number;
@@ -288,6 +301,8 @@ function InstalledTab({
         const description = useChinese
           ? cat?.descriptionZh || skill.descriptionZh || skill.description
           : cat?.description || skill.description;
+        const latest = cat?.latestVersion ?? null;
+        const canUpgrade = isUpgradeAvailable(skill.version, latest);
         return (
           <SkillRow
             key={skill.id}
@@ -296,7 +311,18 @@ function InstalledTab({
             version={skill.version}
             meta={cat?.category || undefined}
             action={(
-              <UninstallButton busy={busy[skill.id]} onClick={() => onUninstall(skill.id)} />
+              <div className="flex items-center gap-2">
+                {canUpgrade && latest
+                  ? (
+                      <UpgradeButton
+                        busy={busy[skill.id]}
+                        version={latest}
+                        onClick={() => onUpgrade(skill.id, latest)}
+                      />
+                    )
+                  : null}
+                <UninstallButton busy={busy[skill.id]} onClick={() => onUninstall(skill.id)} />
+              </div>
             )}
           />
         );
@@ -310,12 +336,14 @@ function AllTab({
   categories,
   error,
   filters,
+  installedById,
   installedIds,
   loading,
   onFiltersChange,
   onInstall,
   onRetry,
   onUninstall,
+  onUpgrade,
   resultCount,
   skills,
   totalCount,
@@ -324,12 +352,14 @@ function AllTab({
   categories: string[];
   error: string | null;
   filters: SkillFilters;
+  installedById: Map<string, InstalledSkill>;
   installedIds: Set<string>;
   loading: boolean;
   onFiltersChange: (filters: SkillFilters) => void;
   onInstall: (id: string, version: string) => void;
   onRetry: () => void;
   onUninstall: (id: string) => void;
+  onUpgrade: (id: string, version: string) => void;
   resultCount: number;
   skills: AvailableSkill[];
   totalCount: number;
@@ -371,6 +401,8 @@ function AllTab({
         const canInstall = Boolean(skill.latestVersion);
         const name = useChineseCatalogueText ? skill.nameZh || skill.name : skill.name;
         const description = useChineseCatalogueText ? skill.descriptionZh || skill.description : skill.description;
+        const installedVersion = installedById.get(skill.id)?.version ?? null;
+        const canUpgrade = isUpgradeAvailable(installedVersion, skill.latestVersion);
         return (
           <SkillRow
             key={skill.id}
@@ -380,7 +412,20 @@ function AllTab({
             meta={skill.category || undefined}
             action={
               isInstalled
-                ? <UninstallButton busy={busy[skill.id]} onClick={() => onUninstall(skill.id)} />
+                ? (
+                    <div className="flex items-center gap-2">
+                      {canUpgrade && skill.latestVersion
+                        ? (
+                            <UpgradeButton
+                              busy={busy[skill.id]}
+                              version={skill.latestVersion}
+                              onClick={() => skill.latestVersion && onUpgrade(skill.id, skill.latestVersion)}
+                            />
+                          )
+                        : null}
+                      <UninstallButton busy={busy[skill.id]} onClick={() => onUninstall(skill.id)} />
+                    </div>
+                  )
                 : (
                     <Button
                       disabled={busy[skill.id] || !canInstall}
@@ -496,6 +541,22 @@ function SkillRow({
       </div>
       <div className="shrink-0">{action}</div>
     </div>
+  );
+}
+
+function UpgradeButton({ busy, onClick, version }: { busy?: boolean; onClick: () => void; version: string }) {
+  const { t } = useTranslation("skills");
+  return (
+    <Button
+      disabled={busy}
+      leftIcon={<ArrowUpCircle className="size-3.5" />}
+      onClick={onClick}
+      size="sm"
+      title={t("upgrade.available", { version })}
+      variant="primary"
+    >
+      {busy ? t("upgrade.upgrading") : t("upgrade.upgrade")}
+    </Button>
   );
 }
 

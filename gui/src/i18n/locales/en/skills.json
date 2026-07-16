@@ -32,6 +32,11 @@
     "install": "Install",
     "noVersion": "No version"
   },
+  "upgrade": {
+    "upgrade": "Upgrade",
+    "upgrading": "Upgrading...",
+    "available": "Upgrade to v{{version}}"
+  },
   "uninstall": {
     "uninstalling": "Uninstalling...",
     "uninstall": "Uninstall",
