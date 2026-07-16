@@ -16,7 +16,8 @@ import {
 } from "../../integrations/skills/skillsClient";
 import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
-import { emitFutureEvent } from "../../lib/futureEvents";
+import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
+import { computeSkillUpgrades } from "./autoUpgrade";
 import {
   allCategoriesValue,
   matchesAvailableSkill,
@@ -92,6 +93,14 @@ export function SkillsView() {
     [allFilters, available],
   );
 
+  // All installed skills with a newer catalogue version — powers the Installed
+  // tab's "Upgrade all" button (disabled when empty). Computed over the full
+  // installed set, not the filtered view.
+  const skillUpgrades = useMemo(
+    () => computeSkillUpgrades(installed, available),
+    [installed, available],
+  );
+
   const refresh = useCallback(async () => {
     const epoch = ++refreshEpochRef.current;
     setLoading(true);
@@ -133,6 +142,10 @@ export function SkillsView() {
     void refresh();
   }, [refresh]);
 
+  // The silent auto-upgrade installs newer versions out-of-band; reload so an
+  // open view reflects them.
+  useEffect(() => onFutureEvent("skills-changed", () => void refresh()), [refresh]);
+
   const runAction = useCallback(async (id: string, action: () => Promise<unknown>) => {
     setBusy(current => ({ ...current, [id]: true }));
     try {
@@ -148,6 +161,26 @@ export function SkillsView() {
       setBusy(current => ({ ...current, [id]: false }));
     }
   }, [refresh, t]);
+
+  // Manual "Upgrade all": overwrite-install every upgradable skill sequentially,
+  // marking each busy, then refresh once. User-initiated, so failures toast.
+  const upgradeAll = useCallback(async () => {
+    if (skillUpgrades.length === 0)
+      return;
+    const ids = skillUpgrades.map(u => u.id);
+    setBusy(current => ({ ...current, ...Object.fromEntries(ids.map(id => [id, true])) }));
+    try {
+      for (const { id, version } of skillUpgrades)
+        await installSkill(id, version);
+      await refresh();
+    }
+    catch (error) {
+      emitFutureEvent("toast", { message: t("actionFailed", { message: errorMessage(error) }), tone: "error" });
+    }
+    finally {
+      setBusy(current => ({ ...current, ...Object.fromEntries(ids.map(id => [id, false])) }));
+    }
+  }, [skillUpgrades, refresh, t]);
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
@@ -175,8 +208,10 @@ export function SkillsView() {
                   error={installedError}
                   busy={busy}
                   catalogue={available}
+                  upgradeCount={skillUpgrades.length}
                   onUninstall={id => void runAction(id, () => uninstallSkill(id))}
                   onUpgrade={(id, version) => void runAction(id, () => installSkill(id, version))}
+                  onUpgradeAll={() => void upgradeAll()}
                   onRetry={() => void refresh()}
                 />
               )
@@ -231,9 +266,11 @@ function InstalledTab({
   onRetry,
   onUninstall,
   onUpgrade,
+  onUpgradeAll,
   resultCount,
   skills,
   totalCount,
+  upgradeCount,
 }: {
   busy: Record<string, boolean>;
   catalogue: AvailableSkill[];
@@ -245,9 +282,11 @@ function InstalledTab({
   onRetry: () => void;
   onUninstall: (id: string) => void;
   onUpgrade: (id: string, version: string) => void;
+  onUpgradeAll: () => void;
   resultCount: number;
   skills: InstalledSkill[];
   totalCount: number;
+  upgradeCount: number;
 }) {
   const { i18n, t } = useTranslation("skills");
   const useChinese = i18n.language !== "en";
@@ -277,8 +316,20 @@ function InstalledTab({
   if (totalCount === 0)
     return <EmptyState title={t("installed.emptyTitle")} detail={t("installed.emptyDetail")} />;
 
+  const anyBusy = skills.some(skill => busy[skill.id]);
   return (
     <>
+      <div className="flex justify-end">
+        <Button
+          disabled={upgradeCount === 0 || anyBusy}
+          leftIcon={<ArrowUpCircle className="size-3.5" />}
+          onClick={onUpgradeAll}
+          size="sm"
+          variant="secondary"
+        >
+          {upgradeCount > 0 ? t("upgrade.upgradeAllCount", { count: upgradeCount }) : t("upgrade.upgradeAll")}
+        </Button>
+      </div>
       <SkillFiltersBar
         categories={categories}
         filters={filters}

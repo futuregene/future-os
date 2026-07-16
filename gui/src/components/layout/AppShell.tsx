@@ -23,6 +23,7 @@ import { ContextPanel } from "./ContextPanel";
 import { useAgentConnection } from "./hooks/useAgentConnection";
 import { useApprovals } from "./hooks/useApprovals";
 import { useAppSettings } from "./hooks/useAppSettings";
+import { useAutoUpgradeSkills } from "./hooks/useAutoUpgradeSkills";
 import { useModelSelection } from "./hooks/useModelSelection";
 import { useNewConversation } from "./hooks/useNewConversation";
 import { useRightPanelWidth } from "./hooks/useRightPanelWidth";
@@ -62,6 +63,7 @@ export function AppShell() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
 
   const { appSettings, changeSettings } = useAppSettings();
+  useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
 
   const centerRef = useRef<HTMLElement>(null);
   const {

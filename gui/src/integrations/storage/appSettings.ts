@@ -14,6 +14,11 @@ export interface AppSettings {
   remoteNatsUrl: string;
   /** Show the model's thinking/reasoning content in the chat. On by default. */
   showThinking: boolean;
+  /**
+   * Silently upgrade installed skills to their latest version on app open (and
+   * immediately when toggled on). Off by default.
+   */
+  autoUpgradeSkills: boolean;
 }
 
 /** Fallback used before the persisted settings load. */
@@ -24,6 +29,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   remotePairId: "DEVPAIR",
   remoteNatsUrl: "nats://localhost:4222",
   showThinking: true,
+  autoUpgradeSkills: false,
 };
 
 export async function getAppSettings() {
@@ -37,6 +43,7 @@ export async function updateAppSettings(input: {
   remotePairId?: string;
   remoteNatsUrl?: string;
   showThinking?: boolean;
+  autoUpgradeSkills?: boolean;
 }) {
   return invokeCommand<AppSettings>("update_app_settings", { input });
 }

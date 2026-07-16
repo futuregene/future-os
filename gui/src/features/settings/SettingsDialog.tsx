@@ -151,6 +151,8 @@ export function SettingsDialog({
                     onChangeApprovalTier={value => onChangeSettings({ approvalTier: value })}
                     showThinking={appSettings.showThinking}
                     onToggleShowThinking={value => onChangeSettings({ showThinking: value })}
+                    autoUpgradeSkills={appSettings.autoUpgradeSkills}
+                    onToggleAutoUpgradeSkills={value => onChangeSettings({ autoUpgradeSkills: value })}
                   />
                 )
               : null}

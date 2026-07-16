@@ -35,7 +35,9 @@
   "upgrade": {
     "upgrade": "Upgrade",
     "upgrading": "Upgrading...",
-    "available": "Upgrade to v{{version}}"
+    "available": "Upgrade to v{{version}}",
+    "upgradeAll": "Upgrade all",
+    "upgradeAllCount": "Upgrade all ({{count}})"
   },
   "uninstall": {
     "uninstalling": "Uninstalling...",
