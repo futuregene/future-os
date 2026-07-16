@@ -696,7 +696,7 @@ const args = parseArgs(process.argv.slice(2));
 
 // Handle --version
 if (args.version) {
-  console.log(`future-tui TUI v${VERSION}`);
+  console.log(`future-tui v${VERSION}`);
   process.exit(0);
 }
 
