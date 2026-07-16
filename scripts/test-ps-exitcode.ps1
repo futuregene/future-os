@@ -23,10 +23,15 @@
 #              (clean output like today, but loses incremental streaming)
 #
 # Read the table: `N OK` = exit code N matches expectation; `N XX` = mismatch.
-# The row that decides it is "handled try/catch": CURRENT should show XX (a false
-# failure), QSTREAM/QBUF should show OK. If they do, $? is the better fallback —
-# then choose QSTREAM (keep streaming) or QBUF (keep clean output) from the
-# stdout preview at the bottom.
+#
+# OUTCOME (verified on Windows PowerShell 5.1): KEEP $Error.Count — do NOT switch
+# to $?. Because the wrapper uses `2>&1` (needed to merge stderr into captured
+# output), errors become output objects and $? reports SUCCESS for "command not
+# found" and Write-Error — i.e. $? reintroduces the silent-failure bug we set out
+# to fix. $Error.Count's only downside is a false FAILURE on handled try/catch and
+# fail-then-succeed (rare, and safe because visible). So the wrapper fallback is
+# left as-is; this harness stays as the record of why, plus the authoritative
+# raw-byte UTF-8 encoding check at the bottom.
 #
 # Usage (Windows PowerShell 5.1 or pwsh 7):
 #   pwsh -NoProfile -File scripts\test-ps-exitcode.ps1
@@ -39,6 +44,11 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 # Resolve the shell the agent would use: pwsh 7 preferred, else Windows PowerShell.
 $shell = if (Get-Command pwsh -ErrorAction SilentlyContinue) { 'pwsh' } else { 'powershell' }
 $ver = & $shell -NoProfile -NoLogo -Command '$PSVersionTable.PSVersion.ToString()'
+# Decode child output as UTF-8 in THIS (parent) console too, so the stdout
+# previews below aren't garbled by a GBK console mis-reading the child's UTF-8.
+# (This only affects the previews; the authoritative encoding test reads raw
+# bytes and is unaffected by console encoding.)
+try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch {}
 Write-Host ""
 Write-Host "Windows shell exit-code strategy comparison"
 Write-Host "Shell: $shell  (v$ver)"
@@ -156,5 +166,36 @@ foreach ($name in @('handled try/catch', 'cmdlet hard fail', 'Chinese output')) 
   Write-Host "  CURRENT: $curOut"
   Write-Host "  QSTREAM: $qsOut"
 }
+# Authoritative encoding check: capture the child's stdout as RAW BYTES (exactly
+# what the Rust agent reads before from_utf8_lossy), independent of any console
+# encoding. If the bytes are the UTF-8 of 中文, production renders it correctly.
+Write-Host ""
+Write-Host "=== raw-byte encoding check (matches Rust from_utf8_lossy) ==="
+$tmp = [System.IO.Path]::GetTempFileName()
+try {
+  $script = Build-Cur 'Write-Output ([char]0x4E2D + [char]0x6587)'   # 中文
+  $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($script))
+  Start-Process $shell `
+    -ArgumentList @('-NoProfile', '-NonInteractive', '-NoLogo', '-EncodedCommand', $enc) `
+    -RedirectStandardOutput $tmp -NoNewWindow -Wait | Out-Null
+  $raw = [System.IO.File]::ReadAllBytes($tmp)
+  $hex = ($raw | ForEach-Object { $_.ToString('X2') }) -join ' '
+  $want = [System.Text.Encoding]::UTF8.GetBytes([string]([char]0x4E2D + [char]0x6587))
+  $wantHex = ($want | ForEach-Object { $_.ToString('X2') }) -join ' '
+  $gbkHex = 'D6 D0 CE C4'   # 中文 in GBK/CP936, for reference if it's wrong
+  Write-Host "  child stdout bytes : $hex"
+  Write-Host "  want (UTF-8 of 中文): $wantHex"
+  if ($hex -like "*$wantHex*") {
+    Write-Host "  VERDICT: OK — wrapper emits UTF-8; production renders 中文 correctly."
+  } elseif ($hex -like "*$gbkHex*") {
+    Write-Host "  VERDICT: BROKEN — wrapper emitted GBK ($gbkHex), not UTF-8. Encoding fix is not taking effect."
+  } else {
+    Write-Host "  VERDICT: UNEXPECTED — neither UTF-8 nor GBK; inspect the bytes above."
+  }
+}
+finally {
+  Remove-Item $tmp -ErrorAction SilentlyContinue
+}
+
 Write-Host ""
 Write-Host "Done. Send me this whole output and I'll decide the fallback + which variant to ship."
