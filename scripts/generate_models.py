@@ -24,6 +24,13 @@ from typing import Dict, Any, List, Optional
 
 
 
+def repo_path(rel: str) -> str:
+    """Absolute path for *rel* (relative to repo root)."""
+    script_dir = __import__('os').path.dirname(__import__('os').path.abspath(__file__))
+    root = __import__('os').path.normpath(__import__('os').path.join(script_dir, ".."))
+    return __import__('os').path.join(root, rel)
+
+
 def fetch_json(url: str, timeout: int = 30) -> Optional[Dict]:
     """Fetch JSON from URL with timeout."""
     try:
@@ -275,7 +282,7 @@ def generate_wiki_docs(models: List[Dict], timestamp: str):
     """Generate docs/wiki/{en,zh}/models.md from the model list."""
 
     script_dir = __import__('os').path.dirname(__import__('os').path.abspath(__file__))
-    repo_root = __import__('os').path.normpath(__import__('os').path.join(script_dir, "../.."))
+    repo_root = __import__('os').path.normpath(__import__('os').path.join(script_dir, ".."))
     wiki_en = __import__('os').path.join(repo_root, "docs/wiki/en")
     wiki_zh = __import__('os').path.join(repo_root, "docs/wiki/zh")
     __import__('os').makedirs(wiki_en, exist_ok=True)
@@ -426,7 +433,7 @@ def main():
     rust_code = generate_rust_code(unique_models, timestamp)
     
     # Write to file
-    output_path = "src/models/generated/mod.rs"
+    output_path = repo_path("agent/src/models/generated/mod.rs")
     with open(output_path, "w") as f:
         f.write(rust_code)
     
@@ -547,7 +554,7 @@ if __name__ == "__main__":
     import sys
 
     if "--wiki-only" in sys.argv:
-        rust_path = "src/models/generated/mod.rs"
+        rust_path = repo_path("agent/src/models/generated/mod.rs")
         print(f"Parsing existing models from {rust_path}...")
         models = parse_rust_models(rust_path)
         print(f"  Found {len(models)} models")

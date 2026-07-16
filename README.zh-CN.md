@@ -80,7 +80,7 @@ future auth login
 
 查看 [内置模型目录](docs/wiki/zh/Models.md) 了解支持的 Provider 及其默认 Base URL。
 
-**C —— 自定义 Provider。** 对于不在内置目录中的 OpenAI 兼容 Provider，在 `~/.future/agent/models.json` 中指定完整信息：
+**C —— 自定义 Provider。** 部分 Provider（如 Azure、Azure Cognitive Services、Amazon Bedrock）不在[内置目录](docs/wiki/zh/Models.md)中，因为 models.dev 未提供其 base URL。此类 Provider 需在 `~/.future/agent/models.json` 中指定完整信息：
 
 ```json
 {

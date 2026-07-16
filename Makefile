@@ -162,7 +162,7 @@ run-channels: build-channels
 # ─── Generate ───────────────────────────────────────────────────────────────
 
 generate-models:
-	cd agent && python3 scripts/generate_models.py
+	python3 scripts/generate_models.py
 
 generate-proto:
 	REGENERATE_PROTO=1 cd agent && cargo build
@@ -202,7 +202,7 @@ help:
 	@echo "  run-gui            Build & run GUI"
 	@echo "  run-channels        Build & run channel bridge"
 	@echo "  package-gui        Package GUI desktop bundles"
-	@echo "  generate-models    Fetch model data and regenerate models_generated.rs"
+	@echo "  generate-models    Fetch model data, regenerate Rust catalog + wiki docs"
 	@echo "  generate-proto     Compile proto/future.proto to Rust gRPC code"
 	@echo "  install            Build & install all components"
 	@echo "  install-nogui      Build & install terminal stack (skip GUI)"
