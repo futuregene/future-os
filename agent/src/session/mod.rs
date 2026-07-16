@@ -1030,3 +1030,107 @@ mod image_persistence_tests {
             .any(|b| matches!(b, ContentBlock::Image { .. })));
     }
 }
+
+#[cfg(test)]
+mod fork_tests {
+    use super::*;
+    use crate::types::AgentMessage;
+
+    fn make_entry(id: &str, entry_type: &str, role: &str, content: &str) -> SessionEntry {
+        SessionEntry {
+            id: id.to_string(),
+            parent_id: String::new(),
+            entry_type: entry_type.to_string(),
+            role: role.to_string(),
+            content: Some(serde_json::json!(content)),
+            tool_calls: vec![],
+            timestamp: chrono::Local::now(),
+            summary: String::new(),
+            model: String::new(),
+            label: String::new(),
+            thinking_level: String::new(),
+            branch_summary: None,
+            custom_type: String::new(),
+            custom_data: None,
+            display: String::new(),
+            provider: String::new(),
+            tool_call_id: String::new(),
+            name: String::new(),
+            tool_args: String::new(),
+            thinking: String::new(),
+            output_tokens: 0,
+            duration_ms: 0,
+            meta: None,
+        }
+    }
+
+    #[test]
+    fn fork_session_copies_entries_up_to_fork_point() {
+        let mut parent = Session::new("/tmp/test", "test-model", "");
+        let u1 = make_entry("u1", ENTRY_TYPE_USER, "user", "hello");
+        let a1 = make_entry("a1", ENTRY_TYPE_ASSISTANT, "assistant", "hi there");
+        let u2 = make_entry("u2", ENTRY_TYPE_USER, "user", "help me");
+        let a2 = make_entry("a2", ENTRY_TYPE_ASSISTANT, "assistant", "sure!");
+        parent.entries = vec![u1.clone(), a1.clone(), u2.clone(), a2.clone()];
+
+        // Fork at a1: should include u1 + a1 (skipping original session_info)
+        let forked = fork_session(&parent, &a1.id);
+
+        // session_info is prepended, so total entries = 1 (info) + 2 (u1, a1)
+        assert_eq!(forked.entries.len(), 3);
+        assert_eq!(forked.entries[1].entry_type, ENTRY_TYPE_USER);
+        assert_eq!(forked.entries[2].entry_type, ENTRY_TYPE_ASSISTANT);
+    }
+
+    #[test]
+    fn entries_to_messages_roundtrip_preserves_history_count() {
+        // Simulate: a forked session with history is created, but
+        // messages is empty → first prompt save would truncate disk.
+        let mut parent = Session::new("/tmp/test", "test-model", "");
+        let u1 = make_entry("u1", ENTRY_TYPE_USER, "user", "hello");
+        let a1 = make_entry("a1", ENTRY_TYPE_ASSISTANT, "assistant", "hi");
+        let a1_id = a1.id.clone();
+        parent.entries = vec![u1, a1];
+
+        let forked = fork_session(&parent, &a1_id);
+
+        // Bug scenario (old code): messages starts empty, so only the new
+        // user message would be saved — history entries are dropped.
+        let empty_msgs: Vec<AgentMessage> = vec![];
+        let entries_from_empty: Vec<SessionEntry> =
+            empty_msgs.iter().map(agent_message_to_entry).collect();
+        assert!(entries_from_empty.is_empty(),
+            "old code: empty messages → no entries → history lost on save");
+
+        // Fix scenario: entries are loaded into messages first.
+        // (model_accepts_images=false → images not rehydrated, but text
+        //  entries still convert correctly.)
+        let msgs = entries_to_agent_messages(&forked.entries, false);
+        // session_info is skipped by entries_to_agent_messages (role="system"
+        // doesn't match user/assistant/tool), but the user+assistant entries
+        // should both convert.
+        assert_eq!(msgs.len(), 2,
+            "fixed code: forked entries (user + assistant) → 2 messages");
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[1].role, "assistant");
+
+        // When the first prompt runs, self.messages now has history + new msg,
+        // so save() preserves everything.
+        let mut msgs_with_prompt = msgs;
+        msgs_with_prompt.push(AgentMessage {
+            role: "user".to_string(),
+            content: vec![crate::types::ContentBlock::text("new question")],
+            thinking: String::new(),
+            tool_calls: vec![],
+            tool_call_id: String::new(),
+            name: String::new(),
+            tool_args: String::new(),
+            metadata: None,
+        });
+        let entries_with_history: Vec<SessionEntry> =
+            msgs_with_prompt.iter().map(agent_message_to_entry).collect();
+        assert!(entries_with_history.len() >= 3,
+            "fixed code: history (2) + new user (1) = {} entries (expected >= 3)",
+            entries_with_history.len());
+    }
+}

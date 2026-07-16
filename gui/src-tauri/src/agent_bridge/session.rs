@@ -269,32 +269,36 @@ pub async fn fork_agent_session(
 
     // ── create workspace + thread ──────────────────────────────────────
 
-    let (workspace_id, _cwd) = if thread.mode == "chat" {
-        let ws = store::get_or_create_chat_workspace(&new_session_id, Some(session_name.clone()))?;
-        let dir = store::chat_workspace_path(&new_session_id).map(|p| p.display().to_string())?;
-        std::fs::create_dir_all(&dir)?;
-        // Tell the agent the correct cwd (the forked session inherited the
-        // parent's cwd from its session_info).
-        if let Err(e) = client
-            .execute_command(set_cwd_command(dir.clone(), new_session_id.clone()))
-            .await
-        {
-            eprintln!("FutureOS: fork set_cwd failed: {e}");
-        }
-        (Some(ws.id), dir)
-    } else {
-        // Workspace thread — keep the parent's project directory as cwd.
-        (Some(thread.workspace_id.clone()), String::new())
-    };
-
+    // Let create_thread handle workspace creation — for chat threads it
+    // always creates a fresh workspace keyed by the new thread id.
+    // create_thread ignores the passed workspace_id for chat mode, so
+    // any workspace we pre-created would be orphaned.
     let new_thread = store::create_thread(store::CreateThreadInput {
         mode: thread.mode.clone(),
         title: Some(session_name),
-        workspace_id,
+        workspace_id: if thread.mode == "chat" {
+            None
+        } else {
+            Some(thread.workspace_id.clone())
+        },
         workspace_path: None,
         workspace_name: None,
         agent_session_id: Some(new_session_id.clone()),
     })?;
+
+    // Now that the thread (and its workspace) exist, set the forked
+    // session's cwd to match so ensure_agent_session can find it
+    // instead of creating a brand-new empty session.
+    let cwd = workspace_path_for_thread(&new_thread.id).unwrap_or_default();
+    if !cwd.is_empty() {
+        std::fs::create_dir_all(&cwd)?;
+        if let Err(e) = client
+            .execute_command(set_cwd_command(cwd, new_session_id.clone()))
+            .await
+        {
+            eprintln!("FutureOS: fork set_cwd failed: {e}");
+        }
+    }
 
     let (provider, model_id) = split_model(&session_model);
     for _ in 0..assistant_count.max(1) {
