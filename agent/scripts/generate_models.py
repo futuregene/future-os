@@ -320,12 +320,6 @@ def generate_wiki_docs(models: List[Dict], timestamp: str):
             return f"{n / 1_000:.0f}K"
         return str(n)
 
-    def cost_str(m, key):
-        v = m.get(key, 0.0)
-        if v == 0.0:
-            return "-"
-        return f"${v:.2f}"
-
     def image_support(m):
         return "✅" if "image" in m.get("input", []) else "—"
 
@@ -345,68 +339,59 @@ def generate_wiki_docs(models: List[Dict], timestamp: str):
         "vercel-ai": "Vercel AI Gateway",
     }
 
-    # ── Build Markdown (English) ───────────────────────────────────────────
-    en = f"""# Built-in Model Catalog
-
-> Auto-generated at {timestamp} — {len(models)} models across {len(providers)} providers.
-> Run `make generate-models` to update.
-
-## Provider Summary
-
-| Provider | Models | Sample Model IDs |
-|---|---|---|"""
+    provider_head = "| Provider | Models |"
+    provider_sep = "|---|---|"
+    en_summary_rows = []
+    zh_summary_rows = []
     for pname in sorted(providers.keys(), key=lambda p: len(providers[p]), reverse=True):
         pmodels = providers[pname]
-        sample = ", ".join(m["id"].split("/")[-1][:40] for m in sorted(pmodels, key=lambda m: m["context_window"], reverse=True)[:3])
-        en += f"\n| {provider_names_cn.get(pname, pname)} | {len(pmodels)} | {sample} |"
+        label = provider_names_cn.get(pname, pname)
+        en_summary_rows.append(f"| {label} | {len(pmodels)} |")
+        zh_summary_rows.append(f"| {label} | {len(pmodels)} |")
 
+    # ── Build Markdown (English) ───────────────────────────────────────────
+    en = "# Built-in Model Catalog\n\n"
+    en += f"## Provider Summary\n\n{provider_head}\n{provider_sep}\n"
+    en += "\n".join(en_summary_rows)
     en += "\n\n---\n\n## Per-Provider Details\n\n"
 
     for pname in sorted(providers.keys()):
         pmodels = sorted(providers[pname], key=lambda m: -m["context_window"])
-        en += f"""### {provider_names_cn.get(pname, pname)}
-
-| Model ID | Name | Context | Max Output | Image | Reasoning | Input ($/1M) | Output ($/1M) |
-|---|---|---|---|---|---|---|---|
-"""
+        provider_label = provider_names_cn.get(pname, pname)
+        # Collect unique base URLs for this provider
+        base_urls = sorted(set(m["base_url"] for m in pmodels if m["base_url"]))
+        base_url_str = ", ".join(f"`{u}`" for u in base_urls) if base_urls else "—"
+        en += f"### {provider_label}\n\n"
+        en += f"**Base URL:** {base_url_str}\n\n"
+        en += "| Model ID | Name | Context | Max Output | Image | Reasoning |\n"
+        en += "|---|---|---|---|---|---|\n"
         for m in pmodels:
             short_id = m["id"].split("/")[-1] if "/" in m["id"] else m["id"]
             if len(short_id) > 48:
                 short_id = short_id[:45] + "..."
-            en += f"| `{short_id}` | {m['name']} | {fmt_num(m['context_window'])} | {fmt_num(m['max_tokens'])} | {image_support(m)} | {reasoning_support(m)} | {cost_str(m, 'cost_input')} | {cost_str(m, 'cost_output')} |\n"
-
+            en += f"| `{short_id}` | {m['name']} | {fmt_num(m['context_window'])} | {fmt_num(m['max_tokens'])} | {image_support(m)} | {reasoning_support(m)} |\n"
         en += "\n"
 
     # ── Build Markdown (Chinese) ───────────────────────────────────────────
-    zh = f"""# 内置模型目录
-
-> 自动生成于 {timestamp} — {len(models)} 个模型，覆盖 {len(providers)} 个 Provider。
-> 运行 `make generate-models` 更新。
-
-## Provider 概览
-
-| Provider | 模型数 | 示例模型 |
-|---|---|---|"""
-    for pname in sorted(providers.keys(), key=lambda p: len(providers[p]), reverse=True):
-        pmodels = providers[pname]
-        sample = ", ".join(m["id"].split("/")[-1][:40] for m in sorted(pmodels, key=lambda m: m["context_window"], reverse=True)[:3])
-        zh += f"\n| {provider_names_cn.get(pname, pname)} | {len(pmodels)} | {sample} |"
-
+    zh = "# 内置模型目录\n\n"
+    zh += f"## Provider 概览\n\n{provider_head}\n{provider_sep}\n"
+    zh += "\n".join(zh_summary_rows)
     zh += "\n\n---\n\n## 各 Provider 详情\n\n"
 
     for pname in sorted(providers.keys()):
         pmodels = sorted(providers[pname], key=lambda m: -m["context_window"])
-        zh += f"""### {provider_names_cn.get(pname, pname)}
-
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 | 输入 ($/1M) | 输出 ($/1M) |
-|---|---|---|---|---|---|---|---|
-"""
+        provider_label = provider_names_cn.get(pname, pname)
+        base_urls = sorted(set(m["base_url"] for m in pmodels if m["base_url"]))
+        base_url_str = ", ".join(f"`{u}`" for u in base_urls) if base_urls else "—"
+        zh += f"### {provider_label}\n\n"
+        zh += f"**Base URL:** {base_url_str}\n\n"
+        zh += "| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |\n"
+        zh += "|---|---|---|---|---|---|\n"
         for m in pmodels:
             short_id = m["id"].split("/")[-1] if "/" in m["id"] else m["id"]
             if len(short_id) > 48:
                 short_id = short_id[:45] + "..."
-            zh += f"| `{short_id}` | {m['name']} | {fmt_num(m['context_window'])} | {fmt_num(m['max_tokens'])} | {image_support(m)} | {reasoning_support(m)} | {cost_str(m, 'cost_input')} | {cost_str(m, 'cost_output')} |\n"
-
+            zh += f"| `{short_id}` | {m['name']} | {fmt_num(m['context_window'])} | {fmt_num(m['max_tokens'])} | {image_support(m)} | {reasoning_support(m)} |\n"
         zh += "\n"
 
     # ── Write ──────────────────────────────────────────────────────────────
