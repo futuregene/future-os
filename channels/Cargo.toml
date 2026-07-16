@@ -12,6 +12,8 @@ tonic = "0.12"
 prost = "0.13"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.24", features = ["__rustls-tls"] }
+rustls = "0.23"
+rustls-platform-verifier = "0.5"
 tokio-stream = "0.1"
 futures = "0.3"
 futures-util = "0.3"

@@ -28,7 +28,7 @@ impl DingtalkRestClient {
         if let Some(ref t) = *self.token.read().await {
             return Ok(t.clone());
         }
-        let client = reqwest::Client::new();
+        let client = crate::tls::http_client();
         let url = format!("https://{}/v1.0/oauth2/accessToken", self.domain);
         let resp: Value = client
             .post(&url)
@@ -67,7 +67,7 @@ impl DingtalkRestClient {
         markdown: &str,
     ) -> Result<()> {
         let token = self.get_token().await?;
-        let client = reqwest::Client::new();
+        let client = crate::tls::http_client();
         let body = json!({
             "msgtype": "markdown",
             "markdown": {"title": title, "text": markdown},

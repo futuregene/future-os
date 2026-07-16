@@ -9,6 +9,7 @@ mod config;
 mod dingtalk;
 mod feishu;
 mod grpc_client;
+mod tls;
 
 use anyhow::Result;
 use std::sync::Arc;

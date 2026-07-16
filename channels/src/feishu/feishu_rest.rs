@@ -25,10 +25,10 @@ struct CachedToken {
 impl FeishuRestClient {
     pub fn new(api_base: &str, app_id: &str, app_secret: &str) -> Self {
         Self {
-            http: reqwest::Client::builder()
+            http: crate::tls::http_client_builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+                .unwrap_or_else(|_| crate::tls::http_client()),
             api_base: api_base.to_string(),
             app_id: app_id.to_string(),
             app_secret: app_secret.to_string(),
