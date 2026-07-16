@@ -39,7 +39,7 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
 - **Node.js** 24+（见 `.nvmrc`）
 - **Bun** —— 必需项，非可选：TUI 构建和 CLI/GUI 打包均使用 `bun build`
 - **Linux 必需**（所有构建都需要）：
-  - `sudo apt install mold pkg-config libssl-dev`
+  - `sudo apt install mold`
 - **Tauri 系统依赖**（构建 GUI 需要）：
   - macOS：`xcode-select --install`
   - Linux（Debian/Ubuntu）：`sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf`
