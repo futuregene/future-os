@@ -435,7 +435,7 @@ def main():
     rust_code = generate_rust_code(unique_models, timestamp)
     
     # Write to file
-    output_path = repo_path("agent/src/models/generated/mod.rs")
+    output_path = repo_path("agent-models/src/lib.rs")
     with open(output_path, "w") as f:
         f.write(rust_code)
     
@@ -556,7 +556,7 @@ if __name__ == "__main__":
     import sys
 
     if "--wiki-only" in sys.argv:
-        rust_path = repo_path("agent/src/models/generated/mod.rs")
+        rust_path = repo_path("agent-models/src/lib.rs")
         print(f"Parsing existing models from {rust_path}...")
         models = parse_rust_models(rust_path)
         print(f"  Found {len(models)} models")
