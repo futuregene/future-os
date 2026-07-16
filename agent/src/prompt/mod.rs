@@ -36,15 +36,34 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
         ));
     }
 
-    // 4. Workspace memory (FUTURE.md) — separate layer from project context.
-    if !opts.memory_content.is_empty() {
-        sections.push(format!(
-            "# Workspace Memory\n\nThe following is the persistent memory for this \
-             workspace, stored in FUTURE.md — notes you previously saved or the user \
-             provided. Treat it as authoritative: preferences, conventions, \
-             build/test/run commands, and facts worth remembering across sessions.\n\n{}",
-            opts.memory_content.trim()
-        ));
+    // 4. Workspace memory (FUTURE.md) — always present so the model knows about
+    //    the feature even before the file exists. Operational rules live here
+    //    instead of duplicating them in the guidelines section.
+    {
+        let mut part = String::from(
+            "# Workspace Memory\n\n\
+             You maintain a workspace memory file named FUTURE.md in the working \
+             directory. Its content is loaded here — treat it as authoritative: \
+             preferences, conventions, build/test/run commands, and facts worth \
+             remembering across sessions.\n\n\
+             Record a memory when the user explicitly asks you to remember something, \
+             and also proactively when you learn a durable, high-value fact about this \
+             workspace: a verified build/test/run/lint command, a stated user \
+             preference, a correction the user made (especially a repeated one), or a \
+             stable project convention. Do not record one-off task details, transient \
+             state, secrets, unverified guesses, or anything already derivable from \
+             the repo. Use the write or edit tool; keep entries short and grouped \
+             under markdown headers; update or remove stale entries instead of \
+             duplicating; keep the file concise (aim under ~200 lines). Whenever you \
+             write to memory, tell the user in one short line what you recorded. \
+             Memory may only be written to FUTURE.md — never to CLAUDE.md, AGENTS.md, \
+             or GEMINI.md.",
+        );
+        if !opts.memory_content.is_empty() {
+            part.push_str("\n\n");
+            part.push_str(opts.memory_content.trim());
+        }
+        sections.push(part);
     }
 
     // 5. Skills XML (only if read tool is available)
@@ -326,16 +345,19 @@ mod tests {
         assert!(prompt.contains("Use 2-space indent."));
         assert!(prompt.contains("# Workspace Memory"));
         assert!(prompt.contains("User prefers pnpm over npm."));
-        assert!(prompt.contains("stored in FUTURE.md"));
+        assert!(prompt.contains("FUTURE.md"));
     }
 
     #[test]
-    fn workspace_memory_section_omitted_when_empty() {
+    fn workspace_memory_section_present_even_when_empty() {
         let prompt = build_prompt(&PromptOptions {
             agent_content: "Project rules.".to_string(),
             ..Default::default()
         });
+        // Section header and operational rules always appear so the model
+        // knows about FUTURE.md before the file exists.
         assert!(prompt.contains("# Project Context"));
-        assert!(!prompt.contains("# Workspace Memory"));
+        assert!(prompt.contains("# Workspace Memory"));
+        assert!(prompt.contains("FUTURE.md"));
     }
 }
