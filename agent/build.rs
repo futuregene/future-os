@@ -77,4 +77,3 @@ fn local_dev_version(base: &str) -> String {
     let dirty = git(&["status", "--porcelain"]).is_some_and(|o| !o.stdout.is_empty());
     format!("{base}-{hash}+local{}", if dirty { ".dirty" } else { "" })
 }
-

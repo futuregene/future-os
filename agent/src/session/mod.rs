@@ -1157,8 +1157,10 @@ mod fork_tests {
         let empty_msgs: Vec<AgentMessage> = vec![];
         let entries_from_empty: Vec<SessionEntry> =
             empty_msgs.iter().map(agent_message_to_entry).collect();
-        assert!(entries_from_empty.is_empty(),
-            "old code: empty messages → no entries → history lost on save");
+        assert!(
+            entries_from_empty.is_empty(),
+            "old code: empty messages → no entries → history lost on save"
+        );
 
         // Fix scenario: entries are loaded into messages first.
         // (model_accepts_images=false → images not rehydrated, but text
@@ -1167,8 +1169,11 @@ mod fork_tests {
         // session_info is skipped by entries_to_agent_messages (role="system"
         // doesn't match user/assistant/tool), but the user+assistant entries
         // should both convert.
-        assert_eq!(msgs.len(), 2,
-            "fixed code: forked entries (user + assistant) → 2 messages");
+        assert_eq!(
+            msgs.len(),
+            2,
+            "fixed code: forked entries (user + assistant) → 2 messages"
+        );
         assert_eq!(msgs[0].role, "user");
         assert_eq!(msgs[1].role, "assistant");
 
@@ -1185,10 +1190,14 @@ mod fork_tests {
             tool_args: String::new(),
             metadata: None,
         });
-        let entries_with_history: Vec<SessionEntry> =
-            msgs_with_prompt.iter().map(agent_message_to_entry).collect();
-        assert!(entries_with_history.len() >= 3,
+        let entries_with_history: Vec<SessionEntry> = msgs_with_prompt
+            .iter()
+            .map(agent_message_to_entry)
+            .collect();
+        assert!(
+            entries_with_history.len() >= 3,
             "fixed code: history (2) + new user (1) = {} entries (expected >= 3)",
-            entries_with_history.len());
+            entries_with_history.len()
+        );
     }
 }
