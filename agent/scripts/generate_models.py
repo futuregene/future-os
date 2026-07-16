@@ -371,7 +371,7 @@ def generate_wiki_docs(models: List[Dict], timestamp: str):
         zh_summary_rows.append(f"| {label} | {len(pmodels)} |")
 
     # ── Build Markdown (English) ───────────────────────────────────────────
-    en = "# Built-in Model Catalog\n\n"
+    en = f"# Built-in Model Catalog\n\n{len(models)} models across {len(providers)} providers.\n\n"
     en += f"## Provider Summary\n\n{provider_head}\n{provider_sep}\n"
     en += "\n".join(en_summary_rows)
     en += "\n\n---\n\n## Per-Provider Details\n\n"
@@ -394,7 +394,7 @@ def generate_wiki_docs(models: List[Dict], timestamp: str):
         en += "\n"
 
     # ── Build Markdown (Chinese) ───────────────────────────────────────────
-    zh = "# 内置模型目录\n\n"
+    zh = f"# 内置模型目录\n\n{len(models)} 个模型，覆盖 {len(providers)} 个 Provider。\n\n"
     zh += f"## Provider 概览\n\n{provider_head}\n{provider_sep}\n"
     zh += "\n".join(zh_summary_rows)
     zh += "\n\n---\n\n## 各 Provider 详情\n\n"
@@ -416,7 +416,7 @@ def generate_wiki_docs(models: List[Dict], timestamp: str):
         zh += "\n"
 
     # ── Write ──────────────────────────────────────────────────────────────
-    for path, content in [(f"{wiki_en}/models.md", en), (f"{wiki_zh}/models.md", zh)]:
+    for path, content in [(f"{wiki_en}/Models.md", en), (f"{wiki_zh}/Models.md", zh)]:
         with open(path, "w") as f:
             f.write(content)
         print(f"  Written {path} ({len(content):,} bytes)")
