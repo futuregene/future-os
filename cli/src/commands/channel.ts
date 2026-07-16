@@ -197,8 +197,8 @@ async function resolveChannelBinary(): Promise<string> {
   const cliRoot = resolve(dirname(currentFile), "..", "..");
   const repoRoot = resolve(cliRoot, "..");
   const candidates = [
-    resolve(repoRoot, "channel", "target", "release", "future-channel"),
-    resolve(repoRoot, "channel", "target", "debug", "future-channel"),
+    resolve(repoRoot, "channels", "target", "release", "future-channel"),
+    resolve(repoRoot, "channels", "target", "debug", "future-channel"),
   ];
 
   for (const candidate of candidates) {
@@ -208,7 +208,7 @@ async function resolveChannelBinary(): Promise<string> {
   }
 
   throw new Error(
-    "Future channel binary not found. Build it first with `cd future-os && make build-channel`, or set FUTURE_CHANNEL_BIN.",
+    "Future channel binary not found. Build it first with `cd future-os && make build-channels`, or set FUTURE_CHANNEL_BIN.",
   );
 }
 
