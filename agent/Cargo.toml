@@ -80,6 +80,12 @@ tokio-test = "0.4"
 
 # Drop debug info and strip symbols so release links faster and ships smaller
 # (the agent is an I/O-bound gRPC server — no runtime cost). See ../.cargo/config.toml.
+# codegen-units=16 parallelises codegen across more LLVM threads; the generated
+# model catalog (3800+ entries) dominates compile time and optimising it heavily
+# gives negligible runtime benefit.
 [profile.release]
 debug = false
 strip = true
+codegen-units = 16
+lto = false
+opt-level = 2
