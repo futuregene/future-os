@@ -20,7 +20,7 @@ FutureOS gives you a unified AI agent experience across TUI, GUI, CLI, Feishu, a
 | Category | Details |
 |---|---|
 | **Multi-Interface** | Terminal UI (TUI), Desktop app (GUI), CLI, Feishu bot, DingTalk bot — one agent, everywhere |
-| **Model Flexibility** | 900+ built-in models across 30+ providers ([full catalog](docs/wiki/en/models.md)); custom providers via `models.json`; scoped model lists |
+| **Model Flexibility** | 900+ built-in models across 30+ providers ([full catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
 | **Streaming & Thinking** | Real-time token streaming with collapsible reasoning-content blocks; configurable thinking levels (off ↔ xhigh) |
 | **Tool Execution** | read, write, edit, bash with approval gating; sandbox tiers (off / manual / macOS Seatbelt); auto-compaction at 90% context |
 | **Session Persistence** | JSONL-based sessions with fork, clone, tree navigation, and query-count tracking |
@@ -70,27 +70,29 @@ The agent needs at least one model with an API key before it can answer. Two opt
 future auth login
 ```
 
-**B — Bring your own key.** Point the agent at any OpenAI-compatible provider via `~/.future/agent/models.json`:
-
-```json
-{
-  "providers": {
-    "openai": {
-      "apiKey": "sk-...",
-      "baseUrl": "https://api.openai.com/v1",
-      "models": [
-        { "id": "gpt-4o", "name": "GPT-4o", "contextWindow": 128000 }
-      ]
-    }
-  }
-}
-```
-
-`baseUrl` has built-in defaults for `openai`, `anthropic`, `google`, `deepseek`, `openrouter`, and `dashscope`, so you can omit it for those. To keep secrets out of `models.json`, put keys in `~/.future/agent/auth.json` instead, keyed by provider:
+**B — Known provider, just add a key.** Many providers have built-in base URLs. Just put your API key in `~/.future/agent/auth.json`, keyed by provider name:
 
 ```json
 {
   "openai": { "type": "api_key", "key": "sk-..." }
+}
+```
+
+See the [built-in model catalog](docs/wiki/en/Models.md) for supported providers and their default base URLs.
+
+**C — Custom provider.** For any OpenAI-compatible provider not in the built-in catalog, specify everything in `~/.future/agent/models.json`:
+
+```json
+{
+  "providers": {
+    "my-provider": {
+      "apiKey": "sk-...",
+      "baseUrl": "https://my-api.example.com/v1",
+      "models": [
+        { "id": "my-model", "name": "My Model", "contextWindow": 128000 }
+      ]
+    }
+  }
 }
 ```
 

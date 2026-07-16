@@ -1,6 +1,8 @@
-# 内置模型目录
+# Built-in Model Catalog
 
-## Provider 概览
+2012 models across 130 providers.
+
+## Provider Summary
 
 | Provider | Models |
 |---|---|
@@ -137,13 +139,13 @@
 
 ---
 
-## 各 Provider 详情
+## Per-Provider Details
 
 ### 302ai
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `grok-4.20-beta-0309-non-reasoning` | grok-4.20-beta-0309-non-reasoning | 2M | 30K | ✅ | — |
 | `grok-4.20-beta-0309-reasoning` | grok-4.20-beta-0309-reasoning | 2M | 30K | ✅ | ✅ |
@@ -169,9 +171,9 @@
 
 ### abacus
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `grok-4-fast-non-reasoning` | Grok 4 Fast (Non-Reasoning) | 2M | 16K | ✅ | — |
 | `Llama-4-Maverick-17B-128E-Instruct-FP8` | Llama 4 Maverick 17B Instruct | 1M | 8K | ✅ | — |
@@ -195,17 +197,17 @@
 
 ### abliteration-ai
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `abliterated-model` | Abliterated Model | 150K | 8K | ✅ | — |
 
 ### aihubmix
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `coding-xiaomi-mimo-v2.5` | Coding Xiaomi MiMo-V2.5 | 1M | 131K | ✅ | ✅ |
 | `coding-xiaomi-mimo-v2.5-pro` | Coding Xiaomi MiMo-V2.5-Pro | 1M | 131K | — | ✅ |
@@ -235,9 +237,9 @@
 
 ### alibaba
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `qwen3.5-27b` | Qwen3.5 27B | 262K | 66K | ✅ | ✅ |
 | `qwen3.5-35b-a3b` | Qwen3.5 35B-A3B | 262K | 66K | ✅ | ✅ |
@@ -261,9 +263,9 @@
 
 ### alibaba-cn
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `qwen-long` | Qwen Long | 10M | 8K | — | — |
 | `qwen-deep-research` | Qwen Deep Research | 1M | 33K | — | — |
@@ -293,9 +295,9 @@
 
 ### alibaba-coding-plan-cn
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `qwen3-max-2026-01-23` | Qwen3 Max | 262K | 33K | — | — |
 
@@ -303,7 +305,7 @@
 
 **Base URL:** `https://bedrock-runtime.us-east-1.amazonaws.com`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `meta.llama4-scout-17b-instruct-v1:0` | Llama 4 Scout 17B Instruct | 4M | 16K | ✅ | — |
 | `us.meta.llama4-scout-17b-instruct-v1:0` | Llama 4 Scout 17B Instruct (US) | 4M | 16K | ✅ | — |
@@ -417,9 +419,9 @@
 
 ### ambient
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `GLM-5.1-FP8` | GLM 5.1 | 203K | 131K | — | ✅ |
 | `GLM-5.2-FP8` | GLM-5.2 | 203K | 203K | — | ✅ |
@@ -429,7 +431,7 @@
 
 **Base URL:** `https://api.anthropic.com/v1`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `claude-sonnet-4-5-20250929` | Claude Sonnet 4.5 | 1M | 64K | ✅ | ✅ |
 | `claude-haiku-4-5-20251001` | Claude Haiku 4.5 | 200K | 64K | ✅ | ✅ |
@@ -438,9 +440,9 @@
 
 ### anyapi
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `gemini-3-pro-preview` | Gemini 3 Pro Preview | 1M | 66K | ✅ | ✅ |
 | `claude-opus-4-6` | Claude Opus 4.6 | 1M | 128K | ✅ | ✅ |
@@ -452,9 +454,9 @@
 
 ### atomic-chat
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Meta-Llama-3_1-8B-Instruct-GGUF` | Meta Llama 3.1 8B Instruct (GGUF) | 131K | 4K | — | — |
 | `Qwen3_5-9B-MLX-4bit` | Qwen 3.5 9B (MLX 4-bit) | 33K | 8K | ✅ | — |
@@ -462,25 +464,25 @@
 
 ### auriko
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `qwen-3.6-plus` | Qwen3.6 Plus | 1M | 66K | ✅ | ✅ |
 
 ### azure
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `gpt-5.3-chat` | GPT-5.3 Chat | 128K | 16K | ✅ | ✅ |
 
 ### azure-cognitive-services
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `grok-4-fast-reasoning` | Grok 4 Fast (Reasoning) | 2M | 30K | ✅ | ✅ |
 | `codestral-2501` | Codestral 25.01 | 256K | 256K | — | — |
@@ -510,25 +512,25 @@
 
 ### bailing
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Ling-1T` | Ling-1T | 128K | 32K | — | — |
 
 ### baseten
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Nemotron-120B-A12B` | Nemotron Super | 203K | 203K | — | ✅ |
 
 ### blueclaw
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Qwen3.6-27B` | Qwen3.6 27B | 197K | 66K | — | ✅ |
 
@@ -536,7 +538,7 @@
 
 **Base URL:** `https://api.cerebras.ai/v1`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `gemma-4-31b` | Gemma 4 31B IT | 131K | 41K | ✅ | ✅ |
 | `gpt-oss-120b` | GPT OSS 120B | 131K | 41K | — | ✅ |
@@ -544,9 +546,9 @@
 
 ### chutes
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `GLM-5.2-TEE` | GLM 5.2 TEE | 1M | 66K | — | ✅ |
 | `Qwen3-235B-A22B-Thinking-2507-TEE` | Qwen3 235B A22B Thinking 2507 TEE | 262K | 262K | — | ✅ |
@@ -563,9 +565,9 @@
 
 ### clarifai
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Ministral-3-14B-Reasoning-2512` | Ministral 3 14B Reasoning 2512 | 262K | 262K | ✅ | ✅ |
 | `Ministral-3-3B-Reasoning-2512` | Ministral 3 3B Reasoning 2512 | 262K | 262K | ✅ | ✅ |
@@ -580,27 +582,27 @@
 
 ### claudinio
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `claudinio` | Claudinio | 256K | 64K | ✅ | ✅ |
 | `claudius` | Claudius | 256K | 64K | ✅ | ✅ |
 
 ### cloudferro-sherlock
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Bielik-11B-v2.6-Instruct` | Bielik 11B v2.6 Instruct | 32K | 32K | — | — |
 | `Bielik-11B-v3.0-Instruct` | Bielik 11B v3.0 Instruct | 32K | 32K | — | — |
 
 ### cloudflare-ai-gateway
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `glm-5.2` | Glm 5.2 | 262K | 262K | — | ✅ |
 | `kimi-k2.5` | Kimi K2.5 | 256K | 256K | ✅ | ✅ |
@@ -616,7 +618,7 @@
 
 **Base URL:** `https://api.cloudflare.com/client/v4/accounts`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `kimi-k2.6` | Kimi K2.6 | 262K | 256K | ✅ | ✅ |
 | `kimi-k2.7-code` | Kimi K2.7 Code | 262K | 262K | ✅ | ✅ |
@@ -634,9 +636,9 @@
 
 ### Cohere
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `command-a-03-2025` | Command A | 256K | 8K | — | — |
 | `command-a-reasoning-08-2025` | Command A Reasoning | 256K | 32K | — | ✅ |
@@ -650,9 +652,9 @@
 
 ### cortecs
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `claude-4-6-sonnet` | Claude Sonnet 4.6 | 1M | 1M | ✅ | ✅ |
 | `claude-opus4-6` | Claude Opus 4.6 | 1M | 1M | ✅ | ✅ |
@@ -673,9 +675,9 @@
 
 ### crof
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `deepseek-v4-pro-lightning` | DeepSeek V4 Pro Lightning | 1M | 131K | — | ✅ |
 | `qwen3.5-397b-a17b` | Qwen3.5 397B-A17B | 262K | 262K | ✅ | ✅ |
@@ -685,9 +687,9 @@
 
 ### crossmodel
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `gemini-2.5-flash` | Gemini 2.5 Flash | 1M | 66K | ✅ | ✅ |
 | `gemini-2.5-flash-lite` | Gemini 2.5 Flash-Lite | 1M | 66K | ✅ | ✅ |
@@ -702,9 +704,9 @@
 
 ### databricks
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `databricks-gpt-5-4` | GPT-5.4 | 1M | 128K | ✅ | ✅ |
 | `databricks-gpt-5-5` | GPT-5.5 | 1M | 128K | ✅ | ✅ |
@@ -739,9 +741,9 @@
 
 ### deepinfra
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Llama-4-Scout-17B-16E-Instruct` | Llama 4 Scout 17B | 328K | 16K | ✅ | — |
 | `Qwen3-Coder-480B-A35B-Instruct-Turbo` | Qwen3 Coder 480B A35B Instruct Turbo | 262K | 67K | — | — |
@@ -755,16 +757,16 @@
 
 **Base URL:** `https://api.deepseek.com/v1`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `deepseek-chat` | DeepSeek Chat | 1M | 384K | — | — |
 | `deepseek-reasoner` | DeepSeek Reasoner | 1M | 384K | — | ✅ |
 
 ### digitalocean
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `openai-gpt-4.1` | GPT-4.1 | 1M | 33K | ✅ | — |
 | `anthropic-claude-4.5-sonnet` | Claude Sonnet 4.5 | 1M | 64K | ✅ | ✅ |
@@ -820,9 +822,9 @@
 
 ### drun
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `minimax-m25` | MiniMax M2.5 | 205K | 131K | — | ✅ |
 | `deepseek-r1` | DeepSeek R1 | 131K | 32K | — | ✅ |
@@ -830,9 +832,9 @@
 
 ### ebcloud
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `DeepSeek-V4-Flash` | DeepSeek V4 Flash | 1M | 384K | — | ✅ |
 | `DeepSeek-V4-Pro` | DeepSeek V4 Pro | 1M | 384K | — | ✅ |
@@ -841,9 +843,9 @@
 
 ### empiriolabs
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `glm-5-2` | GLM 5.2 | 1M | 131K | — | ✅ |
 | `mimo-v2-5` | MiMo V2.5 | 1M | 128K | ✅ | ✅ |
@@ -877,9 +879,9 @@
 
 ### evroc
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Qwen3.6-35B-A3B-FP8` | Qwen3.6 35B-A3B | 262K | 66K | ✅ | ✅ |
 | `roc` | roc | 262K | 262K | ✅ | ✅ |
@@ -889,9 +891,9 @@
 
 ### fastrouter
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `grok-4` | Grok 4 | 256K | 64K | — | ✅ |
 | `minimax-m2.7-highspeed` | MiniMax-M2.7-highspeed | 205K | 131K | — | ✅ |
@@ -901,9 +903,9 @@
 
 ### fireworks-ai
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `glm-5p2` | GLM 5.2 | 1M | 131K | — | ✅ |
 | `glm-5p2-fast` | GLM 5.2 Fast | 1M | 131K | — | ✅ |
@@ -924,9 +926,9 @@
 
 ### frogbot
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `grok-4-1-fast-non-reasoning` | Grok 4.1 Fast (Non-Reasoning) | 2M | 128K | ✅ | — |
 | `grok-4-1-fast-reasoning` | Grok 4.1 Fast (Reasoning) | 2M | 128K | ✅ | ✅ |
@@ -948,7 +950,7 @@
 
 **Base URL:** `https://models.githubcopilot.com/v1`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `gpt-5-mini` | GPT-5 Mini | 264K | 64K | ✅ | ✅ |
 | `mai-code-1-flash-picker` | MAI-Code-1-Flash | 256K | 128K | — | ✅ |
@@ -963,9 +965,9 @@
 
 ### github-models
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `ai21-jamba-1.5-large` | AI21 Jamba 1.5 Large | 256K | 4K | — | ✅ |
 | `ai21-jamba-1.5-mini` | AI21 Jamba 1.5 Mini | 256K | 4K | — | ✅ |
@@ -1012,9 +1014,9 @@
 
 ### gitlab
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `duo-chat-gpt-5-4` | Agentic Chat (GPT-5.4) | 1M | 128K | ✅ | ✅ |
 | `duo-chat-gpt-5-5` | Agentic Chat (GPT-5.5) | 1M | 128K | ✅ | ✅ |
@@ -1041,9 +1043,9 @@
 
 ### gmicloud
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Qwen3.7-Max` | Qwen3.7 Max | 1M | 66K | — | ✅ |
 | `GLM-5-FP8` | GLM-5 | 203K | 131K | — | ✅ |
@@ -1052,7 +1054,7 @@
 
 **Base URL:** `https://generativelanguage.googleapis.com/v1beta/openai`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `gemini-2.0-flash` | Gemini 2.0 Flash | 1M | 8K | ✅ | — |
 | `gemini-2.0-flash-lite` | Gemini 2.0 Flash-Lite | 1M | 8K | ✅ | — |
@@ -1064,7 +1066,7 @@
 
 **Base URL:** `https://LOCATION-aiplatform.googleapis.com/v1beta1/projects/PROJECT_ID/locations/LOCATION/endpoints/openapi`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `gemini-2.5-flash` | Gemini 2.5 Flash | 1M | 66K | ✅ | ✅ |
 | `gemini-2.5-flash-lite` | Gemini 2.5 Flash-Lite | 1M | 66K | ✅ | ✅ |
@@ -1104,7 +1106,7 @@
 
 **Base URL:** `https://api.groq.com/openai/v1`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `llama-3.1-8b-instant` | Llama 3.1 8B | 131K | 131K | — | — |
 | `llama-3.3-70b-versatile` | Llama 3.3 70B | 131K | 33K | — | — |
@@ -1114,9 +1116,9 @@
 
 ### helicone
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `gpt-4.1-mini-2025-04-14` | OpenAI GPT-4.1 Mini | 1M | 33K | ✅ | — |
 | `kimi-k2-0905` | Kimi K2 (09/05) | 262K | 16K | — | — |
@@ -1148,7 +1150,7 @@
 
 **Base URL:** `https://api-inference.huggingface.co/v1`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `MiMo-V2.5-Pro` | MiMo-V2.5-Pro | 1M | 131K | — | ✅ |
 | `DeepSeek-V4-Flash` | DeepSeek V4 Flash | 1M | 384K | — | ✅ |
@@ -1202,26 +1204,26 @@
 
 ### iflowcn
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `qwen3-235b-a22b-instruct` | Qwen3-235B-A22B-Instruct | 256K | 64K | — | — |
 | `qwen3-235b` | Qwen3-235B-A22B | 128K | 32K | — | ✅ |
 
 ### inceptron
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Kimi-K2.6-Fast` | Kimi K2.6 Fast | 262K | 262K | ✅ | ✅ |
 
 ### inference
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `gemma-3` | Google Gemma 3 | 125K | 4K | ✅ | — |
 | `qwen-2.5-7b-vision-instruct` | Qwen 2.5 7B Vision Instruct | 125K | 4K | ✅ | — |
@@ -1233,9 +1235,9 @@
 
 ### inferx
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `qwen3-coder-next-fp8-1m` | Qwen3 Coder Next FP8 1M | 1M | 66K | — | — |
 | `gemma-4-31b-it-fp8` | Gemma 4 31B IT FP8 | 262K | 33K | ✅ | ✅ |
@@ -1246,9 +1248,9 @@
 
 ### io-net
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Devstral-Small-2505` | Devstral Small 2505 | 128K | 4K | — | — |
 | `Magistral-Small-2506` | Magistral Small 2506 | 128K | 4K | — | — |
@@ -1258,9 +1260,9 @@
 
 ### jiekou
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `gemini-2.5-flash-lite-preview-06-17` | gemini-2.5-flash-lite-preview-06-17 | 1M | 66K | ✅ | ✅ |
 | `gemini-2.5-flash-preview-05-20` | gemini-2.5-flash-preview-05-20 | 1M | 200K | ✅ | ✅ |
@@ -1275,9 +1277,9 @@
 
 ### kilo
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `owl-alpha` | Owl Alpha | 1M | 262K | — | ✅ |
 | `gemini-2.0-flash-001` | Google: Gemini 2.0 Flash | 1M | 8K | ✅ | — |
@@ -1317,9 +1319,9 @@
 
 ### kimi-for-coding
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `k2p5` | Kimi K2.5 | 262K | 33K | ✅ | ✅ |
 | `k2p6` | Kimi K2.6 | 262K | 33K | ✅ | ✅ |
@@ -1328,18 +1330,18 @@
 
 ### lilac
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `minimax-m3` | MiniMax M3 | 1M | 1M | ✅ | ✅ |
 | `glm-5.2` | GLM 5.2 | 524K | 524K | — | ✅ |
 
 ### llama
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `cerebras-llama-4-maverick-17b-128e-instruct` | Cerebras-Llama-4-Maverick-17B-128E-Instruct | 128K | 4K | — | — |
 | `cerebras-llama-4-scout-17b-16e-instruct` | Cerebras-Llama-4-Scout-17B-16E-Instruct | 128K | 4K | — | — |
@@ -1351,9 +1353,9 @@
 
 ### llmgateway
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `grok-4-20-beta-0309-non-reasoning` | Grok 4.20 (Non-Reasoning) | 2M | 30K | ✅ | — |
 | `grok-4-20-beta-0309-reasoning` | Grok 4.20 (Reasoning) | 2M | 30K | ✅ | ✅ |
@@ -1409,34 +1411,34 @@
 
 ### llmtr
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `qwen3-6-35b` | Qwen3.6 35B-A3B | 16K | 66K | ✅ | ✅ |
 
 ### lmstudio
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `qwen3-30b-a3b-2507` | Qwen3 30B A3B 2507 | 262K | 16K | — | — |
 | `qwen3-coder-30b` | Qwen3 Coder 30B | 262K | 66K | — | — |
 
 ### longcat
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `LongCat-2.0` | LongCat-2.0 | 1M | 131K | — | ✅ |
 
 ### lucidquery
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `lucidquery-agi-01-frontier` | AGI-01 Frontier | 300K | 120K | ✅ | ✅ |
 | `lucidquery-agi-01-swift` | AGI-01 Swift | 300K | 120K | ✅ | ✅ |
@@ -1445,17 +1447,17 @@
 
 ### lynkr
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `lynkr-auto` | Lynkr Auto (complexity routing) | 128K | 8K | — | — |
 
 ### meganova
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Qwen3.5-Plus` | Qwen3.5 Plus | 1M | 66K | ✅ | ✅ |
 | `DeepSeek-V3.1` | DeepSeek V3.1 | 164K | 164K | — | — |
@@ -1466,9 +1468,9 @@
 
 ### merge-gateway
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `qwen3.6-plus` | Qwen3.6 Plus | 1M | 66K | ✅ | ✅ |
 | `qwen3.7-max` | Qwen3.7 Max | 1M | 66K | — | ✅ |
@@ -1513,7 +1515,7 @@
 
 **Base URL:** `https://api.minimax.io/anthropic`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `MiniMax-M3` | MiniMax-M3 | 1M | 128K | ✅ | ✅ |
 | `MiniMax-M2.1` | MiniMax-M2.1 | 205K | 131K | — | ✅ |
@@ -1527,7 +1529,7 @@
 
 **Base URL:** `https://api.mistral.ai/v1`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `devstral-2512` | Devstral 2 | 262K | 262K | — | — |
 | `devstral-latest` | Devstral 2 | 262K | 262K | — | — |
@@ -1561,17 +1563,17 @@
 
 ### moark
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `GLM-4.7` | GLM-4.7 | 205K | 131K | — | ✅ |
 
 ### modelscope
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Qwen3-30B-A3B-Thinking-2507` | Qwen3 30B A3B Thinking 2507 | 262K | 33K | — | ✅ |
 | `GLM-4.6` | GLM-4.6 | 203K | 98K | — | ✅ |
@@ -1581,7 +1583,7 @@
 
 **Base URL:** `https://api.moonshot.cn/v1`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `kimi-k2-0905-preview` | Kimi K2 0905 | 262K | 262K | — | — |
 | `kimi-k2-thinking` | Kimi K2 Thinking | 262K | 262K | — | ✅ |
@@ -1595,9 +1597,9 @@
 
 ### nano-gpt
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `grok-4.20-multi-agent` | Grok 4.20 Multi-Agent | 2M | 131K | ✅ | ✅ |
 | `gemini-2.5-flash-lite-preview-09-2025` | Gemini 2.5 Flash Lite Preview (09/2025) | 1M | 66K | ✅ | ✅ |
@@ -1725,17 +1727,17 @@
 
 ### nearai
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `gemini-3-pro` | Gemini 3 Pro Preview | 1M | 66K | ✅ | ✅ |
 
 ### nebius
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Kimi-K2.5-fast` | Kimi-K2.5-fast | 256K | 8K | ✅ | ✅ |
 | `Hermes-4-405B` | Hermes-4-405B | 128K | 8K | — | ✅ |
@@ -1754,9 +1756,9 @@
 
 ### neon
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `gpt-5-4` | GPT-5.4 | 1M | 128K | ✅ | ✅ |
 | `gemini-2-5-flash` | Gemini 2.5 Flash | 1M | 66K | ✅ | ✅ |
@@ -1775,9 +1777,9 @@
 
 ### neuralwatt
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `glm-5.2-fast` | GLM 5.2 Fast | 1M | 1M | — | — |
 | `glm-5.2-flex` | GLM 5.2 Flex | 1M | 1M | — | ✅ |
@@ -1795,18 +1797,18 @@
 
 ### nova
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `nova-2-lite-v1` | Nova 2 Lite | 1M | 64K | ✅ | ✅ |
 | `nova-2-pro-v1` | Nova 2 Pro | 1M | 64K | ✅ | ✅ |
 
 ### novita-ai
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `mimo-v2-pro` | MiMo-V2-Pro | 1M | 131K | — | ✅ |
 | `mimo-v2.5-pro` | MiMo-V2.5-Pro | 1M | 131K | — | ✅ |
@@ -1827,9 +1829,9 @@
 
 ### nvidia
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `deepseek-v4-flash` | DeepSeek V4 Flash | 1M | 393K | — | ✅ |
 | `deepseek-v4-pro` | DeepSeek V4 Pro | 1M | 393K | — | ✅ |
@@ -1858,9 +1860,9 @@
 
 ### ollama-cloud
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `nemotron-3-nano:30b` | nemotron-3-nano:30b | 1M | 131K | — | ✅ |
 | `gemma4:31b` | gemma4:31b | 262K | 262K | ✅ | ✅ |
@@ -1874,7 +1876,7 @@
 
 **Base URL:** `https://api.openai.com/v1`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `gpt-5.6` | GPT-5.6 | 1M | 128K | ✅ | ✅ |
 | `gpt-4.1-mini` | GPT-4.1 mini | 1M | 33K | ✅ | — |
@@ -1905,7 +1907,7 @@
 
 **Base URL:** `https://opencode.ai/zen`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `gpt-5.4` | GPT-5.4 | 1M | 128K | ✅ | ✅ |
 | `gpt-5.4-pro` | GPT-5.4 Pro | 1M | 128K | ✅ | ✅ |
@@ -1984,7 +1986,7 @@
 
 **Base URL:** `https://opencode.ai/zen/go`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `qwen3.7-max` | Qwen3.7 Max | 1M | 66K | — | ✅ |
 | `qwen3.7-plus` | Qwen3.7 Plus | 1M | 66K | ✅ | ✅ |
@@ -1993,7 +1995,7 @@
 
 **Base URL:** `https://openrouter.ai/api/v1`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `llama-4-scout` | Meta: Llama 4 Scout | 10M | 33K | — | — |
 | `auto` | Auto Router | 2M | 33K | — | — |
@@ -2261,9 +2263,9 @@
 
 ### orcarouter
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `deepseek-reasoner` | DeepSeek Reasoner | 1M | 384K | — | ✅ |
 | `grok-4.3` | Grok 4.3 | 1M | 30K | ✅ | ✅ |
@@ -2274,18 +2276,18 @@
 
 ### ovhcloud
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `meta-llama-3_3-70b-instruct` | Meta-Llama-3_3-70B-Instruct | 131K | 131K | — | — |
 | `mistral-small-3.2-24b-instruct-2506` | Mistral-Small-3.2-24B-Instruct-2506 | 131K | 131K | ✅ | — |
 
 ### perplexity-agent
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `grok-4-1-fast-non-reasoning` | Grok 4.1 Fast (Non-Reasoning) | 2M | 30K | ✅ | — |
 | `claude-opus-4-5` | Claude Opus 4.5 | 200K | 64K | ✅ | ✅ |
@@ -2293,9 +2295,9 @@
 
 ### pioneer
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `MiMo-V2.5` | MiMo-V2.5 | 1M | 131K | ✅ | ✅ |
 | `auto` | Pioneer Auto | 1M | 4K | ✅ | ✅ |
@@ -2328,9 +2330,9 @@
 
 ### poe
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `grok-4-fast-non-reasoning` | Grok-4-Fast-Non-Reasoning | 2M | 128K | ✅ | — |
 | `grok-4-fast-reasoning` | Grok-4-Fast-Reasoning | 2M | 128K | ✅ | ✅ |
@@ -2410,9 +2412,9 @@
 
 ### qiniu-ai
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `grok-4.1-fast-reasoning` | X-Ai/Grok 4.1 Fast Reasoning | 20M | 2M | ✅ | ✅ |
 | `grok-4-fast` | x-AI/Grok-4-Fast | 2M | 2M | ✅ | ✅ |
@@ -2455,9 +2457,9 @@
 
 ### regolo-ai
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `qwen3.5-122b` | Qwen3.5-122B | 262K | 16K | ✅ | ✅ |
 | `mistral-small-4-119b` | Mistral Small 4 119B | 256K | 16K | ✅ | ✅ |
@@ -2465,9 +2467,9 @@
 
 ### requesty
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `grok-4-fast` | Grok 4 Fast | 2M | 64K | — | ✅ |
 | `gpt-5-image` | GPT-5 Image | 400K | 128K | ✅ | ✅ |
@@ -2477,9 +2479,9 @@
 
 ### routing-run
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `qwen3.5-9b` | Qwen3.5 9B | 262K | 32K | — | ✅ |
 | `glm-5.2-nitro` | GLM 5.2 Nitro | 200K | 32K | — | ✅ |
@@ -2489,18 +2491,18 @@
 
 ### sakana
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `fugu` | Fugu | 1M | 1M | ✅ | ✅ |
 | `fugu-ultra-20260615` | Fugu Ultra | 1M | 1M | ✅ | ✅ |
 
 ### sap-ai-core
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `amazon--nova-lite` | amazon--nova-lite | 1M | 64K | ✅ | ✅ |
 | `anthropic--claude-4.6-opus` | anthropic--claude-4.6-opus | 1M | 128K | ✅ | ✅ |
@@ -2526,9 +2528,9 @@
 
 ### scaleway
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `devstral-2-123b-instruct-2512` | Devstral 2 123B Instruct (2512) | 256K | 16K | — | — |
 | `mistral-medium-3.5-128b` | Mistral Medium 3.5 128B | 256K | 16K | ✅ | ✅ |
@@ -2538,9 +2540,9 @@
 
 ### siliconflow
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Hy3-preview` | Hy3 preview | 262K | 262K | — | ✅ |
 | `Seed-OSS-36B-Instruct` | ByteDance-Seed/Seed-OSS-36B-Instruct | 262K | 262K | — | — |
@@ -2560,9 +2562,9 @@
 
 ### siliconflow-cn
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Qwen3.5-4B` | Qwen/Qwen3.5-4B | 262K | 66K | ✅ | ✅ |
 | `Kimi-K2.5` | Pro/moonshotai/Kimi-K2.5 | 262K | 262K | ✅ | ✅ |
@@ -2577,9 +2579,9 @@
 
 ### snowflake-cortex
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `openai-gpt-5.6-luna` | GPT-5.6 Luna | 1M | 128K | ✅ | ✅ |
 | `openai-gpt-5.6-sol` | GPT-5.6 Sol | 1M | 128K | ✅ | ✅ |
@@ -2590,27 +2592,27 @@
 
 ### stackit
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Qwen3-VL-235B-A22B-Instruct-FP8` | Qwen3-VL 235B | 218K | 16K | ✅ | — |
 | `Llama-3.3-70B-Instruct-FP8-Dynamic` | Llama 3.3 70B | 128K | 4K | — | — |
 
 ### stepfun-ai
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `step-1-32k` | Step 1 (32K) | 33K | 33K | — | — |
 | `step-2-16k` | Step 2 (16K) | 16K | 8K | — | — |
 
 ### stepfun-step-plan
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `step-3.5-flash` | Step 3.5 Flash | 256K | 256K | — | ✅ |
 | `step-3.5-flash-2603` | Step 3.5 Flash 2603 | 256K | 256K | — | ✅ |
@@ -2619,27 +2621,27 @@
 
 ### subconscious
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `glm-5.2` | GLM-5.2 | 1M | 131K | — | ✅ |
 | `tim-qwen3.6-27b` | TIM-Qwen3.6 27B | 8K | 5K | — | ✅ |
 
 ### submodel
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Qwen3-Coder-480B-A35B-Instruct-FP8` | Qwen3 Coder 480B A35B Instruct | 262K | 262K | — | — |
 | `GLM-4.5-FP8` | GLM 4.5 FP8 | 131K | 131K | — | ✅ |
 
 ### synthetic
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `MiniMax-M3` | MiniMax-M3 | 524K | 66K | ✅ | ✅ |
 | `GLM-5.2` | GLM-5.2 | 524K | 66K | — | ✅ |
@@ -2651,9 +2653,9 @@
 
 ### tencent-coding-plan
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `hunyuan-2.0-instruct` | Tencent HY 2.0 Instruct | 131K | 16K | — | — |
 | `hunyuan-2.0-thinking` | Tencent HY 2.0 Think | 131K | 16K | — | ✅ |
@@ -2663,25 +2665,25 @@
 
 ### tencent-token-plan
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `hy3` | Hy3 | 256K | 64K | — | ✅ |
 
 ### tencent-tokenhub
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `hy3-preview` | Hy3 preview | 256K | 64K | — | ✅ |
 
 ### the-grid-ai
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `agent-max` | Agent Max | 1M | 128K | ✅ | ✅ |
 | `code-max` | Code Max | 1M | 128K | ✅ | ✅ |
@@ -2695,9 +2697,9 @@
 
 ### tinfoil
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `gemma4-31b` | Gemma 4 31B IT | 256K | 33K | ✅ | ✅ |
 | `gpt-oss-safeguard-120b` | gpt-oss-safeguard-120b | 131K | 33K | — | ✅ |
@@ -2705,9 +2707,9 @@
 
 ### togetherai
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Qwen3.6-Plus` | Qwen3.6 Plus | 1M | 500K | — | ✅ |
 | `Qwen3-235B-A22B-Instruct-2507-tput` | Qwen3 235B A22B Instruct 2507 FP8 | 262K | 262K | — | — |
@@ -2718,9 +2720,9 @@
 
 ### trustedrouter
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `auto` | Auto | 1M | 131K | ✅ | ✅ |
 | `cheap` | Cheap | 1M | 131K | ✅ | ✅ |
@@ -2732,9 +2734,9 @@
 
 ### umans-ai
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `umans-glm-5.2` | GLM 5.2 | 406K | 131K | ✅ | ✅ |
 | `umans-coder` | Umans Coder | 262K | 33K | ✅ | ✅ |
@@ -2744,17 +2746,17 @@
 
 ### umans-ai-coding-plan
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `umans-qwen3.6-35b-a3b` | Qwen3.6 35B A3B | 262K | 262K | ✅ | ✅ |
 
 ### unorouter
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `gpt-5.4:free` | GPT-5.4 | 1M | 128K | ✅ | ✅ |
 | `gpt-5.5:free` | GPT-5.5 | 1M | 128K | ✅ | ✅ |
@@ -2770,9 +2772,9 @@
 
 ### upstage
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `solar-pro3` | solar-pro3 | 131K | 8K | — | ✅ |
 | `solar-pro2` | solar-pro2 | 66K | 8K | — | ✅ |
@@ -2780,9 +2782,9 @@
 
 ### v0
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `v0-1.5-lg` | v0-1.5-lg | 512K | 32K | ✅ | ✅ |
 | `v0-1.0-md` | v0-1.0-md | 128K | 32K | ✅ | ✅ |
@@ -2790,9 +2792,9 @@
 
 ### venice
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `grok-4-20` | Grok 4.20 | 2M | 128K | ✅ | ✅ |
 | `claude-opus-4-7-fast` | Claude Opus 4.7 Fast | 1M | 128K | ✅ | ✅ |
@@ -2851,9 +2853,9 @@
 
 ### vercel
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `grok-4.20-multi-agent` | Grok 4.20 Multi-Agent | 2M | 2M | ✅ | ✅ |
 | `grok-4.20-multi-agent-beta` | Grok 4.20 Multi Agent Beta | 2M | 2M | ✅ | ✅ |
@@ -2930,9 +2932,9 @@
 
 ### vultr
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16` | NVIDIA Nemotron 3 Nano Omni | 262K | 131K | — | ✅ |
 | `Nemotron-Cascade-2-30B-A3B` | NVIDIA Nemotron Cascade 2 | 262K | 131K | — | ✅ |
@@ -2940,18 +2942,18 @@
 
 ### wafer.ai
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `GLM-5.2` | GLM-5.2 | 1M | 131K | — | ✅ |
 | `glm5.2-fast` | GLM5.2-Fast | 1M | 131K | — | ✅ |
 
 ### wandb
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Qwen3-30B-A3B-Instruct-2507` | Qwen3 30B A3B Instruct 2507 | 262K | 262K | — | — |
 | `NVIDIA-Nemotron-3-Ultra-550B-A55B` | Nemotron 3 Ultra | 262K | 262K | — | ✅ |
@@ -2964,7 +2966,7 @@
 
 **Base URL:** `https://api.x.ai/v1`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `grok-4.20-0309-non-reasoning` | Grok 4.20 (Non-Reasoning) | 1M | 30K | ✅ | — |
 | `grok-4.20-0309-reasoning` | Grok 4.20 (Reasoning) | 1M | 30K | ✅ | ✅ |
@@ -2976,7 +2978,7 @@
 
 **Base URL:** `https://api.xiaomimimo.com/anthropic`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `mimo-v2-pro` | MiMo-V2-Pro | 1M | 131K | — | ✅ |
 | `mimo-v2.5` | MiMo-V2.5 | 1M | 131K | ✅ | ✅ |
@@ -2987,9 +2989,9 @@
 
 ### xpersona
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `xpersona-frieren-coder` | Xpersona Frieren 1 | 1M | 384K | ✅ | ✅ |
 | `xpersona-gpt-5.5` | GPT-5.5 | 1M | 128K | ✅ | ✅ |
@@ -2998,7 +3000,7 @@
 
 **Base URL:** `https://api.z.ai/api/paas/v4`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `glm-4.7-flash` | GLM-4.7-Flash | 200K | 131K | — | ✅ |
 | `glm-4.7-flashx` | GLM-4.7-FlashX | 200K | 131K | — | ✅ |
@@ -3012,25 +3014,25 @@
 
 ### zeldoc
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `z-code` | Z-Code | 1M | 131K | — | ✅ |
 
 ### zenifra
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `qwen3.6-35b-a3b` | Qwen3.6 35B-A3B | 262K | 66K | — | ✅ |
 
 ### zenmux
 
-**Base URL:** —
+**Base URL:** `.into()`
 
-| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+| Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `grok-4.2-fast` | Grok 4.2 Fast | 2M | 30K | ✅ | ✅ |
 | `grok-4.2-fast-non-reasoning` | Grok 4.2 Fast Non Reasoning | 2M | 30K | ✅ | — |
