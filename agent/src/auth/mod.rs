@@ -10,6 +10,8 @@ pub struct AuthEntry {
     #[serde(rename = "type")]
     pub entry_type: String,
     pub key: String,
+    #[serde(rename = "baseUrl", default)]
+    pub base_url: Option<String>,
 }
 
 /// Auth store holding all provider credentials
@@ -92,6 +94,22 @@ impl AuthStore {
             }
         }
 
+        None
+    }
+
+    /// Get base URL for a provider (case-insensitive, prefix match).
+    pub fn base_url(&self, provider: &str) -> Option<String> {
+        let provider_lower = provider.to_lowercase();
+        for (name, entry) in &self.entries {
+            let name_lower = name.to_lowercase();
+            if name_lower == provider_lower || provider_lower.starts_with(&name_lower) {
+                if let Some(ref url) = entry.base_url {
+                    if !url.is_empty() {
+                        return Some(url.trim_end_matches('/').to_string());
+                    }
+                }
+            }
+        }
         None
     }
 

@@ -20,7 +20,7 @@ FutureOS gives you a unified AI agent experience across TUI, GUI, CLI, Feishu, a
 | Category | Details |
 |---|---|
 | **Multi-Interface** | Terminal UI (TUI), Desktop app (GUI), CLI, Feishu bot, DingTalk bot — one agent, everywhere |
-| **Model Flexibility** | 900+ built-in models across 30+ providers ([full catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
+| **Model Flexibility** | 1000+ built-in models across 100+ providers ([full catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
 | **Streaming & Thinking** | Real-time token streaming with collapsible reasoning-content blocks; configurable thinking levels (off ↔ xhigh) |
 | **Tool Execution** | read, write, edit, bash with approval gating; sandbox tiers (off / manual / macOS Seatbelt); auto-compaction at 90% context |
 | **Session Persistence** | JSONL-based sessions with fork, clone, tree navigation, and query-count tracking |
@@ -62,7 +62,7 @@ Binaries are installed to: macOS `/opt/homebrew/bin`, Linux `/usr/local/bin`, Wi
 
 ### Configure a model
 
-The agent needs at least one model with an API key before it can answer. Two options:
+The agent needs at least one model with an API key before it can answer. Three options:
 
 **A — FutureOS hosted models.** Device-flow sign-in provisions keys and a model list automatically:
 
@@ -70,7 +70,7 @@ The agent needs at least one model with an API key before it can answer. Two opt
 future auth login
 ```
 
-**B — Known provider, just add a key.** Many providers have built-in base URLs. Just put your API key in `~/.future/agent/auth.json`, keyed by provider name:
+**B — Use a known provider.** Put your API key in `~/.future/agent/auth.json`, keyed by provider name. See the [built-in model catalog](docs/wiki/en/Models.md) for all supported providers — most have built-in base URLs and auto-discover their models:
 
 ```json
 {
@@ -78,9 +78,15 @@ future auth login
 }
 ```
 
-See the [built-in model catalog](docs/wiki/en/Models.md) for supported providers and their default base URLs.
+For providers with user-specific base URLs (e.g. Azure's `YOUR_RESOURCE`), add a `baseUrl` field in `auth.json`:
 
-**C — Custom provider.** For any OpenAI-compatible provider not in the built-in catalog, specify everything in `~/.future/agent/models.json`:
+```json
+{
+  "azure": { "type": "api_key", "key": "sk-...", "baseUrl": "https://my-resource.openai.azure.com/openai/v1" }
+}
+```
+
+**C — Custom provider.** For providers not in the built-in catalog, specify everything in `~/.future/agent/models.json`:
 
 ```json
 {
@@ -95,8 +101,6 @@ See the [built-in model catalog](docs/wiki/en/Models.md) for supported providers
   }
 }
 ```
-
-Switch the active model any time with `/model <id>` in the TUI, or `ctrl+p` to cycle.
 
 ### Run the agent
 

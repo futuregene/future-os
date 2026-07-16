@@ -24,6 +24,13 @@ from typing import Dict, Any, List, Optional
 
 
 
+def repo_path(rel: str) -> str:
+    """Absolute path for *rel* (relative to repo root)."""
+    script_dir = __import__('os').path.dirname(__import__('os').path.abspath(__file__))
+    root = __import__('os').path.normpath(__import__('os').path.join(script_dir, ".."))
+    return __import__('os').path.join(root, rel)
+
+
 def fetch_json(url: str, timeout: int = 30) -> Optional[Dict]:
     """Fetch JSON from URL with timeout."""
     try:
@@ -89,10 +96,10 @@ def process_models_dev(data: Dict) -> List[Dict]:
                 "input": modalities,
                 "context_window": context_window,
                 "max_tokens": max_tokens,
-                "cost_input": cost.get("input", 0.0),
-                "cost_output": cost.get("output", 0.0),
-                "cost_cache_read": cost.get("cache_read", 0.0),
-                "cost_cache_write": cost.get("cache_write", 0.0),
+                "cost_input": float(cost.get("input", 0)),
+                "cost_output": float(cost.get("output", 0)),
+                "cost_cache_read": float(cost.get("cache_read", 0)),
+                "cost_cache_write": float(cost.get("cache_write", 0)),
                 "compat_json": "{}",
                 "tlm_json": "{}",
                 "headers_json": "{}",
@@ -225,6 +232,7 @@ pub struct Model {{
     pub compat_json: String,
     pub tlm_json: String,
     pub headers_json: String,
+    pub hide: bool,
 }}
 
 /// INIT_BUILTIN_MODELS returns the complete built-in model catalog.
@@ -252,13 +260,14 @@ pub fn init_builtin_models() -> Vec<Model> {{
             input: {input_vec},
             context_window: {m['context_window']},
             max_tokens: {m['max_tokens']},
-            cost_input: {m['cost_input']},
-            cost_output: {m['cost_output']},
-            cost_cache_read: {m['cost_cache_read']},
-            cost_cache_write: {m['cost_cache_write']},
+            cost_input: {m['cost_input']!r},
+            cost_output: {m['cost_output']!r},
+            cost_cache_read: {m['cost_cache_read']!r},
+            cost_cache_write: {m['cost_cache_write']!r},
             compat_json: String::from("{{}}"),
             tlm_json: String::from("{{}}"),
             headers_json: String::from("{{}}"),
+            hide: false,
         }},
 """
     
@@ -275,7 +284,7 @@ def generate_wiki_docs(models: List[Dict], timestamp: str):
     """Generate docs/wiki/{en,zh}/models.md from the model list."""
 
     script_dir = __import__('os').path.dirname(__import__('os').path.abspath(__file__))
-    repo_root = __import__('os').path.normpath(__import__('os').path.join(script_dir, "../.."))
+    repo_root = __import__('os').path.normpath(__import__('os').path.join(script_dir, ".."))
     wiki_en = __import__('os').path.join(repo_root, "docs/wiki/en")
     wiki_zh = __import__('os').path.join(repo_root, "docs/wiki/zh")
     __import__('os').makedirs(wiki_en, exist_ok=True)
@@ -426,7 +435,7 @@ def main():
     rust_code = generate_rust_code(unique_models, timestamp)
     
     # Write to file
-    output_path = "src/models/generated/mod.rs"
+    output_path = repo_path("agent/src/models/generated/mod.rs")
     with open(output_path, "w") as f:
         f.write(rust_code)
     
@@ -547,7 +556,7 @@ if __name__ == "__main__":
     import sys
 
     if "--wiki-only" in sys.argv:
-        rust_path = "src/models/generated/mod.rs"
+        rust_path = repo_path("agent/src/models/generated/mod.rs")
         print(f"Parsing existing models from {rust_path}...")
         models = parse_rust_models(rust_path)
         print(f"  Found {len(models)} models")
