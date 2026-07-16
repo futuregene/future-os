@@ -365,7 +365,7 @@ def main():
         all_models.extend(models)
     
     # Sort by provider name for stable, readable output.
-    all_models.sort(key=lambda m: (m.get("base_url", "") and 0 or 1, m["provider"]))
+    all_models.sort(key=lambda m: (0 if m.get("base_url") else 1, m["provider"]))
 
     # Dedupe by provider + model_id.  The same model ID (e.g. qwen3-coder-next)
     # appears under 50+ providers — each one is a distinct way to access it.
