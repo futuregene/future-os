@@ -136,7 +136,7 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
                 .as_ref()
                 .and_then(|m| auth_store.base_url(&m.provider))
         })
-        .unwrap_or_else(|| future_agent::models::default_base_url_for_provider(&resolved_model));
+        .unwrap_or_default();
     let base_url = if base_url.is_empty() {
         "https://api.openai.com/v1".to_string()
     } else {
