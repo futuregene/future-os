@@ -22,8 +22,10 @@ export interface FutureEventMap {
   // workspace-relative (the form the mention pill stores); emitted by the file
   // tree, consumed by the active thread's Composer.
   "attach-file-to-context": { path: string; name: string };
-  /** Emitted when the agent completes a write/edit/shell tool — the file tree
-   * should re-read so newly created or modified files appear. */
+  /**
+   * Emitted when the agent completes a write/edit/shell tool — the file tree
+   * should re-read so newly created or modified files appear.
+   */
   "file-tree-refresh": void;
   /**
    * Emitted when installed skills change out-of-band (e.g. the silent

@@ -1,5 +1,14 @@
 import type { AgentActivityItem, AgentMessage, MessageAttachment, MessageSegment } from "./agentThreadTypes";
+import type { ToolKind } from "./toolActivityModel";
 import { isSoftExit, nonZeroExitCode } from "./agentActivity";
+import {
+  asToolKind,
+  COLLAPSIBLE_KINDS,
+  dedupeByTarget,
+  foldCollapsibleRuns,
+  normalizeArgs,
+  targetFromArgs,
+} from "./toolActivityModel";
 
 /** Raw entry from agent get_session_entries RPC. */
 export interface SessionEntry {
@@ -40,39 +49,6 @@ function attachmentsFromMeta(entry: SessionEntry): MessageAttachment[] | undefin
   }));
 }
 
-const TOOL_NAMES = new Set(["read", "shell", "edit", "write"]);
-
-function asToolKind(name: string): "read" | "shell" | "edit" | "write" {
-  return TOOL_NAMES.has(name) ? (name as "read" | "shell" | "edit" | "write") : "shell";
-}
-
-/**
- * The activity's display target from a tool call's arguments: the command for
- * shell, else the file path. Without this a reloaded write/read/edit row shows
- * its label ("写入") with no path. Args are the agent's arguments value — a JSON
- * string (usual) or an already-parsed object.
- */
-function targetFromToolArgs(kind: string, args: unknown): string | undefined {
-  let obj: Record<string, unknown> | null = null;
-  if (args && typeof args === "object") {
-    obj = args as Record<string, unknown>;
-  }
-  else if (typeof args === "string") {
-    try {
-      const parsed = JSON.parse(args) as unknown;
-      if (parsed && typeof parsed === "object")
-        obj = parsed as Record<string, unknown>;
-    }
-    catch {
-      return undefined;
-    }
-  }
-  if (!obj)
-    return undefined;
-  const str = (key: string) => (typeof obj[key] === "string" ? (obj[key] as string) : undefined);
-  return kind === "shell" ? str("command") : (str("path") ?? str("file_path") ?? str("filePath"));
-}
-
 interface TurnAcc {
   userMessage?: AgentMessage;
   segments: MessageSegment[];
@@ -106,22 +82,6 @@ function toolResultFailed(content: string, command: string | undefined): boolean
   return !isSoftExit(code, command);
 }
 
-const COLLAPSIBLE_KINDS = new Set(["shell", "edit", "write", "read"]);
-
-/** Distinct-by-target (file tools count files, not touches). */
-function dedupeByTarget(items: AgentActivityItem[]): AgentActivityItem[] {
-  const seen = new Set<string>();
-  const out: AgentActivityItem[] = [];
-  for (const item of items) {
-    const key = item.target ?? item.id;
-    if (seen.has(key))
-      continue;
-    seen.add(key);
-    out.push(item);
-  }
-  return out;
-}
-
 /**
  * Collapse an uninterrupted burst of same-kind, completed tool activities into
  * one summary row ("编辑了 N 个文件"), matching the live/store path. A text or
@@ -129,37 +89,27 @@ function dedupeByTarget(items: AgentActivityItem[]): AgentActivityItem[] {
  */
 function collapseActivitySegments(segments: MessageSegment[]): MessageSegment[] {
   const out: MessageSegment[] = [];
-  let i = 0;
-  while (i < segments.length) {
-    const seg = segments[i];
-    if (seg && seg.kind === "activity" && seg.item.status === "completed" && COLLAPSIBLE_KINDS.has(seg.item.kind)) {
-      const group = [seg.item];
-      let j = i + 1;
-      while (j < segments.length) {
-        const next = segments[j];
-        if (next && next.kind === "activity" && next.item.status === "completed" && next.item.kind === seg.item.kind) {
-          group.push(next.item);
-          j += 1;
-        }
-        else {
-          break;
-        }
-      }
-      if (group.length > 1) {
-        const children = seg.item.kind === "shell" ? group : dedupeByTarget(group);
-        out.push({
-          id: segId(),
-          kind: "activity",
-          item: { id: segId(), kind: seg.item.kind, status: "completed", count: children.length, children },
-        });
-        i = j;
-        continue;
-      }
+  const runs = foldCollapsibleRuns(segments, seg =>
+    seg.kind === "activity" && seg.item.status === "completed" && COLLAPSIBLE_KINDS.has(seg.item.kind as ToolKind)
+      ? (seg.item.kind as ToolKind)
+      : null);
+
+  for (const run of runs) {
+    if (!run.collapsed) {
+      out.push(run.item);
+      continue;
     }
-    if (seg)
-      out.push(seg);
-    i += 1;
+    const items = run.group
+      .filter((seg): seg is Extract<MessageSegment, { kind: "activity" }> => seg.kind === "activity")
+      .map(seg => seg.item);
+    const children = run.kind === "shell" ? items : dedupeByTarget(items);
+    out.push({
+      id: segId(),
+      kind: "activity",
+      item: { id: segId(), kind: run.kind, status: "completed", count: children.length, children },
+    });
   }
+
   return out;
 }
 
@@ -271,7 +221,7 @@ export function entriesToMessages(entries: SessionEntry[]): AgentMessage[] {
       if (entry.tool_calls) {
         for (const tc of entry.tool_calls) {
           const kind = asToolKind(tc.function.name);
-          const target = targetFromToolArgs(kind, tc.function.arguments);
+          const target = targetFromArgs(kind, normalizeArgs(tc.function.arguments));
           const item: AgentActivityItem = {
             // Use the LLM's tool call id (call_00_xxx) so it matches the
             // stored tool call records in the runs panel.

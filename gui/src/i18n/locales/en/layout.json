@@ -49,10 +49,6 @@
     "storeInitFailed": "FutureOS local storage failed to initialize: ",
     "startConversationFailed": "Failed to start the conversation: {{error}}",
     "noWorkspaceSelected": "No workspace selected",
-    "data": "Data",
-    "skill": "Skill",
-    "dataPlaceholder": "Data sources and credentials are planned as the next resource module.",
-    "skillPlaceholder": "Skills will manage built-in and workspace-level agent capabilities.",
     "newChat": "New Chat"
   },
   "appShellDialogs": {
