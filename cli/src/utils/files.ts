@@ -1,6 +1,6 @@
 import { constants as fsConstants } from "node:fs";
 import { access } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { spawn } from "node:child_process";
 
 export async function assertReadableFile(
   path: string,
@@ -30,28 +30,34 @@ export async function canAccess(path: string, mode: number): Promise<boolean> {
 }
 
 /**
- * Directory of the currently running executable.
- *
- * For a `bun build --compile` single-file binary, `process.execPath` is the real
- * path of that binary (symlinks resolved, cwd-independent), so its directory is
- * where packaged builds ship co-located siblings (future-agent, future-tui)
- * inside the .app / portable folder. When running via Node (dev / npm-link),
- * this is Node's own directory, which has no such siblings — callers then fall
- * back to repo-relative resolution.
+ * Find an executable on PATH.  Returns the first match, or null.
+ * On Unix this shells out to `which`; on Windows to `where`.
  */
-export function selfDir(): string {
-  return dirname(process.execPath);
-}
-
-/**
- * Resolve a sibling binary co-located next to the running executable, or null if
- * it is absent / not executable. `name` is the base name without extension; a
- * `.exe` suffix is added on Windows.
- */
-export async function colocatedBinary(name: string): Promise<string | null> {
-  const exe = process.platform === "win32" ? `${name}.exe` : name;
-  const candidate = join(selfDir(), exe);
-  return (await canAccess(candidate, fsConstants.X_OK)) ? candidate : null;
+export function which(name: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const cmd = process.platform === "win32" ? "where" : "which";
+    // On Windows the extension is part of the search; "where future-agent"
+    // won't find "future-agent.exe", but "where future-agent.exe" often
+    // works without the extension too.  Be explicit to be safe.
+    const target = process.platform === "win32" ? `${name}.exe` : name;
+    const child = spawn(cmd, [target], {
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    });
+    let stdout = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.on("close", (code) => {
+      if (code === 0 && stdout.trim()) {
+        // Take the first line (which may print multiple on Windows).
+        resolve(stdout.trim().split("\n")[0].trim());
+      } else {
+        resolve(null);
+      }
+    });
+    child.on("error", () => resolve(null));
+  });
 }
 
 export { fsConstants };

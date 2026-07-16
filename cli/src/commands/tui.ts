@@ -1,7 +1,7 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { assertExecutableFile, assertReadableFile, colocatedBinary } from "../utils/files.js";
+import { assertExecutableFile, assertReadableFile, which } from "../utils/files.js";
 import { runInheritedProcess } from "../utils/process.js";
 
 // The TUI is launched either as a standalone compiled binary (packaged builds)
@@ -33,9 +33,10 @@ async function resolveTuiTarget(): Promise<TuiTarget> {
     return { kind: "entry", path: entryOverride };
   }
 
-  // Packaged builds ship the compiled future-tui next to this executable.
-  const colocated = await colocatedBinary("future-tui");
-  if (colocated) return { kind: "binary", path: colocated };
+  // Look up the compiled binary on PATH — covers make install to $PREFIX
+  // and packaged builds where future-tui sits beside the CLI.
+  const onPath = await which("future-tui");
+  if (onPath) return { kind: "binary", path: onPath };
 
   // Dev / source checkout: run the TUI's JS entry with the current runtime.
   const currentFile = fileURLToPath(import.meta.url);
