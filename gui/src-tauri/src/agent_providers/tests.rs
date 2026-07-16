@@ -78,9 +78,9 @@ fn list_includes_catalog_providers_after_future() {
     let _home = HomeGuard::new("catalog-list");
     let view = list_agent_providers().unwrap();
     assert_eq!(view.builtin.first().map(|p| p.id.as_str()), Some("future"));
-    let openai = view.builtin.iter().find(|p| p.id == "openai").unwrap();
-    assert_eq!(openai.name, "OpenAI");
-    assert!(openai.model_count > 0);
+    let deepseek = view.builtin.iter().find(|p| p.id == "deepseek").unwrap();
+    assert_eq!(deepseek.name, "DeepSeek");
+    assert!(deepseek.model_count > 0);
 }
 
 #[test]
@@ -111,34 +111,34 @@ fn custom_provider_shadows_builtin_catalog_provider() {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(
         &path,
-        r#"{"providers":{"openai":{"name":"My OpenAI","api":"openai-completions","baseUrl":"https://proxy.example.com/v1","models":[]}}}"#,
+        r#"{"providers":{"deepseek":{"name":"My DeepSeek","api":"openai-completions","baseUrl":"https://proxy.example.com/v1","models":[]}}}"#,
     )
     .unwrap();
     let view = list_agent_providers().unwrap();
-    assert!(view.builtin.iter().all(|p| p.id != "openai"));
+    assert!(view.builtin.iter().all(|p| p.id != "deepseek"));
     assert_eq!(view.custom.len(), 1);
-    assert_eq!(view.custom[0].id, "openai");
+    assert_eq!(view.custom[0].id, "deepseek");
 }
 
 #[test]
 fn update_builtin_provider_key_sets_and_clears_auth_entry() {
     let _home = HomeGuard::new("builtin-key");
     let view = update_builtin_provider_key(UpdateBuiltinProviderKeyInput {
-        id: "openai".to_string(),
+        id: "deepseek".to_string(),
         api_key: Some("sk-test".to_string()),
     })
     .unwrap();
     assert!(
         view.builtin
             .iter()
-            .find(|provider| provider.id == "openai")
+            .find(|provider| provider.id == "deepseek")
             .unwrap()
             .has_api_key
     );
     assert_eq!(
         crate::auth_store::read()
             .unwrap()
-            .get("openai")
+            .get("deepseek")
             .and_then(Value::as_object)
             .and_then(|entry| entry.get("key"))
             .and_then(Value::as_str),
@@ -146,7 +146,7 @@ fn update_builtin_provider_key_sets_and_clears_auth_entry() {
     );
 
     let view = update_builtin_provider_key(UpdateBuiltinProviderKeyInput {
-        id: "openai".to_string(),
+        id: "deepseek".to_string(),
         api_key: None,
     })
     .unwrap();
@@ -154,13 +154,13 @@ fn update_builtin_provider_key_sets_and_clears_auth_entry() {
         !view
             .builtin
             .iter()
-            .find(|provider| provider.id == "openai")
+            .find(|provider| provider.id == "deepseek")
             .unwrap()
             .has_api_key
     );
     assert!(crate::auth_store::read()
         .unwrap()
-        .get("openai")
+        .get("deepseek")
         .and_then(Value::as_object)
         .and_then(|entry| entry.get("key"))
         .is_none());
@@ -169,10 +169,10 @@ fn update_builtin_provider_key_sets_and_clears_auth_entry() {
 #[test]
 fn create_rejects_builtin_catalog_id_and_name() {
     let _home = HomeGuard::new("builtin-collision");
-    let id_err = upsert_custom_provider(input("openai", "OpenAI Proxy", true)).unwrap_err();
+    let id_err = upsert_custom_provider(input("deepseek", "DeepSeek Proxy", true)).unwrap_err();
     assert!(id_err.to_string().contains("built-in"));
 
-    let name_err = upsert_custom_provider(input("p1", "OpenAI", true)).unwrap_err();
+    let name_err = upsert_custom_provider(input("p1", "DeepSeek", true)).unwrap_err();
     assert!(name_err.to_string().contains("built-in"));
 }
 
@@ -301,67 +301,66 @@ fn model_modalities_round_trip() {
 }
 
 #[test]
-fn azure_provider_requires_base_url_flag() {
-    let _home = HomeGuard::new("azure-requires");
+fn catalog_providers_have_real_base_urls() {
+    let _home = HomeGuard::new("catalog-base-urls");
     let view = list_agent_providers().unwrap();
-    let azure = view
+    let deepseek = view
         .builtin
         .iter()
-        .find(|p| p.id == "azure-openai-responses")
-        .expect("azure provider present in catalog");
-    assert!(azure.requires_base_url);
-    assert!(azure.base_url.contains("YOUR_RESOURCE"));
+        .find(|p| p.id == "deepseek")
+        .expect("deepseek present in catalog");
+    // Regular catalog providers don't require base URL override.
+    assert!(!deepseek.requires_base_url);
+    assert!(!deepseek.base_url.is_empty());
 }
 
 #[test]
 fn set_builtin_base_url_override_keeps_provider_builtin() {
-    let _home = HomeGuard::new("azure-override");
+    let _home = HomeGuard::new("override");
     let view = set_builtin_provider_base_url(SetBuiltinProviderBaseUrlInput {
-        id: "azure-openai-responses".to_string(),
-        base_url: "https://my-res.openai.azure.com/openai/v1".to_string(),
+        id: "deepseek".to_string(),
+        base_url: "https://custom-deepseek.example.com/v1".to_string(),
     })
     .unwrap();
 
-    // Still built-in (not moved to custom), with the override applied and the
-    // requires-base-url flag intact so it stays editable.
-    assert!(view.custom.iter().all(|p| p.id != "azure-openai-responses"));
-    let azure = view
+    // Still built-in (not moved to custom), with the override applied.
+    assert!(view.custom.iter().all(|p| p.id != "deepseek"));
+    let deepseek = view
         .builtin
         .iter()
-        .find(|p| p.id == "azure-openai-responses")
+        .find(|p| p.id == "deepseek")
         .unwrap();
-    assert_eq!(azure.base_url, "https://my-res.openai.azure.com/openai/v1");
-    assert!(azure.requires_base_url);
-    assert!(azure.model_count > 0);
+    assert_eq!(deepseek.base_url, "https://custom-deepseek.example.com/v1");
+    assert!(deepseek.model_count > 0);
 
     // Persisted as a plain baseUrl override the agent reads.
     let doc = config_io::read_json_lenient(&models_json_path().unwrap());
     assert_eq!(
-        doc["providers"]["azure-openai-responses"]["baseUrl"],
-        json!("https://my-res.openai.azure.com/openai/v1")
+        doc["providers"]["deepseek"]["baseUrl"],
+        json!("https://custom-deepseek.example.com/v1")
     );
 
     // Clearing removes the override entirely.
     set_builtin_provider_base_url(SetBuiltinProviderBaseUrlInput {
-        id: "azure-openai-responses".to_string(),
+        id: "deepseek".to_string(),
         base_url: String::new(),
     })
     .unwrap();
     let doc = config_io::read_json_lenient(&models_json_path().unwrap());
-    assert!(doc["providers"].get("azure-openai-responses").is_none());
+    assert!(doc["providers"].get("deepseek").is_none());
 }
 
 #[test]
 fn set_builtin_base_url_rejects_placeholder_and_bad_url() {
-    let _home = HomeGuard::new("azure-reject");
+    let _home = HomeGuard::new("reject-bad-url");
     let placeholder = set_builtin_provider_base_url(SetBuiltinProviderBaseUrlInput {
-        id: "azure-openai-responses".to_string(),
-        base_url: "https://YOUR_RESOURCE.openai.azure.com/openai/v1".to_string(),
+        id: "deepseek".to_string(),
+        base_url: "https://YOUR_RESOURCE.deepseek.example.com/v1".to_string(),
     });
     assert!(placeholder.is_err());
 
     let bad = set_builtin_provider_base_url(SetBuiltinProviderBaseUrlInput {
-        id: "azure-openai-responses".to_string(),
+        id: "deepseek".to_string(),
         base_url: "ftp://example.com".to_string(),
     });
     assert!(bad.is_err());
