@@ -48,12 +48,12 @@ install-cli: build-cli
 	$(SUDO) cp cli/dist/future $(PREFIX)/future
 
 install-gui: install-cli
-	cd gui && npm install && npm run build
+	cd gui && npm install
 	@mkdir -p gui/src-tauri/binaries
 	cd agent && cargo build --release
 	cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
 	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET)
-	cd gui/src-tauri && cargo build --release
+	cd gui && npx tauri build --no-bundle
 	$(SUDO) cp gui/src-tauri/target/release/futureos $(PREFIX)/future-gui
 
 install-channels:
