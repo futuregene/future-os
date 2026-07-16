@@ -224,7 +224,7 @@ export async function installBuiltinSkills(): Promise<void> {
 
   let skills: SkillInfo[];
   try {
-    skills = (await fetchSkills(platformUrl)).filter(s => s.category === "builtin");
+    skills = (await fetchSkills(platformUrl)).filter(s => s.id.startsWith("future-"));
   } catch (err) {
     console.error("Failed to fetch builtin skills.");
     console.error(err instanceof Error ? err.message : String(err));
@@ -268,9 +268,9 @@ export async function installBuiltinSkills(): Promise<void> {
 async function updateSkills(): Promise<void> {
   const platformUrl = await getPlatformUrl();
   console.log(`Fetching skill catalog from ${platformUrl}...`);
-  const skills = (await fetchSkills(platformUrl)).filter(s => s.category === "builtin");
+  const skills = await fetchSkills(platformUrl);
   if (skills.length === 0) {
-    console.log("No builtin skills available.");
+    console.log("No skills available.");
     return;
   }
 
