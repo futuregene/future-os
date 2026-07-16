@@ -7,6 +7,9 @@
  *   3. Session stats (disk + agent)
  *   4. Skills status (local installs + remote updates)
  *   5. Login status + provider/model summary
+ *
+ * --fix handles: login (auth flow), skills (install builtin).
+ * Other issues (missing binaries, bad config) require manual resolution.
  */
 
 import * as fs from "node:fs";
@@ -28,6 +31,25 @@ interface CheckResult {
   lines: string[];
 }
 
+// ── Colors ─────────────────────────────────────────────────────────────────
+
+const C = { reset: "\x1b[0m", bold: "\x1b[1m", dim: "\x1b[2m" };
+const GREEN = "\x1b[32m";
+const YELLOW = "\x1b[33m";
+const RED = "\x1b[31m";
+
+function icon(s: CheckResult["status"]): string {
+  if (s === "ok") return `${GREEN}[ok]${C.reset}`;
+  if (s === "warn") return `${YELLOW}[--]${C.reset}`;
+  return `${RED}[!!]${C.reset}`;
+}
+
+function colorStatus(s: CheckResult["status"], text: string): string {
+  if (s === "ok") return `${GREEN}${text}${C.reset}`;
+  if (s === "warn") return `${YELLOW}${text}${C.reset}`;
+  return `${RED}${text}${C.reset}`;
+}
+
 // ── Constants ──────────────────────────────────────────────────────────────
 
 const AGENT_DIR = path.join(os.homedir(), ".future", "agent");
@@ -39,21 +61,22 @@ const GRPC_ADDR = process.env.FUTURE_AGENT_GRPC_ADDR ?? "127.0.0.1:50051";
 
 const SKILL_DIRS: Record<string, string> = {
   app: path.join(os.homedir(), ".future", "agent", "skills"),
+  project: path.join(process.cwd(), ".future", "agent", "skills"),
   agents: path.join(os.homedir(), ".agents", "skills"),
 };
 
 // ── Entry ──────────────────────────────────────────────────────────────────
 
 export async function doctor(fix: boolean): Promise<void> {
-  console.log("Future Doctor — checking environment...\n");
+  console.log(`${C.bold}Future Doctor${C.reset} — checking environment...\n`);
 
   const results: CheckResult[] = [];
 
   // 1. Component installation & connectivity
   results.push(await checkComponent("future-agent", "Agent"));
-  results.push(await checkComponent("future-channel", "Channel bridge"));
   results.push(await checkComponent("future-tui", "TUI"));
   results.push(await checkComponent("future-gui", "GUI"));
+  results.push(await checkComponent("future-channel", "Channel bridge"));
   results.push(await checkAgentConnection());
 
   // 2. Configuration
@@ -69,7 +92,7 @@ export async function doctor(fix: boolean): Promise<void> {
 
   // 5. Login + provider/model summary
   results.push(await checkLogin());
-  results.push(checkProviders());
+  results.push(await checkProviders());
 
   printResults(results);
 
@@ -78,19 +101,19 @@ export async function doctor(fix: boolean): Promise<void> {
   const problemCount = issues.length + warns.length;
 
   if (problemCount === 0) {
-    console.log("All checks passed.\n");
+    console.log(`${GREEN}All checks passed.${C.reset}\n`);
     return;
   }
 
   if (!fix) {
     console.log(
-      `${problemCount} issue(s) found. Run \`future doctor --fix\` to attempt automatic repair.\n`,
+      `${problemCount} issue(s) found. Run \`${C.bold}future doctor --fix${C.reset}\` to attempt automatic repair.\n`,
     );
     return;
   }
 
   // --fix mode
-  console.log("Attempting repairs...\n");
+  console.log(`${C.bold}Attempting repairs...${C.reset}\n`);
   let loginOk = false;
   for (const result of results) {
     if (result.status === "ok") continue;
@@ -98,13 +121,19 @@ export async function doctor(fix: boolean): Promise<void> {
       loginOk = await tryFix("Starting login flow...", async () => {
         await login();
       });
-    } else if (result.name === "Skills" && loginOk) {
-      await tryFix("Installing builtin skills...", async () => {
-        await installBuiltinSkills("app");
-      });
+    } else if (result.name === "Skills") {
+      if (!loginOk) {
+        console.log(`  ${YELLOW}Skipping skills install — not logged in.${C.reset}\n`);
+      } else {
+        await tryFix("Installing builtin skills...", async () => {
+          await installBuiltinSkills("app");
+        });
+      }
     }
+    // Other issues (missing binaries, bad config, unreachable agent)
+    // are not automatically fixable — the user must resolve them manually.
   }
-  console.log("Done.\n");
+  console.log(`${C.bold}Done.${C.reset}\n`);
 }
 
 // ── 1. Component checks ───────────────────────────────────────────────────
@@ -122,14 +151,25 @@ async function checkComponent(bin: string, label: string): Promise<CheckResult> 
   return {
     name: label,
     status: "ok",
-    lines: version ? [`${binPath}  (${version})`] : [binPath],
+    lines: version ? [`${binPath}  ${C.dim}(${version})${C.reset}`] : [binPath],
   };
 }
 
+/** Run --version and capture only the first meaningful output line (skip log lines). */
 function getBinaryVersion(binPath: string): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile(binPath, ["--version"], { timeout: 5000 }, (_err, stdout) => {
-      resolve(stdout.trim().split("\n")[0] || null);
+    execFile(binPath, ["--version"], { timeout: 5000 }, (_err, stdout, stderr) => {
+      // Some binaries emit logs to stdout alongside the version string.
+      // Pick the first line that looks like a version (starts with the binary
+      // name or contains a version number), falling back to stderr.
+      const candidates = [...stdout.trim().split("\n"), ...stderr.trim().split("\n")];
+      const versionLine = candidates.find(
+        (line) =>
+          !/^\d{4}-\d{2}-\d{2}T/.test(line) &&       // skip ISO timestamp logs
+          !/\b(INFO|WARN|ERROR|DEBUG|TRACE)\b/.test(line) && // skip log-level lines
+          line.length > 0,
+      );
+      resolve(versionLine || null);
     });
   });
 }
@@ -152,7 +192,7 @@ async function checkAgentConnection(): Promise<CheckResult> {
     return {
       name: "Agent connection",
       status: "issue",
-      lines: [`Cannot reach agent at ${GRPC_ADDR} — start with: future-agent`],
+      lines: [`Cannot reach agent at ${GRPC_ADDR} — start with: ${C.bold}future-agent${C.reset}`],
     };
   }
 }
@@ -271,7 +311,6 @@ async function checkSessions(): Promise<CheckResult> {
     lines.push("No session directory — no sessions created yet");
   }
 
-  // Augment with gRPC stats if agent is reachable
   try {
     const client = new RunClient(GRPC_ADDR);
     const { sessions } = await client.listSessions();
@@ -313,7 +352,7 @@ async function checkSkills(): Promise<CheckResult> {
       });
       if (skillDirs.length > 0) {
         localCount += skillDirs.length;
-        lines.push(`  ${scope}: ${skillDirs.map((d) => d.name).join(", ")}`);
+        lines.push(`  ${scope} (${dir}): ${skillDirs.map((d) => d.name).join(", ")}`);
       }
     } catch {
       // skip unreadable dirs
@@ -321,7 +360,11 @@ async function checkSkills(): Promise<CheckResult> {
   }
 
   if (localCount === 0) {
-    lines.push("No skills installed locally");
+    lines.push(`No skills installed. Search paths:`);
+    for (const [, dir] of Object.entries(SKILL_DIRS)) {
+      const exists = fs.existsSync(dir) ? "" : " (missing)";
+      lines.push(`  ${dir}${exists}`);
+    }
   }
 
   // Check remote catalog for updates
@@ -341,7 +384,7 @@ async function checkSkills(): Promise<CheckResult> {
             const verMatch = md.match(/^version:\s*(.+)$/m);
             if (verMatch && skill.latest_version && verMatch[1].trim() !== skill.latest_version) {
               lines.push(
-                `  ${skill.id}: local ${verMatch[1].trim()} → remote ${skill.latest_version}`,
+                `  ${skill.id}: local ${verMatch[1].trim()} ${C.dim}→${C.reset} remote ${skill.latest_version}`,
               );
               stale++;
             }
@@ -352,8 +395,8 @@ async function checkSkills(): Promise<CheckResult> {
           notInstalled++;
         }
       }
-      if (notInstalled > 0) lines.push(`  ${notInstalled} skill(s) not installed`);
-      if (stale > 0) lines.push(`  ${stale} skill(s) have updates available`);
+      if (notInstalled > 0) lines.push(`  ${notInstalled} not installed`);
+      if (stale > 0) lines.push(`  ${stale} have updates available`);
     }
   } catch {
     // offline or not logged in
@@ -392,18 +435,20 @@ async function checkLogin(): Promise<CheckResult> {
   };
 }
 
-function checkProviders(): CheckResult {
+async function checkProviders(): Promise<CheckResult> {
   const lines: string[] = [];
   let keyCount = 0;
   let providerCount = 0;
 
-  // Count auth keys
+  // Collect providers with keys
+  const keyedProviders: string[] = [];
   try {
     if (fs.existsSync(AUTH_FILE)) {
       const raw = JSON.parse(fs.readFileSync(AUTH_FILE, "utf-8")) as Record<string, unknown>;
-      for (const v of Object.values(raw)) {
+      for (const [id, v] of Object.entries(raw)) {
         if (v && typeof v === "object" && "key" in (v as Record<string, unknown>)) {
           keyCount++;
+          if (id !== "future") keyedProviders.push(id);
         }
       }
     }
@@ -416,19 +461,33 @@ function checkProviders(): CheckResult {
     if (fs.existsSync(MODELS_FILE)) {
       const raw = JSON.parse(fs.readFileSync(MODELS_FILE, "utf-8")) as Record<string, unknown>;
       const providers = (raw.providers as Record<string, unknown>) ?? {};
-      const entries = Object.entries(providers).filter(
-        ([id]) => id !== "future",
-      );
+      const entries = Object.entries(providers).filter(([id]) => id !== "future");
       providerCount = entries.length;
       for (const [id, config] of entries) {
         if (isOverrideOnly(config)) continue;
         const c = config as Record<string, unknown>;
         const models = Array.isArray(c.models) ? c.models : [];
-        lines.push(`  ${id}: ${models.length} model(s)`);
+        const hasKey = keyedProviders.includes(id);
+        const keyNote = hasKey ? " [key]" : "";
+        lines.push(`  ${id}: ${models.length} model(s)${keyNote}`);
       }
     }
   } catch {
     // ignore
+  }
+
+  // If agent is reachable, ask it for built-in model count
+  try {
+    const client = new RunClient(GRPC_ADDR);
+    const state = await client.getState();
+    if (state.model) {
+      lines.push(`  Current model: ${state.model}`);
+    }
+    if (state.contextWindow) {
+      lines.push(`  Context window: ${state.contextWindow.toLocaleString()}`);
+    }
+  } catch {
+    // agent not running
   }
 
   lines.unshift(`${keyCount} provider(s) with API key, ${providerCount} in models.json`);
@@ -444,8 +503,8 @@ function checkProviders(): CheckResult {
 
 function printResults(results: CheckResult[]): void {
   for (const r of results) {
-    const icon = r.status === "ok" ? "[ok]" : r.status === "warn" ? "[--]" : "[!!]";
-    console.log(`${icon} ${r.name}`);
+    const label = colorStatus(r.status, r.name);
+    console.log(`${icon(r.status)} ${label}`);
     for (const line of r.lines) {
       console.log(`      ${line}`);
     }
@@ -454,13 +513,13 @@ function printResults(results: CheckResult[]): void {
 }
 
 async function tryFix(label: string, fn: () => Promise<void>): Promise<boolean> {
-  console.log(`  Fixing: ${label}`);
+  console.log(`  ${C.dim}Fixing:${C.reset} ${label}`);
   try {
     await fn();
-    console.log("  Done.\n");
+    console.log(`  ${GREEN}Done.${C.reset}\n`);
     return true;
   } catch (err) {
-    console.log(`  Failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    console.log(`  ${RED}Failed:${C.reset} ${err instanceof Error ? err.message : String(err)}\n`);
     return false;
   }
 }
