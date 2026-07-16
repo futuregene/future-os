@@ -159,7 +159,6 @@ function parseKittySequence(data: string): ParsedKittySequence | null {
   // Home/End: \x1b[<codepoint>;<mod>H/F or \x1b[<codepoint>;<mod>:<event>H/F
   const homeEndMatch = data.match(/^\x1b\[(\d+);(\d+)(?::(\d+))?([HF])$/);
   if (homeEndMatch) {
-    const codepoint = parseInt(homeEndMatch[1]!, 10);
     const modValue = parseInt(homeEndMatch[2]!, 10);
     const eventType = parseEventType(homeEndMatch[3]);
     const normalizedCodepoint = homeEndMatch[4] === "H" ? -14 : -15; // home : end

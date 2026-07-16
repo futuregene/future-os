@@ -31,38 +31,6 @@ function isEmojiFlag(s: string): boolean {
   return false;
 }
 
-function isEmojiModifierBase(code: number): boolean {
-  return (
-    (code >= 0x261D && code <= 0x270F) || // misc symbols
-    code === 0x1F385 || // Santa
-    code === 0x1F3C3 || code === 0x1F3C4 || // runner, surfer
-    (code >= 0x1F3CA && code <= 0x1F3CC) || // swimmer, etc
-    code === 0x1F3F3 || // flag
-    (code >= 0x1F441 && code <= 0x1F444) || // eyes, mouth
-    (code >= 0x1F446 && code <= 0x1F450) || // hands
-    (code >= 0x1F466 && code <= 0x1F478) || // people
-    code === 0x1F481 || code === 0x1F482 || // guards
-    (code >= 0x1F483 && code <= 0x1F487) || // various people
-    code === 0x1F48F || code === 0x1F491 || // kiss, couple
-    (code >= 0x1F574 && code <= 0x1F590) || // various
-    code === 0x1F595 || code === 0x1F596 || // middle finger, vulcan
-    (code >= 0x1F645 && code <= 0x1F647) || // gestures
-    (code >= 0x1F64B && code <= 0x1F64F) || // gestures
-    (code >= 0x1F6A3 && code <= 0x1F6B6) || // rowboat, pedestrian
-    code === 0x1F6C0 || // bath
-    code === 0x1F918 || code === 0x1F919 || // handshake variants
-    (code >= 0x1F91D && code <= 0x1F91F) || // handshake, etc
-    (code >= 0x1F926 && code <= 0x1F935) || // various
-    (code >= 0x1F9B5 && code <= 0x1F9B9) || // leg, foot, etc
-    (code >= 0x1F9BB && code <= 0x1F9BF) || // various
-    code === 0x1F9D1 || code === 0x1F9D2 || code === 0x1F9D3 // people
-  );
-}
-
-function isEmojiModifier(code: number): boolean {
-  return code >= 0x1F3FB && code <= 0x1F3FF; // skin tones
-}
-
 function isExtendedPictographic(code: number): boolean {
   return (
     (code >= 0x1F300 && code <= 0x1F64F) || // misc symbols, emoticons
@@ -668,19 +636,6 @@ export function sliceByColumn(s: string, start: number, end?: number): string {
   }
 
   if (end === undefined) {
-    // Return from start to end, including trailing ANSI codes
-    let trailing = "";
-    let j = i;
-    while (j < s.length) {
-      const code = extractAnsiCode(s, j);
-      if (code) {
-        trailing += code.code;
-        j += code.length;
-      } else {
-        trailing = ""; // reset trailing codes before content
-        break;
-      }
-    }
     return s.slice(i);
   }
 

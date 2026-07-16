@@ -8,9 +8,9 @@
 
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
-import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {

@@ -3,7 +3,7 @@
  * Shows: pwd, model, thinking, token stats, cost, context usage.
  */
 
-import { CSI, RESET } from "../tui.js";
+import { RESET } from "../tui.js";
 import { visibleWidth, truncateToWidth } from "../utils.js";
 import type { Component } from "../tui.js";
 
