@@ -51,7 +51,8 @@ install-gui: install-cli install-agent
 	@mkdir -p gui/src-tauri/binaries
 	cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
 	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET)
-	cd gui && npm install && npx tauri build --no-bundle
+	$(call npm-install-if-needed,gui)
+	cd gui && npx tauri build --no-bundle
 	$(SUDO) cp gui/src-tauri/target/release/futureos $(PREFIX)/future-gui
 
 install-channels: build-channels
@@ -84,7 +85,7 @@ install-skills:
 
 # ─── Build ──────────────────────────────────────────────────────────────────
 
-build: build-agent build-tui build-cli build-gui
+build: build-agent build-tui build-cli build-gui build-channels
 
 # Only run npm install when package.json is newer than node_modules.
 define npm-install-if-needed
@@ -106,7 +107,8 @@ build-cli:
 	cd cli && npm run gen-version && npm run build && bun build --compile dist/index.js --outfile dist/future
 
 build-gui:
-	cd gui && npm install && npm run build
+	$(call npm-install-if-needed,gui)
+	cd gui && npm run build
 
 build-channels:
 	cd channels && cargo build --release
@@ -153,7 +155,7 @@ run-agent:
 run-tui:
 	cd tui && npm run dev
 
-run-cli: build-cli
+run-cli:
 	cd cli && npm run dev
 
 run-gui:

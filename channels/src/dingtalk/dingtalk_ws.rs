@@ -7,9 +7,7 @@ use futures::{SinkExt, StreamExt};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::time::Duration;
-use tokio_tungstenite::{
-    connect_async_tls_with_config, tungstenite::Message as WsMessage,
-};
+use tokio_tungstenite::{connect_async_tls_with_config, tungstenite::Message as WsMessage};
 use tracing::{debug, info, warn};
 
 /// Event received from DingTalk stream.

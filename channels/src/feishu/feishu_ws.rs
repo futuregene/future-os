@@ -9,9 +9,7 @@ use prost::Message;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration, Instant};
-use tokio_tungstenite::{
-    connect_async_tls_with_config, tungstenite::Message as WsMessage,
-};
+use tokio_tungstenite::{connect_async_tls_with_config, tungstenite::Message as WsMessage};
 use tracing::{debug, info, warn};
 
 // Generated from proto/feishu_ws.proto — checked into src/generated/

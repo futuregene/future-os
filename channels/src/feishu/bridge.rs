@@ -1466,7 +1466,10 @@ fn dirs_next_path() -> std::path::PathBuf {
 /// Save a downloaded file to ~/.future/channels/feishu/files/{filename}.
 /// Returns the absolute path on success.
 fn save_received_file(data: &[u8], filename: &str) -> std::path::PathBuf {
-    let dir = dirs_next_path().join("channels").join("feishu").join("files");
+    let dir = dirs_next_path()
+        .join("channels")
+        .join("feishu")
+        .join("files");
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(filename);
     let _ = std::fs::write(&path, data);
