@@ -143,13 +143,13 @@ fmt:
 run-agent:
 	cd agent && cargo run -- --verbose
 
-run-tui: build-tui
+run-tui:
 	cd tui && npm run dev
 
 run-cli: build-cli
 	cd cli && npm run dev
 
-run-gui: build-gui
+run-gui:
 	cd gui && npm run tauri:dev
 
 package-gui: install-gui
@@ -196,11 +196,11 @@ help:
 	@echo "  test               Run Rust tests (agent)"
 	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI)"
 	@echo "  fmt                Format Rust code (agent + channels)"
-	@echo "  run-agent          Build & run Rust agent"
-	@echo "  run-tui            Build & run TUI"
-	@echo "  run-cli            Build & run CLI"
-	@echo "  run-gui            Build & run GUI"
-	@echo "  run-channels        Build & run channel bridge"
+	@echo "  run-agent          Run agent directly (debug build)"
+	@echo "  run-tui            Run TUI in dev mode"
+	@echo "  run-cli            Run CLI in dev mode"
+	@echo "  run-gui            Run GUI in dev mode"
+	@echo "  run-channels        Run channel bridge directly (debug build)"
 	@echo "  package-gui        Package GUI desktop bundles"
 	@echo "  generate-models    Fetch model data, regenerate Rust catalog + wiki docs"
 	@echo "  generate-proto     Compile proto/future.proto to Rust gRPC code"
