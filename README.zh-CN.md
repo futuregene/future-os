@@ -20,7 +20,7 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
 | 类别 | 说明 |
 |---|---|
 | **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、命令行 (CLI)、飞书机器人、钉钉机器人——一个 Agent，无处不在 |
-| **模型灵活** | 内置 906+ 模型（OpenAI、Anthropic、DeepSeek、Qwen 等）；通过 `models.json` 自定义 Provider；支持模型范围限定 |
+| **模型灵活** | 内置 900+ 模型，覆盖 30+ Provider（[完整目录](docs/wiki/zh/models.md)）；通过 `models.json` 自定义 Provider；支持模型范围限定 |
 | **流式输出与思考链** | 实时 token 流式传输，可折叠的思考链展示；可配置思考深度（off ↔ xhigh） |
 | **工具执行** | 读写、编辑、bash，带审批控制和沙箱保护（关闭 / 手动 / macOS Seatbelt）；上下文超 90% 自动压缩 |
 | **会话持久化** | JSONL 格式存储，支持 fork、clone、树形导航和问答计数 |

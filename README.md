@@ -20,7 +20,7 @@ FutureOS gives you a unified AI agent experience across TUI, GUI, CLI, Feishu, a
 | Category | Details |
 |---|---|
 | **Multi-Interface** | Terminal UI (TUI), Desktop app (GUI), CLI, Feishu bot, DingTalk bot — one agent, everywhere |
-| **Model Flexibility** | 906+ built-in models (OpenAI, Anthropic, DeepSeek, Qwen, …); custom providers via `models.json`; scoped model lists |
+| **Model Flexibility** | 900+ built-in models across 30+ providers ([full catalog](docs/wiki/en/models.md)); custom providers via `models.json`; scoped model lists |
 | **Streaming & Thinking** | Real-time token streaming with collapsible reasoning-content blocks; configurable thinking levels (off ↔ xhigh) |
 | **Tool Execution** | read, write, edit, bash with approval gating; sandbox tiers (off / manual / macOS Seatbelt); auto-compaction at 90% context |
 | **Session Persistence** | JSONL-based sessions with fork, clone, tree navigation, and query-count tracking |
