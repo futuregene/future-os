@@ -10,7 +10,7 @@ import {
   DEFAULT_WINDOWS_SERVICE,
 } from "../constants.js";
 import type { AgentCommand, ServiceResult } from "../types.js";
-import { assertExecutableFile, canAccess, colocatedBinary, fsConstants } from "../utils/files.js";
+import { assertExecutableFile, canAccess, fsConstants, which } from "../utils/files.js";
 import { formatProcessOutput, runProcess } from "../utils/process.js";
 import { escapeXml } from "../utils/string.js";
 
@@ -196,11 +196,12 @@ async function resolveAgentBinary(): Promise<string> {
     return override;
   }
 
-  // Packaged builds ship future-agent next to this executable (inside the .app's
-  // Contents/MacOS or the portable folder).
-  const colocated = await colocatedBinary("future-agent");
-  if (colocated) return colocated;
+  // Look up on PATH — covers make install to $PREFIX and any custom
+  // installation directory already on the user's PATH.
+  const onPath = await which("future-agent");
+  if (onPath) return onPath;
 
+  // Fall back to repo dev paths so developers can run without installing.
   const currentFile = fileURLToPath(import.meta.url);
   const cliRoot = resolve(dirname(currentFile), "..", "..");
   const repoRoot = resolve(cliRoot, "..");

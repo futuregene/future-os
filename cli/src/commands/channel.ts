@@ -9,7 +9,7 @@ import {
   DEFAULT_CHANNEL_WINDOWS_SERVICE,
 } from "../constants.js";
 import type { ChannelCommand, ServiceResult } from "../types.js";
-import { assertExecutableFile, canAccess, fsConstants } from "../utils/files.js";
+import { assertExecutableFile, canAccess, fsConstants, which } from "../utils/files.js";
 import { formatProcessOutput, runProcess } from "../utils/process.js";
 import { escapeXml } from "../utils/string.js";
 
@@ -193,6 +193,12 @@ async function resolveChannelBinary(): Promise<string> {
     return override;
   }
 
+  // Look up on PATH — covers make install to $PREFIX and any custom
+  // installation directory already on the user's PATH.
+  const onPath = await which("future-channel");
+  if (onPath) return onPath;
+
+  // Fall back to repo dev paths so developers can run without installing.
   const currentFile = fileURLToPath(import.meta.url);
   const cliRoot = resolve(dirname(currentFile), "..", "..");
   const repoRoot = resolve(cliRoot, "..");
