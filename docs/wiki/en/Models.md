@@ -1875,7 +1875,7 @@
 | `jamba-large-1.7` | AI21: Jamba Large 1.7 | 256K | 4K | — | — |
 | `kat-coder-pro-v2` | Kwaipilot: KAT-Coder-Pro V2 | 256K | 80K | — | — |
 | `codestral-2508` | Mistral: Codestral 2508 | 256K | 51K | — | — |
-| `nemotron-3-nano-omni-30b-a3b-reasoning:free` | NVIDIA: Nemotron 3 Nano Omni (free) | 256K | 66K | ✅ | ✅ |
+| `nemotron-3-nano-omni-30b-a3b-reasoning:free` | NVIDIA: Nemotron 3 Nano Omni (free) | 256K | 66K | ✅ | — |
 | `qwen3.5-9b` | Qwen: Qwen3.5-9B | 256K | 33K | ✅ | ✅ |
 | `qwen3.6-27b` | Qwen: Qwen3.6 27B | 256K | 66K | ✅ | ✅ |
 | `relace-search` | Relace: Relace Search | 256K | 128K | — | — |

@@ -80,7 +80,7 @@ future auth login
 
 See the [built-in model catalog](docs/wiki/en/Models.md) for supported providers and their default base URLs.
 
-**C — Custom provider.** For any OpenAI-compatible provider not in the built-in catalog, specify everything in `~/.future/agent/models.json`:
+**C — Custom provider.** Some providers (e.g. Azure, Azure Cognitive Services, Amazon Bedrock) are not in the [built-in catalog](docs/wiki/en/Models.md) because models.dev doesn't publish their base URL. For these, specify everything in `~/.future/agent/models.json`:
 
 ```json
 {
