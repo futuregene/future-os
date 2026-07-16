@@ -8,6 +8,7 @@ SCRIPT_DIR="${SCRIPT_PATH%/*}"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 GUI_DIR="$ROOT_DIR/gui"
 AGENT_DIR="$ROOT_DIR/agent"
+CLI_DIR="$ROOT_DIR/cli"
 LOG_DIR="$ROOT_DIR/.logs"
 
 AGENT_ADDR="${FUTURE_AGENT_GRPC_ADDR:-127.0.0.1:50051}"
@@ -20,6 +21,7 @@ STARTED_AGENT_PID=""
 
 REUSE_AGENT="${REUSE_AGENT:-0}"
 BUILD_AGENT="${BUILD_AGENT:-1}"
+BUILD_CLI="${BUILD_CLI:-1}"
 CLEAN_STALE_APP_TASKS="${CLEAN_STALE_APP_TASKS:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 
@@ -163,6 +165,27 @@ fi
 if [[ "$BUILD_AGENT" == "1" ]]; then
   echo "Building future-agent..."
   (cd "$AGENT_DIR" && cargo build)
+fi
+
+# Build the future CLI to a standalone dist/future (matching make build-cli) and
+# put it on the agent's PATH, so skills that shell out to `future` resolve it.
+# Non-fatal: a failure only means those skills won't work; the GUI test proceeds.
+if [[ "$BUILD_CLI" == "1" ]]; then
+  if command -v bun >/dev/null 2>&1; then
+    echo "Building future CLI..."
+    (
+      cd "$CLI_DIR"
+      [[ -d node_modules ]] || npm ci
+      npm run build
+      bun build --compile dist/index.js --outfile dist/future
+    ) || echo "future CLI build failed; skills that call \`future\` will not work."
+  else
+    echo "bun not found; skipping future CLI build (skills that call \`future\` will not work)."
+  fi
+fi
+# The agent (started below) inherits this exported PATH.
+if [[ -x "$CLI_DIR/dist/future" ]]; then
+  export PATH="$CLI_DIR/dist:$PATH"
 fi
 
 if [[ "$REUSE_AGENT" == "1" ]] && nc -z "$AGENT_HOST" "$AGENT_PORT" >/dev/null 2>&1; then
