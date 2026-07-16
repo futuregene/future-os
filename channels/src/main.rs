@@ -17,6 +17,11 @@ use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("future-channel v{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     // rustls-platform-verifier shares a rustls instance with reqwest and
     // tokio-tungstenite.  Both enable different default features on rustls
     // (aws-lc-rs vs. ring), so we must pin one provider explicitly.
