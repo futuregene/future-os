@@ -20,7 +20,7 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
 | 类别 | 说明 |
 |---|---|
 | **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、命令行 (CLI)、飞书机器人、钉钉机器人——一个 Agent，无处不在 |
-| **模型灵活** | 内置 900+ 模型，覆盖 30+ Provider（[完整目录](docs/wiki/zh/Models.md)）；通过 `models.json` 自定义 Provider；支持模型范围限定 |
+| **模型灵活** | 内置 1000+ 模型，覆盖 100+ Provider（[完整目录](docs/wiki/zh/Models.md)）；通过 `models.json` 自定义 Provider；支持模型范围限定 |
 | **流式输出与思考链** | 实时 token 流式传输，可折叠的思考链展示；可配置思考深度（off ↔ xhigh） |
 | **工具执行** | 读写、编辑、bash，带审批控制和沙箱保护（关闭 / 手动 / macOS Seatbelt）；上下文超 90% 自动压缩 |
 | **会话持久化** | JSONL 格式存储，支持 fork、clone、树形导航和问答计数 |
@@ -70,7 +70,7 @@ Agent 至少需要一个带 API key 的模型才能回复。两种方式:
 future auth login
 ```
 
-**B —— 已知 Provider，只需提供 Key。** 多数 Provider 已有内置的 Base URL。只需将 API Key 放入 `~/.future/agent/auth.json`，按 Provider 名索引：
+**B —— 使用已知 Provider。** 将 API Key 放入 `~/.future/agent/auth.json`，按 Provider 名索引。多数 Provider 已有内置 Base URL，模型自动发现：
 
 ```json
 {
@@ -78,9 +78,19 @@ future auth login
 }
 ```
 
-查看 [内置模型目录](docs/wiki/zh/Models.md) 了解支持的 Provider 及其默认 Base URL。
+不在[内置目录](docs/wiki/zh/Models.md)中的 Provider（如 Azure）需额外指定 `baseUrl`：
 
-**C —— 自定义 Provider。** 部分 Provider（如 Azure、Azure Cognitive Services、Amazon Bedrock）不在[内置目录](docs/wiki/zh/Models.md)中，因为 models.dev 未提供其 base URL。此类 Provider 需在 `~/.future/agent/models.json` 中指定完整信息：
+```json
+{
+  "azure": {
+    "type": "api_key",
+    "key": "sk-...",
+    "baseUrl": "https://YOUR_RESOURCE.openai.azure.com/openai/v1"
+  }
+}
+```
+
+**C —— 自定义 Provider。** 需要手动指定模型列表时，使用 `~/.future/agent/models.json`：
 
 ```json
 {
