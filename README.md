@@ -104,12 +104,13 @@ For providers with user-specific base URLs (e.g. Azure's `YOUR_RESOURCE`), add a
 
 ### Run the agent
 
-Every client — TUI, GUI, CLI, channels — is a thin gRPC client. **The agent must be running first**, listening on `127.0.0.1:50051`. Two options:
+Every client — TUI, GUI, CLI, channels — is a thin gRPC client. **The agent must be running first**, listening on `127.0.0.1:50051`:
 
 | Mode | Command | Use when |
 |---|---|---|
 | **Foreground** | `make run-agent` | Builds and runs agent in terminal. Logs to stdout. Stop with Ctrl-C. |
 | **Foreground** | `future-agent`  | Runs pre-built agent. Logs to stdout. Stop with Ctrl-C. |
+
 Then launch a client:
 
 ```bash
