@@ -22,7 +22,7 @@ FutureOS gives you a unified AI agent experience across TUI, GUI, CLI, Feishu, a
 | **Multi-Interface** | Terminal UI (TUI), Desktop app (GUI), CLI, Feishu bot, DingTalk bot — one agent, everywhere |
 | **Model Flexibility** | 1000+ built-in models across 100+ providers ([full catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
 | **Streaming & Thinking** | Real-time token streaming with collapsible reasoning-content blocks; configurable thinking levels (off ↔ xhigh) |
-| **Tool Execution** | read, write, edit, bash with approval gating; sandbox tiers (off / manual / macOS Seatbelt); auto-compaction at 90% context |
+| **Tool Execution** | read, write, edit, shell with approval gating; sandbox tiers (off / manual / macOS Seatbelt); auto-compaction at 90% context |
 | **Session Persistence** | JSONL-based sessions with fork, clone, tree navigation, and query-count tracking |
 | **Compaction & Retry** | Automatic context compaction; exponential-backoff retry on context-length errors |
 | **Channel Bridge** | Feishu (Lark) and DingTalk bots — markdown streaming, slash commands, session management via chat |
@@ -109,13 +109,14 @@ Every client — TUI, GUI, CLI, channels — is a thin gRPC client. **The agent 
 | Mode | Command | Use when |
 |---|---|---|
 | **Foreground** | `make run-agent` | Builds and runs agent in terminal. Logs to stdout. Stop with Ctrl-C. |
-| **Background** | `future agent start` | Installs as OS service, survives reboots. Manage with `future agent stop \| restart \| status`. |
+| **Foreground** | `future-agent` | Runs agent in current terminal. Logs to stdout. Stop with Ctrl-C. |
+| **Background** | `future agent start` | Installs as OS service (launchctl/systemd). Stop/restart/status via `future agent`. |
 
 Then launch a client:
 
 ```bash
-future tui           # terminal, after make install
-future gui           # desktop, after make install
+future-tui           # terminal, after make install
+future-gui           # desktop, after make install
 # or in dev mode (builds first):
 make run-tui         # terminal
 make run-gui         # desktop
@@ -127,9 +128,9 @@ make run-gui         # desktop
 
 ```bash
 future run "Write a Python sort function"    # one-shot prompt
-future tui                                   # open the TUI
-future gui                                   # launch the desktop app
-future channel start                         # start the channel bridge
+future-tui                                   # open the TUI
+future-gui                                   # launch the desktop app
+future-channel                               # start the channel bridge
 future --help                                # full command list
 ```
 
@@ -217,7 +218,7 @@ make generate-proto          # agent + channels + TUI
 
 | Symptom | Fix |
 |---|---|
-| Client exits with a connection / gRPC error | The agent isn't running. Start it (`make run-agent` or `future agent start`) and check nothing else holds the port: `lsof -i :50051`. |
+| Client exits with a connection / gRPC error | The agent isn't running. Start it (`future-agent` or `make run-agent`) and check nothing else holds the port: `lsof -i :50051`. |
 | Agent replies with an auth / "no model" error | No model configured yet. Run `future auth login`, or add a provider to `models.json` — see [Configure a model](#configure-a-model). |
 | GUI can't find the agent binary | `make install-gui` copies the agent sidecar using your host target triple. If your triple differs from the auto-detected one, copy it manually: `cp agent/target/debug/future-agent gui/src-tauri/binaries/future-agent-$(rustc -vV | sed -n 's/^host: //p')`. |
 | Build fails with "unable to find linker 'mold'" | Install mold: `sudo apt install mold` (Linux x86_64 only). ARM Linux doesn't need it. |
