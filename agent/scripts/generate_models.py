@@ -364,7 +364,7 @@ def generate_wiki_docs(models: List[Dict], timestamp: str):
     provider_sep = "|---|---|"
     en_summary_rows = []
     zh_summary_rows = []
-    for pname in sorted(providers.keys(), key=lambda p: len(providers[p]), reverse=True):
+    for pname in sorted(providers.keys(), key=lambda p: p.lower()):
         pmodels = providers[pname]
         label = provider_names_cn.get(pname, pname)
         en_summary_rows.append(f"| {label} | {len(pmodels)} |")
