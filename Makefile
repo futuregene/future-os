@@ -140,7 +140,7 @@ fmt:
 
 # ─── Run ────────────────────────────────────────────────────────────────────
 
-run-agent: build-agent
+run-agent:
 	cd agent && cargo run -- --verbose
 
 run-tui: build-tui
@@ -156,7 +156,7 @@ package-gui: install-gui
 	node scripts/version.mjs --set-bundle
 	cd gui && npm run tauri:build
 
-run-channels: build-channels
+run-channels:
 	cd channels && cargo run
 
 # ─── Generate ───────────────────────────────────────────────────────────────
