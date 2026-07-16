@@ -75,22 +75,23 @@ export async function doctor(): Promise<void> {
 
   // 2. Components (binary + connectivity combined for agent)
   results.push(await checkAgent());
+  results.push(await checkComponent("future", "CLI"));
   results.push(await checkComponent("future-tui", "TUI"));
   results.push(await checkComponent("future-gui", "GUI"));
   results.push(await checkComponent("future-channel", "Channel bridge"));
 
-  // 4. Configuration
+  // 3. Configuration
   results.push(checkAuthConfig());
   results.push(checkModelsConfig());
   results.push(checkSettingsConfig());
 
-  // 5. Providers & models
+  // 4. Providers & models
   results.push(await checkProviders());
 
-  // 6. Sessions
+  // 5. Sessions
   results.push(await checkSessions());
 
-  // 7. Skills
+  // 6. Skills
   results.push(await checkSkills());
 
   printResults(results);
@@ -191,7 +192,7 @@ async function checkAgent(): Promise<CheckResult> {
   }
 }
 
-// ── 4. Configuration ──────────────────────────────────────────────────────
+// ── 3. Configuration ──────────────────────────────────────────────────────
 
 function checkAuthConfig(): CheckResult {
   if (!fs.existsSync(AUTH_FILE)) {
@@ -287,7 +288,7 @@ function checkSettingsConfig(): CheckResult {
   }
 }
 
-// ── 5. Providers & models ──────────────────────────────────────────────────
+// ── 4. Providers ───────────────────────────────────────────────────────────
 
 async function checkProviders(): Promise<CheckResult> {
   const lines: string[] = [];
@@ -331,7 +332,7 @@ async function checkProviders(): Promise<CheckResult> {
   return { name: "Providers & models", status: allProviders.size > 0 ? "ok" : "warn", lines };
 }
 
-// ── 6. Sessions ────────────────────────────────────────────────────────────
+// ── 5. Sessions ────────────────────────────────────────────────────────────
 
 async function checkSessions(): Promise<CheckResult> {
   const lines: string[] = [];
@@ -361,7 +362,7 @@ async function checkSessions(): Promise<CheckResult> {
   return { name: "Sessions", status: "ok", lines };
 }
 
-// ── 7. Skills ──────────────────────────────────────────────────────────────
+// ── 6. Skills ──────────────────────────────────────────────────────────────
 
 async function checkSkills(): Promise<CheckResult> {
   const lines: string[] = [];
