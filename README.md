@@ -109,9 +109,7 @@ Every client — TUI, GUI, CLI, channels — is a thin gRPC client. **The agent 
 | Mode | Command | Use when |
 |---|---|---|
 | **Foreground** | `make run-agent` | Builds and runs agent in terminal. Logs to stdout. Stop with Ctrl-C. |
-| **Foreground** | `future-agent` | Runs agent in current terminal. Logs to stdout. Stop with Ctrl-C. |
-| **Background** | `future agent start` | Installs as OS service (launchctl/systemd). Stop/restart/status via `future agent`. |
-
+| **Foreground** | `future-agent`  | Runs pre-built agent. Logs to stdout. Stop with Ctrl-C. |
 Then launch a client:
 
 ```bash
