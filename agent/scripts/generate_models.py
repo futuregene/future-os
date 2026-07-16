@@ -549,8 +549,8 @@ def parse_rust_models(rust_path: str) -> List[Dict]:
             v = field(name)
             if v is None:
                 return ""
-            # "value".into()
-            m = re.match(r'"(.+)"\.into\(\)', v)
+            # "value".into() (including empty: "".into())
+            m = re.match(r'"([^"]*)"\.into\(\)', v)
             if m:
                 return m.group(1)
             return v.strip('"')
