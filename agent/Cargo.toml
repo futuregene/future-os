@@ -47,7 +47,7 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 fd-lock = "4"
 signal-hook = "0.3"
-atty = "0.2"
+
 shellexpand = "3"
 async-trait = "0.1"
 # gRPC

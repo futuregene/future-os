@@ -176,7 +176,7 @@ pub fn canonical_path(path: &Path) -> std::io::Result<PathBuf> {
 
 /// Detect if running in a terminal
 pub fn is_tty() -> bool {
-    atty::is(atty::Stream::Stdin)
+    std::io::stdin().is_terminal()
 }
 
 /// ANSI color codes (matching Go constants)
