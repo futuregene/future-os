@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
  * process. This prevents Chrome from inheriting the agent/CLI stdout pipe,
  * which would otherwise keep the Rust shell tool waiting for EOF.
  */
-export function launchWindowsDetached(executable: string, args: string[]): void {
+export function launchWindowsDetached(executable: string, args: string[]): Promise<void> {
   const script = buildStartProcessScript(executable, args);
   const encoded = Buffer.from(script, "utf16le").toString("base64");
   const child = spawn("powershell.exe", [
@@ -17,18 +17,34 @@ export function launchWindowsDetached(executable: string, args: string[]): void 
     "-EncodedCommand",
     encoded,
   ], {
-    detached: true,
     stdio: "ignore",
     windowsHide: true,
   });
-  child.unref();
+
+  // Wait only for Start-Process itself, not for Chrome. This both surfaces a
+  // missing/failed PowerShell launch and guarantees that the browser creation
+  // request has completed before browserStart begins polling CDP.
+  return new Promise((resolve, reject) => {
+    child.once("error", (error) => {
+      reject(new Error(`Failed to launch browser through PowerShell: ${error.message}`));
+    });
+    child.once("exit", (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      const detail = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
+      reject(new Error(`PowerShell failed to launch browser (${detail}).`));
+    });
+  });
 }
 
 export function buildStartProcessScript(executable: string, args: string[]): string {
   const argumentLine = args.map(quoteWindowsCommandLineArgument).join(" ");
   return [
     "$ErrorActionPreference = 'Stop'",
-    `Start-Process -FilePath ${quotePowerShellLiteral(executable)} -ArgumentList ${quotePowerShellLiteral(argumentLine)} | Out-Null`,
+    `$process = Start-Process -FilePath ${quotePowerShellLiteral(executable)} -ArgumentList ${quotePowerShellLiteral(argumentLine)} -WindowStyle Normal -PassThru`,
+    "if ($null -eq $process) { throw 'Start-Process did not return a process.' }",
   ].join("; ");
 }
 

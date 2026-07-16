@@ -210,7 +210,7 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
   if (process.platform === "win32") {
     // Use PowerShell's Windows-shell launcher so Chrome does not inherit the
     // agent's stdout handle and keep the shell tool waiting for EOF.
-    launchWindowsDetached(launcher.command, browserArgs);
+    await launchWindowsDetached(launcher.command, browserArgs);
   } else {
     const child = spawn(launcher.command, browserArgs, {
       detached: true,
