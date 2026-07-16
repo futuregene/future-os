@@ -70,7 +70,7 @@ Agent 至少需要一个带 API key 的模型才能回复。三种方式:
 future auth login
 ```
 
-**B —— 使用已知 Provider。** 将 API Key 放入 `~/.future/agent/auth.json`，按 Provider 名索引。查看[内置模型目录](docs/wiki/zh/Models.md)了解 1000+ 个支持的 Provider——多数自带 Base URL，模型自动发现：
+**B —— 使用已知 Provider。** 将 API Key 放入 `~/.future/agent/auth.json`，按 Provider 名索引。查看[内置模型目录](docs/wiki/zh/Models.md)了解所有支持的 Provider——多数自带 Base URL，模型自动发现：
 
 ```json
 {
