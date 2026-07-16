@@ -73,14 +73,11 @@ export async function doctor(): Promise<void> {
   // 1. Login
   results.push(await checkLogin());
 
-  // 2. Components
-  results.push(await checkComponent("future-agent", "Agent"));
+  // 2. Components (binary + connectivity combined for agent)
+  results.push(await checkAgent());
   results.push(await checkComponent("future-tui", "TUI"));
   results.push(await checkComponent("future-gui", "GUI"));
   results.push(await checkComponent("future-channel", "Channel bridge"));
-
-  // 3. Agent connectivity
-  results.push(await checkAgentConnection());
 
   // 4. Configuration
   results.push(checkAuthConfig());
@@ -167,28 +164,30 @@ function getBinaryVersion(binPath: string): Promise<string | null> {
   });
 }
 
-// ── 3. Agent connectivity ──────────────────────────────────────────────────
+// ── 2b. Agent (binary + connectivity combined) ────────────────────────────
 
-async function checkAgentConnection(): Promise<CheckResult> {
+async function checkAgent(): Promise<CheckResult> {
+  const binPath = await which("future-agent");
+  const lines: string[] = [];
+
+  if (binPath) {
+    const version = await getBinaryVersion(binPath);
+    lines.push(version ? `${binPath}  ${C.dim}(${version})${C.reset}` : binPath);
+  } else {
+    lines.push(`future-agent not found on PATH — run \`make install\``);
+  }
+
   try {
     const client = new RunClient(GRPC_ADDR);
     const state = await client.getState();
-    return {
-      name: "Agent",
-      status: "ok",
-      lines: [
-        `Connected to ${GRPC_ADDR}`,
-        `Version: ${state.version ?? "unknown"}`,
-        `Model: ${state.model ?? "none"}`,
-        `Thinking: ${state.thinkingLevel ?? "off"}`,
-      ],
-    };
+    lines.push(`Connected to ${GRPC_ADDR}  ${C.dim}(v${state.version ?? "?"})${C.reset}`);
+    return { name: "Agent", status: "ok", lines };
   } catch {
-    return {
-      name: "Agent",
-      status: "issue",
-      lines: [`Cannot reach agent at ${GRPC_ADDR} — start with: ${C.bold}future-agent${C.reset}`],
-    };
+    if (!binPath) {
+      return { name: "Agent", status: "warn", lines };
+    }
+    lines.push(`${RED}Not running — start with: future-agent${C.reset}`);
+    return { name: "Agent", status: "issue", lines };
   }
 }
 
@@ -292,52 +291,44 @@ function checkSettingsConfig(): CheckResult {
 
 async function checkProviders(): Promise<CheckResult> {
   const lines: string[] = [];
-  let keyCount = 0;
+  const allProviders = new Map<string, string>(); // id → label
 
-  const keyedProviders: string[] = [];
+  // Collect from auth.json
   try {
     if (fs.existsSync(AUTH_FILE)) {
       const raw = JSON.parse(fs.readFileSync(AUTH_FILE, "utf-8")) as Record<string, unknown>;
       for (const [id, v] of Object.entries(raw)) {
         if (v && typeof v === "object" && "key" in (v as Record<string, unknown>)) {
-          keyCount++;
-          if (id !== "future") keyedProviders.push(id);
+          allProviders.set(id, "[key]");
         }
       }
     }
-  } catch {
-    // ignore
-  }
+  } catch { /* ignore */ }
 
+  // Collect from models.json (custom providers)
   try {
     if (fs.existsSync(MODELS_FILE)) {
       const raw = JSON.parse(fs.readFileSync(MODELS_FILE, "utf-8")) as Record<string, unknown>;
       const providers = (raw.providers as Record<string, unknown>) ?? {};
-      const entries = Object.entries(providers).filter(([id]) => id !== "future");
-      for (const [id, config] of entries) {
-        if (isOverrideOnly(config)) continue;
-        const c = config as Record<string, unknown>;
-        const models = Array.isArray(c.models) ? c.models : [];
-        const hasKey = keyedProviders.includes(id) ? " [key]" : "";
-        lines.push(`  ${id}: ${models.length} model(s)${hasKey}`);
+      for (const [id, config] of Object.entries(providers)) {
+        if (id === "future" || isOverrideOnly(config)) continue;
+        const existing = allProviders.get(id);
+        allProviders.set(id, existing ? `${existing} + custom` : "custom");
       }
     }
-  } catch {
-    // ignore
+  } catch { /* ignore */ }
+
+  if (allProviders.size > 0) {
+    const sorted = [...allProviders.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    for (const [id, label] of sorted) {
+      lines.push(`  ${id} ${C.dim}(${label})${C.reset}`);
+    }
+    lines.unshift(`${allProviders.size} provider(s) configured`);
+  } else {
+    lines.push("No providers configured — run `future auth login`");
   }
 
-  try {
-    const client = new RunClient(GRPC_ADDR);
-    const state = await client.getState();
-    if (state.model) lines.push(`  Current model: ${state.model}`);
-    if (state.contextWindow) lines.push(`  Context window: ${state.contextWindow.toLocaleString()}`);
-  } catch {
-    // agent not running
-  }
-
-  lines.unshift(`${keyCount} provider(s) with API key`);
-
-  return { name: "Providers & models", status: "ok", lines };
+  return { name: "Providers & models", status: allProviders.size > 0 ? "ok" : "warn", lines };
 }
 
 // ── 6. Sessions ────────────────────────────────────────────────────────────
@@ -361,19 +352,7 @@ async function checkSessions(): Promise<CheckResult> {
     const client = new RunClient(GRPC_ADDR);
     const { sessions } = await client.listSessions();
     if (sessions.length > 0) {
-      lines.push(`${sessions.length} session(s)`);
-      const recent = sessions
-        .sort(
-          (a, b) =>
-            new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
-        )
-        .slice(0, 5);
-      lines.push("Recent:");
-      for (const s of recent) {
-        const label = s.name || s.id.slice(0, 8);
-        const model = s.model ? `  [${s.model}]` : "";
-        lines.push(`  ${label}${model}`);
-      }
+      lines.push(`${sessions.length} session(s) tracked by agent`);
     }
   } catch {
     // agent not running
@@ -388,9 +367,7 @@ async function checkSkills(): Promise<CheckResult> {
   const lines: string[] = [];
 
   const installed = await getInstalledSkillIds();
-  if (installed.size > 0) {
-    lines.push(`${SKILLS_DIR}: ${[...installed].join(", ")}`);
-  } else {
+  if (installed.size === 0) {
     lines.push("No skills installed.");
     const marker = fs.existsSync(SKILLS_DIR) ? "" : ` ${C.dim}(directory not found)${C.reset}`;
     lines.push(`  ${SKILLS_DIR}${marker}`);
@@ -402,20 +379,27 @@ async function checkSkills(): Promise<CheckResult> {
       const platformUrl = await getPlatformUrl();
       const allSkills = await fetchSkills(platformUrl);
       const catalog = new Map(allSkills.map(s => [s.id, s]));
-      let stale = 0;
+      const upToDate: string[] = [];
+      const needsUpdate: string[] = [];
 
       for (const id of installed) {
         const skill = catalog.get(id);
-        if (!skill?.latest_version) continue;
         const localVer = await readSkillMdVersion(path.join(SKILLS_DIR, id, "SKILL.md"));
-        if (localVer && localVer !== skill.latest_version) {
-          lines.push(
-            `  ${id}: ${localVer} ${C.dim}→${C.reset} ${skill.latest_version}`,
-          );
-          stale++;
+        if (localVer && skill?.latest_version && localVer !== skill.latest_version) {
+          needsUpdate.push(`${id}: ${localVer} ${C.dim}→${C.reset} ${skill.latest_version}`);
+        } else {
+          const ver = localVer ? ` ${C.dim}(v${localVer})${C.reset}` : "";
+          upToDate.push(`${id}${ver}`);
         }
       }
-      if (stale > 0) lines.push(`  ${stale} have updates — run ${C.bold}future skills update${C.reset}`);
+
+      if (upToDate.length > 0) {
+        lines.push(`  Up to date: ${upToDate.join(", ")}`);
+      }
+      if (needsUpdate.length > 0) {
+        for (const u of needsUpdate) lines.push(`  ${u}`);
+        lines.push(`  Run ${C.bold}future skills update${C.reset} to upgrade`);
+      }
     } catch {
       // offline or not logged in
     }
