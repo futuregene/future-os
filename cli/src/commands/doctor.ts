@@ -396,31 +396,29 @@ async function checkSkills(): Promise<CheckResult> {
     lines.push(`  ${SKILLS_DIR}${marker}`);
   }
 
-  try {
-    const platformUrl = await getPlatformUrl();
-    const builtinSkills = (await fetchSkills(platformUrl)).filter(s => s.category === "builtin");
-    if (builtinSkills.length > 0) {
-      lines.push(`${builtinSkills.length} builtin skill(s) available from platform`);
-      let notInstalled = 0;
+  // Check installed skills for updates against platform catalog
+  if (installed.size > 0) {
+    try {
+      const platformUrl = await getPlatformUrl();
+      const allSkills = await fetchSkills(platformUrl);
+      const catalog = new Map(allSkills.map(s => [s.id, s]));
       let stale = 0;
 
-      for (const skill of builtinSkills) {
-        const skillMdPath = path.join(SKILLS_DIR, skill.id, "SKILL.md");
-        const localVer = await readSkillMdVersion(skillMdPath);
-        if (localVer && skill.latest_version && localVer !== skill.latest_version) {
+      for (const id of installed) {
+        const skill = catalog.get(id);
+        if (!skill?.latest_version) continue;
+        const localVer = await readSkillMdVersion(path.join(SKILLS_DIR, id, "SKILL.md"));
+        if (localVer && localVer !== skill.latest_version) {
           lines.push(
-            `  ${skill.id}: ${localVer} ${C.dim}→${C.reset} ${skill.latest_version}`,
+            `  ${id}: ${localVer} ${C.dim}→${C.reset} ${skill.latest_version}`,
           );
           stale++;
-        } else if (!localVer) {
-          notInstalled++;
         }
       }
-      if (notInstalled > 0) lines.push(`  ${notInstalled} not installed`);
       if (stale > 0) lines.push(`  ${stale} have updates — run ${C.bold}future skills update${C.reset}`);
+    } catch {
+      // offline or not logged in
     }
-  } catch {
-    // offline or not logged in
   }
 
   return {
