@@ -38,7 +38,7 @@ pub fn resolve_against(base: &Path, path: &str) -> PathBuf {
 }
 
 /// Lexically remove `.` and `..` components (no filesystem access).
-fn normalize_lexically(path: &Path) -> PathBuf {
+pub fn normalize_lexically(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
