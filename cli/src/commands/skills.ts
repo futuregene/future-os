@@ -19,8 +19,17 @@ function projectSkillsDir(): string {
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type SkillsCommand = "list" | "install" | "uninstall" | "install-builtin";
+export type SkillsCommand = "list" | "install" | "uninstall" | "install-builtin" | "update";
 export type Scope = "app" | "project" | "global";
+
+// Export skill directory resolution for doctor and other consumers.
+export function skillsDirFor(scope: Scope): string {
+  switch (scope) {
+    case "app":     return APP_SKILLS;
+    case "project": return projectSkillsDir();
+    case "global":  return GLOBAL_SKILLS;
+  }
+}
 
 interface SkillInfo {
   id: string;
@@ -67,10 +76,15 @@ export async function skills(command: SkillsCommand, args: string[]): Promise<vo
     await uninstallSkill(name, scope);
     return;
   }
+
+  if (command === "update") {
+    await updateSkills(args);
+    return;
+  }
 }
 
 export function isSkillsCommand(command: string): command is SkillsCommand {
-  return command === "list" || command === "install" || command === "uninstall" || command === "install-builtin";
+  return command === "list" || command === "install" || command === "uninstall" || command === "install-builtin" || command === "update";
 }
 
 // ── Scope ────────────────────────────────────────────────────────────────────
@@ -83,14 +97,6 @@ function parseScope(args: string[]): Scope {
   console.error(`Invalid scope "${val}". Valid: app, project, global.`);
   process.exitCode = 1;
   return "app";
-}
-
-function skillsDirFor(scope: Scope): string {
-  switch (scope) {
-    case "app":     return APP_SKILLS;
-    case "project": return projectSkillsDir();
-    case "global":  return GLOBAL_SKILLS;
-  }
 }
 
 function scopeLabel(scope: Scope, dir: string): string {
@@ -315,6 +321,60 @@ export async function installBuiltinSkills(scope: Scope = "app"): Promise<void> 
   console.log(`Done. ${toInstall.length} skills installed.`);
 }
 
+/**
+ * Update all installed skills to their latest versions.
+ * Checks every scope, compares against the platform catalog, and upgrades stale skills.
+ */
+async function updateSkills(args: string[]): Promise<void> {
+  const scope = parseScope(args);
+
+  const platformUrl = await getPlatformUrl();
+  console.log(`Fetching skill catalog from ${platformUrl}...`);
+  const builtinSkills = await fetchSkills(platformUrl, "builtin");
+  if (builtinSkills.length === 0) {
+    console.log("No builtin skills available.");
+    return;
+  }
+
+  const scopes: Scope[] = scope ? [scope] : ["app", "project", "global"];
+  let updated = 0;
+  let upToDate = 0;
+
+  for (const sc of scopes) {
+    const installed = await getInstalledSkillIds(sc);
+    if (installed.size === 0) continue;
+
+    const dir = skillsDirFor(sc);
+    for (const skill of builtinSkills) {
+      if (!installed.has(skill.id)) continue;
+      if (!skill.latest_version) continue;
+
+      const skillMdPath = join(dir, skill.id, "SKILL.md");
+      const localVer = await readSkillMdVersion(skillMdPath);
+      if (!localVer || localVer === skill.latest_version) {
+        upToDate++;
+        continue;
+      }
+
+      console.log(`  ${skill.id}: ${localVer} → ${skill.latest_version}`);
+      try {
+        await installSkill(skill.id, skill.latest_version, sc);
+        updated++;
+      } catch (err) {
+        console.error(`  Failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  if (updated === 0 && upToDate === 0) {
+    console.log("No skills installed.");
+  } else if (updated === 0) {
+    console.log(`${upToDate} skill(s) already up to date.`);
+  } else {
+    console.log(`Updated ${updated} skill(s), ${upToDate} already up to date.`);
+  }
+}
+
 export async function getInstalledSkillIds(scope: Scope): Promise<Set<string>> {
   const dir = skillsDirFor(scope);
   const ids = new Set<string>();
@@ -356,7 +416,7 @@ async function uninstallSkill(skillId: string, scope: Scope = "app"): Promise<vo
  * Read YAML frontmatter from a SKILL.md and extract the version field.
  * Returns null if no version field found.
  */
-async function readSkillMdVersion(skillMdPath: string): Promise<string | null> {
+export async function readSkillMdVersion(skillMdPath: string): Promise<string | null> {
   let text: string;
   try {
     text = await readFile(skillMdPath, "utf8");

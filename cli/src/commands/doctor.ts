@@ -18,7 +18,14 @@ import * as os from "node:os";
 import { execFile } from "node:child_process";
 
 import { login, loadAuthFile, getFutureAuthEntry } from "./auth.js";
-import { fetchSkills, getInstalledSkillIds, installBuiltinSkills } from "./skills.js";
+import {
+  fetchSkills,
+  getInstalledSkillIds,
+  installBuiltinSkills,
+  readSkillMdVersion,
+  skillsDirFor,
+  type Scope,
+} from "./skills.js";
 import { getPlatformUrl } from "../utils/platform.js";
 import { which } from "../utils/files.js";
 import { RunClient } from "../rpc/grpc-client.js";
@@ -59,11 +66,7 @@ const SETTINGS_FILE = path.join(AGENT_DIR, "settings.json");
 const SESSIONS_DIR = path.join(AGENT_DIR, "sessions");
 const GRPC_ADDR = process.env.FUTURE_AGENT_GRPC_ADDR ?? "127.0.0.1:50051";
 
-const SKILL_DIRS: Record<string, string> = {
-  app: path.join(os.homedir(), ".future", "agent", "skills"),
-  project: path.join(process.cwd(), ".future", "agent", "skills"),
-  agents: path.join(os.homedir(), ".agents", "skills"),
-};
+const SKILL_SCOPES: Scope[] = ["app", "project", "global"];
 
 // ── Entry ──────────────────────────────────────────────────────────────────
 
@@ -342,61 +345,66 @@ async function checkSkills(): Promise<CheckResult> {
   const lines: string[] = [];
   let localCount = 0;
 
-  for (const [scope, dir] of Object.entries(SKILL_DIRS)) {
-    if (!fs.existsSync(dir)) continue;
+  for (const scope of SKILL_SCOPES) {
+    const dir = skillsDirFor(scope);
     try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      const skillDirs = entries.filter((e) => {
-        if (!e.isDirectory()) return false;
-        return fs.existsSync(path.join(dir, e.name, "SKILL.md"));
-      });
-      if (skillDirs.length > 0) {
-        localCount += skillDirs.length;
-        lines.push(`  ${scope} (${dir}): ${skillDirs.map((d) => d.name).join(", ")}`);
+      const ids = await getInstalledSkillIds(scope);
+      if (ids.size > 0) {
+        localCount += ids.size;
+        lines.push(`  ${scope} (${dir}): ${[...ids].join(", ")}`);
       }
     } catch {
-      // skip unreadable dirs
+      // skip
     }
   }
 
   if (localCount === 0) {
-    lines.push(`No skills installed. Search paths:`);
-    for (const [, dir] of Object.entries(SKILL_DIRS)) {
-      const exists = fs.existsSync(dir) ? "" : " (missing)";
-      lines.push(`  ${dir}${exists}`);
+    lines.push("No skills installed. Search paths:");
+    for (const scope of SKILL_SCOPES) {
+      const dir = skillsDirFor(scope);
+      const marker = fs.existsSync(dir) ? "" : ` ${C.dim}(not found)${C.reset}`;
+      lines.push(`  ${dir}${marker}`);
     }
   }
 
-  // Check remote catalog for updates
+  // Check remote catalog for updates across all scopes
   try {
     const platformUrl = await getPlatformUrl();
     const builtinSkills = await fetchSkills(platformUrl, "builtin");
     if (builtinSkills.length > 0) {
       lines.push(`${builtinSkills.length} builtin skill(s) available from platform`);
-      const installed = await getInstalledSkillIds("app");
       let notInstalled = 0;
       let stale = 0;
+
       for (const skill of builtinSkills) {
-        if (installed.has(skill.id)) {
-          const localDir = path.join(SKILL_DIRS.app, skill.id);
+        // Check all scopes for this skill
+        let foundScope: Scope | null = null;
+        let localVer: string | null = null;
+        for (const scope of SKILL_SCOPES) {
+          const skillMdPath = path.join(skillsDirFor(scope), skill.id, "SKILL.md");
           try {
-            const md = fs.readFileSync(path.join(localDir, "SKILL.md"), "utf-8");
-            const verMatch = md.match(/^version:\s*(.+)$/m);
-            if (verMatch && skill.latest_version && verMatch[1].trim() !== skill.latest_version) {
-              lines.push(
-                `  ${skill.id}: local ${verMatch[1].trim()} ${C.dim}→${C.reset} remote ${skill.latest_version}`,
-              );
-              stale++;
+            const ver = await readSkillMdVersion(skillMdPath);
+            if (ver) {
+              foundScope = scope;
+              localVer = ver;
+              break;
             }
           } catch {
-            // can't read version — skip
+            // not in this scope
           }
-        } else {
+        }
+
+        if (localVer && skill.latest_version && localVer !== skill.latest_version) {
+          lines.push(
+            `  ${skill.id}: ${localVer} ${C.dim}→${C.reset} ${skill.latest_version} ${C.dim}(${foundScope})${C.reset}`,
+          );
+          stale++;
+        } else if (!localVer) {
           notInstalled++;
         }
       }
       if (notInstalled > 0) lines.push(`  ${notInstalled} not installed`);
-      if (stale > 0) lines.push(`  ${stale} have updates available`);
+      if (stale > 0) lines.push(`  ${stale} have updates — run ${C.bold}future skills update${C.reset}`);
     }
   } catch {
     // offline or not logged in

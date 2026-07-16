@@ -15,6 +15,7 @@ Usage:
   future skills install <name> [--version <ver>] [--scope <app|project|global>]
   future skills uninstall <name> [--scope <app|project|global>]
   future skills install-builtin [--scope <app|project|global>]
+  future skills update [--scope <app|project|global>]
   future doctor [--fix]
 
 Run 'future run --help' for run command options.
