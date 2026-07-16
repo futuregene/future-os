@@ -295,6 +295,127 @@ pub fn init_builtin_models() -> Vec<Model> {{
     return output
 
 
+def generate_wiki_docs(models: List[Dict], timestamp: str):
+    """Generate docs/wiki/{en,zh}/models.md from the model list."""
+
+    script_dir = __import__('os').path.dirname(__import__('os').path.abspath(__file__))
+    repo_root = __import__('os').path.normpath(__import__('os').path.join(script_dir, "../.."))
+    wiki_en = __import__('os').path.join(repo_root, "docs/wiki/en")
+    wiki_zh = __import__('os').path.join(repo_root, "docs/wiki/zh")
+    __import__('os').makedirs(wiki_en, exist_ok=True)
+    __import__('os').makedirs(wiki_zh, exist_ok=True)
+
+    # ── Aggregate by provider ──────────────────────────────────────────────
+    providers: Dict[str, List[Dict]] = {}
+    for m in models:
+        providers.setdefault(m["provider"], []).append(m)
+
+    # ── Helpers ────────────────────────────────────────────────────────────
+    def fmt_num(n):
+        if n >= 1_000_000_000:
+            return f"{n / 1_000_000_000:.0f}B"
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:.0f}M"
+        if n >= 1_000:
+            return f"{n / 1_000:.0f}K"
+        return str(n)
+
+    def cost_str(m, key):
+        v = m.get(key, 0.0)
+        if v == 0.0:
+            return "-"
+        return f"${v:.2f}"
+
+    def image_support(m):
+        return "✅" if "image" in m.get("input", []) else "—"
+
+    def reasoning_support(m):
+        return "✅" if m.get("reasoning", False) else "—"
+
+    provider_names_cn = {
+        "openai": "OpenAI",
+        "anthropic": "Anthropic",
+        "google": "Google",
+        "deepseek": "DeepSeek",
+        "mistral": "Mistral",
+        "cohere": "Cohere",
+        "meta": "Meta",
+        "amazon-bedrock": "Amazon Bedrock",
+        "openrouter": "OpenRouter",
+        "vercel-ai": "Vercel AI Gateway",
+    }
+
+    # ── Build Markdown (English) ───────────────────────────────────────────
+    en = f"""# Built-in Model Catalog
+
+> Auto-generated at {timestamp} — {len(models)} models across {len(providers)} providers.
+> Run `make generate-models` to update.
+
+## Provider Summary
+
+| Provider | Models | Sample Model IDs |
+|---|---|---|"""
+    for pname in sorted(providers.keys(), key=lambda p: len(providers[p]), reverse=True):
+        pmodels = providers[pname]
+        sample = ", ".join(m["id"].split("/")[-1][:40] for m in sorted(pmodels, key=lambda m: m["context_window"], reverse=True)[:3])
+        en += f"\n| {provider_names_cn.get(pname, pname)} | {len(pmodels)} | {sample} |"
+
+    en += "\n\n---\n\n## Per-Provider Details\n\n"
+
+    for pname in sorted(providers.keys()):
+        pmodels = sorted(providers[pname], key=lambda m: -m["context_window"])
+        en += f"""### {provider_names_cn.get(pname, pname)}
+
+| Model ID | Name | Context | Max Output | Image | Reasoning | Input ($/1M) | Output ($/1M) |
+|---|---|---|---|---|---|---|---|
+"""
+        for m in pmodels:
+            short_id = m["id"].split("/")[-1] if "/" in m["id"] else m["id"]
+            if len(short_id) > 48:
+                short_id = short_id[:45] + "..."
+            en += f"| `{short_id}` | {m['name']} | {fmt_num(m['context_window'])} | {fmt_num(m['max_tokens'])} | {image_support(m)} | {reasoning_support(m)} | {cost_str(m, 'cost_input')} | {cost_str(m, 'cost_output')} |\n"
+
+        en += "\n"
+
+    # ── Build Markdown (Chinese) ───────────────────────────────────────────
+    zh = f"""# 内置模型目录
+
+> 自动生成于 {timestamp} — {len(models)} 个模型，覆盖 {len(providers)} 个 Provider。
+> 运行 `make generate-models` 更新。
+
+## Provider 概览
+
+| Provider | 模型数 | 示例模型 |
+|---|---|---|"""
+    for pname in sorted(providers.keys(), key=lambda p: len(providers[p]), reverse=True):
+        pmodels = providers[pname]
+        sample = ", ".join(m["id"].split("/")[-1][:40] for m in sorted(pmodels, key=lambda m: m["context_window"], reverse=True)[:3])
+        zh += f"\n| {provider_names_cn.get(pname, pname)} | {len(pmodels)} | {sample} |"
+
+    zh += "\n\n---\n\n## 各 Provider 详情\n\n"
+
+    for pname in sorted(providers.keys()):
+        pmodels = sorted(providers[pname], key=lambda m: -m["context_window"])
+        zh += f"""### {provider_names_cn.get(pname, pname)}
+
+| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 | 输入 ($/1M) | 输出 ($/1M) |
+|---|---|---|---|---|---|---|---|
+"""
+        for m in pmodels:
+            short_id = m["id"].split("/")[-1] if "/" in m["id"] else m["id"]
+            if len(short_id) > 48:
+                short_id = short_id[:45] + "..."
+            zh += f"| `{short_id}` | {m['name']} | {fmt_num(m['context_window'])} | {fmt_num(m['max_tokens'])} | {image_support(m)} | {reasoning_support(m)} | {cost_str(m, 'cost_input')} | {cost_str(m, 'cost_output')} |\n"
+
+        zh += "\n"
+
+    # ── Write ──────────────────────────────────────────────────────────────
+    for path, content in [(f"{wiki_en}/models.md", en), (f"{wiki_zh}/models.md", zh)]:
+        with open(path, "w") as f:
+            f.write(content)
+        print(f"  Written {path} ({len(content):,} bytes)")
+
+
 def main():
     print("Fetching models from external APIs...")
     
@@ -344,7 +465,11 @@ def main():
         f.write(rust_code)
     
     print(f"\nWritten to {output_path}")
-    
+
+    # Generate wiki docs
+    print("\nGenerating wiki docs...")
+    generate_wiki_docs(unique_models, timestamp)
+
     # Also compare with Go's generated file
     go_path = "../internal/modelregistry/models_generated.go"
     try:
@@ -377,5 +502,93 @@ def main():
         print(f"\nGo file not found at {go_path}, skipping comparison")
 
 
+def parse_rust_models(rust_path: str) -> List[Dict]:
+    """Parse existing generated Rust code back into model dicts for wiki-only mode."""
+    import re
+
+    with open(rust_path) as f:
+        content = f.read()
+
+    # Split by indented "Model {" (instances inside init_builtin_models, not the struct def)
+    blocks = [b for b in content.split("\n        Model {")][1:]  # first is before first Model
+
+    models = []
+    for block in blocks:
+        # Find matching closing brace (rough — sufficient for generated code)
+        depth = 1
+        end = 0
+        for i, ch in enumerate(block):
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        block = block[:end]
+
+        def field(name: str) -> Optional[str]:
+            m = re.search(rf'{name}:\s*(.+?),?\s*$', block, re.MULTILINE)
+            return m.group(1).rstrip(',') if m else None
+
+        def str_val(name: str) -> str:
+            v = field(name)
+            if v is None:
+                return ""
+            # "value".into()
+            m = re.match(r'"(.+)"\.into\(\)', v)
+            if m:
+                return m.group(1)
+            return v.strip('"')
+
+        def num_val(name: str) -> float:
+            v = field(name)
+            return float(v) if v else 0.0
+
+        def bool_val(name: str) -> bool:
+            v = field(name)
+            return v == "true" if v else False
+
+        def modalities():
+            v = field("input")
+            if not v:
+                return ["text"]
+            return re.findall(r'String::from\("(\w+)"\)', v)
+
+        models.append({
+            "id": str_val("id"),
+            "name": str_val("name"),
+            "provider": str_val("provider"),
+            "api": "chat",
+            "base_url": str_val("base_url"),
+            "reasoning": bool_val("reasoning"),
+            "input": modalities(),
+            "context_window": int(num_val("context_window")),
+            "max_tokens": int(num_val("max_tokens")),
+            "cost_input": num_val("cost_input"),
+            "cost_output": num_val("cost_output"),
+            "cost_cache_read": num_val("cost_cache_read"),
+            "cost_cache_write": num_val("cost_cache_write"),
+            "compat_json": "{}",
+            "tlm_json": "{}",
+            "headers_json": "{}",
+        })
+
+    return models
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+
+    if "--wiki-only" in sys.argv:
+        rust_path = "src/models/generated/mod.rs"
+        print(f"Parsing existing models from {rust_path}...")
+        models = parse_rust_models(rust_path)
+        print(f"  Found {len(models)} models")
+
+        timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S%z")
+        print("Generating wiki docs...")
+        generate_wiki_docs(models, timestamp)
+        print("Done.")
+    else:
+        main()
