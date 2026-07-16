@@ -28,6 +28,8 @@ PROVIDER_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
     "openai-codex": "https://api.openai.com/v1",
     "azure-openai-responses": "https://YOUR_RESOURCE.openai.azure.com/openai/v1",
+    "azure-cognitive-services": "https://YOUR_RESOURCE.cognitiveservices.azure.com/openai/v1",
+    "azure": "https://YOUR_RESOURCE.openai.azure.com/openai/v1",
     "anthropic": "https://api.anthropic.com/v1",
     "google": "https://generativelanguage.googleapis.com/v1beta/openai",
     "google-vertex": "https://LOCATION-aiplatform.googleapis.com/v1beta1/projects/PROJECT_ID/locations/LOCATION/endpoints/openapi",
@@ -56,6 +58,19 @@ PROVIDER_BASE_URLS = {
     "kimi-coding": "https://api.kimi.com/coding",
     "opencode": "https://opencode.ai/zen",
     "opencode-go": "https://opencode.ai/zen/go",
+    "cohere": "https://api.cohere.ai/v1",
+    "togetherai": "https://api.together.xyz/v1",
+    "deepinfra": "https://api.deepinfra.com/v1",
+    "venice": "https://api.venice.ai/api/v1",
+    "gitlab": "https://gitlab.com/api/v4/code_suggestions",
+    "cloudflare-ai-gateway": "https://gateway.ai.cloudflare.com/v1",
+    "google-vertex-anthropic": "https://LOCATION-aiplatform.googleapis.com/v1beta1/projects/PROJECT_ID/locations/LOCATION/endpoints/openapi",
+    "merge-gateway": "https://api.merge.dev/gateway/v1",
+    "aihubmix": "https://api.aihubmix.com/v1",
+    "v0": "https://api.v0.dev/v1",
+    "sap-ai-core": "https://api.ai.core.sap.cloud/api/v1",
+    "vercel": "https://ai-gateway.vercel.sh/v1",
+    "perplexity": "https://api.perplexity.ai",
 }
 
 # Provider API types (same as Go)
