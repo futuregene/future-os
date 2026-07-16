@@ -14,7 +14,7 @@ use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
 
@@ -38,7 +38,15 @@ impl Job {
         let job = Job(handle);
 
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // KILL_ON_JOB_CLOSE: all processes in the job are terminated when
+        // the last handle closes (clean teardown on abort/timeout).
+        // BREAKAWAY_OK: child processes that call CreateProcess with
+        // CREATE_BREAKAWAY_FROM_JOB (e.g. Chrome's sandboxed renderer /
+        // GPU / network processes) can leave the job.  Without this flag,
+        // Chrome's multi-process architecture cannot initialise and CDP
+        // WebSocket operations hang indefinitely.
+        info.BasicLimitInformation.LimitFlags =
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
         // SAFETY: `info` is a correctly-sized, initialized struct for this class.
         let ok = unsafe {
             SetInformationJobObject(
