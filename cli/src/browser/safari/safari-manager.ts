@@ -70,7 +70,6 @@ export class SafariManager implements BrowserManager {
 
     // Wait for it to be ready
     const deadline = Date.now() + 10_000;
-    let lastError: string | undefined;
     while (Date.now() < deadline) {
       if (await this.endpointReachable(driverEndpoint)) {
         // Create a WebDriver session
@@ -100,8 +99,7 @@ export class SafariManager implements BrowserManager {
 
     // Started but unreachable
     throw new Error(
-      `safaridriver did not respond at ${driverEndpoint} within 10s. ` +
-      `Last error: ${lastError ?? "timeout"}`,
+      `safaridriver did not respond at ${driverEndpoint} within 10s.`,
     );
   }
 

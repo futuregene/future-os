@@ -311,7 +311,7 @@ describe("Safari WebDriver", () => {
         <button id="btn" onclick="this.textContent='Clicked'">Click me</button>
       `));
 
-      const result = await session.click(
+      await session.click(
         { original: "#btn", source: "selector", selector: "#btn" },
       );
 
@@ -435,7 +435,7 @@ describe("Safari WebDriver", () => {
       await session.tabs({ action: "new", url: "data:text/html,<title>TabB</title>" });
 
       // Select first tab
-      const selectResult = await session.tabs({ action: "select", index: 0 });
+      await session.tabs({ action: "select", index: 0 });
       const titleAfterSelect = await session.evaluate<string>({
         kind: "expression",
         expression: "document.title",

@@ -3,7 +3,7 @@
  *
  */
 
-import { fg, bold, DARK_THEME } from "../theme.js";
+import { fg, bold } from "../theme.js";
 import type { Component } from "../tui.js";
 import { visibleWidth } from "../utils.js";
 

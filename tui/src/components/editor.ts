@@ -5,7 +5,7 @@
 
 import { CSI, RESET, CURSOR_MARKER } from "../tui.js";
 import type { Component, Focusable } from "../tui.js";
-import { visibleWidth, stripAnsiCodes, sliceWithWidth } from "../utils.js";
+import { visibleWidth, sliceWithWidth } from "../utils.js";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -898,7 +898,6 @@ export class Editor implements Component, Focusable {
     let currentLineChunks: TextChunk[] = [];
     let currentLineStart = 0;
     let currentLineWidth = 0;
-    const lineWidth = firstVisualLine ? firstLineWidth : continuationWidth;
 
     const self = this;
     function flushVisualLine(endOffset: number): void {

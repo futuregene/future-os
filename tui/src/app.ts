@@ -25,9 +25,9 @@ import {
   resolveOverlayLayout,
   isFocusable,
 } from "./tui.js";
-import { DARK_THEME, type Theme, fg, dim, bold } from "./theme.js";
+import { DARK_THEME, type Theme, fg, bold } from "./theme.js";
 import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.js";
-import { parseKey, isKeyRelease, isKeyRepeat, Key } from "./keys.js";
+import { parseKey, isKeyRelease, Key } from "./keys.js";
 import { KeybindingManager } from "./keybindings.js";
 import { extractSegments, visibleWidth, stripAnsiCodes, normalizeTerminalOutput, sliceByColumn, truncateToWidth, wrapTextWithAnsi } from "./utils.js";
 import * as path from "node:path";

@@ -3,12 +3,12 @@
  * Renders messages with proper markdown, tool output, and streaming.
  */
 
-import { CSI, RESET } from "../tui.js";
+import { RESET } from "../tui.js";
 import type { Component } from "../tui.js";
-import { fg, bg, bold, italic } from "../theme.js";
+import { fg, bold, italic } from "../theme.js";
 import type { Theme } from "../theme.js";
 import { MarkdownRenderer } from "./markdown.js";
-import { visibleWidth, applyBackgroundToLine, truncateToWidth, wrapTextWithAnsi } from "../utils.js";
+import { applyBackgroundToLine, truncateToWidth, wrapTextWithAnsi } from "../utils.js";
 
 export interface ChatMessage {
   id: string;

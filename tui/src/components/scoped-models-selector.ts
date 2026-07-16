@@ -6,7 +6,7 @@
 
 import type { Component } from "../tui.js";
 import { CSI, RESET, BOLD } from "../tui.js";
-import { visibleWidth, truncateToWidth } from "../utils.js";
+import { truncateToWidth } from "../utils.js";
 import type { ModelInfo } from "../rpc/types.js";
 
 export interface ScopedModelsSelectorOptions {
