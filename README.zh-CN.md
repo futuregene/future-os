@@ -60,27 +60,6 @@ make install   # 构建全部组件并安装到系统路径
 
 > **只构建终端版？** 跳过 GUI 工具链：`make install-nogui`
 
-### 启动 Agent（必须先启动）
-
-所有客户端——TUI、GUI、CLI、channels——都只是轻量 gRPC 客户端。**必须先启动 Agent**,监听 `127.0.0.1:50051`。启动方式有两种,对应两种场景:
-
-| 模式 | 命令 | 适用场景 |
-|---|---|---|
-| **开发 / 前台** | `make run-agent` | 开发调试 Agent。从源码重新构建,跑在当前终端,日志打到 stdout,Ctrl-C 停止。 |
-| **后台服务** | `future agent start` | 日常使用。安装为托管服务(macOS launchctl / Linux systemd / Windows sc),开机自启,启动一次即可。用 `future agent stop \| restart \| status` 管理。 |
-
-然后启动任意客户端：
-
-```bash
-future tui           # 终端界面（需先 make install）
-future gui           # 桌面应用（需先 make install）
-# 开发模式下直接运行（会自动构建）：
-make run-tui         # 终端界面
-make run-gui         # 桌面应用
-```
-
-> 客户端如果报连接 / gRPC 错误,几乎都是 Agent 还没启动——见 [故障排查](#故障排查)。
-
 ### 配置模型
 
 Agent 至少需要一个带 API key 的模型才能回复。两种方式:
@@ -116,6 +95,27 @@ future auth login
 ```
 
 随时用 TUI 里的 `/model <id>` 切换当前模型,或 `ctrl+p` 循环切换。
+
+### 启动 Agent
+
+所有客户端——TUI、GUI、CLI、channels——都只是轻量 gRPC 客户端。**必须先启动 Agent**,监听 `127.0.0.1:50051`。启动方式有两种,对应两种场景:
+
+| 模式 | 命令 | 适用场景 |
+|---|---|---|
+| **开发 / 前台** | `make run-agent` | 开发调试 Agent。从源码重新构建,跑在当前终端,日志打到 stdout,Ctrl-C 停止。 |
+| **后台服务** | `future agent start` | 日常使用。安装为托管服务(macOS launchctl / Linux systemd / Windows sc),开机自启,启动一次即可。用 `future agent stop \| restart \| status` 管理。 |
+
+然后启动任意客户端：
+
+```bash
+future tui           # 终端界面（需先 make install）
+future gui           # 桌面应用（需先 make install）
+# 开发模式下直接运行（会自动构建）：
+make run-tui         # 终端界面
+make run-gui         # 桌面应用
+```
+
+> 客户端如果报连接 / gRPC 错误,几乎都是 Agent 还没启动——见 [故障排查](#故障排查)。
 
 ### CLI 快速上手
 

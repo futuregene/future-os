@@ -60,27 +60,6 @@ Binaries are installed to: macOS `/opt/homebrew/bin`, Linux `/usr/local/bin`, Wi
 
 > **Terminal-only?** Skip the GUI toolchain: `make install-nogui`
 
-### Run the agent (start this first)
-
-Every client — TUI, GUI, CLI, channels — is a thin gRPC client. **The agent must be running first**, listening on `127.0.0.1:50051`. Two options:
-
-| Mode | Command | Use when |
-|---|---|---|
-| **Foreground** | `make run-agent` | Builds and runs agent in terminal. Logs to stdout. Stop with Ctrl-C. |
-| **Background** | `future agent start` | Installs as OS service, survives reboots. Manage with `future agent stop \| restart \| status`. |
-
-Then launch a client:
-
-```bash
-future tui           # terminal, after make install
-future gui           # desktop, after make install
-# or in dev mode (builds first):
-make run-tui         # terminal
-make run-gui         # desktop
-```
-
-> A client that exits with a connection / gRPC error almost always means the agent isn't running yet — see [Troubleshooting](#troubleshooting).
-
 ### Configure a model
 
 The agent needs at least one model with an API key before it can answer. Two options:
@@ -116,6 +95,27 @@ future auth login
 ```
 
 Switch the active model any time with `/model <id>` in the TUI, or `ctrl+p` to cycle.
+
+### Run the agent (start this first)
+
+Every client — TUI, GUI, CLI, channels — is a thin gRPC client. **The agent must be running first**, listening on `127.0.0.1:50051`. Two options:
+
+| Mode | Command | Use when |
+|---|---|---|
+| **Foreground** | `make run-agent` | Builds and runs agent in terminal. Logs to stdout. Stop with Ctrl-C. |
+| **Background** | `future agent start` | Installs as OS service, survives reboots. Manage with `future agent stop \| restart \| status`. |
+
+Then launch a client:
+
+```bash
+future tui           # terminal, after make install
+future gui           # desktop, after make install
+# or in dev mode (builds first):
+make run-tui         # terminal
+make run-gui         # desktop
+```
+
+> A client that exits with a connection / gRPC error almost always means the agent isn't running yet — see [Troubleshooting](#troubleshooting).
 
 ### CLI Quick Start
 
