@@ -123,7 +123,6 @@ def process_openrouter(data: Dict) -> List[Dict]:
             continue
             
         name = model.get("name", model_id)
-        provider = model.get("id", "").split("/")[0] if "/" in model_id else "openrouter"
         context_window = model.get("context_length", 4096)
         
         pricing = model.get("pricing", {})
