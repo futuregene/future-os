@@ -102,8 +102,6 @@ future auth login
 }
 ```
 
-随时用 TUI 里的 `/model <id>` 切换当前模型,或 `ctrl+p` 循环切换。
-
 ### 启动 Agent
 
 所有客户端——TUI、GUI、CLI、channels——都只是轻量 gRPC 客户端。**必须先启动 Agent**,监听 `127.0.0.1:50051`。启动方式有两种,对应两种场景:

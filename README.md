@@ -102,8 +102,6 @@ For providers with user-specific base URLs (e.g. Azure's `YOUR_RESOURCE`), add a
 }
 ```
 
-Switch the active model any time with `/model <id>` in the TUI, or `ctrl+p` to cycle.
-
 ### Run the agent
 
 Every client — TUI, GUI, CLI, channels — is a thin gRPC client. **The agent must be running first**, listening on `127.0.0.1:50051`. Two options:
