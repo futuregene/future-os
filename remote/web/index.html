@@ -197,7 +197,10 @@ async function listSessions() {
     sessions = r?.data?.sessions || [];
     renderSessionList();
   } catch (e) {
-    $("sessionList").innerHTML = `<div class="hint err">会话列表加载失败: ${(e?.message || e)}</div>`;
+    const errDiv = document.createElement("div");
+    errDiv.className = "hint err";
+    errDiv.textContent = `会话列表加载失败: ${(e?.message || e)}`;
+    $("sessionList").replaceChildren(errDiv);
   }
 }
 
