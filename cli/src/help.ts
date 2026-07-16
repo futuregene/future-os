@@ -12,10 +12,10 @@ Usage:
   future tools list
   future tools call <name> [--args '<json>' | --stdin] [--input <path>] [--mask <path>]
   future skills list
-  future skills install <name> [--version <ver>] [--scope <app|project|global>]
-  future skills uninstall <name> [--scope <app|project|global>]
-  future skills install-builtin [--scope <app|project|global>]
-  future skills update [--scope <app|project|global>]
+  future skills install <name> [--version <ver>]
+  future skills uninstall <name>
+  future skills install-builtin
+  future skills update
   future doctor [--fix]
 
 Run 'future run --help' for run command options.

@@ -8,28 +8,13 @@ import { execFile } from "node:child_process";
 
 import { getPlatformUrl } from "../utils/platform.js";
 
-// ── Paths ────────────────────────────────────────────────────────────────────
+// ── Paths ──────────────────────────────────────────────────────────────────
 
-const APP_SKILLS = join(homedir(), ".future", "agent", "skills");
-const GLOBAL_SKILLS = join(homedir(), ".agents", "skills");
+export const SKILLS_DIR = join(homedir(), ".future", "agent", "skills");
 
-function projectSkillsDir(): string {
-  return join(process.cwd(), ".future", "agent", "skills");
-}
-
-// ── Types ────────────────────────────────────────────────────────────────────
+// ── Types ──────────────────────────────────────────────────────────────────
 
 export type SkillsCommand = "list" | "install" | "uninstall" | "install-builtin" | "update";
-export type Scope = "app" | "project" | "global";
-
-// Export skill directory resolution for doctor and other consumers.
-export function skillsDirFor(scope: Scope): string {
-  switch (scope) {
-    case "app":     return APP_SKILLS;
-    case "project": return projectSkillsDir();
-    case "global":  return GLOBAL_SKILLS;
-  }
-}
 
 interface SkillInfo {
   id: string;
@@ -42,7 +27,7 @@ interface SkillInfo {
   latest_version: string | null;
 }
 
-// ── Entry ────────────────────────────────────────────────────────────────────
+// ── Entry ──────────────────────────────────────────────────────────────────
 
 export async function skills(command: SkillsCommand, args: string[]): Promise<void> {
   if (command === "list") {
@@ -51,34 +36,31 @@ export async function skills(command: SkillsCommand, args: string[]): Promise<vo
   }
 
   if (command === "install-builtin") {
-    const scope = parseScope(args);
-    await installBuiltinSkills(scope);
+    await installBuiltinSkills();
+    return;
+  }
+
+  if (command === "update") {
+    await updateSkills();
     return;
   }
 
   const name = args[0];
   if (!name) {
-    console.error(`Usage: future skills ${command} <skill-name> [--version <ver>] [--scope <app|project|global>]`);
+    console.error(`Usage: future skills ${command} <skill-name> [--version <ver>]`);
     process.exitCode = 1;
     return;
   }
 
-  const scope = parseScope(args);
-
   if (command === "install") {
     const versionIdx = args.indexOf("--version");
     const version = versionIdx !== -1 && versionIdx + 1 < args.length ? args[versionIdx + 1] : undefined;
-    await installSkill(name, version, scope);
+    await installSkill(name, version);
     return;
   }
 
   if (command === "uninstall") {
-    await uninstallSkill(name, scope);
-    return;
-  }
-
-  if (command === "update") {
-    await updateSkills(args);
+    await uninstallSkill(name);
     return;
   }
 }
@@ -87,24 +69,7 @@ export function isSkillsCommand(command: string): command is SkillsCommand {
   return command === "list" || command === "install" || command === "uninstall" || command === "install-builtin" || command === "update";
 }
 
-// ── Scope ────────────────────────────────────────────────────────────────────
-
-function parseScope(args: string[]): Scope {
-  const idx = args.indexOf("--scope");
-  if (idx === -1) return "app";
-  const val = args[idx + 1];
-  if (val === "app" || val === "project" || val === "global") return val;
-  console.error(`Invalid scope "${val}". Valid: app, project, global.`);
-  process.exitCode = 1;
-  return "app";
-}
-
-function scopeLabel(scope: Scope, dir: string): string {
-  if (scope === "project") return `${dir} (project)`;
-  return dir;
-}
-
-// ── Remote API ───────────────────────────────────────────────────────────────
+// ── Remote API ─────────────────────────────────────────────────────────────
 
 export async function fetchSkills(platformUrl: string, category?: string): Promise<SkillInfo[]> {
   const url = category
@@ -133,7 +98,7 @@ async function downloadSkillZip(platformUrl: string, skillId: string, version: s
   return Readable.fromWeb(resp.body as any);
 }
 
-// ── Implementation ───────────────────────────────────────────────────────────
+// ── Implementation ─────────────────────────────────────────────────────────
 
 async function listSkills(): Promise<void> {
   const platformUrl = await getPlatformUrl();
@@ -153,28 +118,22 @@ async function listSkills(): Promise<void> {
     return;
   }
 
-  // Check which skills are installed across all scopes
+  // Check which skills are installed
   const installed: Record<string, string> = {};
-  for (const dir of [APP_SKILLS, projectSkillsDir(), GLOBAL_SKILLS]) {
-    try {
-      const entries = await readdir(dir);
-      for (const entry of entries) {
-        if (installed[entry]) continue;
-        const skillMd = join(dir, entry, "SKILL.md");
-        try {
-          const ver = await readSkillMdVersion(skillMd);
-          if (ver) installed[entry] = ver;
-        } catch {
-          // No SKILL.md — still mark as installed (partial install)
-          if (!installed[entry]) installed[entry] = "?";
-        }
+  try {
+    const entries = await readdir(SKILLS_DIR);
+    for (const entry of entries) {
+      try {
+        const ver = await readSkillMdVersion(join(SKILLS_DIR, entry, "SKILL.md"));
+        if (ver) installed[entry] = ver;
+      } catch {
+        // skip
       }
-    } catch {
-      // Skip nonexistent dirs
     }
+  } catch {
+    // Dir doesn't exist
   }
 
-  // Compute dynamic column widths
   const idWidth = Math.min(36, Math.max(12, ...skills.map(s => s.id.length)));
   const verWidth = Math.max(10, ...skills.map(s => (s.latest_version ? `v${s.latest_version}` : "—").length));
   const instWidth = skills.reduce((max, s) => {
@@ -197,10 +156,9 @@ async function listSkills(): Promise<void> {
   console.log(`\n${skills.length} skills available. Use "future skills install <name>" to install.`);
 }
 
-async function installSkill(skillId: string, version?: string, scope: Scope = "app"): Promise<void> {
+async function installSkill(skillId: string, version?: string): Promise<void> {
   const platformUrl = await getPlatformUrl();
 
-  // Fetch skill metadata to get latest_version if version not specified
   if (!version) {
     let skills: SkillInfo[];
     try {
@@ -226,17 +184,15 @@ async function installSkill(skillId: string, version?: string, scope: Scope = "a
     version = skillMeta.latest_version;
   }
 
-  const skillsDir = skillsDirFor(scope);
-  const dest = join(skillsDir, skillId);
+  const dest = join(SKILLS_DIR, skillId);
   let isUpdate = false;
   try {
     await stat(dest);
     isUpdate = true;
   } catch {
-    // Not installed — fresh install
+    // fresh install
   }
 
-  // Download the zip
   console.log(`Downloading ${skillId} v${version}...`);
   const tmpZip = join(tmpdir(), `future-skill-${skillId}-${version}.zip`);
   let zipStream: Readable;
@@ -249,33 +205,25 @@ async function installSkill(skillId: string, version?: string, scope: Scope = "a
   }
 
   try {
-    // Write zip to temp file
     const fileStream = createWriteStream(tmpZip);
     await pipeline(zipStream, fileStream);
 
-    // Prepare destination
     if (isUpdate) {
       await rm(dest, { recursive: true, force: true });
     }
     await mkdir(dest, { recursive: true });
-
-    // Extract zip
     await unzip(tmpZip, dest);
-
-    // If zip contents are wrapped in a single subdirectory, flatten it
     await flattenSingleSubdir(dest);
 
-    console.log(`${isUpdate ? "Updated" : "Installed"} skill "${skillId}" v${version} → ${scopeLabel(scope, dest)}`);
+    console.log(`${isUpdate ? "Updated" : "Installed"} skill "${skillId}" v${version} → ${dest}`);
   } finally {
-    // Clean up temp file
     try { await rm(tmpZip, { force: true }); } catch { /* ignore */ }
   }
 }
 
-export async function installBuiltinSkills(scope: Scope = "app"): Promise<void> {
+export async function installBuiltinSkills(): Promise<void> {
   const platformUrl = await getPlatformUrl();
 
-  // 1. Fetch builtin skills
   let skills: SkillInfo[];
   try {
     skills = await fetchSkills(platformUrl, "builtin");
@@ -291,10 +239,8 @@ export async function installBuiltinSkills(scope: Scope = "app"): Promise<void> 
     return;
   }
 
-  // 2. Get already installed skill IDs
-  const installed = await getInstalledSkillIds(scope);
+  const installed = await getInstalledSkillIds();
 
-  // 3. Filter out already installed
   const toInstall = skills.filter(s => !installed.has(s.id));
 
   if (toInstall.length === 0) {
@@ -305,14 +251,13 @@ export async function installBuiltinSkills(scope: Scope = "app"): Promise<void> 
   const skipped = skills.length - toInstall.length;
   console.log(`Installing ${toInstall.length} builtin skills${skipped > 0 ? ` (${skipped} already installed)` : ""}...`);
 
-  // 4. Install one by one
   for (const skill of toInstall) {
     if (!skill.latest_version) {
       console.log(`  Skipping ${skill.id} — no version available.`);
       continue;
     }
     try {
-      await installSkill(skill.id, skill.latest_version, scope);
+      await installSkill(skill.id, skill.latest_version);
     } catch (err) {
       console.error(`  Failed to install ${skill.id}: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -321,69 +266,59 @@ export async function installBuiltinSkills(scope: Scope = "app"): Promise<void> 
   console.log(`Done. ${toInstall.length} skills installed.`);
 }
 
-/**
- * Update all installed skills to their latest versions.
- * Checks every scope, compares against the platform catalog, and upgrades stale skills.
- */
-async function updateSkills(args: string[]): Promise<void> {
-  const scope = args.includes("--scope") ? parseScope(args) : null;
-
+/** Update all installed skills to their latest versions. */
+async function updateSkills(): Promise<void> {
   const platformUrl = await getPlatformUrl();
   console.log(`Fetching skill catalog from ${platformUrl}...`);
-  const builtinSkills = await fetchSkills(platformUrl, "builtin");
-  if (builtinSkills.length === 0) {
-    console.log("No builtin skills available.");
+  const skills = await fetchSkills(platformUrl, "builtin");
+  if (skills.length === 0) {
+    console.log("No skills available.");
     return;
   }
 
-  const scopes: Scope[] = scope ? [scope] : ["app", "project", "global"];
+  const installed = await getInstalledSkillIds();
+  if (installed.size === 0) {
+    console.log("No skills installed.");
+    return;
+  }
+
   let updated = 0;
   let upToDate = 0;
 
-  for (const sc of scopes) {
-    const installed = await getInstalledSkillIds(sc);
-    if (installed.size === 0) continue;
+  for (const skill of skills) {
+    if (!installed.has(skill.id)) continue;
+    if (!skill.latest_version) continue;
 
-    const dir = skillsDirFor(sc);
-    for (const skill of builtinSkills) {
-      if (!installed.has(skill.id)) continue;
-      if (!skill.latest_version) continue;
+    const skillMdPath = join(SKILLS_DIR, skill.id, "SKILL.md");
+    const localVer = await readSkillMdVersion(skillMdPath);
+    if (!localVer || localVer === skill.latest_version) {
+      upToDate++;
+      continue;
+    }
 
-      const skillMdPath = join(dir, skill.id, "SKILL.md");
-      const localVer = await readSkillMdVersion(skillMdPath);
-      if (!localVer || localVer === skill.latest_version) {
-        upToDate++;
-        continue;
-      }
-
-      console.log(`  ${skill.id}: ${localVer} → ${skill.latest_version}`);
-      try {
-        await installSkill(skill.id, skill.latest_version, sc);
-        updated++;
-      } catch (err) {
-        console.error(`  Failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
+    console.log(`  ${skill.id}: ${localVer} → ${skill.latest_version}`);
+    try {
+      await installSkill(skill.id, skill.latest_version);
+      updated++;
+    } catch (err) {
+      console.error(`  Failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  if (updated === 0 && upToDate === 0) {
-    console.log("No skills installed.");
-  } else if (updated === 0) {
+  if (updated === 0) {
     console.log(`${upToDate} skill(s) already up to date.`);
   } else {
     console.log(`Updated ${updated} skill(s), ${upToDate} already up to date.`);
   }
 }
 
-export async function getInstalledSkillIds(scope: Scope): Promise<Set<string>> {
-  const dir = skillsDirFor(scope);
+export async function getInstalledSkillIds(): Promise<Set<string>> {
   const ids = new Set<string>();
   try {
-    const entries = await readdir(dir);
+    const entries = await readdir(SKILLS_DIR);
     for (const entry of entries) {
-      const skillMd = join(dir, entry, "SKILL.md");
       try {
-        await stat(skillMd);
+        await stat(join(SKILLS_DIR, entry, "SKILL.md"));
         ids.add(entry);
       } catch {
         // No SKILL.md — skip
@@ -395,27 +330,23 @@ export async function getInstalledSkillIds(scope: Scope): Promise<Set<string>> {
   return ids;
 }
 
-async function uninstallSkill(skillId: string, scope: Scope = "app"): Promise<void> {
-  const skillsDir = skillsDirFor(scope);
-  const dest = join(skillsDir, skillId);
+async function uninstallSkill(skillId: string): Promise<void> {
+  const dest = join(SKILLS_DIR, skillId);
 
   try {
     await stat(dest);
   } catch {
-    console.log(`Skill "${skillId}" is not installed${scope !== "app" ? ` (${scope})` : ""}.`);
+    console.log(`Skill "${skillId}" is not installed.`);
     return;
   }
 
   await rm(dest, { recursive: true, force: true });
-  console.log(`Uninstalled skill "${skillId}" from ${scopeLabel(scope, skillsDir)}.`);
+  console.log(`Uninstalled skill "${skillId}" from ${SKILLS_DIR}.`);
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────
 
-/**
- * Read YAML frontmatter from a SKILL.md and extract the version field.
- * Returns null if no version field found.
- */
+/** Read YAML frontmatter from a SKILL.md and extract the version field. */
 export async function readSkillMdVersion(skillMdPath: string): Promise<string | null> {
   let text: string;
   try {
@@ -465,8 +396,7 @@ function unzip(zipPath: string, destDir: string): Promise<void> {
 
 /**
  * If the extracted directory contains exactly one subdirectory and nothing else,
- * move its contents up one level (flatten). This handles zips that wrap
- * their contents in a top-level directory (e.g. paper-summary/SKILL.md → SKILL.md).
+ * move its contents up one level (flatten).
  */
 async function flattenSingleSubdir(dir: string): Promise<void> {
   let entries: string[];
@@ -486,10 +416,8 @@ async function flattenSingleSubdir(dir: string): Promise<void> {
   }
   if (!info.isDirectory()) return;
 
-  // Move contents of single subdir up to dir
   const children = await readdir(single);
   for (const child of children) {
-    // Remove any existing item at destination with same name
     await rm(join(dir, child), { recursive: true, force: true }).catch(() => {});
     await renameAcrossDevice(join(single, child), join(dir, child));
   }

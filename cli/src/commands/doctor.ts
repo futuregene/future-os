@@ -23,8 +23,7 @@ import {
   getInstalledSkillIds,
   installBuiltinSkills,
   readSkillMdVersion,
-  skillsDirFor,
-  type Scope,
+  SKILLS_DIR,
 } from "./skills.js";
 import { getPlatformUrl } from "../utils/platform.js";
 import { which } from "../utils/files.js";
@@ -66,7 +65,6 @@ const SETTINGS_FILE = path.join(AGENT_DIR, "settings.json");
 const SESSIONS_DIR = path.join(AGENT_DIR, "sessions");
 const GRPC_ADDR = process.env.FUTURE_AGENT_GRPC_ADDR ?? "127.0.0.1:50051";
 
-const SKILL_SCOPES: Scope[] = ["app", "project", "global"];
 
 // ── Entry ──────────────────────────────────────────────────────────────────
 
@@ -129,7 +127,7 @@ export async function doctor(fix: boolean): Promise<void> {
         console.log(`  ${YELLOW}Skipping skills install — not logged in.${C.reset}\n`);
       } else {
         await tryFix("Installing builtin skills...", async () => {
-          await installBuiltinSkills("app");
+          await installBuiltinSkills();
         });
       }
     }
@@ -343,31 +341,17 @@ async function checkSessions(): Promise<CheckResult> {
 
 async function checkSkills(): Promise<CheckResult> {
   const lines: string[] = [];
-  let localCount = 0;
 
-  for (const scope of SKILL_SCOPES) {
-    const dir = skillsDirFor(scope);
-    try {
-      const ids = await getInstalledSkillIds(scope);
-      if (ids.size > 0) {
-        localCount += ids.size;
-        lines.push(`  ${scope} (${dir}): ${[...ids].join(", ")}`);
-      }
-    } catch {
-      // skip
-    }
+  const installed = await getInstalledSkillIds();
+  if (installed.size > 0) {
+    lines.push(`${SKILLS_DIR}: ${[...installed].join(", ")}`);
+  } else {
+    lines.push("No skills installed.");
+    const marker = fs.existsSync(SKILLS_DIR) ? "" : ` ${C.dim}(directory not found)${C.reset}`;
+    lines.push(`  ${SKILLS_DIR}${marker}`);
   }
 
-  if (localCount === 0) {
-    lines.push("No skills installed. Search paths:");
-    for (const scope of SKILL_SCOPES) {
-      const dir = skillsDirFor(scope);
-      const marker = fs.existsSync(dir) ? "" : ` ${C.dim}(not found)${C.reset}`;
-      lines.push(`  ${dir}${marker}`);
-    }
-  }
-
-  // Check remote catalog for updates across all scopes
+  // Check remote catalog for updates
   try {
     const platformUrl = await getPlatformUrl();
     const builtinSkills = await fetchSkills(platformUrl, "builtin");
@@ -377,26 +361,11 @@ async function checkSkills(): Promise<CheckResult> {
       let stale = 0;
 
       for (const skill of builtinSkills) {
-        // Check all scopes for this skill
-        let foundScope: Scope | null = null;
-        let localVer: string | null = null;
-        for (const scope of SKILL_SCOPES) {
-          const skillMdPath = path.join(skillsDirFor(scope), skill.id, "SKILL.md");
-          try {
-            const ver = await readSkillMdVersion(skillMdPath);
-            if (ver) {
-              foundScope = scope;
-              localVer = ver;
-              break;
-            }
-          } catch {
-            // not in this scope
-          }
-        }
-
+        const skillMdPath = path.join(SKILLS_DIR, skill.id, "SKILL.md");
+        const localVer = await readSkillMdVersion(skillMdPath);
         if (localVer && skill.latest_version && localVer !== skill.latest_version) {
           lines.push(
-            `  ${skill.id}: ${localVer} ${C.dim}→${C.reset} ${skill.latest_version} ${C.dim}(${foundScope})${C.reset}`,
+            `  ${skill.id}: ${localVer} ${C.dim}→${C.reset} ${skill.latest_version}`,
           );
           stale++;
         } else if (!localVer) {
@@ -412,7 +381,7 @@ async function checkSkills(): Promise<CheckResult> {
 
   return {
     name: "Skills",
-    status: localCount > 0 ? "ok" : "warn",
+    status: installed.size > 0 ? "ok" : "warn",
     lines,
   };
 }
