@@ -368,13 +368,26 @@ export async function readSkillMdVersion(skillMdPath: string): Promise<string | 
   for (const line of frontmatter.split("\n")) {
     const t = line.trim();
     if (!t || t.startsWith("#")) continue;
-    const m = t.match(/^version:\s*(.+)$/);
-    if (m) {
-      let val = m[1].trim();
+
+    // Direct version field: version: 1.0.0
+    const vm = t.match(/^version:\s*(.+)$/);
+    if (vm) {
+      let val = vm[1].trim();
       if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
         val = val.slice(1, -1);
       }
       return val || null;
+    }
+
+    // Metadata JSON: metadata: {"version": "1.0", ...}
+    const mm = t.match(/^metadata:\s*(.+)$/);
+    if (mm) {
+      try {
+        const meta = JSON.parse(mm[1]);
+        if (meta.version) return String(meta.version);
+      } catch {
+        // not valid JSON — ignore
+      }
     }
   }
   return null;
