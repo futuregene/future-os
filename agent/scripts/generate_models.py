@@ -98,8 +98,9 @@ def process_models_dev(data: Dict) -> List[Dict]:
         # Skip openrouter and vercel (fetched separately)
         if provider_name in ("openrouter", "vercel-ai"):
             continue
-        base_url = PROVIDER_BASE_URLS.get(provider_name, "")
-        # Only include providers with a known base URL (curated list).
+        # Priority: models.dev `api` field → static PROVIDER_BASE_URLS fallback.
+        api_url = (provider_data.get("api") or "").rstrip("/")
+        base_url = api_url or PROVIDER_BASE_URLS.get(provider_name, "")
         if not base_url:
             continue
 
