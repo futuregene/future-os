@@ -1,6 +1,6 @@
 # 内置模型目录
 
-1738 个模型，覆盖 117 个 Provider。
+1932 个模型，覆盖 118 个 Provider。
 
 ## Provider 概览
 
@@ -112,6 +112,7 @@
 | umans-ai-coding-plan | 1 |
 | unorouter | 11 |
 | upstage | 3 |
+| Vercel AI Gateway | 194 |
 | vultr | 3 |
 | wafer.ai | 2 |
 | wandb | 6 |
@@ -2552,6 +2553,207 @@
 | `solar-pro3` | solar-pro3 | 131K | 8K | — | ✅ |
 | `solar-pro2` | solar-pro2 | 66K | 8K | — | ✅ |
 | `solar-mini` | solar-mini | 33K | 4K | — | — |
+
+### Vercel AI Gateway
+
+**Base URL:** `https://ai-gateway.vercel.sh/v1`
+
+| 模型 ID | 名称 | 上下文 | 最大输出 | 图像 | 推理 |
+|---|---|---|---|---|---|
+| `grok-4.20-multi-agent-beta` | Grok 4.20 Multi Agent Beta | 2M | 2M | — | — |
+| `grok-4.20-non-reasoning` | Grok 4.20 Non-Reasoning | 2M | 2M | — | — |
+| `grok-4.20-non-reasoning-beta` | Grok 4.20 Beta Non-Reasoning | 2M | 2M | — | — |
+| `grok-4.20-reasoning` | Grok 4.20 Reasoning | 2M | 2M | — | — |
+| `grok-4.20-reasoning-beta` | Grok 4.20 Beta Reasoning | 2M | 2M | — | — |
+| `muse-spark-1.1` | Muse Spark 1.1 | 1M | 1M | — | — |
+| `glm-5.2` | GLM 5.2 | 1M | 128K | — | — |
+| `qwen3-coder-plus` | Qwen3 Coder Plus | 1M | 66K | — | — |
+| `qwen3.5-flash` | Qwen 3.5 Flash | 1M | 64K | — | — |
+| `qwen3.5-plus` | Qwen 3.5 Plus | 1M | 64K | — | — |
+| `qwen3.6-plus` | Qwen 3.6 Plus | 1M | 64K | — | — |
+| `qwen3.7-plus` | Qwen 3.7 Plus | 1M | 64K | — | — |
+| `nova-2-lite` | Nova 2 Lite | 1M | 1M | — | — |
+| `gemini-omni-flash-preview` | Gemini Omni Flash Preview | 1M | 58K | — | — |
+| `interfaze-beta` | Interfaze Beta | 1M | 32K | — | — |
+| `glm-5.2-fast` | GLM 5.2 Fast | 1M | 128K | — | — |
+| `qwen3.7-max` | Qwen 3.7 Max | 991K | 64K | — | — |
+| `grok-4.5` | Grok 4.5 | 500K | 500K | — | — |
+| `gpt-5.1-thinking` | GPT 5.1 Thinking | 400K | 128K | — | — |
+| `nova-lite` | Nova Lite | 300K | 8K | — | — |
+| `nova-pro` | Nova Pro | 300K | 8K | — | — |
+| `qwen-3-235b` | Qwen3 235B A22B | 262K | 16K | — | — |
+| `qwen3-coder` | Qwen3 Coder 480B A35B Instruct | 262K | 66K | — | — |
+| `qwen3-coder-30b-a3b` | Qwen 3 Coder 30B A3B Instruct | 262K | 8K | — | — |
+| `qwen3-max` | Qwen3 Max | 262K | 33K | — | — |
+| `qwen3-max-preview` | Qwen3 Max Preview | 262K | 33K | — | — |
+| `qwen3-coder-next` | Qwen3 Coder Next | 256K | 256K | — | — |
+| `qwen3-max-thinking` | Qwen 3 Max Thinking | 256K | 66K | — | — |
+| `qwen3.6-27b` | Qwen 3.6 27B | 256K | 256K | — | — |
+| `seed-1.6` | Seed 1.6 | 256K | 32K | — | — |
+| `seed-1.8` | Bytedance Seed 1.8 | 256K | 64K | — | — |
+| `command-a` | Command A | 256K | 8K | — | — |
+| `kat-coder-pro-v1` | KAT-Coder-Pro V1 | 256K | 32K | — | — |
+| `devstral-2` | Devstral 2 | 256K | 256K | — | — |
+| `devstral-small-2` | Devstral Small 2 | 256K | 256K | — | — |
+| `ministral-14b` | Ministral 14B | 256K | 256K | — | — |
+| `mistral-large-3` | Mistral Large 3 | 256K | 256K | — | — |
+| `inkling` | Inkling | 256K | 256K | — | — |
+| `grok-build-0.1` | Grok Build 0.1 | 256K | 256K | — | — |
+| `qwen-3.6-max-preview` | Qwen 3.6 Max Preview | 240K | 64K | — | — |
+| `minimax-m2.1-lightning` | MiniMax M2.1 Lightning | 205K | 131K | — | — |
+| `glm-5` | GLM 5 | 203K | 131K | — | — |
+| `glm-5-turbo` | GLM 5 Turbo | 203K | 131K | — | — |
+| `glm-5.1` | GLM 5.1 | 202K | 202K | — | — |
+| `sonar-pro` | Sonar Pro | 200K | 8K | — | — |
+| `glm-4.6` | GLM 4.6 | 200K | 96K | — | — |
+| `glm-4.7` | GLM 4.7 | 200K | 120K | — | — |
+| `glm-4.7-flash` | GLM 4.7 Flash | 200K | 131K | — | — |
+| `glm-4.7-flashx` | GLM 4.7 FlashX | 200K | 128K | — | — |
+| `glm-5v-turbo` | GLM 5V Turbo | 200K | 128K | — | — |
+| `deepseek-v3` | DeepSeek V3 0324 | 164K | 164K | — | — |
+| `qwen3-235b-a22b-thinking` | Qwen3 VL 235B A22B Thinking | 131K | 33K | — | — |
+| `qwen3-next-80b-a3b-instruct` | Qwen3 Next 80B A3B Instruct | 131K | 33K | — | — |
+| `qwen3-next-80b-a3b-thinking` | Qwen3 Next 80B A3B Thinking | 131K | 33K | — | — |
+| `qwen3-vl-235b-a22b-instruct` | Qwen3 VL 235B A22B Instruct | 131K | 129K | — | — |
+| `qwen3-vl-instruct` | Qwen3 VL 235B A22B Instruct | 131K | 129K | — | — |
+| `qwen3-vl-thinking` | Qwen3 VL 235B A22B Thinking | 131K | 33K | — | — |
+| `gemini-3.1-flash-image` | Gemini 3.1 Flash Image (Nano Banana 2) | 131K | 33K | — | — |
+| `gemini-3.1-flash-image-preview` | Gemini 3.1 Flash Image Preview (Nano Banana 2) | 131K | 33K | — | — |
+| `nemotron-nano-12b-v2-vl` | Nvidia Nemotron Nano 12B V2 VL | 131K | 131K | — | — |
+| `arrow-1.1` | Arrow 1.1 | 131K | 131K | — | — |
+| `qwen-3-32b` | Qwen 3 32B | 128K | 8K | — | — |
+| `nova-micro` | Nova Micro | 128K | 8K | — | — |
+| `embed-v4.0` | Embed v4.0 | 128K | 0 | — | — |
+| `deepseek-v3.2-thinking` | DeepSeek V3.2 Thinking | 128K | 8K | — | — |
+| `llama-3.1-70b` | Llama 3.1 70B Instruct | 128K | 8K | — | — |
+| `llama-3.1-8b` | Llama 3.1 8B Instruct | 128K | 8K | — | — |
+| `llama-3.2-11b` | Llama 3.2 11B Vision Instruct | 128K | 8K | — | — |
+| `llama-3.2-1b` | Llama 3.2 1B Instruct | 128K | 8K | — | — |
+| `llama-3.2-3b` | Llama 3.2 3B Instruct | 128K | 8K | — | — |
+| `llama-3.2-90b` | Llama 3.2 90B Vision Instruct | 128K | 8K | — | — |
+| `llama-3.3-70b` | Llama 3.3 70B Instruct | 128K | 8K | — | — |
+| `llama-4-maverick` | Llama 4 Maverick 17B Instruct | 128K | 8K | — | — |
+| `llama-4-scout` | Llama 4 Scout 17B Instruct | 128K | 8K | — | — |
+| `codestral` | Mistral Codestral | 128K | 4K | — | — |
+| `magistral-medium` | Magistral Medium 2509 | 128K | 64K | — | — |
+| `magistral-small` | Magistral Small 2509 | 128K | 64K | — | — |
+| `ministral-3b` | Ministral 3B | 128K | 4K | — | — |
+| `ministral-8b` | Ministral 8B | 128K | 4K | — | — |
+| `mistral-medium` | Mistral Medium 3.1 | 128K | 64K | — | — |
+| `mistral-nemo` | Mistral Nemo 12B | 128K | 128K | — | — |
+| `pixtral-12b` | Pixtral 12B 2409 | 128K | 4K | — | — |
+| `gpt-4o-mini-search-preview` | GPT 4o Mini Search Preview | 128K | 16K | — | — |
+| `gpt-realtime-2.1` | gpt-realtime-2.1 | 128K | 32K | — | — |
+| `glm-4.5` | GLM 4.5 | 128K | 96K | — | — |
+| `glm-4.5-air` | GLM 4.5 Air | 128K | 96K | — | — |
+| `glm-4.6v` | GLM-4.6V | 128K | 24K | — | — |
+| `glm-4.6v-flash` | GLM-4.6V-Flash | 128K | 24K | — | — |
+| `sonar-reasoning-pro` | Sonar Reasoning Pro | 127K | 8K | — | — |
+| `morph-v3-fast` | Morph V3 Fast | 82K | 16K | — | — |
+| `morph-v3-large` | Morph V3 Large | 82K | 16K | — | — |
+| `flux-2-max` | FLUX.2 [max] | 67K | 67K | — | — |
+| `flux-2-pro` | FLUX.2 [pro] | 67K | 67K | — | — |
+| `glm-4.5v` | GLM 4.5V | 66K | 16K | — | — |
+| `gemini-3.1-flash-lite-image` | Gemini 3.1 Flash Lite Image (Nano Banana 2 Lite) | 66K | 4K | — | — |
+| `qwen-3-14b` | Qwen3-14B | 41K | 16K | — | — |
+| `qwen-3-30b` | Qwen3-30B-A3B | 41K | 16K | — | — |
+| `qwen3-embedding-0.6b` | Qwen3 Embedding 0.6B | 33K | 33K | — | — |
+| `qwen3-embedding-4b` | Qwen3 Embedding 4B | 33K | 33K | — | — |
+| `qwen3-embedding-8b` | Qwen3 Embedding 8B | 33K | 33K | — | — |
+| `gemini-2.5-flash-image` | Nano Banana (Gemini 2.5 Flash Image) | 33K | 66K | — | — |
+| `rerank-v4-fast` | Cohere Rerank 4 Fast | 32K | 32K | — | — |
+| `rerank-v4-pro` | Cohere Rerank 4 Pro | 32K | 32K | — | — |
+| `mercury-coder-small` | Mercury Coder Small Beta | 32K | 16K | — | — |
+| `mistral-small` | Mistral Small | 32K | 4K | — | — |
+| `rerank-2.5` | Voyage Rerank 2.5 | 32K | 32K | — | — |
+| `rerank-2.5-lite` | Voyage Rerank 2.5 Lite | 32K | 32K | — | — |
+| `voyage-4` | Voyage 4 | 32K | 0 | — | — |
+| `voyage-4-large` | Voyage 4 Large | 32K | 0 | — | — |
+| `voyage-4-lite` | Voyage 4 Lite | 32K | 0 | — | — |
+| `rerank-v3.5` | Cohere Rerank 3.5 | 4K | 4K | — | — |
+| `gpt-4o-mini-transcribe` | GPT-4o mini Transcribe | 4K | 4K | — | — |
+| `gpt-4o-transcribe` | GPT-4o Transcribe | 4K | 4K | — | — |
+| `gpt-realtime-whisper` | gpt-realtime-whisper | 4K | 4K | — | — |
+| `tts-1` | TTS-1 | 4K | 4K | — | — |
+| `tts-1-hd` | TTS-1 HD | 4K | 4K | — | — |
+| `whisper-1` | Whisper | 4K | 4K | — | — |
+| `grok-stt` | Grok STT | 4K | 4K | — | — |
+| `grok-tts` | Grok TTS | 4K | 4K | — | — |
+| `flux-kontext-max` | FLUX.1 Kontext Max | 512 | 0 | — | — |
+| `flux-kontext-pro` | FLUX.1 Kontext Pro | 512 | 0 | — | — |
+| `flux-fast-schnell` | Flux Schnell | 512 | 0 | — | — |
+| `imagen-4.0-fast-generate-001` | Imagen 4 Fast | 480 | 0 | — | — |
+| `imagen-4.0-generate-001` | Imagen 4 | 480 | 0 | — | — |
+| `imagen-4.0-ultra-generate-001` | Imagen 4 Ultra | 480 | 0 | — | — |
+| `wan-v2.5-t2v-preview` | Wan v2.5 Text-to-Video Preview | 0 | 0 | — | — |
+| `wan-v2.6-i2v` | Wan v2.6 Image-to-Video | 0 | 0 | — | — |
+| `wan-v2.6-i2v-flash` | Wan v2.6 Image-to-Video Flash | 0 | 0 | — | — |
+| `wan-v2.6-r2v` | Wan v2.6 Reference-to-Video | 0 | 0 | — | — |
+| `wan-v2.6-r2v-flash` | Wan v2.6 Reference-to-Video Flash | 0 | 0 | — | — |
+| `wan-v2.6-t2v` | Wan v2.6 Text-to-Video | 0 | 0 | — | — |
+| `wan-v2.7-r2v` | Wan v2.7 Reference-to-Video | 0 | 0 | — | — |
+| `wan-v2.7-t2v` | Wan v2.7 Text-to-Video | 0 | 0 | — | — |
+| `titan-embed-text-v2` | Titan Text Embeddings V2 | 0 | 0 | — | — |
+| `flux-2-flex` | FLUX.2 [flex] | 0 | 0 | — | — |
+| `flux-2-klein-4b` | FLUX.2 [klein] 4B | 0 | 0 | — | — |
+| `flux-2-klein-9b` | FLUX.2 [klein] 9B | 0 | 0 | — | — |
+| `flux-pro-1.0-fill` | FLUX.1 Fill [pro] | 0 | 0 | — | — |
+| `flux-pro-1.1` | FLUX1.1 [pro] | 0 | 0 | — | — |
+| `flux-pro-1.1-ultra` | FLUX1.1 [pro] Ultra | 0 | 0 | — | — |
+| `seedance-2.0` | Seedance 2.0 | 0 | 0 | — | — |
+| `seedance-2.0-fast` | Seedance 2.0 Fast | 0 | 0 | — | — |
+| `seedance-v1.0-pro` | Seedance v1.0 Pro | 0 | 0 | — | — |
+| `seedance-v1.0-pro-fast` | Seedance v1.0 Pro Fast | 0 | 0 | — | — |
+| `seedance-v1.5-pro` | Seedance v1.5 Pro | 0 | 0 | — | — |
+| `seedream-4.0` | Seedream 4.0 | 0 | 0 | — | — |
+| `seedream-4.5` | Seedream 4.5 | 0 | 0 | — | — |
+| `seedream-5.0-lite` | Seedream 5.0 Lite | 0 | 0 | — | — |
+| `seedream-5.0-pro` | Seedream 5.0 Pro | 0 | 0 | — | — |
+| `gemini-embedding-001` | Gemini Embedding 001 | 0 | 0 | — | — |
+| `gemini-embedding-2` | Gemini Embedding 2 | 0 | 0 | — | — |
+| `text-embedding-005` | Text Embedding 005 | 0 | 0 | — | — |
+| `text-multilingual-embedding-002` | Text Multilingual Embedding 002 | 0 | 0 | — | — |
+| `veo-3.0-fast-generate-001` | Veo 3.0 Fast Generate | 0 | 0 | — | — |
+| `veo-3.0-generate-001` | Veo 3.0 | 0 | 0 | — | — |
+| `veo-3.1-fast-generate-001` | Veo 3.1 Fast Generate | 0 | 0 | — | — |
+| `veo-3.1-generate-001` | Veo 3.1 | 0 | 0 | — | — |
+| `kling-v2.5-turbo-i2v` | Kling v2.5 Turbo Image-to-Video | 0 | 0 | — | — |
+| `kling-v2.5-turbo-t2v` | Kling v2.5 Turbo Text-to-Video | 0 | 0 | — | — |
+| `kling-v2.6-i2v` | Kling v2.6 Image-to-Video | 0 | 0 | — | — |
+| `kling-v2.6-motion-control` | Kling v2.6 Motion Control | 0 | 0 | — | — |
+| `kling-v2.6-t2v` | Kling v2.6 Text-to-Video | 0 | 0 | — | — |
+| `kling-v3.0-i2v` | Kling v3.0 Image-to-Video | 0 | 0 | — | — |
+| `kling-v3.0-motion-control` | Kling v3.0 Motion Control | 0 | 0 | — | — |
+| `kling-v3.0-t2v` | Kling v3.0 Text-to-Video | 0 | 0 | — | — |
+| `codestral-embed` | Codestral Embed | 0 | 0 | — | — |
+| `mistral-embed` | Mistral Embed | 0 | 0 | — | — |
+| `gpt-image-1.5` | GPT Image 1.5 | 0 | 0 | — | — |
+| `gpt-image-2` | GPT Image 2 | 0 | 0 | — | — |
+| `gpt-realtime-2` | gpt-realtime-2 | 0 | 0 | — | — |
+| `gpt-realtime-mini` | GPT-Realtime mini | 0 | 0 | — | — |
+| `text-embedding-3-large` | text-embedding-3-large | 0 | 0 | — | — |
+| `text-embedding-3-small` | text-embedding-3-small | 0 | 0 | — | — |
+| `text-embedding-ada-002` | text-embedding-ada-002 | 0 | 0 | — | — |
+| `recraft-v2` | Recraft V2 | 0 | 0 | — | — |
+| `recraft-v3` | Recraft V3 | 0 | 0 | — | — |
+| `recraft-v4` | Recraft V4 | 0 | 0 | — | — |
+| `recraft-v4-pro` | Recraft V4 Pro | 0 | 0 | — | — |
+| `recraft-v4.1` | Recraft V4.1 | 0 | 0 | — | — |
+| `recraft-v4.1-pro` | Recraft V4.1 Pro | 0 | 0 | — | — |
+| `recraft-v4.1-utility` | Recraft V4.1 Utility | 0 | 0 | — | — |
+| `recraft-v4.1-utility-pro` | Recraft V4.1 Utility Pro | 0 | 0 | — | — |
+| `voyage-3-large` | voyage-3-large | 0 | 0 | — | — |
+| `voyage-3.5` | Voyage 3.5 | 0 | 0 | — | — |
+| `voyage-3.5-lite` | Voyage 3.5 Lite | 0 | 0 | — | — |
+| `voyage-code-2` | Voyage Code 2 | 0 | 0 | — | — |
+| `voyage-code-3` | Voyage Code 3 | 0 | 0 | — | — |
+| `voyage-finance-2` | Voyage Finance 2 | 0 | 0 | — | — |
+| `voyage-law-2` | Voyage Law 2 | 0 | 0 | — | — |
+| `grok-imagine-image` | Grok Imagine Image | 0 | 0 | — | — |
+| `grok-imagine-video` | Grok Imagine | 0 | 0 | — | — |
+| `grok-imagine-video-1.5` | Grok Imagine Video 1.5 | 0 | 0 | — | — |
+| `grok-imagine-video-1.5-preview` | Grok Imagine Video 1.5 Preview | 0 | 0 | — | — |
+| `grok-voice-think-fast-1.0` | Grok Voice Think Fast 1.0 | 0 | 0 | — | — |
 
 ### vultr
 
