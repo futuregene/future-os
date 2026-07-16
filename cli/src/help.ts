@@ -5,14 +5,6 @@ Usage:
   future auth login
   future auth status
   future auth logout
-  future agent start
-  future agent stop
-  future agent restart
-  future agent status
-  future channel start
-  future channel stop
-  future channel restart
-  future channel status
   future account profile
   future account balance [--json]
   future account recharge --amount <yuan> --channel <alipay|wechat>
@@ -24,8 +16,6 @@ Usage:
   future skills uninstall <name> [--scope <app|project|global>]
   future skills install-builtin [--scope <app|project|global>]
   future doctor [--fix]
-  future tui [tui options]
-  future gui
 
 Run 'future run --help' for run command options.
 `);
