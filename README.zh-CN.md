@@ -78,7 +78,7 @@ future auth login
 }
 ```
 
-不在[内置目录](docs/wiki/zh/Models.md)中的 Provider（如 Azure）需额外指定 `baseUrl`：
+部分[内置目录](docs/wiki/zh/Models.md)中的 Provider 的 Base URL 为模板（如 Azure 的 `YOUR_RESOURCE`、Google Vertex 的 `PROJECT_ID`），需额外指定 `baseUrl` 为实际值：
 
 ```json
 {
