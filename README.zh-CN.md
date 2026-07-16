@@ -39,10 +39,10 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
 - **Node.js** 24+（见 `.nvmrc`）
 - **Bun** —— 必需项，非可选：TUI 构建和 CLI/GUI 打包均使用 `bun build`
 - **Linux 必需**（所有构建都需要）：
-  - `sudo apt install mold`
+  - `sudo apt install build-essential mold`
 - **Tauri 系统依赖**（构建 GUI 需要）：
   - macOS：`xcode-select --install`
-  - Linux（Debian/Ubuntu）：`sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf`
+  - Linux（Debian/Ubuntu）：`sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf`
   - Windows：WebView2 Runtime（Win 10/11 自带）+ MSVC 构建工具
 - 可选：**Python 3** —— 仅 `make generate-models` 需要
 - 可选：**protoc**（Protocol Buffers 编译器）—— 仅 `make generate-proto` 需要；生成的代码已提交，正常构建无需安装
@@ -120,7 +120,6 @@ make run-gui         # 桌面应用
 ### CLI 快速上手
 
 ```bash
-future auth login                          # 登录托管模型
 future run "用 Python 写个排序函数"         # 单次对话
 future tui                                 # 打开 TUI
 future gui                                 # 启动桌面应用
@@ -215,6 +214,7 @@ make generate-proto          # agent + channels + TUI
 | 客户端报连接 / gRPC 错误退出 | Agent 没启动。先启动它(`make run-agent` 或 `future agent start`),并确认端口没被占用:`lsof -i :50051`。 |
 | Agent 回复鉴权 / "no model" 错误 | 还没配置模型。运行 `future auth login`,或在 `models.json` 里加一个 provider——见 [配置模型](#配置模型)。 |
 | GUI 找不到 Agent 二进制 | `make install-gui` 用你的宿主 target triple 复制 sidecar。如果 triple 与自动检测的不一致，手动复制：`cp agent/target/debug/future-agent gui/src-tauri/binaries/future-agent-$(rustc -vV | sed -n 's/^host: //p')`。 |
+| 构建时报 "unable to find linker 'mold'" | 安装 mold：`sudo apt install mold`（仅限 Linux x86_64，ARM Linux 不需要）。 |
 | Linux 上 GUI 构建失败(webkit / gtk 报错) | 安装 Tauri 系统依赖——见 [环境要求](#环境要求)。 |
 
 ## License

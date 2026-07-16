@@ -39,10 +39,10 @@ Required for a full `make build` (agent + TUI + CLI + GUI):
 - **Node.js** 24+ (see `.nvmrc`)
 - **Bun** — required, not optional: the TUI build and CLI/GUI packaging use `bun build`
 - **Linux only** (required for all builds):
-  - `sudo apt install mold`
+  - `sudo apt install build-essential mold`
 - **Tauri system dependencies** (for the GUI):
   - macOS: `xcode-select --install`
-  - Linux (Debian/Ubuntu): `sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf`
+  - Linux (Debian/Ubuntu): `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf`
   - Windows: WebView2 Runtime (ships with Windows 10/11) + MSVC build tools
 - Optional: **Python 3** — only for `make generate-models`
 - Optional: **protoc** (Protocol Buffers compiler) — only for `make generate-proto`; generated code is checked in so normal builds don't need it
@@ -96,7 +96,7 @@ future auth login
 
 Switch the active model any time with `/model <id>` in the TUI, or `ctrl+p` to cycle.
 
-### Run the agent (start this first)
+### Run the agent
 
 Every client — TUI, GUI, CLI, channels — is a thin gRPC client. **The agent must be running first**, listening on `127.0.0.1:50051`. Two options:
 
@@ -120,7 +120,6 @@ make run-gui         # desktop
 ### CLI Quick Start
 
 ```bash
-future auth login                            # sign in to hosted models
 future run "Write a Python sort function"    # one-shot prompt
 future tui                                   # open the TUI
 future gui                                   # launch the desktop app
@@ -215,6 +214,7 @@ make generate-proto          # agent + channels + TUI
 | Client exits with a connection / gRPC error | The agent isn't running. Start it (`make run-agent` or `future agent start`) and check nothing else holds the port: `lsof -i :50051`. |
 | Agent replies with an auth / "no model" error | No model configured yet. Run `future auth login`, or add a provider to `models.json` — see [Configure a model](#configure-a-model). |
 | GUI can't find the agent binary | `make install-gui` copies the agent sidecar using your host target triple. If your triple differs from the auto-detected one, copy it manually: `cp agent/target/debug/future-agent gui/src-tauri/binaries/future-agent-$(rustc -vV | sed -n 's/^host: //p')`. |
+| Build fails with "unable to find linker 'mold'" | Install mold: `sudo apt install mold` (Linux x86_64 only). ARM Linux doesn't need it. |
 | GUI build fails on Linux (webkit / gtk errors) | Install the Tauri system dependencies — see [Prerequisites](#prerequisites). |
 
 ## License
