@@ -12,7 +12,7 @@ use crate::config_io;
 
 // Depth note: this file lives at gui/src-tauri/src/agent_providers/, one level
 // deeper than the old flat module, so the include needs one extra `../`.
-#[path = "../../../../agent/src/models/generated/mod.rs"]
+#[path = "../../../../agent/src/models/builtin/mod.rs"]
 mod generated_model_catalog;
 
 #[derive(Debug, Clone)]
