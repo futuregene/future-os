@@ -68,9 +68,7 @@ async function main(): Promise<void> {
   }
 
   if (group === "doctor") {
-    const restArgs = args.slice(1);
-    const fix = restArgs.includes("--fix");
-    await doctor(fix);
+    await doctor();
     return;
   }
 

@@ -16,7 +16,7 @@ Usage:
   future skills uninstall <name>
   future skills install-builtin
   future skills update
-  future doctor [--fix]
+  future doctor
 
 Run 'future run --help' for run command options.
 `);
