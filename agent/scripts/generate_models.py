@@ -97,9 +97,12 @@ def process_models_dev(data: Dict) -> List[Dict]:
     for provider_name, provider_data in data.items():
         # Skip openrouter and vercel (fetched separately)
         if provider_name in ("openrouter", "vercel-ai"):
-            continue    
+            continue
         base_url = PROVIDER_BASE_URLS.get(provider_name, "")
-        
+        # Only include providers with a known base URL (curated list).
+        if not base_url:
+            continue
+
         for model_id, model in provider_data.get("models", {}).items():
             # Only include models that support tool calling
             if not model.get("tool_call", False):
