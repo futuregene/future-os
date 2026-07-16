@@ -1,8 +1,5 @@
 use anyhow::Result;
-use std::{
-    path::{Component, Path, PathBuf},
-    sync::Arc,
-};
+use std::{path::Path, sync::Arc};
 
 use super::ServerSession;
 
@@ -115,46 +112,21 @@ impl ServerSession {
                     "auto_compaction": self.auto_compaction,
                     "parent_session_id": parent_session_id,
                 });
-                let info_entry = crate::session::SessionEntry {
-                    id: crate::utils::generate_entry_id(),
-                    parent_id: String::new(),
-                    entry_type: crate::session::ENTRY_TYPE_SESSION_INFO.to_string(),
-                    role: "system".to_string(),
-                    content: Some(info),
-                    tool_calls: vec![],
-                    timestamp: chrono::Local::now(),
-                    summary: String::new(),
-                    model: self.model.clone(),
-                    label: String::new(),
-                    thinking_level: self.thinking_level.clone(),
-                    name: String::new(),
-                    tool_args: String::new(),
-                    thinking: String::new(),
-                    output_tokens: 0,
-                    duration_ms: 0,
-                    meta: None,
-                    branch_summary: None,
-                    custom_type: String::new(),
-                    custom_data: None,
-                    display: String::new(),
-                    provider: String::new(),
-                    tool_call_id: String::new(),
-                };
+                let info_entry = crate::session::SessionEntry::session_info(
+                    info,
+                    self.model.clone(),
+                    self.thinking_level.clone(),
+                );
                 entries.insert(0, info_entry);
             }
-            let session = crate::session::Session {
-                id: self.session_id.clone(),
-                version: crate::session::CURRENT_SESSION_VERSION,
-                cwd: self.cwd.clone(),
-                model: self.model.clone(),
-                base_url: String::new(),
-                name: self.session_name.clone(),
+            let session = crate::session::Session::snapshot(
+                self.session_id.clone(),
+                self.cwd.clone(),
+                self.model.clone(),
+                self.session_name.clone(),
                 parent_session_id,
-                leaf_id: String::new(),
                 entries,
-                created_at: chrono::Local::now(),
-                updated_at: chrono::Local::now(),
-            };
+            );
             if let Err(e) = self.session_manager.save(&session) {
                 tracing::error!("Failed to persist user message: {}", e);
             }
@@ -271,29 +243,9 @@ impl ServerSession {
             if let Ok(mut r#loop) = agent_loop.try_write() {
                 r#loop.tool_event_callback =
                     Some(Arc::new(move |event: crate::types::StreamEvent| {
-                        let mut data = serde_json::Map::new();
-                        data.insert("type".to_string(), serde_json::json!(&event.event_type));
-                        if !event.tool_name.is_empty() {
-                            data.insert(
-                                "tool_name".to_string(),
-                                serde_json::json!(&event.tool_name),
-                            );
-                        }
-                        if !event.tool_id.is_empty() {
-                            data.insert("tool_id".to_string(), serde_json::json!(&event.tool_id));
-                        }
-                        if !event.text.is_empty() {
-                            data.insert("text".to_string(), serde_json::json!(&event.text));
-                        }
-                        if !event.error_text.is_empty() {
-                            data.insert("error".to_string(), serde_json::json!(&event.error_text));
-                        }
-                        if let Some(ref tc) = event.tool_call {
-                            data.insert("tool_args".to_string(), tc.function.arguments.clone());
-                        }
                         broadcaster_tool.broadcast(crate::rpc::SseEvent {
                             event_type: event.event_type.clone(),
-                            data: serde_json::to_string(&data).unwrap_or_default(),
+                            data: stream_event_to_sse_data(&event),
                             ..Default::default()
                         });
                     }));
@@ -434,59 +386,9 @@ impl ServerSession {
                                     });
                                 },
                                 move |event| {
-                                    let mut data = serde_json::Map::new();
-                                    data.insert(
-                                        "type".to_string(),
-                                        serde_json::json!(&event.event_type),
-                                    );
-                                    if !event.text.is_empty() {
-                                        data.insert(
-                                            "text".to_string(),
-                                            serde_json::json!(&event.text),
-                                        );
-                                    }
-                                    if !event.tool_name.is_empty() {
-                                        data.insert(
-                                            "tool_name".to_string(),
-                                            serde_json::json!(&event.tool_name),
-                                        );
-                                    }
-                                    if !event.tool_id.is_empty() {
-                                        data.insert(
-                                            "tool_id".to_string(),
-                                            serde_json::json!(&event.tool_id),
-                                        );
-                                    }
-                                    if !event.error_text.is_empty() {
-                                        data.insert(
-                                            "error".to_string(),
-                                            serde_json::json!(&event.error_text),
-                                        );
-                                    }
-                                    if !event.stop_reason.is_empty() {
-                                        data.insert(
-                                            "stopReason".to_string(),
-                                            serde_json::json!(&event.stop_reason),
-                                        );
-                                    }
-                                    if let Some(usage) = &event.usage {
-                                        data.insert("usage".to_string(), serde_json::json!(usage));
-                                    }
-                                    if let Some(ref tc) = event.tool_call {
-                                        data.insert(
-                                            "tool_args".to_string(),
-                                            tc.function.arguments.clone(),
-                                        );
-                                    }
-                                    if event.tc_index > 0 {
-                                        data.insert(
-                                            "tc_index".to_string(),
-                                            serde_json::json!(event.tc_index),
-                                        );
-                                    }
                                     be.broadcast(crate::rpc::SseEvent {
                                         event_type: event.event_type.clone(),
-                                        data: serde_json::to_string(&data).unwrap_or_default(),
+                                        data: stream_event_to_sse_data(&event),
                                         ..Default::default()
                                     });
                                 },
@@ -653,46 +555,21 @@ impl ServerSession {
                         if !source_meta.is_null() {
                             info["source_meta"] = source_meta;
                         }
-                        let info_entry = crate::session::SessionEntry {
-                            id: crate::utils::generate_entry_id(),
-                            parent_id: String::new(),
-                            entry_type: crate::session::ENTRY_TYPE_SESSION_INFO.to_string(),
-                            role: "system".to_string(),
-                            content: Some(info),
-                            tool_calls: vec![],
-                            timestamp: chrono::Local::now(),
-                            summary: String::new(),
-                            model: session_model.clone(),
-                            label: String::new(),
-                            thinking_level: session_thinking.clone(),
-                            branch_summary: None,
-                            custom_type: String::new(),
-                            custom_data: None,
-                            display: String::new(),
-                            provider: String::new(),
-                            tool_call_id: String::new(),
-                            name: String::new(),
-                            tool_args: String::new(),
-                            thinking: String::new(),
-                            output_tokens: 0,
-                            duration_ms: 0,
-                            meta: None,
-                        };
+                        let info_entry = crate::session::SessionEntry::session_info(
+                            info,
+                            session_model.clone(),
+                            session_thinking.clone(),
+                        );
                         entries.insert(0, info_entry);
 
-                        let session = crate::session::Session {
-                            id: session_id.clone(),
-                            version: crate::session::CURRENT_SESSION_VERSION,
-                            cwd: session_cwd.clone(),
-                            model: session_model.clone(),
-                            base_url: String::new(),
-                            name: session_name.clone(),
+                        let session = crate::session::Session::snapshot(
+                            session_id.clone(),
+                            session_cwd.clone(),
+                            session_model.clone(),
+                            session_name.clone(),
                             parent_session_id,
-                            leaf_id: String::new(),
                             entries,
-                            created_at: chrono::Local::now(),
-                            updated_at: chrono::Local::now(),
-                        };
+                        );
                         if let Err(e) = session_manager.save(&session) {
                             tracing::error!("Failed to save session: {}", e);
                         }
@@ -743,6 +620,45 @@ impl ServerSession {
 
         Ok(())
     }
+}
+
+/// Serialize a `StreamEvent` into the JSON `data` payload of an `SseEvent`.
+///
+/// Every optional field is emitted only when the event carries it, so the
+/// tool-only callback (tool_start/tool_end) and the full turn callback share one
+/// schema instead of drifting — previously the tool path silently omitted
+/// `stopReason`/`usage`/`tc_index`.
+fn stream_event_to_sse_data(event: &crate::types::StreamEvent) -> String {
+    let mut data = serde_json::Map::new();
+    data.insert("type".to_string(), serde_json::json!(&event.event_type));
+    if !event.text.is_empty() {
+        data.insert("text".to_string(), serde_json::json!(&event.text));
+    }
+    if !event.tool_name.is_empty() {
+        data.insert("tool_name".to_string(), serde_json::json!(&event.tool_name));
+    }
+    if !event.tool_id.is_empty() {
+        data.insert("tool_id".to_string(), serde_json::json!(&event.tool_id));
+    }
+    if !event.error_text.is_empty() {
+        data.insert("error".to_string(), serde_json::json!(&event.error_text));
+    }
+    if !event.stop_reason.is_empty() {
+        data.insert(
+            "stopReason".to_string(),
+            serde_json::json!(&event.stop_reason),
+        );
+    }
+    if let Some(usage) = &event.usage {
+        data.insert("usage".to_string(), serde_json::json!(usage));
+    }
+    if let Some(ref tc) = event.tool_call {
+        data.insert("tool_args".to_string(), tc.function.arguments.clone());
+    }
+    if event.tc_index > 0 {
+        data.insert("tc_index".to_string(), serde_json::json!(event.tc_index));
+    }
+    serde_json::to_string(&data).unwrap_or_default()
 }
 
 /// Assemble the user message the model sees, plus its stored metadata.
@@ -899,21 +815,9 @@ fn rewrite_path_field(cwd: &str, arguments: &mut serde_json::Value, key: &str) {
 fn resolve_workspace_path(cwd: &str, path: &str) -> String {
     // §3.5: `~` resolves to the real home directory, not the workspace.
     let candidate = crate::sandbox::paths::resolve_against(Path::new(cwd), path);
-    normalize_path(&candidate).to_string_lossy().to_string()
-}
-
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            _ => normalized.push(component.as_os_str()),
-        }
-    }
-    normalized
+    crate::sandbox::paths::normalize_lexically(&candidate)
+        .to_string_lossy()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -1057,6 +961,8 @@ mod build_user_message_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
     use crate::{
         agent::Loop,
         tools::coding_tools,

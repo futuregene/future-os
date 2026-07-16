@@ -26,21 +26,11 @@ pub struct Client {
     base_url: RwLock<String>,
     api_key: RwLock<String>,
     reasoning_effort: String,
-    #[allow(dead_code)]
-    tool_choice: Option<Value>,
-    #[allow(dead_code)]
-    enable_cache_control: bool,
     thinking_budget: RwLock<i32>,
-    #[allow(dead_code)]
-    stream_opts: Option<StreamOptions>,
     #[allow(clippy::type_complexity)]
     on_payload: Option<Arc<dyn Fn(&[u8]) + Send + Sync>>,
     #[allow(clippy::type_complexity)]
     on_response: Option<Arc<dyn Fn(u16, &HashMap<String, String>) + Send + Sync>>,
-    #[allow(dead_code)]
-    is_cloudflare: bool,
-    #[allow(dead_code)]
-    is_copilot: bool,
     thinking_level: RwLock<String>,
     thinking_level_map: RwLock<HashMap<String, String>>,
     compat_thinking_format: RwLock<String>,
@@ -49,11 +39,6 @@ pub struct Client {
     max_tokens_field: RwLock<String>,
     temperature: Option<f32>,
     max_tokens: Option<i32>,
-}
-
-#[derive(Clone, Default)]
-pub struct StreamOptions {
-    pub thinking_budget: i32,
 }
 
 impl Client {
@@ -68,21 +53,14 @@ impl Client {
             .build()
             .unwrap_or_else(|_| HttpClient::new());
 
-        let is_cloudflare = base_url.contains("cloudflare") || base_url.contains("workers.dev");
-
         Self {
             http,
             base_url: RwLock::new(base_url.to_string()),
             api_key: RwLock::new(api_key.to_string()),
             reasoning_effort: String::new(),
-            tool_choice: None,
-            enable_cache_control: false,
             thinking_budget: RwLock::new(0),
-            stream_opts: None,
             on_payload: None,
             on_response: None,
-            is_cloudflare,
-            is_copilot: false,
             thinking_level: RwLock::new(String::new()),
             thinking_level_map: RwLock::new(HashMap::new()),
             compat_thinking_format: RwLock::new(String::new()),
@@ -137,27 +115,6 @@ impl Client {
     pub fn with_max_tokens(mut self, max_tokens: i32) -> Self {
         self.max_tokens = Some(max_tokens);
         self
-    }
-}
-
-impl Client {
-    pub fn update_compat_dyn(
-        &self,
-        thinking_format: &str,
-        supports_reasoning_effort: bool,
-        requires_reasoning_on_assistant: bool,
-        thinking_level_map: HashMap<String, String>,
-    ) {
-        *self.compat_thinking_format.write().unwrap() = thinking_format.to_string();
-        *self.compat_supports_reasoning_effort.write().unwrap() = supports_reasoning_effort;
-        *self.compat_requires_reasoning_on_assistant.write().unwrap() =
-            requires_reasoning_on_assistant;
-        *self.thinking_level_map.write().unwrap() = thinking_level_map;
-    }
-
-    pub fn update_thinking_dyn(&self, level: &str, budget: i32) {
-        *self.thinking_level.write().unwrap() = level.to_string();
-        *self.thinking_budget.write().unwrap() = budget;
     }
 }
 
@@ -388,10 +345,13 @@ impl crate::types::LLMProvider for Client {
                 status_code,
                 if text.is_empty() {
                     " No response body.".to_string()
-                } else if text.len() > 200 {
-                    format!(" {}…", &text[..200])
                 } else {
-                    format!(" {}", text)
+                    let truncated: String = text.chars().take(200).collect();
+                    if truncated.len() < text.len() {
+                        format!(" {}…", truncated)
+                    } else {
+                        format!(" {}", text)
+                    }
                 },
                 msg_count,
                 body_kb,
@@ -711,25 +671,6 @@ impl crate::types::LLMProvider for Client {
         Ok(ReceiverStream::new(rx))
     }
 
-    fn update_compat(
-        &self,
-        thinking_format: &str,
-        supports_reasoning_effort: bool,
-        requires_reasoning_on_assistant: bool,
-        thinking_level_map: HashMap<String, String>,
-    ) {
-        *self.compat_thinking_format.write().unwrap() = thinking_format.to_string();
-        *self.compat_supports_reasoning_effort.write().unwrap() = supports_reasoning_effort;
-        *self.compat_requires_reasoning_on_assistant.write().unwrap() =
-            requires_reasoning_on_assistant;
-        *self.thinking_level_map.write().unwrap() = thinking_level_map;
-    }
-
-    fn update_endpoint(&self, base_url: &str, api_key: &str) {
-        *self.base_url.write().unwrap() = base_url.to_string();
-        *self.api_key.write().unwrap() = api_key.to_string();
-    }
-
     fn set_api_key(&self, api_key: &str) {
         *self.api_key.write().unwrap() = api_key.to_string();
     }
@@ -737,9 +678,5 @@ impl crate::types::LLMProvider for Client {
     fn update_thinking(&self, level: &str, budget: i32) {
         *self.thinking_level.write().unwrap() = level.to_string();
         *self.thinking_budget.write().unwrap() = budget;
-    }
-
-    fn update_max_tokens_field(&self, field: &str) {
-        *self.max_tokens_field.write().unwrap() = field.to_string();
     }
 }

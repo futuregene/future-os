@@ -334,8 +334,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             )
         }
         "set_model" => {
-            let _ = session.write().unwrap().set_model(&cmd.model_id);
-            RpcResponse::ok(id, "set_model", serde_json::json!({"model": cmd.model_id}))
+            let result = session.write().unwrap().set_model(&cmd.model_id);
+            match result {
+                Ok(()) => {
+                    RpcResponse::ok(id, "set_model", serde_json::json!({"model": cmd.model_id}))
+                }
+                Err(e) => RpcResponse::build_fail(id, "set_model", &e.to_string()),
+            }
         }
         "set_thinking_level" => {
             session.write().unwrap().set_thinking_level(&cmd.level);
@@ -853,7 +858,9 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             let next_model = &models[next_idx];
 
             // Use set_model to update session, agent_loop, compat, and endpoint
-            let _ = session.write().unwrap().set_model(next_model);
+            if let Err(e) = session.write().unwrap().set_model(next_model) {
+                return RpcResponse::build_fail(id, "cycle_model", &e.to_string());
+            }
 
             RpcResponse::ok(
                 id,

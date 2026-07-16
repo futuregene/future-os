@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, Result};
 use std::future::Future;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -53,7 +53,7 @@ where
     F: Future,
 {
     let scope = ToolExecutionScope {
-        workspace: normalize_path(&PathBuf::from(options.workspace)),
+        workspace: crate::sandbox::paths::normalize_lexically(&PathBuf::from(options.workspace)),
         approved_outside_paths: Arc::new(Mutex::new(vec![])),
         permission_level: options.permission_level,
         interrupt_flag: options.interrupt_flag,
@@ -861,10 +861,9 @@ async fn run_edit(
 /// Truncate a string for error messages — keeps the first 80 chars so the
 /// error is readable without dumping an entire file into the log.
 fn truncate_for_error(s: &str) -> String {
-    if s.len() <= 80 {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..80])
+    match s.char_indices().nth(80) {
+        Some((idx, _)) => format!("{}…", &s[..idx]),
+        None => s.to_string(),
     }
 }
 
@@ -882,7 +881,7 @@ fn workspace_path(path: &str) -> Result<PathBuf> {
     // `~` resolves to the real home directory (NOT the workspace — the legacy
     // behavior disagreed with what the OS sandbox enforces, see §3.5).
     let absolute_path = crate::sandbox::paths::resolve_against(&cwd, path);
-    let normalized_path = normalize_path(&absolute_path);
+    let normalized_path = crate::sandbox::paths::normalize_lexically(&absolute_path);
     Ok(normalized_path)
 }
 
@@ -950,20 +949,6 @@ fn is_approved_outside_path(path: &Path) -> bool {
                 .unwrap_or(false)
         })
         .unwrap_or(false)
-}
-
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            _ => normalized.push(component.as_os_str()),
-        }
-    }
-    normalized
 }
 
 #[cfg(test)]

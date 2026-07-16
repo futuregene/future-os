@@ -202,6 +202,37 @@ impl SessionEntry {
             meta: None,
         }
     }
+
+    /// Build the `session_info` metadata entry prepended to every saved session.
+    /// `content` holds the token/cost/name JSON snapshot; `model`/`thinking_level`
+    /// pin the session's active settings. All other fields take entry defaults.
+    pub fn session_info(content: serde_json::Value, model: String, thinking_level: String) -> Self {
+        Self {
+            id: generate_entry_id(),
+            parent_id: String::new(),
+            entry_type: ENTRY_TYPE_SESSION_INFO.to_string(),
+            role: ENTRY_TYPE_SYSTEM.to_string(),
+            content: Some(content),
+            tool_calls: vec![],
+            timestamp: Local::now(),
+            summary: String::new(),
+            model,
+            label: String::new(),
+            thinking_level,
+            branch_summary: None,
+            custom_type: String::new(),
+            custom_data: None,
+            display: String::new(),
+            provider: String::new(),
+            tool_call_id: String::new(),
+            name: String::new(),
+            tool_args: String::new(),
+            thinking: String::new(),
+            output_tokens: 0,
+            duration_ms: 0,
+            meta: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,6 +295,33 @@ impl Session {
             parent_session_id: String::new(),
             leaf_id: String::new(),
             entries: vec![],
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Assemble a full session snapshot for persistence: an existing `id` and its
+    /// `entries` (already carrying the prepended `session_info`), stamped with the
+    /// current time. Used by the prompt persist path where the id is known.
+    pub fn snapshot(
+        id: String,
+        cwd: String,
+        model: String,
+        name: String,
+        parent_session_id: String,
+        entries: Vec<SessionEntry>,
+    ) -> Self {
+        let now = Local::now();
+        Self {
+            id,
+            version: CURRENT_SESSION_VERSION,
+            cwd,
+            model,
+            base_url: String::new(),
+            name,
+            parent_session_id,
+            leaf_id: String::new(),
+            entries,
             created_at: now,
             updated_at: now,
         }

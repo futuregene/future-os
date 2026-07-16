@@ -2,7 +2,6 @@
 
 use serde::ser::{SerializeStruct, Serializer};
 use serde::{de, de::MapAccess, de::SeqAccess, Deserialize, Deserializer, Serialize};
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -696,30 +695,14 @@ pub trait LLMProvider: Send + Sync {
         system_prompt: String,
     ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<StreamEvent>>;
 
-    /// Update compat/thinking settings at runtime (e.g. after set_model).
-    fn update_compat(
-        &self,
-        _thinking_format: &str,
-        _supports_reasoning_effort: bool,
-        _requires_reasoning_on_assistant: bool,
-        _thinking_level_map: HashMap<String, String>,
-    ) {
-    }
-
-    /// Update the endpoint (base_url + api_key) at runtime for model switching.
-    fn update_endpoint(&self, _base_url: &str, _api_key: &str) {}
-
     /// Refresh only the API key at runtime, after an out-of-band credential
-    /// change (FutureGene login/logout, custom-provider key edits). Unlike
-    /// `update_endpoint` this leaves the base_url untouched — a login/logout
-    /// changes the key, not the model's endpoint.
+    /// change (FutureGene login/logout, custom-provider key edits). This leaves
+    /// the base_url untouched — a login/logout changes the key, not the model's
+    /// endpoint.
     fn set_api_key(&self, _api_key: &str) {}
 
     /// Update thinking level and budget at runtime (after set_thinking_level / cycle_thinking_level).
     fn update_thinking(&self, _level: &str, _budget: i32) {}
-
-    /// Update max_tokens field name (from compat.maxTokensField: "max_tokens" or "max_completion_tokens").
-    fn update_max_tokens_field(&self, _field: &str) {}
 }
 
 // ─── Message ↔ AgentMessage conversion ────────────────────────────────────
