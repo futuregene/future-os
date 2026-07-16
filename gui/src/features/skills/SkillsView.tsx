@@ -308,6 +308,7 @@ function InstalledTab({
             meta={cat?.category || undefined}
             action={(
               <div className="flex items-center gap-2">
+                <UninstallButton busy={busy[skill.id]} onClick={() => onUninstall(skill.id)} />
                 {canUpgrade && latest
                   ? (
                       <UpgradeButton
@@ -317,7 +318,6 @@ function InstalledTab({
                       />
                     )
                   : null}
-                <UninstallButton busy={busy[skill.id]} onClick={() => onUninstall(skill.id)} />
               </div>
             )}
           />
@@ -410,6 +410,7 @@ function AllTab({
               isInstalled
                 ? (
                     <div className="flex items-center gap-2">
+                      <UninstallButton busy={busy[skill.id]} onClick={() => onUninstall(skill.id)} />
                       {canUpgrade && skill.latestVersion
                         ? (
                             <UpgradeButton
@@ -419,7 +420,6 @@ function AllTab({
                             />
                           )
                         : null}
-                      <UninstallButton busy={busy[skill.id]} onClick={() => onUninstall(skill.id)} />
                     </div>
                   )
                 : (
