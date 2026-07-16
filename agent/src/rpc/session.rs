@@ -82,6 +82,22 @@ pub fn default_workspace() -> String {
         .to_string()
 }
 
+/// Resolve the API key for a model, in priority order: an entry keyed by the
+/// exact model id, then by its provider, then the model's own configured key
+/// (when non-empty), then the account-wide default. Empty string when none match.
+fn resolve_api_key(
+    auth: &crate::AuthStore,
+    model: &str,
+    provider: &str,
+    model_key: &str,
+) -> String {
+    auth.get(model)
+        .or_else(|| auth.get(provider))
+        .or_else(|| (!model_key.is_empty()).then(|| model_key.to_string()))
+        .or_else(|| auth.default_key())
+        .unwrap_or_default()
+}
+
 impl ServerSession {
     pub fn new(
         session_id: String,
@@ -322,18 +338,8 @@ impl ServerSession {
                     .collect();
 
                 let auth = crate::AuthStore::load();
-                let api_key = auth
-                    .get(model)
-                    .or_else(|| auth.get(&model_config.provider))
-                    .or_else(|| {
-                        if model_config.api_key.is_empty() {
-                            None
-                        } else {
-                            Some(model_config.api_key.clone())
-                        }
-                    })
-                    .or_else(|| auth.default_key())
-                    .unwrap_or_default();
+                let api_key =
+                    resolve_api_key(&auth, model, &model_config.provider, &model_config.api_key);
 
                 // Build a FRESH provider (its own reqwest client) and swap it in,
                 // rather than mutating the existing provider's endpoint. Sessions
@@ -412,20 +418,11 @@ impl ServerSession {
             .unwrap_or_else(|| self.model.split('/').next().unwrap_or("").to_string());
 
         let auth = crate::AuthStore::load();
-        let api_key = auth
-            .get(&self.model)
-            .or_else(|| auth.get(&provider))
-            .or_else(|| {
-                resolved.as_ref().and_then(|m| {
-                    if m.api_key.is_empty() {
-                        None
-                    } else {
-                        Some(m.api_key.clone())
-                    }
-                })
-            })
-            .or_else(|| auth.default_key())
+        let model_key = resolved
+            .as_ref()
+            .map(|m| m.api_key.clone())
             .unwrap_or_default();
+        let api_key = resolve_api_key(&auth, &self.model, &provider, &model_key);
 
         if let Ok(loop_) = self.agent_loop.try_read() {
             loop_.provider.set_api_key(&api_key);

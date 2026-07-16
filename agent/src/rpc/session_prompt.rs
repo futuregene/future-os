@@ -784,25 +784,11 @@ fn approve_tool_path_if_present(cwd: &str, tool_name: &str, arguments: &serde_js
         return;
     }
 
-    let Some(path) = argument_path(arguments) else {
+    let Some(path) = super::argument_path(arguments) else {
         return;
     };
 
     crate::tools::approve_outside_path(&resolve_workspace_path(cwd, &path));
-}
-
-fn argument_path(arguments: &serde_json::Value) -> Option<String> {
-    let normalized = match arguments {
-        serde_json::Value::String(raw) => {
-            serde_json::from_str::<serde_json::Value>(raw).unwrap_or(arguments.clone())
-        }
-        _ => arguments.clone(),
-    };
-
-    ["path", "file_path", "filePath"]
-        .iter()
-        .find_map(|key| normalized.get(*key).and_then(|value| value.as_str()))
-        .map(str::to_string)
 }
 
 fn rewrite_path_field(cwd: &str, arguments: &mut serde_json::Value, key: &str) {

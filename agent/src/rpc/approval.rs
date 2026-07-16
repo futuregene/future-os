@@ -106,7 +106,7 @@ impl ApprovalGate {
             "write" | "edit" => Op::Write,
             _ => return None,
         };
-        let raw_path = argument_path(arguments)?;
+        let raw_path = super::argument_path(arguments)?;
         // Canonicalize once so path_within / strip_prefix agree with the
         // canonicalized sandbox.workspace (symlink + case correct, §3.5).
         let path = paths::canonicalize_lenient(&paths::resolve_against(Path::new(cwd), &raw_path));
@@ -786,17 +786,6 @@ fn has_unclosed_string(value: &str) -> bool {
         }
     }
     in_string
-}
-
-fn argument_path(arguments: &serde_json::Value) -> Option<String> {
-    let normalized = match arguments {
-        serde_json::Value::String(raw) => serde_json::from_str(raw).unwrap_or(arguments.clone()),
-        _ => arguments.clone(),
-    };
-    ["path", "file_path", "filePath"]
-        .iter()
-        .find_map(|key| normalized.get(*key).and_then(|value| value.as_str()))
-        .map(str::to_string)
 }
 
 #[cfg(test)]
