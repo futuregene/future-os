@@ -398,7 +398,7 @@ async function checkSkills(): Promise<CheckResult> {
 
   try {
     const platformUrl = await getPlatformUrl();
-    const builtinSkills = await fetchSkills(platformUrl, "builtin");
+    const builtinSkills = (await fetchSkills(platformUrl)).filter(s => s.category === "builtin");
     if (builtinSkills.length > 0) {
       lines.push(`${builtinSkills.length} builtin skill(s) available from platform`);
       let notInstalled = 0;

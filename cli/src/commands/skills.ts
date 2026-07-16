@@ -71,10 +71,8 @@ export function isSkillsCommand(command: string): command is SkillsCommand {
 
 // ── Remote API ─────────────────────────────────────────────────────────────
 
-export async function fetchSkills(platformUrl: string, category?: string): Promise<SkillInfo[]> {
-  const url = category
-    ? `${platformUrl}/client/v1/skills?category=${encodeURIComponent(category)}`
-    : `${platformUrl}/client/v1/skills`;
+export async function fetchSkills(platformUrl: string): Promise<SkillInfo[]> {
+  const url = `${platformUrl}/client/v1/skills`;
   const resp = await fetch(url);
   if (!resp.ok) {
     throw new Error(`Failed to fetch skills: ${resp.status} ${resp.statusText}`);
@@ -226,7 +224,7 @@ export async function installBuiltinSkills(): Promise<void> {
 
   let skills: SkillInfo[];
   try {
-    skills = await fetchSkills(platformUrl, "builtin");
+    skills = (await fetchSkills(platformUrl)).filter(s => s.category === "builtin");
   } catch (err) {
     console.error("Failed to fetch builtin skills.");
     console.error(err instanceof Error ? err.message : String(err));
@@ -270,9 +268,9 @@ export async function installBuiltinSkills(): Promise<void> {
 async function updateSkills(): Promise<void> {
   const platformUrl = await getPlatformUrl();
   console.log(`Fetching skill catalog from ${platformUrl}...`);
-  const skills = await fetchSkills(platformUrl, "builtin");
+  const skills = (await fetchSkills(platformUrl)).filter(s => s.category === "builtin");
   if (skills.length === 0) {
-    console.log("No skills available.");
+    console.log("No builtin skills available.");
     return;
   }
 
