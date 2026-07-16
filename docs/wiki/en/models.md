@@ -4,106 +4,110 @@
 
 | Provider | Models |
 |---|---|
-| nano-gpt | 173 |
-| kilo | 142 |
+| OpenRouter | 263 |
+| nano-gpt | 123 |
 | Amazon Bedrock | 109 |
-| abacus | 80 |
 | poe | 75 |
-| vercel | 74 |
-| llmgateway | 69 |
+| opencode | 72 |
+| vercel | 72 |
 | venice | 54 |
 | digitalocean | 51 |
-| github-models | 49 |
-| merge-gateway | 46 |
-| pioneer | 44 |
-| qiniu-ai | 43 |
+| llmgateway | 51 |
+| huggingface | 49 |
+| github-models | 42 |
+| merge-gateway | 38 |
+| qiniu-ai | 38 |
+| kilo | 35 |
+| google-vertex | 33 |
 | databricks | 30 |
 | empiriolabs | 29 |
 | Mistral | 29 |
-| OpenRouter | 29 |
-| aihubmix | 28 |
-| nvidia | 28 |
+| pioneer | 28 |
 | zenmux | 28 |
-| helicone | 27 |
-| opencode | 27 |
-| frogbot | 26 |
-| google-vertex | 26 |
+| aihubmix | 25 |
 | alibaba-cn | 25 |
-| anyapi | 25 |
 | azure-cognitive-services | 25 |
-| crossmodel | 25 |
-| 302ai | 22 |
+| helicone | 25 |
+| nvidia | 24 |
+| OpenAI | 24 |
 | gitlab | 22 |
+| 302ai | 21 |
 | sap-ai-core | 21 |
+| abacus | 19 |
 | alibaba | 19 |
-| cortecs | 17 |
-| huggingface | 17 |
+| cortecs | 16 |
 | fireworks-ai | 16 |
 | novita-ai | 16 |
-| nebius | 15 |
+| frogbot | 15 |
 | siliconflow | 15 |
+| nebius | 14 |
 | neon | 14 |
 | cloudflare-workers-ai | 13 |
 | neuralwatt | 13 |
 | chutes | 12 |
-| crof | 12 |
-| requesty | 12 |
-| meganova | 11 |
 | unorouter | 11 |
 | clarifai | 10 |
+| crossmodel | 10 |
+| github-copilot | 10 |
 | jiekou | 10 |
 | siliconflow-cn | 10 |
 | cloudflare-ai-gateway | 9 |
 | Cohere | 9 |
-| fastrouter | 9 |
-| routing-run | 9 |
+| moonshotai-cn | 9 |
 | the-grid-ai | 9 |
-| ambient | 7 |
+| zai | 9 |
+| anyapi | 7 |
 | deepinfra | 7 |
 | inference | 7 |
 | llama | 7 |
-| minimax-coding-plan | 7 |
+| minimax | 7 |
 | ollama-cloud | 7 |
-| OpenAI | 7 |
-| orcarouter | 7 |
 | synthetic | 7 |
 | trustedrouter | 7 |
-| evroc | 6 |
-| github-copilot | 6 |
 | inferx | 6 |
+| meganova | 6 |
+| orcarouter | 6 |
 | snowflake-cortex | 6 |
 | togetherai | 6 |
 | wandb | 6 |
+| xiaomi | 6 |
+| crof | 5 |
+| evroc | 5 |
+| fastrouter | 5 |
+| Google | 5 |
+| groq | 5 |
 | io-net | 5 |
-| kimi-for-coding | 5 |
-| mixlayer | 5 |
+| requesty | 5 |
+| routing-run | 5 |
 | scaleway | 5 |
 | tencent-coding-plan | 5 |
 | umans-ai | 5 |
 | xai | 5 |
+| Anthropic | 4 |
 | ebcloud | 4 |
+| kimi-for-coding | 4 |
 | lucidquery | 4 |
 | stepfun-step-plan | 4 |
-| xiaomi | 4 |
+| ambient | 3 |
 | atomic-chat | 3 |
+| cerebras | 3 |
 | drun | 3 |
 | modelscope | 3 |
-| moonshotai-cn | 3 |
 | perplexity-agent | 3 |
 | regolo-ai | 3 |
 | tinfoil | 3 |
 | upstage | 3 |
 | v0 | 3 |
 | vultr | 3 |
-| cerebras | 2 |
 | claudinio | 2 |
 | cloudferro-sherlock | 2 |
+| DeepSeek | 2 |
 | gmicloud | 2 |
 | iflowcn | 2 |
 | lilac | 2 |
 | lmstudio | 2 |
-| model-oracle-ai | 2 |
 | nova | 2 |
+| opencode-go | 2 |
 | ovhcloud | 2 |
 | sakana | 2 |
 | stackit | 2 |
@@ -119,21 +123,17 @@
 | bailing | 1 |
 | baseten | 1 |
 | blueclaw | 1 |
-| groq | 1 |
 | inceptron | 1 |
 | llmtr | 1 |
 | longcat | 1 |
 | lynkr | 1 |
 | moark | 1 |
 | nearai | 1 |
-| poolside | 1 |
 | tencent-token-plan | 1 |
 | tencent-tokenhub | 1 |
 | umans-ai-coding-plan | 1 |
-| zai | 1 |
 | zeldoc | 1 |
 | zenifra | 1 |
-| zhipuai-coding-plan | 1 |
 
 ---
 
@@ -164,7 +164,6 @@
 | `claude-opus-4-5-20251101-thinking` | claude-opus-4-5-20251101-thinking | 200K | 64K | ✅ | ✅ |
 | `glm-for-coding` | glm-for-coding | 200K | 131K | — | ✅ |
 | `grok-4.1` | grok-4.1 | 200K | 64K | ✅ | — |
-| `deepseek-reasoner` | Deepseek-Reasoner | 128K | 128K | — | ✅ |
 | `deepseek-v3.2-thinking` | DeepSeek-V3.2-Thinking | 128K | 128K | — | ✅ |
 | `ministral-14b-2512` | ministral-14b-2512 | 128K | 128K | ✅ | — |
 
@@ -175,82 +174,21 @@
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `grok-4-fast-non-reasoning` | Grok 4 Fast (Non-Reasoning) | 2M | 16K | ✅ | — |
-| `gemini-3.1-flash-lite` | Gemini 3.1 Flash Lite | 1M | 66K | ✅ | ✅ |
-| `gemini-3.1-flash-lite-preview` | Gemini 3.1 Flash Lite Preview | 1M | 66K | ✅ | ✅ |
-| `gemini-3.1-pro-preview` | Gemini 3.1 Pro Preview | 1M | 66K | ✅ | ✅ |
-| `gemini-3.5-flash` | Gemini 3.5 Flash | 1M | 66K | ✅ | ✅ |
 | `Llama-4-Maverick-17B-128E-Instruct-FP8` | Llama 4 Maverick 17B Instruct | 1M | 8K | ✅ | — |
-| `mimo-v2-pro` | MiMo-V2-Pro | 1M | 131K | — | ✅ |
-| `GLM-5.2` | GLM-5.2 | 1M | 131K | — | ✅ |
-| `gpt-4.1` | GPT-4.1 | 1M | 33K | ✅ | — |
-| `gpt-4.1-mini` | GPT-4.1 mini | 1M | 33K | ✅ | — |
-| `gpt-4.1-nano` | GPT-4.1 nano | 1M | 33K | ✅ | — |
-| `MiniMax-M3` | MiniMax-M3 | 1M | 131K | ✅ | ✅ |
-| `claude-fable-5` | Claude Fable 5 | 1M | 128K | ✅ | ✅ |
-| `claude-opus-4-8` | Claude Opus 4.8 | 1M | 128K | ✅ | ✅ |
-| `claude-sonnet-5` | Claude Sonnet 5 | 1M | 64K | ✅ | ✅ |
-| `DeepSeek-V4-Flash` | DeepSeek V4 Flash | 1M | 33K | — | ✅ |
-| `DeepSeek-V4-Pro` | DeepSeek V4 Pro | 1M | 33K | — | ✅ |
-| `gpt-5.5` | GPT-5.5 | 1M | 128K | ✅ | ✅ |
-| `gpt-5.6-luna` | GPT-5.6 Luna | 1M | 128K | ✅ | ✅ |
-| `gpt-5.6-sol` | GPT-5.6 Sol | 1M | 128K | ✅ | ✅ |
-| `gpt-5.6-terra` | GPT-5.6 Terra | 1M | 128K | ✅ | ✅ |
 | `muse-spark-1.1` | Muse Spark 1.1 | 1M | 32K | ✅ | ✅ |
-| `gpt-5` | GPT-5 | 400K | 128K | ✅ | ✅ |
-| `gpt-5-codex` | GPT-5-Codex | 400K | 128K | ✅ | ✅ |
-| `gpt-5-mini` | GPT-5 Mini | 400K | 128K | ✅ | ✅ |
-| `gpt-5-nano` | GPT-5 Nano | 400K | 128K | ✅ | ✅ |
-| `gpt-5.1` | GPT-5.1 | 400K | 128K | ✅ | ✅ |
-| `gpt-5.1-chat-latest` | GPT-5.1 Chat Latest | 400K | 128K | ✅ | ✅ |
-| `gpt-5.1-codex` | GPT-5.1 Codex | 400K | 128K | ✅ | ✅ |
-| `gpt-5.1-codex-max` | GPT-5.1 Codex Max | 400K | 128K | ✅ | ✅ |
-| `gpt-5.2` | GPT-5.2 | 400K | 128K | ✅ | ✅ |
-| `gpt-5.2-chat-latest` | GPT-5.2 Chat Latest | 400K | 128K | ✅ | ✅ |
-| `gpt-5.2-codex` | GPT-5.2 Codex | 400K | 128K | ✅ | ✅ |
-| `gpt-5.3-chat-latest` | GPT-5.3 Chat Latest | 400K | 128K | ✅ | ✅ |
-| `gpt-5.3-codex` | GPT-5.3 Codex | 400K | 128K | ✅ | ✅ |
 | `gpt-5.3-codex-xhigh` | GPT-5.3 Codex XHigh | 400K | 128K | ✅ | ✅ |
-| `gpt-5.4` | GPT-5.4 | 400K | 128K | ✅ | ✅ |
-| `gpt-5.4-mini` | GPT-5.4 mini | 400K | 128K | ✅ | ✅ |
-| `gpt-5.4-nano` | GPT-5.4 nano | 400K | 128K | ✅ | ✅ |
 | `Qwen3-235B-A22B-Instruct-2507` | Qwen3 235B A22B Instruct | 262K | 8K | — | ✅ |
-| `Qwen3-Coder-480B-A35B-Instruct` | Qwen3-Coder 480B-A35B Instruct | 262K | 16K | — | — |
-| `Qwen3.6-27B` | Qwen3.6 27B | 262K | 8K | — | ✅ |
-| `gemma-4-31b-it` | Gemma 4 31B IT | 262K | 131K | ✅ | ✅ |
-| `Kimi-K2.6` | Kimi K2.6 | 262K | 262K | ✅ | ✅ |
 | `grok-4-0709` | Grok 4 | 256K | 16K | ✅ | ✅ |
-| `kimi-k2-turbo-preview` | Kimi K2 Turbo Preview | 256K | 8K | — | — |
-| `MiniMax-M2.7` | MiniMax-M2.7 | 205K | 131K | — | ✅ |
-| `GLM-4.7` | GLM-4.7 | 205K | 131K | — | ✅ |
-| `GLM-5` | GLM-5 | 205K | 131K | — | ✅ |
-| `GLM-5.1` | GLM-5.1 | 205K | 131K | — | ✅ |
-| `GLM-4.6` | GLM-4.6 | 203K | 131K | — | ✅ |
 | `claude-3-7-sonnet-20250219` | Claude Sonnet 3.7 | 200K | 64K | ✅ | ✅ |
-| `claude-haiku-4-5-20251001` | Claude Haiku 4.5 | 200K | 64K | ✅ | ✅ |
-| `claude-opus-4-1-20250805` | Claude Opus 4.1 | 200K | 32K | ✅ | ✅ |
 | `claude-opus-4-20250514` | Claude Opus 4 | 200K | 32K | ✅ | ✅ |
-| `claude-opus-4-5-20251101` | Claude Opus 4.5 | 200K | 64K | ✅ | ✅ |
 | `claude-sonnet-4-20250514` | Claude Sonnet 4 | 200K | 64K | ✅ | ✅ |
-| `claude-sonnet-4-5-20250929` | Claude Sonnet 4.5 | 200K | 64K | ✅ | ✅ |
-| `o3` | o3 | 200K | 100K | ✅ | ✅ |
-| `o3-mini` | o3-mini | 200K | 100K | — | ✅ |
-| `o3-pro` | o3-pro | 200K | 100K | ✅ | ✅ |
-| `o4-mini` | o4-mini | 200K | 100K | ✅ | ✅ |
-| `Qwen3-32B` | Qwen3 32B | 131K | 8K | — | ✅ |
 | `Meta-Llama-3.3-70B-Instruct` | Llama-3.3-70B-Instruct | 131K | 8K | — | — |
 | `qwen3-max` | Qwen3 Max | 131K | 16K | — | ✅ |
-| `GLM-4.5` | GLM-4.5 | 131K | 96K | — | ✅ |
 | `Qwen2.5-72B-Instruct` | Qwen 2.5 72B Instruct | 128K | 8K | — | — |
-| `DeepSeek-R1` | DeepSeek R1 | 128K | 8K | — | ✅ |
 | `DeepSeek-V3.1-Terminus` | DeepSeek V3.1 Terminus | 128K | 8K | — | ✅ |
-| `DeepSeek-V3.2` | DeepSeek V3.2 | 128K | 8K | — | ✅ |
 | `deepseek-v3.1` | DeepSeek V3.1 | 128K | 8K | — | ✅ |
-| `gpt-4o-2024-11-20` | GPT-4o (2024-11-20) | 128K | 16K | ✅ | — |
-| `gpt-4o-mini` | GPT-4o mini | 128K | 16K | ✅ | — |
-| `llama-3.3-70b-versatile` | Llama 3.3 70B Versatile | 128K | 33K | — | — |
 | `Meta-Llama-3.1-405B-Instruct-Turbo` | Llama 3.1 405B Instruct Turbo | 128K | 4K | — | — |
 | `Meta-Llama-3.1-8B-Instruct` | Llama 3.1 8B Instruct | 128K | 4K | — | — |
-| `gpt-oss-120b` | GPT OSS 120B | 128K | 16K | — | ✅ |
 | `qwen-2.5-coder-32b` | Qwen 2.5 Coder 32B | 128K | 8K | — | — |
 | `route-llm` | RouteLLM | 128K | 64K | ✅ | — |
 | `QwQ-32B` | QwQ 32B | 33K | 33K | — | ✅ |
@@ -282,7 +220,6 @@
 | `claude-sonnet-4-6-think` | Claude Sonnet 4.6 Thinking | 1M | 64K | ✅ | ✅ |
 | `deep-deepseek-v4-flash` | DeepSeek V4 Flash (DeepSeek) | 1M | 384K | — | ✅ |
 | `deep-deepseek-v4-pro` | DeepSeek V4 Pro (DeepSeek) | 1M | 384K | — | ✅ |
-| `gpt-5.1-codex-mini` | GPT-5.1 Codex mini | 400K | 128K | ✅ | ✅ |
 | `doubao-seed-2-0-code-preview` | Doubao Seed 2.0 Code Preview | 256K | 128K | ✅ | ✅ |
 | `doubao-seed-2-0-lite-260428` | Doubao Seed 2.0 Lite 260428 | 256K | 128K | ✅ | ✅ |
 | `doubao-seed-2-0-mini-260428` | Doubao Seed 2.0 Mini 260428 | 256K | 128K | ✅ | ✅ |
@@ -290,12 +227,10 @@
 | `coding-minimax-m2.7` | Coding MiniMax M2.7 | 205K | 128K | — | ✅ |
 | `coding-minimax-m2.7-free` | Coding MiniMax M2.7 (Free) | 205K | 128K | — | ✅ |
 | `coding-minimax-m2.7-highspeed` | Coding MiniMax M2.7 Highspeed | 205K | 128K | — | ✅ |
-| `minimax-m2.7` | MiniMax M2.7 | 205K | 128K | — | ✅ |
 | `alicloud-glm-5.1` | GLM-5.1 (Alibaba Cloud) | 200K | 128K | — | ✅ |
 | `claude-opus-4-8-think` | Claude Opus 4.8 | 200K | 32K | ✅ | ✅ |
 | `coding-glm-5.1` | Coding GLM 5.1 | 200K | 128K | — | ✅ |
 | `coding-glm-5.1-free` | Coding GLM 5.1 (free) | 200K | 128K | — | ✅ |
-| `glm-5v-turbo` | GLM 5 Vision Turbo | 200K | 128K | ✅ | ✅ |
 | `zai-glm-5.1` | GLM-5.1 (Z.ai) | 200K | 128K | — | ✅ |
 
 ### alibaba
@@ -486,13 +421,20 @@
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
-| `kimi-k2.6` | Kimi K2.6 | 262K | 262K | ✅ | ✅ |
-| `kimi-k2.7-code` | Kimi K2.7 Code | 262K | 262K | ✅ | ✅ |
-| `step-3.7-flash` | Step 3.7 Flash | 262K | 262K | ✅ | ✅ |
 | `GLM-5.1-FP8` | GLM 5.1 | 203K | 131K | — | ✅ |
 | `GLM-5.2-FP8` | GLM-5.2 | 203K | 203K | — | ✅ |
 | `large` | Ambient Large | 101K | 101K | — | ✅ |
-| `glm-5.2` | GLM-5.2 | 101K | 101K | — | ✅ |
+
+### Anthropic
+
+**Base URL:** `https://api.anthropic.com/v1`
+
+| Model ID | Name | Context | Max Output | Image | Reasoning |
+|---|---|---|---|---|---|
+| `claude-sonnet-4-5-20250929` | Claude Sonnet 4.5 | 1M | 64K | ✅ | ✅ |
+| `claude-haiku-4-5-20251001` | Claude Haiku 4.5 | 200K | 64K | ✅ | ✅ |
+| `claude-opus-4-1-20250805` | Claude Opus 4.1 | 200K | 32K | ✅ | ✅ |
+| `claude-opus-4-5-20251101` | Claude Opus 4.5 | 200K | 64K | ✅ | ✅ |
 
 ### anyapi
 
@@ -500,31 +442,13 @@
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
-| `gpt-5.4` | GPT-5.4 | 1M | 128K | ✅ | ✅ |
-| `gemini-2.5-flash` | Gemini 2.5 Flash | 1M | 66K | ✅ | ✅ |
-| `gemini-2.5-flash-lite` | Gemini 2.5 Flash-Lite | 1M | 66K | ✅ | ✅ |
-| `gemini-2.5-pro` | Gemini 2.5 Pro | 1M | 66K | ✅ | ✅ |
-| `gemini-3-flash-preview` | Gemini 3 Flash Preview | 1M | 66K | ✅ | ✅ |
 | `gemini-3-pro-preview` | Gemini 3 Pro Preview | 1M | 66K | ✅ | ✅ |
 | `claude-opus-4-6` | Claude Opus 4.6 | 1M | 128K | ✅ | ✅ |
 | `claude-opus-4-7` | Claude Opus 4.7 | 1M | 128K | ✅ | ✅ |
 | `claude-sonnet-4-6` | Claude Sonnet 4.6 | 1M | 64K | ✅ | ✅ |
-| `deepseek-chat` | DeepSeek Chat | 1M | 384K | — | — |
-| `deepseek-v4-flash` | DeepSeek V4 Flash | 1M | 384K | — | ✅ |
-| `deepseek-v4-pro` | DeepSeek V4 Pro | 1M | 384K | — | ✅ |
 | `grok-4.3` | Grok 4.3 | 1M | 30K | ✅ | ✅ |
-| `gpt-5` | GPT-5 | 400K | 128K | ✅ | ✅ |
-| `gpt-5-mini` | GPT-5 Mini | 400K | 128K | ✅ | ✅ |
-| `gpt-5.1` | GPT-5.1 | 400K | 128K | ✅ | ✅ |
-| `gpt-5.2` | GPT-5.2 | 400K | 128K | ✅ | ✅ |
-| `devstral-2512` | Devstral 2 | 262K | 262K | — | — |
-| `mistral-large-2512` | Mistral Large 3 | 262K | 262K | ✅ | — |
 | `claude-haiku-4-5` | Claude Haiku 4.5 (latest) | 200K | 64K | ✅ | ✅ |
 | `claude-sonnet-4-5` | Claude Sonnet 4.5 (latest) | 200K | 64K | ✅ | ✅ |
-| `o3` | o3 | 200K | 100K | ✅ | ✅ |
-| `o3-mini` | o3-mini | 200K | 100K | — | ✅ |
-| `o4-mini` | o4-mini | 200K | 100K | ✅ | ✅ |
-| `command-r-plus-08-2024` | Command R+ | 128K | 4K | — | — |
 
 ### atomic-chat
 
@@ -610,11 +534,12 @@
 
 ### cerebras
 
-**Base URL:** —
+**Base URL:** `https://api.cerebras.ai/v1`
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `gemma-4-31b` | Gemma 4 31B IT | 131K | 41K | ✅ | ✅ |
+| `gpt-oss-120b` | GPT OSS 120B | 131K | 41K | — | ✅ |
 | `zai-glm-4.7` | Z.AI GLM-4.7 | 131K | 41K | — | ✅ |
 
 ### chutes
@@ -689,7 +614,7 @@
 
 ### cloudflare-workers-ai
 
-**Base URL:** —
+**Base URL:** `https://api.cloudflare.com/client/v4/accounts`
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -709,7 +634,7 @@
 
 ### Cohere
 
-**Base URL:** `https://api.cohere.ai/v1`
+**Base URL:** —
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -740,7 +665,6 @@
 | `codestral-2508` | Codestral 2508 | 256K | 256K | — | — |
 | `claude-4-5-sonnet` | Claude 4.5 Sonnet | 200K | 200K | ✅ | ✅ |
 | `claude-opus4-5` | Claude Opus 4.5 | 200K | 200K | ✅ | ✅ |
-| `claude-sonnet-4` | Claude Sonnet 4 | 200K | 64K | ✅ | — |
 | `kimi-k2-instruct` | Kimi K2 Instruct | 131K | 131K | — | — |
 | `hermes-4-70b` | Hermes 4 70B | 128K | 128K | — | ✅ |
 | `intellect-3` | INTELLECT 3 | 128K | 128K | — | ✅ |
@@ -753,16 +677,9 @@
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
-| `mimo-v2.5-pro` | MiMo-V2.5-Pro | 1M | 131K | — | ✅ |
 | `deepseek-v4-pro-lightning` | DeepSeek V4 Pro Lightning | 1M | 131K | — | ✅ |
-| `gemma-4-31b-it` | Gemma 4 31B IT | 262K | 262K | ✅ | ✅ |
 | `qwen3.5-397b-a17b` | Qwen3.5 397B-A17B | 262K | 262K | ✅ | ✅ |
 | `qwen3.6-27b` | Qwen3.6 27B | 262K | 262K | ✅ | ✅ |
-| `minimax-m2.5` | MiniMax-M2.5 | 205K | 131K | — | ✅ |
-| `glm-4.7` | GLM-4.7 | 203K | 203K | — | ✅ |
-| `glm-4.7-flash` | GLM-4.7-Flash | 203K | 131K | — | ✅ |
-| `glm-5` | GLM-5 | 203K | 203K | — | ✅ |
-| `glm-5.1` | GLM-5.1 | 203K | 203K | — | ✅ |
 | `deepseek-v3.2` | DeepSeek V3.2 | 164K | 164K | — | — |
 | `kimi-k2.5-lightning` | Kimi K2.5 (Lightning) | 131K | 33K | ✅ | ✅ |
 
@@ -772,31 +689,16 @@
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
-| `gpt-5.5-pro` | GPT-5.5 Pro | 1M | 128K | ✅ | ✅ |
-| `gpt-5.6-luna` | GPT-5.6 Luna | 1M | 128K | ✅ | ✅ |
-| `gpt-5.6-sol` | GPT-5.6 Sol | 1M | 128K | ✅ | ✅ |
-| `gpt-5.6-terra` | GPT-5.6 Terra | 1M | 128K | ✅ | ✅ |
 | `gemini-2.5-flash` | Gemini 2.5 Flash | 1M | 66K | ✅ | ✅ |
 | `gemini-2.5-flash-lite` | Gemini 2.5 Flash-Lite | 1M | 66K | ✅ | ✅ |
 | `gemini-2.5-pro` | Gemini 2.5 Pro | 1M | 66K | ✅ | ✅ |
 | `gemini-3-flash-preview` | Gemini 3 Flash Preview | 1M | 66K | ✅ | ✅ |
 | `gemini-3.1-pro-preview` | Gemini 3.1 Pro Preview | 1M | 66K | ✅ | ✅ |
 | `gemini-3.5-flash` | Gemini 3.5 Flash | 1M | 66K | ✅ | ✅ |
-| `claude-fable-5` | Claude Fable 5 | 1M | 128K | ✅ | ✅ |
 | `claude-opus-4-8` | Claude Opus 4.8 | 1M | 128K | ✅ | ✅ |
-| `claude-sonnet-5` | Claude Sonnet 5 | 1M | 128K | ✅ | ✅ |
-| `qwen3.6-flash` | Qwen3.6 Flash | 1M | 66K | ✅ | ✅ |
-| `qwen3.6-plus` | Qwen3.6 Plus | 1M | 66K | ✅ | ✅ |
-| `qwen3.7-max` | Qwen3.7 Max | 1M | 66K | — | ✅ |
-| `qwen3.7-plus` | Qwen3.7 Plus | 1M | 64K | ✅ | ✅ |
-| `grok-4.5` | Grok 4.5 | 500K | 500K | ✅ | ✅ |
-| `hy3-preview` | Hy3 preview | 262K | 262K | — | ✅ |
 | `kimi-k2.5` | Kimi K2.5 | 262K | 262K | ✅ | ✅ |
 | `kimi-k2.6` | Kimi K2.6 | 262K | 262K | ✅ | ✅ |
 | `kimi-k2.7-code` | Kimi K2.7 Code | 262K | 262K | ✅ | ✅ |
-| `glm-4.7` | GLM-4.7 | 200K | 128K | — | ✅ |
-| `glm-5` | GLM-5 | 200K | 128K | — | ✅ |
-| `glm-5.1` | GLM-5.1 | 200K | 128K | — | ✅ |
 
 ### databricks
 
@@ -848,6 +750,15 @@
 | `Qwen3-Max` | Qwen3 Max | 256K | 66K | — | — |
 | `Llama-3.3-70B-Instruct-Turbo` | Llama 3.3 70B Turbo | 131K | 16K | — | — |
 | `Llama-3.3-Nemotron-Super-49B-v1.5` | Llama 3.3 Nemotron Super 49B v1.5 | 131K | 131K | — | ✅ |
+
+### DeepSeek
+
+**Base URL:** `https://api.deepseek.com/v1`
+
+| Model ID | Name | Context | Max Output | Image | Reasoning |
+|---|---|---|---|---|---|
+| `deepseek-chat` | DeepSeek Chat | 1M | 384K | — | — |
+| `deepseek-reasoner` | DeepSeek Reasoner | 1M | 384K | — | ✅ |
 
 ### digitalocean
 
@@ -972,7 +883,6 @@
 |---|---|---|---|---|---|
 | `Qwen3.6-35B-A3B-FP8` | Qwen3.6 35B-A3B | 262K | 66K | ✅ | ✅ |
 | `roc` | roc | 262K | 262K | ✅ | ✅ |
-| `gemma-4-26B-A4B-it` | Gemma 4 26B A4B IT | 262K | 33K | ✅ | ✅ |
 | `Mistral-Medium-3.5-128B` | Mistral Medium 3.5 | 262K | 262K | ✅ | ✅ |
 | `Llama-3.3-70B-Instruct-FP8` | Llama-3.3-70B-Instruct | 128K | 4K | — | — |
 | `Qwen3-VL-30B-A3B-Instruct` | Qwen3 VL 30B | 100K | 100K | ✅ | — |
@@ -983,12 +893,8 @@
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
-| `gpt-5-nano` | GPT-5 Nano | 400K | 128K | ✅ | ✅ |
 | `grok-4` | Grok 4 | 256K | 64K | — | ✅ |
 | `minimax-m2.7-highspeed` | MiniMax-M2.7-highspeed | 205K | 131K | — | ✅ |
-| `claude-opus-4.1` | Claude Opus 4.1 | 200K | 32K | ✅ | ✅ |
-| `claude-sonnet-4` | Claude Sonnet 4 | 200K | 64K | ✅ | ✅ |
-| `kimi-k2` | Kimi K2 | 131K | 33K | — | — |
 | `sarvam-105b` | Sarvam 105B | 131K | 131K | — | ✅ |
 | `sarvam-30b` | Sarvam 30B | 128K | 128K | — | ✅ |
 | `gpt-realtime-1.5` | GPT Realtime 1.5 | 32K | 4K | ✅ | — |
@@ -1024,9 +930,6 @@
 |---|---|---|---|---|---|
 | `grok-4-1-fast-non-reasoning` | Grok 4.1 Fast (Non-Reasoning) | 2M | 128K | ✅ | — |
 | `grok-4-1-fast-reasoning` | Grok 4.1 Fast (Reasoning) | 2M | 128K | ✅ | ✅ |
-| `gemini-2.5-flash` | Gemini 2.5 Flash | 1M | 66K | ✅ | ✅ |
-| `gemini-2.5-pro` | Gemini 2.5 Pro | 1M | 66K | ✅ | ✅ |
-| `gemini-3-flash-preview` | Gemini 3 Flash Preview | 1M | 66K | ✅ | ✅ |
 | `gemini-3-1-pro-preview` | Gemini 3.1 Pro Preview | 1M | 64K | ✅ | ✅ |
 | `grok-4-3` | Grok 4.3 | 1M | 128K | ✅ | ✅ |
 | `qwen-3-6-plus` | Qwen 3.6 Plus | 1M | 64K | ✅ | ✅ |
@@ -1036,31 +939,27 @@
 | `gpt-5-5` | GPT-5.5 | 272K | 128K | ✅ | ✅ |
 | `grok-code-fast-1` | Grok 4.1 Fast (Reasoning) | 256K | 128K | — | ✅ |
 | `kimi-k2-6` | Kimi-K2.6 | 256K | 128K | ✅ | ✅ |
-| `kimi-k2.5` | Kimi-K2.5 | 256K | 128K | ✅ | ✅ |
-| `claude-haiku-4-5` | Claude Haiku 4.5 | 200K | 64K | ✅ | ✅ |
-| `claude-opus-4-6` | Claude Opus 4.6 | 200K | 128K | ✅ | ✅ |
-| `claude-opus-4-7` | Claude Opus 4.7 | 200K | 128K | ✅ | ✅ |
-| `claude-sonnet-4-6` | Claude Sonnet 4.6 | 200K | 64K | ✅ | ✅ |
 | `zai-glm-5-1` | Z.AI GLM-5.1 | 198K | 8K | — | — |
 | `minimax-m2-5` | MiniMax-M2.5 | 192K | 8K | — | — |
 | `minimax-m2-7` | MiniMax-M2.7 | 192K | 8K | — | — |
-| `gpt-oss-120b` | GPT OSS 120B | 131K | 33K | — | ✅ |
 | `gpt-oss-20b` | GPT OSS 20B | 131K | 33K | — | ✅ |
-| `deepseek-v4-pro` | DeepSeek v4 Pro | 128K | 8K | — | — |
-| `gpt-4o` | GPT-4o | 128K | 16K | ✅ | — |
 
 ### github-copilot
 
-**Base URL:** —
+**Base URL:** `https://models.githubcopilot.com/v1`
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
+| `gpt-5-mini` | GPT-5 Mini | 264K | 64K | ✅ | ✅ |
 | `mai-code-1-flash-picker` | MAI-Code-1-Flash | 256K | 128K | — | ✅ |
+| `claude-haiku-4.5` | Claude Haiku 4.5 (latest) | 200K | 64K | ✅ | ✅ |
 | `claude-opus-4.5` | Claude Opus 4.5 (latest) | 200K | 32K | ✅ | ✅ |
 | `claude-opus-4.6` | Claude Opus 4.6 | 200K | 32K | ✅ | ✅ |
 | `claude-opus-4.7` | Claude Opus 4.7 | 200K | 32K | ✅ | ✅ |
+| `claude-opus-4.8` | Claude Opus 4.8 | 200K | 64K | ✅ | ✅ |
 | `claude-sonnet-4.5` | Claude Sonnet 4.5 (latest) | 200K | 32K | ✅ | ✅ |
 | `claude-sonnet-4.6` | Claude Sonnet 4.6 | 200K | 32K | ✅ | ✅ |
+| `gpt-4.1` | GPT-4.1 | 128K | 16K | ✅ | — |
 
 ### github-models
 
@@ -1099,15 +998,8 @@
 | `mistral-medium-2505` | Mistral Medium 3 (25.05) | 128K | 33K | ✅ | ✅ |
 | `mistral-nemo` | Mistral Nemo | 128K | 8K | — | ✅ |
 | `mistral-small-2503` | Mistral Small 3.1 | 128K | 33K | ✅ | ✅ |
-| `gpt-4.1` | GPT-4.1 | 128K | 16K | ✅ | — |
-| `gpt-4.1-mini` | GPT-4.1-mini | 128K | 16K | ✅ | — |
-| `gpt-4.1-nano` | GPT-4.1-nano | 128K | 16K | ✅ | — |
-| `gpt-4o` | GPT-4o | 128K | 16K | ✅ | — |
-| `gpt-4o-mini` | GPT-4o mini | 128K | 16K | ✅ | — |
 | `grok-3` | Grok 3 | 128K | 8K | — | ✅ |
 | `grok-3-mini` | Grok 3 Mini | 128K | 8K | — | ✅ |
-| `deepseek-r1` | DeepSeek-R1 | 66K | 8K | — | ✅ |
-| `deepseek-r1-0528` | DeepSeek-R1-0528 | 66K | 8K | — | ✅ |
 | `mai-ds-r1` | MAI-DS-R1 | 66K | 8K | — | ✅ |
 | `codestral-2501` | Codestral 25.01 | 32K | 8K | — | ✅ |
 | `phi-4` | Phi-4 | 16K | 4K | — | ✅ |
@@ -1156,14 +1048,33 @@
 | `Qwen3.7-Max` | Qwen3.7 Max | 1M | 66K | — | ✅ |
 | `GLM-5-FP8` | GLM-5 | 203K | 131K | — | ✅ |
 
-### google-vertex
+### Google
 
-**Base URL:** —
+**Base URL:** `https://generativelanguage.googleapis.com/v1beta/openai`
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
+| `gemini-2.0-flash` | Gemini 2.0 Flash | 1M | 8K | ✅ | — |
+| `gemini-2.0-flash-lite` | Gemini 2.0 Flash-Lite | 1M | 8K | ✅ | — |
+| `gemini-3-pro-preview` | Gemini 3 Pro Preview | 1M | 66K | ✅ | ✅ |
+| `gemma-4-26b-a4b-it` | Gemma 4 26B A4B IT | 262K | 33K | ✅ | ✅ |
+| `gemma-4-31b-it` | Gemma 4 31B IT | 262K | 33K | ✅ | ✅ |
+
+### google-vertex
+
+**Base URL:** `https://LOCATION-aiplatform.googleapis.com/v1beta1/projects/PROJECT_ID/locations/LOCATION/endpoints/openapi`
+
+| Model ID | Name | Context | Max Output | Image | Reasoning |
+|---|---|---|---|---|---|
+| `gemini-2.5-flash` | Gemini 2.5 Flash | 1M | 66K | ✅ | ✅ |
 | `gemini-2.5-flash-lite` | Gemini 2.5 Flash-Lite | 1M | 66K | ✅ | ✅ |
+| `gemini-2.5-pro` | Gemini 2.5 Pro | 1M | 66K | ✅ | ✅ |
+| `gemini-3-flash-preview` | Gemini 3 Flash Preview | 1M | 66K | ✅ | ✅ |
+| `gemini-3.1-flash-lite` | Gemini 3.1 Flash Lite | 1M | 66K | ✅ | ✅ |
+| `gemini-3.1-flash-lite-preview` | Gemini 3.1 Flash Lite Preview | 1M | 66K | ✅ | ✅ |
+| `gemini-3.1-pro-preview` | Gemini 3.1 Pro Preview | 1M | 66K | ✅ | ✅ |
 | `gemini-3.1-pro-preview-customtools` | Gemini 3.1 Pro Preview Custom Tools | 1M | 66K | ✅ | ✅ |
+| `gemini-3.5-flash` | Gemini 3.5 Flash | 1M | 66K | ✅ | ✅ |
 | `gemini-flash-latest` | Gemini Flash Latest | 1M | 66K | ✅ | ✅ |
 | `gemini-flash-lite-latest` | Gemini Flash-Lite Latest | 1M | 66K | ✅ | ✅ |
 | `claude-opus-4-6@default` | Claude Opus 4.6 | 1M | 128K | ✅ | ✅ |
@@ -1191,11 +1102,15 @@
 
 ### groq
 
-**Base URL:** —
+**Base URL:** `https://api.groq.com/openai/v1`
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
+| `llama-3.1-8b-instant` | Llama 3.1 8B | 131K | 131K | — | — |
+| `llama-3.3-70b-versatile` | Llama 3.3 70B | 131K | 33K | — | — |
 | `llama-4-scout-17b-16e-instruct` | Llama 4 Scout 17B 16E | 131K | 8K | ✅ | — |
+| `gpt-oss-safeguard-20b` | Safety GPT OSS 20B | 131K | 66K | — | ✅ |
+| `qwen3-32b` | Qwen3-32B | 131K | 41K | — | ✅ |
 
 ### helicone
 
@@ -1203,7 +1118,6 @@
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
-| `gemini-3-pro-preview` | Google Gemini 3 Pro Preview | 1M | 66K | ✅ | ✅ |
 | `gpt-4.1-mini-2025-04-14` | OpenAI GPT-4.1 Mini | 1M | 33K | ✅ | — |
 | `kimi-k2-0905` | Kimi K2 (09/05) | 262K | 16K | — | — |
 | `claude-3-haiku-20240307` | Anthropic: Claude 3 Haiku | 200K | 4K | ✅ | — |
@@ -1218,7 +1132,6 @@
 | `grok-3-mini` | xAI Grok 3 Mini | 131K | 131K | — | — |
 | `hermes-2-pro-llama-3-8b` | Hermes 2 Pro Llama 3 8B | 131K | 131K | — | — |
 | `kimi-k2-0711` | Kimi K2 (07/11) | 131K | 16K | — | — |
-| `llama-3.1-8b-instant` | Meta Llama 3.1 8B Instant | 131K | 33K | — | — |
 | `llama-4-scout` | Meta Llama 4 Scout 17B 16E | 131K | 8K | ✅ | — |
 | `deepseek-tng-r1t2-chimera` | DeepSeek TNG R1T2 Chimera | 130K | 164K | — | — |
 | `chatgpt-4o-latest` | OpenAI ChatGPT-4o | 128K | 16K | ✅ | — |
@@ -1233,12 +1146,17 @@
 
 ### huggingface
 
-**Base URL:** —
+**Base URL:** `https://api-inference.huggingface.co/v1`
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
+| `MiMo-V2.5-Pro` | MiMo-V2.5-Pro | 1M | 131K | — | ✅ |
+| `DeepSeek-V4-Flash` | DeepSeek V4 Flash | 1M | 384K | — | ✅ |
+| `DeepSeek-V4-Pro` | DeepSeek V4 Pro | 1M | 393K | — | ✅ |
+| `MiniMax-M3` | MiniMax-M3 | 524K | 128K | ✅ | ✅ |
 | `Qwen3-235B-A22B-Thinking-2507` | Qwen3-235B-A22B-Thinking-2507 | 262K | 131K | — | ✅ |
 | `Qwen3-Coder-30B-A3B-Instruct` | Qwen3-Coder 30B-A3B Instruct | 262K | 66K | — | — |
+| `Qwen3-Coder-480B-A35B-Instruct` | Qwen3-Coder-480B-A35B-Instruct | 262K | 67K | — | — |
 | `Qwen3-Coder-Next` | Qwen3-Coder-Next | 262K | 66K | — | — |
 | `Qwen3-Next-80B-A3B-Instruct` | Qwen3-Next-80B-A3B-Instruct | 262K | 67K | — | — |
 | `Qwen3-Next-80B-A3B-Thinking` | Qwen3-Next-80B-A3B-Thinking | 262K | 131K | — | — |
@@ -1246,13 +1164,40 @@
 | `Qwen3.5-27B` | Qwen3.5 27B | 262K | 66K | ✅ | ✅ |
 | `Qwen3.5-35B-A3B` | Qwen3.5 35B-A3B | 262K | 66K | ✅ | ✅ |
 | `Qwen3.5-397B-A17B` | Qwen3.5-397B-A17B | 262K | 33K | ✅ | ✅ |
+| `Qwen3.5-9B` | Qwen3.5 9B | 262K | 66K | ✅ | ✅ |
+| `Qwen3.6-27B` | Qwen3.6 27B | 262K | 66K | ✅ | ✅ |
+| `Qwen3.6-35B-A3B` | Qwen3.6 35B-A3B | 262K | 66K | ✅ | ✅ |
+| `MiMo-V2-Flash` | MiMo-V2-Flash | 262K | 4K | — | ✅ |
+| `gemma-4-26B-A4B-it` | Gemma 4 26B A4B IT | 262K | 33K | ✅ | ✅ |
+| `gemma-4-31B-it` | Gemma 4 31B IT | 262K | 33K | ✅ | ✅ |
+| `Kimi-K2-Instruct-0905` | Kimi-K2-Instruct-0905 | 262K | 16K | — | — |
+| `Kimi-K2-Thinking` | Kimi-K2-Thinking | 262K | 262K | — | ✅ |
+| `Kimi-K2.5` | Kimi-K2.5 | 262K | 262K | ✅ | ✅ |
+| `Kimi-K2.6` | Kimi-K2.6 | 262K | 262K | ✅ | ✅ |
+| `Kimi-K2.7-Code` | Kimi K2.7 Code | 262K | 262K | ✅ | ✅ |
 | `Step-3.5-Flash` | Step 3.5 Flash | 262K | 256K | — | ✅ |
 | `Step-3.7-Flash` | Step 3.7 Flash | 262K | 256K | ✅ | ✅ |
+| `GLM-5.2` | GLM-5.2 | 262K | 131K | — | ✅ |
 | `MiniMax-M2` | MiniMax-M2 | 205K | 128K | — | ✅ |
+| `MiniMax-M2.1` | MiniMax-M2.1 | 205K | 131K | — | ✅ |
+| `MiniMax-M2.5` | MiniMax-M2.5 | 205K | 131K | — | ✅ |
+| `MiniMax-M2.7` | MiniMax-M2.7 | 205K | 131K | — | ✅ |
+| `GLM-4.6` | GLM-4.6 | 205K | 131K | — | ✅ |
+| `GLM-4.7` | GLM-4.7 | 205K | 131K | — | ✅ |
+| `GLM-5` | GLM-5 | 203K | 131K | — | ✅ |
+| `GLM-5.1` | GLM-5.1 | 203K | 131K | — | ✅ |
 | `GLM-4.7-Flash` | GLM-4.7-Flash | 200K | 128K | — | ✅ |
 | `DeepSeek-R1-0528` | DeepSeek-R1-0528 | 164K | 164K | — | ✅ |
+| `DeepSeek-V3.2` | DeepSeek-V3.2 | 164K | 66K | — | ✅ |
+| `Qwen3-32B` | Qwen3 32B | 131K | 16K | — | ✅ |
+| `Llama-3.3-70B-Instruct` | Llama-3.3-70B-Instruct | 131K | 4K | — | — |
 | `Kimi-K2-Instruct` | Kimi-K2-Instruct | 131K | 16K | — | — |
+| `gpt-oss-120b` | GPT OSS 120B | 131K | 33K | — | ✅ |
+| `gpt-oss-20b` | GPT OSS 20B | 131K | 33K | — | ✅ |
+| `GLM-4.5` | GLM-4.5 | 131K | 98K | — | ✅ |
+| `GLM-4.5-Air` | GLM-4.5-Air | 131K | 98K | — | ✅ |
 | `GLM-4.5V` | GLM-4.5V | 66K | 16K | ✅ | ✅ |
+| `DeepSeek-R1` | DeepSeek-R1 | 64K | 33K | — | ✅ |
 | `Qwen3-235B-A22B` | Qwen3 235B-A22B | 41K | 16K | — | ✅ |
 
 ### iflowcn
@@ -1334,148 +1279,41 @@
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
-| `auto` | Auto Router | 2M | 33K | ✅ | ✅ |
-| `gpt-latest` | OpenAI: GPT Latest | 1M | 128K | ✅ | ✅ |
 | `owl-alpha` | Owl Alpha | 1M | 262K | — | ✅ |
 | `gemini-2.0-flash-001` | Google: Gemini 2.0 Flash | 1M | 8K | ✅ | — |
 | `gemini-2.0-flash-lite-001` | Google: Gemini 2.0 Flash Lite | 1M | 8K | ✅ | — |
 | `gemini-2.5-flash-lite-preview-09-2025` | Google: Gemini 2.5 Flash Lite Preview 09-2025 | 1M | 66K | ✅ | ✅ |
-| `gemini-2.5-pro-preview` | Google: Gemini 2.5 Pro Preview 06-05 | 1M | 66K | ✅ | ✅ |
-| `gemini-2.5-pro-preview-05-06` | Google: Gemini 2.5 Pro Preview 05-06 | 1M | 66K | ✅ | ✅ |
-| `gemini-flash-latest` | Google: Gemini Flash Latest | 1M | 66K | ✅ | ✅ |
-| `gemini-pro-latest` | Google: Gemini Pro Latest | 1M | 66K | ✅ | ✅ |
-| `nova-2-lite-v1` | Amazon: Nova 2 Lite | 1M | 66K | ✅ | ✅ |
-| `nova-premier-v1` | Amazon: Nova Premier 1.0 | 1M | 32K | ✅ | — |
 | `claude-opus-4.6-fast` | Anthropic: Claude Opus 4.6 (Fast) | 1M | 128K | ✅ | ✅ |
-| `claude-opus-4.7-fast` | Anthropic: Claude Opus 4.7 (Fast) | 1M | 128K | ✅ | ✅ |
-| `claude-sonnet-4.5` | Anthropic: Claude Sonnet 4.5 | 1M | 64K | ✅ | ✅ |
 | `frontier` | Kilo Auto Frontier | 1M | 128K | ✅ | ✅ |
-| `minimax-m1` | MiniMax: MiniMax M1 | 1M | 40K | — | ✅ |
-| `qwen-plus` | Qwen: Qwen-Plus | 1M | 33K | — | — |
-| `qwen-plus-2025-07-28` | Qwen: Qwen Plus 0728 | 1M | 33K | — | — |
-| `qwen-plus-2025-07-28:thinking` | Qwen: Qwen Plus 0728 (thinking) | 1M | 33K | — | ✅ |
-| `qwen3-coder-flash` | Qwen: Qwen3 Coder Flash | 1M | 66K | — | — |
-| `qwen3-coder-plus` | Qwen: Qwen3 Coder Plus | 1M | 66K | — | — |
-| `qwen3.5-flash-02-23` | Qwen: Qwen3.5-Flash | 1M | 66K | ✅ | ✅ |
-| `qwen3.5-plus-02-15` | Qwen: Qwen3.5 Plus 2026-02-15 | 1M | 66K | ✅ | ✅ |
-| `qwen3.5-plus-20260420` | Qwen: Qwen3.5 Plus 2026-04-20 | 1M | 66K | ✅ | ✅ |
 | `claude-opus-4.6` | Stealth: Claude Opus 4.6 (20% off) | 1M | 128K | ✅ | ✅ |
 | `claude-opus-4.7` | Stealth: Claude Opus 4.7 (20% off) | 1M | 128K | ✅ | ✅ |
 | `claude-sonnet-4.6` | Stealth: Claude Sonnet 4.6 (20% off) | 1M | 64K | ✅ | ✅ |
-| `claude-opus-latest` | Anthropic: Claude Opus Latest | 1M | 128K | ✅ | ✅ |
-| `claude-sonnet-latest` | Anthropic: Claude Sonnet Latest | 1M | 128K | ✅ | ✅ |
 | `small` | Kilo Auto Small | 400K | 128K | ✅ | ✅ |
 | `gpt-5-image-mini` | OpenAI: GPT-5 Image Mini | 400K | 128K | ✅ | ✅ |
-| `gpt-mini-latest` | OpenAI: GPT Mini Latest | 400K | 128K | ✅ | ✅ |
-| `nova-lite-v1` | Amazon: Nova Lite 1.0 | 300K | 5K | ✅ | — |
-| `nova-pro-v1` | Amazon: Nova Pro 1.0 | 300K | 5K | ✅ | — |
-| `seed-1.6` | ByteDance Seed: Seed 1.6 | 262K | 33K | ✅ | ✅ |
-| `seed-1.6-flash` | ByteDance Seed: Seed 1.6 Flash | 262K | 33K | ✅ | ✅ |
-| `seed-2.0-lite` | ByteDance Seed: Seed-2.0-Lite | 262K | 131K | ✅ | ✅ |
-| `seed-2.0-mini` | ByteDance Seed: Seed-2.0-Mini | 262K | 131K | ✅ | ✅ |
-| `ministral-14b-2512` | Mistral: Ministral 3 14B 2512 | 262K | 52K | ✅ | — |
-| `ministral-8b-2512` | Mistral: Ministral 3 8B 2512 | 262K | 33K | ✅ | — |
-| `mistral-medium-3-5` | Mistral: Mistral Medium 3.5 | 262K | 262K | ✅ | ✅ |
-| `mistral-small-2603` | Mistral: Mistral Small 4 | 262K | 262K | ✅ | ✅ |
-| `nemotron-3-super-120b-a12b:free` | NVIDIA: Nemotron 3 Super (free) | 262K | 262K | — | ✅ |
-| `laguna-m.1:free` | Poolside: Laguna M.1 (free) | 262K | 33K | — | ✅ |
 | `laguna-xs.2:free` | Poolside: Laguna XS.2 (free) | 262K | 33K | — | ✅ |
-| `qwen3-235b-a22b-2507` | Qwen: Qwen3 235B A22B Instruct 2507 | 262K | 52K | — | — |
-| `qwen3-235b-a22b-thinking-2507` | Qwen: Qwen3 235B A22B Thinking 2507 | 262K | 262K | — | ✅ |
-| `qwen3-30b-a3b-instruct-2507` | Qwen: Qwen3 30B A3B Instruct 2507 | 262K | 262K | — | — |
-| `qwen3-max` | Qwen: Qwen3 Max | 262K | 33K | — | — |
-| `qwen3-max-thinking` | Qwen: Qwen3 Max Thinking | 262K | 33K | — | ✅ |
-| `qwen3-vl-235b-a22b-instruct` | Qwen: Qwen3 VL 235B A22B Instruct | 262K | 52K | ✅ | — |
-| `qwen3.6-max-preview` | Qwen: Qwen3.6 Max Preview | 262K | 66K | — | ✅ |
-| `kimi-latest` | MoonshotAI: Kimi Latest | 262K | 262K | ✅ | ✅ |
-| `jamba-large-1.7` | AI21: Jamba Large 1.7 | 256K | 4K | — | — |
-| `kat-coder-pro-v2` | Kwaipilot: KAT-Coder-Pro V2 | 256K | 80K | — | — |
-| `codestral-2508` | Mistral: Codestral 2508 | 256K | 51K | — | — |
-| `nemotron-3-nano-omni-30b-a3b-reasoning:free` | NVIDIA: Nemotron 3 Nano Omni (free) | 256K | 66K | ✅ | ✅ |
-| `qwen3.6-27b` | Qwen: Qwen3.6 27B | 256K | 66K | ✅ | ✅ |
-| `relace-search` | Relace: Relace Search | 256K | 128K | — | — |
-| `step-3.5-flash` | StepFun: Step 3.5 Flash | 256K | 256K | — | ✅ |
 | `balanced` | Kilo Auto Balanced | 205K | 131K | — | ✅ |
 | `free` | Kilo Auto Free | 205K | 131K | — | ✅ |
-| `glm-4.7-flash` | Z.ai: GLM 4.7 Flash | 203K | 41K | — | ✅ |
-| `claude-3-haiku` | Anthropic: Claude 3 Haiku | 200K | 4K | ✅ | — |
 | `claude-3.5-haiku` | Anthropic: Claude 3.5 Haiku | 200K | 8K | ✅ | — |
-| `claude-haiku-4.5` | Anthropic: Claude Haiku 4.5 | 200K | 64K | ✅ | ✅ |
-| `claude-opus-4.5` | Anthropic: Claude Opus 4.5 | 200K | 64K | ✅ | ✅ |
-| `o3-deep-research` | OpenAI: o3 Deep Research | 200K | 100K | ✅ | ✅ |
-| `o3-pro` | OpenAI: o3 Pro | 200K | 100K | ✅ | ✅ |
-| `o4-mini-deep-research` | OpenAI: o4 Mini Deep Research | 200K | 100K | ✅ | ✅ |
-| `free` | Free Models Router | 200K | 33K | ✅ | ✅ |
-| `claude-haiku-latest` | Anthropic: Claude Haiku Latest | 200K | 64K | ✅ | ✅ |
-| `deepseek-chat-v3-0324` | DeepSeek: DeepSeek V3 0324 | 164K | 66K | — | — |
-| `qwen3-coder-30b-a3b-instruct` | Qwen: Qwen3 Coder 30B A3B Instruct | 160K | 33K | — | — |
 | `trinity-mini` | Arcee AI: Trinity Mini | 131K | 131K | — | ✅ |
-| `virtuoso-large` | Arcee AI: Virtuoso Large | 131K | 64K | — | — |
 | `cobuddy:free` | Baidu: CoBuddy (free) | 131K | 66K | — | ✅ |
-| `llama-3.1-70b-instruct` | Meta: Llama 3.1 70B Instruct | 131K | 26K | — | — |
 | `devstral-medium` | Mistral: Devstral Medium | 131K | 26K | — | — |
 | `devstral-small` | Mistral: Devstral Small 1.1 | 131K | 26K | — | — |
-| `ministral-3b-2512` | Mistral: Ministral 3 3B 2512 | 131K | 33K | ✅ | — |
-| `mistral-large-2407` | Mistral Large 2407 | 131K | 33K | — | — |
 | `mistral-large-2411` | Mistral Large 2411 | 131K | 26K | — | — |
-| `mistral-medium-3` | Mistral: Mistral Medium 3 | 131K | 26K | ✅ | — |
-| `mistral-medium-3.1` | Mistral: Mistral Medium 3.1 | 131K | 26K | ✅ | — |
-| `mistral-nemo` | Mistral: Mistral Nemo | 131K | 16K | — | — |
-| `mistral-small-3.2-24b-instruct` | Mistral: Mistral Small 3.2 24B | 131K | 131K | ✅ | — |
 | `pixtral-large-2411` | Mistral: Pixtral Large 2411 | 131K | 33K | ✅ | — |
 | `deepseek-v3.1-nex-n1` | Nex AGI: DeepSeek V3.1 Nex N1 | 131K | 164K | — | — |
-| `llama-3.3-nemotron-super-49b-v1.5` | NVIDIA: Llama 3.3 Nemotron Super 49B V1.5 | 131K | 26K | — | ✅ |
 | `nemotron-nano-9b-v2` | NVIDIA: Nemotron Nano 9B V2 | 131K | 26K | — | ✅ |
-| `gpt-oss-safeguard-20b` | OpenAI: gpt-oss-safeguard-20b | 131K | 66K | — | ✅ |
 | `intellect-3` | Prime Intellect: INTELLECT-3 | 131K | 131K | — | ✅ |
-| `qwen3-next-80b-a3b-thinking` | Qwen: Qwen3 Next 80B A3B Thinking | 131K | 33K | — | ✅ |
-| `qwen3-vl-235b-a22b-thinking` | Qwen: Qwen3 VL 235B A22B Thinking | 131K | 33K | ✅ | ✅ |
-| `qwen3-vl-30b-a3b-instruct` | Qwen: Qwen3 VL 30B A3B Instruct | 131K | 33K | ✅ | — |
-| `qwen3-vl-30b-a3b-thinking` | Qwen: Qwen3 VL 30B A3B Thinking | 131K | 33K | ✅ | ✅ |
-| `qwen3-vl-32b-instruct` | Qwen: Qwen3 VL 32B Instruct | 131K | 33K | ✅ | — |
-| `qwen3-vl-8b-instruct` | Qwen: Qwen3 VL 8B Instruct | 131K | 33K | ✅ | — |
-| `qwen3-vl-8b-thinking` | Qwen: Qwen3 VL 8B Thinking | 131K | 33K | ✅ | ✅ |
-| `l3.1-euryale-70b` | Sao10K: Llama 3.1 Euryale 70B v2.2 | 131K | 16K | — | — |
-| `glm-4.5` | Z.ai: GLM 4.5 | 131K | 98K | — | ✅ |
-| `glm-4.5-air` | Z.ai: GLM 4.5 Air | 131K | 98K | — | ✅ |
-| `glm-4.6v` | Z.ai: GLM 4.6V | 131K | 131K | ✅ | ✅ |
-| `nova-micro-v1` | Amazon: Nova Micro 1.0 | 128K | 5K | — | — |
-| `mercury-2` | Inception: Mercury 2 | 128K | 50K | — | ✅ |
-| `mistral-large` | Mistral Large | 128K | 26K | — | — |
 | `gpt-4-1106-preview` | OpenAI: GPT-4 Turbo (older v1106) | 128K | 4K | — | — |
-| `gpt-4-turbo` | OpenAI: GPT-4 Turbo | 128K | 4K | ✅ | — |
-| `gpt-4-turbo-preview` | OpenAI: GPT-4 Turbo Preview | 128K | 4K | — | — |
 | `gpt-4o-audio-preview` | OpenAI: GPT-4o Audio | 128K | 16K | — | — |
-| `gpt-4o-mini-2024-07-18` | OpenAI: GPT-4o-mini (2024-07-18) | 128K | 16K | ✅ | — |
-| `gpt-5.3-chat` | OpenAI: GPT-5.3 Chat | 128K | 16K | ✅ | — |
-| `solar-pro-3` | Upstage: Solar Pro 3 | 128K | 33K | — | ✅ |
 | `glm-4-32b` | Z.ai: GLM 4 32B  | 128K | 33K | — | — |
 | `ernie-4.5-21b-a3b` | Baidu: ERNIE 4.5 21B A3B | 120K | 8K | — | — |
-| `glm-4.5v` | Z.ai: GLM 4.5V | 66K | 16K | ✅ | ✅ |
-| `qwen3-14b` | Qwen: Qwen3 14B | 41K | 41K | — | ✅ |
-| `qwen3-30b-a3b` | Qwen: Qwen3 30B A3B | 41K | 41K | — | ✅ |
-| `qwen3-32b` | Qwen: Qwen3 32B | 41K | 41K | — | ✅ |
-| `qwen3-8b` | Qwen: Qwen3 8B | 41K | 8K | — | ✅ |
-| `deepseek-chat-v3.1` | DeepSeek: DeepSeek V3.1 | 33K | 7K | — | ✅ |
 | `rnj-1-instruct` | EssentialAI: Rnj 1 Instruct | 33K | 7K | — | — |
-| `mistral-saba` | Mistral: Saba | 33K | 33K | — | — |
 | `mistral-small-24b-instruct-2501` | Mistral: Mistral Small 3 | 33K | 16K | — | — |
-| `qwen-2.5-72b-instruct` | Qwen2.5 72B Instruct | 33K | 16K | — | — |
-| `qwen-2.5-7b-instruct` | Qwen: Qwen2.5 7B Instruct | 33K | 7K | — | — |
-| `qwen3-30b-a3b-thinking-2507` | Qwen: Qwen3 30B A3B Thinking 2507 | 33K | 7K | — | ✅ |
 | `rocinante-12b` | TheDrummer: Rocinante 12B | 33K | 33K | — | — |
-| `unslopnemo-12b` | TheDrummer: UnslopNemo 12B | 33K | 33K | — | — |
-| `voxtral-small-24b-2507` | Mistral: Voxtral Small 24B 2507 | 32K | 6K | — | — |
 | `ernie-4.5-vl-28b-a3b` | Baidu: ERNIE 4.5 VL 28B A3B | 30K | 8K | ✅ | ✅ |
-| `gpt-3.5-turbo` | OpenAI: GPT-3.5 Turbo | 16K | 4K | — | — |
-| `gpt-3.5-turbo-16k` | OpenAI: GPT-3.5 Turbo 16k | 16K | 4K | — | — |
-| `llama-3.1-8b-instruct` | Meta: Llama 3.1 8B Instruct | 16K | 16K | — | — |
-| `reka-edge` | Reka Edge | 16K | 16K | ✅ | — |
 | `llama-3-8b-instruct` | Meta: Llama 3 8B Instruct | 8K | 16K | — | — |
 | `l3-euryale-70b` | Sao10k: Llama 3 Euryale 70B v2.1 | 8K | 8K | — | — |
-| `gpt-4` | OpenAI: GPT-4 | 8K | 4K | — | — |
 | `gpt-4-0314` | OpenAI: GPT-4 (older v0314) | 8K | 4K | — | — |
-| `gpt-3.5-turbo-0613` | OpenAI: GPT-3.5 Turbo (older v0613) | 4K | 4K | — | — |
 
 ### kimi-for-coding
 
@@ -1487,7 +1325,6 @@
 | `k2p6` | Kimi K2.6 | 262K | 33K | ✅ | ✅ |
 | `k2p7` | Kimi K2.7 Code | 262K | 33K | ✅ | ✅ |
 | `kimi-for-coding-highspeed` | Kimi For Coding HighSpeed | 262K | 33K | ✅ | ✅ |
-| `kimi-k2-thinking` | Kimi K2 Thinking | 262K | 33K | — | ✅ |
 
 ### lilac
 
@@ -1522,20 +1359,13 @@
 | `grok-4-20-beta-0309-reasoning` | Grok 4.20 (Reasoning) | 2M | 30K | ✅ | ✅ |
 | `grok-4-20-non-reasoning` | Grok 4.20 (Non-Reasoning) | 2M | 30K | ✅ | — |
 | `grok-4-20-reasoning` | Grok 4.20 (Reasoning) | 2M | 30K | ✅ | ✅ |
-| `gpt-5.4-pro` | GPT-5.4 Pro | 1M | 128K | ✅ | ✅ |
-| `gpt-5.5-pro` | GPT-5.5 Pro | 1M | 128K | ✅ | ✅ |
 | `gemini-pro-latest` | Gemini Pro Latest | 1M | 66K | ✅ | ✅ |
 | `fugu-ultra` | Fugu Ultra | 1M | 1M | ✅ | ✅ |
 | `qwen-flash` | Qwen Flash | 1M | 33K | — | ✅ |
 | `qwen-plus-latest` | Qwen Plus Latest | 1M | 8K | ✅ | — |
 | `qwen3-coder-flash` | Qwen3 Coder Flash | 1M | 66K | — | — |
 | `qwen3-coder-plus` | Qwen3 Coder Plus | 1M | 66K | — | — |
-| `minimax-m3` | MiniMax-M3 | 524K | 128K | ✅ | ✅ |
 | `grok-4-5` | Grok 4.5 | 500K | 500K | ✅ | ✅ |
-| `gpt-5-pro` | GPT-5 Pro | 400K | 272K | ✅ | ✅ |
-| `gpt-5.2-pro` | GPT-5.2 Pro | 400K | 128K | ✅ | ✅ |
-| `gemma-4-26b-a4b-it` | Gemma 4 26B A4B IT | 262K | 33K | ✅ | ✅ |
-| `kimi-k2.7-code-highspeed` | Kimi K2.7 Code Highspeed | 262K | 262K | ✅ | ✅ |
 | `nemotron-3-ultra-550b` | Nemotron 3 Ultra 550B A55B | 262K | 128K | — | ✅ |
 | `qwen3-235b-a22b-instruct-2507` | Qwen3 235B A22B Instruct (2507) | 262K | 8K | — | — |
 | `qwen3-coder-480b-a35b-instruct` | Qwen3-Coder 480B-A35B Instruct | 262K | 66K | — | — |
@@ -1548,21 +1378,15 @@
 | `qwen3-30b-a3b-instruct-2507` | Qwen3 30B A3B Instruct (2507) | 262K | 8K | — | — |
 | `grok-4` | Grok 4 | 256K | 256K | ✅ | — |
 | `grok-build-0-1` | Grok Build 0.1 | 256K | 256K | ✅ | ✅ |
-| `kimi-k2` | Kimi K2 | 256K | 16K | — | — |
 | `seed-1-6-250615` | Seed 1.6 (250615) | 256K | 8K | ✅ | ✅ |
 | `seed-1-6-250915` | Seed 1.6 (250915) | 256K | 8K | ✅ | ✅ |
 | `seed-1-6-flash-250715` | Seed 1.6 Flash (250715) | 256K | 8K | ✅ | ✅ |
 | `seed-1-8-251228` | Seed 1.8 (251228) | 256K | 8K | ✅ | ✅ |
-| `glm-4.6` | GLM-4.6 | 205K | 131K | — | ✅ |
-| `minimax-m2.1` | MiniMax-M2.1 | 205K | 131K | — | ✅ |
 | `minimax-m2.5-highspeed` | MiniMax-M2.5-highspeed | 205K | 131K | — | ✅ |
 | `minimax-m2.7-highspeed` | MiniMax-M2.7-highspeed | 205K | 131K | — | ✅ |
 | `claude-3-opus` | Claude 3 Opus | 200K | 4K | ✅ | — |
 | `claude-haiku-4-5-free` | Claude Haiku 4.5 (latest) | 200K | 200K | ✅ | — |
-| `glm-4.7-flashx` | GLM-4.7-FlashX | 200K | 131K | — | ✅ |
-| `o1` | o1 | 200K | 100K | ✅ | ✅ |
 | `minimax-m2` | MiniMax-M2 | 197K | 128K | — | ✅ |
-| `glm-4.6v` | GLM-4.6V | 131K | 33K | ✅ | ✅ |
 | `qwen-coder-plus` | Qwen Coder Plus | 131K | 8K | — | — |
 | `qwen-plus` | Qwen Plus | 131K | 33K | — | ✅ |
 | `qwen2-5-vl-32b-instruct` | Qwen2.5 VL 32B Instruct | 131K | 8K | ✅ | — |
@@ -1571,22 +1395,17 @@
 | `qwen3-vl-235b-a22b-instruct` | Qwen3 VL 235B A22B Instruct | 131K | 8K | ✅ | — |
 | `qwen3-vl-235b-a22b-thinking` | Qwen3 VL 235B A22B Thinking | 131K | 8K | ✅ | ✅ |
 | `qwen3-vl-30b-a3b-instruct` | Qwen3 VL 30B A3B Instruct | 131K | 8K | ✅ | — |
-| `glm-4.5` | GLM-4.5 | 131K | 98K | — | ✅ |
-| `glm-4.5-air` | GLM-4.5-Air | 131K | 98K | — | ✅ |
 | `custom` | Custom Model | 128K | 16K | ✅ | — |
 | `glm-4-32b-0414-128k` | GLM-4 32B (0414-128k) | 128K | 16K | — | — |
 | `glm-4.5-airx` | GLM-4.5 AirX | 128K | 16K | — | — |
 | `glm-4.5-x` | GLM-4.5 X | 128K | 16K | — | ✅ |
-| `glm-4.5v` | GLM-4.5V | 128K | 16K | ✅ | ✅ |
 | `glm-4.6v-flashx` | GLM-4.6V FlashX | 128K | 16K | ✅ | ✅ |
-| `gpt-4-turbo` | GPT-4 Turbo | 128K | 4K | ✅ | — |
 | `qwen3-235b-a22b-fp8` | Qwen3 235B A22B FP8 | 41K | 8K | — | ✅ |
 | `qwen-max` | Qwen Max | 33K | 8K | — | — |
 | `qwen-max-latest` | Qwen Max Latest | 33K | 8K | ✅ | — |
 | `qwen-omni-turbo` | Qwen-Omni Turbo | 33K | 2K | ✅ | — |
 | `qwen2-5-vl-72b-instruct` | Qwen2.5-VL 72B Instruct | 33K | 8K | ✅ | — |
 | `qwen3-32b` | Qwen3 32B | 33K | 16K | — | ✅ |
-| `gpt-4` | GPT-4 | 8K | 8K | — | — |
 
 ### llmtr
 
@@ -1639,11 +1458,6 @@
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `Qwen3.5-Plus` | Qwen3.5 Plus | 1M | 66K | ✅ | ✅ |
-| `MiMo-V2-Flash` | MiMo V2 Flash | 262K | 32K | — | ✅ |
-| `Kimi-K2-Thinking` | Kimi K2 Thinking | 262K | 262K | — | ✅ |
-| `Kimi-K2.5` | Kimi K2.5 | 262K | 262K | ✅ | ✅ |
-| `MiniMax-M2.5` | MiniMax M2.5 | 205K | 131K | — | ✅ |
-| `MiniMax-M2.1` | MiniMax M2.1 | 197K | 131K | — | ✅ |
 | `DeepSeek-V3.1` | DeepSeek V3.1 | 164K | 164K | — | — |
 | `DeepSeek-V3.2-Exp` | DeepSeek V3.2 Exp | 164K | 164K | — | — |
 | `DeepSeek-V3-0324` | DeepSeek V3 0324 | 164K | 164K | — | — |
@@ -1656,12 +1470,10 @@
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
-| `gemini-3.1-flash-lite-preview` | Gemini 3.1 Flash Lite Preview | 1M | 66K | ✅ | ✅ |
 | `qwen3.6-plus` | Qwen3.6 Plus | 1M | 66K | ✅ | ✅ |
 | `qwen3.7-max` | Qwen3.7 Max | 1M | 66K | — | ✅ |
 | `grok-4.20-0309-reasoning` | Grok 4.20 (Reasoning) | 1M | 30K | ✅ | ✅ |
 | `glm-5.2` | GLM-5.2 | 1M | 131K | — | ✅ |
-| `gemma-4-26b-a4b-it` | Gemma 4 26B A4B IT | 262K | 33K | ✅ | ✅ |
 | `devstral-2512` | Devstral 2 | 262K | 262K | — | — |
 | `devstral-medium-latest` | Devstral 2 (latest) | 262K | 262K | — | — |
 | `mistral-large-2512` | Mistral Large 3 | 262K | 262K | ✅ | — |
@@ -1681,31 +1493,25 @@
 | `claude-opus-4-5-20251101` | Claude Opus 4.5 | 200K | 64K | ✅ | ✅ |
 | `claude-sonnet-4-20250514` | Claude Sonnet 4 | 200K | 64K | ✅ | ✅ |
 | `claude-sonnet-4-5-20250929` | Claude Sonnet 4.5 | 200K | 64K | ✅ | ✅ |
-| `o1` | o1 | 200K | 100K | ✅ | ✅ |
 | `glm-4.7-flashx` | GLM-4.7-FlashX | 200K | 131K | — | ✅ |
 | `glm-5-turbo` | GLM-5-Turbo | 200K | 131K | — | ✅ |
 | `glm-5.1` | GLM-5.1 | 200K | 131K | — | ✅ |
-| `minimax-m2` | MiniMax-M2 | 197K | 128K | — | ✅ |
 | `mistral-large-2411` | Mistral Large 2.1 | 131K | 16K | — | — |
 | `mistral-medium-2505` | Mistral Medium 3 | 131K | 131K | ✅ | — |
 | `glm-4.5` | GLM-4.5 | 131K | 98K | — | ✅ |
 | `glm-4.5-air` | GLM-4.5-Air | 131K | 98K | — | ✅ |
-| `command-r-08-2024` | Command R | 128K | 4K | — | — |
 | `command-r7b-12-2024` | Command R7B | 128K | 4K | — | — |
 | `devstral-medium-2507` | Devstral Medium | 128K | 128K | — | — |
 | `devstral-small-2507` | Devstral Small | 128K | 128K | — | — |
 | `magistral-medium-latest` | Magistral Medium (latest) | 128K | 16K | — | ✅ |
 | `pixtral-large-latest` | Pixtral Large (latest) | 128K | 128K | ✅ | — |
-| `gpt-4o-2024-05-13` | GPT-4o (2024-05-13) | 128K | 4K | ✅ | — |
-| `gpt-4o-2024-08-06` | GPT-4o (2024-08-06) | 128K | 16K | ✅ | — |
-| `gpt-4o-2024-11-20` | GPT-4o (2024-11-20) | 128K | 16K | ✅ | — |
 | `gpt-5.1-chat-latest` | GPT-5.1 Chat | 128K | 16K | ✅ | ✅ |
 | `gpt-5.2-chat-latest` | GPT-5.2 Chat | 128K | 16K | ✅ | ✅ |
 | `gpt-5.3-chat-latest` | GPT-5.3 Chat (latest) | 128K | 16K | ✅ | — |
 
-### minimax-coding-plan
+### minimax
 
-**Base URL:** —
+**Base URL:** `https://api.minimax.io/anthropic`
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -1753,18 +1559,6 @@
 | `open-mixtral-8x7b` | Mixtral 8x7B | 32K | 32K | — | — |
 | `open-mistral-7b` | Mistral 7B | 8K | 8K | — | — |
 
-### mixlayer
-
-**Base URL:** —
-
-| Model ID | Name | Context | Max Output | Image | Reasoning |
-|---|---|---|---|---|---|
-| `qwen3.5-122b-a10b` | Qwen3.5 122B A10B | 262K | 262K | — | ✅ |
-| `qwen3.5-27b` | Qwen3.5 27B | 262K | 262K | — | ✅ |
-| `qwen3.5-35b-a3b` | Qwen3.5 35B A3B | 262K | 262K | — | ✅ |
-| `qwen3.5-397b-a17b` | Qwen3.5 397B A17B | 262K | 262K | — | ✅ |
-| `qwen3.5-9b` | Qwen3.5 9B | 262K | 262K | — | ✅ |
-
 ### moark
 
 **Base URL:** —
@@ -1772,15 +1566,6 @@
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `GLM-4.7` | GLM-4.7 | 205K | 131K | — | ✅ |
-
-### model-oracle-ai
-
-**Base URL:** —
-
-| Model ID | Name | Context | Max Output | Image | Reasoning |
-|---|---|---|---|---|---|
-| `claude-opus-4.8` | Claude Opus 4.8 | 1M | 128K | ✅ | ✅ |
-| `claude-haiku-4.5` | Claude Haiku 4.5 (latest) | 200K | 64K | ✅ | ✅ |
 
 ### modelscope
 
@@ -1794,12 +1579,18 @@
 
 ### moonshotai-cn
 
-**Base URL:** —
+**Base URL:** `https://api.moonshot.cn/v1`
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `kimi-k2-0905-preview` | Kimi K2 0905 | 262K | 262K | — | — |
+| `kimi-k2-thinking` | Kimi K2 Thinking | 262K | 262K | — | ✅ |
 | `kimi-k2-thinking-turbo` | Kimi K2 Thinking Turbo | 262K | 262K | — | ✅ |
+| `kimi-k2-turbo-preview` | Kimi K2 Turbo | 262K | 262K | — | — |
+| `kimi-k2.5` | Kimi K2.5 | 262K | 262K | ✅ | ✅ |
+| `kimi-k2.6` | Kimi K2.6 | 262K | 262K | ✅ | ✅ |
+| `kimi-k2.7-code` | Kimi K2.7 Code | 262K | 262K | ✅ | ✅ |
+| `kimi-k2.7-code-highspeed` | Kimi K2.7 Code HighSpeed | 262K | 262K | ✅ | ✅ |
 | `kimi-k2-0711-preview` | Kimi K2 0711 | 131K | 16K | — | — |
 
 ### nano-gpt
@@ -1808,14 +1599,11 @@
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
-| `grok-4.20` | Grok 4.20 | 2M | 131K | ✅ | ✅ |
 | `grok-4.20-multi-agent` | Grok 4.20 Multi-Agent | 2M | 131K | ✅ | ✅ |
 | `gemini-2.5-flash-lite-preview-09-2025` | Gemini 2.5 Flash Lite Preview (09/2025) | 1M | 66K | ✅ | ✅ |
 | `gemini-2.5-flash-lite-preview-09-2025-thinking` | Gemini 2.5 Flash Lite Preview (09/2025) – Thinking | 1M | 66K | ✅ | ✅ |
 | `gemini-2.5-flash-preview-09-2025` | Gemini 2.5 Flash Preview (09/2025) | 1M | 66K | ✅ | ✅ |
 | `gemini-2.5-flash-preview-09-2025-thinking` | Gemini 2.5 Flash Preview (09/2025) – Thinking | 1M | 66K | ✅ | ✅ |
-| `gemini-3.1-pro-preview` | Gemini 3.1 Pro (Preview) | 1M | 66K | ✅ | ✅ |
-| `gemini-3.1-pro-preview-customtools` | Gemini 3.1 Pro (Preview Custom Tools) | 1M | 66K | ✅ | ✅ |
 | `gemini-3.1-pro-preview-high` | Gemini 3.1 Pro (Preview High) | 1M | 66K | ✅ | ✅ |
 | `gemini-3.1-pro-preview-low` | Gemini 3.1 Pro (Preview Low) | 1M | 66K | ✅ | ✅ |
 | `gemini-pro-latest` | Gemini Pro Latest | 1M | 66K | ✅ | ✅ |
@@ -1826,26 +1614,17 @@
 | `deepseek-v4-pro-cheaper` | DeepSeek V4 Pro Cheaper | 1M | 384K | — | ✅ |
 | `deepseek-v4-pro-cheaper:thinking` | DeepSeek V4 Pro Cheaper (Thinking) | 1M | 384K | — | ✅ |
 | `deepseek-v4-pro:thinking` | DeepSeek V4 Pro (Thinking) | 1M | 384K | — | ✅ |
-| `gemini-3.1-flash-lite` | Gemini 3.1 Flash Lite | 1M | 66K | ✅ | ✅ |
-| `gemini-3.5-flash` | Gemini 3.5 Flash | 1M | 66K | ✅ | ✅ |
 | `gemini-flash-latest` | Gemini Flash Latest | 1M | 66K | ✅ | ✅ |
 | `gemini-flash-lite-latest` | Gemini Flash Lite Latest | 1M | 66K | ✅ | ✅ |
 | `hermes-low` | Hermes Low | 1M | 66K | ✅ | ✅ |
-| `llama-4-maverick` | Llama 4 Maverick | 1M | 66K | ✅ | — |
 | `mimo-v2-pro` | MiMo V2 Pro | 1M | 131K | — | ✅ |
-| `mimo-v2.5` | MiMo V2.5 | 1M | 131K | ✅ | ✅ |
-| `mimo-v2.5-pro` | MiMo V2.5 Pro | 1M | 131K | — | ✅ |
-| `claude-opus-4.6` | Claude 4.6 Opus | 1M | 128K | ✅ | ✅ |
 | `claude-opus-4.6:thinking` | Claude 4.6 Opus Thinking | 1M | 128K | ✅ | ✅ |
 | `claude-opus-4.6:thinking:low` | Claude 4.6 Opus Thinking Low | 1M | 128K | ✅ | ✅ |
 | `claude-opus-4.6:thinking:max` | Claude 4.6 Opus Thinking Max | 1M | 128K | ✅ | ✅ |
 | `claude-opus-4.6:thinking:medium` | Claude 4.6 Opus Thinking Medium | 1M | 128K | ✅ | ✅ |
-| `claude-opus-4.7` | Claude 4.7 Opus | 1M | 128K | ✅ | ✅ |
 | `claude-opus-4.7:thinking` | Claude 4.7 Opus Thinking | 1M | 128K | ✅ | ✅ |
-| `claude-opus-4.8` | Claude Opus 4.8 | 1M | 128K | ✅ | ✅ |
 | `claude-opus-4.8:thinking` | Claude Opus 4.8 Thinking | 1M | 128K | ✅ | ✅ |
 | `claude-opus-latest` | Claude Opus Latest | 1M | 128K | ✅ | ✅ |
-| `claude-sonnet-4.6` | Claude Sonnet 4.6 | 1M | 128K | ✅ | — |
 | `claude-sonnet-4.6:thinking` | Claude Sonnet 4.6 Thinking | 1M | 128K | ✅ | ✅ |
 | `claude-sonnet-latest` | Claude Sonnet Latest | 1M | 128K | ✅ | ✅ |
 | `claude-sonnet-4-5-20250929-thinking` | Claude Sonnet 4.5 Thinking | 1M | 64K | ✅ | ✅ |
@@ -1862,48 +1641,25 @@
 | `coding-router:low` | Coding Router Low | 1M | 128K | — | ✅ |
 | `coding-router:max` | Coding Router Max | 1M | 128K | — | ✅ |
 | `coding-router:medium` | Coding Router Medium | 1M | 128K | — | ✅ |
-| `gpt-5.5` | GPT 5.5 | 1M | 128K | ✅ | ✅ |
 | `gpt-latest` | GPT Latest | 1M | 128K | ✅ | ✅ |
-| `grok-4.3` | Grok 4.3 | 1M | 1M | ✅ | ✅ |
 | `grok-latest` | Grok Latest | 1M | 1M | ✅ | ✅ |
-| `gpt-5.4-pro` | GPT 5.4 Pro | 922K | 128K | ✅ | ✅ |
 | `deepseek-v4-pro` | DeepSeek V4 Pro TEE | 800K | 66K | — | ✅ |
 | `deepseek-v4-pro:thinking` | DeepSeek V4 Pro Thinking TEE | 800K | 66K | — | ✅ |
 | `minimax-latest` | MiniMax Latest | 512K | 80K | ✅ | ✅ |
-| `minimax-m3` | MiniMax M3 | 512K | 80K | ✅ | — |
 | `minimax-m3:thinking` | MiniMax M3 Thinking | 512K | 80K | ✅ | ✅ |
-| `gpt-5.1-codex-max` | GPT 5.1 Codex Max | 400K | 128K | ✅ | ✅ |
-| `gpt-5.2-codex` | GPT 5.2 Codex | 400K | 128K | ✅ | ✅ |
-| `gpt-5.2-pro` | GPT 5.2 Pro | 400K | 128K | ✅ | ✅ |
-| `gpt-5.3-codex` | GPT 5.3 Codex | 400K | 128K | ✅ | ✅ |
-| `gpt-5.4-mini` | GPT 5.4 Mini | 400K | 128K | ✅ | ✅ |
-| `gpt-5.4-nano` | GPT 5.4 Nano | 400K | 128K | ✅ | ✅ |
-| `gpt-chat-latest` | GPT Chat Latest | 400K | 128K | ✅ | — |
-| `llama-4-scout` | Llama 4 Scout | 328K | 66K | ✅ | — |
 | `gemma-4-31b-it` | Gemma 4 31B IT TEE | 262K | 262K | — | ✅ |
 | `kimi-k2.6` | Kimi K2.6 TEE | 262K | 66K | ✅ | — |
 | `qwen3.5-122b-a10b` | Qwen3.5 122B A10B TEE | 262K | 262K | — | ✅ |
-| `trinity-large-thinking` | Trinity Large Thinking | 262K | 80K | — | ✅ |
-| `ling-2.6-1t` | Ling 2.6 1T | 262K | 33K | — | — |
-| `ling-2.6-flash` | Ling 2.6 Flash | 262K | 33K | — | — |
-| `ring-2.6-1t` | Ring 2.6 1T | 262K | 66K | — | ✅ |
 | `mistral-code-agent-latest` | Mistral Code Agent Latest | 262K | 33K | — | — |
 | `mistral-small-4-119b-2603` | Mistral Small 4 119B | 262K | 16K | ✅ | ✅ |
 | `mistral-small-4-119b-2603:thinking` | Mistral Small 4 119B Thinking | 262K | 16K | ✅ | ✅ |
-| `nemotron-3-super-120b-a12b` | Nvidia Nemotron 3 Super 120B | 262K | 16K | — | ✅ |
 | `nemotron-3-super-120b-a12b:thinking` | Nvidia Nemotron 3 Super 120B Thinking | 262K | 16K | — | ✅ |
-| `laguna-m.1` | Laguna M.1 | 262K | 33K | — | ✅ |
 | `laguna-xs.2` | Laguna XS.2 | 262K | 33K | — | ✅ |
-| `qwen3-coder-next` | Qwen3 Coder Next | 262K | 66K | — | — |
 | `mimo-v2-omni` | MiMo V2 Omni | 262K | 66K | ✅ | ✅ |
-| `qwen3-coder` | Qwen 3 Coder 480B | 262K | 66K | — | — |
 | `mistral-code-latest` | Mistral Code Latest | 256K | 33K | — | — |
 | `mistral-medium-3.5` | Mistral Medium 3.5 | 256K | 33K | ✅ | ✅ |
 | `mistral-medium-3.5:thinking` | Mistral Medium 3.5 Thinking | 256K | 33K | ✅ | ✅ |
-| `Kimi-K2-Instruct-0905` | Kimi K2 0905 | 256K | 262K | — | — |
 | `kimi-k2-instruct` | Kimi K2 Instruct | 256K | 8K | — | — |
-| `kimi-k2-thinking` | Kimi K2 Thinking | 256K | 262K | — | — |
-| `kimi-k2.5` | Kimi K2.5 | 256K | 66K | ✅ | — |
 | `kimi-k2.5:thinking` | Kimi K2.5 Thinking | 256K | 66K | ✅ | ✅ |
 | `kimi-k2.6:thinking` | Kimi K2.6 Thinking | 256K | 66K | ✅ | ✅ |
 | `kimi-latest` | Kimi Latest | 256K | 66K | ✅ | ✅ |
@@ -1912,14 +1668,9 @@
 | `Qwen3-235B-A22B-Instruct-2507-TEE` | Qwen 3 235b A22B 2507 (TEE) | 256K | 262K | — | — |
 | `Qwen3-Next-80B-A3B-Instruct` | Qwen3 Next 80B A3B (Instruct) | 256K | 262K | — | — |
 | `step-3.7-flash:thinking` | Step 3.7 Flash Thinking | 256K | 256K | ✅ | ✅ |
-| `grok-build-0.1` | Grok Build 0.1 | 256K | 256K | ✅ | ✅ |
 | `claw-medium` | Claw Medium | 205K | 131K | — | ✅ |
 | `hermes-medium` | Hermes Medium | 205K | 131K | — | ✅ |
-| `minimax-m2.5` | MiniMax M2.5 | 205K | 131K | — | ✅ |
-| `minimax-m2.7` | MiniMax M2.7 | 205K | 131K | — | ✅ |
 | `minimax-m2.7-turbo` | MiniMax M2.7 Turbo | 205K | 131K | — | ✅ |
-| `glm-5-turbo` | GLM 5 Turbo | 203K | 131K | — | — |
-| `glm-5v-turbo` | GLM 5V Turbo | 203K | 131K | ✅ | — |
 | `glm-5v-turbo:thinking` | GLM 5V Turbo Thinking | 203K | 131K | ✅ | ✅ |
 | `glm-5.1-thinking` | GLM 5.1 Thinking TEE | 203K | 66K | — | ✅ |
 | `claude-haiku-latest` | Claude Haiku Latest | 200K | 64K | ✅ | ✅ |
@@ -1936,12 +1687,8 @@
 | `claude-opus-4-thinking:32000` | Claude 4 Opus Thinking (32K) | 200K | 32K | ✅ | ✅ |
 | `claude-opus-4-thinking:32768` | Claude 4 Opus Thinking (32K) | 200K | 32K | ✅ | ✅ |
 | `claude-opus-4-thinking:8192` | Claude 4 Opus Thinking (8K) | 200K | 32K | ✅ | ✅ |
-| `minimax-m2.1` | MiniMax M2.1 | 200K | 131K | — | ✅ |
-| `o3-mini-high` | OpenAI o3-mini (High) | 200K | 100K | — | ✅ |
 | `o3-mini-low` | OpenAI o3-mini (Low) | 200K | 100K | — | ✅ |
 | `o3-pro-2025-06-10` | OpenAI o3-pro (2025-06-10) | 200K | 100K | — | ✅ |
-| `o4-mini-high` | OpenAI o4-mini high | 200K | 100K | — | ✅ |
-| `glm-4.6` | GLM 4.6 | 200K | 66K | — | ✅ |
 | `glm-4.6:thinking` | GLM 4.6 Thinking | 200K | 66K | — | ✅ |
 | `glm-4.7` | GLM 4.7 | 200K | 128K | — | ✅ |
 | `glm-4.7-flash` | GLM 4.7 Flash | 200K | 128K | — | ✅ |
@@ -1957,28 +1704,22 @@
 | `glm-5:thinking` | GLM 5 Thinking | 200K | 128K | — | ✅ |
 | `glm-latest` | GLM Latest | 200K | 131K | — | ✅ |
 | `minimax-m2.5` | MiniMax M2.5 TEE | 197K | 131K | — | ✅ |
-| `deepseek-v3.2` | DeepSeek V3.2 | 163K | 66K | — | — |
 | `deepseek-v3.2:thinking` | DeepSeek V3.2 Thinking | 163K | 66K | — | ✅ |
 | `qwen3.6-35b-a3b-uncensored` | Qwen3.6 35B A3B Uncensored TEE | 131K | 131K | ✅ | ✅ |
-| `granite-4.1-8b` | Granite 4.1 8B | 131K | 131K | — | — |
-| `llama-3.3-70b-instruct` | Llama 3.3 70b Instruct | 131K | 16K | — | — |
 | `sarvam-105b` | Sarvam 105B | 131K | 4K | — | ✅ |
 | `azure-gpt-4o` | Azure gpt-4o | 128K | 16K | ✅ | — |
 | `azure-gpt-4o-mini` | Azure gpt-4o-mini | 128K | 16K | ✅ | — |
 | `DeepSeek-V3.1-Terminus:thinking` | DeepSeek V3.1 Terminus (Thinking) | 128K | 66K | — | — |
-| `deepseek-chat` | DeepSeek V3/Deepseek Chat | 128K | 8K | — | — |
 | `deepseek-chat-cheaper` | DeepSeek V3/Chat Cheaper | 128K | 8K | — | — |
 | `deepseek-v3-0324` | DeepSeek Chat 0324 | 128K | 8K | — | — |
 | `mercury-2` | Mercury 2 | 128K | 50K | — | ✅ |
 | `kimi-k2-instruct-0711` | Kimi K2 0711 | 128K | 8K | — | — |
 | `qwen3-coder-30b-a3b-instruct` | Qwen3 Coder 30B A3B Instruct | 128K | 66K | — | — |
-| `GLM-4.5-Air` | GLM 4.5 Air | 128K | 98K | — | — |
 | `GLM-4.5-Air:thinking` | GLM 4.5 Air (Thinking) | 128K | 98K | — | ✅ |
 | `gemma-4-26b-a4b-uncensored` | Gemma 4 26B A4B Uncensored TEE | 66K | 66K | ✅ | — |
 | `holo3-35b-a3b` | Holo3-35B-A3B | 66K | 66K | ✅ | ✅ |
 | `holo3-35b-a3b:thinking` | Holo3-35B-A3B Thinking | 66K | 66K | ✅ | ✅ |
 | `sarvam-30b` | Sarvam 30B | 66K | 4K | — | ✅ |
-| `qwen3-235b-a22b` | Qwen 3 235b A22B | 41K | 33K | — | — |
 | `glm-z1-air` | GLM Z1 Air | 32K | 16K | — | — |
 | `glm-z1-airx` | GLM Z1 AirX | 32K | 16K | — | — |
 
@@ -2002,7 +1743,6 @@
 | `INTELLECT-3` | INTELLECT-3 | 128K | 8K | — | — |
 | `Qwen2.5-VL-72B-Instruct` | Qwen2.5-VL-72B-Instruct | 128K | 8K | ✅ | — |
 | `Llama-3_1-Nemotron-Ultra-253B-v1` | Llama-3.1-Nemotron-Ultra-253B-v1 | 128K | 4K | — | — |
-| `gemma-3-27b-it` | Gemma-3-27b-it | 110K | 8K | ✅ | — |
 | `Nemotron-3-Nano-Omni` | Nemotron-3-Nano-Omni | 66K | 8K | — | ✅ |
 | `NVIDIA-Nemotron-3-Nano-30B-A3B` | Nemotron-3-Nano-30B-A3B | 32K | 4K | — | — |
 | `MiniMax-M2.5-fast` | MiniMax-M2.5-fast | 8K | 8K | — | ✅ |
@@ -2093,16 +1833,13 @@
 |---|---|---|---|---|---|
 | `deepseek-v4-flash` | DeepSeek V4 Flash | 1M | 393K | — | ✅ |
 | `deepseek-v4-pro` | DeepSeek V4 Pro | 1M | 393K | — | ✅ |
-| `nemotron-3-ultra-550b-a55b` | Nemotron 3 Ultra 550B A55B | 1M | 66K | — | ✅ |
 | `mistral-large-3-675b-instruct-2512` | Mistral Large 3 675B Instruct 2512 | 262K | 262K | ✅ | — |
 | `kimi-k2-instruct-0905` | Kimi K2 0905 | 262K | 262K | — | — |
 | `qwen3-coder-480b-a35b-instruct` | Qwen3 Coder 480B A35B Instruct | 262K | 67K | — | — |
-| `qwen3-next-80b-a3b-instruct` | Qwen3-Next-80B-A3B-Instruct | 262K | 16K | — | — |
 | `seed-oss-36b-instruct` | ByteDance-Seed/Seed-OSS-36B-Instruct | 262K | 262K | — | — |
 | `step-3.5-flash` | Step 3.5 Flash | 256K | 16K | — | ✅ |
 | `step-3.7-flash` | Step 3.7 Flash | 256K | 16K | ✅ | ✅ |
 | `minimax-m2.7` | MiniMax-M2.7 | 205K | 131K | — | ✅ |
-| `nemotron-3-nano-30b-a3b` | nemotron-3-nano-30b-a3b | 131K | 131K | — | ✅ |
 | `nvidia-nemotron-nano-9b-v2` | nvidia-nemotron-nano-9b-v2 | 131K | 131K | — | ✅ |
 | `dracarys-llama-3_1-70b-instruct` | dracarys-llama-3.1-70b-instruct | 128K | 8K | — | — |
 | `gemma-2-2b-it` | Gemma 2 2b It | 128K | 4K | — | — |
@@ -2117,7 +1854,6 @@
 | `sarvam-m` | sarvam-m | 128K | 8K | — | — |
 | `solar-10_7b-instruct` | solar-10.7b-instruct | 128K | 8K | — | — |
 | `mistral-7b-instruct-v03` | Mistral-7B-Instruct-v0.3 | 66K | 66K | — | — |
-| `mixtral-8x22b-instruct` | Mistral: Mixtral 8x22B Instruct | 66K | 13K | — | — |
 | `mixtral-8x7b-instruct` | Mistral: Mixtral 8x7B Instruct | 33K | 16K | — | — |
 
 ### ollama-cloud
@@ -2141,40 +1877,102 @@
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `gpt-5.6` | GPT-5.6 | 1M | 128K | ✅ | ✅ |
+| `gpt-4.1-mini` | GPT-4.1 mini | 1M | 33K | ✅ | — |
+| `gpt-4.1-nano` | GPT-4.1 nano | 1M | 33K | ✅ | — |
+| `gpt-5-pro` | GPT-5 Pro | 400K | 272K | ✅ | ✅ |
+| `gpt-5.2-pro` | GPT-5.2 Pro | 400K | 128K | ✅ | ✅ |
+| `o1` | o1 | 200K | 100K | ✅ | ✅ |
 | `o1-pro` | o1-pro | 200K | 100K | ✅ | ✅ |
+| `o3` | o3 | 200K | 100K | ✅ | ✅ |
 | `o3-deep-research` | o3-deep-research | 200K | 100K | ✅ | ✅ |
+| `o3-mini` | o3-mini | 200K | 100K | — | ✅ |
+| `o3-pro` | o3-pro | 200K | 100K | ✅ | ✅ |
+| `o4-mini` | o4-mini | 200K | 100K | ✅ | ✅ |
 | `o4-mini-deep-research` | o4-mini-deep-research | 200K | 100K | ✅ | ✅ |
+| `gpt-4-turbo` | GPT-4 Turbo | 128K | 4K | ✅ | — |
+| `gpt-4o` | GPT-4o | 128K | 16K | ✅ | — |
 | `gpt-4o-2024-05-13` | GPT-4o (2024-05-13) | 128K | 4K | ✅ | — |
 | `gpt-4o-2024-08-06` | GPT-4o (2024-08-06) | 128K | 16K | ✅ | — |
+| `gpt-4o-2024-11-20` | GPT-4o (2024-11-20) | 128K | 16K | ✅ | — |
+| `gpt-4o-mini` | GPT-4o mini | 128K | 16K | ✅ | — |
+| `gpt-5.1-chat-latest` | GPT-5.1 Chat | 128K | 16K | ✅ | ✅ |
+| `gpt-5.2-chat-latest` | GPT-5.2 Chat | 128K | 16K | ✅ | ✅ |
+| `gpt-5.3-chat-latest` | GPT-5.3 Chat (latest) | 128K | 16K | ✅ | — |
 | `gpt-realtime-2.1` | GPT-Realtime-2.1 | 128K | 32K | ✅ | ✅ |
+| `gpt-4` | GPT-4 | 8K | 8K | — | — |
 
 ### opencode
 
-**Base URL:** —
+**Base URL:** `https://opencode.ai/zen`
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
+| `gpt-5.4` | GPT-5.4 | 1M | 128K | ✅ | ✅ |
+| `gpt-5.4-pro` | GPT-5.4 Pro | 1M | 128K | ✅ | ✅ |
+| `gpt-5.5` | GPT-5.5 | 1M | 128K | ✅ | ✅ |
+| `gpt-5.5-pro` | GPT-5.5 Pro | 1M | 128K | ✅ | ✅ |
+| `gpt-5.6-luna` | GPT-5.6 Luna | 1M | 128K | ✅ | ✅ |
+| `gpt-5.6-sol` | GPT-5.6 Sol | 1M | 128K | ✅ | ✅ |
+| `gpt-5.6-terra` | GPT-5.6 Terra | 1M | 128K | ✅ | ✅ |
+| `gemini-3-flash` | Gemini 3 Flash | 1M | 66K | ✅ | ✅ |
 | `gemini-3-pro` | Gemini 3 Pro | 1M | 66K | ✅ | ✅ |
+| `gemini-3.1-pro` | Gemini 3.1 Pro Preview | 1M | 66K | ✅ | ✅ |
 | `mimo-v2-pro-free` | MiMo V2 Pro Free | 1M | 64K | — | ✅ |
+| `claude-fable-5` | Claude Fable 5 | 1M | 128K | ✅ | ✅ |
+| `claude-opus-4-6` | Claude Opus 4.6 | 1M | 128K | ✅ | ✅ |
+| `claude-opus-4-7` | Claude Opus 4.7 | 1M | 128K | ✅ | ✅ |
+| `claude-opus-4-8` | Claude Opus 4.8 | 1M | 128K | ✅ | ✅ |
+| `claude-sonnet-4` | Claude Sonnet 4 | 1M | 64K | ✅ | ✅ |
+| `claude-sonnet-4-5` | Claude Sonnet 4.5 | 1M | 64K | ✅ | ✅ |
+| `claude-sonnet-4-6` | Claude Sonnet 4.6 | 1M | 64K | ✅ | ✅ |
+| `claude-sonnet-5` | Claude Sonnet 5 | 1M | 128K | ✅ | ✅ |
+| `deepseek-v4-flash` | DeepSeek V4 Flash | 1M | 384K | — | ✅ |
+| `deepseek-v4-pro` | DeepSeek V4 Pro | 1M | 384K | — | ✅ |
+| `glm-5.2` | GLM-5.2 | 1M | 131K | — | ✅ |
 | `nemotron-3-ultra-free` | Nemotron 3 Ultra Free | 1M | 128K | — | ✅ |
+| `minimax-m3` | MiniMax-M3 | 512K | 128K | ✅ | ✅ |
+| `gpt-5` | GPT-5 | 400K | 128K | ✅ | ✅ |
+| `gpt-5-codex` | GPT-5 Codex | 400K | 128K | ✅ | ✅ |
+| `gpt-5-nano` | GPT-5 Nano | 400K | 128K | ✅ | ✅ |
+| `gpt-5.1` | GPT-5.1 | 400K | 128K | ✅ | ✅ |
+| `gpt-5.1-codex` | GPT-5.1 Codex | 400K | 128K | ✅ | ✅ |
+| `gpt-5.1-codex-max` | GPT-5.1 Codex Max | 400K | 128K | ✅ | ✅ |
+| `gpt-5.1-codex-mini` | GPT-5.1 Codex Mini | 400K | 128K | ✅ | ✅ |
+| `gpt-5.2` | GPT-5.2 | 400K | 128K | ✅ | ✅ |
+| `gpt-5.2-codex` | GPT-5.2 Codex | 400K | 128K | ✅ | ✅ |
+| `gpt-5.3-codex` | GPT-5.3 Codex | 400K | 128K | ✅ | ✅ |
+| `gpt-5.4-mini` | GPT-5.4 Mini | 400K | 128K | ✅ | ✅ |
+| `gpt-5.4-nano` | GPT-5.4 Nano | 400K | 128K | ✅ | ✅ |
+| `kimi-k2` | Kimi K2 | 262K | 262K | — | — |
 | `kimi-k2.5-free` | Kimi K2.5 Free | 262K | 262K | ✅ | ✅ |
 | `mimo-v2-flash-free` | MiMo V2 Flash Free | 262K | 66K | — | ✅ |
 | `mimo-v2-omni-free` | MiMo V2 Omni Free | 262K | 64K | ✅ | ✅ |
 | `qwen3-coder` | Qwen3 Coder | 262K | 66K | — | — |
 | `qwen3.5-plus` | Qwen3.5 Plus | 262K | 66K | ✅ | ✅ |
+| `qwen3.6-plus` | Qwen3.6 Plus | 262K | 66K | ✅ | ✅ |
 | `qwen3.6-plus-free` | Qwen3.6 Plus Free | 262K | 66K | ✅ | ✅ |
 | `ling-2.6-flash-free` | Ling 2.6 Flash Free | 262K | 33K | — | — |
 | `ring-2.6-1t-free` | Ring 2.6 1T Free | 262K | 66K | — | ✅ |
 | `grok-code` | Grok Code Fast 1 | 256K | 256K | — | ✅ |
 | `hy3-preview-free` | Hy3 preview Free | 256K | 64K | — | ✅ |
 | `north-mini-code-free` | North Mini Code Free | 256K | 64K | — | ✅ |
+| `glm-4.6` | GLM-4.6 | 205K | 131K | — | ✅ |
+| `glm-4.7` | GLM-4.7 | 205K | 131K | — | ✅ |
 | `glm-4.7-free` | GLM-4.7 Free | 205K | 131K | — | ✅ |
+| `glm-5` | GLM-5 | 205K | 131K | — | ✅ |
 | `glm-5-free` | GLM-5 Free | 205K | 131K | — | ✅ |
+| `glm-5.1` | GLM-5.1 | 205K | 131K | — | ✅ |
+| `minimax-m2.1` | MiniMax-M2.1 | 205K | 131K | — | ✅ |
 | `minimax-m2.1-free` | MiniMax-M2.1 Free | 205K | 131K | — | ✅ |
+| `minimax-m2.5` | MiniMax-M2.5 | 205K | 131K | — | ✅ |
 | `minimax-m2.5-free` | MiniMax-M2.5 Free | 205K | 131K | — | ✅ |
+| `minimax-m2.7` | MiniMax-M2.7 | 205K | 131K | — | ✅ |
 | `nemotron-3-super-free` | Nemotron 3 Super Free | 205K | 128K | — | ✅ |
 | `big-pickle` | Big Pickle | 200K | 32K | — | ✅ |
 | `claude-3-5-haiku` | Claude Haiku 3.5 | 200K | 8K | ✅ | — |
+| `claude-haiku-4-5` | Claude Haiku 4.5 | 200K | 64K | ✅ | ✅ |
+| `claude-opus-4-1` | Claude Opus 4.1 | 200K | 32K | ✅ | ✅ |
+| `claude-opus-4-5` | Claude Opus 4.5 | 200K | 64K | ✅ | ✅ |
 | `deepseek-v4-flash-free` | DeepSeek V4 Flash Free | 200K | 128K | — | ✅ |
 | `mimo-v2.5-free` | MiMo V2.5 Free | 200K | 32K | ✅ | ✅ |
 | `minimax-m3-free` | MiniMax-M3 Free | 200K | 32K | ✅ | ✅ |
@@ -2182,41 +1980,284 @@
 | `trinity-large-preview-free` | Trinity Large Preview | 131K | 131K | — | — |
 | `gpt-5.3-codex-spark` | GPT-5.3 Codex Spark | 128K | 128K | — | ✅ |
 
+### opencode-go
+
+**Base URL:** `https://opencode.ai/zen/go`
+
+| Model ID | Name | Context | Max Output | Image | Reasoning |
+|---|---|---|---|---|---|
+| `qwen3.7-max` | Qwen3.7 Max | 1M | 66K | — | ✅ |
+| `qwen3.7-plus` | Qwen3.7 Plus | 1M | 66K | ✅ | ✅ |
+
 ### OpenRouter
 
 **Base URL:** `https://openrouter.ai/api/v1`
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
+| `llama-4-scout` | Meta: Llama 4 Scout | 10M | 33K | — | — |
+| `auto` | Auto Router | 2M | 33K | — | — |
+| `grok-4.20` | xAI: Grok 4.20 | 2M | 33K | — | — |
+| `gpt-5.4` | OpenAI: GPT-5.4 | 1M | 33K | — | — |
+| `gpt-5.4-pro` | OpenAI: GPT-5.4 Pro | 1M | 33K | — | — |
+| `gpt-5.5` | OpenAI: GPT-5.5 | 1M | 33K | — | — |
+| `gpt-5.5-pro` | OpenAI: GPT-5.5 Pro | 1M | 33K | — | — |
+| `gpt-5.6-luna` | OpenAI: GPT-5.6 Luna | 1M | 33K | — | — |
 | `gpt-5.6-luna-pro` | OpenAI: GPT-5.6 Luna Pro | 1M | 33K | — | — |
+| `gpt-5.6-sol` | OpenAI: GPT-5.6 Sol | 1M | 33K | — | — |
 | `gpt-5.6-sol-pro` | OpenAI: GPT-5.6 Sol Pro | 1M | 33K | — | — |
+| `gpt-5.6-terra` | OpenAI: GPT-5.6 Terra | 1M | 33K | — | — |
 | `gpt-5.6-terra-pro` | OpenAI: GPT-5.6 Terra Pro | 1M | 33K | — | — |
+| `gpt-latest` | OpenAI GPT Latest | 1M | 33K | — | — |
+| `gemini-3.1-pro-preview-customtools` | Google: Gemini 3.1 Pro Preview Custom Tools | 1M | 33K | — | — |
+| `deepseek-v4-flash` | DeepSeek: DeepSeek V4 Flash | 1M | 33K | — | — |
+| `deepseek-v4-pro` | DeepSeek: DeepSeek V4 Pro | 1M | 33K | — | — |
+| `gemini-2.5-flash` | Google: Gemini 2.5 Flash | 1M | 33K | — | — |
+| `gemini-2.5-flash-lite` | Google: Gemini 2.5 Flash Lite | 1M | 33K | — | — |
+| `gemini-2.5-pro` | Google: Gemini 2.5 Pro | 1M | 33K | — | — |
+| `gemini-2.5-pro-preview` | Google: Gemini 2.5 Pro Preview 06-05 | 1M | 33K | — | — |
+| `gemini-2.5-pro-preview-05-06` | Google: Gemini 2.5 Pro Preview 05-06 | 1M | 33K | — | — |
+| `gemini-3-flash-preview` | Google: Gemini 3 Flash Preview | 1M | 33K | — | — |
+| `gemini-3.1-flash-lite` | Google: Gemini 3.1 Flash Lite | 1M | 33K | — | — |
+| `gemini-3.1-flash-lite-preview` | Google: Gemini 3.1 Flash Lite Preview | 1M | 33K | — | — |
+| `gemini-3.1-pro-preview` | Google: Gemini 3.1 Pro Preview | 1M | 33K | — | — |
+| `gemini-3.5-flash` | Google: Gemini 3.5 Flash | 1M | 33K | — | — |
+| `llama-4-maverick` | Meta: Llama 4 Maverick | 1M | 33K | — | — |
+| `minimax-m3` | MiniMax: MiniMax M3 | 1M | 33K | — | — |
+| `qwen3-coder` | Qwen: Qwen3 Coder 480B A35B | 1M | 33K | — | — |
 | `qwen3-coder:free` | Qwen: Qwen3 Coder 480B A35B (free) | 1M | 33K | — | — |
+| `mimo-v2.5` | Xiaomi: MiMo-V2.5 | 1M | 33K | — | — |
+| `mimo-v2.5-pro` | Xiaomi: MiMo-V2.5-Pro | 1M | 33K | — | — |
+| `glm-5.2` | Z.ai: GLM 5.2 | 1M | 33K | — | — |
+| `gemini-flash-latest` | Google Gemini Flash Latest | 1M | 33K | — | — |
+| `gemini-pro-latest` | Google Gemini Pro Latest | 1M | 33K | — | — |
+| `gpt-4.1` | OpenAI: GPT-4.1 | 1M | 33K | — | — |
+| `gpt-4.1-mini` | OpenAI: GPT-4.1 Mini | 1M | 33K | — | — |
+| `gpt-4.1-nano` | OpenAI: GPT-4.1 Nano | 1M | 33K | — | — |
+| `nova-2-lite-v1` | Amazon: Nova 2 Lite | 1M | 33K | — | — |
+| `nova-premier-v1` | Amazon: Nova Premier 1.0 | 1M | 33K | — | — |
+| `claude-fable-5` | Anthropic: Claude Fable 5 | 1M | 33K | — | — |
+| `claude-opus-4.6` | Anthropic: Claude Opus 4.6 | 1M | 33K | — | — |
+| `claude-opus-4.7` | Anthropic: Claude Opus 4.7 | 1M | 33K | — | — |
+| `claude-opus-4.7-fast` | Anthropic: Claude Opus 4.7 (Fast) | 1M | 33K | — | — |
+| `claude-opus-4.8` | Anthropic: Claude Opus 4.8 | 1M | 33K | — | — |
 | `claude-opus-4.8-fast` | Anthropic: Claude Opus 4.8 (Fast) | 1M | 33K | — | — |
+| `claude-sonnet-4` | Anthropic: Claude Sonnet 4 | 1M | 33K | — | — |
+| `claude-sonnet-4.5` | Anthropic: Claude Sonnet 4.5 | 1M | 33K | — | — |
+| `claude-sonnet-4.6` | Anthropic: Claude Sonnet 4.6 | 1M | 33K | — | — |
+| `claude-sonnet-5` | Anthropic: Claude Sonnet 5 | 1M | 33K | — | — |
+| `minimax-m1` | MiniMax: MiniMax M1 | 1M | 33K | — | — |
+| `nemotron-3-super-120b-a12b` | NVIDIA: Nemotron 3 Super | 1M | 33K | — | — |
+| `nemotron-3-super-120b-a12b:free` | NVIDIA: Nemotron 3 Super (free) | 1M | 33K | — | — |
+| `nemotron-3-ultra-550b-a55b` | NVIDIA: Nemotron 3 Ultra | 1M | 33K | — | — |
 | `nemotron-3-ultra-550b-a55b:free` | NVIDIA: Nemotron 3 Ultra (free) | 1M | 33K | — | — |
+| `qwen-plus` | Qwen: Qwen-Plus | 1M | 33K | — | — |
+| `qwen-plus-2025-07-28` | Qwen: Qwen Plus 0728 | 1M | 33K | — | — |
+| `qwen-plus-2025-07-28:thinking` | Qwen: Qwen Plus 0728 (thinking) | 1M | 33K | — | — |
+| `qwen3-coder-flash` | Qwen: Qwen3 Coder Flash | 1M | 33K | — | — |
+| `qwen3-coder-plus` | Qwen: Qwen3 Coder Plus | 1M | 33K | — | — |
+| `qwen3.5-flash-02-23` | Qwen: Qwen3.5-Flash | 1M | 33K | — | — |
+| `qwen3.5-plus-02-15` | Qwen: Qwen3.5 Plus 2026-02-15 | 1M | 33K | — | — |
+| `qwen3.5-plus-20260420` | Qwen: Qwen3.5 Plus 2026-04-20 | 1M | 33K | — | — |
+| `qwen3.6-flash` | Qwen: Qwen3.6 Flash | 1M | 33K | — | — |
+| `qwen3.6-plus` | Qwen: Qwen3.6 Plus | 1M | 33K | — | — |
+| `qwen3.7-max` | Qwen: Qwen3.7 Max | 1M | 33K | — | — |
+| `qwen3.7-plus` | Qwen: Qwen3.7 Plus | 1M | 33K | — | — |
+| `fugu-ultra` | Sakana: Fugu Ultra | 1M | 33K | — | — |
+| `grok-4.3` | xAI: Grok 4.3 | 1M | 33K | — | — |
 | `claude-fable-latest` | Anthropic: Claude Fable Latest | 1M | 33K | — | — |
+| `claude-opus-latest` | Anthropic: Claude Opus Latest | 1M | 33K | — | — |
+| `claude-sonnet-latest` | Anthropic Claude Sonnet Latest | 1M | 33K | — | — |
+| `grok-4.5` | xAI: Grok 4.5 | 500K | 33K | — | — |
 | `grok-latest` | xAI: Grok Latest | 500K | 33K | — | — |
+| `gpt-5` | OpenAI: GPT-5 | 400K | 33K | — | — |
+| `gpt-5-codex` | OpenAI: GPT-5 Codex | 400K | 33K | — | — |
+| `gpt-5-mini` | OpenAI: GPT-5 Mini | 400K | 33K | — | — |
+| `gpt-5-nano` | OpenAI: GPT-5 Nano | 400K | 33K | — | — |
+| `gpt-5-pro` | OpenAI: GPT-5 Pro | 400K | 33K | — | — |
+| `gpt-5.1` | OpenAI: GPT-5.1 | 400K | 33K | — | — |
+| `gpt-5.1-codex` | OpenAI: GPT-5.1-Codex | 400K | 33K | — | — |
+| `gpt-5.1-codex-max` | OpenAI: GPT-5.1-Codex-Max | 400K | 33K | — | — |
+| `gpt-5.1-codex-mini` | OpenAI: GPT-5.1-Codex-Mini | 400K | 33K | — | — |
+| `gpt-5.2` | OpenAI: GPT-5.2 | 400K | 33K | — | — |
+| `gpt-5.2-codex` | OpenAI: GPT-5.2-Codex | 400K | 33K | — | — |
+| `gpt-5.2-pro` | OpenAI: GPT-5.2 Pro | 400K | 33K | — | — |
+| `gpt-5.3-codex` | OpenAI: GPT-5.3-Codex | 400K | 33K | — | — |
+| `gpt-5.4-mini` | OpenAI: GPT-5.4 Mini | 400K | 33K | — | — |
+| `gpt-5.4-nano` | OpenAI: GPT-5.4 Nano | 400K | 33K | — | — |
+| `gpt-chat-latest` | OpenAI: GPT Chat Latest | 400K | 33K | — | — |
+| `gpt-mini-latest` | OpenAI GPT Mini Latest | 400K | 33K | — | — |
+| `nova-lite-v1` | Amazon: Nova Lite 1.0 | 300K | 33K | — | — |
+| `nova-pro-v1` | Amazon: Nova Pro 1.0 | 300K | 33K | — | — |
+| `trinity-large-thinking` | Arcee AI: Trinity Large Thinking | 262K | 33K | — | — |
+| `seed-1.6` | ByteDance Seed: Seed 1.6 | 262K | 33K | — | — |
+| `seed-1.6-flash` | ByteDance Seed: Seed 1.6 Flash | 262K | 33K | — | — |
+| `seed-2.0-lite` | ByteDance Seed: Seed-2.0-Lite | 262K | 33K | — | — |
+| `seed-2.0-mini` | ByteDance Seed: Seed-2.0-Mini | 262K | 33K | — | — |
+| `gemma-4-26b-a4b-it` | Google: Gemma 4 26B A4B  | 262K | 33K | — | — |
 | `gemma-4-26b-a4b-it:free` | Google: Gemma 4 26B A4B  (free) | 262K | 33K | — | — |
+| `gemma-4-31b-it` | Google: Gemma 4 31B | 262K | 33K | — | — |
 | `gemma-4-31b-it:free` | Google: Gemma 4 31B (free) | 262K | 33K | — | — |
+| `ling-2.6-1t` | inclusionAI: Ling-2.6-1T | 262K | 33K | — | — |
+| `ling-2.6-flash` | inclusionAI: Ling-2.6-flash | 262K | 33K | — | — |
+| `ring-2.6-1t` | inclusionAI: Ring-2.6-1T | 262K | 33K | — | — |
+| `devstral-2512` | Mistral: Devstral 2 2512 | 262K | 33K | — | — |
+| `ministral-14b-2512` | Mistral: Ministral 3 14B 2512 | 262K | 33K | — | — |
+| `ministral-8b-2512` | Mistral: Ministral 3 8B 2512 | 262K | 33K | — | — |
+| `mistral-large-2512` | Mistral: Mistral Large 3 2512 | 262K | 33K | — | — |
+| `mistral-medium-3-5` | Mistral: Mistral Medium 3.5 | 262K | 33K | — | — |
+| `mistral-small-2603` | Mistral: Mistral Small 4 | 262K | 33K | — | — |
+| `kimi-k2-0905` | MoonshotAI: Kimi K2 0905 | 262K | 33K | — | — |
+| `kimi-k2-thinking` | MoonshotAI: Kimi K2 Thinking | 262K | 33K | — | — |
+| `kimi-k2.5` | MoonshotAI: Kimi K2.5 | 262K | 33K | — | — |
+| `kimi-k2.6` | MoonshotAI: Kimi K2.6 | 262K | 33K | — | — |
+| `kimi-k2.7-code` | MoonshotAI: Kimi K2.7 Code | 262K | 33K | — | — |
 | `nex-n2-mini` | Nex AGI: Nex-N2-Mini | 262K | 33K | — | — |
 | `nex-n2-pro` | Nex AGI: Nex-N2-Pro | 262K | 33K | — | — |
+| `nemotron-3-nano-30b-a3b` | NVIDIA: Nemotron 3 Nano 30B A3B | 262K | 33K | — | — |
+| `laguna-m.1` | Poolside: Laguna M.1 | 262K | 33K | — | — |
+| `laguna-m.1:free` | Poolside: Laguna M.1 (free) | 262K | 33K | — | — |
+| `laguna-xs-2.1` | Poolside: Laguna XS 2.1 | 262K | 33K | — | — |
 | `laguna-xs-2.1:free` | Poolside: Laguna XS 2.1 (free) | 262K | 33K | — | — |
+| `qwen3-235b-a22b-2507` | Qwen: Qwen3 235B A22B Instruct 2507 | 262K | 33K | — | — |
+| `qwen3-235b-a22b-thinking-2507` | Qwen: Qwen3 235B A22B Thinking 2507 | 262K | 33K | — | — |
+| `qwen3-30b-a3b-instruct-2507` | Qwen: Qwen3 30B A3B Instruct 2507 | 262K | 33K | — | — |
+| `qwen3-coder-next` | Qwen: Qwen3 Coder Next | 262K | 33K | — | — |
+| `qwen3-max` | Qwen: Qwen3 Max | 262K | 33K | — | — |
+| `qwen3-max-thinking` | Qwen: Qwen3 Max Thinking | 262K | 33K | — | — |
+| `qwen3-next-80b-a3b-instruct` | Qwen: Qwen3 Next 80B A3B Instruct | 262K | 33K | — | — |
 | `qwen3-next-80b-a3b-instruct:free` | Qwen: Qwen3 Next 80B A3B Instruct (free) | 262K | 33K | — | — |
+| `qwen3-next-80b-a3b-thinking` | Qwen: Qwen3 Next 80B A3B Thinking | 262K | 33K | — | — |
+| `qwen3-vl-30b-a3b-instruct` | Qwen: Qwen3 VL 30B A3B Instruct | 262K | 33K | — | — |
+| `qwen3-vl-32b-instruct` | Qwen: Qwen3 VL 32B Instruct | 262K | 33K | — | — |
+| `qwen3.5-122b-a10b` | Qwen: Qwen3.5-122B-A10B | 262K | 33K | — | — |
+| `qwen3.5-27b` | Qwen: Qwen3.5-27B | 262K | 33K | — | — |
+| `qwen3.5-35b-a3b` | Qwen: Qwen3.5-35B-A3B | 262K | 33K | — | — |
+| `qwen3.5-397b-a17b` | Qwen: Qwen3.5 397B A17B | 262K | 33K | — | — |
+| `qwen3.5-9b` | Qwen: Qwen3.5-9B | 262K | 33K | — | — |
+| `qwen3.6-27b` | Qwen: Qwen3.6 27B | 262K | 33K | — | — |
+| `qwen3.6-35b-a3b` | Qwen: Qwen3.6 35B A3B | 262K | 33K | — | — |
+| `qwen3.6-max-preview` | Qwen: Qwen3.6 Max Preview | 262K | 33K | — | — |
+| `step-3.5-flash` | StepFun: Step 3.5 Flash | 262K | 33K | — | — |
 | `hy3` | Tencent: Hy3 | 262K | 33K | — | — |
+| `hy3-preview` | Tencent: Hy3 preview | 262K | 33K | — | — |
 | `hy3:free` | Tencent: Hy3 (free) | 262K | 33K | — | — |
+| `kimi-latest` | MoonshotAI Kimi Latest | 262K | 33K | — | — |
+| `jamba-large-1.7` | AI21: Jamba Large 1.7 | 256K | 33K | — | — |
 | `north-mini-code:free` | Cohere: North Mini Code (free) | 256K | 33K | — | — |
+| `kat-coder-air-v2.5` | Kwaipilot: KAT-Coder-Air V2.5 | 256K | 33K | — | — |
+| `kat-coder-pro-v2` | Kwaipilot: KAT-Coder-Pro V2 | 256K | 33K | — | — |
+| `kat-coder-pro-v2.5` | Kwaipilot: KAT-Coder-Pro V2.5 | 256K | 33K | — | — |
+| `codestral-2508` | Mistral: Codestral 2508 | 256K | 33K | — | — |
 | `nemotron-3-nano-30b-a3b:free` | NVIDIA: Nemotron 3 Nano 30B A3B (free) | 256K | 33K | — | — |
+| `nemotron-3-nano-omni-30b-a3b-reasoning:free` | NVIDIA: Nemotron 3 Nano Omni (free) | 256K | 33K | — | — |
+| `qwen3-vl-8b-instruct` | Qwen: Qwen3 VL 8B Instruct | 256K | 33K | — | — |
+| `qwen3-vl-8b-thinking` | Qwen: Qwen3 VL 8B Thinking | 256K | 33K | — | — |
+| `relace-search` | Relace: Relace Search | 256K | 33K | — | — |
+| `step-3.7-flash` | StepFun: Step 3.7 Flash | 256K | 33K | — | — |
+| `grok-build-0.1` | xAI: Grok Build 0.1 | 256K | 33K | — | — |
+| `minimax-m2` | MiniMax: MiniMax M2 | 205K | 33K | — | — |
+| `minimax-m2.1` | MiniMax: MiniMax M2.1 | 205K | 33K | — | — |
+| `minimax-m2.5` | MiniMax: MiniMax M2.5 | 205K | 33K | — | — |
+| `minimax-m2.7` | MiniMax: MiniMax M2.7 | 205K | 33K | — | — |
+| `glm-4.6` | Z.ai: GLM 4.6 | 203K | 33K | — | — |
+| `glm-4.7` | Z.ai: GLM 4.7 | 203K | 33K | — | — |
+| `glm-4.7-flash` | Z.ai: GLM 4.7 Flash | 203K | 33K | — | — |
+| `glm-5` | Z.ai: GLM 5 | 203K | 33K | — | — |
+| `glm-5-turbo` | Z.ai: GLM 5 Turbo | 203K | 33K | — | — |
+| `glm-5.1` | Z.ai: GLM 5.1 | 203K | 33K | — | — |
+| `glm-5v-turbo` | Z.ai: GLM 5V Turbo | 203K | 33K | — | — |
+| `claude-3-haiku` | Anthropic: Claude 3 Haiku | 200K | 33K | — | — |
+| `claude-haiku-4.5` | Anthropic: Claude Haiku 4.5 | 200K | 33K | — | — |
+| `claude-opus-4` | Anthropic: Claude Opus 4 | 200K | 33K | — | — |
+| `claude-opus-4.1` | Anthropic: Claude Opus 4.1 | 200K | 33K | — | — |
+| `claude-opus-4.5` | Anthropic: Claude Opus 4.5 | 200K | 33K | — | — |
+| `o1` | OpenAI: o1 | 200K | 33K | — | — |
+| `o3` | OpenAI: o3 | 200K | 33K | — | — |
+| `o3-deep-research` | OpenAI: o3 Deep Research | 200K | 33K | — | — |
+| `o3-mini` | OpenAI: o3 Mini | 200K | 33K | — | — |
+| `o3-mini-high` | OpenAI: o3 Mini High | 200K | 33K | — | — |
+| `o3-pro` | OpenAI: o3 Pro | 200K | 33K | — | — |
+| `o4-mini` | OpenAI: o4 Mini | 200K | 33K | — | — |
+| `o4-mini-deep-research` | OpenAI: o4 Mini Deep Research | 200K | 33K | — | — |
+| `o4-mini-high` | OpenAI: o4 Mini High | 200K | 33K | — | — |
+| `free` | Free Models Router | 200K | 33K | — | — |
+| `claude-haiku-latest` | Anthropic Claude Haiku Latest | 200K | 33K | — | — |
+| `deepseek-chat-v3-0324` | DeepSeek: DeepSeek V3 0324 | 164K | 33K | — | — |
+| `deepseek-chat-v3.1` | DeepSeek: DeepSeek V3.1 | 164K | 33K | — | — |
+| `deepseek-r1` | DeepSeek: R1 | 164K | 33K | — | — |
+| `deepseek-r1-0528` | DeepSeek: R1 0528 | 164K | 33K | — | — |
+| `deepseek-v3.2` | DeepSeek: DeepSeek V3.2 | 164K | 33K | — | — |
+| `deepseek-v3.2-exp` | DeepSeek: DeepSeek V3.2 Exp | 164K | 33K | — | — |
+| `qwen3-coder-30b-a3b-instruct` | Qwen: Qwen3 Coder 30B A3B Instruct | 160K | 33K | — | — |
+| `qwen3-14b` | Qwen: Qwen3 14B | 132K | 33K | — | — |
 | `aion-2.0` | AionLabs: Aion-2.0 | 131K | 33K | — | — |
 | `aion-3.0` | AionLabs: Aion-3.0 | 131K | 33K | — | — |
 | `aion-3.0-mini` | AionLabs: Aion-3.0-Mini | 131K | 33K | — | — |
+| `virtuoso-large` | Arcee AI: Virtuoso Large | 131K | 33K | — | — |
+| `deepseek-chat` | DeepSeek: DeepSeek V3 | 131K | 33K | — | — |
+| `deepseek-v3.1-terminus` | DeepSeek: DeepSeek V3.1 Terminus | 131K | 33K | — | — |
 | `gemma-3-12b-it` | Google: Gemma 3 12B | 131K | 33K | — | — |
+| `gemma-3-27b-it` | Google: Gemma 3 27B | 131K | 33K | — | — |
+| `granite-4.1-8b` | IBM: Granite 4.1 8B | 131K | 33K | — | — |
+| `llama-3.1-70b-instruct` | Meta: Llama 3.1 70B Instruct | 131K | 33K | — | — |
+| `llama-3.1-8b-instruct` | Meta: Llama 3.1 8B Instruct | 131K | 33K | — | — |
+| `llama-3.3-70b-instruct` | Meta: Llama 3.3 70B Instruct | 131K | 33K | — | — |
 | `llama-3.3-70b-instruct:free` | Meta: Llama 3.3 70B Instruct (free) | 131K | 33K | — | — |
+| `ministral-3b-2512` | Mistral: Ministral 3 3B 2512 | 131K | 33K | — | — |
+| `mistral-large-2407` | Mistral Large 2407 | 131K | 33K | — | — |
+| `mistral-medium-3` | Mistral: Mistral Medium 3 | 131K | 33K | — | — |
+| `mistral-medium-3.1` | Mistral: Mistral Medium 3.1 | 131K | 33K | — | — |
+| `mistral-nemo` | Mistral: Mistral Nemo | 131K | 33K | — | — |
+| `mistral-small-3.2-24b-instruct` | Mistral: Mistral Small 3.2 24B | 131K | 33K | — | — |
+| `kimi-k2` | MoonshotAI: Kimi K2 0711 | 131K | 33K | — | — |
+| `llama-3.3-nemotron-super-49b-v1.5` | NVIDIA: Llama 3.3 Nemotron Super 49B V1.5 | 131K | 33K | — | — |
 | `gpt-oss-20b:free` | OpenAI: gpt-oss-20b (free) | 131K | 33K | — | — |
+| `qwen-2.5-72b-instruct` | Qwen2.5 72B Instruct | 131K | 33K | — | — |
+| `qwen-2.5-7b-instruct` | Qwen: Qwen2.5 7B Instruct | 131K | 33K | — | — |
+| `qwen3-235b-a22b` | Qwen: Qwen3 235B A22B | 131K | 33K | — | — |
+| `qwen3-30b-a3b` | Qwen: Qwen3 30B A3B | 131K | 33K | — | — |
+| `qwen3-30b-a3b-thinking-2507` | Qwen: Qwen3 30B A3B Thinking 2507 | 131K | 33K | — | — |
+| `qwen3-8b` | Qwen: Qwen3 8B | 131K | 33K | — | — |
+| `qwen3-vl-235b-a22b-instruct` | Qwen: Qwen3 VL 235B A22B Instruct | 131K | 33K | — | — |
+| `qwen3-vl-235b-a22b-thinking` | Qwen: Qwen3 VL 235B A22B Thinking | 131K | 33K | — | — |
+| `qwen3-vl-30b-a3b-thinking` | Qwen: Qwen3 VL 30B A3B Thinking | 131K | 33K | — | — |
+| `l3.1-euryale-70b` | Sao10K: Llama 3.1 Euryale 70B v2.2 | 131K | 33K | — | — |
+| `glm-4.5` | Z.ai: GLM 4.5 | 131K | 33K | — | — |
+| `glm-4.5-air` | Z.ai: GLM 4.5 Air | 131K | 33K | — | — |
+| `glm-4.6v` | Z.ai: GLM 4.6V | 131K | 33K | — | — |
+| `nova-micro-v1` | Amazon: Nova Micro 1.0 | 128K | 33K | — | — |
+| `command-r-08-2024` | Cohere: Command R (08-2024) | 128K | 33K | — | — |
+| `command-r-plus-08-2024` | Cohere: Command R+ (08-2024) | 128K | 33K | — | — |
+| `mercury-2` | Inception: Mercury 2 | 128K | 33K | — | — |
+| `mistral-large` | Mistral Large | 128K | 33K | — | — |
 | `nemotron-nano-12b-v2-vl:free` | NVIDIA: Nemotron Nano 12B 2 VL (free) | 128K | 33K | — | — |
 | `nemotron-nano-9b-v2:free` | NVIDIA: Nemotron Nano 9B V2 (free) | 128K | 33K | — | — |
+| `gpt-4-turbo` | OpenAI: GPT-4 Turbo | 128K | 33K | — | — |
+| `gpt-4-turbo-preview` | OpenAI: GPT-4 Turbo Preview | 128K | 33K | — | — |
+| `gpt-4o` | OpenAI: GPT-4o | 128K | 33K | — | — |
+| `gpt-4o-2024-05-13` | OpenAI: GPT-4o (2024-05-13) | 128K | 33K | — | — |
+| `gpt-4o-2024-08-06` | OpenAI: GPT-4o (2024-08-06) | 128K | 33K | — | — |
+| `gpt-4o-2024-11-20` | OpenAI: GPT-4o (2024-11-20) | 128K | 33K | — | — |
+| `gpt-4o-mini` | OpenAI: GPT-4o-mini | 128K | 33K | — | — |
+| `gpt-4o-mini-2024-07-18` | OpenAI: GPT-4o-mini (2024-07-18) | 128K | 33K | — | — |
+| `gpt-5.1-chat` | OpenAI: GPT-5.1 Chat | 128K | 33K | — | — |
+| `gpt-5.2-chat` | OpenAI: GPT-5.2 Chat | 128K | 33K | — | — |
+| `gpt-5.3-chat` | OpenAI: GPT-5.3 Chat | 128K | 33K | — | — |
 | `gpt-audio` | OpenAI: GPT Audio | 128K | 33K | — | — |
 | `gpt-audio-mini` | OpenAI: GPT Audio Mini | 128K | 33K | — | — |
+| `solar-pro-3` | Upstage: Solar Pro 3 | 128K | 33K | — | — |
 | `gemini-3-pro-image` | Google: Nano Banana Pro (Gemini 3 Pro Image) | 66K | 33K | — | — |
+| `mixtral-8x22b-instruct` | Mistral: Mixtral 8x22B Instruct | 66K | 33K | — | — |
+| `glm-4.5v` | Z.ai: GLM 4.5V | 66K | 33K | — | — |
+| `mistral-saba` | Mistral: Saba | 33K | 33K | — | — |
+| `unslopnemo-12b` | TheDrummer: UnslopNemo 12B | 33K | 33K | — | — |
+| `voxtral-small-24b-2507` | Mistral: Voxtral Small 24B 2507 | 32K | 32K | — | — |
+| `gpt-3.5-turbo` | OpenAI: GPT-3.5 Turbo | 16K | 16K | — | — |
+| `gpt-3.5-turbo-16k` | OpenAI: GPT-3.5 Turbo 16k | 16K | 16K | — | — |
+| `reka-edge` | Reka Edge | 16K | 16K | — | — |
+| `gpt-4` | OpenAI: GPT-4 | 8K | 8K | — | — |
+| `gpt-3.5-turbo-0613` | OpenAI: GPT-3.5 Turbo (older v0613) | 4K | 4K | — | — |
 
 ### orcarouter
 
@@ -2229,7 +2270,6 @@
 | `qwen3.5-plus` | Qwen3.5 Plus | 1M | 66K | ✅ | ✅ |
 | `kimi-k2.5` | Kimi K2.5 | 262K | 262K | ✅ | ✅ |
 | `kimi-k2.6` | Kimi K2.6 | 262K | 262K | ✅ | ✅ |
-| `qwen3.6-35b-a3b` | Qwen3.6 35B-A3B | 262K | 66K | ✅ | ✅ |
 | `auto` | OrcaRouter Auto | 128K | 16K | ✅ | — |
 
 ### ovhcloud
@@ -2258,40 +2298,24 @@
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `MiMo-V2.5` | MiMo-V2.5 | 1M | 131K | ✅ | ✅ |
-| `MiMo-V2.5-Pro` | MiMo-V2.5-Pro | 1M | 131K | — | ✅ |
-| `gemini-3-flash` | Gemini 3 Flash Preview | 1M | 66K | ✅ | ✅ |
-| `gemini-3.1-pro` | Gemini 3.1 Pro Preview | 1M | 66K | ✅ | ✅ |
 | `auto` | Pioneer Auto | 1M | 4K | ✅ | ✅ |
-| `claude-sonnet-4-5` | Claude Sonnet 4.5 (latest) | 1M | 64K | ✅ | ✅ |
 | `NVIDIA-Nemotron-3-Super-120B-A12B-FP8` | Nemotron 3 Super 120B A12B | 1M | 32K | — | ✅ |
 | `NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16` | Nemotron 3 Ultra 550B A55B | 1M | 65K | — | ✅ |
 | `qwen3.6-flash` | Qwen3.6 Flash | 1M | 66K | ✅ | ✅ |
-| `qwen3.6-plus` | Qwen3.6 Plus | 1M | 66K | ✅ | ✅ |
-| `qwen3.7-max` | Qwen3.7 Max | 1M | 66K | — | ✅ |
-| `qwen3.7-plus` | Qwen3.7 Plus | 1M | 66K | ✅ | ✅ |
-| `fugu-ultra` | Fugu Ultra | 1M | 131K | ✅ | ✅ |
 | `Qwen3-4B-Instruct-2507` | Qwen3 4B Instruct | 262K | 131K | — | ✅ |
-| `Qwen3.6-35B-A3B` | Qwen3.6 35B-A3B | 262K | 131K | ✅ | ✅ |
 | `diffusiongemma-26B-A4B-it` | DiffusionGemma 26B-A4B IT | 262K | 131K | — | ✅ |
 | `mistral-medium-3.5` | Mistral Medium 3.5 | 262K | 131K | ✅ | ✅ |
 | `Mistral-Small-4-119B-2603` | Mistral Small 4 | 262K | 66K | ✅ | ✅ |
-| `Kimi-K2.7-Code` | Kimi K2.7 Code | 262K | 33K | ✅ | ✅ |
 | `NVIDIA-Nemotron-3-Nano-30B-A3B-BF16` | Nemotron 3 Nano 30B A3B | 262K | 131K | — | ✅ |
 | `qwen3.6-max-preview` | Qwen3.6 Max Preview | 262K | 66K | — | ✅ |
-| `claude-opus-4-1` | Claude Opus 4.1 (latest) | 200K | 32K | ✅ | ✅ |
-| `claude-opus-4-5` | Claude Opus 4.5 (latest) | 200K | 64K | ✅ | ✅ |
 | `Qwen3-8B` | Qwen3 8B | 131K | 131K | — | ✅ |
 | `Llama-3.1-8B-Instruct` | Llama 3.1 8B Instruct | 131K | 16K | — | ✅ |
-| `Llama-3.3-70B-Instruct` | Llama-3.3-70B-Instruct | 131K | 131K | — | ✅ |
 | `Mistral-Nemo-Instruct-2407` | Mistral Nemo | 131K | 128K | — | ✅ |
-| `gpt-oss-20b` | GPT OSS 20B | 131K | 8K | — | ✅ |
 | `SmolLM3-3B-Base` | SmolLM3 3B Base | 33K | 33K | — | ✅ |
 | `Qwen3-1.7B-Base` | Qwen3 1.7B Base | 33K | 33K | — | ✅ |
 | `Qwen3-4B-Base` | Qwen3 4B Base | 33K | 33K | — | ✅ |
-| `Qwen3.5-9B` | Qwen3.5 9B | 33K | 33K | — | ✅ |
 | `gemma-3-4b-pt` | Gemma 3 4B (Pretrained) | 33K | 33K | — | ✅ |
 | `gemma-4-12B-it` | Gemma 4 12B IT | 33K | 33K | — | ✅ |
-| `gemma-4-31B-it` | Gemma 4 31B IT | 33K | 33K | ✅ | ✅ |
 | `gemma-4-E2B-it` | Gemma 4 E2B IT | 33K | 33K | ✅ | ✅ |
 | `gemma-4-E4B-it` | Gemma 4 E4B IT | 33K | 33K | ✅ | ✅ |
 | `Mistral-7B-Instruct-v0.3` | Mistral 7B Instruct v0.3 | 33K | 33K | — | ✅ |
@@ -2384,14 +2408,6 @@
 | `sora-2-pro` | Sora-2-Pro | 0 | 0 | ✅ | — |
 | `claude-code` | claude-code | 0 | 0 | — | ✅ |
 
-### poolside
-
-**Base URL:** —
-
-| Model ID | Name | Context | Max Output | Image | Reasoning |
-|---|---|---|---|---|---|
-| `laguna-xs-2.1` | Laguna XS 2.1 | 262K | 33K | — | ✅ |
-
 ### qiniu-ai
 
 **Base URL:** —
@@ -2404,8 +2420,6 @@
 | `grok-4-fast-reasoning` | X-Ai/Grok-4-Fast-Reasoning | 2M | 2M | ✅ | ✅ |
 | `grok-4.1-fast` | x-AI/Grok-4.1-Fast | 2M | 2M | — | ✅ |
 | `grok-4.1-fast-non-reasoning` | X-Ai/Grok 4.1 Fast Non Reasoning | 2M | 2M | ✅ | — |
-| `gemini-2.0-flash` | Gemini 2.0 Flash | 1M | 8K | ✅ | — |
-| `gemini-2.0-flash-lite` | Gemini 2.0 Flash Lite | 1M | 8K | ✅ | ✅ |
 | `MiniMax-M1` | MiniMax M1 | 1M | 80K | — | ✅ |
 | `gemini-3.0-flash-preview` | Gemini 3.0 Flash Preview | 1M | 64K | ✅ | ✅ |
 | `gemini-3.0-pro-preview` | Gemini 3.0 Pro Preview | 1M | 64K | ✅ | ✅ |
@@ -2418,7 +2432,6 @@
 | `doubao-seed-2.0-mini` | Doubao Seed 2.0 Mini | 256K | 32K | ✅ | ✅ |
 | `doubao-seed-2.0-pro` | Doubao Seed 2.0 Pro | 256K | 128K | ✅ | ✅ |
 | `longcat-flash-lite` | Meituan/Longcat-Flash-Lite | 256K | 320K | — | — |
-| `kimi-k2-0905` | Kimi K2 0905 | 256K | 100K | — | — |
 | `qwen3-max-preview` | Qwen3 Max Preview | 256K | 64K | — | — |
 | `grok-code-fast-1` | x-AI/Grok-Code-Fast 1 | 256K | 10K | — | ✅ |
 | `mimo-v2-flash` | Xiaomi/Mimo-V2-Flash | 256K | 256K | — | ✅ |
@@ -2427,9 +2440,7 @@
 | `claude-4.0-sonnet` | Claude 4.0 Sonnet | 200K | 64K | ✅ | ✅ |
 | `claude-4.1-opus` | Claude 4.1 Opus | 200K | 32K | ✅ | ✅ |
 | `deepseek-r1` | DeepSeek-R1 | 128K | 32K | — | ✅ |
-| `deepseek-v3.1-terminus` | DeepSeek/DeepSeek-V3.1-Terminus | 128K | 32K | — | — |
 | `deepseek-v3.2-251201` | Deepseek/DeepSeek-V3.2 | 128K | 32K | — | ✅ |
-| `deepseek-v3.2-exp` | DeepSeek/DeepSeek-V3.2-Exp | 128K | 32K | — | — |
 | `doubao-1.5-pro-32k` | Doubao 1.5 Pro 32k | 128K | 12K | — | — |
 | `doubao-1.5-thinking-pro` | Doubao 1.5 Thinking Pro | 128K | 16K | — | ✅ |
 | `qwen-max-2025-01-25` | Qwen2.5-Max-2025-01-25 | 128K | 4K | — | — |
@@ -2459,17 +2470,10 @@
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
 | `grok-4-fast` | Grok 4 Fast | 2M | 64K | — | ✅ |
-| `gpt-5-codex` | GPT-5 Codex | 400K | 128K | ✅ | ✅ |
 | `gpt-5-image` | GPT-5 Image | 400K | 128K | ✅ | ✅ |
-| `gpt-5-pro` | GPT-5 Pro | 400K | 272K | ✅ | ✅ |
-| `gpt-5.1-codex` | GPT-5.1-Codex | 400K | 128K | ✅ | ✅ |
-| `gpt-5.1-codex-mini` | GPT-5.1-Codex-Mini | 400K | 100K | ✅ | ✅ |
 | `grok-4` | Grok 4 | 256K | 64K | ✅ | ✅ |
 | `claude-3-7-sonnet` | Claude Sonnet 3.7 | 200K | 64K | ✅ | ✅ |
-| `claude-opus-4` | Claude Opus 4 | 200K | 32K | ✅ | ✅ |
 | `claude-opus-4-1` | Claude Opus 4.1 | 200K | 32K | ✅ | ✅ |
-| `gpt-5.1-chat` | GPT-5.1 Chat | 128K | 16K | ✅ | ✅ |
-| `gpt-5.2-chat` | GPT-5.2 Chat | 128K | 16K | ✅ | ✅ |
 
 ### routing-run
 
@@ -2477,13 +2481,9 @@
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
-| `deepseek-v4-flash` | DeepSeek V4 Flash | 1M | 64K | — | ✅ |
 | `qwen3.5-9b` | Qwen3.5 9B | 262K | 32K | — | ✅ |
-| `glm-5.2` | GLM-5.2 | 200K | 32K | — | ✅ |
 | `glm-5.2-nitro` | GLM 5.2 Nitro | 200K | 32K | — | ✅ |
-| `kimi-k2.6` | Kimi K2.6 | 200K | 32K | ✅ | ✅ |
 | `kimi-k2.6-nitro` | Kimi K2.6 Nitro | 200K | 32K | ✅ | ✅ |
-| `kimi-k2.7-code` | Kimi K2.7 Code | 200K | 32K | ✅ | ✅ |
 | `kimi-k2.7-code-nitro` | Kimi K2.7 Code Nitro | 200K | 32K | ✅ | ✅ |
 | `nemotron-3-ultra` | Nemotron 3 Ultra 550B A55B | 131K | 32K | — | ✅ |
 
@@ -2885,8 +2885,6 @@
 | `seed-1.6` | Seed 1.6 | 256K | 32K | ✅ | ✅ |
 | `seed-1.8` | Seed 1.8 | 256K | 64K | ✅ | ✅ |
 | `command-a` | Command A | 256K | 8K | — | — |
-| `kat-coder-air-v2.5` | Kat Coder Air V2.5 | 256K | 80K | — | ✅ |
-| `kat-coder-pro-v2.5` | Kat Coder Pro V2.5 | 256K | 80K | — | ✅ |
 | `codestral` | Codestral (latest) | 256K | 4K | — | — |
 | `devstral-2` | Devstral 2 | 256K | 256K | — | — |
 | `devstral-small-2` | Devstral Small 2 | 256K | 256K | ✅ | — |
@@ -2964,7 +2962,7 @@
 
 ### xai
 
-**Base URL:** —
+**Base URL:** `https://api.x.ai/v1`
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
@@ -2976,11 +2974,13 @@
 
 ### xiaomi
 
-**Base URL:** —
+**Base URL:** `https://api.xiaomimimo.com/anthropic`
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
+| `mimo-v2-pro` | MiMo-V2-Pro | 1M | 131K | — | ✅ |
 | `mimo-v2.5` | MiMo-V2.5 | 1M | 131K | ✅ | ✅ |
+| `mimo-v2.5-pro` | MiMo-V2.5-Pro | 1M | 131K | — | ✅ |
 | `mimo-v2.5-pro-ultraspeed` | MiMo-V2.5-Pro-UltraSpeed | 1M | 131K | — | ✅ |
 | `mimo-v2-flash` | MiMo-V2-Flash | 262K | 66K | — | ✅ |
 | `mimo-v2-omni` | MiMo-V2-Omni | 262K | 131K | ✅ | ✅ |
@@ -2996,11 +2996,19 @@
 
 ### zai
 
-**Base URL:** —
+**Base URL:** `https://api.z.ai/api/paas/v4`
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
+| `glm-4.7-flash` | GLM-4.7-Flash | 200K | 131K | — | ✅ |
+| `glm-4.7-flashx` | GLM-4.7-FlashX | 200K | 131K | — | ✅ |
+| `glm-5-turbo` | GLM-5-Turbo | 200K | 131K | — | ✅ |
+| `glm-5v-turbo` | GLM-5V-Turbo | 200K | 131K | ✅ | ✅ |
+| `glm-4.5` | GLM-4.5 | 131K | 98K | — | ✅ |
+| `glm-4.5-air` | GLM-4.5-Air | 131K | 98K | — | ✅ |
 | `glm-4.5-flash` | GLM-4.5-Flash | 131K | 98K | — | ✅ |
+| `glm-4.6v` | GLM-4.6V | 128K | 33K | ✅ | ✅ |
+| `glm-4.5v` | GLM-4.5V | 64K | 16K | ✅ | ✅ |
 
 ### zeldoc
 
@@ -3052,12 +3060,4 @@
 | `ling-1t` | Ling-1T | 128K | 64K | — | — |
 | `ring-1t` | Ring-1T | 128K | 64K | — | ✅ |
 | `step-3` | Step-3 | 66K | 64K | ✅ | ✅ |
-
-### zhipuai-coding-plan
-
-**Base URL:** —
-
-| Model ID | Name | Context | Max Output | Image | Reasoning |
-|---|---|---|---|---|---|
-| `glm-5-turbo` | GLM-5-Turbo | 200K | 131K | — | ✅ |
 

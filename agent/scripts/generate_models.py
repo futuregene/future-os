@@ -22,18 +22,40 @@ import urllib.error
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
-# Provider base URLs (same as Go)
+# Provider base URLs — comprehensive mapping extracted from the Go model registry.
+# Keyed by the provider slug used in models.dev/api.json.
 PROVIDER_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
-    "anthropic": "https://api.anthropic.com",
-    "google": "https://generativelanguage.googleapis.com/v1beta",
-    "deepseek": "https://api.deepseek.com",
+    "openai-codex": "https://api.openai.com/v1",
+    "azure-openai-responses": "https://YOUR_RESOURCE.openai.azure.com/openai/v1",
+    "anthropic": "https://api.anthropic.com/v1",
+    "google": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "google-vertex": "https://LOCATION-aiplatform.googleapis.com/v1beta1/projects/PROJECT_ID/locations/LOCATION/endpoints/openapi",
+    "deepseek": "https://api.deepseek.com/v1",
     "mistral": "https://api.mistral.ai/v1",
-    "cohere": "https://api.cohere.ai/v1",
-    "meta": "https://api.llama-cloud.ai/v1",
     "amazon-bedrock": "https://bedrock-runtime.us-east-1.amazonaws.com",
     "openrouter": "https://openrouter.ai/api/v1",
+    "vercel-ai-gateway": "https://ai-gateway.vercel.sh",
     "vercel-ai": "https://ai-gateway.vercel.sh/v1",
+    "xai": "https://api.x.ai/v1",
+    "groq": "https://api.groq.com/openai/v1",
+    "cerebras": "https://api.cerebras.ai/v1",
+    "huggingface": "https://api-inference.huggingface.co/v1",
+    "cloudflare-workers-ai": "https://api.cloudflare.com/client/v4/accounts",
+    "moonshotai": "https://api.moonshot.ai/v1",
+    "moonshotai-cn": "https://api.moonshot.cn/v1",
+    "minimax": "https://api.minimax.io/anthropic",
+    "minimax-cn": "https://api.minimaxi.com/anthropic",
+    "zai": "https://api.z.ai/api/paas/v4",
+    "zhipuai": "https://open.bigmodel.cn/api/paas/v4",
+    "github-copilot": "https://models.githubcopilot.com/v1",
+    "xiaomi": "https://api.xiaomimimo.com/anthropic",
+    "xiaomi-token-plan-ams": "https://token-plan-ams.xiaomimimo.com/anthropic",
+    "xiaomi-token-plan-cn": "https://token-plan-cn.xiaomimimo.com/anthropic",
+    "xiaomi-token-plan-sgp": "https://token-plan-sgp.xiaomimimo.com/anthropic",
+    "kimi-coding": "https://api.kimi.com/coding",
+    "opencode": "https://opencode.ai/zen",
+    "opencode-go": "https://opencode.ai/zen/go",
 }
 
 # Provider API types (same as Go)
@@ -75,8 +97,7 @@ def process_models_dev(data: Dict) -> List[Dict]:
     for provider_name, provider_data in data.items():
         # Skip openrouter and vercel (fetched separately)
         if provider_name in ("openrouter", "vercel-ai"):
-            continue
-            
+            continue    
         base_url = PROVIDER_BASE_URLS.get(provider_name, "")
         
         for model_id, model in provider_data.get("models", {}).items():
@@ -430,7 +451,15 @@ def main():
         print(f"    found {len(models)} models from vercel")
         all_models.extend(models)
     
-    # Sort and dedupe by id
+    # Sort and dedupe by id.  Known providers (ones with a non-empty base URL)
+    # come first so their models win over reseller/aggregator copies of the
+    # same model ID.
+    def provider_rank(m):
+        has_url = 1 if m.get("base_url") else 0
+        return -has_url  # negative so known providers sort first
+
+    all_models.sort(key=provider_rank)
+
     seen = set()
     unique_models = []
     for m in all_models:
