@@ -8,9 +8,9 @@ use crate::types::AgentTool;
 /// BuildPrompt produces a fully assembled system prompt from the given options.
 /// Section ordering matches 's BuildPrompt():
 ///   1. Identity (who you are + tool list + behavior rules)
-///   2. Project context (CLAUDE.md / AGENTS.md / GEMINI.md)
-///   3. Workspace memory (FUTURE.md)
-///   4. Skills XML (with lead-in text, only if read tool is available)
+///   2. Skills (available capabilities — only if read tool is present)
+///   3. Project context (CLAUDE.md / AGENTS.md / GEMINI.md)
+///   4. Workspace memory (FUTURE.md)
 ///   5. Append prompt (user override — placed late so it can override earlier rules)
 ///   6. Environment (date, cwd, platform)
 pub fn build_prompt(opts: &PromptOptions) -> String {
@@ -23,7 +23,20 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
         sections.push(build_identity_section(opts));
     }
 
-    // 2. Project context (AGENTS.md / CLAUDE.md)
+    // 2. Skills XML — capabilities before project-specific rules, so the model
+    //    knows what it can do before reading constraints.
+    if !opts.skills.is_empty() && has_tool(&opts.tools, "read") {
+        let visible: Vec<_> = opts
+            .skills
+            .iter()
+            .filter(|s| !s.disable_model_invocation)
+            .collect();
+        if !visible.is_empty() {
+            sections.push(format_skills_section(&visible));
+        }
+    }
+
+    // 3. Project context (AGENTS.md / CLAUDE.md)
     if !opts.agent_content.is_empty() {
         sections.push(format!(
             "# Project Context\n\nProject-specific instructions and guidelines:\n\n{}",
@@ -31,7 +44,7 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
         ));
     }
 
-    // 3. Workspace memory (FUTURE.md) — always present so the model knows about
+    // 4. Workspace memory (FUTURE.md) — always present so the model knows about
     //    the feature even before the file exists. Operational rules live here
     //    instead of duplicating them in the guidelines section.
     {
@@ -59,18 +72,6 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
             part.push_str(opts.memory_content.trim());
         }
         sections.push(part);
-    }
-
-    // 4. Skills XML (only if read tool is available)
-    if !opts.skills.is_empty() && has_tool(&opts.tools, "read") {
-        let visible: Vec<_> = opts
-            .skills
-            .iter()
-            .filter(|s| !s.disable_model_invocation)
-            .collect();
-        if !visible.is_empty() {
-            sections.push(format_skills_section(&visible));
-        }
     }
 
     // 5. Append prompt — placed late so user overrides can take precedence
