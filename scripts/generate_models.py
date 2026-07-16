@@ -96,10 +96,10 @@ def process_models_dev(data: Dict) -> List[Dict]:
                 "input": modalities,
                 "context_window": context_window,
                 "max_tokens": max_tokens,
-                "cost_input": cost.get("input", 0.0),
-                "cost_output": cost.get("output", 0.0),
-                "cost_cache_read": cost.get("cache_read", 0.0),
-                "cost_cache_write": cost.get("cache_write", 0.0),
+                "cost_input": float(cost.get("input", 0)),
+                "cost_output": float(cost.get("output", 0)),
+                "cost_cache_read": float(cost.get("cache_read", 0)),
+                "cost_cache_write": float(cost.get("cache_write", 0)),
                 "compat_json": "{}",
                 "tlm_json": "{}",
                 "headers_json": "{}",
@@ -232,6 +232,7 @@ pub struct Model {{
     pub compat_json: String,
     pub tlm_json: String,
     pub headers_json: String,
+    pub hide: bool,
 }}
 
 /// INIT_BUILTIN_MODELS returns the complete built-in model catalog.
@@ -259,13 +260,14 @@ pub fn init_builtin_models() -> Vec<Model> {{
             input: {input_vec},
             context_window: {m['context_window']},
             max_tokens: {m['max_tokens']},
-            cost_input: {m['cost_input']},
-            cost_output: {m['cost_output']},
-            cost_cache_read: {m['cost_cache_read']},
-            cost_cache_write: {m['cost_cache_write']},
+            cost_input: {m['cost_input']!r},
+            cost_output: {m['cost_output']!r},
+            cost_cache_read: {m['cost_cache_read']!r},
+            cost_cache_write: {m['cost_cache_write']!r},
             compat_json: String::from("{{}}"),
             tlm_json: String::from("{{}}"),
             headers_json: String::from("{{}}"),
+            hide: false,
         }},
 """
     

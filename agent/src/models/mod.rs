@@ -657,7 +657,7 @@ fn load_user_models_with_overrides(
     Ok((models, overrides))
 }
 
-fn default_base_url_for_provider(provider: &str) -> String {
+pub fn default_base_url_for_provider(provider: &str) -> String {
     match provider {
         "openai" => "https://api.openai.com/v1".to_string(),
         "anthropic" => "https://api.anthropic.com".to_string(),

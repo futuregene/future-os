@@ -62,7 +62,7 @@ make install   # 构建全部组件并安装到系统路径
 
 ### 配置模型
 
-Agent 至少需要一个带 API key 的模型才能回复。四种方式:
+Agent 至少需要一个带 API key 的模型才能回复。三种方式:
 
 **A —— FutureOS 托管模型。** 设备码登录会自动配好 key 和模型列表:
 
@@ -70,7 +70,7 @@ Agent 至少需要一个带 API key 的模型才能回复。四种方式:
 future auth login
 ```
 
-**B —— 使用已知 Provider。** 将 API Key 放入 `~/.future/agent/auth.json`，按 Provider 名索引。[目录](docs/wiki/zh/Models.md)中的 Provider 自动使用内置 Base URL 和模型列表：
+**B —— 使用已知 Provider。** 将 API Key 放入 `~/.future/agent/auth.json`，按 Provider 名索引。查看[内置模型目录](docs/wiki/zh/Models.md)了解 1000+ 个支持的 Provider——多数自带 Base URL，模型自动发现：
 
 ```json
 {
@@ -78,20 +78,15 @@ future auth login
 }
 ```
 
-**C —— 已知 Provider，自定义 Base URL。** 部分 Provider 的 Base URL 含占位符（如 Azure 的 `YOUR_RESOURCE`、Google Vertex 的 `PROJECT_ID`），需在 `~/.future/agent/models.json` 中指定 `apiKey` + `baseUrl`，模型仍自动发现：
+对于 Base URL 含用户特定值的 Provider（如 Azure 的 `YOUR_RESOURCE`），在 `auth.json` 中添加 `baseUrl` 字段：
 
 ```json
 {
-  "providers": {
-    "azure": {
-      "apiKey": "sk-...",
-      "baseUrl": "https://my-resource.openai.azure.com/openai/v1"
-    }
-  }
+  "azure": { "type": "api_key", "key": "sk-...", "baseUrl": "https://my-resource.openai.azure.com/openai/v1" }
 }
 ```
 
-**D —— 自定义 Provider。** 不在内置目录中的 Provider，需在 `models.json` 中指定完整模型列表：
+**C —— 自定义 Provider。** 不在内置目录中的 Provider，在 `~/.future/agent/models.json` 中指定完整信息：
 
 ```json
 {
