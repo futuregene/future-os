@@ -332,3 +332,19 @@ fn escape_html(s: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
 }
+
+/// The file path a tool call operates on: the first of `path` / `file_path` /
+/// `filePath` present in its arguments (a JSON object, or a JSON string that
+/// parses to one). Shared by the approval gate and the prompt path rewriter.
+fn argument_path(arguments: &serde_json::Value) -> Option<String> {
+    let normalized = match arguments {
+        serde_json::Value::String(raw) => {
+            serde_json::from_str::<serde_json::Value>(raw).unwrap_or_else(|_| arguments.clone())
+        }
+        _ => arguments.clone(),
+    };
+    ["path", "file_path", "filePath"]
+        .iter()
+        .find_map(|key| normalized.get(*key).and_then(|value| value.as_str()))
+        .map(str::to_string)
+}
