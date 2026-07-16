@@ -311,7 +311,7 @@ export async function run(args: string[]): Promise<void> {
     permission: parsed.permission ?? undefined,
     noSession: parsed.noSession || undefined,
     mode: parsed.mode,
-    cwd: parsed.cwd ?? undefined,
+    cwd: parsed.cwd ?? process.cwd(),
     skills: parsed.skill ?? undefined,
     noSkills: parsed.noSkills || undefined,
     verbose: parsed.verbose || undefined,
