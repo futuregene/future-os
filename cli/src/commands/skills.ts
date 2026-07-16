@@ -45,17 +45,23 @@ export async function skills(command: SkillsCommand, args: string[]): Promise<vo
     return;
   }
 
-  const name = args[0];
-  if (!name) {
-    console.error(`Usage: future skills ${command} <skill-name> [--version <ver>]`);
-    process.exitCode = 1;
-    return;
-  }
-
   if (command === "install") {
+    const name = args[0];
+    if (!name) {
+      // No name given — install all builtin skills (same as install-builtin)
+      await installBuiltinSkills();
+      return;
+    }
     const versionIdx = args.indexOf("--version");
     const version = versionIdx !== -1 && versionIdx + 1 < args.length ? args[versionIdx + 1] : undefined;
     await installSkill(name, version);
+    return;
+  }
+
+  const name = args[0];
+  if (!name) {
+    console.error(`Usage: future skills ${command} <skill-name>`);
+    process.exitCode = 1;
     return;
   }
 
