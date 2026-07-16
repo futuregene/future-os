@@ -19,6 +19,7 @@ mod remote;
 mod run_error;
 mod shadow_review;
 mod skills;
+mod skills_bootstrap;
 mod store;
 
 use commands::*;
@@ -177,6 +178,12 @@ pub fn run() {
             if let Err(error) = future_platform::apply_channel_environment_default() {
                 eprintln!("FutureOS environment policy failed: {error}");
             }
+            // First-launch built-in skill install, off the launch path. Runs
+            // after the environment pin above so the bundled CLI resolves the
+            // same platform URL. Fully silent — a one-shot marker gates it and
+            // every failure is logged, never surfaced.
+            let skills_handle = app.handle().clone();
+            std::thread::spawn(move || skills_bootstrap::ensure_builtin_skills(&skills_handle));
             // Start the bundled agent off the launch path — it does a blocking
             // TCP probe and we don't want to delay the window. In dev (no
             // sidecar binary) this no-ops and the user runs the agent manually.

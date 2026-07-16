@@ -48,6 +48,10 @@ const KEY_REMOTE_PAIR_ID: &str = "remote_pair_id";
 const KEY_REMOTE_NATS_URL: &str = "remote_nats_url";
 const KEY_SHOW_THINKING: &str = "show_thinking";
 const KEY_AUTO_UPGRADE_SKILLS: &str = "auto_upgrade_skills";
+/// One-shot marker: the GUI has run the built-in skill bootstrap once. Set only
+/// after a successful run so a first launch that's offline retries next time.
+/// Kept out of [`AppSettings`] — it's backend-internal, never sent to the UI.
+const KEY_BUILTIN_SKILLS_BOOTSTRAPPED: &str = "builtin_skills_bootstrapped";
 const DEFAULT_REMOTE_PAIR_ID: &str = "DEVPAIR";
 const DEFAULT_REMOTE_NATS_URL: &str = "nats://localhost:4222";
 
@@ -102,6 +106,20 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
     let settings = read_app_settings(&tx)?;
     tx.commit()?;
     Ok(settings)
+}
+
+/// Whether the built-in skill bootstrap has already completed successfully.
+pub fn is_builtin_skills_bootstrapped() -> Result<bool, crate::AppError> {
+    let conn = connect()?;
+    Ok(read_value(&conn, KEY_BUILTIN_SKILLS_BOOTSTRAPPED)?
+        .map(|value| value == "true")
+        .unwrap_or(false))
+}
+
+/// Record that the built-in skill bootstrap completed, so it never runs again.
+pub fn mark_builtin_skills_bootstrapped() -> Result<(), crate::AppError> {
+    let conn = connect()?;
+    write_value(&conn, KEY_BUILTIN_SKILLS_BOOTSTRAPPED, "true", now_millis())
 }
 
 fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> {
