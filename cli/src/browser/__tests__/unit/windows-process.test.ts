@@ -20,6 +20,7 @@ describe("Windows detached process launcher", () => {
 
     expect(script).toContain("Start-Process -FilePath 'C:\\Program Files\\Browser''s App\\chrome.exe'");
     expect(script).toContain("-ArgumentList '--flag \"value with spaces\"'");
+    expect(script).toContain("-WindowStyle Normal -PassThru");
     expect(script).not.toContain("cmd /c");
   });
 });

@@ -602,7 +602,63 @@ async fn spawn_shell(
     let mut read_buf = [0u8; 8192];
     let timeout_dur = std::time::Duration::from_secs(timeout_secs.max(1));
 
-    // Race: read loop vs timeout vs interrupt
+    // On Windows the CLI terminates itself via TerminateProcess/process.exit.
+    // PowerShell can keep waiting for the browser descendant, so waiting for
+    // the shell process would hang forever. The wrapper already merges stderr
+    // into stdout; EOF therefore means the CLI result is complete.
+    #[cfg(windows)]
+    {
+        let result = tokio::select! {
+            result = tokio::time::timeout(timeout_dur, async {
+                use tokio::io::AsyncReadExt;
+                loop {
+                    match stdout.read(&mut read_buf).await {
+                        Ok(0) => break,
+                        Ok(n) => output_buf.extend_from_slice(&read_buf[..n]),
+                        Err(e) => return Err(anyhow!("Failed to read shell output: {}", e)),
+                    }
+                }
+                Ok(())
+            }) => result,
+            _ = wait_for_interrupt(interrupt_flag.clone()) => {
+                if let Some(job) = &job {
+                    job.terminate();
+                }
+                return Err(anyhow!("Shell command interrupted by abort"));
+            }
+        };
+
+        if let Some(job) = &job {
+            job.disarm();
+        }
+        // PowerShell may keep stderr open while waiting for the browser too.
+        // Do not await that drain after stdout has provided the completion
+        // signal, or it would recreate the same hang.
+        drop(stderr_task);
+
+        return match result {
+            Ok(Ok(())) => {
+                let combined = String::from_utf8_lossy(&output_buf);
+                Ok(format_shell_output(&combined, combined.len(), 0))
+            }
+            Ok(Err(e)) => Err(e),
+            Err(_elapsed) => {
+                let combined = String::from_utf8_lossy(&output_buf);
+                let total = combined.len();
+                if total == 0 {
+                    Err(anyhow!(
+                        "Shell command timed out after {} seconds (no output captured)",
+                        timeout_secs.max(1)
+                    ))
+                } else {
+                    spawned.kill().await.ok();
+                    Ok(format_shell_output(&combined, total, 0))
+                }
+            }
+        };
+    }
+
+    #[cfg(not(windows))]
     let read_result = tokio::select! {
         result = tokio::time::timeout(timeout_dur, async {
             use tokio::io::AsyncReadExt;
@@ -614,56 +670,24 @@ async fn spawn_shell(
                 }
             }
             Ok(spawned.wait().await)
-        }) => {
-            result
-        }
+        }) => result,
         _ = wait_for_interrupt(interrupt_flag.clone()) => {
-            #[cfg(unix)]
             kill_process_group(pgid);
-            #[cfg(windows)]
-            if let Some(job) = &job {
-                job.terminate();
-            }
             return Err(anyhow!("Shell command interrupted by abort"));
         }
     };
 
+    #[cfg(not(windows))]
     match read_result {
         Ok(Ok(Ok(status))) => {
             // Normal completion. On unix a successful command never kills the
             // process group, so intentionally detached grandchildren survive.
-            // Match that on Windows: disarm the job's KILL_ON_JOB_CLOSE before
-            // `job` drops, otherwise closing the handle would terminate the
-            // whole tree — including a browser just launched by
-            // `future-cli browser start`, which would then die immediately even
-            // though it was spawned detached.
-            #[cfg(windows)]
-            if let Some(job) = &job {
-                job.disarm();
-            }
             // Drain any leftover bytes (rare: process exited but pipe still has data).
             use tokio::io::AsyncReadExt;
             loop {
                 match stdout.read(&mut read_buf).await {
                     Ok(0) | Err(_) => break,
                     Ok(n) => output_buf.extend_from_slice(&read_buf[..n]),
-                }
-            }
-            // Windows: append PowerShell's own stderr (parse/startup errors that
-            // never reached the in-script 2>&1 merge). Empty on a normal run.
-            // Strip any CLIXML the PS host serialized onto its stderr (the
-            // wrapper suppresses progress, but be defensive against other
-            // non-output records leaking as `#< CLIXML …`).
-            #[cfg(windows)]
-            if let Some(task) = stderr_task {
-                if let Ok(err_buf) = task.await {
-                    let err = strip_powershell_clixml(&String::from_utf8_lossy(&err_buf));
-                    if !err.trim().is_empty() {
-                        if !output_buf.is_empty() && !output_buf.ends_with(b"\n") {
-                            output_buf.push(b'\n');
-                        }
-                        output_buf.extend_from_slice(err.as_bytes());
-                    }
                 }
             }
             let combined = String::from_utf8_lossy(&output_buf);
@@ -674,12 +698,7 @@ async fn spawn_shell(
         Ok(Err(e)) => Err(e),
         Err(_elapsed) => {
             // Timeout — kill process tree, drain remaining pipe content.
-            #[cfg(unix)]
             kill_process_group(pgid);
-            #[cfg(windows)]
-            if let Some(job) = &job {
-                job.terminate();
-            }
             // Drain whatever the process wrote before the kill took effect.
             use tokio::io::AsyncReadExt;
             loop {
