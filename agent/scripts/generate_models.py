@@ -22,70 +22,6 @@ import urllib.error
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
-# Provider base URLs — comprehensive mapping extracted from the Go model registry.
-# Keyed by the provider slug used in models.dev/api.json.
-PROVIDER_BASE_URLS = {
-    "openai": "https://api.openai.com/v1",
-    "openai-codex": "https://api.openai.com/v1",
-    "azure-openai-responses": "https://YOUR_RESOURCE.openai.azure.com/openai/v1",
-    "azure-cognitive-services": "https://YOUR_RESOURCE.cognitiveservices.azure.com/openai/v1",
-    "azure": "https://YOUR_RESOURCE.openai.azure.com/openai/v1",
-    "anthropic": "https://api.anthropic.com/v1",
-    "google": "https://generativelanguage.googleapis.com/v1beta/openai",
-    "google-vertex": "https://LOCATION-aiplatform.googleapis.com/v1beta1/projects/PROJECT_ID/locations/LOCATION/endpoints/openapi",
-    "deepseek": "https://api.deepseek.com/v1",
-    "mistral": "https://api.mistral.ai/v1",
-    "amazon-bedrock": "https://bedrock-runtime.us-east-1.amazonaws.com",
-    "openrouter": "https://openrouter.ai/api/v1",
-    "vercel-ai-gateway": "https://ai-gateway.vercel.sh",
-    "vercel-ai": "https://ai-gateway.vercel.sh/v1",
-    "xai": "https://api.x.ai/v1",
-    "groq": "https://api.groq.com/openai/v1",
-    "cerebras": "https://api.cerebras.ai/v1",
-    "huggingface": "https://api-inference.huggingface.co/v1",
-    "cloudflare-workers-ai": "https://api.cloudflare.com/client/v4/accounts",
-    "moonshotai": "https://api.moonshot.ai/v1",
-    "moonshotai-cn": "https://api.moonshot.cn/v1",
-    "minimax": "https://api.minimax.io/anthropic",
-    "minimax-cn": "https://api.minimaxi.com/anthropic",
-    "zai": "https://api.z.ai/api/paas/v4",
-    "zhipuai": "https://open.bigmodel.cn/api/paas/v4",
-    "github-copilot": "https://models.githubcopilot.com/v1",
-    "xiaomi": "https://api.xiaomimimo.com/anthropic",
-    "xiaomi-token-plan-ams": "https://token-plan-ams.xiaomimimo.com/anthropic",
-    "xiaomi-token-plan-cn": "https://token-plan-cn.xiaomimimo.com/anthropic",
-    "xiaomi-token-plan-sgp": "https://token-plan-sgp.xiaomimimo.com/anthropic",
-    "kimi-coding": "https://api.kimi.com/coding",
-    "opencode": "https://opencode.ai/zen",
-    "opencode-go": "https://opencode.ai/zen/go",
-    "cohere": "https://api.cohere.ai/v1",
-    "togetherai": "https://api.together.xyz/v1",
-    "deepinfra": "https://api.deepinfra.com/v1",
-    "venice": "https://api.venice.ai/api/v1",
-    "gitlab": "https://gitlab.com/api/v4/code_suggestions",
-    "cloudflare-ai-gateway": "https://gateway.ai.cloudflare.com/v1",
-    "google-vertex-anthropic": "https://LOCATION-aiplatform.googleapis.com/v1beta1/projects/PROJECT_ID/locations/LOCATION/endpoints/openapi",
-    "merge-gateway": "https://api.merge.dev/gateway/v1",
-    "aihubmix": "https://api.aihubmix.com/v1",
-    "v0": "https://api.v0.dev/v1",
-    "sap-ai-core": "https://api.ai.core.sap.cloud/api/v1",
-    "vercel": "https://ai-gateway.vercel.sh/v1",
-    "perplexity": "https://api.perplexity.ai",
-}
-
-# Provider API types (same as Go)
-PROVIDER_APIS = {
-    "openai": "chat",
-    "anthropic": "chat",
-    "google": "chat",
-    "deepseek": "chat",
-    "mistral": "chat",
-    "cohere": "chat",
-    "meta": "chat",
-    "amazon-bedrock": "chat",
-    "openrouter": "chat",
-    "vercel-ai": "chat",
-}
 
 
 def fetch_json(url: str, timeout: int = 30) -> Optional[Dict]:
@@ -113,9 +49,8 @@ def process_models_dev(data: Dict) -> List[Dict]:
         # Skip openrouter and vercel (fetched separately)
         if provider_name in ("openrouter", "vercel-ai"):
             continue
-        # Priority: models.dev `api` field → static PROVIDER_BASE_URLS fallback.
-        api_url = (provider_data.get("api") or "").rstrip("/")
-        base_url = api_url or PROVIDER_BASE_URLS.get(provider_name, "")
+        # Base URL only from models.dev `api` field — no hardcoded fallback.
+        base_url = (provider_data.get("api") or "").rstrip("/")
         if not base_url:
             continue
 
@@ -148,7 +83,7 @@ def process_models_dev(data: Dict) -> List[Dict]:
                 "id": model_id,
                 "name": name,
                 "provider": provider_name,
-                "api": PROVIDER_APIS.get(provider_name, "chat"),
+                "api": "chat",
                 "base_url": base_url,
                 "reasoning": reasoning,
                 "input": modalities,
@@ -191,7 +126,7 @@ def process_openrouter(data: Dict) -> List[Dict]:
             "name": name,
             "provider": "openrouter",
             "api": "chat",
-            "base_url": PROVIDER_BASE_URLS["openrouter"],
+            "base_url": "https://openrouter.ai/api/v1",
             "reasoning": False,  # OpenRouter doesn't expose this directly
             "input": ["text"],  # Assume text only
             "context_window": context_window,
@@ -236,7 +171,7 @@ def process_vercel_ai(data: Dict) -> List[Dict]:
             "name": name,
             "provider": "vercel-ai",
             "api": "chat",
-            "base_url": PROVIDER_BASE_URLS["vercel-ai"],
+            "base_url": "https://ai-gateway.vercel.sh/v1",
             "reasoning": False,
             "input": ["text"],
             "context_window": context_window,
