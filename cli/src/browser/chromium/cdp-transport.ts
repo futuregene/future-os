@@ -8,7 +8,7 @@ export interface CdpTransport {
   /** Send a JSON-encoded CDP message. */
   send(message: string): void;
 
-  /** Close the transport. Returns when fully closed. */
+  /** Close the transport. Implementations may bound the handshake wait. */
   close(): Promise<void>;
 
   /** Register a message handler. Returns unsubscribe function. */
@@ -74,7 +74,19 @@ export class WebSocketTransport implements CdpTransport {
     if (this.closed) return this.closePromise;
     this.closed = true;
     this.ws.close(1000, "client disconnect");
-    return this.closePromise;
+
+    // Chrome does not always complete the CDP WebSocket close handshake on
+    // Windows. Give a normal close a brief chance, then let the short-lived
+    // browser CLI finish instead of hanging indefinitely.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, 500);
+    });
+    await Promise.race([this.closePromise, timeout]);
+    if (timer) clearTimeout(timer);
+    // Make subsequent close() calls observe the same bounded completion even
+    // when Chrome never sends a close frame.
+    this.resolveClose();
   }
 
   onMessage(handler: (message: string) => void): () => void {

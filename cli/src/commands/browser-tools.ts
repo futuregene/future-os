@@ -18,6 +18,7 @@ import { resolveTarget } from "../browser/selector-resolver.js";
 import { SNAPSHOT_FUNCTION_SOURCE, type SnapshotResult } from "../browser/scripts/snapshot-script.js";
 import { resolveScreenshotPath, writeScreenshot } from "../browser/artifacts/screenshot-writer.js";
 import { resolveCdpEndpoint } from "../browser/chromium/chromium-endpoint.js";
+import { launchWindowsDetached } from "../browser/windows-process.js";
 
 const DEFAULT_ENDPOINT = "http://127.0.0.1:9222";
 const BROWSER_DIR = join(homedir(), ".future", "agent", "browser");
@@ -205,11 +206,18 @@ async function browserStart(args: Record<string, unknown>): Promise<LocalToolRes
     "--no-default-browser-check",
     url,
   ];
-  const child = spawn(launcher.command, [...launcher.args, ...chromeArgs], {
-    detached: true,
-    stdio: "ignore",
-  });
-  child.unref();
+  const browserArgs = [...launcher.args, ...chromeArgs];
+  if (process.platform === "win32") {
+    // Use PowerShell's Windows-shell launcher so Chrome does not inherit the
+    // agent's stdout handle and keep the shell tool waiting for EOF.
+    launchWindowsDetached(launcher.command, browserArgs);
+  } else {
+    const child = spawn(launcher.command, browserArgs, {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+  }
 
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
