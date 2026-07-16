@@ -47,17 +47,14 @@ install-tui: build-tui
 install-cli: build-cli
 	$(SUDO) cp cli/dist/future $(PREFIX)/future
 
-install-gui: install-cli
-	cd gui && npm install
+install-gui: install-cli install-agent
 	@mkdir -p gui/src-tauri/binaries
-	cd agent && cargo build --release
 	cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
 	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET)
-	cd gui && npx tauri build --no-bundle
+	cd gui && npm install && npx tauri build --no-bundle
 	$(SUDO) cp gui/src-tauri/target/release/futureos $(PREFIX)/future-gui
 
-install-channels:
-	cd channels && cargo build --release
+install-channels: build-channels
 	$(SUDO) cp channels/target/release/future-channel $(PREFIX)/
 
 # Symlink the built-in skill bundles into the agent's app-skills directory
@@ -89,14 +86,24 @@ install-skills:
 
 build: build-agent build-tui build-cli build-gui
 
+# Only run npm install when package.json is newer than node_modules.
+define npm-install-if-needed
+	@if [ ! -d "$(1)/node_modules" ] || [ "$(1)/package.json" -nt "$(1)/node_modules" ]; then \
+		echo "  npm install $(1)/"; \
+		cd $(1) && npm install; \
+	fi
+endef
+
 build-agent:
 	cd agent && cargo build --release
 
 build-tui:
-	cd tui && npm install && npm run build && bun build --compile dist/index.js --outfile dist/future-tui
+	$(call npm-install-if-needed,tui)
+	cd tui && npm run gen-version && npm run build && bun build --compile dist/index.js --outfile dist/future-tui
 
 build-cli:
-	cd cli && npm install && npm run build && bun build --compile dist/index.js --outfile dist/future
+	$(call npm-install-if-needed,cli)
+	cd cli && npm run gen-version && npm run build && bun build --compile dist/index.js --outfile dist/future
 
 build-gui:
 	cd gui && npm install && npm run build

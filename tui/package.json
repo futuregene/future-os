@@ -7,7 +7,6 @@
   "scripts": {
     "gen-version": "node ../scripts/version.mjs --gen-ts src/version.generated.ts",
     "postinstall": "node ../scripts/version.mjs --gen-ts src/version.generated.ts",
-    "prebuild": "node ../scripts/version.mjs --gen-ts src/version.generated.ts",
     "build": "bun run scripts/generate-proto.ts && tsc -p tsconfig.build.json",
     "dev": "bun run src/index.ts",
     "start": "bun run dist/index.js",
