@@ -630,10 +630,18 @@ async fn spawn_shell(
             }
         };
         if let Some(job) = &job { job.disarm(); }
-        // Don't await stderr_task — PowerShell may keep its stderr pipe
-        // open while waiting for the (already-terminated) child process.
-        // Parse errors wouldn't reach stderr on a successful run anyway.
-        drop(stderr_task);
+        // Append PowerShell stderr (which was drained in background).
+        if let Some(task) = stderr_task {
+            if let Ok(err_buf) = task.await {
+                let err = strip_powershell_clixml(&String::from_utf8_lossy(&err_buf));
+                if !err.trim().is_empty() {
+                    if !output_buf.is_empty() && !output_buf.ends_with(b"\n") {
+                        output_buf.push(b'\n');
+                    }
+                    output_buf.extend_from_slice(err.as_bytes());
+                }
+            }
+        }
         return match result {
             Ok(Ok(())) => {
                 let combined = String::from_utf8_lossy(&output_buf);
