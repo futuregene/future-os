@@ -651,14 +651,18 @@ async fn spawn_shell(
             }
             // Windows: append PowerShell's own stderr (parse/startup errors that
             // never reached the in-script 2>&1 merge). Empty on a normal run.
+            // Strip any CLIXML the PS host serialized onto its stderr (the
+            // wrapper suppresses progress, but be defensive against other
+            // non-output records leaking as `#< CLIXML …`).
             #[cfg(windows)]
             if let Some(task) = stderr_task {
                 if let Ok(err_buf) = task.await {
-                    if !err_buf.is_empty() {
+                    let err = strip_powershell_clixml(&String::from_utf8_lossy(&err_buf));
+                    if !err.trim().is_empty() {
                         if !output_buf.is_empty() && !output_buf.ends_with(b"\n") {
                             output_buf.push(b'\n');
                         }
-                        output_buf.extend_from_slice(&err_buf);
+                        output_buf.extend_from_slice(err.as_bytes());
                     }
                 }
             }
@@ -701,6 +705,25 @@ async fn spawn_shell(
             ))
         }
     }
+}
+
+/// Drop the CLIXML noise Windows PowerShell serializes onto its stderr when it
+/// is a redirected pipe (each block starts with a `#< CLIXML` marker line
+/// followed by a `<Objs …>…</Objs>` XML payload). Line-based so it never eats
+/// genuine error text. No-op when there is no CLIXML marker.
+#[cfg(windows)]
+fn strip_powershell_clixml(text: &str) -> String {
+    if !text.contains("#< CLIXML") {
+        return text.to_string();
+    }
+    text.lines()
+        .filter(|line| {
+            let t = line.trim_start();
+            !(t.starts_with("#< CLIXML")
+                || (t.starts_with("<Objs") && t.contains("schemas.microsoft.com/powershell")))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Format shell output with truncation info and exit code footer.
@@ -946,6 +969,25 @@ fn normalize_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(windows)]
+    fn clixml_lines_are_stripped_but_real_text_survives() {
+        let input = "Cannot find path 'C:\\nope.txt' because it does not exist.\n\
+                     #< CLIXML\n\
+                     <Objs Version=\"1.1.0.1\" xmlns=\"http://schemas.microsoft.com/powershell/2004/04\"><Obj S=\"progress\">x</Obj></Objs>\n\
+                     real trailing error line";
+        let out = strip_powershell_clixml(input);
+        assert!(out.contains("Cannot find path"));
+        assert!(out.contains("real trailing error line"));
+        assert!(!out.contains("CLIXML"));
+        assert!(!out.contains("<Objs"));
+        // No CLIXML marker → returned unchanged.
+        assert_eq!(
+            strip_powershell_clixml("plain error text"),
+            "plain error text"
+        );
+    }
 
     fn test_path(name: &str) -> PathBuf {
         let stamp = std::time::SystemTime::now()

@@ -57,6 +57,7 @@ Write-Host "Shell: $shell  (v$ver)"
 $prologue = @'
 chcp 65001 > $null
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$ProgressPreference = 'SilentlyContinue'
 $global:LASTEXITCODE = $null
 '@
 

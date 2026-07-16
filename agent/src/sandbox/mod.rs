@@ -359,6 +359,10 @@ pub fn shell_invocation(command: &str) -> (&'static str, Vec<String>) {
 ///   no-op there.) Native tools that ignore the code page and hard-code OEM/
 ///   ANSI output can't be fixed here — those bytes become replacement chars
 ///   via `from_utf8_lossy` rather than corrupting the capture.
+/// - `$ProgressPreference = 'SilentlyContinue'` suppresses progress records
+///   (e.g. "Preparing modules for first use"). When powershell.exe's stderr is
+///   a redirected pipe, PS 5.1 serializes such records as CLIXML (`#< CLIXML …`)
+///   onto that stderr, which our capture would otherwise splice into the output.
 #[cfg(target_os = "windows")]
 pub fn windows_wrapper_script(command: &str) -> String {
     // The model may generate bash-style double-quoted-with-escapes content
@@ -368,6 +372,7 @@ pub fn windows_wrapper_script(command: &str) -> String {
     format!(
         "chcp 65001 > $null; \
          $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); \
+         $ProgressPreference = 'SilentlyContinue'; \
          $global:LASTEXITCODE = $null; \
          & {{ {} }} 2>&1 | ForEach-Object {{ \"$_\" }}; \
          if ($null -ne $LASTEXITCODE) {{ exit $LASTEXITCODE }} \
@@ -736,6 +741,9 @@ mod tests {
         // defaults leak a BOM / ASCII respectively).
         assert!(script.contains("[System.Text.UTF8Encoding]::new($false)"));
         assert!(script.contains("$OutputEncoding = [Console]::OutputEncoding"));
+        // Progress suppressed so PS 5.1 doesn't serialize "Preparing modules…"
+        // as CLIXML onto the redirected stderr we capture.
+        assert!(script.contains("$ProgressPreference = 'SilentlyContinue'"));
     }
 
     #[test]
