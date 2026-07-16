@@ -569,10 +569,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 broadcaster,
                 state.approval_gate.clone(),
             );
-            let supports_images =
-                crate::models::model_accepts_images(&forked.model);
-            let msgs =
-                crate::session::entries_to_agent_messages(&forked.entries, supports_images);
+            let supports_images = crate::models::model_accepts_images(&forked.model);
+            let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
             *new_sess.messages.write().unwrap() = msgs;
             if !forked.model.is_empty() {
                 new_sess.model = forked.model.clone();
@@ -966,10 +964,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 broadcaster,
                 state.approval_gate.clone(),
             );
-            let supports_images =
-                crate::models::model_accepts_images(&forked.model);
-            let msgs =
-                crate::session::entries_to_agent_messages(&forked.entries, supports_images);
+            let supports_images = crate::models::model_accepts_images(&forked.model);
+            let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
             *new_sess.messages.write().unwrap() = msgs;
             if !forked.model.is_empty() {
                 new_sess.model = forked.model.clone();
