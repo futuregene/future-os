@@ -133,170 +133,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 Err(error) => RpcResponse::build_fail(id, "approval_decision", &error),
             }
         }
-        "new_session" => {
-            // Create a new session with shared agent_loop, preserving model/thinking
-            // Use TUI-provided cwd if available, otherwise default workspace
-            let session_cwd = if !cmd.cwd.is_empty() {
-                cmd.cwd.clone()
-            } else {
-                super::session::default_workspace()
-            };
-            let active_id = state.get_active_session_id();
-            let session = state.get_session(&active_id);
-            // Snapshot everything we need from the active session up front, then
-            // drop its lock — nothing below should keep the active ServerSession
-            // borrowed while we fall back to other loops for the config template.
-            let (
-                active_loop,
-                inherit_model,
-                inherit_thinking,
-                event_bus,
-                broadcaster,
-                approval_gate,
-                session_manager,
-            ) = {
-                let sess = session.read().unwrap();
-                (
-                    sess.agent_loop.clone(),
-                    sess.model.clone(),
-                    sess.thinking_level.clone(),
-                    sess.event_bus.clone(),
-                    sess.broadcaster.clone(),
-                    sess.approval_gate.clone(),
-                    sess.session_manager.clone(),
-                )
-            };
-
-            // Build the fresh loop's config template from an *idle* loop. The
-            // active session's loop is held under a write lock for the whole turn
-            // while it streams, so a `try_read` on it fails mid-run — which used to
-            // make "start a second conversation while the first is running" fail
-            // outright. Fall back to the default session's loop (never used for
-            // prompts by the GUI, so effectively always idle) so concurrent
-            // sessions can be created. Clients call `set_model` on the new session
-            // right after, so this template is only a seed.
-            let snapshot = |loop_arc: &Arc<tokio::sync::RwLock<crate::agent::Loop>>| {
-                loop_arc.try_read().ok().map(|loop_guard| {
-                    let config = crate::types::AgentConfig {
-                        system_prompt: loop_guard.config.system_prompt.clone(),
-                        max_turns: loop_guard.config.max_turns,
-                        thinking_budget: loop_guard.config.thinking_budget,
-                        max_retries: loop_guard.config.max_retries,
-                        tools_execution_mode: loop_guard.config.tools_execution_mode.clone(),
-                        ..Default::default()
-                    };
-                    (
-                        loop_guard.provider.clone(),
-                        loop_guard.model.clone(),
-                        loop_guard.tools.clone(),
-                        config,
-                        loop_guard.verbose,
-                    )
-                })
-            };
-
-            let template = snapshot(&active_loop).or_else(|| {
-                let default_loop = state.session.read().unwrap().agent_loop.clone();
-                snapshot(&default_loop)
-            });
-            let Some((provider, model, tools, config, verbose)) = template else {
-                return RpcResponse::build_fail(
-                    id,
-                    "new_session",
-                    "agent is busy; wait for the current run to finish before starting a new session",
-                );
-            };
-            let mut fresh_loop = crate::agent::Loop::new(provider, &model)
-                .with_tools(tools)
-                .with_config(config);
-            fresh_loop.verbose = verbose;
-
-            let new_session_id = if cmd.session_id.is_empty() {
-                crate::utils::generate_id()
-            } else {
-                cmd.session_id.clone()
-            };
-
-            // If this session ID already exists on disk (e.g. a forked session),
-            // load the existing entries and restore them after creating the session.
-            let existing_entries = session_manager
-                .load(&new_session_id)
-                .ok()
-                .filter(|s| !s.entries.is_empty())
-                .map(|s| (s.entries, s.model.clone()));
-
-            let mut new_sess = ServerSession::new_with_shared_loop(
-                new_session_id.clone(),
-                Arc::new(tokio::sync::RwLock::new(fresh_loop)),
-                Arc::new(crate::session::Manager::default_for(&session_cwd)),
-                &session_cwd,
-                event_bus,
-                broadcaster,
-                approval_gate,
-            );
-            // Preserve model and thinking level from the current session
-            new_sess.model = inherit_model.clone();
-            *new_sess.compaction_model.write().unwrap() = inherit_model;
-            new_sess.thinking_level = inherit_thinking;
-
-            // Default created_by to "tui" for sessions created without
-            // explicit source info (e.g. TUI, channels). GUI passes
-            // custom_instructions with createdBy: "gui".
-            new_sess.created_by = "tui".to_string();
-
-            // Parse source metadata from custom_instructions (JSON).
-            // Client passes {"createdBy":"gui","sourceMeta":{...}}.
-            if !cmd.custom_instructions.is_empty() {
-                if let Ok(meta) =
-                    serde_json::from_str::<serde_json::Value>(&cmd.custom_instructions)
-                {
-                    if let Some(src) = meta
-                        .get("createdBy")
-                        .or_else(|| meta.get("source"))
-                        .and_then(|v| v.as_str())
-                    {
-                        new_sess.created_by = src.to_string();
-                    }
-                    if let Some(m) = meta.get("sourceMeta").or_else(|| meta.get("meta")) {
-                        new_sess.source_meta = m.clone();
-                    }
-                }
-            }
-            // Apply model and thinking level from the command if provided
-            // (client sends these during session creation so the session
-            // starts with the user's selection, without needing a separate
-            // set_model/set_thinking_level RPC).
-            if !cmd.model_id.is_empty() {
-                new_sess.model = cmd.model_id.clone();
-                *new_sess.compaction_model.write().unwrap() = cmd.model_id.clone();
-            }
-            if !cmd.level.is_empty() {
-                new_sess.thinking_level = cmd.level.clone();
-            }
-
-            // Restore entries from a pre-existing session (forked or persisted).
-            if let Some((entries, disk_model)) = existing_entries {
-                // Gate image re-hydration on the model that will actually run
-                // (disk model wins over the command's default).
-                let effective_model = if disk_model.is_empty() {
-                    new_sess.model.clone()
-                } else {
-                    disk_model.clone()
-                };
-                let supports_images = crate::models::model_accepts_images(&effective_model);
-                let mut msgs = new_sess.messages.write().unwrap();
-                *msgs = crate::session::entries_to_agent_messages(&entries, supports_images);
-                if !disk_model.is_empty() {
-                    new_sess.model = disk_model.clone();
-                    *new_sess.compaction_model.write().unwrap() = disk_model;
-                }
-            }
-
-            // Add to sessions map
-            let new_id = state.create_session(new_sess);
-
-            RpcResponse::ok(id, "new_session", serde_json::json!({"sessionId": new_id}))
-        }
+        "new_session" => cmd_new_session(state, &cmd, id),
         "get_state" => {
             let state_val = get_state_internal(state, &cmd.session_id);
             RpcResponse::ok(id, "get_state", state_val)
@@ -499,87 +336,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             }
             RpcResponse::ok(id, "delete_session", serde_json::json!({"deleted": true}))
         }
-        "fork" => {
-            let entry_id = &cmd.entry_id;
-            if entry_id.is_empty() {
-                return RpcResponse::build_fail(
-                    id,
-                    "fork",
-                    "No message selected to fork from. Choose a user message to fork at.",
-                );
-            }
-
-            // Extract needed data from session
-            let (agent_loop, session_manager, event_bus, broadcaster, _cwd, current_session_id) = {
-                let sess = session.read().unwrap();
-                (
-                    sess.agent_loop.clone(),
-                    sess.session_manager.clone(),
-                    sess.event_bus.clone(),
-                    sess.broadcaster.clone(),
-                    sess.cwd.clone(),
-                    sess.session_id.clone(),
-                )
-            };
-
-            // Resolve parent session: use cmd.parent_session if provided,
-            // otherwise fork from the current session.
-            let parent_id = if !cmd.parent_session.is_empty() {
-                cmd.parent_session.clone()
-            } else {
-                current_session_id.clone()
-            };
-
-            // Get parent session from manager
-            let parent = match session_manager.load(&parent_id) {
-                Ok(s) => s,
-                Err(_) => {
-                    return RpcResponse::build_fail(
-                        id,
-                        "fork",
-                        "Session not found on disk — it may have been deleted or moved.",
-                    );
-                }
-            };
-
-            // Fork a new session
-            let forked = crate::session::fork_session(&parent, entry_id);
-            let forked_id = forked.id.clone();
-
-            // Save the forked session
-            if let Err(e) = session_manager.save(&forked) {
-                return RpcResponse::build_fail(
-                    id,
-                    "fork",
-                    &format!("failed to save forked session: {}", e),
-                );
-            }
-
-            // Add to sessions map.  Load the forked entries into
-            // in-memory messages so the first prompt doesn't overwrite
-            // the saved history on disk — session_prompt.rs saves
-            // self.messages back to disk (via File::create), truncating
-            // anything not held in memory.
-            let mut new_sess = ServerSession::new_with_shared_loop(
-                forked_id.clone(),
-                agent_loop,
-                session_manager,
-                &forked.cwd,
-                event_bus,
-                broadcaster,
-                state.approval_gate.clone(),
-            );
-            let supports_images = crate::models::model_accepts_images(&forked.model);
-            let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
-            *new_sess.messages.write().unwrap() = msgs;
-            if !forked.model.is_empty() {
-                new_sess.model = forked.model.clone();
-                *new_sess.compaction_model.write().unwrap() = forked.model.clone();
-            }
-            state.create_session(new_sess);
-
-            RpcResponse::ok(id, "fork", serde_json::json!({"sessionId": forked_id}))
-        }
+        "fork" => cmd_fork(state, &session, &cmd, id),
         "get_fork_messages" => {
             // Load session from disk to get entry IDs (needed for fork).
             let (session_manager, session_id) = {
@@ -625,123 +382,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 serde_json::json!({"messages": user_entries}),
             )
         }
-        "get_session_entries" => {
-            // Return displayable entries from a session plus the session_info
-            // metadata entry (model, thinking_level, session_name, cwd).
-            let (session_manager, session_id) = {
-                let sess = session.read().unwrap();
-                (sess.session_manager.clone(), sess.session_id.clone())
-            };
-            let entries: Vec<serde_json::Value> = session_manager
-                .load(&session_id)
-                .map(|s| {
-                    s.entries
-                        .iter()
-                        .filter(|e| {
-                            matches!(
-                                e.entry_type.as_str(),
-                                "user" | "assistant" | "tool" | "session_info"
-                            )
-                        })
-                        .map(|e| {
-                            let content_text = e
-                                .content
-                                .as_ref()
-                                .map(|c| {
-                                    if let Some(arr) = c.as_array() {
-                                        let texts = arr
-                                            .iter()
-                                            .filter_map(|b| b.get("text").and_then(|t| t.as_str()));
-                                        if e.role == "user" {
-                                            // A user entry's visible text is only their typed
-                                            // message (the first text block). Any later text
-                                            // block is agent-injected attachment context
-                                            // (file paths), which must not leak into the bubble.
-                                            texts.take(1).collect::<Vec<_>>().join(" ")
-                                        } else {
-                                            texts.collect::<Vec<_>>().join(" ")
-                                        }
-                                    } else {
-                                        c.as_str().unwrap_or("").to_string()
-                                    }
-                                })
-                                .unwrap_or_default();
-                            // Build the display content for this entry. Only include the
-                            // actual visible text — no thinking or tool formatting.
-                            // The forked session's messages should look identical to
-                            // original GUI messages (which store thinking/tools in
-                            // run events, not in the message content).
-                            let full_content = if e.entry_type == "tool" {
-                                // Tool entries: show the result text, or a placeholder.
-                                if content_text.is_empty() {
-                                    String::new()
-                                } else {
-                                    content_text
-                                }
-                            } else {
-                                // User and assistant entries: just the text content.
-                                content_text
-                            };
-
-                            let mut entry = serde_json::json!({
-                                "id": e.id,
-                                "role": e.role,
-                                "content": full_content,
-                                "name": e.name,
-                                "tool_args": e.tool_args,
-                                "timestamp": e.timestamp.to_rfc3339(),
-                            });
-                            // Include thinking and tool_calls for the new agent-based
-                            // message display (entryProjection.ts).
-                            if !e.thinking.is_empty() {
-                                entry["thinking"] = serde_json::Value::String(e.thinking.clone());
-                            }
-                            // Structured per-entry metadata (e.g. user attachments with
-                            // their cached thumbnails) so the GUI can rebuild attachment
-                            // chips after reload — the JSONL is the only message source.
-                            if let Some(ref meta) = e.meta {
-                                entry["meta"] = meta.clone();
-                            }
-                            if !e.tool_calls.is_empty() {
-                                entry["tool_calls"] = serde_json::to_value(&e.tool_calls)
-                                    .unwrap_or(serde_json::Value::Null);
-                            }
-                            // Per-reply metadata for the GUI's message footer
-                            // ("time · N tokens"); set on the final assistant
-                            // entry of each run.
-                            if e.output_tokens > 0 {
-                                entry["output_tokens"] = serde_json::json!(e.output_tokens);
-                            }
-                            if e.duration_ms > 0 {
-                                entry["duration_ms"] = serde_json::json!(e.duration_ms);
-                            }
-                            // For session_info entries, include the original content
-                            // JSON (session_name, cwd, parent_session_id, …) and the
-                            // model / thinking_level struct fields so callers can
-                            // read fork metadata without a second RPC.
-                            if e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO {
-                                if let Some(ref content) = e.content {
-                                    entry["content"] = content.clone();
-                                }
-                                if !e.model.is_empty() {
-                                    entry["model"] = serde_json::Value::String(e.model.clone());
-                                }
-                                if !e.thinking_level.is_empty() {
-                                    entry["thinking_level"] =
-                                        serde_json::Value::String(e.thinking_level.clone());
-                                }
-                            }
-                            entry
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            RpcResponse::ok(
-                id,
-                "get_session_entries",
-                serde_json::json!({"entries": entries}),
-            )
-        }
+        "get_session_entries" => cmd_get_session_entries(&session, id),
         "get_last_assistant_text" => {
             let text = session.read().unwrap().get_last_assistant_text();
             RpcResponse::ok(
@@ -893,88 +534,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             // returns all available models.
             RpcResponse::ok(id, "set_enabled_models", serde_json::json!({}))
         }
-        "clone" => {
-            // Extract needed data from session
-            let (agent_loop, session_manager, event_bus, broadcaster, _cwd, session_id) = {
-                let sess = session.read().unwrap();
-                if sess.messages.read().unwrap().is_empty() {
-                    return RpcResponse::build_fail(
-                        id,
-                        "clone",
-                        "Nothing to clone — the current session has no messages yet.",
-                    );
-                }
-                (
-                    sess.agent_loop.clone(),
-                    sess.session_manager.clone(),
-                    sess.event_bus.clone(),
-                    sess.broadcaster.clone(),
-                    sess.cwd.clone(),
-                    sess.session_id.clone(),
-                )
-            };
-
-            // Get parent session from manager
-            let parent = match session_manager.load(&session_id) {
-                Ok(s) => s,
-                Err(_) => {
-                    return RpcResponse::build_fail(
-                        id,
-                        "clone",
-                        "Session not found on disk — it may have been deleted or moved.",
-                    );
-                }
-            };
-
-            let leaf_id = parent
-                .entries
-                .last()
-                .map(|e| e.id.clone())
-                .unwrap_or_default();
-            if leaf_id.is_empty() {
-                return RpcResponse::build_fail(
-                    id,
-                    "clone",
-                    "Nothing to clone — no messages found in session.",
-                );
-            }
-
-            // Fork from leaf
-            let forked = crate::session::fork_session(&parent, &leaf_id);
-            let forked_id = forked.id.clone();
-
-            // Save the forked session
-            if let Err(e) = session_manager.save(&forked) {
-                return RpcResponse::build_fail(
-                    id,
-                    "clone",
-                    &format!("failed to save cloned session: {}", e),
-                );
-            }
-
-            // Add to sessions map.  Load the cloned entries into
-            // in-memory messages (same reason as fork — prevents
-            // the first prompt from truncating history on disk).
-            let mut new_sess = ServerSession::new_with_shared_loop(
-                forked_id.clone(),
-                agent_loop,
-                session_manager,
-                &forked.cwd,
-                event_bus,
-                broadcaster,
-                state.approval_gate.clone(),
-            );
-            let supports_images = crate::models::model_accepts_images(&forked.model);
-            let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
-            *new_sess.messages.write().unwrap() = msgs;
-            if !forked.model.is_empty() {
-                new_sess.model = forked.model.clone();
-                *new_sess.compaction_model.write().unwrap() = forked.model.clone();
-            }
-            state.create_session(new_sess);
-
-            RpcResponse::ok(id, "clone", serde_json::json!({"cancelled": false}))
-        }
+        "clone" => cmd_clone(state, &session, id),
         "export_html" => {
             // Export session to HTML file
             let sess = session.read().unwrap();
@@ -999,80 +559,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
 
             RpcResponse::ok(id, "export_html", serde_json::json!({"path": output_path}))
         }
-        "reload_config" => {
-            // Re-discover skills and re-read context files, then rebuild system prompt.
-            let (cwd, tools) = {
-                let sess = session.read().unwrap();
-                let loop_ = match sess.agent_loop.try_read() {
-                    Ok(l) => l,
-                    Err(_) => {
-                        return RpcResponse::build_fail(
-                            id,
-                            "reload_config",
-                            "agent is busy, retry in a moment",
-                        );
-                    }
-                };
-                (sess.cwd.clone(), loop_.tools.clone())
-            };
-
-            // Re-discover skills (blocking I/O, no locks held)
-            let skill_dirs = vec![
-                crate::skills::APP_SKILLS_DIR.to_string(),
-                format!("{}/{}", cwd, crate::skills::PROJECT_SKILLS_DIR),
-                crate::skills::AGENTS_SKILLS_DIR.to_string(),
-            ];
-            let skills = crate::skills::discover_skills(&skill_dirs).unwrap_or_default();
-            let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
-
-            // Re-read context files
-            let mut agent_content = String::new();
-            for fname in &["CLAUDE.md", "AGENTS.md", "GEMINI.md"] {
-                let p = std::path::Path::new(&cwd).join(fname);
-                if p.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&p) {
-                        agent_content = content;
-                        break;
-                    }
-                }
-            }
-            let context_lines: Vec<String> = if agent_content.is_empty() {
-                vec![]
-            } else {
-                vec![agent_content.clone()]
-            };
-
-            // Rebuild system prompt
-            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-            let new_prompt = crate::prompt::build_prompt(&crate::prompt::PromptOptions {
-                working_directory: cwd.clone(),
-                date: today,
-                tools: tools.clone(),
-                skills: skills.clone(),
-                agent_content: agent_content.clone(),
-                ..Default::default()
-            });
-
-            // Update welcome_* state for get_state
-            *state.welcome_skills.write().unwrap() = skill_names.clone();
-            *state.welcome_context.write().unwrap() = context_lines;
-
-            // Update running session's system prompt
-            let sess = session.read().unwrap();
-            if let Ok(mut r#loop) = sess.agent_loop.try_write() {
-                r#loop.system_prompt = new_prompt.clone();
-                r#loop.config.system_prompt = new_prompt;
-            }
-
-            RpcResponse::ok(
-                id,
-                "reload_config",
-                serde_json::json!({
-                    "skills": skill_names,
-                    "contextFiles": if agent_content.is_empty() { vec![] } else { vec!["CLAUDE.md".to_string()] },
-                }),
-            )
-        }
+        "reload_config" => cmd_reload_config(state, &session, id),
         "set_cwd" => {
             let (session_manager, session_id) = {
                 let mut sess = session.write().unwrap();
@@ -1191,6 +678,540 @@ fn list_models_response(id: &str) -> String {
             "models": payload_models,
             "defaultModel": effective_default,
             "isScoped": false,
+        }),
+    )
+}
+
+fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
+    // Create a new session with shared agent_loop, preserving model/thinking
+    // Use TUI-provided cwd if available, otherwise default workspace
+    let session_cwd = if !cmd.cwd.is_empty() {
+        cmd.cwd.clone()
+    } else {
+        super::session::default_workspace()
+    };
+    let active_id = state.get_active_session_id();
+    let session = state.get_session(&active_id);
+    // Snapshot everything we need from the active session up front, then
+    // drop its lock — nothing below should keep the active ServerSession
+    // borrowed while we fall back to other loops for the config template.
+    let (
+        active_loop,
+        inherit_model,
+        inherit_thinking,
+        event_bus,
+        broadcaster,
+        approval_gate,
+        session_manager,
+    ) = {
+        let sess = session.read().unwrap();
+        (
+            sess.agent_loop.clone(),
+            sess.model.clone(),
+            sess.thinking_level.clone(),
+            sess.event_bus.clone(),
+            sess.broadcaster.clone(),
+            sess.approval_gate.clone(),
+            sess.session_manager.clone(),
+        )
+    };
+
+    // Build the fresh loop's config template from an *idle* loop. The
+    // active session's loop is held under a write lock for the whole turn
+    // while it streams, so a `try_read` on it fails mid-run — which used to
+    // make "start a second conversation while the first is running" fail
+    // outright. Fall back to the default session's loop (never used for
+    // prompts by the GUI, so effectively always idle) so concurrent
+    // sessions can be created. Clients call `set_model` on the new session
+    // right after, so this template is only a seed.
+    let snapshot = |loop_arc: &Arc<tokio::sync::RwLock<crate::agent::Loop>>| {
+        loop_arc.try_read().ok().map(|loop_guard| {
+            let config = crate::types::AgentConfig {
+                system_prompt: loop_guard.config.system_prompt.clone(),
+                max_turns: loop_guard.config.max_turns,
+                thinking_budget: loop_guard.config.thinking_budget,
+                max_retries: loop_guard.config.max_retries,
+                tools_execution_mode: loop_guard.config.tools_execution_mode.clone(),
+                ..Default::default()
+            };
+            (
+                loop_guard.provider.clone(),
+                loop_guard.model.clone(),
+                loop_guard.tools.clone(),
+                config,
+                loop_guard.verbose,
+            )
+        })
+    };
+
+    let template = snapshot(&active_loop).or_else(|| {
+        let default_loop = state.session.read().unwrap().agent_loop.clone();
+        snapshot(&default_loop)
+    });
+    let Some((provider, model, tools, config, verbose)) = template else {
+        return RpcResponse::build_fail(
+            id,
+            "new_session",
+            "agent is busy; wait for the current run to finish before starting a new session",
+        );
+    };
+    let mut fresh_loop = crate::agent::Loop::new(provider, &model)
+        .with_tools(tools)
+        .with_config(config);
+    fresh_loop.verbose = verbose;
+
+    let new_session_id = if cmd.session_id.is_empty() {
+        crate::utils::generate_id()
+    } else {
+        cmd.session_id.clone()
+    };
+
+    // If this session ID already exists on disk (e.g. a forked session),
+    // load the existing entries and restore them after creating the session.
+    let existing_entries = session_manager
+        .load(&new_session_id)
+        .ok()
+        .filter(|s| !s.entries.is_empty())
+        .map(|s| (s.entries, s.model.clone()));
+
+    let mut new_sess = ServerSession::new_with_shared_loop(
+        new_session_id.clone(),
+        Arc::new(tokio::sync::RwLock::new(fresh_loop)),
+        Arc::new(crate::session::Manager::default_for(&session_cwd)),
+        &session_cwd,
+        event_bus,
+        broadcaster,
+        approval_gate,
+    );
+    // Preserve model and thinking level from the current session
+    new_sess.model = inherit_model.clone();
+    *new_sess.compaction_model.write().unwrap() = inherit_model;
+    new_sess.thinking_level = inherit_thinking;
+
+    // Default created_by to "tui" for sessions created without
+    // explicit source info (e.g. TUI, channels). GUI passes
+    // custom_instructions with createdBy: "gui".
+    new_sess.created_by = "tui".to_string();
+
+    // Parse source metadata from custom_instructions (JSON).
+    // Client passes {"createdBy":"gui","sourceMeta":{...}}.
+    if !cmd.custom_instructions.is_empty() {
+        if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&cmd.custom_instructions) {
+            if let Some(src) = meta
+                .get("createdBy")
+                .or_else(|| meta.get("source"))
+                .and_then(|v| v.as_str())
+            {
+                new_sess.created_by = src.to_string();
+            }
+            if let Some(m) = meta.get("sourceMeta").or_else(|| meta.get("meta")) {
+                new_sess.source_meta = m.clone();
+            }
+        }
+    }
+    // Apply model and thinking level from the command if provided
+    // (client sends these during session creation so the session
+    // starts with the user's selection, without needing a separate
+    // set_model/set_thinking_level RPC).
+    if !cmd.model_id.is_empty() {
+        new_sess.model = cmd.model_id.clone();
+        *new_sess.compaction_model.write().unwrap() = cmd.model_id.clone();
+    }
+    if !cmd.level.is_empty() {
+        new_sess.thinking_level = cmd.level.clone();
+    }
+
+    // Restore entries from a pre-existing session (forked or persisted).
+    if let Some((entries, disk_model)) = existing_entries {
+        // Gate image re-hydration on the model that will actually run
+        // (disk model wins over the command's default).
+        let effective_model = if disk_model.is_empty() {
+            new_sess.model.clone()
+        } else {
+            disk_model.clone()
+        };
+        let supports_images = crate::models::model_accepts_images(&effective_model);
+        let mut msgs = new_sess.messages.write().unwrap();
+        *msgs = crate::session::entries_to_agent_messages(&entries, supports_images);
+        if !disk_model.is_empty() {
+            new_sess.model = disk_model.clone();
+            *new_sess.compaction_model.write().unwrap() = disk_model;
+        }
+    }
+
+    // Add to sessions map
+    let new_id = state.create_session(new_sess);
+
+    RpcResponse::ok(id, "new_session", serde_json::json!({"sessionId": new_id}))
+}
+
+fn cmd_get_session_entries(session: &Arc<std::sync::RwLock<ServerSession>>, id: &str) -> String {
+    // Return displayable entries from a session plus the session_info
+    // metadata entry (model, thinking_level, session_name, cwd).
+    let (session_manager, session_id) = {
+        let sess = session.read().unwrap();
+        (sess.session_manager.clone(), sess.session_id.clone())
+    };
+    let entries: Vec<serde_json::Value> = session_manager
+        .load(&session_id)
+        .map(|s| {
+            s.entries
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e.entry_type.as_str(),
+                        "user" | "assistant" | "tool" | "session_info"
+                    )
+                })
+                .map(|e| {
+                    let content_text = e
+                        .content
+                        .as_ref()
+                        .map(|c| {
+                            if let Some(arr) = c.as_array() {
+                                let texts = arr
+                                    .iter()
+                                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()));
+                                if e.role == "user" {
+                                    // A user entry's visible text is only their typed
+                                    // message (the first text block). Any later text
+                                    // block is agent-injected attachment context
+                                    // (file paths), which must not leak into the bubble.
+                                    texts.take(1).collect::<Vec<_>>().join(" ")
+                                } else {
+                                    texts.collect::<Vec<_>>().join(" ")
+                                }
+                            } else {
+                                c.as_str().unwrap_or("").to_string()
+                            }
+                        })
+                        .unwrap_or_default();
+                    // Build the display content for this entry. Only include the
+                    // actual visible text — no thinking or tool formatting.
+                    // The forked session's messages should look identical to
+                    // original GUI messages (which store thinking/tools in
+                    // run events, not in the message content).
+                    let full_content = if e.entry_type == "tool" {
+                        // Tool entries: show the result text, or a placeholder.
+                        if content_text.is_empty() {
+                            String::new()
+                        } else {
+                            content_text
+                        }
+                    } else {
+                        // User and assistant entries: just the text content.
+                        content_text
+                    };
+
+                    let mut entry = serde_json::json!({
+                        "id": e.id,
+                        "role": e.role,
+                        "content": full_content,
+                        "name": e.name,
+                        "tool_args": e.tool_args,
+                        "timestamp": e.timestamp.to_rfc3339(),
+                    });
+                    // Include thinking and tool_calls for the new agent-based
+                    // message display (entryProjection.ts).
+                    if !e.thinking.is_empty() {
+                        entry["thinking"] = serde_json::Value::String(e.thinking.clone());
+                    }
+                    // Structured per-entry metadata (e.g. user attachments with
+                    // their cached thumbnails) so the GUI can rebuild attachment
+                    // chips after reload — the JSONL is the only message source.
+                    if let Some(ref meta) = e.meta {
+                        entry["meta"] = meta.clone();
+                    }
+                    if !e.tool_calls.is_empty() {
+                        entry["tool_calls"] =
+                            serde_json::to_value(&e.tool_calls).unwrap_or(serde_json::Value::Null);
+                    }
+                    // Per-reply metadata for the GUI's message footer
+                    // ("time · N tokens"); set on the final assistant
+                    // entry of each run.
+                    if e.output_tokens > 0 {
+                        entry["output_tokens"] = serde_json::json!(e.output_tokens);
+                    }
+                    if e.duration_ms > 0 {
+                        entry["duration_ms"] = serde_json::json!(e.duration_ms);
+                    }
+                    // For session_info entries, include the original content
+                    // JSON (session_name, cwd, parent_session_id, …) and the
+                    // model / thinking_level struct fields so callers can
+                    // read fork metadata without a second RPC.
+                    if e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO {
+                        if let Some(ref content) = e.content {
+                            entry["content"] = content.clone();
+                        }
+                        if !e.model.is_empty() {
+                            entry["model"] = serde_json::Value::String(e.model.clone());
+                        }
+                        if !e.thinking_level.is_empty() {
+                            entry["thinking_level"] =
+                                serde_json::Value::String(e.thinking_level.clone());
+                        }
+                    }
+                    entry
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    RpcResponse::ok(
+        id,
+        "get_session_entries",
+        serde_json::json!({"entries": entries}),
+    )
+}
+
+fn cmd_fork(
+    state: &AppState,
+    session: &Arc<std::sync::RwLock<ServerSession>>,
+    cmd: &RpcCommand,
+    id: &str,
+) -> String {
+    let entry_id = &cmd.entry_id;
+    if entry_id.is_empty() {
+        return RpcResponse::build_fail(
+            id,
+            "fork",
+            "No message selected to fork from. Choose a user message to fork at.",
+        );
+    }
+
+    // Extract needed data from session
+    let (agent_loop, session_manager, event_bus, broadcaster, _cwd, current_session_id) = {
+        let sess = session.read().unwrap();
+        (
+            sess.agent_loop.clone(),
+            sess.session_manager.clone(),
+            sess.event_bus.clone(),
+            sess.broadcaster.clone(),
+            sess.cwd.clone(),
+            sess.session_id.clone(),
+        )
+    };
+
+    // Resolve parent session: use cmd.parent_session if provided,
+    // otherwise fork from the current session.
+    let parent_id = if !cmd.parent_session.is_empty() {
+        cmd.parent_session.clone()
+    } else {
+        current_session_id.clone()
+    };
+
+    // Get parent session from manager
+    let parent = match session_manager.load(&parent_id) {
+        Ok(s) => s,
+        Err(_) => {
+            return RpcResponse::build_fail(
+                id,
+                "fork",
+                "Session not found on disk — it may have been deleted or moved.",
+            );
+        }
+    };
+
+    // Fork a new session
+    let forked = crate::session::fork_session(&parent, entry_id);
+    let forked_id = forked.id.clone();
+
+    // Save the forked session
+    if let Err(e) = session_manager.save(&forked) {
+        return RpcResponse::build_fail(
+            id,
+            "fork",
+            &format!("failed to save forked session: {}", e),
+        );
+    }
+
+    // Add to sessions map.  Load the forked entries into
+    // in-memory messages so the first prompt doesn't overwrite
+    // the saved history on disk — session_prompt.rs saves
+    // self.messages back to disk (via File::create), truncating
+    // anything not held in memory.
+    let mut new_sess = ServerSession::new_with_shared_loop(
+        forked_id.clone(),
+        agent_loop,
+        session_manager,
+        &forked.cwd,
+        event_bus,
+        broadcaster,
+        state.approval_gate.clone(),
+    );
+    let supports_images = crate::models::model_accepts_images(&forked.model);
+    let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
+    *new_sess.messages.write().unwrap() = msgs;
+    if !forked.model.is_empty() {
+        new_sess.model = forked.model.clone();
+        *new_sess.compaction_model.write().unwrap() = forked.model.clone();
+    }
+    state.create_session(new_sess);
+
+    RpcResponse::ok(id, "fork", serde_json::json!({"sessionId": forked_id}))
+}
+
+fn cmd_clone(
+    state: &AppState,
+    session: &Arc<std::sync::RwLock<ServerSession>>,
+    id: &str,
+) -> String {
+    // Extract needed data from session
+    let (agent_loop, session_manager, event_bus, broadcaster, _cwd, session_id) = {
+        let sess = session.read().unwrap();
+        if sess.messages.read().unwrap().is_empty() {
+            return RpcResponse::build_fail(
+                id,
+                "clone",
+                "Nothing to clone — the current session has no messages yet.",
+            );
+        }
+        (
+            sess.agent_loop.clone(),
+            sess.session_manager.clone(),
+            sess.event_bus.clone(),
+            sess.broadcaster.clone(),
+            sess.cwd.clone(),
+            sess.session_id.clone(),
+        )
+    };
+
+    // Get parent session from manager
+    let parent = match session_manager.load(&session_id) {
+        Ok(s) => s,
+        Err(_) => {
+            return RpcResponse::build_fail(
+                id,
+                "clone",
+                "Session not found on disk — it may have been deleted or moved.",
+            );
+        }
+    };
+
+    let leaf_id = parent
+        .entries
+        .last()
+        .map(|e| e.id.clone())
+        .unwrap_or_default();
+    if leaf_id.is_empty() {
+        return RpcResponse::build_fail(
+            id,
+            "clone",
+            "Nothing to clone — no messages found in session.",
+        );
+    }
+
+    // Fork from leaf
+    let forked = crate::session::fork_session(&parent, &leaf_id);
+    let forked_id = forked.id.clone();
+
+    // Save the forked session
+    if let Err(e) = session_manager.save(&forked) {
+        return RpcResponse::build_fail(
+            id,
+            "clone",
+            &format!("failed to save cloned session: {}", e),
+        );
+    }
+
+    // Add to sessions map.  Load the cloned entries into
+    // in-memory messages (same reason as fork — prevents
+    // the first prompt from truncating history on disk).
+    let mut new_sess = ServerSession::new_with_shared_loop(
+        forked_id.clone(),
+        agent_loop,
+        session_manager,
+        &forked.cwd,
+        event_bus,
+        broadcaster,
+        state.approval_gate.clone(),
+    );
+    let supports_images = crate::models::model_accepts_images(&forked.model);
+    let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
+    *new_sess.messages.write().unwrap() = msgs;
+    if !forked.model.is_empty() {
+        new_sess.model = forked.model.clone();
+        *new_sess.compaction_model.write().unwrap() = forked.model.clone();
+    }
+    state.create_session(new_sess);
+
+    RpcResponse::ok(id, "clone", serde_json::json!({"cancelled": false}))
+}
+
+fn cmd_reload_config(
+    state: &AppState,
+    session: &Arc<std::sync::RwLock<ServerSession>>,
+    id: &str,
+) -> String {
+    // Re-discover skills and re-read context files, then rebuild system prompt.
+    let (cwd, tools) = {
+        let sess = session.read().unwrap();
+        let loop_ = match sess.agent_loop.try_read() {
+            Ok(l) => l,
+            Err(_) => {
+                return RpcResponse::build_fail(
+                    id,
+                    "reload_config",
+                    "agent is busy, retry in a moment",
+                );
+            }
+        };
+        (sess.cwd.clone(), loop_.tools.clone())
+    };
+
+    // Re-discover skills (blocking I/O, no locks held)
+    let skill_dirs = vec![
+        crate::skills::APP_SKILLS_DIR.to_string(),
+        format!("{}/{}", cwd, crate::skills::PROJECT_SKILLS_DIR),
+        crate::skills::AGENTS_SKILLS_DIR.to_string(),
+    ];
+    let skills = crate::skills::discover_skills(&skill_dirs).unwrap_or_default();
+    let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
+
+    // Re-read context files
+    let mut agent_content = String::new();
+    for fname in &["CLAUDE.md", "AGENTS.md", "GEMINI.md"] {
+        let p = std::path::Path::new(&cwd).join(fname);
+        if p.exists() {
+            if let Ok(content) = std::fs::read_to_string(&p) {
+                agent_content = content;
+                break;
+            }
+        }
+    }
+    let context_lines: Vec<String> = if agent_content.is_empty() {
+        vec![]
+    } else {
+        vec![agent_content.clone()]
+    };
+
+    // Rebuild system prompt
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let new_prompt = crate::prompt::build_prompt(&crate::prompt::PromptOptions {
+        working_directory: cwd.clone(),
+        date: today,
+        tools: tools.clone(),
+        skills: skills.clone(),
+        agent_content: agent_content.clone(),
+        ..Default::default()
+    });
+
+    // Update welcome_* state for get_state
+    *state.welcome_skills.write().unwrap() = skill_names.clone();
+    *state.welcome_context.write().unwrap() = context_lines;
+
+    // Update running session's system prompt
+    let sess = session.read().unwrap();
+    if let Ok(mut r#loop) = sess.agent_loop.try_write() {
+        r#loop.system_prompt = new_prompt.clone();
+        r#loop.config.system_prompt = new_prompt;
+    }
+
+    RpcResponse::ok(
+        id,
+        "reload_config",
+        serde_json::json!({
+            "skills": skill_names,
+            "contextFiles": if agent_content.is_empty() { vec![] } else { vec!["CLAUDE.md".to_string()] },
         }),
     )
 }
