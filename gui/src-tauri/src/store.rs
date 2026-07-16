@@ -21,7 +21,8 @@ mod workspaces;
 use db::*;
 
 pub use app_settings::{
-    get_app_settings, update_app_settings, AppSettings, UpdateAppSettingsInput,
+    get_app_settings, is_builtin_skills_bootstrapped, mark_builtin_skills_bootstrapped,
+    update_app_settings, AppSettings, UpdateAppSettingsInput,
 };
 pub use approvals::{
     decide_approval_request, ensure_approval_request, list_approval_requests,
