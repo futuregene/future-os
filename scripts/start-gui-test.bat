@@ -10,6 +10,8 @@ rem   FUTURE_AGENT_GRPC_ADDR  default 127.0.0.1:50051
 rem   GUI_DEV_PORT            default 5173
 rem   REUSE_AGENT             1 = reuse an agent already listening on the port
 rem   BUILD_AGENT             1 = cargo build the agent first (default 1)
+rem   BUILD_CLI               1 = build the future CLI and put it on the agent's
+rem                               PATH so skills that call `future` work (default 1)
 rem   CLEAN_STALE_APP_TASKS   1 = cancel stale GUI runs/approvals first (default 1)
 rem   RUN_CHECKS             1 = run lint/stylelint/test/build + cargo check first
 rem   DRY_RUN                1 = print config and exit without starting anything
@@ -22,6 +24,7 @@ set "ROOT_DIR=%CD%"
 popd
 set "GUI_DIR=%ROOT_DIR%\gui"
 set "AGENT_DIR=%ROOT_DIR%\agent"
+set "CLI_DIR=%ROOT_DIR%\cli"
 set "LOG_DIR=%ROOT_DIR%\.logs"
 
 if not defined FUTURE_AGENT_GRPC_ADDR set "FUTURE_AGENT_GRPC_ADDR=127.0.0.1:50051"
@@ -33,6 +36,7 @@ for /f "tokens=1,2 delims=:" %%a in ("%AGENT_ADDR%") do (
 if not defined GUI_DEV_PORT set "GUI_DEV_PORT=5173"
 if not defined REUSE_AGENT set "REUSE_AGENT=0"
 if not defined BUILD_AGENT set "BUILD_AGENT=1"
+if not defined BUILD_CLI set "BUILD_CLI=1"
 if not defined CLEAN_STALE_APP_TASKS set "CLEAN_STALE_APP_TASKS=1"
 if not defined RUN_CHECKS set "RUN_CHECKS=0"
 if not defined DRY_RUN set "DRY_RUN=0"
@@ -83,6 +87,11 @@ if "%BUILD_AGENT%"=="1" (
   popd
 )
 
+if "%BUILD_CLI%"=="1" call :build_cli
+rem Put the built CLI on the agent's PATH so skills that shell out to `future`
+rem resolve it. The agent (started below) inherits this process's environment.
+if exist "%CLI_DIR%\dist\future.exe" set "PATH=%CLI_DIR%\dist;%PATH%"
+
 call :port_in_use
 set "PORT_BUSY=%ERRORLEVEL%"
 
@@ -132,8 +141,11 @@ echo future-agent started pid=%AGENT_PID%
 echo Agent log: %AGENT_LOG%
 
 :start_gui
+call :ensure_sidecars
 echo Starting GUI...
-echo Press Ctrl-C here to stop the GUI; the agent this script started is stopped afterward.
+echo Press Ctrl-C to stop the GUI. At the "Terminate batch job (Y/N)?" prompt choose N
+echo so this script can stop the agent it started; choosing Y leaves the agent running
+echo (the next run reclaims it via the pid file).
 set "FUTURE_AGENT_GRPC_ADDR=%AGENT_ADDR%"
 pushd "%GUI_DIR%" || (call :cleanup & exit /b 1)
 if "%GUI_DEV_PORT%"=="5173" (
@@ -158,6 +170,48 @@ call :cleanup
 exit /b %GUI_EXIT%
 
 rem ---------------------------------------------------------------------------
+:build_cli
+rem Build the future CLI to a standalone dist\future.exe (matching make build-cli)
+rem so the agent can shell out to it. Non-fatal: a failure only means skills that
+rem call `future` won't work; the GUI test still runs.
+where bun >nul 2>&1 || (
+  echo bun not found; skipping future CLI build. Skills that call future will not work.
+  exit /b 0
+)
+echo Building future CLI...
+pushd "%CLI_DIR%" || exit /b 0
+if not exist node_modules (
+  call npm ci || (echo npm ci failed; skipping future CLI build. & popd & exit /b 0)
+)
+call npm run build || (echo CLI tsc build failed; skipping. & popd & exit /b 0)
+call bun build --compile dist\index.js --outfile dist\future.exe || (echo bun compile failed; skipping. & popd & exit /b 0)
+popd
+exit /b 0
+
+rem ---------------------------------------------------------------------------
+:ensure_sidecars
+rem Tauri validates bundle.externalBin sidecars (future-agent, future) at COMPILE
+rem time — even for `tauri dev`. This script runs the agent standalone and the GUI
+rem connects to it, so the sidecars are never launched here; they only need to
+rem exist. Create empty placeholders (with the Windows .exe suffix) for any that
+rem are missing (CI and the packaging scripts stage the real binaries). Mirrors
+rem the sidecar block in start-gui-test.sh.
+set "TRIPLE="
+for /f "tokens=2" %%h in ('rustc -Vv ^| findstr /b /c:"host: "') do set "TRIPLE=%%h"
+if not defined TRIPLE (
+  echo Could not determine host triple from rustc; skipping sidecar placeholders.
+  exit /b 0
+)
+set "BIN_DIR=%GUI_DIR%\src-tauri\binaries"
+if not exist "%BIN_DIR%" mkdir "%BIN_DIR%"
+for %%n in (future-agent future) do (
+  if not exist "%BIN_DIR%\%%n-%TRIPLE%.exe" (
+    echo Creating sidecar placeholder %%n-%TRIPLE%.exe
+    type nul > "%BIN_DIR%\%%n-%TRIPLE%.exe"
+  )
+)
+exit /b 0
+
 :port_in_use
 rem Returns 0 (errorlevel) if AGENT_PORT is LISTENING, 1 otherwise.
 netstat -ano -p tcp | findstr /r /c:":%AGENT_PORT% .*LISTENING" >nul 2>&1
@@ -174,7 +228,10 @@ if %_attempts% GEQ 60 (
   echo Agent err: %AGENT_ERR%
   exit /b 1
 )
-timeout /t 1 /nobreak >nul
+rem `ping -n 2` waits ~1s and, unlike `timeout`, works when stdin is redirected
+rem (CI / piped invocation), where `timeout` aborts with "Input redirection is
+rem not supported".
+ping -n 2 127.0.0.1 >nul
 goto :wait_loop
 
 :cleanup
