@@ -587,7 +587,7 @@ fn load_user_models_with_overrides(
         let provider_base_url = provider
             .base_url
             .clone()
-            .unwrap_or_else(|| default_base_url_for_provider(&provider_name));
+            .unwrap_or_default();
 
         // Load explicit models
         for model in provider.models.unwrap_or_default() {
