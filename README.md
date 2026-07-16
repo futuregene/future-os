@@ -62,7 +62,7 @@ Binaries are installed to: macOS `/opt/homebrew/bin`, Linux `/usr/local/bin`, Wi
 
 ### Configure a model
 
-The agent needs at least one model with an API key before it can answer. Four options:
+The agent needs at least one model with an API key before it can answer. Three options:
 
 **A — FutureOS hosted models.** Device-flow sign-in provisions keys and a model list automatically:
 
@@ -70,7 +70,7 @@ The agent needs at least one model with an API key before it can answer. Four op
 future auth login
 ```
 
-**B — Use a known provider.** Put your API key in `~/.future/agent/auth.json`, keyed by provider name. Built-in base URLs and models are auto-discovered for providers in the [catalog](docs/wiki/en/Models.md):
+**B — Use a known provider.** Put your API key in `~/.future/agent/auth.json`, keyed by provider name. See the [built-in model catalog](docs/wiki/en/Models.md) for 1000+ supported providers — most have built-in base URLs and auto-discover their models:
 
 ```json
 {
@@ -78,20 +78,15 @@ future auth login
 }
 ```
 
-**C — Known provider, custom base URL.** For providers whose base URL requires user-specific values (e.g. Azure's `YOUR_RESOURCE`, Google Vertex's `PROJECT_ID`), add a provider entry with `apiKey` + `baseUrl` in `~/.future/agent/models.json`. Models are still auto-discovered from the built-in catalog:
+For providers with user-specific base URLs (e.g. Azure's `YOUR_RESOURCE`), add a `baseUrl` field in `auth.json`:
 
 ```json
 {
-  "providers": {
-    "azure": {
-      "apiKey": "sk-...",
-      "baseUrl": "https://my-resource.openai.azure.com/openai/v1"
-    }
-  }
+  "azure": { "type": "api_key", "key": "sk-...", "baseUrl": "https://my-resource.openai.azure.com/openai/v1" }
 }
 ```
 
-**D — Custom provider.** For providers not in the built-in catalog, specify the full model list in `models.json` as well:
+**C — Custom provider.** For providers not in the built-in catalog, specify everything in `~/.future/agent/models.json`:
 
 ```json
 {

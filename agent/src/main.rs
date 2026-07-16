@@ -120,10 +120,28 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
         .map(|m| m.id.clone())
         .unwrap_or_else(|| resolved_model.clone());
 
+    // Resolve base URL: models.json > auth.json baseUrl > built-in default
     let base_url = model_config
         .as_ref()
-        .map(|m| m.base_url.clone())
-        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+        .and_then(|m| {
+            if m.base_url.is_empty() {
+                None
+            } else {
+                Some(m.base_url.clone())
+            }
+        })
+        .or_else(|| auth_store.base_url(&resolved_model))
+        .or_else(|| {
+            model_config
+                .as_ref()
+                .and_then(|m| auth_store.base_url(&m.provider))
+        })
+        .unwrap_or_else(|| future_agent::models::default_base_url_for_provider(&resolved_model));
+    let base_url = if base_url.is_empty() {
+        "https://api.openai.com/v1".to_string()
+    } else {
+        base_url
+    };
 
     // Resolve API key from auth.json > model config
     let api_key = auth_store
