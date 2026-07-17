@@ -458,7 +458,10 @@ impl Manager {
             writeln!(w, "{}", json).context("write entry")?;
         }
         w.flush().context("flush")?;
-        drop(w);
+        // Force data to disk before rename so a crash cannot leave a
+        // renamed-but-empty file behind (OS may defer writes in page cache).
+        let file = w.into_inner().map_err(|_| anyhow::anyhow!("flush failed"))?;
+        file.sync_all().context("fsync temp session file")?;
         fs::rename(&tmp_path, &path).context("rename temp to final")?;
         Ok(())
     }
@@ -717,10 +720,23 @@ impl Manager {
 
 pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
     let chain = for_each_entry(&parent.entries, from_entry_id);
-    // for_each_entry returns root→target order; clone as-is (IDs are regenerated below).
+    // If from_entry_id wasn't found, for_each_entry returns every entry
+    // (never hits the break).  Guard against a bad entry ID silently
+    // producing an unforked clone.
+    if chain.is_empty() || chain.last().map(|e| e.id.as_str()) != Some(from_entry_id) {
+        // Fall back to cloning the whole session without a cut — better
+        // than losing history.  Callers should validate the entry ID first.
+        tracing::warn!(
+            "fork point {from_entry_id} not found in session {}; cloning without a cut",
+            parent.id
+        );
+    }
     let mut entries: Vec<SessionEntry> = chain.into_iter().cloned().collect();
     for e in &mut entries {
         e.id = generate_entry_id();
+        // Reset parent_id too — the old references point into the
+        // parent session and are meaningless (orphaned) in the fork.
+        e.parent_id.clear();
     }
     // Read parent metadata from the session_info entry.  The values live on
     // the SessionEntry struct fields (model, thinking_level) and also inside

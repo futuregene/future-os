@@ -302,9 +302,12 @@ impl ServerSession {
         *self.compaction_model.write().unwrap() = self.model.clone();
 
         // Update the agent loop in one shot — both model name and provider endpoint.
-        // Uses try_write: if a prompt is actively streaming (holding the write lock),
-        // skip this update. The caller should retry or set_model before prompting.
-        if let Ok(mut loop_) = self.agent_loop.try_write() {
+        // Fail explicitly when the loop is busy so the caller knows to retry
+        // rather than silently continuing with the old model.
+        let mut loop_ = self
+            .agent_loop
+            .try_write()
+            .map_err(|_| anyhow::anyhow!("agent is currently streaming; retry /model before your next prompt"))?;
             // Set agent loop model to bare canonical ID for LLM API calls.
             // The session-level self.model already holds the full provider/id.
             if let Some(ref mc) = resolved {
@@ -389,7 +392,6 @@ impl ServerSession {
 
                 loop_.provider = std::sync::Arc::new(client);
             }
-        }
         Ok(())
     }
 
