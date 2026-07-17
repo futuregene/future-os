@@ -5,6 +5,25 @@ use super::{
     RpcCommand, RpcResponse, ServerSession, SseBroadcaster,
 };
 
+/// Poison-safe session write lock — returns an RPC error instead of panicking.
+macro_rules! wlock {
+    ($session:expr, $id:expr) => {
+        match $session.write() {
+            Ok(s) => s,
+            Err(_) => return RpcResponse::build_fail($id, "internal", "session lock poisoned"),
+        }
+    };
+}
+/// Poison-safe session read lock.
+macro_rules! rlock {
+    ($session:expr, $id:expr) => {
+        match $session.read() {
+            Ok(s) => s,
+            Err(_) => return RpcResponse::build_fail($id, "internal", "session lock poisoned"),
+        }
+    };
+}
+
 pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     let id = &cmd.id;
     let cmd_type = &cmd.cmd_type;
@@ -55,7 +74,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     ),
                 );
             };
-            let mut sess = session.write().unwrap();
+            let mut sess = wlock!(session, id);
             if sess.is_streaming.load(std::sync::atomic::Ordering::Relaxed) {
                 RpcResponse::build_fail(
                     id,
@@ -63,13 +82,17 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     "agent is still streaming; wait or abort first",
                 )
             } else {
-                let _ = sess.prompt(&cmd.message, &cmd.images, &cmd.attachments);
-                RpcResponse::ok(id, "prompt", serde_json::json!({}))
+                match sess.prompt(&cmd.message, &cmd.images, &cmd.attachments) {
+                    Ok(()) => RpcResponse::ok(id, "prompt", serde_json::json!({})),
+                    Err(e) => RpcResponse::build_fail(id, "prompt", &e.to_string()),
+                }
             }
         }
         "steer" => {
-            let _ = session.write().unwrap().steer(&cmd.message);
-            RpcResponse::ok(id, "steer", serde_json::json!({}))
+            match wlock!(session, id).steer(&cmd.message) {
+                Ok(()) => RpcResponse::ok(id, "steer", serde_json::json!({})),
+                Err(e) => RpcResponse::build_fail(id, "steer", &e.to_string()),
+            }
         }
         "follow_up" => {
             if state
@@ -82,15 +105,17 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     "agent is shutting down; no new prompts accepted",
                 );
             }
-            let _ = session.write().unwrap().follow_up(&cmd.message);
-            RpcResponse::ok(id, "follow_up", serde_json::json!({}))
+            match wlock!(session, id).follow_up(&cmd.message) {
+                Ok(()) => RpcResponse::ok(id, "follow_up", serde_json::json!({})),
+                Err(e) => RpcResponse::build_fail(id, "follow_up", &e.to_string()),
+            }
         }
         "abort" => {
             // abort() only needs &self — take a read lock so a concurrent
             // reader (get_state polling) can never make the abort a no-op,
             // which a failed try_write() silently did.
             let session_id = {
-                let sess = session.read().unwrap();
+                let sess = rlock!(session, id);
                 sess.abort();
                 sess.session_id.clone()
             };
@@ -134,13 +159,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "get_state", state_val)
         }
         "get_messages" => {
-            let msgs = session.read().unwrap().get_messages();
+            let msgs = rlock!(session, id).get_messages();
             RpcResponse::ok(id, "get_messages", serde_json::json!({"messages": msgs}))
         }
         "get_events_since" => {
             // P1: backfill current-run events with idx > since_idx (Bridge reconnect).
             let (run_id, events, min_idx) = {
-                let sess = session.read().unwrap();
+                let sess = rlock!(session, id);
                 sess.broadcaster.events_since(&cmd.run_id, cmd.since_idx)
             };
             // A full backfill (`since_idx < 0`) whose earliest buffered event is
@@ -166,7 +191,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             )
         }
         "set_model" => {
-            let result = session.write().unwrap().set_model(&cmd.model_id);
+            let result = wlock!(session, id).set_model(&cmd.model_id);
             match result {
                 Ok(()) => {
                     RpcResponse::ok(id, "set_model", serde_json::json!({"model": cmd.model_id}))
@@ -175,30 +200,30 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             }
         }
         "set_thinking_level" => {
-            session.write().unwrap().set_thinking_level(&cmd.level);
+            wlock!(session, id).set_thinking_level(&cmd.level);
             RpcResponse::ok(id, "set_thinking_level", serde_json::json!({}))
         }
         "set_steering_mode" => {
-            session.write().unwrap().set_steering_mode(&cmd.mode);
+            wlock!(session, id).set_steering_mode(&cmd.mode);
             RpcResponse::ok(id, "set_steering_mode", serde_json::json!({}))
         }
         "set_follow_up_mode" => {
-            session.write().unwrap().set_follow_up_mode(&cmd.mode);
+            wlock!(session, id).set_follow_up_mode(&cmd.mode);
             RpcResponse::ok(id, "set_follow_up_mode", serde_json::json!({}))
         }
         "compact" => {
-            let result = session.write().unwrap().compact(&cmd.custom_instructions);
+            let result = wlock!(session, id).compact(&cmd.custom_instructions);
             match result {
                 Ok(r) => RpcResponse::ok(id, "compact", r),
                 Err(e) => RpcResponse::build_fail(id, "compact", &e.to_string()),
             }
         }
         "set_auto_compaction" => {
-            session.write().unwrap().set_auto_compaction(cmd.enabled);
+            wlock!(session, id).set_auto_compaction(cmd.enabled);
             RpcResponse::ok(id, "set_auto_compaction", serde_json::json!({}))
         }
         "set_auto_retry" => {
-            session.write().unwrap().set_auto_retry(cmd.enabled);
+            wlock!(session, id).set_auto_retry(cmd.enabled);
             RpcResponse::ok(id, "set_auto_retry", serde_json::json!({}))
         }
         "set_system_prompt" => {
@@ -209,15 +234,15 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "set_system_prompt", serde_json::json!({}))
         }
         "set_tools" => {
-            session.write().unwrap().set_tools(&cmd.tools);
+            wlock!(session, id).set_tools(&cmd.tools);
             RpcResponse::ok(id, "set_tools", serde_json::json!({"tools": cmd.tools}))
         }
         "disable_tools" => {
-            session.write().unwrap().disable_tools();
+            wlock!(session, id).disable_tools();
             RpcResponse::ok(id, "disable_tools", serde_json::json!({}))
         }
         "disable_builtin_tools" => {
-            session.write().unwrap().disable_builtin_tools();
+            wlock!(session, id).disable_builtin_tools();
             RpcResponse::ok(id, "disable_builtin_tools", serde_json::json!({}))
         }
         "append_system_prompt" => {
@@ -228,7 +253,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "append_system_prompt", serde_json::json!({}))
         }
         "set_ephemeral" => {
-            session.write().unwrap().set_ephemeral(cmd.ephemeral);
+            wlock!(session, id).set_ephemeral(cmd.ephemeral);
             RpcResponse::ok(
                 id,
                 "set_ephemeral",
@@ -236,14 +261,14 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             )
         }
         "shell" => {
-            let result = session.write().unwrap().execute_shell(&cmd.command);
+            let result = wlock!(session, id).execute_shell(&cmd.command);
             match result {
                 Ok(r) => RpcResponse::ok(id, "shell", r),
                 Err(e) => RpcResponse::build_fail(id, "shell", &e.to_string()),
             }
         }
         "get_session_stats" => {
-            let stats = session.read().unwrap().get_session_stats();
+            let stats = rlock!(session, id).get_session_stats();
             RpcResponse::ok(id, "get_session_stats", stats)
         }
         "list_sessions" => {
@@ -284,7 +309,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     "No session selected. Choose a session from the list to switch to.",
                 );
             }
-            let mut sess = session.write().unwrap();
+            let mut sess = wlock!(session, id);
             let result = match sess.switch_session(&cmd.session_id) {
                 Ok(()) => {
                     if let Ok(mut active_id) = state.active_session_id.try_write() {
@@ -335,7 +360,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "get_fork_messages" => {
             // Load session from disk to get entry IDs (needed for fork).
             let (session_manager, session_id) = {
-                let sess = session.read().unwrap();
+                let sess = rlock!(session, id);
                 (sess.session_manager.clone(), sess.session_id.clone())
             };
             let user_entries: Vec<serde_json::Value> =
@@ -379,7 +404,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         }
         "get_session_entries" => cmd_get_session_entries(&session, id),
         "get_last_assistant_text" => {
-            let text = session.read().unwrap().get_last_assistant_text();
+            let text = rlock!(session, id).get_last_assistant_text();
             RpcResponse::ok(
                 id,
                 "get_last_assistant_text",
@@ -388,7 +413,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         }
         "set_session_name" => {
             let (session_manager, session_id) = {
-                let mut sess = session.write().unwrap();
+                let mut sess = wlock!(session, id);
                 sess.set_session_name(&cmd.name);
                 (sess.session_manager.clone(), sess.session_id.clone())
             };
@@ -459,7 +484,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             )
         }
         "abort_retry" => {
-            session.read().unwrap().abort();
+            rlock!(session, id).abort();
             RpcResponse::ok(id, "abort_retry", serde_json::json!({}))
         }
         "abort_shell" => {
@@ -486,13 +511,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 );
             }
 
-            let current = session.read().unwrap().model.clone();
+            let current = rlock!(session, id).model.clone();
             let idx = models.iter().position(|m| m == &current).unwrap_or(0);
             let next_idx = (idx + 1) % models.len();
             let next_model = &models[next_idx];
 
             // Use set_model to update session, agent_loop, compat, and endpoint
-            if let Err(e) = session.write().unwrap().set_model(next_model) {
+            if let Err(e) = wlock!(session, id).set_model(next_model) {
                 return RpcResponse::build_fail(id, "cycle_model", &e.to_string());
             }
 
@@ -501,7 +526,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 "cycle_model",
                 serde_json::json!({
                     "model": next_model,
-                    "thinkingLevel": session.read().unwrap().thinking_level.clone(),
+                    "thinkingLevel": rlock!(session, id).thinking_level.clone(),
                     "isScoped": false
                 }),
             )
@@ -509,13 +534,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "cycle_thinking_level" => {
             // Cycle thinking level: off -> minimal -> low -> medium -> high -> xhigh -> off
             let levels = ["off", "minimal", "low", "medium", "high", "xhigh"];
-            let current = session.read().unwrap().thinking_level.clone();
+            let current = rlock!(session, id).thinking_level.clone();
             let idx = levels.iter().position(|l| *l == current).unwrap_or(0);
             let next_idx = (idx + 1) % levels.len();
             let next_level = levels[next_idx];
 
             // Update session thinking level and propagate to provider
-            session.write().unwrap().set_thinking_level(next_level);
+            wlock!(session, id).set_thinking_level(next_level);
 
             RpcResponse::ok(
                 id,
@@ -532,7 +557,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "clone" => cmd_clone(state, &session, id),
         "export_html" => {
             // Export session to HTML file
-            let sess = session.read().unwrap();
+            let sess = rlock!(session, id);
             let session_id = sess.session_id();
             let model = sess.model.clone();
             let cwd = sess.cwd.clone();
@@ -557,7 +582,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "reload_config" => cmd_reload_config(state, &session, id),
         "set_cwd" => {
             let (session_manager, session_id) = {
-                let mut sess = session.write().unwrap();
+                let mut sess = wlock!(session, id);
                 sess.set_cwd(&cmd.cwd);
                 (sess.session_manager.clone(), sess.session_id.clone())
             };
@@ -599,7 +624,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 "tier": policy.tier.as_str(),
                 "sandboxAvailable": crate::sandbox::platform_sandbox_available(),
             });
-            session.write().unwrap().set_sandbox_policy(policy);
+            wlock!(session, id).set_sandbox_policy(policy);
             RpcResponse::ok(id, "set_sandbox_policy", summary)
         }
         "set_permission_level" => {
@@ -611,7 +636,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     &format!("invalid level: {}. valid: all, workspace, none", cmd.level),
                 );
             }
-            session.write().unwrap().set_permission_level(&cmd.level);
+            wlock!(session, id).set_permission_level(&cmd.level);
             RpcResponse::ok(
                 id,
                 "set_permission_level",
@@ -699,7 +724,7 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
         approval_gate,
         session_manager,
     ) = {
-        let sess = session.read().unwrap();
+        let sess = rlock!(session, id);
         (
             sess.agent_loop.clone(),
             sess.model.clone(),
@@ -847,7 +872,7 @@ fn cmd_get_session_entries(session: &Arc<std::sync::RwLock<ServerSession>>, id: 
     // Return displayable entries from a session plus the session_info
     // metadata entry (model, thinking_level, session_name, cwd).
     let (session_manager, session_id) = {
-        let sess = session.read().unwrap();
+        let sess = rlock!(session, id);
         (sess.session_manager.clone(), sess.session_id.clone())
     };
     let entries: Vec<serde_json::Value> = session_manager
@@ -978,7 +1003,7 @@ fn cmd_fork(
 
     // Extract needed data from session
     let (agent_loop, session_manager, event_bus, broadcaster, _cwd, current_session_id) = {
-        let sess = session.read().unwrap();
+        let sess = rlock!(session, id);
         (
             sess.agent_loop.clone(),
             sess.session_manager.clone(),
@@ -1055,7 +1080,7 @@ fn cmd_clone(
 ) -> String {
     // Extract needed data from session
     let (agent_loop, session_manager, event_bus, broadcaster, _cwd, session_id) = {
-        let sess = session.read().unwrap();
+        let sess = rlock!(session, id);
         if sess.messages.read().unwrap().is_empty() {
             return RpcResponse::build_fail(
                 id,
@@ -1142,7 +1167,7 @@ fn cmd_reload_config(
 ) -> String {
     // Re-discover skills and re-read context files, then rebuild system prompt.
     let (cwd, tools) = {
-        let sess = session.read().unwrap();
+        let sess = rlock!(session, id);
         let loop_ = match sess.agent_loop.try_read() {
             Ok(l) => l,
             Err(_) => {
@@ -1198,7 +1223,7 @@ fn cmd_reload_config(
     *state.welcome_context.write().unwrap() = context_lines;
 
     // Update running session's system prompt
-    let sess = session.read().unwrap();
+    let sess = rlock!(session, id);
     if let Ok(mut r#loop) = sess.agent_loop.try_write() {
         r#loop.system_prompt = new_prompt.clone();
         r#loop.config.system_prompt = new_prompt;
