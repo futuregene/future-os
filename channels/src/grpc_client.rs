@@ -181,7 +181,7 @@ impl AgentClient {
             tokens_out: resp["tokensOut"].as_i64().unwrap_or(0),
             query_count: resp["queryCount"].as_i64().unwrap_or(0) as usize,
             session_id: resp["sessionId"].as_str().unwrap_or("").to_string(),
-            session_name: resp["sessionName"].as_str().unwrap_or("").to_string(),
+            session_name: resp["session_name"].as_str().unwrap_or("").to_string(),
             cwd: resp["cwd"].as_str().unwrap_or("").to_string(),
             auto_compaction: resp["autoCompactionEnabled"].as_bool().unwrap_or(true),
             total_cost: resp["totalCost"].as_f64().unwrap_or(0.0),

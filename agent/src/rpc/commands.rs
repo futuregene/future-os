@@ -265,7 +265,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 .map(|s| {
                     serde_json::json!({
                         "id": s.id,
-                        "name": s.name,
+                        "session_name": s.name,
                         "model": s.model,
                         "cwd": s.cwd,
                         "updated_at": s.updated_at.format("%Y-%m-%d %H:%M:%S").to_string(),

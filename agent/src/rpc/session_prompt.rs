@@ -404,6 +404,7 @@ impl ServerSession {
                             "auto_compaction": auto_compaction,
                             "parent_session_id": parent_session_id,
                             "thinking_level": session_thinking.clone(),
+                            "model": session_model.clone(),
                         });
                         if !created_by.is_empty() {
                             info["created_by"] = serde_json::Value::String(created_by);
@@ -648,6 +649,7 @@ impl ServerSession {
                 "auto_compaction": self.auto_compaction,
                 "parent_session_id": parent_session_id,
                 "thinking_level": self.thinking_level.clone(),
+                "model": self.model.clone(),
             });
             if !self.created_by.is_empty() {
                 info["created_by"] =

@@ -565,7 +565,7 @@ export class RunClient {
         );
         if (verbose) {
           process.stderr.write(
-            `Continuing session ${sessions[0].name || sessions[0].id}...\n`,
+            `Continuing session ${sessions[0].session_name || sessions[0].id}...\n`,
           );
         }
         await this.switchSession(sessions[0].id);

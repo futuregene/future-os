@@ -64,7 +64,7 @@ export async function getAgentState(threadId: string): Promise<AgentSessionState
       const state: AgentSessionState = {
         model: typeof raw.model === "string" ? raw.model : null,
         thinkingLevel: typeof raw.thinkingLevel === "string" ? raw.thinkingLevel : null,
-        sessionName: typeof raw.sessionName === "string" ? raw.sessionName : null,
+        sessionName: typeof raw.session_name === "string" ? raw.session_name : null,
         cwd: typeof raw.cwd === "string" ? raw.cwd : null,
         parentSessionId: typeof raw.parentSessionId === "string" ? raw.parentSessionId : null,
       };

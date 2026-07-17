@@ -96,7 +96,7 @@ export interface RpcSessionState {
   followUpMode: "all" | "one-at-a-time";
   sessionFile?: string;
   sessionId: string;
-  sessionName?: string;
+  session_name?: string;
   explicitSession: boolean;
   autoCompactionEnabled: boolean;
   queryCount: number;
@@ -129,7 +129,7 @@ export interface SessionSummary {
   cwd: string;
   updated_at: string;
   model: string;
-  name?: string;
+  session_name?: string;
   parent_session_id?: string;
 }
 

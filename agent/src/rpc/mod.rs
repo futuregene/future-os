@@ -250,7 +250,7 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
         "followUpMode": sess.follow_up_mode,
         "sessionFile": if session_id.is_empty() { serde_json::Value::Null } else { serde_json::Value::String("".to_string()) },
         "sessionId": if session_id.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(session_id) },
-        "sessionName": if sess.session_name.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(sess.session_name.clone()) },
+        "session_name": if sess.session_name.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(sess.session_name.clone()) },
         "explicitSession": state.explicit_session,
         "autoCompactionEnabled": sess.auto_compaction,
         "queryCount": query_count,

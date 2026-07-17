@@ -173,7 +173,7 @@ pub async fn get_thread_agent_state(
     Ok(serde_json::json!({
         "model": null,
         "thinkingLevel": null,
-        "sessionName": thread.title,
+        "session_name": thread.title,
         "cwd": null,
         "parentSessionId": null,
     }))

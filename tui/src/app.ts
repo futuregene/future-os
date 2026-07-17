@@ -112,7 +112,7 @@ export class App extends Container {
   private getSessions = async (): Promise<string[]> => {
     try {
       const r = await this.client.listSessions();
-      return r.sessions.map((s) => s.name || s.id);
+      return r.sessions.map((s) => s.session_name || s.id);
     } catch { return []; }
   };
 
@@ -1018,7 +1018,7 @@ export class App extends Container {
                   prefix += isLast ? "└─ " : "├─ ";
                 }
                 const currentMarker = s.id === this.state.sessionId ? "▶ " : "  ";
-                const label = `${currentMarker}${prefix}${s.name || (s as any).first_message || s.id}`;
+                const label = `${currentMarker}${prefix}${s.session_name || (s as any).first_message || s.id}`;
                 items.push({
                   value: s.id,
                   label,
@@ -1466,7 +1466,7 @@ export class App extends Container {
       this.state.model = s.model ?? "(no model)";
       this.state.thinking = s.thinkingLevel;
       this.state.sessionId = s.sessionId ?? this.state.sessionId;
-      this.state.sessionName = s.sessionName ?? "";
+      this.state.sessionName = s.session_name ?? "";
       this.state.cwd = s.cwd ?? "";
       this.state.version = s.version ?? "";
       this.state.skills = (s.skills ?? []).slice().sort((a, b) => a.localeCompare(b));
@@ -1788,7 +1788,7 @@ export class App extends Container {
   }
 
   async showSessions(): Promise<void> {
-    let sessions: { id: string; name?: string; first_message?: string; query_count?: number; model: string; updated_at: string }[] = [];
+    let sessions: { id: string; session_name?: string; first_message?: string; query_count?: number; model: string; updated_at: string }[] = [];
     try {
       const r = await this.client.listSessions();
       sessions = r.sessions;
@@ -1803,7 +1803,7 @@ export class App extends Container {
 
     const items: SelectItem[] = sessions.map((s) => ({
       value: s.id,
-      label: s.name || s.first_message || s.id,
+      label: s.session_name || (s as any).first_message || s.id,
       description: `${s.model} · ${s.query_count ?? "?"}Q · ${new Date(s.updated_at).toLocaleString()}`,
     }));
 

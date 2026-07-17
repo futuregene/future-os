@@ -121,7 +121,7 @@ export interface SessionSummary {
   cwd: string;
   updated_at: string;
   model: string;
-  name?: string;
+  session_name?: string;
   parent_session_id?: string;
   first_message?: string;
   query_count?: number;
