@@ -610,6 +610,31 @@ impl ServerSession {
         // token counters and may skip needed compaction.
         {
             use std::sync::atomic::Ordering;
+            // Derive session_name: prefer the explicitly-set name; fall back
+            // to the first user message so the mid-stream save doesn't write
+            // an empty name that would leak into a subsequent fork.
+            let session_name = if !self.session_name.is_empty() {
+                self.session_name.clone()
+            } else {
+                // Same auto-generation logic as the final save below.
+                entries
+                    .iter()
+                    .find(|e| e.role == "user")
+                    .and_then(|e| e.content.as_ref())
+                    .map(|c| {
+                        if let Some(arr) = c.as_array() {
+                            arr.iter()
+                                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                                .next()
+                                .unwrap_or("")
+                                .to_string()
+                        } else {
+                            c.as_str().unwrap_or("").to_string()
+                        }
+                    })
+                    .map(|s| crate::session::truncate_visible(s.trim(), 40))
+                    .unwrap_or_default()
+            };
             let info = serde_json::json!({
                 "cwd": self.cwd,
                 "tokens_in": self.tokens_in.load(Ordering::Relaxed),
@@ -618,7 +643,7 @@ impl ServerSession {
                 "tokens_cache_w": self.tokens_cache_w.load(Ordering::Relaxed),
                 "last_prompt_tokens": self.last_prompt_tokens.load(Ordering::Relaxed),
                 "total_cost": *self.cumulative_cost.lock().unwrap(),
-                "session_name": self.session_name,
+                "session_name": session_name,
                 "auto_compaction": self.auto_compaction,
                 "parent_session_id": parent_session_id,
             });
