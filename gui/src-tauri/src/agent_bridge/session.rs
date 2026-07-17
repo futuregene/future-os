@@ -252,12 +252,20 @@ pub async fn fork_agent_session(
     let session_info = fork_entries
         .iter()
         .find(|e| e.get("role").and_then(|r| r.as_str()) == Some("system"));
-    let session_name = session_info
+    let agent_session_name = session_info
         .and_then(|e| e.get("content"))
         .and_then(|c| c.get("session_name"))
         .and_then(|v| v.as_str())
-        .unwrap_or("(fork)")
-        .to_string();
+        .filter(|s| !s.is_empty() && *s != "(fork)")
+        .map(str::to_string);
+    let session_name = agent_session_name.unwrap_or_else(|| {
+        let parent_title = if thread.title.is_empty() {
+            "Untitled"
+        } else {
+            &thread.title
+        };
+        format!("{parent_title} (fork)")
+    });
     let session_model = session_info
         .and_then(|e| e.get("model"))
         .and_then(|m| m.as_str())
