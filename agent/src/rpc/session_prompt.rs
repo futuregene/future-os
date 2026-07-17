@@ -522,13 +522,16 @@ impl ServerSession {
                     if context_tokens == 0 {
                         return msgs; // Truly empty — nothing to compact
                     }
-                    // Compact when context usage exceeds 90% (10% reserve, min 16K)
+                    // Compact when context usage exceeds 90% (10% reserve, min 16K).
+                    // Keep more history: 50% of context window so the model retains
+                    // substantial conversation continuity after compaction.
                     let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
+                    let keep_tokens = ((context_window as f64 * 0.5) as i32).max(reserve_tokens);
                     let (compacted, result) = crate::compaction::compact(
                         msgs,
                         &crate::compaction::CompactOptions {
                             reserve_tokens,
-                            keep_recent_tokens: reserve_tokens,
+                            keep_recent_tokens: keep_tokens,
                             context_window,
                             tokens_before: context_tokens,
                         },
