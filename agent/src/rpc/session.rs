@@ -28,6 +28,7 @@ pub struct ServerSession {
     pub session_manager: Arc<Manager>,
     pub cwd: String,
     pub is_streaming: Arc<std::sync::atomic::AtomicBool>,
+    pub parent_session_id: String,
     pub session_name: String,
     /// Source that created this session: "gui", "tui", "fork", "feishu", "dingtalk", etc.
     pub created_by: String,
@@ -146,6 +147,7 @@ impl ServerSession {
             cwd: cwd.to_string(),
             is_streaming: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             session_name: String::new(),
+            parent_session_id: String::new(),
             created_by: String::new(),
             source_meta: serde_json::Value::Null,
             event_bus,
@@ -203,6 +205,7 @@ impl ServerSession {
             cwd: cwd.to_string(),
             is_streaming: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             session_name: String::new(),
+            parent_session_id: String::new(),
             created_by: String::new(),
             source_meta: serde_json::Value::Null,
             event_bus,
@@ -248,7 +251,7 @@ impl ServerSession {
 
     pub fn follow_up(&mut self, msg: &str) -> Result<()> {
         if !self.is_streaming.load(std::sync::atomic::Ordering::Relaxed) {
-            return self.prompt(msg, &[], &[], "");
+            return self.prompt(msg, &[], &[]);
         }
         let _ = self.follow_up_tx.try_send(msg.to_string());
         Ok(())

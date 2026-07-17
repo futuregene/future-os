@@ -9,7 +9,6 @@ impl ServerSession {
         msg: &str,
         images: &[crate::types::ImageContent],
         attachments: &[crate::types::Attachment],
-        _behavior: &str,
     ) -> Result<()> {
         std::fs::create_dir_all(&self.cwd)?;
         if let Ok(mut r#loop) = self.agent_loop.try_write() {
@@ -990,6 +989,7 @@ mod build_user_message_tests {
             mime_type: None,
             data: Some("data:image/png;base64,ZZZ".to_string()),
             source: None,
+            file_path: None,
         }];
         let msg = build_user_message("hi", &images, &[], false, &none_loader);
         assert_eq!(

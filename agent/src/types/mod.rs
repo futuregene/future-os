@@ -414,6 +414,9 @@ pub struct ImageContent {
     pub data: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<ImageSource>,
+    /// Local filesystem path after the image is saved to disk (set by GUI).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

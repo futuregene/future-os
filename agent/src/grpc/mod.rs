@@ -110,6 +110,11 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                     mime_type: None,
                     data,
                     source,
+                    file_path: if img.file_path.is_empty() {
+                        None
+                    } else {
+                        Some(img.file_path)
+                    },
                 }
             })
             .collect();
@@ -201,6 +206,9 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
     ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
         let req = request.into_inner();
         let session_id = req.session_id;
+        let event_types: std::collections::HashSet<String> =
+            req.event_types.into_iter().collect();
+        let filter_enabled = !event_types.is_empty();
 
         let rx = if session_id.is_empty() {
             self.state.broadcaster.subscribe()
@@ -217,27 +225,32 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             sess.broadcaster.subscribe()
         };
 
-        // Convert broadcast receiver into a Stream, adding an initial ping.
-        // Using StreamExt directly instead of async_stream::stream! gives tonic
-        // a proper poll-based stream — yields are not buffered internally.
         let ping = tokio_stream::once(Ok(proto::StreamEvent {
             r#type: "ping".to_string(),
             data: r#"{"type":"ping"}"#.to_string(),
             run_id: String::new(),
             idx: 0,
         }));
-        let events = BroadcastStream::new(rx).map(|r| match r {
-            Ok(event) => Ok(proto::StreamEvent {
-                r#type: event.event_type,
-                data: event.data,
-                run_id: event.run_id,
-                idx: event.idx,
-            }),
-            Err(e) => {
-                tracing::warn!("SSE stream error: {}", e);
-                Err(tonic::Status::internal(e.to_string()))
-            }
-        });
+        let events = BroadcastStream::new(rx)
+            .filter(move |r| {
+                if !filter_enabled { return true; }
+                match r {
+                    Ok(event) => event_types.contains(&event.event_type),
+                    Err(_) => true, // pass through errors
+                }
+            })
+            .map(|r| match r {
+                Ok(event) => Ok(proto::StreamEvent {
+                    r#type: event.event_type,
+                    data: event.data,
+                    run_id: event.run_id,
+                    idx: event.idx,
+                }),
+                Err(e) => {
+                    tracing::warn!("SSE stream error: {}", e);
+                    Err(tonic::Status::internal(e.to_string()))
+                }
+            });
         let stream = ping.chain(events);
 
         Ok(tonic::Response::new(Box::pin(stream)))

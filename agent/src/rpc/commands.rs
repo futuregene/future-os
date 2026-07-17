@@ -63,12 +63,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     "agent is still streaming; wait or abort first",
                 )
             } else {
-                let _ = sess.prompt(
-                    &cmd.message,
-                    &cmd.images,
-                    &cmd.attachments,
-                    &cmd.streaming_behavior,
-                );
+                let _ = sess.prompt(&cmd.message, &cmd.images, &cmd.attachments);
                 RpcResponse::ok(id, "prompt", serde_json::json!({}))
             }
         }
@@ -792,6 +787,9 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     // explicit source info (e.g. TUI, channels). GUI passes
     // custom_instructions with createdBy: "gui".
     new_sess.created_by = "tui".to_string();
+    if !cmd.parent_session.is_empty() {
+        new_sess.parent_session_id = cmd.parent_session.clone();
+    }
 
     // Parse source metadata from custom_instructions (JSON).
     // Client passes {"createdBy":"gui","sourceMeta":{...}}.
