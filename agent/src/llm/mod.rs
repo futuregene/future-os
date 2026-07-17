@@ -293,7 +293,7 @@ impl crate::types::LLMProvider for Client {
                             || message.contains("reduce") =>
                     {
                         return Err(anyhow!(
-                            "Request exceeds the model's maximum context length (HTTP 400). \
+                            "[CTX_LIMIT] Request exceeds the model's maximum context length (HTTP 400). \
                              The conversation history may be too long. Consider starting a \
                              new session or reducing the message count (current: {} messages, \
                              {} KB).{}",
@@ -330,7 +330,7 @@ impl crate::types::LLMProvider for Client {
             // size is the more likely culprit when this happens repeatedly.
             if text.is_empty() {
                 return Err(anyhow!(
-                    "API request failed (HTTP 400). No response body. \
+                    "[CTX_LIMIT] API request failed (HTTP 400). No response body. \
                      This usually indicates a reverse-proxy or gateway issue \
                      (e.g. request body too large for nginx client_max_body_size, \
                      or Cloudflare rejecting the connection). \

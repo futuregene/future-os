@@ -1004,33 +1004,12 @@ fn has_unclosed_string(value: &str) -> bool {
     in_string
 }
 
-/// Returns true when the error message indicates the request was rejected
-/// because the body is too large — either exceeding the model's context window
-/// or hitting a reverse-proxy / gateway body-size limit.
-///
-/// These errors are retryable if we compact the conversation history first.
+/// Returns true when the LLM error was caused by request body exceeding
+/// the provider's limit (context window or proxy body-size cap).  The LLM
+/// client annotates these errors with a `[CTX_LIMIT]` prefix so we can
+/// detect them reliably without fragile keyword matching.
 fn is_retryable_size_error(err_msg: &str) -> bool {
-    // ── Explicit context-length errors from the LLM provider ──────────
-    if err_msg.contains("maximum context")
-        || err_msg.contains("context_length")
-        || err_msg.contains("reduce the length")
-        || err_msg.contains("too long")
-    {
-        return true;
-    }
-
-    // ── Empty-body HTTP 400 — typical of reverse-proxy / gateway ─────
-    //     rejection (nginx client_max_body_size, Cloudflare WAF, etc.)
-    if err_msg.contains("No response body") {
-        return true;
-    }
-
-    // ── Our improved diagnostic messages from llm/mod.rs ─────────────
-    if err_msg.contains("reverse-proxy or gateway") || err_msg.contains("request body too large") {
-        return true;
-    }
-
-    false
+    err_msg.starts_with("[CTX_LIMIT]")
 }
 
 #[cfg(test)]
@@ -1038,27 +1017,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn size_error_matches_context_length() {
-        assert!(is_retryable_size_error("maximum context length exceeded"));
-        assert!(is_retryable_size_error("context_length_exceeded"));
-        assert!(is_retryable_size_error("reduce the length of the messages"));
-        assert!(is_retryable_size_error("request too long"));
-    }
-
-    #[test]
-    fn size_error_matches_empty_body_400() {
+    fn size_error_matches_context_limit_prefix() {
         assert!(is_retryable_size_error(
-            "API request failed (HTTP 400). No response body."
-        ));
-    }
-
-    #[test]
-    fn size_error_matches_gateway_rejection() {
-        assert!(is_retryable_size_error(
-            "API request failed (HTTP 400). No response body. This usually indicates a reverse-proxy or gateway issue"
+            "[CTX_LIMIT] Request exceeds the model's maximum context length (HTTP 400)."
         ));
         assert!(is_retryable_size_error(
-            "request body too large for nginx client_max_body_size"
+            "[CTX_LIMIT] API request failed (HTTP 400). No response body."
         ));
     }
 
