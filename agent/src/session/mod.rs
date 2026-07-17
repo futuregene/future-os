@@ -418,6 +418,34 @@ impl Manager {
         self.dir.join(format!("{}.jsonl", id))
     }
 
+    /// Append one or more entries to the session JSONL without rewriting
+    /// the file.  Each entry is written as a single `write_all` syscall
+    /// (JSON + newline pre-assembled) so a crash mid-write at most loses
+    /// the last entry rather than producing a partially-written line.
+    pub fn append_entries(
+        &self,
+        session_id: &str,
+        entries: &[SessionEntry],
+    ) -> Result<()> {
+        use std::io::Write;
+        let path = self.session_path(session_id);
+        if !path.exists() {
+            return Err(anyhow::anyhow!("session file does not exist yet"));
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("open session file for append: {}", path.display()))?;
+        for entry in entries {
+            let json = serde_json::to_string(entry).context("serialize entry")?;
+            let mut line = json.into_bytes();
+            line.push(b'\n');
+            file.write_all(&line).context("write entry")?;
+        }
+        file.flush().context("flush")?;
+        Ok(())
+    }
+
     pub fn save(&self, session: &Session) -> Result<()> {
         let path = self.session_path(&session.id);
         fs::create_dir_all(&self.dir).context("create session dir")?;
@@ -445,13 +473,33 @@ impl Manager {
         let file = File::open(path).context("open session file")?;
         let reader = BufReader::new(file);
         let mut entries = vec![];
+        let mut raw_lines: Vec<String> = vec![];
         for line in reader.lines() {
             let line = line.context("read line")?;
             if line.trim().is_empty() {
                 continue;
             }
-            let entry: SessionEntry = serde_json::from_str(&line).context("parse entry")?;
-            entries.push(entry);
+            raw_lines.push(line);
+        }
+        if raw_lines.is_empty() {
+            return Err(anyhow!("session {} has no entries", id));
+        }
+        // Try each line; if the last line fails to parse (partial write from
+        // a crash during append), skip it instead of rejecting the whole session.
+        let len = raw_lines.len();
+        for (i, line) in raw_lines.into_iter().enumerate() {
+            match serde_json::from_str::<SessionEntry>(&line) {
+                Ok(entry) => entries.push(entry),
+                Err(e) if i == len - 1 => {
+                    tracing::warn!(
+                        "Dropping malformed last line of session {id} (possibly \
+                         from a crash during append): {e}"
+                    );
+                }
+                Err(e) => {
+                    return Err(anyhow!("parse entry at line {}: {}", i + 1, e));
+                }
+            }
         }
         if entries.is_empty() {
             return Err(anyhow!("session {} has no entries", id));
