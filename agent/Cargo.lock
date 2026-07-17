@@ -629,6 +629,7 @@ dependencies = [
  "sha2",
  "shellexpand",
  "signal-hook",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",

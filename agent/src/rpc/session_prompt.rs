@@ -433,11 +433,28 @@ impl ServerSession {
                                     })
                                     .is_some_and(|t| t.starts_with("[Context compaction:"))
                         }) {
-                            if entries.get(idx).is_some() {
-                                let mut comp_entry = entries[idx].clone();
+                            if let Some(marker) = entries.get(idx) {
+                                // Build a clean compaction entry — keep the summary
+                                // text but convert from message array to a simple
+                                // JSON object.
+                                let summary = marker
+                                    .content
+                                    .as_ref()
+                                    .and_then(|c| c.as_array())
+                                    .and_then(|arr| arr.first())
+                                    .and_then(|b| b.get("text"))
+                                    .and_then(|t| t.as_str())
+                                    .unwrap_or("");
+                                let mut comp_entry = marker.clone();
                                 comp_entry.id = crate::utils::generate_id();
                                 comp_entry.entry_type =
                                     crate::session::ENTRY_TYPE_COMPACTION.to_string();
+                                comp_entry.role = "system".to_string();
+                                comp_entry.content = Some(serde_json::json!({
+                                    "summary": summary,
+                                    "tokens_in": tokens_in.load(Ordering::Relaxed),
+                                    "tokens_out": tokens_out.load(Ordering::Relaxed),
+                                }));
                                 comp_entry.label = "compacted".to_string();
                                 entries.insert(idx + 1, comp_entry);
                                 entries.remove(idx);
