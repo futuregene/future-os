@@ -506,9 +506,9 @@ impl ServerSession {
                     crate::models::Registry::new()
                         .resolve(&model)
                         .map(|m| m.context_window)
-                        .unwrap_or(200000)
+                        .unwrap_or(1_000_000) // Modern default: 1M (was 200K — too low for 1M models)
                 } else {
-                    200000
+                    1_000_000
                 };
                 r#loop.config.transform_context = Some(Arc::new(move |msgs, _| {
                     use std::sync::atomic::Ordering;

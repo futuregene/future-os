@@ -484,7 +484,7 @@ impl ServerSession {
         let context_window = crate::models::Registry::new()
             .resolve(&self.model)
             .map(|m| m.context_window)
-            .unwrap_or(200000);
+            .unwrap_or(1_000_000); // Modern default: 1M
 
         let (compacted, result) = crate::compaction::compact(
             messages,
