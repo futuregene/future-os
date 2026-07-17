@@ -11,11 +11,7 @@ version:
 
 # ─── Platform ────────────────────────────────────────────────────────────────
 
-ARCH := $(shell uname -m)
-ARCH := $(subst arm64,aarch64,$(ARCH))
-ARCH := $(subst x86_64,x86_64,$(ARCH))
-OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
-TARGET := $(ARCH)-$(OS)
+TARGET := $(shell rustc -vV | sed -n 's/^host: //p')
 
 ifeq ($(OS),darwin)
   PREFIX := /opt/homebrew/bin
@@ -160,15 +156,14 @@ run-cli:
 
 run-gui: build-gui
 	@mkdir -p gui/src-tauri/binaries
-	@if [ ! -f gui/src-tauri/binaries/future-agent-$(TARGET) ]; then \
-		cd agent && cargo build --release && \
-		cp target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET); \
+	@if [ ! -f "gui/src-tauri/binaries/future-agent-$(TARGET)" ]; then \
+		$(MAKE) build-agent && \
+		cp agent/target/release/future-agent "gui/src-tauri/binaries/future-agent-$(TARGET)"; \
 	fi
-	@if [ ! -f gui/src-tauri/binaries/future-$(TARGET) ]; then \
-		$(call npm-install-if-needed,cli) && \
-		cd cli && npm run build && \
+	@if [ ! -f "gui/src-tauri/binaries/future-$(TARGET)" ]; then \
+		cd cli && npm install && npm run build && \
 		bun build --compile dist/index.js --outfile dist/future && \
-		cp dist/future gui/src-tauri/binaries/future-$(TARGET); \
+		cd .. && cp cli/dist/future "gui/src-tauri/binaries/future-$(TARGET)"; \
 	fi
 	cd gui && npm run tauri:dev
 
