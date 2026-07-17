@@ -162,11 +162,18 @@ if ($Sign) {
 
 Write-Host "==> Building GUI installers (Tauri)" -ForegroundColor Cyan
 $overlay = $null
+$failLog = $null
 $tauriArgs = @()
 if ($Sign) {
+    # Start from a clean log — a leftover from an earlier build would fail this
+    # one for a signature that has since been fixed.
+    $failLog = Join-Path ([System.IO.Path]::GetTempPath()) "futureos-sign-failures-$PID.log"
+    Remove-Item -Force -ErrorAction SilentlyContinue $failLog
+
     $overlay = New-SignOverlayConfig -Thumbprint $signThumbprint `
                                      -SignScript (Join-Path $PSScriptRoot "sign-file.ps1") `
-                                     -TimestampUrl $TimestampUrl
+                                     -TimestampUrl $TimestampUrl `
+                                     -FailLog $failLog
     Write-Host "    signCommand overlay: $overlay"
     $tauriArgs = @("--config", $overlay)
 }
@@ -176,6 +183,13 @@ try { Invoke-Native { npm run tauri:build -- @tauriArgs } }
 finally {
     Pop-Location
     if ($overlay -and (Test-Path $overlay)) { Remove-Item -Force $overlay }
+}
+
+# Before looking at the artifacts: catches the signing failures the bundler
+# swallowed, notably the NSIS uninstaller's, which no check further down can see.
+if ($failLog) {
+    try { Assert-NoSignFailures $failLog }
+    finally { Remove-Item -Force -ErrorAction SilentlyContinue $failLog }
 }
 
 Write-Host "==> Installer" -ForegroundColor Cyan
