@@ -2,6 +2,8 @@
 //! permission level, and resolve a thread's workspace path and prior-message
 //! count. These back the per-prompt setup in the parent module.
 
+use std::collections::HashMap;
+
 use tonic::transport::Channel;
 
 use super::client::{
@@ -301,7 +303,9 @@ pub async fn fork_agent_session(
     }
 
     let (provider, model_id) = split_model(&session_model);
-    for _ in 0..assistant_count.max(1) {
+    let run_count = assistant_count.max(1);
+    let mut run_ids: Vec<String> = Vec::with_capacity(run_count);
+    for _ in 0..run_count {
         let run = store::create_run(store::CreateRunInput {
             thread_id: new_thread.id.clone(),
             trigger_message_id: None,
@@ -309,14 +313,119 @@ pub async fn fork_agent_session(
             model_id: model_id.clone(),
         })?;
         let _ = store::update_run_status_if_active(store::UpdateRunStatusInput {
-            run_id: run.id,
+            run_id: run.id.clone(),
             status: "completed".to_string(),
             error_message: None,
             error_type: None,
         });
+        run_ids.push(run.id);
+    }
+
+    // Write synthetic run events so the right panel (Runs tab) shows tool calls
+    // from the forked history immediately — no live stream exists for these runs.
+    if let Err(e) = synthesize_run_events_from_entries(&fork_entries, &run_ids) {
+        eprintln!("FutureOS: fork run-event synthesis failed: {e}");
     }
 
     Ok(new_thread.id)
+}
+
+/// Write synthetic `tool_start` and `tool_end` run events from agent session
+/// entries so `list_tool_calls` can reconstruct tool calls for runs that have
+/// no live event stream (forked and imported sessions).
+///
+/// The Nth assistant entry maps to the Nth run_id. Tool result entries
+/// (role = "tool") are matched by `tool_call_id`.
+pub(super) fn synthesize_run_events_from_entries(
+    entries: &[serde_json::Value],
+    run_ids: &[String],
+) -> Result<(), crate::AppError> {
+    // Index tool result entries by tool_call_id.
+    let tool_results: HashMap<&str, &serde_json::Value> = entries
+        .iter()
+        .filter(|e| e.get("role").and_then(|r| r.as_str()) == Some("tool"))
+        .filter_map(|e| {
+            let id = e.get("tool_call_id").and_then(|v| v.as_str())?;
+            if id.is_empty() { None } else { Some((id, e)) }
+        })
+        .collect();
+
+    let mut run_idx: usize = 0;
+    let mut seq: i64 = 0;
+
+    for entry in entries {
+        if entry.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+            continue;
+        }
+        if run_idx >= run_ids.len() {
+            break;
+        }
+        let run_id = &run_ids[run_idx];
+        run_idx += 1;
+
+        let Some(tool_calls) = entry.get("tool_calls").and_then(|v| v.as_array()) else {
+            continue;
+        };
+
+        for tc in tool_calls {
+            let tc_id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if tc_id.is_empty() {
+                continue;
+            }
+            let name = tc
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let args = tc
+                .get("function")
+                .and_then(|f| f.get("arguments"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let start_payload = serde_json::json!({
+                "tool_id": tc_id,
+                "tool_name": name,
+                "tool_args": args,
+            });
+            store::append_run_event(store::AppendRunEventInput {
+                run_id: run_id.clone(),
+                event_type: "tool_start".to_string(),
+                payload: Some(start_payload.to_string()),
+                sequence: seq,
+            })?;
+            seq += 1;
+
+            // tool_end from the matching result entry, if one exists.
+            if let Some(result) = tool_results.get(tc_id) {
+                let content = result
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let is_error = content.starts_with("Error:");
+                let end_payload = if is_error {
+                    serde_json::json!({
+                        "tool_id": tc_id,
+                        "text": content,
+                        "error": content,
+                    })
+                } else {
+                    serde_json::json!({
+                        "tool_id": tc_id,
+                        "text": content,
+                    })
+                };
+                store::append_run_event(store::AppendRunEventInput {
+                    run_id: run_id.clone(),
+                    event_type: "tool_end".to_string(),
+                    payload: Some(end_payload.to_string()),
+                    sequence: seq,
+                })?;
+                seq += 1;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn split_model(model: &str) -> (Option<String>, Option<String>) {

@@ -32,31 +32,6 @@ struct AgentSessionSummary {
     parent_session_id: String,
 }
 
-/// A single entry from the agent's `get_session_entries` RPC.
-/// Only `role` is used for counting assistant turns; the rest exist for
-/// correct deserialization of the agent response.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
-struct Entry {
-    role: String,
-    #[serde(default)]
-    content: String,
-    #[serde(default)]
-    thinking: String,
-    #[serde(default)]
-    tool_calls: Vec<serde_json::Value>,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    tool_args: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct EntriesResponse {
-    entries: Vec<Entry>,
-}
-
 // ─── fetch helpers ──────────────────────────────────────────────────────────
 
 /// Fetch all sessions from the agent. Returns an empty list when the agent is
@@ -115,7 +90,7 @@ async fn list_agent_sessions() -> Vec<AgentSessionSummary> {
 }
 
 /// Fetch the full entry list for a session. Returns empty on any failure.
-async fn fetch_session_entries(session_id: &str) -> Vec<Entry> {
+async fn fetch_session_entries(session_id: &str) -> Vec<serde_json::Value> {
     let mut client = match connect_agent().await {
         Ok(c) => c,
         Err(_) => return vec![],
@@ -130,8 +105,10 @@ async fn fetch_session_entries(session_id: &str) -> Vec<Entry> {
     if !resp.success {
         return vec![];
     }
-    serde_json::from_str::<EntriesResponse>(&resp.data)
-        .map(|r| r.entries)
+    serde_json::from_str::<serde_json::Value>(&resp.data)
+        .ok()
+        .and_then(|v| v.get("entries").cloned())
+        .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default()
 }
 
@@ -316,20 +293,29 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
         }
     }
 
-    // Fetch entries to count assistant turns for per-turn run records.
+    // Fetch entries to count assistant turns and synthesize run events.
     let entries = fetch_session_entries(&summary.id).await;
-    let assistant_count = entries.iter().filter(|e| e.role == "assistant").count();
+    let assistant_count = entries
+        .iter()
+        .filter(|e| e.get("role").and_then(|r| r.as_str()) == Some("assistant"))
+        .count();
+    let run_count = assistant_count.max(1);
 
-    if assistant_count > 0 {
-        for _ in 0..assistant_count {
-            create_historical_run(&thread.id, &summary.model)?;
-        }
-    } else {
-        // At least one run so the session appears in the right panel.
-        create_historical_run(&thread.id, &summary.model)?;
+    let mut run_ids: Vec<String> = Vec::with_capacity(run_count);
+    for _ in 0..run_count {
+        let run = create_historical_run(&thread.id, &summary.model)?;
+        run_ids.push(run.id);
     }
 
-    Ok(assistant_count.max(1))
+    // Write synthetic run events from the imported session's tool calls
+    // so the right panel (Runs tab) is populated immediately.
+    if let Err(e) =
+        super::session::synthesize_run_events_from_entries(&entries, &run_ids)
+    {
+        eprintln!("FutureOS: import run-event synthesis failed: {e}");
+    }
+
+    Ok(run_count)
 }
 
 /// Discover agent sessions not yet in the GUI DB and import them. Runs in the
