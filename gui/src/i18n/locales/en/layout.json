@@ -39,9 +39,7 @@
     "pin": "Pin",
     "unpin": "Unpin",
     "delete": "Delete",
-    "revealInFinder": "Reveal in Finder",
-    "revealInExplorer": "Show in File Explorer",
-    "revealInFileManager": "Open in File Manager",
+    "revealInFinder": "Open Folder",
     "workspaceActions": "Workspace actions for {{name}}",
     "pinnedHeader": "Pinned"
   },

@@ -4,7 +4,6 @@ import { Archive, FolderOpen, MoreHorizontal, Pencil, Pin, Trash2 } from "lucide
 import { useTranslation } from "react-i18next";
 import { openPath } from "../../integrations/storage/files";
 import { cn } from "../../lib/cn";
-import { isMacOS, isWindows } from "../../lib/platform";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { MenuPanel } from "../ui/MenuPanel";
 import { useDropUpMenu } from "./hooks/useDropUpMenu";
@@ -82,11 +81,7 @@ export function WorkspaceHeaderMenu({
   const { t } = useTranslation("layout");
   // Label follows OS convention: Finder (macOS) / File Explorer (Windows) /
   // File Manager (Linux and other).
-  const revealLabel = isMacOS
-    ? t("activityRail.revealInFinder")
-    : isWindows
-      ? t("activityRail.revealInExplorer")
-      : t("activityRail.revealInFileManager");
+  const revealLabel = t("activityRail.revealInFinder");
   const layerRef = useDismissableLayer<HTMLDivElement>({ enabled: open, onDismiss: () => onOpenChange(false) });
   const { menuRef, dropUp } = useDropUpMenu(open);
 

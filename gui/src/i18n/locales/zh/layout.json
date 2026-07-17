@@ -39,9 +39,7 @@
     "pin": "置顶",
     "unpin": "取消置顶",
     "delete": "删除",
-    "revealInFinder": "在访达中显示",
-    "revealInExplorer": "在资源管理器中打开",
-    "revealInFileManager": "在文件管理器中打开",
+    "revealInFinder": "打开文件夹",
     "workspaceActions": "{{name}} 的操作",
     "pinnedHeader": "置顶"
   },
