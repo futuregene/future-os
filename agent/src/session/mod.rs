@@ -127,7 +127,6 @@ fn deserialize_timestamp_lenient<'de, D>(deserializer: D) -> Result<DateTime<Loc
 where
     D: serde::Deserializer<'de>,
 {
-    use serde::de;
     let s = String::deserialize(deserializer)?;
     // Standard ISO 8601 (with timezone).
     if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
