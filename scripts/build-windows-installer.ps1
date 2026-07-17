@@ -164,35 +164,9 @@ Write-Host "==> Building GUI installers (Tauri)" -ForegroundColor Cyan
 $overlay = $null
 $tauriArgs = @()
 if ($Sign) {
-    # Hand the bundler a signCommand pointing back at scripts/sign-file.ps1.
-    # Absolute paths throughout: the bundler's working directory is its own
-    # business, and this file is generated fresh per build anyway.
-    #
-    # Object notation, not the string form: Tauri splits the string form on
-    # spaces, which would corrupt any path containing one.
-    #
-    # Reuse the PowerShell host running this script rather than assuming pwsh is
-    # on PATH inside the bundler's environment.
-    $psExe = (Get-Process -Id $PID).Path
-    $signScript = Join-Path $PSScriptRoot "sign-file.ps1"
-    $overlayObj = @{
-        bundle = @{
-            windows = @{
-                signCommand = @{
-                    cmd  = $psExe
-                    args = @(
-                        "-NoProfile", "-ExecutionPolicy", "Bypass",
-                        "-File", $signScript,
-                        "-Thumbprint", $signThumbprint,
-                        "-TimestampUrl", $TimestampUrl,
-                        "-Path", "%1"
-                    )
-                }
-            }
-        }
-    }
-    $overlay = Join-Path ([System.IO.Path]::GetTempPath()) "futureos-sign-overlay-$PID.json"
-    $overlayObj | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $overlay -Encoding utf8
+    $overlay = New-SignOverlayConfig -Thumbprint $signThumbprint `
+                                     -SignScript (Join-Path $PSScriptRoot "sign-file.ps1") `
+                                     -TimestampUrl $TimestampUrl
     Write-Host "    signCommand overlay: $overlay"
     $tauriArgs = @("--config", $overlay)
 }
@@ -210,22 +184,9 @@ $artifacts = @(Get-ChildItem -Path (Join-Path $bundle "nsis\*.exe") -ErrorAction
 if (-not $artifacts) { throw "Tauri produced no installer under $bundle\nsis." }
 
 foreach ($a in $artifacts) {
-    if ($Sign) {
-        # Independent check that the bundler really did call signCommand — a
-        # silently-unsigned installer is exactly the failure worth catching here.
-        # `signtool verify` says nothing about timestamping, and an untimestamped
-        # signature dies with the certificate, so check that separately.
-        & $signTool verify /pa /q $a.FullName
-        $state = if ($LASTEXITCODE -ne 0) {
-            "UNSIGNED"
-        } elseif (-not (Get-AuthenticodeSignature $a.FullName).TimeStamperCertificate) {
-            "NO-TIMESTAMP"
-        } else {
-            "signed"
-        }
-    } else {
-        $state = "unsigned"
-    }
+    # Independent check that the bundler really did call signCommand — a
+    # silently-unsigned installer is exactly the failure worth catching here.
+    $state = if ($Sign) { Get-SignatureState -SignTool $signTool -Path $a.FullName } else { "unsigned" }
     Write-Host ("    {0,-12} {1}" -f $state, $a.FullName)
 }
 

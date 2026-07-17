@@ -87,3 +87,53 @@ function Invoke-SignFile {
     & $SignTool verify /pa /q $Path
     if ($LASTEXITCODE -ne 0) { throw "signtool verify failed (exit $LASTEXITCODE) for '$Path'." }
 }
+
+# "signed" | "NO-TIMESTAMP" | "UNSIGNED". `signtool verify` says nothing about
+# timestamping, and an untimestamped signature dies with the certificate —
+# taking every already-shipped artifact with it — so check that separately.
+function Get-SignatureState {
+    param(
+        [Parameter(Mandatory)][string]$SignTool,
+        [Parameter(Mandatory)][string]$Path
+    )
+    & $SignTool verify /pa /q $Path
+    if ($LASTEXITCODE -ne 0) { return "UNSIGNED" }
+    if (-not (Get-AuthenticodeSignature -LiteralPath $Path).TimeStamperCertificate) { return "NO-TIMESTAMP" }
+    "signed"
+}
+
+# Write a `tauri build --config` overlay pointing bundle.windows.signCommand back
+# at sign-file.ps1, and return its path. Generated per build rather than
+# committed to tauri.conf.json so unsigned builds — local dev, and CI on machines
+# without the certificate — are unaffected.
+function New-SignOverlayConfig {
+    param(
+        [Parameter(Mandatory)][string]$Thumbprint,
+        [Parameter(Mandatory)][string]$SignScript,
+        [string]$TimestampUrl = "http://time.certum.pl/"
+    )
+    # Object notation, not the string form: Tauri splits the string form on
+    # spaces, and these paths contain them.
+    #
+    # cmd is the PowerShell host running us, rather than assuming `pwsh` is on
+    # PATH inside the bundler's environment.
+    $overlay = @{
+        bundle = @{
+            windows = @{
+                signCommand = @{
+                    cmd  = (Get-Process -Id $PID).Path
+                    args = @(
+                        "-NoProfile", "-ExecutionPolicy", "Bypass",
+                        "-File", $SignScript,
+                        "-Thumbprint", $Thumbprint,
+                        "-TimestampUrl", $TimestampUrl,
+                        "-Path", "%1"
+                    )
+                }
+            }
+        }
+    }
+    $path = Join-Path ([System.IO.Path]::GetTempPath()) "futureos-sign-overlay-$PID.json"
+    $overlay | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $path -Encoding utf8
+    $path
+}
