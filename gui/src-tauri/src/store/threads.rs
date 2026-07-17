@@ -111,7 +111,12 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
     let workspace = if mode == "chat" {
-        get_or_create_chat_workspace_in(&tx, &thread_id, Some(title.clone()))?
+        // Use the agent session ID when it's known (fork, import) so the
+        // workspace path matches the agent's session dir; otherwise fall
+        // back to the thread ID (new chat threads get the session ID on
+        // the first prompt via update_chat_workspace_path).
+        let ws_key = agent_session_id.as_deref().unwrap_or(&thread_id);
+        get_or_create_chat_workspace_in(&tx, ws_key, Some(title.clone()))?
     } else if let Some(workspace_id) = input.workspace_id {
         loaded(get_workspace_in(&tx, &workspace_id)?, "Workspace")?
     } else {
