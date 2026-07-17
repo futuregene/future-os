@@ -157,19 +157,15 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
           />
           {t("showHidden")}
         </label>
-        {isWorkspace
-          ? (
-              <Button
-                disabled={!rootPath}
-                leftIcon={<FolderOpen className="size-3.5" />}
-                onClick={openWorkspace}
-                size="sm"
-                variant="toolbar"
-              >
-                {t("openWorkspace")}
-              </Button>
-            )
-          : null}
+        <Button
+          disabled={!rootPath}
+          leftIcon={<FolderOpen className="size-3.5" />}
+          onClick={openWorkspace}
+          size="sm"
+          variant="toolbar"
+        >
+          {t("openWorkspace")}
+        </Button>
         <Button
           disabled={refreshing || !rootPath}
           leftIcon={<RefreshCw className={`size-3.5${refreshing ? " animate-spin" : ""}`} />}
