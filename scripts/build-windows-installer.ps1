@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    Build the FutureOS Windows installers (NSIS setup + MSI) locally, optionally
+    Build the FutureOS Windows installer (NSIS setup) locally, optionally
     signed — no GitHub Actions.
 
 .DESCRIPTION
@@ -10,7 +10,7 @@
       1. build the agent (release) and stage it as the Tauri sidecar,
       2. compile the CLI into a standalone .exe (bun --compile), stage it too,
       3. sign both sidecars (-Sign only) — see below,
-      4. build the GUI with Tauri, producing bundle/nsis/*.exe and bundle/msi/*.msi.
+      4. build the GUI with Tauri, producing bundle/nsis/*.exe.
 
     Signing splits across two mechanisms, which is the whole reason this script
     exists separately:
@@ -18,10 +18,12 @@
       * The sidecars are signed here, before the bundle. Tauri copies externalBin
         binaries into the installer as-is, so anything not signed by now ships
         unsigned inside the installer.
-      * The app .exe and the two installers are signed by the Tauri bundler
-        itself, which calls scripts/sign-file.ps1 through bundle.windows.
-        signCommand. We cannot sign those ourselves: they only exist part-way
-        through the bundling process.
+      * The app .exe, the NSIS plugin DLLs and the setup .exe are signed by the
+        Tauri bundler itself, which calls scripts/sign-file.ps1 through
+        bundle.windows.signCommand. We cannot sign those ourselves: they only
+        exist part-way through the bundling process. (The plugin DLLs ship
+        unsigned from upstream NSIS and get flagged by AV if left that way —
+        tauri-apps/tauri#11673.)
 
     signCommand is injected via a generated `tauri build --config` overlay rather
     than committed to tauri.conf.json, so unsigned builds (local dev, and CI on
@@ -202,22 +204,29 @@ finally {
     if ($overlay -and (Test-Path $overlay)) { Remove-Item -Force $overlay }
 }
 
-Write-Host "==> Installers" -ForegroundColor Cyan
+Write-Host "==> Installer" -ForegroundColor Cyan
 $bundle = Join-Path $Root "gui\src-tauri\target\release\bundle"
-$artifacts = @(Get-ChildItem -Path (Join-Path $bundle "nsis\*.exe"), (Join-Path $bundle "msi\*.msi") `
-                             -ErrorAction SilentlyContinue)
-if (-not $artifacts) { throw "Tauri produced no installers under $bundle." }
+$artifacts = @(Get-ChildItem -Path (Join-Path $bundle "nsis\*.exe") -ErrorAction SilentlyContinue)
+if (-not $artifacts) { throw "Tauri produced no installer under $bundle\nsis." }
 
 foreach ($a in $artifacts) {
     if ($Sign) {
         # Independent check that the bundler really did call signCommand — a
         # silently-unsigned installer is exactly the failure worth catching here.
+        # `signtool verify` says nothing about timestamping, and an untimestamped
+        # signature dies with the certificate, so check that separately.
         & $signTool verify /pa /q $a.FullName
-        $state = if ($LASTEXITCODE -eq 0) { "signed" } else { "UNSIGNED" }
+        $state = if ($LASTEXITCODE -ne 0) {
+            "UNSIGNED"
+        } elseif (-not (Get-AuthenticodeSignature $a.FullName).TimeStamperCertificate) {
+            "NO-TIMESTAMP"
+        } else {
+            "signed"
+        }
     } else {
         $state = "unsigned"
     }
-    Write-Host ("    {0,-8} {1}" -f $state, $a.FullName)
+    Write-Host ("    {0,-12} {1}" -f $state, $a.FullName)
 }
 
 Write-Host ""

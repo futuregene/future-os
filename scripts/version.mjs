@@ -84,7 +84,7 @@ export function isRelease(version) {
   return !version.includes("-");
 }
 
-/** Bundle/installer version — plain semver core (MSI/NSIS reject suffixes). */
+/** Bundle/installer version — plain semver core (NSIS rejects suffixes). */
 export function bundleVersion(version) {
   return version.split(/[-+]/)[0];
 }

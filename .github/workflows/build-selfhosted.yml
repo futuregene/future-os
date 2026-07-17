@@ -290,12 +290,12 @@ jobs:
           npm run build
           bun build --compile dist/index.js --outfile dist/future.exe
           # Stage it as a Tauri sidecar too (bundle.externalBin) so the CLI ships
-          # inside the msi/nsis installers, not just the portable zip.
+          # inside the NSIS installer, not just the portable zip.
           $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
           New-Item -ItemType Directory -Force -Path ../gui/src-tauri/binaries | Out-Null
           Copy-Item "dist/future.exe" "../gui/src-tauri/binaries/future-$triple.exe"
 
-      # Pin the Tauri installer version to the plain semver core (MSI/NSIS reject
+      # Pin the Tauri installer version to the plain semver core (NSIS rejects
       # SemVer suffixes). The display version keeps the full FUTURE_VERSION.
       - name: Set Tauri bundle version
         run: node scripts/version.mjs --set-bundle
@@ -408,7 +408,6 @@ jobs:
           Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item "gui/src-tauri/target/release/bundle/nsis/*.exe" $stage
-          Copy-Item "gui/src-tauri/target/release/bundle/msi/*.msi" $stage
           Copy-Item "FutureOS-portable-windows.zip" $stage
           Write-Host "==> Uploading to oss://$env:OSS_BUCKET/$prefix/$version/"
           Get-ChildItem $stage | Select-Object -ExpandProperty Name

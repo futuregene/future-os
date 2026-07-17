@@ -13,7 +13,7 @@ Get the latest version for your system from the Releases page:
 | System | What to download |
 |---|---|
 | **macOS** | `.dmg` disk image |
-| **Windows** | An installer (`.exe` / `.msi`), or the portable `.zip` |
+| **Windows** | An installer (`.exe`), or the portable `.zip` |
 
 The command-line tool `future` ships **inside every download** — it sits next to the app in both the installer and the portable package. You don't need to install it separately. See the [[CLI (future)|CLI]] page if you want to use it.
 
@@ -35,7 +35,7 @@ The current builds are **not signed / notarized**, so your system will show a wa
 
 ### Windows
 
-- **Installer version:** run the `.exe` / `.msi` and follow the prompts.
+- **Installer version:** run the `.exe` and follow the prompts.
 - **Portable version:** unzip the **whole folder**, then double-click `FutureOS.exe`. Keep `FutureOS.exe` and `future-agent.exe` in the **same folder** — the background service is started automatically from there, so don't move `FutureOS.exe` on its own.
 - The first time, **SmartScreen** may say "Windows protected your PC". Click **More info → Run anyway**.
 - FutureOS needs the **Microsoft Edge WebView2 Runtime**. Recent Windows 10 and Windows 11 usually already have it. If the window won't open or a component is reported missing, install the "Evergreen" WebView2 Runtime from Microsoft's website and try again.

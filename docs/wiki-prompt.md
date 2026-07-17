@@ -120,14 +120,14 @@ docs/wiki/
 - 底部注明:运行于 **macOS 和 Windows**。
 
 ### Installation
-**代码入口(先读再写):** `gui/src-tauri/tauri.conf.json`(打包产物:dmg / nsis|msi / zip,确认真实产物类型)、`gui/src-tauri/build.rs`(随包附带的 sidecar 二进制)、`scripts/build-windows-portable.ps1`(Windows 便携包内容)、`Makefile`(`package-gui` 等打包目标)、`CLAUDE.md`(`~/.future` 数据/配置位置)。
+**代码入口(先读再写):** `gui/src-tauri/tauri.conf.json`(打包产物:dmg / nsis / zip,确认真实产物类型)、`gui/src-tauri/build.rs`(随包附带的 sidecar 二进制)、`scripts/build-windows-portable.ps1`(Windows 便携包内容)、`Makefile`(`package-gui` 等打包目标)、`CLAUDE.md`(`~/.future` 数据/配置位置)。
 - **下载**:去 Releases 页下载对应系统最新版。
   - macOS:`.dmg` 磁盘镜像
-  - Windows:安装包(`.exe` / `.msi`),或便携版 `.zip`
+  - Windows:安装包(`.exe`),或便携版 `.zip`
 - 说明命令行工具 `future` **随每个下载包附带**(安装包与便携包都有,装在应用旁边),详见 CLI 页。
 - **首次启动**(当前构建未签名/公证,系统会告警,属正常):
   - **macOS**:把 FutureOS 拖进"应用程序";首次右键 →"打开"→ 再点"打开";若提示"已损坏",在终端运行 `xattr -dr com.apple.quarantine /Applications/FutureOS.app` 再打开。
-  - **Windows**:安装版跑 `.exe`/`.msi`;便携版解压整个文件夹后双击 `FutureOS.exe`(便携版需把 `FutureOS.exe` 和 `future-agent.exe` 放在同一文件夹)。首次 SmartScreen 提示时点"更多信息 → 仍要运行"。需要 **Microsoft Edge WebView2 Runtime**(Win10 近期版与 Win11 一般已内置,缺失则从微软官网装 Evergreen 版)。
+  - **Windows**:安装版跑 `.exe`;便携版解压整个文件夹后双击 `FutureOS.exe`(便携版需把 `FutureOS.exe` 和 `future-agent.exe` 放在同一文件夹)。首次 SmartScreen 提示时点"更多信息 → 仍要运行"。需要 **Microsoft Edge WebView2 Runtime**(Win10 近期版与 Win11 一般已内置,缺失则从微软官网装 Evergreen 版)。
 - **登录**:首次使用需联网并在应用内登录,详见快速开始。
 - **数据位置**:主目录下的 `.future` 文件夹(macOS `~/.future`,Windows `C:\Users\<你>\.future`)。
 - **更新**:下载最新版覆盖安装(便携版替换文件夹),`.future` 数据保留。

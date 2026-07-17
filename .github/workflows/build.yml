@@ -52,12 +52,11 @@ jobs:
           - name: Windows
             os: windows-latest
             artifact_name: futureos-windows
-            # Both installers (NSIS setup .exe + MSI). Coexists with the portable
-            # zip (uploaded as futureos-windows-portable below), which carries the
+            # NSIS setup .exe only — MSI is not targeted in tauri.conf.json, so
+            # nothing else lands under bundle/. Coexists with the portable zip
+            # (uploaded as futureos-windows-portable below), which carries the
             # GUI, agent, and CLI in one directory.
-            bundle_path: |
-              gui/src-tauri/target/release/bundle/nsis/*.exe
-              gui/src-tauri/target/release/bundle/msi/*.msi
+            bundle_path: gui/src-tauri/target/release/bundle/nsis/*.exe
           - name: Linux
             os: ubuntu-22.04
             artifact_name: futureos-linux
@@ -219,12 +218,12 @@ jobs:
           npm run build
           bun build --compile dist/index.js --outfile dist/future.exe
           # Stage it as a Tauri sidecar too (bundle.externalBin) so the CLI ships
-          # inside the msi/nsis installers, not just the portable zip.
+          # inside the NSIS installer, not just the portable zip.
           $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
           New-Item -ItemType Directory -Force -Path ../gui/src-tauri/binaries | Out-Null
           Copy-Item "dist/future.exe" "../gui/src-tauri/binaries/future-$triple.exe"
 
-      # Pin the Tauri installer version to the plain semver core (MSI/NSIS reject
+      # Pin the Tauri installer version to the plain semver core (NSIS rejects
       # SemVer suffixes). The display version keeps the full FUTURE_VERSION.
       - name: Set Tauri bundle version
         run: node scripts/version.mjs --set-bundle
@@ -367,7 +366,7 @@ jobs:
       # Linux tarball) are TESTER-ONLY: they remain as Actions artifacts
       # (downloadable from the run) but are NOT published to the GitHub Release
       # or OSS. Only the end-user installers ship:
-      #   macOS .dmg · Windows .exe + .msi · Linux .deb
+      #   macOS .dmg · Windows .exe · Linux .deb
       # Files are flattened into publish/ (no per-artifact subfolders) so the
       # Release and the OSS releases/<version>/ layout stay clean.
       - name: Stage publishable installers
@@ -377,7 +376,6 @@ jobs:
           find release-assets -type f \( \
             -name '*.dmg' -o \
             -name '*-setup.exe' -o \
-            -name '*.msi' -o \
             -name '*.deb' \) -exec cp -v {} publish/ \;
           echo "==> Staged for release/OSS:"
           ls -1 publish

@@ -4,10 +4,10 @@
     Sign one binary. Invoked by the Tauri bundler via bundle.windows.signCommand.
 
 .DESCRIPTION
-    Tauri calls this once per artifact it produces (the app .exe, then the NSIS
-    setup and the MSI), substituting the artifact path for %1. A non-zero exit
-    aborts the bundle — which is what we want: a half-signed installer is worse
-    than a failed build.
+    Tauri calls this once per artifact it produces (the app .exe, the NSIS plugin
+    DLLs, then the setup .exe), substituting the artifact path for %1. A non-zero
+    exit aborts the bundle — which is what we want: a half-signed installer is
+    worse than a failed build.
 
     Prefer passing -Thumbprint: the caller resolves the certificate once up
     front, so every artifact in a build is signed by the same certificate and a

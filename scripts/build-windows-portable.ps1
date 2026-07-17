@@ -150,7 +150,7 @@ finally { Pop-Location }
 Copy-Item "cli/dist/future.exe" "gui/src-tauri/binaries/future-$triple.exe" -Force
 
 Write-Host "==> Building GUI (Tauri, no installer)" -ForegroundColor Cyan
-# --no-bundle: compile the frontend + release .exe but skip NSIS/MSI packaging.
+# --no-bundle: compile the frontend + release .exe but skip NSIS packaging.
 Push-Location gui
 try { Invoke-Native { npm run tauri:build -- --no-bundle } }
 finally { Pop-Location }
