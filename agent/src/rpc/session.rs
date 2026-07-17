@@ -487,7 +487,7 @@ impl ServerSession {
             .unwrap_or(1_000_000); // Modern default: 1M
 
         let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
-        let keep_tokens = ((context_window as f64 * 0.5) as i32).max(reserve_tokens);
+        let keep_tokens = ((context_window as f64 * 0.2) as i32).max(reserve_tokens);
         let (compacted, result) = crate::compaction::compact(
             messages,
             &crate::compaction::CompactOptions {

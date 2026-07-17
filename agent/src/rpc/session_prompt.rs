@@ -526,7 +526,7 @@ impl ServerSession {
                     // Keep more history: 50% of context window so the model retains
                     // substantial conversation continuity after compaction.
                     let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
-                    let keep_tokens = ((context_window as f64 * 0.5) as i32).max(reserve_tokens);
+                    let keep_tokens = ((context_window as f64 * 0.2) as i32).max(reserve_tokens);
                     let (compacted, result) = crate::compaction::compact(
                         msgs,
                         &crate::compaction::CompactOptions {

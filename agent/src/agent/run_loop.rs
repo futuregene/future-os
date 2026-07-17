@@ -211,7 +211,7 @@ impl Loop {
                                 .map(|m| m.context_window)
                                 .unwrap_or(1_000_000);
                             let reserve = ((context_window as f64 * 0.1) as i32).max(16384);
-                            let keep_tokens = ((context_window as f64 * 0.5) as i32).max(reserve);
+                            let keep_tokens = ((context_window as f64 * 0.2) as i32).max(reserve);
                             let (compacted, compact_result) = crate::compaction::compact(
                                 ConvertToLLM(&messages),
                                 &crate::compaction::CompactOptions {
