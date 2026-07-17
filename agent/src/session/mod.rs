@@ -421,13 +421,18 @@ impl Manager {
     pub fn save(&self, session: &Session) -> Result<()> {
         let path = self.session_path(&session.id);
         fs::create_dir_all(&self.dir).context("create session dir")?;
-        let file = File::create(&path).context("create session file")?;
+        // Write to a temp file and rename atomically so a mid-write crash
+        // never leaves a partially-written (corrupt) JSONL behind.
+        let tmp_path = path.with_extension("jsonl.tmp");
+        let file = File::create(&tmp_path).context("create temp session file")?;
         let mut w = std::io::BufWriter::new(file);
         for entry in &session.entries {
             let json = serde_json::to_string(entry).context("serialize entry")?;
             writeln!(w, "{}", json).context("write entry")?;
         }
         w.flush().context("flush")?;
+        drop(w);
+        fs::rename(&tmp_path, &path).context("rename temp to final")?;
         Ok(())
     }
 
