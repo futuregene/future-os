@@ -277,10 +277,6 @@ export interface RunConfig {
   permission?: PermissionLevel;
   /** Ephemeral mode (don't save session) */
   noSession?: boolean;
-  /** Skill file/directory paths */
-  skills?: string[];
-  /** Disable skills */
-  noSkills?: boolean;
   /** Output mode: text or json */
   mode?: "text" | "json";
   /** Show verbose progress to stderr */
@@ -471,6 +467,7 @@ export class RunClient {
   async newSession(cwd?: string): Promise<{ sessionId: string }> {
     return this.executeCommand("new_session", {
       cwd: cwd || process.cwd(),
+      customInstructions: JSON.stringify({ createdBy: "cli" }),
     }) as Promise<{ sessionId: string }>;
   }
 

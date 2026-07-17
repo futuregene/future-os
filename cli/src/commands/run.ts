@@ -33,8 +33,6 @@ interface RunArgs {
   noSession: boolean;
   mode: "text" | "json";
   cwd: string | null;
-  skill: string[] | null;
-  noSkills: boolean;
   verbose: boolean;
   fileArgs: string[];
   messages: string[];
@@ -76,8 +74,6 @@ Options:
   --no-session             Ephemeral mode (don't save session)
   --mode <mode>            Output mode: text (default), json
   --cwd <dir>              Working directory
-  --skill <path>           Load a skill file or directory
-  --no-skills, -ns         Disable skills discovery
   --verbose                Show progress to stderr
   --help, -h               Show this help
 
@@ -118,8 +114,6 @@ function parseRunArgs(args: string[]): RunArgs | null {
     noSession: false,
     mode: "text",
     cwd: null,
-    skill: null,
-    noSkills: false,
     verbose: false,
     fileArgs: [],
     messages: [],
@@ -219,14 +213,6 @@ function parseRunArgs(args: string[]): RunArgs | null {
       case "--cwd":
         if (i + 1 < args.length) result.cwd = args[++i];
         break;
-      case "--skill":
-        result.skill = result.skill ?? [];
-        if (i + 1 < args.length) result.skill.push(args[++i]);
-        break;
-      case "--no-skills":
-      case "-ns":
-        result.noSkills = true;
-        break;
       case "--verbose":
         result.verbose = true;
         break;
@@ -312,8 +298,6 @@ export async function run(args: string[]): Promise<void> {
     noSession: parsed.noSession || undefined,
     mode: parsed.mode,
     cwd: parsed.cwd ?? process.cwd(),
-    skills: parsed.skill ?? undefined,
-    noSkills: parsed.noSkills || undefined,
     verbose: parsed.verbose || undefined,
     message: prompt,
   };

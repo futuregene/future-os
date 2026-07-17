@@ -658,10 +658,6 @@ export class GrpcClient {
     return this.call("get_fork_messages", {}) as Promise<{ messages: unknown[] }>;
   }
 
-  async getLastAssistantText(): Promise<{ text: string | null }> {
-    return this.call("get_last_assistant_text", {}) as Promise<{ text: string | null }>;
-  }
-
   async setSessionName(name: string): Promise<void> {
     await this.call("set_session_name", { name });
   }
@@ -670,18 +666,10 @@ export class GrpcClient {
     return this.call("list_sessions", {}) as Promise<{ sessions: SessionSummary[] }>;
   }
 
-  async deleteSession(sessionId: string): Promise<{ deleted: boolean }> {
-    return this.call("delete_session", { sessionId }) as Promise<{ deleted: boolean }>;
-  }
-
   // ─── Core RPC Methods ────────────────────────────────────────────────
 
   async prompt(message: string, images?: RpcCommand["images"], streamingBehavior?: "steer" | "followUp"): Promise<void> {
     await this.call("prompt", { message, images, streamingBehavior });
-  }
-
-  async steer(message: string): Promise<void> {
-    await this.call("steer", { message });
   }
 
   async followUp(message: string): Promise<void> {
@@ -713,10 +701,6 @@ export class GrpcClient {
     return resp.models;
   }
 
-  async setEnabledModels(modelIds: string[]): Promise<void> {
-    // Stored client-side in TUI settings; no longer persisted on agent.
-  }
-
   async setThinkingLevel(level: RpcCommand["level"]): Promise<void> {
     await this.call("set_thinking_level", { level });
   }
@@ -725,24 +709,8 @@ export class GrpcClient {
     return this.call("cycle_thinking_level", {}) as Promise<{ level: string } | null>;
   }
 
-  async setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void> {
-    await this.call("set_steering_mode", { mode });
-  }
-
-  async setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void> {
-    await this.call("set_follow_up_mode", { mode });
-  }
-
   async compact(customInstructions?: string): Promise<string> {
     return this.call("compact", { customInstructions }) as Promise<string>;
-  }
-
-  async setAutoCompaction(enabled: boolean): Promise<void> {
-    await this.call("set_auto_compaction", { enabled });
-  }
-
-  async setAutoRetry(enabled: boolean): Promise<void> {
-    await this.call("set_auto_retry", { enabled });
   }
 
   async setCwd(cwd: string): Promise<void> {
@@ -759,30 +727,6 @@ export class GrpcClient {
 
   async setPermissionLevel(level: "all" | "workspace" | "none"): Promise<void> {
     await this.call("set_permission_level", { level } as any);
-  }
-
-  async abortRetry(): Promise<void> {
-    await this.call("abort_retry", {});
-  }
-
-  async shell(command: string): Promise<unknown> {
-    return this.call("shell", { command });
-  }
-
-  async abortShell(): Promise<void> {
-    await this.call("abort_shell", {});
-  }
-
-  async getSessionStats(): Promise<unknown> {
-    return this.call("get_session_stats", {});
-  }
-
-  async exportHtml(outputPath?: string): Promise<{ path: string }> {
-    return this.call("export_html", { outputPath }) as Promise<{ path: string }>;
-  }
-
-  async getCommands(): Promise<{ commands: unknown[] }> {
-    return this.call("get_commands", {}) as Promise<{ commands: unknown[] }>;
   }
 
   async reloadConfig(): Promise<{ skills: string[]; contextFiles: string[] }> {
