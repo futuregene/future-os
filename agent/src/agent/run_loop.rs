@@ -114,18 +114,21 @@ impl Loop {
                 let transformed = transform_fn(llm_msgs, String::new());
                 let result = ConvertFromLLM(transformed);
                 if result.len() < before_len {
-                    // Compaction happened
+                    // Compaction happened — replace in-memory messages with
+                    // compacted ones so the save path persists the trimmed
+                    // history instead of the full (now discarded) prefix.
+                    messages = result.clone();
                     if let Some(ref bus) = self.event_bus {
                         bus.emit(events::compaction_start("auto"));
                     }
                     let mut comp_result = self.last_compaction_result.lock().unwrap();
-                    let (tokens_before, summary) = if let Some(ref r) = *comp_result {
-                        (r.tokens_before, r.summary.clone())
-                    } else {
-                        (0, String::new())
-                    };
+                    let compaction_info = comp_result.clone();
                     *comp_result = None;
                     if let Some(ref bus) = self.event_bus {
+                        let (tokens_before, summary) = compaction_info
+                            .as_ref()
+                            .map(|r| (r.tokens_before, r.summary.clone()))
+                            .unwrap_or((0, String::new()));
                         bus.emit(events::compaction_end(
                             tokens_before,
                             &summary,

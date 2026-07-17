@@ -418,6 +418,32 @@ impl ServerSession {
                         );
                         entries.insert(0, info_entry);
 
+                        // If the first user message is a compaction marker, replace
+                        // it with a proper compaction entry so the JSONL records
+                        // the compaction point explicitly.
+                        if let Some(idx) = entries.iter().position(|e| {
+                            e.role == "user"
+                                && e.content
+                                    .as_ref()
+                                    .and_then(|c| c.as_array())
+                                    .and_then(|arr| {
+                                        arr.first()
+                                            .and_then(|b| b.get("text"))
+                                            .and_then(|t| t.as_str())
+                                    })
+                                    .is_some_and(|t| t.starts_with("[Context compaction:"))
+                        }) {
+                            if entries.get(idx).is_some() {
+                                let mut comp_entry = entries[idx].clone();
+                                comp_entry.id = crate::utils::generate_id();
+                                comp_entry.entry_type =
+                                    crate::session::ENTRY_TYPE_COMPACTION.to_string();
+                                comp_entry.label = "compacted".to_string();
+                                entries.insert(idx + 1, comp_entry);
+                                entries.remove(idx);
+                            }
+                        }
+
                         let session = crate::session::Session::snapshot(
                             session_id.clone(),
                             session_cwd.clone(),
