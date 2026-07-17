@@ -1,5 +1,7 @@
 //! Tools — 1:1 compatible with Go internal/tools/
 
+mod cmd_exe_rewrite;
+
 use anyhow::{anyhow, Result};
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -424,6 +426,14 @@ async fn run_shell(
     escalated: bool,
     justification: &str,
 ) -> Result<String> {
+    // On Windows, cmd.exe strips double quotes when processing arguments to
+    // npm-generated .cmd wrappers (like the `future` CLI). This corrupts
+    // --args JSON that contains commas in string values. Rewrite such
+    // commands to pipe JSON through --stdin via a temp file.
+    let command_owned = cmd_exe_rewrite::rewrite_future_tools_args(command)
+        .unwrap_or_else(|| command.to_string());
+    let command: &str = &command_owned;
+
     let sandbox = TOOL_SCOPE
         .try_with(|scope| scope.sandbox.clone())
         .unwrap_or_default();
