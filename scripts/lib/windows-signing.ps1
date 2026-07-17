@@ -81,11 +81,18 @@ function Invoke-SignFile {
 
     # /fd + /td sha256: SHA-1 is no longer accepted for code signing.
     # /tr (RFC 3161) keeps the signature valid past certificate expiry.
-    & $SignTool sign /sha1 $Thumbprint /fd sha256 /tr $TimestampUrl /td sha256 /q $Path
-    if ($LASTEXITCODE -ne 0) { throw "signtool sign failed (exit $LASTEXITCODE) for '$Path'." }
+    #
+    # Output is captured rather than left to fall through — see Get-SignatureState
+    # — and folded into the error, which is otherwise just an exit code.
+    $out = & $SignTool sign /sha1 $Thumbprint /fd sha256 /tr $TimestampUrl /td sha256 /q $Path
+    if ($LASTEXITCODE -ne 0) {
+        throw "signtool sign failed (exit $LASTEXITCODE) for '$Path'.`n$(($out | Out-String).Trim())"
+    }
 
-    & $SignTool verify /pa /q $Path
-    if ($LASTEXITCODE -ne 0) { throw "signtool verify failed (exit $LASTEXITCODE) for '$Path'." }
+    $out = & $SignTool verify /pa /q $Path
+    if ($LASTEXITCODE -ne 0) {
+        throw "signtool verify failed (exit $LASTEXITCODE) for '$Path'.`n$(($out | Out-String).Trim())"
+    }
 }
 
 # "signed" | "NO-TIMESTAMP" | "UNSIGNED". `signtool verify` says nothing about
@@ -96,8 +103,15 @@ function Get-SignatureState {
         [Parameter(Mandatory)][string]$SignTool,
         [Parameter(Mandatory)][string]$Path
     )
-    & $SignTool verify /pa /q $Path
-    if ($LASTEXITCODE -ne 0) { return "UNSIGNED" }
+    # Capture signtool's stdout instead of letting it fall through: anything a
+    # function writes to the output stream becomes part of its return value, so
+    # an uncaptured line here turns the state into an object[] and every caller's
+    # `-eq 'signed'` silently fails.
+    $out = & $SignTool verify /pa /q $Path
+    if ($LASTEXITCODE -ne 0) {
+        if ($out) { Write-Host ($out | Out-String).Trim() }
+        return "UNSIGNED"
+    }
     if (-not (Get-AuthenticodeSignature -LiteralPath $Path).TimeStamperCertificate) { return "NO-TIMESTAMP" }
     "signed"
 }
