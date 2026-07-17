@@ -499,8 +499,17 @@ impl ServerSession {
         if self.auto_compaction {
             if let Ok(mut r#loop) = self.agent_loop.try_write() {
                 let comp_tokens = self.last_prompt_tokens.clone();
-                let comp_model = self.compaction_model.clone();
                 let comp_result = r#loop.last_compaction_result.clone();
+                // Resolve context_window once — avoid creating a new Registry
+                // on every LLM call inside the closure.
+                let context_window = if let Ok(model) = self.compaction_model.try_read() {
+                    crate::models::Registry::new()
+                        .resolve(&model)
+                        .map(|m| m.context_window)
+                        .unwrap_or(200000)
+                } else {
+                    200000
+                };
                 r#loop.config.transform_context = Some(Arc::new(move |msgs, _| {
                     use std::sync::atomic::Ordering;
                     let api_tokens = comp_tokens.load(Ordering::Relaxed) as i32;
@@ -513,11 +522,6 @@ impl ServerSession {
                     if context_tokens == 0 {
                         return msgs; // Truly empty — nothing to compact
                     }
-                    let model = comp_model.read().unwrap().clone();
-                    let context_window = crate::models::Registry::new()
-                        .resolve(&model)
-                        .map(|m| m.context_window)
-                        .unwrap_or(200000);
                     // Compact when context usage exceeds 90% (10% reserve, min 16K)
                     let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
                     let (compacted, result) = crate::compaction::compact(
