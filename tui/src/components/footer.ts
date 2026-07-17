@@ -82,7 +82,10 @@ export class Footer implements Component {
       const pwd = home && this.data.cwd.startsWith(home)
         ? "~" + this.data.cwd.slice(home.length)
         : this.data.cwd;
-      leftParts.push(baseFg + pwd);
+      const sessionTag = this.data.sessionName
+        ? ` ${colorFg(AUTO_FG, `[${this.data.sessionName}]`)}`
+        : "";
+      leftParts.push(baseFg + pwd + sessionTag);
     }
 
     // Model — brighter fg (252), optional thinking level in blue

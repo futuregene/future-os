@@ -123,6 +123,8 @@ export interface SessionSummary {
   model: string;
   name?: string;
   parent_session_id?: string;
+  first_message?: string;
+  query_count?: number;
 }
 
 // ============================================================================
