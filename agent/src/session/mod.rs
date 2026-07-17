@@ -50,6 +50,10 @@ pub struct SessionEntry {
     pub content: Option<serde_json::Value>,
     #[serde(rename = "tool_calls", default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
+    #[serde(
+        deserialize_with = "deserialize_timestamp_lenient",
+        default = "default_timestamp"
+    )]
     pub timestamp: DateTime<Local>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub summary: String,
@@ -112,6 +116,50 @@ pub struct SessionEntry {
     /// from `AgentMessage.metadata`; absent on entries without metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<serde_json::Value>,
+}
+
+/// Lenient timestamp deserializer: tries standard ISO 8601 first, then
+/// falls back to appending the local timezone offset when the string is
+/// missing one (common in hand-edited or migrated JSONL files). If both
+/// fail, returns the current local time so the session entry is at least
+/// loadable rather than dropped silently.
+fn deserialize_timestamp_lenient<'de, D>(deserializer: D) -> Result<DateTime<Local>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+    let s = String::deserialize(deserializer)?;
+    // Standard ISO 8601 (with timezone).
+    if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
+        return Ok(dt.with_timezone(&chrono::Local));
+    }
+    // ISO 8601 with space separator (common variant).
+    if let Ok(dt) = DateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f%:z") {
+        return Ok(dt.with_timezone(&chrono::Local));
+    }
+    if let Ok(dt) = DateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%:z") {
+        return Ok(dt.with_timezone(&chrono::Local));
+    }
+    // Try appending local timezone offset.
+    let local_offset = chrono::Local::now().offset().to_string();
+    let with_tz = format!("{s}{local_offset}");
+    if let Ok(dt) = DateTime::parse_from_rfc3339(&with_tz) {
+        tracing::warn!(
+            "Session entry had timestamp without timezone (\"{s}\"); \
+             repaired to \"{with_tz}\". Consider fixing the source file."
+        );
+        return Ok(dt.with_timezone(&chrono::Local));
+    }
+    // Last resort: current time so the entry isn't lost.
+    tracing::warn!(
+        "Session entry has unparseable timestamp (\"{s}\"); \
+         falling back to current time."
+    );
+    Ok(chrono::Local::now())
+}
+
+fn default_timestamp() -> DateTime<Local> {
+    chrono::Local::now()
 }
 
 fn is_zero_i64(v: &i64) -> bool {
