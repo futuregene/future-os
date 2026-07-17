@@ -12,6 +12,7 @@ version:
 # ─── Platform ────────────────────────────────────────────────────────────────
 
 TARGET := $(shell rustc -vV | sed -n 's/^host: //p')
+OS := $(word 3,$(subst -, ,$(TARGET)))
 
 ifeq ($(OS),darwin)
   PREFIX := /opt/homebrew/bin
