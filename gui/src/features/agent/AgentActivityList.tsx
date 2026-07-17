@@ -115,22 +115,12 @@ function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentAct
   const [open, setOpen] = useState(false);
   const Chevron = open ? ChevronLeft : ChevronRight;
 
-  const handleInspect = useCallback(() => {
-    if (runId)
-      emitFutureEvent("inspect-tool", { runId, toolId: item.id });
-  }, [runId, item.id]);
-
-  const handleToggle = () => {
-    setOpen(value => !value);
-    handleInspect();
-  };
-
   return (
     <div
       className="flex min-w-0 flex-col gap-1 text-[13px] leading-6 text-ink-muted"
       role={runId ? "button" : undefined}
       title={runId ? i18n.t("agent:activity.inspectRun") : undefined}
-      onClick={runId ? handleToggle : undefined}
+      onClick={runId ? (() => setOpen(v => !v)) : undefined}
     >
       <button
         type="button"
