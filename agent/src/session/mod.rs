@@ -421,11 +421,7 @@ impl Manager {
     /// the file.  Each entry is written as a single `write_all` syscall
     /// (JSON + newline pre-assembled) so a crash mid-write at most loses
     /// the last entry rather than producing a partially-written line.
-    pub fn append_entries(
-        &self,
-        session_id: &str,
-        entries: &[SessionEntry],
-    ) -> Result<()> {
+    pub fn append_entries(&self, session_id: &str, entries: &[SessionEntry]) -> Result<()> {
         use std::io::Write;
         let path = self.session_path(session_id);
         if !path.exists() {
@@ -460,7 +456,9 @@ impl Manager {
         w.flush().context("flush")?;
         // Force data to disk before rename so a crash cannot leave a
         // renamed-but-empty file behind (OS may defer writes in page cache).
-        let file = w.into_inner().map_err(|_| anyhow::anyhow!("flush failed"))?;
+        let file = w
+            .into_inner()
+            .map_err(|_| anyhow::anyhow!("flush failed"))?;
         file.sync_all().context("fsync temp session file")?;
         fs::rename(&tmp_path, &path).context("rename temp to final")?;
         Ok(())

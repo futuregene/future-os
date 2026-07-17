@@ -354,7 +354,11 @@ pub(super) fn synthesize_run_events_from_entries(
         .filter(|e| e.get("role").and_then(|r| r.as_str()) == Some("tool"))
         .filter_map(|e| {
             let id = e.get("tool_call_id").and_then(|v| v.as_str())?;
-            if id.is_empty() { None } else { Some((id, e)) }
+            if id.is_empty() {
+                None
+            } else {
+                Some((id, e))
+            }
         })
         .collect();
 
@@ -406,10 +410,7 @@ pub(super) fn synthesize_run_events_from_entries(
 
             // tool_end from the matching result entry, if one exists.
             if let Some(result) = tool_results.get(tc_id) {
-                let content = result
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let content = result.get("content").and_then(|v| v.as_str()).unwrap_or("");
                 let is_error = content.starts_with("Error:");
                 let end_payload = if is_error {
                     serde_json::json!({

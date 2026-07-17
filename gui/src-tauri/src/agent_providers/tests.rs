@@ -325,11 +325,7 @@ fn set_builtin_base_url_override_keeps_provider_builtin() {
 
     // Still built-in (not moved to custom), with the override applied.
     assert!(view.custom.iter().all(|p| p.id != "deepseek"));
-    let deepseek = view
-        .builtin
-        .iter()
-        .find(|p| p.id == "deepseek")
-        .unwrap();
+    let deepseek = view.builtin.iter().find(|p| p.id == "deepseek").unwrap();
     assert_eq!(deepseek.base_url, "https://custom-deepseek.example.com/v1");
     assert!(deepseek.model_count > 0);
 

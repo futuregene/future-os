@@ -309,9 +309,7 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
 
     // Write synthetic run events from the imported session's tool calls
     // so the right panel (Runs tab) is populated immediately.
-    if let Err(e) =
-        super::session::synthesize_run_events_from_entries(&entries, &run_ids)
-    {
+    if let Err(e) = super::session::synthesize_run_events_from_entries(&entries, &run_ids) {
         eprintln!("FutureOS: import run-event synthesis failed: {e}");
     }
 

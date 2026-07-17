@@ -115,10 +115,7 @@ impl ServerSession {
                     let msgs = save_messages.read().unwrap();
                     if let Some(last_msg) = msgs.last() {
                         let entry = crate::session::agent_message_to_entry(last_msg);
-                        if let Err(e) = save_manager.append_entries(
-                            &save_session_id,
-                            &[entry],
-                        ) {
+                        if let Err(e) = save_manager.append_entries(&save_session_id, &[entry]) {
                             tracing::error!("Failed to append entry: {}", e);
                         }
                     }
@@ -723,8 +720,7 @@ impl ServerSession {
                 "model": self.model.clone(),
             });
             if !self.created_by.is_empty() {
-                info["created_by"] =
-                    serde_json::Value::String(self.created_by.clone());
+                info["created_by"] = serde_json::Value::String(self.created_by.clone());
             }
             if !self.source_meta.is_null() {
                 info["source_meta"] = self.source_meta.clone();
@@ -1293,12 +1289,10 @@ mod tests {
     #[test]
     fn session_info_session_name_never_empty() {
         // Simulated entries where the first user message is "hello world".
-        let entries: Vec<serde_json::Value> = vec![
-            serde_json::json!({
-                "role": "user",
-                "content": [{"type": "text", "text": "hello world"}],
-            }),
-        ];
+        let entries: Vec<serde_json::Value> = vec![serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "hello world"}],
+        })];
         // Replicate the auto-generation logic from persist_user_message.
         let name = entries
             .iter()

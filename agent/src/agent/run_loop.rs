@@ -1052,8 +1052,8 @@ mod tests {
         /// Simulates the duplicate-id fallback: merge `new_args` into `existing`.
         fn merge_args(existing: &str, new_args: &str) -> String {
             if new_args.len() > existing.len() {
-                if new_args.starts_with(existing) {
-                    format!("{}{}", existing, &new_args[existing.len()..])
+                if let Some(suffix) = new_args.strip_prefix(existing) {
+                    format!("{}{}", existing, suffix)
                 } else {
                     new_args.to_string()
                 }

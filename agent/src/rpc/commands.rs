@@ -88,12 +88,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 }
             }
         }
-        "steer" => {
-            match wlock!(session, id).steer(&cmd.message) {
-                Ok(()) => RpcResponse::ok(id, "steer", serde_json::json!({})),
-                Err(e) => RpcResponse::build_fail(id, "steer", &e.to_string()),
-            }
-        }
+        "steer" => match wlock!(session, id).steer(&cmd.message) {
+            Ok(()) => RpcResponse::ok(id, "steer", serde_json::json!({})),
+            Err(e) => RpcResponse::build_fail(id, "steer", &e.to_string()),
+        },
         "follow_up" => {
             if state
                 .shutting_down

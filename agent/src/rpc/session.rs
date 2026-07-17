@@ -304,94 +304,93 @@ impl ServerSession {
         // Update the agent loop in one shot — both model name and provider endpoint.
         // Fail explicitly when the loop is busy so the caller knows to retry
         // rather than silently continuing with the old model.
-        let mut loop_ = self
-            .agent_loop
-            .try_write()
-            .map_err(|_| anyhow::anyhow!("agent is currently streaming; retry /model before your next prompt"))?;
-            // Set agent loop model to bare canonical ID for LLM API calls.
-            // The session-level self.model already holds the full provider/id.
-            if let Some(ref mc) = resolved {
-                loop_.model = mc.id.clone();
+        let mut loop_ = self.agent_loop.try_write().map_err(|_| {
+            anyhow::anyhow!("agent is currently streaming; retry /model before your next prompt")
+        })?;
+        // Set agent loop model to bare canonical ID for LLM API calls.
+        // The session-level self.model already holds the full provider/id.
+        if let Some(ref mc) = resolved {
+            loop_.model = mc.id.clone();
+        } else {
+            loop_.model = model.to_string();
+        }
+
+        if let Some(model_config) = resolved {
+            if !model_config.input.iter().any(|input| input == "image") {
+                self.strip_image_content_from_messages();
+            }
+
+            let thinking_format = model_config
+                .compat
+                .get("thinkingFormat")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let supports_reasoning_effort = model_config
+                .compat
+                .get("supportsReasoningEffort")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let requires_reasoning_on_assistant = model_config
+                .compat
+                .get("requiresReasoningContentOnAssistantMessages")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let tlm: HashMap<String, String> = model_config
+                .thinking_level_map
+                .into_iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
+                .collect();
+
+            let auth = crate::AuthStore::load();
+            let api_key =
+                resolve_api_key(&auth, model, &model_config.provider, &model_config.api_key);
+
+            // Build a FRESH provider (its own reqwest client) and swap it in,
+            // rather than mutating the existing provider's endpoint. Sessions
+            // are seeded from a shared provider `Arc` in `new_session`, so
+            // mutating it in place would (a) serialize concurrent sessions onto
+            // one HTTP connection and (b) let one session's endpoint change
+            // clobber another's mid-run. A per-session client makes concurrent
+            // conversations use independent connections. The GUI calls
+            // `set_model` on every session before prompting, so this is where
+            // each session gets its own client.
+            let max_tokens = if model_config.max_tokens > 0 {
+                Some(std::cmp::min(model_config.max_tokens, 32000))
+            } else if model_config.reasoning {
+                Some(32000)
             } else {
-                loop_.model = model.to_string();
+                Some(16384)
+            };
+            // maxTokensField: compat field controlling max_tokens vs max_completion_tokens
+            let max_tokens_field = model_config
+                .compat
+                .get("maxTokensField")
+                .and_then(|v| v.as_str())
+                .unwrap_or("max_tokens")
+                .to_string();
+
+            let mut client =
+                crate::llm::Client::new(&model_config.base_url, &api_key, None, max_tokens)
+                    .with_compat(
+                        &thinking_format,
+                        supports_reasoning_effort,
+                        requires_reasoning_on_assistant,
+                    )
+                    .with_max_tokens_field(&max_tokens_field)
+                    .with_thinking_level_map(tlm);
+            // Carry the session's current thinking level/budget onto the new
+            // client; an explicit set_thinking_level afterward still overrides.
+            if !self.thinking_level.is_empty() {
+                client = client.with_thinking_level(&self.thinking_level);
+            }
+            let thinking_budget = loop_.config.thinking_budget;
+            if thinking_budget > 0 {
+                client = client.with_thinking_budget(thinking_budget);
             }
 
-            if let Some(model_config) = resolved {
-                if !model_config.input.iter().any(|input| input == "image") {
-                    self.strip_image_content_from_messages();
-                }
-
-                let thinking_format = model_config
-                    .compat
-                    .get("thinkingFormat")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let supports_reasoning_effort = model_config
-                    .compat
-                    .get("supportsReasoningEffort")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let requires_reasoning_on_assistant = model_config
-                    .compat
-                    .get("requiresReasoningContentOnAssistantMessages")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let tlm: HashMap<String, String> = model_config
-                    .thinking_level_map
-                    .into_iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
-                    .collect();
-
-                let auth = crate::AuthStore::load();
-                let api_key =
-                    resolve_api_key(&auth, model, &model_config.provider, &model_config.api_key);
-
-                // Build a FRESH provider (its own reqwest client) and swap it in,
-                // rather than mutating the existing provider's endpoint. Sessions
-                // are seeded from a shared provider `Arc` in `new_session`, so
-                // mutating it in place would (a) serialize concurrent sessions onto
-                // one HTTP connection and (b) let one session's endpoint change
-                // clobber another's mid-run. A per-session client makes concurrent
-                // conversations use independent connections. The GUI calls
-                // `set_model` on every session before prompting, so this is where
-                // each session gets its own client.
-                let max_tokens = if model_config.max_tokens > 0 {
-                    Some(std::cmp::min(model_config.max_tokens, 32000))
-                } else if model_config.reasoning {
-                    Some(32000)
-                } else {
-                    Some(16384)
-                };
-                // maxTokensField: compat field controlling max_tokens vs max_completion_tokens
-                let max_tokens_field = model_config
-                    .compat
-                    .get("maxTokensField")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("max_tokens")
-                    .to_string();
-
-                let mut client =
-                    crate::llm::Client::new(&model_config.base_url, &api_key, None, max_tokens)
-                        .with_compat(
-                            &thinking_format,
-                            supports_reasoning_effort,
-                            requires_reasoning_on_assistant,
-                        )
-                        .with_max_tokens_field(&max_tokens_field)
-                        .with_thinking_level_map(tlm);
-                // Carry the session's current thinking level/budget onto the new
-                // client; an explicit set_thinking_level afterward still overrides.
-                if !self.thinking_level.is_empty() {
-                    client = client.with_thinking_level(&self.thinking_level);
-                }
-                let thinking_budget = loop_.config.thinking_budget;
-                if thinking_budget > 0 {
-                    client = client.with_thinking_budget(thinking_budget);
-                }
-
-                loop_.provider = std::sync::Arc::new(client);
-            }
+            loop_.provider = std::sync::Arc::new(client);
+        }
         Ok(())
     }
 

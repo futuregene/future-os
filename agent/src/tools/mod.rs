@@ -430,8 +430,8 @@ async fn run_shell(
     // npm-generated .cmd wrappers (like the `future` CLI). This corrupts
     // --args JSON that contains commas in string values. Rewrite such
     // commands to pipe JSON through --stdin via a temp file.
-    let command_owned = cmd_exe_rewrite::rewrite_future_tools_args(command)
-        .unwrap_or_else(|| command.to_string());
+    let command_owned =
+        cmd_exe_rewrite::rewrite_future_tools_args(command).unwrap_or_else(|| command.to_string());
     let command: &str = &command_owned;
 
     let sandbox = TOOL_SCOPE

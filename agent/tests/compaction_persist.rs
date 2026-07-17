@@ -7,27 +7,33 @@ fn compaction_discards_history_and_records_marker() {
 
     // ── 1. Build simulated long conversation ───────────────────────────────
     let padding = "x".repeat(10_000);
-    let mut messages: Vec<future_agent::types::Message> = vec![
-        future_agent::types::Message {
-            role: "system".into(),
-            content: Some(serde_json::json!([{"type":"text","text":"sys prompt"}])),
-            ..Default::default()
-        },
-    ];
+    let mut messages: Vec<future_agent::types::Message> = vec![future_agent::types::Message {
+        role: "system".into(),
+        content: Some(serde_json::json!([{"type":"text","text":"sys prompt"}])),
+        ..Default::default()
+    }];
     for i in 0..40 {
         messages.push(future_agent::types::Message {
             role: "user".into(),
-            content: Some(serde_json::json!([{"type":"text","text":format!("turn {i}: {padding}")}])),
+            content: Some(
+                serde_json::json!([{"type":"text","text":format!("turn {i}: {padding}")}]),
+            ),
             ..Default::default()
         });
         messages.push(future_agent::types::Message {
             role: "assistant".into(),
-            content: Some(serde_json::json!([{"type":"text","text":format!("response {i}: {padding}")}])),
+            content: Some(
+                serde_json::json!([{"type":"text","text":format!("response {i}: {padding}")}]),
+            ),
             ..Default::default()
         });
     }
     let estimated = future_agent::compaction::estimate_context_tokens(&messages);
-    eprintln!("Built {} messages, est {} tokens", messages.len(), estimated);
+    eprintln!(
+        "Built {} messages, est {} tokens",
+        messages.len(),
+        estimated
+    );
 
     // ── 2. Compact with small window to force it ───────────────────────────
     let context_window = 50_000i32;
@@ -60,15 +66,19 @@ fn compaction_discards_history_and_records_marker() {
         messages.len()
     );
     assert!(
-        !compacted
-            .iter()
-            .any(|m| m.content.as_ref().map(|c| c.to_string().contains("turn 0")).unwrap_or(false)),
+        !compacted.iter().any(|m| m
+            .content
+            .as_ref()
+            .map(|c| c.to_string().contains("turn 0"))
+            .unwrap_or(false)),
         "Turn 0 should be discarded"
     );
     assert!(
-        compacted
-            .iter()
-            .any(|m| m.content.as_ref().map(|c| c.to_string().contains("turn 39")).unwrap_or(false)),
+        compacted.iter().any(|m| m
+            .content
+            .as_ref()
+            .map(|c| c.to_string().contains("turn 39"))
+            .unwrap_or(false)),
         "Turn 39 should be kept (most recent)"
     );
 
@@ -102,18 +112,28 @@ fn compaction_discards_history_and_records_marker() {
         .collect();
 
     // Prepend session_info
-    entries.insert(0, serde_json::json!({
-        "id": "si", "type": "session_info", "role": "system",
-        "content": {"session_name": "compaction-test"},
-        "timestamp": chrono::Local::now().to_rfc3339(),
-    }));
+    entries.insert(
+        0,
+        serde_json::json!({
+            "id": "si", "type": "session_info", "role": "system",
+            "content": {"session_name": "compaction-test"},
+            "timestamp": chrono::Local::now().to_rfc3339(),
+        }),
+    );
 
     // Debug: show entries before marker replacement
-    eprintln!("Entries before marker replacement ({} total):", entries.len());
+    eprintln!(
+        "Entries before marker replacement ({} total):",
+        entries.len()
+    );
     for (i, e) in entries.iter().enumerate() {
         let r = e.get("role").and_then(|v| v.as_str()).unwrap_or("?");
         let c = e.get("content").map(|c| c.to_string()).unwrap_or_default();
-        let c = if c.len() > 80 { format!("{}…", &c[..80]) } else { c };
+        let c = if c.len() > 80 {
+            format!("{}…", &c[..80])
+        } else {
+            c
+        };
         eprintln!("  {i:3} role={r:12} content={c}");
     }
 
@@ -135,14 +155,17 @@ fn compaction_discards_history_and_records_marker() {
             .and_then(|b| b.get("text"))
             .and_then(|t| t.as_str())
             .unwrap_or("");
-        entries.insert(idx + 1, serde_json::json!({
-            "id": "comp-1",
-            "type": "compaction",
-            "role": "system",
-            "content": {"summary": summary},
-            "label": "compacted",
-            "timestamp": chrono::Local::now().to_rfc3339(),
-        }));
+        entries.insert(
+            idx + 1,
+            serde_json::json!({
+                "id": "comp-1",
+                "type": "compaction",
+                "role": "system",
+                "content": {"summary": summary},
+                "label": "compacted",
+                "timestamp": chrono::Local::now().to_rfc3339(),
+            }),
+        );
         entries.remove(idx);
     }
 
@@ -158,12 +181,11 @@ fn compaction_discards_history_and_records_marker() {
     }
 
     let content = std::fs::read_to_string(&jsonl_path).unwrap();
-    let read_entries: Vec<serde_json::Value> =
-        content
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect();
+    let read_entries: Vec<serde_json::Value> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
 
     // ── 7. Verify JSONL contents ──────────────────────────────────────────
     assert!(
@@ -173,15 +195,17 @@ fn compaction_discards_history_and_records_marker() {
         "JSONL MUST have 'compaction' entry"
     );
     assert!(
-        !read_entries
-            .iter()
-            .any(|e| e.get("content").map(|c| c.to_string().contains("turn 0")).unwrap_or(false)),
+        !read_entries.iter().any(|e| e
+            .get("content")
+            .map(|c| c.to_string().contains("turn 0"))
+            .unwrap_or(false)),
         "Turn 0 MUST be discarded from JSONL"
     );
     assert!(
-        read_entries
-            .iter()
-            .any(|e| e.get("content").map(|c| c.to_string().contains("turn 39")).unwrap_or(false)),
+        read_entries.iter().any(|e| e
+            .get("content")
+            .map(|c| c.to_string().contains("turn 39"))
+            .unwrap_or(false)),
         "Turn 39 MUST be kept in JSONL"
     );
 
@@ -193,7 +217,11 @@ fn compaction_discards_history_and_records_marker() {
             .get("content")
             .map(|c| {
                 let s = c.to_string();
-                if s.len() > 100 { format!("{}…", &s[..100]) } else { s }
+                if s.len() > 100 {
+                    format!("{}…", &s[..100])
+                } else {
+                    s
+                }
             })
             .unwrap_or_default();
         eprintln!("  {i:3} {t:15} {preview}");

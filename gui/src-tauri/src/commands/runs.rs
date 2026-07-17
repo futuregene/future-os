@@ -35,7 +35,9 @@ pub async fn abort_run(
 }
 
 #[tauri::command]
-pub async fn list_run_events(run_id: String) -> Result<Vec<store::RunEventRecord>, crate::AppError> {
+pub async fn list_run_events(
+    run_id: String,
+) -> Result<Vec<store::RunEventRecord>, crate::AppError> {
     let local = store::list_run_events(&run_id)?;
     // After a GUI restart the in-memory RUN_EVENT_BUFFER is empty — the agent
     // (still running in the background) holds the authoritative events.  Pull
@@ -76,8 +78,15 @@ pub async fn list_run_events(run_id: String) -> Result<Vec<store::RunEventRecord
         .map(|(i, e)| store::RunEventRecord {
             id: format!("agent_{run_id}_{i}"),
             run_id: run_id.clone(),
-            event_type: e.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            payload: e.get("data").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            event_type: e
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            payload: e
+                .get("data")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
             sequence: e.get("idx").and_then(|v| v.as_i64()).unwrap_or(i as i64),
             created_at: now,
         })

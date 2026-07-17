@@ -206,8 +206,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
     ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
         let req = request.into_inner();
         let session_id = req.session_id;
-        let event_types: std::collections::HashSet<String> =
-            req.event_types.into_iter().collect();
+        let event_types: std::collections::HashSet<String> = req.event_types.into_iter().collect();
         let filter_enabled = !event_types.is_empty();
 
         let rx = if session_id.is_empty() {
@@ -233,7 +232,9 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         }));
         let events = BroadcastStream::new(rx)
             .filter(move |r| {
-                if !filter_enabled { return true; }
+                if !filter_enabled {
+                    return true;
+                }
                 match r {
                     Ok(event) => event_types.contains(&event.event_type),
                     Err(_) => true, // pass through errors

@@ -35,8 +35,7 @@ fn rewrite_impl(command: &str) -> Result<Option<String>> {
     // Only rewrite standalone `future tools call ...` commands (no pipes, chains).
     // Multi-command pipelines make argument rewriting fragile.
     let trimmed = command.trim();
-    if !trimmed.starts_with("future tools call ")
-        && !trimmed.starts_with("future.exe tools call ")
+    if !trimmed.starts_with("future tools call ") && !trimmed.starts_with("future.exe tools call ")
     {
         return Ok(None);
     }

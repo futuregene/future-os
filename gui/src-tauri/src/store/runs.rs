@@ -427,7 +427,11 @@ pub fn list_tool_calls(run_id: &str) -> Result<Vec<ToolCallRecord>, crate::AppEr
                 let id = event_tool_id(event).unwrap_or_else(|| {
                     let (name, _, _) = parse_tool_start_payload(event.payload.as_deref());
                     let seq = event.sequence;
-                    if name.is_empty() { event.id.clone() } else { format!("{name}_{seq}") }
+                    if name.is_empty() {
+                        event.id.clone()
+                    } else {
+                        format!("{name}_{seq}")
+                    }
                 });
                 let (name, kind, input) = parse_tool_start_payload(event.payload.as_deref());
                 if let Some(&idx) = index_by_id.get(&id) {
@@ -635,7 +639,11 @@ pub fn list_tool_outputs(
         let resolved_id = event_tool_id(event).unwrap_or_else(|| {
             let (name, _, _) = parse_tool_start_payload(event.payload.as_deref());
             let seq = event.sequence;
-            if name.is_empty() { event.id.clone() } else { format!("{name}_{seq}") }
+            if name.is_empty() {
+                event.id.clone()
+            } else {
+                format!("{name}_{seq}")
+            }
         });
         if resolved_id != tool_call_id {
             continue;
