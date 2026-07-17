@@ -102,6 +102,18 @@ future auth login
 }
 ```
 
+### 安装技能（可选）
+
+FutureOS 内置一套精选技能——针对深度研究、浏览器自动化、文档处理等常见任务的专业指令集。技能维护在 [future-skills](https://github.com/futuregene/future-skills) 仓库，是我们的推荐默认配置。
+
+```bash
+make install-skills                          # 从内置 skills/ 子模块创建符号链接
+# 或从平台目录安装：
+future skills install                        # 安装所有 future-* 技能（约 13 个）
+```
+
+> 技能以符号链接方式装入 `~/.future/agent/skills/`，Agent 会自动发现。使用 `future skills list` 查看可用技能，`future skills update` 升级。
+
 ### 启动 Agent
 
 所有客户端——TUI、GUI、CLI、channels——都只是轻量 gRPC 客户端。**必须先启动 Agent**,监听 `127.0.0.1:50051`：

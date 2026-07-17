@@ -102,6 +102,18 @@ For providers with user-specific base URLs (e.g. Azure's `YOUR_RESOURCE`), add a
 }
 ```
 
+### Install skills (optional)
+
+FutureOS includes a set of curated skills — specialized instructions for common tasks like deep research, browser automation, document processing, and more. These are maintained in the [future-skills](https://github.com/futuregene/future-skills) repository and are our recommended defaults.
+
+```bash
+make install-skills                          # symlink from the bundled skills/ submodule
+# or install from the platform catalog:
+future skills install                        # install all future-* skills (~13)
+```
+
+> Skills are symlinked into `~/.future/agent/skills/` where the agent discovers them automatically. Use `future skills list` to see available skills and `future skills update` to upgrade.
+
 ### Run the agent
 
 Every client — TUI, GUI, CLI, channels — is a thin gRPC client. **The agent must be running first**, listening on `127.0.0.1:50051`:
