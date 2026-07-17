@@ -369,7 +369,29 @@ export class AttachmentProvider implements AutocompleteProvider {
       });
       results = stdout.trim().split("\n").filter(Boolean);
     } catch {
-      // fd not available, fall back to null to indicate no results
+      // fd not available — fall back to native find / Get-ChildItem
+      try {
+        const cp = await import("node:child_process");
+        const isWin = process.platform === "win32";
+        const cmd = isWin ? "powershell" : "find";
+        const args = isWin
+          ? ["-NoProfile", "-Command", `Get-ChildItem -Path '.' -Recurse -File -Name '${pattern}*' | Select-Object -First 50`]
+          : [".", "-name", `${pattern}*`, "-type", "f", "-maxdepth", "5"];
+        const stdout = await new Promise<string>((resolve, reject) => {
+          cp.execFile(cmd, args, {
+            cwd: process.cwd(),
+            encoding: "utf-8",
+            timeout: 5000,
+            maxBuffer: 1024 * 1024,
+          }, (err, stdout) => {
+            if (err) reject(err);
+            else resolve(stdout);
+          });
+        });
+        results = stdout.trim().split("\n").filter(Boolean);
+      } catch {
+        // Neither fd nor fallback available — no autocomplete results
+      }
     }
 
     if (signal.aborted) return [];
