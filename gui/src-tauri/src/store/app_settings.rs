@@ -143,7 +143,7 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
         .unwrap_or(true);
     let auto_upgrade_skills = read_value(conn, KEY_AUTO_UPGRADE_SKILLS)?
         .map(|value| value == "true")
-        .unwrap_or(false);
+        .unwrap_or(true); // On by default — keeps skills current without manual intervention.
     Ok(AppSettings {
         approval_tier,
         hidden_models,
