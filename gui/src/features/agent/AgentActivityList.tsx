@@ -120,7 +120,7 @@ function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentAct
       className="flex min-w-0 flex-col gap-1 text-[13px] leading-6 text-ink-muted"
       role={runId ? "button" : undefined}
       title={runId ? i18n.t("agent:activity.inspectRun") : undefined}
-      onClick={runId ? (() => setOpen(v => !v)) : undefined}
+      onClick={runId ? () => setOpen(v => !v) : undefined}
     >
       <button
         type="button"
