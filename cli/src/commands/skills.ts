@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { execFile } from "node:child_process";
+import { platform as osPlatform } from "node:os";
 
 import { getPlatformUrl } from "../utils/platform.js";
 
@@ -417,13 +418,28 @@ function unquote(val: string): string {
 }
 function unzip(zipPath: string, destDir: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    execFile("unzip", ["-o", zipPath, "-d", destDir], (err, _stdout, stderr) => {
-      if (err) {
-        reject(new Error(`unzip failed: ${String(stderr || err.message)}`));
-      } else {
-        resolve();
-      }
-    });
+    if (osPlatform() === "win32") {
+      // Windows: use PowerShell Expand-Archive (built-in since Win 10)
+      execFile(
+        "powershell",
+        ["-NoProfile", "-Command", `Expand-Archive -Path '${zipPath}' -DestinationPath '${destDir}' -Force`],
+        (err, _stdout, stderr) => {
+          if (err) {
+            reject(new Error(`unzip failed: ${String(stderr || err.message)}`));
+          } else {
+            resolve();
+          }
+        },
+      );
+    } else {
+      execFile("unzip", ["-o", zipPath, "-d", destDir], (err, _stdout, stderr) => {
+        if (err) {
+          reject(new Error(`unzip failed: ${String(stderr || err.message)}`));
+        } else {
+          resolve();
+        }
+      });
+    }
   });
 }
 
