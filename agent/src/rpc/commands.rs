@@ -272,13 +272,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "get_session_stats", stats)
         }
         "list_sessions" => {
-            // Use session_manager.list_all() to get all sessions from disk
-            let summaries = session
-                .read()
-                .unwrap()
-                .session_manager
-                .list_all()
-                .unwrap_or_default();
+            // Clone the session manager Arc outside the lock so list_all()'s
+            // disk I/O doesn't block concurrent readers/writers.
+            let session_manager = {
+                let sess = rlock!(session, id);
+                sess.session_manager.clone()
+            };
+            let summaries = session_manager.list_all().unwrap_or_default();
             // Convert to the format expected by TUI
             let sessions: Vec<serde_json::Value> = summaries
                 .into_iter()
@@ -567,8 +567,12 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             // Generate HTML
             let html = generate_session_html(&session_id, &model, &cwd, &messages);
 
-            // Write to file
-            let output_path = format!("/tmp/future_agent_export_{}.html", session_id);
+            // Write to a unique temp file to avoid clobbering concurrent exports.
+            let output_path = format!(
+                "/tmp/future_agent_export_{}_{}.html",
+                session_id,
+                chrono::Local::now().format("%Y%m%d%H%M%S")
+            );
             if let Err(e) = std::fs::write(&output_path, html) {
                 return RpcResponse::build_fail(
                     id,

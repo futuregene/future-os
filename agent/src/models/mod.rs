@@ -57,22 +57,32 @@ fn spawn_future_models_refresh(api_key: &str, base_url: &str) {
     let api_key = api_key.to_string();
     let base_url = base_url.to_string();
     std::thread::spawn(move || {
-        if let Some(models) = fetch_future_models(&api_key, &base_url) {
-            // Persist to disk AND update in-process cache so the next
-            // `Registry::new()` sees fresh models without re-reading the file.
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let cache = FutureModelsCache {
-                fetched_at: now,
-                models,
-            };
-            save_future_models_cache_inner(&cache);
-            if let Ok(mut mem) = FUTURE_MODELS_MEMORY_CACHE.write() {
-                *mem = Some(cache);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(models) = fetch_future_models(&api_key, &base_url) {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let cache = FutureModelsCache {
+                    fetched_at: now,
+                    models,
+                };
+                save_future_models_cache_inner(&cache);
+                if let Ok(mut mem) = FUTURE_MODELS_MEMORY_CACHE.write() {
+                    *mem = Some(cache);
+                }
             }
+        }));
+        if let Err(e) = result {
+            let msg = e
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| e.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_string());
+            tracing::warn!("Future models background refresh panicked: {msg}");
         }
+        // Always reset the flag — a panic must not permanently block
+        // future refreshes.
         FUTURE_MODELS_REFRESH_IN_FLIGHT.store(false, Ordering::Release);
     });
 }
