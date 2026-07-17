@@ -159,6 +159,17 @@ run-cli:
 	cd cli && npm run dev
 
 run-gui:
+	@mkdir -p gui/src-tauri/binaries
+	@if [ ! -f gui/src-tauri/binaries/future-agent-$(TARGET) ]; then \
+		cd agent && cargo build --release && \
+		cp target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET); \
+	fi
+	@if [ ! -f gui/src-tauri/binaries/future-$(TARGET) ]; then \
+		cd cli && npm install && npm run build && \
+		bun build --compile dist/index.js --outfile dist/future && \
+		cp dist/future gui/src-tauri/binaries/future-$(TARGET); \
+	fi
+	$(call npm-install-if-needed,gui)
 	cd gui && npm run tauri:dev
 
 package-gui: install-gui
