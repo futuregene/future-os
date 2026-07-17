@@ -47,24 +47,35 @@ message RpcCommand {
   repeated ImageContent images = 11;
   string streaming_behavior = 12;
   string parent_session = 20;
-  string provider = 30;
   string model_id = 31;
   string level = 40;
   string mode = 50;
   string custom_instructions = 60;
   bool enabled = 70;
   string command = 80;
-  string session_path = 90;
   string session_id = 91;
   string entry_id = 92;
   string name = 93;
-  string output_path = 94;
   string cwd = 95;
   string system_prompt = 100;
   repeated string tools = 110;
-  bool no_tools = 111;
   bool ephemeral = 120;
   repeated string enabled_models = 130;
+  int64 since_idx = 140;
+  string run_id = 141;
+  SandboxPolicy sandbox_policy = 150;
+  repeated Attachment attachments = 151;
+}
+
+message Attachment {
+  string path = 1;
+  string kind = 2;
+  string name = 3;
+  string thumbnail = 5;
+}
+
+message SandboxPolicy {
+  string tier = 7;
 }
 
 message ImageContent {
@@ -73,6 +84,7 @@ message ImageContent {
     string url = 10;
     string base64 = 11;
   }
+  string file_path = 12;
 }
 
 message RpcResponse {
@@ -96,92 +108,23 @@ message SessionState {
   string session_name = 9;
   bool explicit_session = 10;
   bool auto_compaction_enabled = 11;
-  int32 message_count = 12;
+  int32 query_count = 12;
   int32 pending_message_count = 13;
   string version = 14;
   string cwd = 15;
   repeated string skills = 16;
   repeated string context_files = 17;
   repeated string extensions = 18;
-  int32 context_tokens = 19;
-  int32 context_window = 20;
+  int64 context_tokens = 19;
+  int64 context_window = 20;
   double context_percent = 21;
-  int32 tokens_in = 22;
-  int32 tokens_out = 23;
+  int64 tokens_in = 22;
+  int64 tokens_out = 23;
   double total_cost = 24;
-}
-
-message SessionStats {
-  string session_file = 1;
-  string session_id = 2;
-  int32 user_messages = 3;
-  int32 assistant_messages = 4;
-  int32 tool_calls = 5;
-  int32 tool_results = 6;
-  int32 total_messages = 7;
-  TokenStats tokens = 8;
-  double cost = 9;
-}
-
-message TokenStats {
-  int32 input = 1;
-  int32 output = 2;
-  int32 cache_read = 3;
-  int32 total = 4;
-}
-
-message Message {
-  string role = 1;
-  repeated ContentBlock content = 2;
-  string name = 3;
-  ToolCalls tool_calls = 4;
-  ToolCall tool_call = 5;
-  string text = 6;
-}
-
-message ContentBlock {
-  string type = 1;
-  string text = 10;
-  string image_url = 11;
-  string tool_use_id = 12;
-  string tool_use_name = 13;
-  string tool_use_input = 14;
-  string tool_result_id = 15;
-  string tool_result_content = 16;
-}
-
-message ToolCalls {
-  repeated ToolCall calls = 1;
-}
-
-message ToolCall {
-  string id = 1;
-  string type = 2;
-  FunctionCall function = 3;
-}
-
-message FunctionCall {
-  string name = 1;
-  string arguments = 2;
-}
-
-message ShellResult {
-  string output = 1;
-  int32 exit_code = 2;
-}
-
-message CompactResult {
-  int32 tokens_before = 1;
-  int32 tokens_after = 2;
-  string summary = 3;
-  int32 messages_removed = 4;
-}
-
-message SessionListItem {
-  string id = 1;
-  string cwd = 2;
-  string model = 3;
-  int64 updated_at = 4;
+  bool image_support = 25;
+  int64 tokens_cache_r = 26;
+  int64 tokens_cache_w = 27;
+  string permission_level = 28;
 }
 
 service FutureAgent {
@@ -197,6 +140,8 @@ message StreamRequest {
 message StreamEvent {
   string type = 1;
   string data = 2;
+  string run_id = 3;
+  int64 idx = 4;
 }
 `;
 
