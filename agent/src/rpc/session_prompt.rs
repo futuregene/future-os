@@ -103,6 +103,72 @@ impl ServerSession {
                             ..Default::default()
                         });
                     }));
+                // Persist tool results incrementally so they survive crashes
+                // during long streaming runs.
+                let save_messages = messages_arc.clone();
+                let save_manager = session_manager.clone();
+                let save_session_id = session_id.clone();
+                let save_cwd = session_cwd.clone();
+                let save_model = session_model.clone();
+                let save_thinking = session_thinking.clone();
+                let save_name = session_name.clone();
+                let save_tokens_in = tokens_in.clone();
+                let save_tokens_out = tokens_out.clone();
+                let save_tokens_cr = tokens_cache_r.clone();
+                let save_tokens_cw = tokens_cache_w.clone();
+                let save_last_prompt = last_prompt.clone();
+                let save_cost = cumulative_cost.clone();
+                let save_auto = auto_compaction;
+                let save_created = created_by.clone();
+                let save_meta = source_meta.clone();
+                r#loop.on_tool_result = Some(Arc::new(move || {
+                    use std::sync::atomic::Ordering;
+                    let msgs = save_messages.read().unwrap();
+                    let mut entries: Vec<crate::session::SessionEntry> = msgs
+                        .iter()
+                        .map(crate::session::agent_message_to_entry)
+                        .collect();
+                    let info = serde_json::json!({
+                        "cwd": save_cwd,
+                        "tokens_in": save_tokens_in.load(Ordering::Relaxed),
+                        "tokens_out": save_tokens_out.load(Ordering::Relaxed),
+                        "tokens_cache_r": save_tokens_cr.load(Ordering::Relaxed),
+                        "tokens_cache_w": save_tokens_cw.load(Ordering::Relaxed),
+                        "last_prompt_tokens": save_last_prompt.load(Ordering::Relaxed),
+                        "total_cost": *save_cost.lock().unwrap(),
+                        "session_name": save_name,
+                        "auto_compaction": save_auto,
+                        "thinking_level": save_thinking.clone(),
+                        "model": save_model.clone(),
+                    });
+                    let mut info_entry = crate::session::SessionEntry::session_info(
+                        info,
+                        save_model.clone(),
+                        save_thinking.clone(),
+                    );
+                    if !save_created.is_empty() {
+                        info_entry.content.as_mut().map(|c| {
+                            c["created_by"] = serde_json::Value::String(save_created.clone());
+                        });
+                    }
+                    if !save_meta.is_null() {
+                        info_entry.content.as_mut().map(|c| {
+                            c["source_meta"] = save_meta.clone();
+                        });
+                    }
+                    entries.insert(0, info_entry);
+                    let session = crate::session::Session::snapshot(
+                        save_session_id.clone(),
+                        save_cwd.clone(),
+                        save_model.clone(),
+                        save_name.clone(),
+                        String::new(),
+                        entries,
+                    );
+                    if let Err(e) = save_manager.save(&session) {
+                        tracing::error!("Failed to persist tool result: {}", e);
+                    }
+                }));
                 let approval_gate_hook = approval_gate.clone();
                 let approval_broadcaster = broadcaster.clone();
                 let approval_session_id = session_id.clone();

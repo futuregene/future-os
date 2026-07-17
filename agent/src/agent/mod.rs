@@ -34,6 +34,9 @@ pub struct Loop {
     pub(crate) interrupt_flag: Arc<AtomicBool>,
     pub(crate) last_compaction_result: Arc<Mutex<Option<crate::compaction::CompactionResult>>>,
     pub tool_event_callback: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
+    /// Called after each tool result is pushed to messages, so the session
+    /// can be persisted incrementally during long streaming runs.
+    pub on_tool_result: Option<Arc<dyn Fn() + Send + Sync>>,
     pub cumulative_input_tokens: Arc<std::sync::atomic::AtomicI64>,
     pub cumulative_output_tokens: Arc<std::sync::atomic::AtomicI64>,
     pub cumulative_cache_read_tokens: Arc<std::sync::atomic::AtomicI64>,
@@ -61,6 +64,7 @@ impl Loop {
             interrupt_flag: Arc::new(AtomicBool::new(false)),
             last_compaction_result: Arc::new(Mutex::new(None)),
             tool_event_callback: None,
+            on_tool_result: None,
             cumulative_input_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_output_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_cache_read_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
@@ -234,6 +238,9 @@ impl Loop {
                 err_str.as_deref(),
             );
             messages.push(tool_msg);
+            if let Some(ref cb) = self.on_tool_result {
+                cb();
+            }
             executed += 1;
         }
 
