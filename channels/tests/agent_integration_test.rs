@@ -7,12 +7,15 @@ use tokio::time::timeout;
 
 // Reuse the channel's gRPC client types
 mod proto {
-    tonic::include_proto!("proto");
+    #![allow(dead_code)]
+    include!("../src/generated/proto.rs");
 }
 
 use proto::future_agent_client::FutureAgentClient;
 use proto::{RpcCommand, StreamRequest};
 
+// `tool_id` mirrors the real client enum; only printed via Debug here.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 enum AgentEvent {
     TextChunk(String),
@@ -181,10 +184,8 @@ async fn test_agent_prompt_flow() {
                         AgentEvent::ToolStart { tool_name, .. } => {
                             println!("\n[TOOL:{}]", tool_name);
                         }
-                        AgentEvent::ToolEnd { text, .. } => {
-                            if let Some(t) = text {
-                                println!("[TOOL RESULT: {:.100}]", t);
-                            }
+                        AgentEvent::ToolEnd { text: Some(t), .. } => {
+                            println!("[TOOL RESULT: {:.100}]", t);
                         }
                         AgentEvent::AgentEnd { error } => {
                             if let Some(err) = error {
@@ -266,7 +267,7 @@ async fn test_old_session_prompt_flow() {
     .await;
     println!(
         "switch_session result: {:?}",
-        switch_resp.as_ref().map(|_| "ok").unwrap_or_else(|e| "err")
+        switch_resp.as_ref().map_or("err", |_| "ok")
     );
 
     // 2. Send prompt with old session ID
