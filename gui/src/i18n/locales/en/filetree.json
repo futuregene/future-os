@@ -1,6 +1,9 @@
 {
   "refresh": "Refresh",
   "refreshing": "Refreshing…",
+  "revealInFinder": "Reveal in Finder",
+  "revealInExplorer": "Show in Explorer",
+  "revealInFileManager": "Open in File Manager",
   "openWorkspace": "Open Folder",
   "showHidden": "Hidden files",
   "empty": "This folder is empty",

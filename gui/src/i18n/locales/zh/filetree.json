@@ -1,6 +1,9 @@
 {
   "refresh": "刷新",
   "refreshing": "正在刷新…",
+  "revealInFinder": "在访达中显示",
+  "revealInExplorer": "在资源管理器中显示",
+  "revealInFileManager": "在文件管理器中打开",
   "openWorkspace": "打开文件夹",
   "showHidden": "显示隐藏文件",
   "empty": "此目录为空",

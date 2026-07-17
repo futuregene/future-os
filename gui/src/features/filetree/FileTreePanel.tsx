@@ -4,6 +4,7 @@ import type { LinkMenuItem } from "../markdown/renderers/LinkContextMenu";
 import { FolderOpen, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { isMacOS, isWindows } from "../../lib/platform";
 import { Button } from "../../components/ui/Button";
 import { openPath } from "../../integrations/storage/files";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
@@ -29,6 +30,11 @@ import { useFileTree } from "./useFileTree";
  */
 export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | null; isWorkspace: boolean }) {
   const { t } = useTranslation("filetree");
+  const revealLabel = isMacOS
+    ? t("revealInFinder")
+    : isWindows
+      ? t("revealInExplorer")
+      : t("revealInFileManager");
   const [showHidden, setShowHidden] = useState(isWorkspace);
   // Re-apply the mode's default when the thread (root) changes — a manual toggle
   // only sticks within the same thread.
@@ -164,7 +170,7 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
           size="sm"
           variant="toolbar"
         >
-          {t("openWorkspace")}
+          {revealLabel}
         </Button>
         <Button
           disabled={refreshing || !rootPath}
