@@ -204,7 +204,12 @@ impl Loop {
                             if let Some(ref bus) = self.event_bus {
                                 bus.emit(events::compaction_start("auto"));
                             }
-                            let context_window = 200000i32;
+                            // Resolve the model's actual context window so we don't
+                            // over-compact large-context models (1M+).
+                            let context_window = crate::models::Registry::new()
+                                .resolve(&self.model)
+                                .map(|m| m.context_window)
+                                .unwrap_or(1_000_000);
                             let reserve = ((context_window as f64 * 0.1) as i32).max(16384);
                             let (compacted, compact_result) = crate::compaction::compact(
                                 ConvertToLLM(&messages),
