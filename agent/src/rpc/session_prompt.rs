@@ -121,7 +121,7 @@ impl ServerSession {
                 let save_auto = auto_compaction;
                 let save_created = created_by.clone();
                 let save_meta = source_meta.clone();
-                r#loop.on_tool_result = Some(Arc::new(move || {
+                let save_closure: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
                     use std::sync::atomic::Ordering;
                     let msgs = save_messages.read().unwrap();
                     let mut entries: Vec<crate::session::SessionEntry> = msgs
@@ -168,7 +168,9 @@ impl ServerSession {
                     if let Err(e) = save_manager.save(&session) {
                         tracing::error!("Failed to persist tool result: {}", e);
                     }
-                }));
+                });
+                r#loop.on_tool_result = Some(save_closure.clone());
+                r#loop.save_callback = Some(save_closure);
                 let approval_gate_hook = approval_gate.clone();
                 let approval_broadcaster = broadcaster.clone();
                 let approval_session_id = session_id.clone();

@@ -37,6 +37,9 @@ pub struct Loop {
     /// Called after each tool result is pushed to messages, so the session
     /// can be persisted incrementally during long streaming runs.
     pub on_tool_result: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// General save callback — also called after assistant messages are
+    /// pushed, not just tool results.
+    pub save_callback: Option<Arc<dyn Fn() + Send + Sync>>,
     pub cumulative_input_tokens: Arc<std::sync::atomic::AtomicI64>,
     pub cumulative_output_tokens: Arc<std::sync::atomic::AtomicI64>,
     pub cumulative_cache_read_tokens: Arc<std::sync::atomic::AtomicI64>,
@@ -65,6 +68,7 @@ impl Loop {
             last_compaction_result: Arc::new(Mutex::new(None)),
             tool_event_callback: None,
             on_tool_result: None,
+            save_callback: None,
             cumulative_input_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_output_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_cache_read_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
