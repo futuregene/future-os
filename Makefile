@@ -11,7 +11,7 @@ version:
 
 # ─── Platform ────────────────────────────────────────────────────────────────
 
-TARGET := $(shell rustc -vV | sed -n 's/^host: //p')
+TARGET := $(shell rustc -vV | node -e "process.stdin.on('data',d=>{const m=d.toString().match(/host:\s*(.+)/);if(m)console.log(m[1])})")
 OS := $(word 3,$(subst -, ,$(TARGET)))
 
 ifeq ($(OS),darwin)
