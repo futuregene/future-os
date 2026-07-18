@@ -138,7 +138,7 @@ Commands:
   call <name>        Invoke a tool. Args as --key value. Use describe first to see
                      what arguments each tool accepts.
 
-Requires authentication: future auth login, or set FUTURE_API_KEY.`);
+Requires authentication: future auth login, or set the FUTURE_API_KEY environment variable.`);
     return;
   }
 
@@ -163,7 +163,7 @@ Commands:
   call <name>        Invoke a tool. Args as --key value. Use describe first to see
                      what arguments each tool accepts.
 
-Requires authentication: future auth login, or set FUTURE_API_KEY.`);
+Requires authentication: future auth login, or set the FUTURE_API_KEY environment variable.`);
     return;
   }
 

@@ -18,7 +18,7 @@ async function loadAccountAuth(): Promise<AccountAuth> {
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") {
       throw new Error(
-        `No API key found. Run "future auth login" first, or set FUTURE_API_KEY.`,
+        `No API key found. Run "future auth login" first, or set the FUTURE_API_KEY environment variable.`,
       );
     }
     throw error;

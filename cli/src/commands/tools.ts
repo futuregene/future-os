@@ -23,6 +23,7 @@ interface ToolEntry {
   example: string;
   inputRequired?: boolean;    // tool needs --input <file>
   maskSupported?: boolean;    // tool also accepts --mask <file>
+  outputSupported?: boolean;  // tool can save output to --output <path>
 }
 
 export const TOOL_CATALOG: Record<string, ToolEntry> = {
@@ -45,6 +46,7 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
   },
   image_gen: {
     description: "Generate images from a text prompt.",
+    outputSupported: true,
     args: {
       prompt: "description of the image to generate (required)",
       size: 'output dimensions, e.g. "1024x1024", "1792x1024" (optional, default: 1024x1024)',
@@ -56,6 +58,7 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
   },
   image_edit: {
     description: "Edit an existing image using a text prompt. Requires --input <path> for the source image. Optional --mask <path> to limit edits to a region.",
+    outputSupported: true,
     args: {
       prompt: "description of the desired edits (required)",
       size: 'output dimensions, e.g. "1024x1024" (optional)',
@@ -113,21 +116,21 @@ export async function loadApiKey(): Promise<string> {
 
     const future = auth[FUTURE_PROVIDER];
     if (!isRecord(future)) {
-      throw new Error(`Not logged in. Run "future auth login" first, or set FUTURE_API_KEY.`);
+      throw new Error(`Not logged in. Run "future auth login" first, or set the FUTURE_API_KEY environment variable.`);
     }
 
     const key = typeof (future as Record<string, unknown>).key === "string"
       ? (future as Record<string, unknown>).key as string
       : undefined;
     if (!key) {
-      throw new Error(`Not logged in. Run "future auth login" first, or set FUTURE_API_KEY.`);
+      throw new Error(`Not logged in. Run "future auth login" first, or set the FUTURE_API_KEY environment variable.`);
     }
     return key;
   } catch (err) {
     const testKey = process.env["FUTURE_API_TEST_KEY"];
     if (testKey) return testKey;
     if (isNodeError(err) && err.code === "ENOENT") {
-      throw new Error(`Not logged in. Run "future auth login" first, or set FUTURE_API_KEY.`);
+      throw new Error(`Not logged in. Run "future auth login" first, or set the FUTURE_API_KEY environment variable.`);
     }
     throw err;
   }
@@ -174,7 +177,7 @@ async function callRemoteTool(apiKey: string, name: string, args: Record<string,
     const err = body.error as Record<string, unknown>;
     const code = typeof err.code === "number" ? String(err.code) : String(err.code ?? "unknown");
     const message = typeof err.message === "string" ? err.message : "unknown error";
-    throw new Error(`tools/call failed: code=${code}, message=${message}`);
+    throw new Error(`code=${code}, message=${message}`);
   }
 
   const result = getRecord(body.result);
@@ -196,7 +199,6 @@ async function callRemoteTool(apiKey: string, name: string, args: Record<string,
   };
 }
 
-// ── Tool-specific result formatters ─────────────────────────────────────────
 // Each formatter extracts the useful content from MCP responses, filtering
 // out JSON wrapper noise and usage metadata. Use --raw to get the original output.
 
@@ -571,16 +573,27 @@ function stripOuterQuotes(input: string): string {
 export async function tools(command: ToolsCommand, args: string[]): Promise<void> {
   if (command === "list") {
     const jsonFlag = args.includes("--json");
-    let tools: Array<{ name: string; description: string }> = Object.entries(BROWSER_TOOL_CATALOG)
-      .map(([name, entry]) => ({ name, description: entry.description }));
+    const allTools: Array<{ name: string; description: string; needsInput?: boolean }> = [];
 
+    // Local catalog (browser)
+    for (const [name, entry] of Object.entries(BROWSER_TOOL_CATALOG)) {
+      allTools.push({ name, description: entry.description });
+    }
+
+    // Remote tools from API, prefer local catalog descriptions
     try {
       const apiKey = await loadApiKey();
-      tools = [...tools, ...await listRemoteTools(apiKey)];
+      const remote = await listRemoteTools(apiKey);
+      for (const rt of remote) {
+        const local = TOOL_CATALOG[rt.name];
+        allTools.push({
+          name: rt.name,
+          description: local?.description ?? rt.description,
+          needsInput: local?.inputRequired,
+        });
+      }
     } catch (error) {
-      if (jsonFlag) {
-        tools = tools.map((tool) => ({ ...tool }));
-      } else {
+      if (!jsonFlag) {
         console.error(
           `Remote tools unavailable: ${error instanceof Error ? error.message : String(error)}`,
         );
@@ -589,18 +602,24 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     }
 
     if (jsonFlag) {
-      console.log(JSON.stringify(tools, null, 2));
+      console.log(JSON.stringify(allTools, null, 2));
     } else {
-      for (const t of tools) {
-        const desc = t.description.slice(0, 80);
-        console.log(`  ${t.name.padEnd(30)} ${desc}`);
+      const maxName = Math.max(...allTools.map(t => t.name.length), 12);
+      for (const t of allTools) {
+        const desc = t.description.length > 90 ? t.description.slice(0, 89) + "…" : t.description;
+        const hint = t.needsInput ? " [needs --input]" : "";
+        console.log(`  ${t.name.padEnd(maxName + 2)} ${desc}${hint}`);
       }
-      console.log(`\n${tools.length} tools available.`);
+      console.log(`\n${allTools.length} tools available.  Use "future tools describe <name>" for details.`);
     }
     return;
   }
 
   if (command === "describe") {
+    if (args[0] === "--help" || args[0] === "-h") {
+      console.log("Usage: future tools describe <tool_name>\n\nShow arguments, flags, and usage example for a tool.");
+      return;
+    }
     const toolName = args[0];
     if (!toolName) {
       console.error("Usage: future tools describe <tool_name>");
@@ -629,14 +648,18 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     }
     console.log(`  ${toolName}`);
     console.log(`  ${entry.description}`);
+
+    // Flags (common to all tools)
+    console.log("");
+    console.log("  Flags:");
     if (entry.inputRequired) {
-      console.log("");
-      console.log("  Flags:");
-      console.log("    --input <path>   Input file (required)");
-      if (entry.maskSupported) {
-        console.log("    --mask <path>    Mask image (optional)");
-      }
+      console.log("    --input <path>     Input file");
+      if (entry.maskSupported) console.log("    --mask <path>      Optional mask image");
     }
+    if (entry.outputSupported) console.log("    --output <path>    Save output to file");
+    console.log("    --timeout <secs>   HTTP timeout (default: 60s)");
+
+    // Arguments (tool-specific)
     if (Object.keys(entry.args).length > 0) {
       console.log("");
       console.log("  Arguments (--key value):");
@@ -644,7 +667,8 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
         console.log(`    --${name.padEnd(24)} ${type}`);
       }
     }
-    // Build example only from args present in entry.example
+
+    // Example
     const exampleFlags = (() => {
       try {
         const ex = JSON.parse(entry.example) as Record<string, unknown>;
@@ -664,8 +688,15 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
   }
 
   if (command === "call") {
+    if (args[0] === "--help" || args[0] === "-h") {
+      console.log(`Usage: future tools call <tool_name> [--key value...]
+
+Call a tool by name. Use "future tools describe <tool_name>" to see
+required arguments, flags, and examples for each tool.`);
+      return;
+    }
     const toolName = args[0];
-    if (!toolName) {
+    if (!toolName || toolName.startsWith("--")) {
       console.error("Usage: future tools call <tool_name> [--key value...] [--input <path>] [--output <path>] [--timeout <secs>] [--raw]");
       process.exitCode = 1;
       return;
@@ -743,6 +774,72 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
       }
     }
 
+    // Pre-check: for known tools, validate required args and value ranges
+    const catalogEntry = TOOL_CATALOG[toolName];
+    if (catalogEntry) {
+      const missing: string[] = [];
+      for (const [name, desc] of Object.entries(catalogEntry.args)) {
+        if (desc.includes("required") && !(name in toolArgs)) {
+          missing.push(`--${name}`);
+        }
+      }
+      if (missing.length > 0) {
+        console.error(`Error: ${toolName} requires: ${missing.join(", ")}`);
+        console.error(`Use "future tools describe ${toolName}" for details.`);
+        process.exit(1);
+      }
+
+      // Validate numeric ranges for known parameters
+      const intRange = (key: string, min: number, max: number) => {
+        if (key in toolArgs) {
+          const v = toolArgs[key];
+          if (typeof v !== "number" || !Number.isInteger(v) || v < min || v > max) {
+            console.error(`Error: --${key} must be an integer between ${min} and ${max}, got: ${JSON.stringify(v)}`);
+            process.exit(1);
+          }
+        }
+      };
+      const intMin = (key: string, min: number) => {
+        if (key in toolArgs) {
+          const v = toolArgs[key];
+          if (typeof v !== "number" || !Number.isInteger(v) || v < min) {
+            console.error(`Error: --${key} must be a positive integer, got: ${JSON.stringify(v)}`);
+            process.exit(1);
+          }
+        }
+      };
+
+      // Validate search_paper queries
+      if (toolName === "search_paper" && "queries" in toolArgs) {
+        const q = toolArgs["queries"];
+        if (!Array.isArray(q) || q.length === 0 || q.some((s: unknown) => typeof s !== "string" || s.trim() === "")) {
+          console.error(`Error: --queries must be a non-empty array of non-empty strings`);
+          process.exit(1);
+        }
+      }
+
+      intRange("n", 1, 10);
+      intRange("count", 1, 50);
+      intMin("max_k", 1);
+      intMin("max_tokens", 1);
+
+      // Normalize file_type to lowercase
+      if (typeof toolArgs["file_type"] === "string") {
+        const ft = (toolArgs["file_type"] as string).toLowerCase();
+        if (ft !== "pdf" && ft !== "docx") {
+          console.error(`Error: --file_type must be "pdf" or "docx", got: "${toolArgs["file_type"]}"`);
+          process.exit(1);
+        }
+        toolArgs["file_type"] = ft;
+      }
+    }
+
+    // Validate --timeout (common flag)
+    if (timeoutSec < 0) {
+      console.error(`Error: --timeout must be >= 1 second, got: ${timeoutSec}`);
+      process.exit(1);
+    }
+
     if (isBrowserTool(toolName)) {
       let output: string;
       let exitCode = 0;
@@ -775,9 +872,10 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     try {
       result = await callRemoteTool(apiKey, toolName, toolArgs, timeoutMs);
     } catch (error) {
-      console.error(
-        `tools/call failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      const msg = error instanceof Error ? error.message : String(error);
+      // Give context: which tool, and how to see its arguments
+      console.error(`Error calling ${toolName}: ${msg}`);
+      console.error(`Use "future tools describe ${toolName}" to see required arguments.`);
       process.exit(1);
     }
 
