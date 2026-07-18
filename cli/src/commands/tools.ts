@@ -33,8 +33,9 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     args: {
       queries: "search terms, one per query (required)",
       information_to_extract: "what information to extract from the results (optional)",
+      max_results_per_query: "max papers to return per query, 1-20 (optional, default: 10)",
     },
-    example: '{"queries": ["CRISPR gene editing overview", "CRISPR applications 2025"], "information_to_extract": "key methods and recent advances"}',
+    example: '{"queries": ["CRISPR gene editing overview", "CRISPR applications 2025"], "information_to_extract": "key methods and recent advances", "max_results_per_query": 8}',
   },
   get_paper: {
     description: "Get full paper content by identifier (PMID, DOI). Returns metadata (title, authors, journal, year, DOI) and complete body_text.",
