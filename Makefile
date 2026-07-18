@@ -4,7 +4,7 @@
 # Single source of truth for the build version (see scripts/version.mjs).
 # Exported so cargo build.rs and the TS build scripts pick it up. On a release
 # tag CI sets FUTURE_VERSION in the environment, which wins over this default.
-export FUTURE_VERSION ?= $(shell node scripts/version.mjs)
+export FUTURE_VERSION ?= $(shell node $(CURDIR)/scripts/version.mjs)
 
 version:
 	@node scripts/version.mjs --json
