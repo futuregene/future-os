@@ -138,7 +138,7 @@ impl ServerSession {
             agent_loop,
             messages: Arc::new(std::sync::RwLock::new(vec![])),
             model: String::new(),
-            thinking_level: "high".to_string(), // Match default
+            thinking_level: "xhigh".to_string(), // Match default
             steering_mode: "one-at-a-time".to_string(),
             follow_up_mode: "one-at-a-time".to_string(),
             auto_compaction: true, // Match default
@@ -196,7 +196,7 @@ impl ServerSession {
             agent_loop,
             messages: Arc::new(std::sync::RwLock::new(vec![])),
             model: String::new(),
-            thinking_level: "high".to_string(),
+            thinking_level: "xhigh".to_string(),
             steering_mode: "one-at-a-time".to_string(),
             follow_up_mode: "one-at-a-time".to_string(),
             auto_compaction: true,

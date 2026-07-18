@@ -37,44 +37,19 @@ interface BrowserToolEntry {
 
 export const BROWSER_TOOL_CATALOG: Record<string, BrowserToolEntry> = {
   browser: {
-    description: "Control a local visible Chrome/Edge/Safari browser. Sub-commands: start, status, tabs, open, snapshot, click, type, press, screenshot, console.",
+    description: "Control a local Chrome/Edge/Safari browser for web automation: navigate pages, take snapshots, click elements, fill forms, capture screenshots.",
     args: {
-      command: '"start" | "status" | "tabs" | "open" | "snapshot" | "click" | "type" | "press" | "scroll" | "screenshot" | "console"',
-      // start
-      browser: 'string (default: auto, for start: "chrome" | "edge" | "safari")',
-      port: "integer (default: 9222)",
-      profileDir: "string (default: ~/.future/agent/browser/profile)",
-      executablePath: "string (optional)",
-      // status
-      endpoint: "string (default: saved endpoint or http://127.0.0.1:9222)",
-      // tabs
-      action: '"list" | "new" | "select" | "close"',
-      index: "integer (0-based, for select/close)",
-      // open
-      url: "string (for open / tabs new)",
-      // snapshot
-      limit: "integer (default: 80)",
-      // click / type
-      ref: "string (from snapshot)",
-      selector: "string (CSS selector)",
-      target: "string (ref or selector)",
-      // type
-      text: "string (required for type)",
-      submit: "boolean (for type)",
-      clear: "boolean (default: true, for type)",
-      // press
-      key: "string (required for press, e.g. Enter, Escape)",
-      // screenshot
-      fullPage: "boolean",
-      path: "string (optional)",
-      output: "string (optional alias for path)",
-      // scroll
-      direction: '"up" | "down" (default: "down")',
-      amount: "integer (default: 300, pixels to scroll)",
-      // console
-      level: '"log" | "info" | "warn" | "error" (optional)',
+      command: "sub-command: start | status | open | snapshot | click | type | press | scroll | screenshot | console | tabs (required)",
+      url: "URL to navigate to (for open / start)",
+      ref: "element reference from a previous snapshot (for click / type)",
+      text: "text to type into an element (for type)",
+      key: 'key to press, e.g. "Enter" or "Escape" (for press)',
+      fullPage: "capture the full scrollable page (for screenshot, default: false)",
+      limit: "max snapshot lines to return (default: 80)",
+      path: "file path to save screenshot, e.g. ./page.png (for screenshot)",
+      level: 'console message level to filter: "log" | "warn" | "error" (for console)',
     },
-    example: '{"command": "snapshot"}',
+    example: '{"command": "open", "url": "https://example.com"}',
   },
 };
 

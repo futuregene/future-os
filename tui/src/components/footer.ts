@@ -13,7 +13,6 @@ export interface FooterData {
   thinking?: string;
   streaming?: boolean;
   spinnerFrame?: number;
-  sessionName?: string;
   pending?: number;
   contextTokens?: number;
   contextWindow?: number;
@@ -82,10 +81,7 @@ export class Footer implements Component {
       const pwd = home && this.data.cwd.startsWith(home)
         ? "~" + this.data.cwd.slice(home.length)
         : this.data.cwd;
-      const sessionTag = this.data.sessionName
-        ? ` ${colorFg(AUTO_FG, `[${this.data.sessionName}]`)}`
-        : "";
-      leftParts.push(baseFg + pwd + sessionTag);
+      leftParts.push(baseFg + pwd);
     }
 
     // Model — brighter fg (252), optional thinking level in blue

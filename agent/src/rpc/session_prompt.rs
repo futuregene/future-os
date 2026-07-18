@@ -34,7 +34,10 @@ impl ServerSession {
         // tool entries from prior turns) during streaming. Without this, a
         // thread switch mid-stream loses the question until the run settles
         // because get_session_entries reads from disk.
-        self.persist_user_message();
+        // Ephemeral sessions (--no-session) skip persistence entirely.
+        if !self.ephemeral {
+            self.persist_user_message();
+        }
 
         // Set streaming flag + start a new run. P1: run_id is assigned once per
         // user run at the is_streaming false→true edge (resets idx + event buffer);
@@ -71,6 +74,7 @@ impl ServerSession {
         let source_meta = self.source_meta.clone();
         let auto_compaction = self.auto_compaction;
         let approval_gate = self.approval_gate.clone();
+        let is_ephemeral = self.ephemeral;
 
         // Resolve the sandbox boundary once per run: canonicalized writable
         // roots + platform availability. Shared by the approval closure (pre-
@@ -109,6 +113,10 @@ impl ServerSession {
                 let save_manager = session_manager.clone();
                 let save_session_id = session_id.clone();
                 let save_closure: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                    // Ephemeral sessions skip all disk I/O — nothing to persist.
+                    if is_ephemeral {
+                        return;
+                    }
                     // Append-only: only write the last entry instead of
                     // rebuilding and rewriting the entire file.  The final
                     // post-run save does the full snapshot.
@@ -480,16 +488,18 @@ impl ServerSession {
                             }
                         }
 
-                        let session = crate::session::Session::snapshot(
-                            session_id.clone(),
-                            session_cwd.clone(),
-                            session_model.clone(),
-                            session_name.clone(),
-                            parent_session_id,
-                            entries,
-                        );
-                        if let Err(e) = session_manager.save(&session) {
-                            tracing::error!("Failed to save session: {}", e);
+                        if !is_ephemeral {
+                            let session = crate::session::Session::snapshot(
+                                session_id.clone(),
+                                session_cwd.clone(),
+                                session_model.clone(),
+                                session_name.clone(),
+                                parent_session_id,
+                                entries,
+                            );
+                            if let Err(e) = session_manager.save(&session) {
+                                tracing::error!("Failed to save session: {}", e);
+                            }
                         }
                     }
                     // Carry this run's output-token total on the terminal event so

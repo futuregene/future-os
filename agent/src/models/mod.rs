@@ -554,11 +554,29 @@ fn get_future_models_with_cache(api_key: &str, base_url: &str) -> Vec<Model> {
 pub fn get_default_model() -> Option<String> {
     let registry = Registry::new();
     let auth = crate::AuthStore::load();
-    registry
-        .all_models()
-        .into_iter()
-        .find(|m| !m.api_key.is_empty() || auth.get(&m.provider).is_some())
-        .map(|m| format!("{}/{}", m.provider, m.id))
+    // Prefer future/deepseek-v4-pro when the future provider is configured,
+    // otherwise fall back to the first model with credentials.
+    let preferred = if auth.get("future").is_some()
+        || registry
+            .all_models()
+            .iter()
+            .any(|m| m.provider == "future" && !m.api_key.is_empty())
+    {
+        registry
+            .all_models()
+            .into_iter()
+            .find(|m| m.provider == "future" && m.id == "deepseek-v4-pro")
+            .map(|m| format!("{}/{}", m.provider, m.id))
+    } else {
+        None
+    };
+    preferred.or_else(|| {
+        registry
+            .all_models()
+            .into_iter()
+            .find(|m| !m.api_key.is_empty() || auth.get(&m.provider).is_some())
+            .map(|m| format!("{}/{}", m.provider, m.id))
+    })
 }
 
 /// LoadUserModels reads a models.json file.

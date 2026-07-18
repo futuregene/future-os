@@ -54,7 +54,11 @@ export async function skills(command: SkillsCommand, args: string[]): Promise<vo
       return;
     }
     const versionIdx = args.indexOf("--version");
-    const version = versionIdx !== -1 && versionIdx + 1 < args.length ? args[versionIdx + 1] : undefined;
+    let version = versionIdx !== -1 && versionIdx + 1 < args.length ? args[versionIdx + 1] : undefined;
+    // Strip leading "v" if user provided it (e.g. "v1.0" → "1.0") to avoid double "v" in output
+    if (version && version.startsWith("v")) {
+      version = version.slice(1);
+    }
     await installSkill(name, version);
     return;
   }

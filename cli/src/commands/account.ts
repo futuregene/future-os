@@ -78,38 +78,6 @@ async function platformGet<T>(url: string, apiKey: string): Promise<T> {
   }
 }
 
-async function platformPost<T>(
-  url: string,
-  apiKey: string,
-  payload: unknown,
-): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30_000);
-
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-
-    const body = (await response.json()) as { error?: string; message?: string };
-    if (!response.ok) {
-      throw new Error(
-        body.message ?? body.error ?? `HTTP ${response.status}`,
-      );
-    }
-    return body as T;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 // ── Profile ───────────────────────────────────────────────────────────────────
 
 interface ProfileResponse {
@@ -119,16 +87,31 @@ interface ProfileResponse {
   created_at: string;
 }
 
-async function accountProfile(): Promise<void> {
+async function accountProfile(jsonFlag: boolean): Promise<void> {
   const auth = await loadAccountAuth();
   const url = `${auth.platformUrl}/client/v1/account/profile`;
 
   const profile = await platformGet<ProfileResponse>(url, auth.apiKey);
 
-  console.log(`  Email:           ${profile.email}`);
-  console.log(`  User ID:         ${profile.user_id}`);
-  console.log(`  Email verified:  ${profile.email_verified}`);
-  console.log(`  Created:         ${profile.created_at}`);
+  if (jsonFlag) {
+    console.log(
+      JSON.stringify(
+        {
+          email: profile.email,
+          user_id: profile.user_id,
+          email_verified: profile.email_verified,
+          created_at: profile.created_at,
+        },
+        null,
+        2,
+      ),
+    );
+  } else {
+    console.log(`  Email:           ${profile.email}`);
+    console.log(`  User ID:         ${profile.user_id}`);
+    console.log(`  Email verified:  ${profile.email_verified}`);
+    console.log(`  Created:         ${profile.created_at}`);
+  }
 }
 
 // ── Balance ───────────────────────────────────────────────────────────────────
@@ -163,78 +146,12 @@ async function accountBalance(jsonFlag: boolean): Promise<void> {
   }
 }
 
-// ── Recharge ──────────────────────────────────────────────────────────────────
-
-interface RechargeOrderResponse {
-  id: string;
-  order_no: string;
-  channel: string;
-  product: string;
-  amount_cents: number;
-  amount_credits: number;
-  currency: string;
-  subject: string;
-  status: string;
-  provider_trade_no?: string;
-  provider_payload_json?: unknown;
-  pay_url?: string;
-  qr_code_url?: string;
-  return_url?: string;
-  expires_at: string;
-  paid_at?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-async function accountRecharge(
-  amountYuan: number,
-  channel: string,
-): Promise<void> {
-  if (amountYuan <= 0) {
-    console.error("Error: --amount must be a positive number (in CNY).");
-    process.exitCode = 1;
-    return;
-  }
-
-  const channelLower = channel.toLowerCase();
-  if (channelLower !== "alipay" && channelLower !== "wechat") {
-    console.error(
-      'Error: --channel must be "alipay" or "wechat".',
-    );
-    process.exitCode = 1;
-    return;
-  }
-
-  const auth = await loadAccountAuth();
-  const url = `${auth.platformUrl}/client/v1/account/recharge/orders`;
-
-  // Convert yuan to cents: 1 CNY = 100 cents
-  const amountCents = Math.round(amountYuan * 100);
-
-  const order = await platformPost<RechargeOrderResponse>(url, auth.apiKey, {
-    amount_cents: amountCents,
-    channel: channelLower,
-  });
-
-  console.log(`  Order:     ${order.order_no}`);
-  console.log(`  Amount:    ${(order.amount_cents / 100).toFixed(2)} CNY`);
-  console.log(`  Channel:   ${order.channel}`);
-  console.log(`  Status:    ${order.status}`);
-  if (order.pay_url) {
-    console.log(`  Pay URL:   ${order.pay_url}`);
-  } else {
-    console.log(`  Pay URL:   (not available yet)`);
-  }
-  console.log(`  Expires:   ${order.expires_at}`);
-  console.log(`  Created:   ${order.created_at}`);
-}
-
 // ── Public command ───────────────────────────────────────────────────────────
 
-export type AccountCommand = "profile" | "balance" | "recharge";
+export type AccountCommand = "profile" | "balance";
 
 export function isAccountCommand(command: string): command is AccountCommand {
-  return command === "profile" || command === "balance" || command === "recharge";
+  return command === "profile" || command === "balance";
 }
 
 export async function account(
@@ -243,45 +160,13 @@ export async function account(
 ): Promise<void> {
   switch (command) {
     case "profile": {
-      await accountProfile();
+      const jsonFlag = args.includes("--json");
+      await accountProfile(jsonFlag);
       return;
     }
     case "balance": {
       const jsonFlag = args.includes("--json");
       await accountBalance(jsonFlag);
-      return;
-    }
-    case "recharge": {
-      const amountIdx = args.indexOf("--amount");
-      const channelIdx = args.indexOf("--channel");
-
-      if (amountIdx === -1 || amountIdx + 1 >= args.length) {
-        console.error(
-          'Usage: future account recharge --amount <yuan> --channel <alipay|wechat>',
-        );
-        process.exitCode = 1;
-        return;
-      }
-
-      const amountYuan = Number(args[amountIdx + 1]);
-      if (Number.isNaN(amountYuan)) {
-        console.error(
-          `Error: --amount must be a number, got "${args[amountIdx + 1]}".`,
-        );
-        process.exitCode = 1;
-        return;
-      }
-
-      if (channelIdx === -1 || channelIdx + 1 >= args.length) {
-        console.error(
-          'Usage: future account recharge --amount <yuan> --channel <alipay|wechat>',
-        );
-        process.exitCode = 1;
-        return;
-      }
-
-      const channel = args[channelIdx + 1];
-      await accountRecharge(amountYuan, channel);
       return;
     }
   }

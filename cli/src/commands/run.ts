@@ -53,43 +53,60 @@ const VALID_PERMISSION_LEVELS: PermissionLevel[] = ["all", "workspace", "none"];
 // ─── Help Text ─────────────────────────────────────────────────────────
 
 function printRunHelp(): void {
-  console.log(`future run — send a prompt to the Future agent and print the response
+  console.log(`future run — send a prompt to the Future Agent (one-shot, non-interactive)
+
+Connects to the agent gRPC server, configures the session, sends a prompt,
+streams the response to stdout, and exits.
 
 Usage:
   future run [options] [@files...] [message...]
 
-Options:
-  --grpc-addr <addr>       gRPC server address (default: 127.0.0.1:50051)
-  --session <id>           Connect to a specific session
-  --continue, -c           Continue the most recent session
-  --fork <entry-id>        Fork from a session entry
-  --model <model>          Model ID (supports model:thinking format, e.g. "sonnet:high")
-  --thinking <level>       Thinking level: off, minimal, low, medium, high, xhigh
-  --tools, -t <tools>      Comma-separated tool names to enable
+Session options:
+  --session <id>           Connect to an existing session by ID
+  --continue, -c           Continue the most recent session (by updated_at)
+  --fork <entry-id>        Fork a new session from a specific entry in the current session
+  --no-session             Ephemeral mode: do not persist the session to disk
+
+Model & behavior:
+  --model <id>             Model ID. Only affects this run; subsequent runs use the default.
+                           Supports model:thinking shorthand, e.g. "sonnet:high".
+  --thinking <level>       Thinking/reasoning level: off, minimal, low, medium, high, xhigh
+  --permission <level>     File access permission: all (no restrictions), workspace
+                           (workspace + temp only), none (read-only outside workspace)
+
+Tool control:
+  --tools, -t <names>      Comma-separated tool names to enable (e.g. "read,shell")
   --no-tools, -nt          Disable all tools
-  --no-builtin-tools, -nbt Disable built-in tools only (keep extensions)
-  --system-prompt <text>   Set system prompt
-  --append-system-prompt <text> Append to system prompt
-  --permission <level>     Permission level: all, workspace, none
-  --no-session             Ephemeral mode (don't save session)
-  --mode <mode>            Output mode: text (default), json
-  --cwd <dir>              Working directory
-  --verbose                Show progress to stderr
+  --no-builtin-tools, -nbt Disable built-in tools only (keep MCP extensions active)
+
+Prompt control:
+  --system-prompt <text>   Replace the system prompt
+  --append-system-prompt <text>  Append to the system prompt (can repeat)
+
+Output:
+  --mode <mode>            text (default): stream to stdout; json: one JSON object on exit
+  --verbose                Write progress and tool calls to stderr
+
+Other:
+  --grpc-addr <addr>       gRPC server address (default 127.0.0.1:50051).
+                           Override with env FUTURE_AGENT_GRPC_ADDR.
+  --cwd <dir>              Working directory for the agent (default: current directory)
   --help, -h               Show this help
 
 Arguments:
-  @files...    File paths to include in prompt (content wrapped in <file> tags)
-  message...   The prompt text
+  @files...    Read each file's content and wrap it in <file name="<abs-path>"> tags
+               before the message text. Files are read before the prompt is sent.
+  message...   The text prompt. Joined with spaces. If empty, @files must provide content.
 
 Examples:
   future run "Explain this codebase"
   future run --model sonnet:high "Review the changes"
-  future run --fork abc123 --thinking high "Continue from fork"
-  future run --tools read,shell "Read the README"
-  future run --permission workspace --no-tools "Summarize AGENTS.md"
+  future run --fork abc123 "Continue from this fork point"
+  future run --continue "Pick up where we left off"
+  future run --tools read,shell "Read the README and list files"
+  future run --permission workspace "Summarize AGENTS.md"
   future run --mode json "What is 2+2?"
-  future run @README.md "Summarize this file"
-`);
+  future run @README.md @src/main.rs "Summarize these files"`);
 }
 
 // ─── Arg Parser ────────────────────────────────────────────────────────

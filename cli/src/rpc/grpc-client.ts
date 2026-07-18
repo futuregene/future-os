@@ -265,6 +265,7 @@ export class RunClient {
     type: string,
     cmd: Partial<RpcCommand>,
     sessionId?: string,
+    timeoutSecs = 10,
   ): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const request = {
@@ -276,7 +277,7 @@ export class RunClient {
 
       this.client.ExecuteCommand(
         request,
-        { deadline: grpcDeadline() },
+        { deadline: grpcDeadline(timeoutSecs) },
         (err: Error | null, response: any) => {
           if (err) {
             reject(err);
@@ -384,28 +385,105 @@ export class RunClient {
     });
   }
 
+  // ─── Agent Commands ─────────────────────────────────────────────────
+
+  async getAgentInfo(): Promise<{ version: string; skillsCount: number }> {
+    return this.executeCommand("get_agent_info", {}, undefined, 5) as Promise<{
+      version: string;
+      skillsCount: number;
+    }>;
+  }
+
+  // ─── Model Commands ──────────────────────────────────────────────────
+
+  async listModels(): Promise<{
+    models: Array<{
+      id: string;
+      label: string;
+      provider: string;
+      supportsImages: boolean;
+      thinkingLevel: string;
+      contextWindow: number;
+      isDefault: boolean;
+    }>;
+    defaultModel: string;
+  }> {
+    return this.executeCommand("list_models", {}, undefined, 5) as Promise<{
+      models: Array<{
+        id: string;
+        label: string;
+        provider: string;
+        supportsImages: boolean;
+        thinkingLevel: string;
+        contextWindow: number;
+        isDefault: boolean;
+      }>;
+      defaultModel: string;
+    }>;
+  }
+
   // ─── Session Commands ────────────────────────────────────────────────
 
-  async getState(): Promise<RpcSessionState> {
-    return this.executeCommand("get_state", {}) as Promise<RpcSessionState>;
+  async getState(sessionId?: string): Promise<RpcSessionState> {
+    return this.executeCommand("get_state", {}, sessionId, 5) as Promise<RpcSessionState>;
   }
 
   async fork(entryId: string): Promise<{ cancelled: boolean; sessionId?: string }> {
-    return this.executeCommand("fork", { entryId }) as Promise<{
+    return this.executeCommand("fork", { entryId }, undefined, 5) as Promise<{
       cancelled: boolean;
       sessionId?: string;
     }>;
   }
 
   async switchSession(sessionId: string): Promise<{ cancelled: boolean }> {
-    return this.executeCommand("switch_session", { sessionId }) as Promise<{
+    return this.executeCommand("switch_session", { sessionId }, undefined, 5) as Promise<{
       cancelled: boolean;
     }>;
   }
 
   async listSessions(): Promise<{ sessions: SessionSummary[] }> {
-    return this.executeCommand("list_sessions", {}) as Promise<{
+    return this.executeCommand("list_sessions", {}, undefined, 5) as Promise<{
       sessions: SessionSummary[];
+    }>;
+  }
+
+  async getSessionStats(sessionId: string): Promise<{
+    sessionId: string;
+    userMessages: number;
+    assistantMessages: number;
+    toolCalls: number;
+    toolResults: number;
+    totalMessages: number;
+    tokens: { input: number; output: number; cacheRead: number; total: number };
+    cost: number;
+  }> {
+    return this.executeCommand("get_session_stats", { sessionId }, undefined, 5) as Promise<{
+      sessionId: string;
+      userMessages: number;
+      assistantMessages: number;
+      toolCalls: number;
+      toolResults: number;
+      totalMessages: number;
+      tokens: { input: number; output: number; cacheRead: number; total: number };
+      cost: number;
+    }>;
+  }
+
+  async renameSession(sessionId: string, name: string): Promise<void> {
+    await this.executeCommand("set_session_name", { sessionId, name }, undefined, 5);
+  }
+
+  async deleteSession(sessionId: string): Promise<{ deleted: boolean }> {
+    return this.executeCommand("delete_session", { sessionId }, undefined, 5) as Promise<{
+      deleted: boolean;
+    }>;
+  }
+
+  async getSessionEntries(sessionId: string): Promise<{
+    entries: Array<Record<string, unknown>>;
+  }> {
+    return this.executeCommand("get_session_entries", { sessionId }, undefined, 5) as Promise<{
+      entries: Array<Record<string, unknown>>;
     }>;
   }
 
@@ -413,55 +491,55 @@ export class RunClient {
     return this.executeCommand("new_session", {
       cwd: cwd || process.cwd(),
       customInstructions: JSON.stringify({ createdBy: "cli" }),
-    }) as Promise<{ sessionId: string }>;
+    }, undefined, 5) as Promise<{ sessionId: string }>;
   }
 
   // ─── Config Commands ─────────────────────────────────────────────────
 
-  async setModel(modelId: string): Promise<void> {
-    await this.executeCommand("set_model", { modelId });
+  async setModel(modelId: string, sessionId?: string): Promise<void> {
+    await this.executeCommand("set_model", { modelId }, sessionId, 5);
   }
 
-  async setThinkingLevel(level: ThinkingLevel): Promise<void> {
-    await this.executeCommand("set_thinking_level", { level });
+  async setThinkingLevel(level: ThinkingLevel, sessionId?: string): Promise<void> {
+    await this.executeCommand("set_thinking_level", { level }, sessionId, 5);
   }
 
-  async setTools(toolNames: string[]): Promise<void> {
-    await this.executeCommand("set_tools", { tools: toolNames });
+  async setTools(toolNames: string[], sessionId?: string): Promise<void> {
+    await this.executeCommand("set_tools", { tools: toolNames }, sessionId, 5);
   }
 
-  async disableTools(): Promise<void> {
-    await this.executeCommand("disable_tools", {});
+  async disableTools(sessionId?: string): Promise<void> {
+    await this.executeCommand("disable_tools", {}, sessionId, 5);
   }
 
-  async disableBuiltinTools(): Promise<void> {
-    await this.executeCommand("disable_builtin_tools", {});
+  async disableBuiltinTools(sessionId?: string): Promise<void> {
+    await this.executeCommand("disable_builtin_tools", {}, sessionId, 5);
   }
 
-  async setSystemPrompt(prompt: string): Promise<void> {
-    await this.executeCommand("set_system_prompt", { systemPrompt: prompt });
+  async setSystemPrompt(prompt: string, sessionId?: string): Promise<void> {
+    await this.executeCommand("set_system_prompt", { systemPrompt: prompt }, sessionId, 5);
   }
 
-  async appendSystemPrompt(prompt: string): Promise<void> {
-    await this.executeCommand("append_system_prompt", { systemPrompt: prompt });
+  async appendSystemPrompt(prompt: string, sessionId?: string): Promise<void> {
+    await this.executeCommand("append_system_prompt", { systemPrompt: prompt }, sessionId, 5);
   }
 
-  async setEphemeral(ephemeral: boolean): Promise<void> {
-    await this.executeCommand("set_ephemeral", { ephemeral });
+  async setEphemeral(ephemeral: boolean, sessionId?: string): Promise<void> {
+    await this.executeCommand("set_ephemeral", { ephemeral }, sessionId, 5);
   }
 
-  async setPermissionLevel(level: PermissionLevel): Promise<void> {
-    await this.executeCommand("set_permission_level", { level } as any);
+  async setPermissionLevel(level: PermissionLevel, sessionId?: string): Promise<void> {
+    await this.executeCommand("set_permission_level", { level } as any, sessionId, 5);
   }
 
-  async setCwd(cwd: string): Promise<void> {
-    await this.executeCommand("set_cwd", { cwd });
+  async setCwd(cwd: string, sessionId?: string): Promise<void> {
+    await this.executeCommand("set_cwd", { cwd }, sessionId, 5);
   }
 
   // ─── Prompt ─────────────────────────────────────────────────────────
 
-  async prompt(message: string): Promise<void> {
-    await this.executeCommand("prompt", { message });
+  async prompt(message: string, sessionId?: string): Promise<void> {
+    await this.executeCommand("prompt", { message }, sessionId, 30);
   }
 
   // ─── High-level Run ─────────────────────────────────────────────────
@@ -473,15 +551,20 @@ export class RunClient {
   async run(config: RunConfig): Promise<RunResult> {
     const verbose = config.verbose ?? false;
 
-    // 1. Get initial state (also establishes session)
+    // 1. Establish session
     if (verbose) {
       process.stderr.write(`Connecting to ${this.address}...\n`);
     }
-    const state = await this.getState();
-    let sessionId = state.sessionId;
 
-    // 2. Handle session options (fork / continue / switch)
+    let sessionId: string;
+
+    // Resolve the target session: explicit links (fork, session, continue)
+    // reuse an existing session; otherwise create a fresh one so --model and
+    // other config changes are isolated to this run and never pollute the
+    // default session.
     if (config.fork) {
+      const state = await this.getState();
+      sessionId = state.sessionId;
       if (verbose) {
         process.stderr.write(`Forking from entry ${config.fork}...\n`);
       }
@@ -493,11 +576,11 @@ export class RunClient {
         sessionId = result.sessionId;
       }
     } else if (config.session) {
-      if (verbose) {
-        process.stderr.write(`Switching to session ${config.session}...\n`);
-      }
       await this.switchSession(config.session);
       sessionId = config.session;
+      if (verbose) {
+        process.stderr.write(`Switched to session ${config.session}\n`);
+      }
     } else if (config.continueLast) {
       const { sessions } = await this.listSessions();
       if (sessions.length > 0) {
@@ -505,56 +588,67 @@ export class RunClient {
           (a, b) =>
             new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
         );
+        await this.switchSession(sessions[0].id);
+        sessionId = sessions[0].id;
         if (verbose) {
           process.stderr.write(
             `Continuing session ${sessions[0].session_name || sessions[0].id}...\n`,
           );
         }
-        await this.switchSession(sessions[0].id);
-        sessionId = sessions[0].id;
+      } else {
+        throw new Error("No previous session to continue; run without --continue to start a new one.");
+      }
+    } else {
+      // Fresh session for every standalone run — isolates model/thinking/tool
+      // changes so they never bleed into subsequent invocations.
+      const newSession = await this.newSession(config.cwd);
+      sessionId = newSession.sessionId;
+      if (config.noSession) {
+        await this.setEphemeral(true, sessionId);
+        if (verbose) {
+          process.stderr.write(`Created ephemeral session ${sessionId}\n`);
+        }
+      } else if (verbose) {
+        process.stderr.write(`Created session ${sessionId}\n`);
       }
     }
 
-    // 3. Apply configuration options
+    // 3. Apply configuration options (all scoped to this run's session)
     if (config.model) {
       if (verbose) process.stderr.write(`Model: ${config.model}\n`);
-      await this.setModel(config.model);
+      await this.setModel(config.model, sessionId);
     }
 
     if (config.thinking) {
       if (verbose) process.stderr.write(`Thinking: ${config.thinking}\n`);
-      await this.setThinkingLevel(config.thinking);
+      await this.setThinkingLevel(config.thinking, sessionId);
     }
 
     if (config.tools && config.tools.length > 0) {
-      await this.setTools(config.tools);
+      await this.setTools(config.tools, sessionId);
     } else if (config.noTools) {
-      await this.disableTools();
+      await this.disableTools(sessionId);
     }
 
     if (config.noBuiltinTools) {
-      await this.disableBuiltinTools();
+      await this.disableBuiltinTools(sessionId);
     }
 
     if (config.systemPrompt) {
-      await this.setSystemPrompt(config.systemPrompt);
+      await this.setSystemPrompt(config.systemPrompt, sessionId);
     }
 
     if (config.appendSystemPrompt) {
-      await this.appendSystemPrompt(config.appendSystemPrompt);
+      await this.appendSystemPrompt(config.appendSystemPrompt, sessionId);
     }
 
     if (config.permission) {
       if (verbose) process.stderr.write(`Permission: ${config.permission}\n`);
-      await this.setPermissionLevel(config.permission);
-    }
-
-    if (config.noSession) {
-      await this.setEphemeral(true);
+      await this.setPermissionLevel(config.permission, sessionId);
     }
 
     if (config.cwd) {
-      await this.setCwd(config.cwd);
+      await this.setCwd(config.cwd, sessionId);
     }
 
     // 4. Start streaming events BEFORE sending prompt
@@ -567,17 +661,17 @@ export class RunClient {
       verbose,
     );
 
-    // 5. Send prompt
-    await this.prompt(config.message);
+    // 5. Send prompt (must target the same session as streamEvents)
+    await this.prompt(config.message, sessionId);
 
     // 6. Wait for events to complete
     const { events, text } = await streamPromise;
 
-    // 7. Get final state for model info
+    // 7. Get final state for model info (query the run's own session)
     let model: string | undefined;
     let thinkingLevel: string | undefined;
     try {
-      const finalState = await this.getState();
+      const finalState = await this.getState(sessionId);
       model = finalState.model;
       thinkingLevel = finalState.thinkingLevel;
     } catch {

@@ -96,14 +96,28 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
     // the server anyway with an empty model. The endpoint stays unconfigured
     // until the first `set_model` call, which resolves base_url + api_key from a
     // freshly loaded auth.json (see agent/src/rpc/session.rs::set_model).
-    let resolved_model = future_agent::models::get_default_model()
-        .or_else(|| {
+    let resolved_model = {
+        // Prefer future/deepseek-v4-pro when the future provider is configured.
+        let preferred = if auth_store.get("future").is_some()
+            || all_models.iter().any(|m| m.provider == "future" && !m.api_key.is_empty())
+        {
             all_models
                 .iter()
-                .find(|m| !m.api_key.is_empty() || auth_store.get(&m.provider).is_some())
-                .map(|m| m.id.clone())
-        })
-        .unwrap_or_default();
+                .find(|m| m.provider == "future" && m.id == "deepseek-v4-pro")
+                .map(|m| format!("{}/{}", m.provider, m.id))
+        } else {
+            None
+        };
+        preferred
+            .or_else(future_agent::models::get_default_model)
+            .or_else(|| {
+                all_models
+                    .iter()
+                    .find(|m| !m.api_key.is_empty() || auth_store.get(&m.provider).is_some())
+                    .map(|m| m.id.clone())
+            })
+            .unwrap_or_default()
+    };
     if resolved_model.is_empty() {
         tracing::info!(
             "future-agent: no model configured yet — starting the gRPC server \

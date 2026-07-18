@@ -28,6 +28,9 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     let id = &cmd.id;
     let cmd_type = &cmd.cmd_type;
 
+    if cmd_type == "get_agent_info" {
+        return get_agent_info_response(id);
+    }
     if cmd_type == "list_models" {
         return list_models_response(id);
     }
@@ -649,6 +652,22 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     }
 }
 
+fn get_agent_info_response(id: &str) -> String {
+    let dirs = vec![
+        crate::skills::APP_SKILLS_DIR.to_string(),
+        crate::skills::AGENTS_SKILLS_DIR.to_string(),
+    ];
+    let skills_count = crate::skills::discover_skills(&dirs).map(|s| s.len()).unwrap_or(0);
+    RpcResponse::ok(
+        id,
+        "get_agent_info",
+        serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "skillsCount": skills_count,
+        }),
+    )
+}
+
 fn list_models_response(id: &str) -> String {
     let registry = crate::models::Registry::new();
     let auth = crate::AuthStore::load();
@@ -669,7 +688,12 @@ fn list_models_response(id: &str) -> String {
     });
     models.dedup_by(|left, right| left.id == right.id && left.provider == right.provider);
 
-    let effective_default = models.first().map(|m| m.id.clone()).unwrap_or_default();
+    // Use the same default-model resolution as cmd_new_session so the list
+    // and actual session creation agree on which model is the default.
+    let effective_default = crate::models::get_default_model()
+        .and_then(|full| full.rsplit_once('/').map(|(_, id)| id.to_string()))
+        .or_else(|| models.first().map(|m| m.id.clone()))
+        .unwrap_or_default();
 
     let payload_models: Vec<serde_json::Value> = models
         .into_iter()
@@ -720,7 +744,6 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     let (
         active_loop,
         inherit_model,
-        inherit_thinking,
         event_bus,
         broadcaster,
         approval_gate,
@@ -730,7 +753,6 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
         (
             sess.agent_loop.clone(),
             sess.model.clone(),
-            sess.thinking_level.clone(),
             sess.event_bus.clone(),
             sess.broadcaster.clone(),
             sess.approval_gate.clone(),
@@ -805,10 +827,28 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
         broadcaster,
         approval_gate,
     );
-    // Preserve model and thinking level from the current session
-    new_sess.model = inherit_model.clone();
-    *new_sess.compaction_model.write().unwrap() = inherit_model;
-    new_sess.thinking_level = inherit_thinking;
+    // Resolve the default model fresh from the registry (not inherited from
+    // the active session) so that CLI one-shot runs always start from the
+    // preferred default.  GUI/TUI explicitly set model_id on the command,
+    // which overrides this below.
+    let default_model = crate::models::get_default_model()
+        .unwrap_or_else(|| inherit_model.clone());
+    new_sess.model = default_model.clone();
+    *new_sess.compaction_model.write().unwrap() = default_model.clone();
+    // Also update the fresh loop's model so the LLM call uses the correct
+    // bare model ID (the loop takes just the ID, not provider/id).
+    // The template's model was inherited from the active session, which may
+    // have been changed by a previous --model override.
+    if let Ok(mut loop_) = new_sess.agent_loop.try_write() {
+        // Strip provider/ prefix to get the bare model ID for LLM API calls.
+        let bare_id = default_model
+            .rsplit_once('/')
+            .map(|(_, id)| id.to_string())
+            .unwrap_or_else(|| default_model.clone());
+        loop_.model = bare_id;
+    }
+    // Always start new sessions at the preferred thinking level.
+    new_sess.thinking_level = "xhigh".to_string();
 
     // Default created_by to "tui" for sessions created without
     // explicit source info (e.g. TUI, channels). GUI passes

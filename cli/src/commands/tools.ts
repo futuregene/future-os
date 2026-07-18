@@ -21,6 +21,8 @@ interface ToolEntry {
   description: string;
   args: Record<string, string>;
   example: string;
+  inputRequired?: boolean;    // tool needs --input <file>
+  maskSupported?: boolean;    // tool also accepts --mask <file>
 }
 
 export const TOOL_CATALOG: Record<string, ToolEntry> = {
@@ -28,66 +30,71 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
   search_paper: {
     description: "Search academic papers and extract requested information.",
     args: {
-      information_to_extract: "string",
+      queries: "search terms, one per query (required)",
+      information_to_extract: "what information to extract from the results (optional)",
     },
-    example: '{"information_to_extract": "inheritance pattern and typical age of onset"}',
+    example: '{"queries": ["CRISPR gene editing overview", "CRISPR applications 2025"], "information_to_extract": "key methods and recent advances"}',
   },
   get_paper: {
-    description: "Get full paper content by identifier (PMID, DOI). Returns structured Paper object with metadata (title, authors, journal, year, DOI) and complete body_text.",
+    description: "Get full paper content by identifier (PMID, DOI). Returns metadata (title, authors, journal, year, DOI) and complete body_text.",
     args: {
-      paper_id: "string (required)",
-      max_k: "int",
+      paper_id: 'paper identifier like "PMID:12345678" or "DOI:10.xxx/..." (required)',
+      max_k: "max result chunks to return (optional)",
     },
-    example: '{"paper_id": "PMID:12345678"}',
+    example: '{"paper_id": "PMID:12345678", "max_k": 3}',
   },
   image_gen: {
-    description: "Generate images from text prompts.",
+    description: "Generate images from a text prompt.",
     args: {
-      prompt: "string (required)",
-      size: 'string (default: "1024x1024")',
-      quality: 'string (default: "medium")',
-      n: "int (1–10)",
-      output_format: 'string (default: "png")',
+      prompt: "description of the image to generate (required)",
+      size: 'output dimensions, e.g. "1024x1024", "1792x1024" (optional, default: 1024x1024)',
+      quality: 'image quality: "standard" or "hd" (optional, default: standard)',
+      n: "number of images to generate, 1–10 (optional, default: 1)",
+      output_format: 'file format: "png", "jpg", or "webp" (optional, default: png)',
     },
-    example: '{"prompt": "A photograph of a red fox in an autumn forest, golden hour", "size": "1024x1024"}',
+    example: '{"prompt": "A red fox in an autumn forest, golden hour", "size": "1024x1024", "n": 1}',
   },
   image_edit: {
-    description: "Edit an existing image using text instructions. Use --input <path> to provide the source image, --mask <path> for an optional mask.",
+    description: "Edit an existing image using a text prompt. Requires --input <path> for the source image. Optional --mask <path> to limit edits to a region.",
     args: {
-      prompt: "string (required)",
-      size: 'string (default: "1024x1024")',
-      quality: 'string (default: "medium")',
+      prompt: "description of the desired edits (required)",
+      size: 'output dimensions, e.g. "1024x1024" (optional)',
+      quality: '"standard" or "hd" (optional)',
     },
-    example: '--input photo.png --args \'{"prompt": "Convert to watercolor painting"}\'',
+    example: '{"prompt": "Convert to watercolor painting"}',
+    inputRequired: true,
+    maskSupported: true,
   },
   read_image: {
-    description: "Read and analyze an image. Use --input <path> to provide the image file — supports OCR, object recognition, and visual Q&A.",
+    description: "Analyze an image: OCR text extraction, object recognition, visual Q&A. Requires --input <path> for the image file.",
     args: {
-      question: "string (required, e.g. 'Extract text' or 'Describe this image')",
-      mime_type: 'string (default: "image/png")',
-      max_tokens: "integer (default: 2000)",
+      question: 'what to ask about the image, e.g. "What text is in this image?" or "Describe this image" (required)',
+      mime_type: 'image MIME type (optional, default: image/png)',
+      max_tokens: "max tokens in the response (optional, default: 2000)",
     },
-    example: '--input photo.png --args \'{"question": "What text is in this image?"}\'',
+    example: '{"question": "What text is in this image?"}',
+    inputRequired: true,
   },
   parse_doc: {
-    description: "Parse PDF and Word documents into markdown. Use --input <path> to provide the document — get structured markdown with text, tables, and formulas preserved.",
+    description: "Parse a PDF or Word document into markdown, preserving text, tables, and formulas. Requires --input <path> for the document.",
     args: {
-      file_type: 'string (optional, "pdf" or "docx", default: "pdf")',
+      file_type: 'document type: "pdf" or "docx" (optional, default: pdf)',
     },
-    example: '--input report.pdf --args \'{"file_type": "pdf"}\'',
+    example: '{"file_type": "pdf"}',
+    inputRequired: true,
   },
   web_search: {
-    description: "Search the web. Returns titles, links, and snippets.",
+    description: "Search the web. Returns result titles, URLs, and snippets.",
     args: {
-      query: "string (required)",
-      count: "integer (default: 10, max: 50)",
+      query: "the search query string (required)",
+      count: "number of results to return, max 50 (optional, default: 10)",
     },
     example: '{"query": "BRCA1 variant classification guidelines 2025", "count": 5}',
   },
   fetch_url: {
-    description: "Fetch and extract content from a web page URL. Returns page title and compact content.",
+    description: "Fetch and extract the main content from a web page. Returns page title and clean text.",
     args: {
-      url: "string (required)",
+      url: "the full URL to fetch, e.g. https://example.com/article (required)",
     },
     example: '{"url": "https://en.wikipedia.org/wiki/BRCA1"}',
   },
@@ -436,10 +443,10 @@ function str(v: unknown): string {
 
 // ── Public command ───────────────────────────────────────────────────────────
 
-export type ToolsCommand = "list" | "call";
+export type ToolsCommand = "list" | "call" | "describe";
 
 export function isToolsCommand(command: string): command is ToolsCommand {
-  return command === "list" || command === "call";
+  return command === "list" || command === "call" || command === "describe";
 }
 
 export function parseToolArgs(raw: string): Record<string, unknown> {
@@ -558,31 +565,6 @@ function stripOuterQuotes(input: string): string {
   return trimmed;
 }
 
-// ── Path-to-base64 resolution ──────────────────────────────────────────────
-
-/** Resolve image_path / doc_path fields to base64 before sending to API.
- *  This allows users to pass file paths instead of giant base64 strings. */
-async function resolveLocalPaths(args: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const resolved = { ...args };
-
-  // read_image / image_edit: support image_path and mask_path
-  for (const key of ["image_path", "doc_path", "mask_path"]) {
-    const val = resolved[key];
-    if (typeof val !== "string") continue;
-    try {
-      const buf = await readFile(val);
-      const b64Key = key === "image_path" ? "image_b64"
-        : key === "mask_path" ? "mask_b64"
-        : "doc_b64";
-      resolved[b64Key] = buf.toString("base64");
-      // Keep the original path so API knows the filename too
-    } catch {
-      // File not found — leave as-is, let API report the error
-    }
-  }
-
-  return resolved;
-}
 
 // ── Public command entry ────────────────────────────────────────────────────
 
@@ -618,23 +600,83 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     return;
   }
 
+  if (command === "describe") {
+    const toolName = args[0];
+    if (!toolName) {
+      console.error("Usage: future tools describe <tool_name>");
+      process.exitCode = 1;
+      return;
+    }
+    const entry = TOOL_CATALOG[toolName];
+    if (!entry) {
+      // Fallback: try remote tool
+      try {
+        const apiKey = await loadApiKey();
+        const remote = await listRemoteTools(apiKey);
+        const found = remote.find(t => t.name === toolName);
+        if (found) {
+          console.log(`  ${found.name}`);
+          console.log(`  ${found.description}`);
+          console.log("");
+          console.log("  Remote tool — use --args with JSON to call it:");
+          console.log(`  future tools call ${found.name} --args '{"param": "value"}'`);
+          return;
+        }
+      } catch { /* ignore */ }
+      console.error(`Tool not found: ${toolName}`);
+      process.exit(1);
+      return;
+    }
+    console.log(`  ${toolName}`);
+    console.log(`  ${entry.description}`);
+    if (entry.inputRequired) {
+      console.log("");
+      console.log("  Flags:");
+      console.log("    --input <path>   Input file (required)");
+      if (entry.maskSupported) {
+        console.log("    --mask <path>    Mask image (optional)");
+      }
+    }
+    if (Object.keys(entry.args).length > 0) {
+      console.log("");
+      console.log("  Arguments (--key value):");
+      for (const [name, type] of Object.entries(entry.args)) {
+        console.log(`    --${name.padEnd(24)} ${type}`);
+      }
+    }
+    // Build example only from args present in entry.example
+    const exampleFlags = (() => {
+      try {
+        const ex = JSON.parse(entry.example) as Record<string, unknown>;
+        return Object.keys(ex).map(k => {
+          const v = ex[k];
+          if (Array.isArray(v)) return `--${k} '${JSON.stringify(v)}'`;
+          if (typeof v === "string") return `--${k} "${v}"`;
+          return `--${k} ${JSON.stringify(v)}`;
+        }).join(" ");
+      } catch { return ""; }
+    })();
+    const inputPart = entry.inputRequired ? "--input <file> " : "";
+    console.log("");
+    console.log("  Example:");
+    console.log(`  future tools call ${toolName} ${inputPart}${exampleFlags}`);
+    return;
+  }
+
   if (command === "call") {
     const toolName = args[0];
     if (!toolName) {
-      console.error("Usage: future tools call <tool_name> [--args '<json>' | --stdin] [--input <path>] [--mask <path>] [--raw] [--output <path>] [--timeout <seconds>]");
+      console.error("Usage: future tools call <tool_name> [--key value...] [--input <path>] [--output <path>] [--timeout <secs>] [--raw]");
       process.exitCode = 1;
       return;
     }
 
     let toolArgs: Record<string, unknown> = {};
-    const argsIdx = args.indexOf("--args");
     const stdinFlag = args.includes("--stdin");
     const outputIdx = args.indexOf("--output");
     const outputPath = outputIdx !== -1 && outputIdx + 1 < args.length
       ? args[outputIdx + 1]
       : null;
-    // --input and --mask: read local files and inject as base64 to MCP,
-    // so base64 strings never appear in user-facing args or output.
     const inputIdx = args.indexOf("--input");
     const inputPath = inputIdx !== -1 && inputIdx + 1 < args.length && !args[inputIdx + 1].startsWith("--")
       ? args[inputIdx + 1]
@@ -650,51 +692,33 @@ export async function tools(command: ToolsCommand, args: string[]): Promise<void
     const timeoutMs = timeoutSec > 0
       ? timeoutSec * 1000
       : ["image_gen", "image_edit"].includes(toolName)
-        ? 600_000   // image generation can take 2-10 minutes
-        : undefined; // other tools use mcpPost's default 60s
+        ? 600_000
+        : undefined;
 
     const rawFlag = args.includes("--raw");
 
     if (stdinFlag) {
-      // Read from stdin
       const chunks: Buffer[] = [];
       for await (const chunk of process.stdin) {
         chunks.push(chunk as Buffer);
       }
       toolArgs = parseToolArgs(Buffer.concat(chunks).toString());
-    } else if (argsIdx !== -1 && argsIdx + 1 < args.length) {
-      // cmd.exe strips double quotes from JSON, which turns spaces inside
-      // string values into argument boundaries. Rejoin adjacent fragments
-      // that belong to the same JSON argument (stopping at the next --flag).
-      let raw = args[argsIdx + 1];
-      for (let i = argsIdx + 2; i < args.length && !args[i].startsWith("--"); i++) {
-        raw += " " + args[i];
-      }
-      toolArgs = parseToolArgs(raw);
     }
 
-    // Accept --<param> <value> sugar as an alternative to --args JSON.
-    // The model sometimes generates individual flags (e.g. --query "..."
-    // --count 8) instead of --args '{"query":"...","count":8}'.
+    // Tool arguments: --key value.
     const knownFlags = new Set([
-      "--args", "--stdin", "--input", "--mask",
-      "--output", "--timeout", "--raw",
+      "--stdin", "--input", "--mask", "--output", "--timeout", "--raw",
     ]);
-    for (let i = 2; i < args.length - 1; i++) {
+    for (let i = 1; i < args.length - 1; i++) {
       const arg = args[i];
       if (arg.startsWith("--") && !knownFlags.has(arg)) {
         const val = args[i + 1];
-        // Don't consume a value that looks like another flag
         if (!val.startsWith("--")) {
-          const key = arg.slice(2); // strip "--" prefix
-          toolArgs[key] = parseCmdValue(val);
-          i++; // skip the value
+          toolArgs[arg.slice(2)] = parseCmdValue(val);
+          i++;
         }
       }
     }
-
-    // Resolve image_path / doc_path → base64 before sending to API
-    toolArgs = await resolveLocalPaths(toolArgs);
 
     // Resolve --input / --mask flags to base64, tool-aware:
     //   image_edit, read_image → image_b64 / mask_b64

@@ -122,7 +122,6 @@ export class App extends Container {
     streaming: false,
     spinnerFrame: 0,
     sessionId: "",  // Current session ID
-    sessionName: "",
     cwd: "",
     version: "",
     skills: [] as string[],
@@ -1466,7 +1465,6 @@ export class App extends Container {
       this.state.model = s.model ?? "(no model)";
       this.state.thinking = s.thinkingLevel;
       this.state.sessionId = s.sessionId ?? this.state.sessionId;
-      this.state.sessionName = s.session_name ?? "";
       this.state.cwd = s.cwd ?? "";
       this.state.version = s.version ?? "";
       this.state.skills = (s.skills ?? []).slice().sort((a, b) => a.localeCompare(b));
@@ -2070,7 +2068,6 @@ export class App extends Container {
       thinking: this.state.thinking,
       streaming: this.state.streaming,
       spinnerFrame: this.state.spinnerFrame,
-      sessionName: this.state.sessionName,
       contextTokens: this.state.contextTokens,
       contextWindow: this.state.contextWindow,
       contextPercent: this.state.contextPercent,

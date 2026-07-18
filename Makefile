@@ -150,10 +150,12 @@ run-agent:
 	cd agent && cargo run -- --verbose
 
 run-tui:
-	cd tui && npm run dev
+	$(call npm-install-if-needed,tui)
+	cd tui && npm run gen-version && npm run dev
 
 run-cli:
-	cd cli && npm run dev
+	$(call npm-install-if-needed,cli)
+	cd cli && npm run gen-version && npm run dev
 
 run-gui: build-gui
 	@mkdir -p gui/src-tauri/binaries
