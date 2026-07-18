@@ -53,7 +53,7 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
       size: 'output dimensions, e.g. "1024x1024", "1792x1024" (optional, default: 1024x1024)',
       quality: 'image quality: "low", "medium", or "high" (optional, default: medium)',
       n: "number of images to generate, 1–10 (optional, default: 1)",
-      output_format: 'file format: "png", "jpg", or "webp" (optional, default: png)',
+      output_format: 'file format: only "png" is reliable (optional, default: png; jpg/webp are unstable)',
     },
     example: '{"prompt": "A red fox in an autumn forest, golden hour", "size": "1024x1024", "n": 1}',
   },
