@@ -51,7 +51,7 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     args: {
       prompt: "description of the image to generate (required)",
       size: 'output dimensions, e.g. "1024x1024", "1792x1024" (optional, default: 1024x1024)',
-      quality: 'image quality: "standard" or "hd" (optional, default: standard)',
+      quality: 'image quality: "low", "medium", or "high" (optional, default: medium)',
       n: "number of images to generate, 1–10 (optional, default: 1)",
       output_format: 'file format: "png", "jpg", or "webp" (optional, default: png)',
     },
@@ -63,7 +63,7 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
     args: {
       prompt: "description of the desired edits (required)",
       size: 'output dimensions, e.g. "1024x1024" (optional)',
-      quality: '"standard" or "hd" (optional)',
+      quality: '"low", "medium", or "high" (optional)',
     },
     example: '{"prompt": "Convert to watercolor painting"}',
     inputRequired: true,
