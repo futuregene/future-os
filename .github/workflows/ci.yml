@@ -43,10 +43,11 @@ jobs:
           cache-all-crates: true
 
       # protoc for the agent/channels build.rs proto codegen.
-      - name: Install protoc
+      # mold + binutils: .cargo/config.toml sets -fuse-ld=mold for Linux.
+      - name: Install Linux deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y binutils mold protobuf-compiler
 
       - name: rustfmt
         run: |
