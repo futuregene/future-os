@@ -69,8 +69,9 @@ jobs:
           cargo test --manifest-path remote/Cargo.toml
 
   # ─── CLI: typecheck + bun test ───────────────────────────────────────────
-  # Browser tests (contract/characterization/safari-manual) self-skip when no
-  # browser is reachable, so the full suite is safe on a headless runner.
+  # `bun run test` runs the unit set only (src/commands + browser unit tests);
+  # real-browser suites (validation/characterization) are opt-in via
+  # `npm run test:browser` since they need Chrome/Safari on the machine.
   cli:
     name: CLI (typecheck + tests)
     runs-on: ubuntu-latest
@@ -102,7 +103,7 @@ jobs:
 
       - name: bun test
         working-directory: cli
-        run: bun test
+        run: bun run test
 
   # ─── TUI: typecheck only (no test suite yet) ─────────────────────────────
   tui:

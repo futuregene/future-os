@@ -15,8 +15,9 @@
     "postinstall": "node ../scripts/version.mjs --gen-ts src/version.generated.ts",
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts",
-    "test": "bun test",
-    "test:coverage": "bun test --coverage"
+    "test": "bun test src/commands src/browser/__tests__/unit src/browser/__tests__/infrastructure.test.ts",
+    "test:browser": "bun test src/browser/__tests__/validation src/browser/__tests__/characterization",
+    "test:coverage": "bun test --coverage src/commands src/browser/__tests__/unit src/browser/__tests__/infrastructure.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
