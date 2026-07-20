@@ -49,12 +49,11 @@ impl Engine {
         temperature: Option<f32>,
         max_tokens: Option<i32>,
     ) -> Result<Self> {
-        let llm_client = LLMClient::new(base_url, api_key, temperature, max_tokens)
-            .with_compat(
-                &config.compat_thinking_format,
-                config.compat_supports_reasoning_effort,
-                config.compat_requires_reasoning_on_assistant,
-            );
+        let llm_client = LLMClient::new(base_url, api_key, temperature, max_tokens).with_compat(
+            &config.compat_thinking_format,
+            config.compat_supports_reasoning_effort,
+            config.compat_requires_reasoning_on_assistant,
+        );
 
         // Apply optional overrides in a chain via a scoped block — each
         // with_* consumes and returns Self (true builder pattern), so the

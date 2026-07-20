@@ -98,9 +98,7 @@ impl AuthStore {
                 continue;
             }
             let name_lower = name.to_lowercase();
-            if name_lower.starts_with(&provider_lower)
-                || provider_lower.starts_with(&name_lower)
-            {
+            if name_lower.starts_with(&provider_lower) || provider_lower.starts_with(&name_lower) {
                 match best {
                     None => best = Some((name, entry)),
                     Some((ref best_name, _)) => {
