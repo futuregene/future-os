@@ -56,7 +56,31 @@ function isExtendedPictographic(code: number): boolean {
     (code >= 0x2B1B && code <= 0x2B1C) || // squares
     code === 0x2B50 || code === 0x2B55 || // star, circle
     code === 0x3030 || code === 0x303D || // wavy dash, part alternation
-    code === 0x3297 || code === 0x3299 // circled marks
+    code === 0x3297 || code === 0x3299 || // circled marks
+    // ─── BMP code points with Emoji_Presentation=Yes (emoji-data.txt) ──────
+    // These render as emoji (2 cells) by DEFAULT, without needing VS16.
+    // E.g. ✅ (U+2705), ❌, ⭐-adjacent symbols — previously measured 1 cell
+    // wide here, drifting column math whenever they appeared in content.
+    (code >= 0x2614 && code <= 0x2615) || // umbrella, hot beverage
+    (code >= 0x2648 && code <= 0x2653) || // zodiac
+    code === 0x267F || // wheelchair
+    code === 0x2693 || // anchor
+    code === 0x26A1 || // high voltage
+    (code >= 0x26AA && code <= 0x26AB) || // white/black circle
+    (code >= 0x26BD && code <= 0x26BE) || // soccer, baseball
+    (code >= 0x26C4 && code <= 0x26C5) || // snowman, sun behind cloud
+    code === 0x26CE || code === 0x26D4 || // ophiuchus, no entry
+    code === 0x26EA || // church
+    (code >= 0x26F2 && code <= 0x26F3) || // fountain, golf
+    code === 0x26F5 || code === 0x26FA || code === 0x26FD || // sailboat, tent, fuel
+    code === 0x2705 || // white heavy check mark ✅
+    (code >= 0x270A && code <= 0x270B) || // raised fist, raised hand
+    code === 0x2728 || // sparkles ✨
+    code === 0x274C || code === 0x274E || // cross mark, negative cross ❌❎
+    (code >= 0x2753 && code <= 0x2755) || // question/exclamation marks ❓❔❕
+    code === 0x2757 || // heavy exclamation ❗
+    (code >= 0x2795 && code <= 0x2797) || // heavy plus/minus/division
+    code === 0x27B0 || code === 0x27BF // curly loops
   );
 }
 
@@ -128,8 +152,17 @@ export function graphemeWidth(grapheme: string): number {
   const code = grapheme.codePointAt(0);
   if (code === undefined) return 0;
 
-  const cached = graphemeWidthCache.get(code);
-  if (cached !== undefined) return cached;
+  // The cache is keyed by the FIRST codepoint, which is only a valid key for
+  // single-codepoint graphemes: multi-codepoint graphemes (VS15/VS16
+  // variation selectors, ZWJ chains, keycap sequences) can render at a
+  // different width for the same leading codepoint — e.g. "✅" is 2 cells but
+  // "✅\uFE0E" is 1. Those bypass the cache and are computed fresh.
+  const singleCodepoint = grapheme.length === (code > 0xffff ? 2 : 1);
+
+  if (singleCodepoint) {
+    const cached = graphemeWidthCache.get(code);
+    if (cached !== undefined) return cached;
+  }
 
   let width: number;
   if (isZeroWidth(code)) {
@@ -147,7 +180,9 @@ export function graphemeWidth(grapheme: string): number {
     width = 1;
   }
 
-  graphemeWidthCache.set(code, width);
+  if (singleCodepoint) {
+    graphemeWidthCache.set(code, width);
+  }
   return width;
 }
 
@@ -402,8 +437,15 @@ export class AnsiCodeTracker {
           break;
         case 39: this.state.fg = null; break;
         case 49: this.state.bg = null; break;
-        // 256-color fg: 38;5;N handled above
-        // 256-color bg: 48;5;N handled above
+        default:
+          // Standard + bright SGR colors. Previously these fell through
+          // silently, so a wrapped line lost e.g. \x1b[31m red on its
+          // continuation — the tracker only knew 38/48 extended forms.
+          if (p >= 30 && p <= 37) this.state.fg = String(p);
+          else if (p >= 90 && p <= 97) this.state.fg = String(p);
+          else if (p >= 40 && p <= 47) this.state.bg = String(p);
+          else if (p >= 100 && p <= 107) this.state.bg = String(p);
+          break;
       }
     }
   }
