@@ -549,11 +549,18 @@ fn on_path(name: &str) -> bool {
 /// Homebrew, npm-global) — not just the minimal PATH a GUI launched from the
 /// Finder/dock inherits. Mirrors what VS Code and similar tools do.
 ///
-/// Runs `$SHELL -l -i -c` once to dump `env` between markers (rc noise on
-/// stderr is discarded; a 5s timeout guards against a hanging rc). PATH is
-/// always taken from the login shell; other vars are merged only when absent,
-/// so intentional launcher overrides are never clobbered. No-op on Windows,
-/// where GUI processes already inherit the full registry PATH.
+/// Runs `$SHELL -l -c` once (login shell, NON-interactive) to dump `env`
+/// between markers. The `-i` flag is deliberately omitted — interactive mode
+/// sources `.bashrc` / `.zshrc` which may run arbitrary user code; a compromised
+/// or misconfigured rc file could inject environment variables or side-effects
+/// into the agent process. Only login-profile scripts (`.bash_profile` /
+/// `.zprofile`) are evaluated; these are the correct place for PATH entries
+/// that non-interactive tools need.
+///
+/// RC noise on stderr is discarded; a 5s timeout guards against a hanging
+/// profile.  PATH is always taken from the login shell; other vars are merged
+/// only when absent, so intentional launcher overrides are never clobbered.
+/// No-op on Windows, where GUI processes already inherit the full registry PATH.
 #[cfg(not(target_os = "windows"))]
 pub fn hydrate_from_login_shell() {
     use std::io::Read;
@@ -561,15 +568,17 @@ pub fn hydrate_from_login_shell() {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    // The shell whose rc files define the user's real env — their actual login
-    // shell ($SHELL), even if it is fish/nu (we only harvest the resulting env,
-    // we don't run shell-specific syntax beyond printf + the env binary).
+    // The shell whose login-profile scripts define the user's real env — their
+    // actual login shell ($SHELL). Non-interactive (-l only, no -i) so no rc
+    // files execute; only .bash_profile / .zprofile are sourced.  Fish/nu fall
+    // through to the spawn error path below.
     let shell = std::env::var("SHELL").unwrap_or_else(|_| unix_shell().to_string());
     let marker = "__future_env_boundary_9c4f__";
     let script = format!("printf '%s' '{marker}'; /usr/bin/env; printf '%s' '{marker}'");
 
     let mut child = match Command::new(&shell)
-        .args(["-l", "-i", "-c", &script])
+        .args(["-l", "-c", &script])
+        .env_remove("BASH_ENV")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
