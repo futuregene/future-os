@@ -42,7 +42,9 @@ fn main() -> Result<()> {
     // Build model registry BEFORE tokio runtime starts.
     // Registry::new() uses reqwest::blocking::Client internally,
     // which creates a nested runtime that cannot be dropped in async context.
-    let model_registry = ModelRegistry::new();
+    // Wrap in Arc<RwLock> so AppState can share the cached registry and
+    // get_state_internal avoids repeated blocking network I/O.
+    let model_registry = Arc::new(parking_lot::RwLock::new(ModelRegistry::new()));
 
     // Launch async portion
     tokio::runtime::Builder::new_multi_thread()
@@ -52,7 +54,7 @@ fn main() -> Result<()> {
         .block_on(async_main(model_registry))
 }
 
-async fn async_main(model_registry: ModelRegistry) -> Result<()> {
+async fn async_main(model_registry: Arc<parking_lot::RwLock<ModelRegistry>>) -> Result<()> {
     let cli = Cli::parse();
 
     let cwd = dirs::home_dir()
@@ -60,7 +62,7 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
         .to_string_lossy()
         .to_string();
 
-    let all_models = model_registry.all_models();
+    let all_models = model_registry.read().all_models();
 
     // Load settings
     let settings_path = std::path::PathBuf::from(future_agent::models::settings_path());
@@ -130,7 +132,7 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
     }
 
     // Resolve model config
-    let model_config = model_registry.resolve(&resolved_model);
+    let model_config = model_registry.read().resolve(&resolved_model);
 
     let engine_model = model_config
         .as_ref()
@@ -345,6 +347,7 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
         approval_gate,
         verbose: cli.verbose,
         shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        model_registry: model_registry.clone(),
     };
 
     // Graceful shutdown on Ctrl+C: set the shutting_down flag so new prompts

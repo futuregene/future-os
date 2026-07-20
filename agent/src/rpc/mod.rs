@@ -8,6 +8,7 @@ mod session;
 mod session_prompt;
 
 use crate::events::EventBus;
+use crate::models::Registry as ModelRegistry;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -42,6 +43,9 @@ pub struct AppState {
     /// streaming runs continue to completion.  Read-only and control commands
     /// (abort, status, etc.) are still accepted.
     pub shutting_down: Arc<AtomicBool>,
+    /// Cached model registry populated once at startup.  Avoids repeated
+    /// blocking network I/O on every get_state → Registry::new() call.
+    pub model_registry: Arc<RwLock<ModelRegistry>>,
 }
 
 impl AppState {
@@ -174,8 +178,9 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
     let session = state.get_session(session_id);
     let sess = session.read();
 
-    // Resolve context window: registry first (user models), then builtin, then default
-    let registry = crate::models::Registry::new();
+    // Resolve context window: use the cached model registry from AppState.
+    // Avoids repeated blocking network I/O from Registry::new() on every poll.
+    let registry = state.model_registry.read();
     let context_window = registry
         .resolve(&sess.model)
         .map(|m| m.context_window)
