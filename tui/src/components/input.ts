@@ -30,9 +30,14 @@ export class Input implements Component, Focusable {
     return this.value;
   }
 
-  setValue(value: string): void {
+  setValue(value: string, cursorPos?: number): void {
     this.value = value;
-    this.cursor = Math.min(this.cursor, value.length);
+    // Default to the end of the new value. Keeping the old (stale) cursor
+    // position left the cursor mid-word after autocomplete selection or
+    // command auto-fill, so further typing inserted at the wrong offset.
+    this.cursor = cursorPos !== undefined
+      ? Math.max(0, Math.min(cursorPos, value.length))
+      : value.length;
   }
 
   insertText(text: string): void {

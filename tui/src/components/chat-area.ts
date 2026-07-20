@@ -22,6 +22,7 @@ export interface ChatMessage {
   timestamp?: number;
   thinking?: string;
   pending?: boolean;  // streaming in progress
+  stopped?: boolean;  // generation was interrupted (partial content kept)
   welcome?: boolean;   // skip prefix/icon for welcome/info messages
 }
 
@@ -124,9 +125,7 @@ export class ChatArea implements Component {
     if (idx >= 0) {
       const msg = this.messages[idx];
       msg.pending = false;
-      if (msg) {
-        (msg as unknown as Record<string, unknown>).stopped = true;
-      }
+      msg.stopped = true;
       this.rerenderMessage(idx);
     }
   }
@@ -198,11 +197,9 @@ export class ChatArea implements Component {
     const lastIdx = this.messages.length - 1;
     const last = this.messages[lastIdx];
     if (last.role === "assistant") {
-      // Second thinking block in the same turn: keep previous content
-      // and start a new paragraph so both blocks are visible.
-      if (last.thinking && last.thinking.trim()) {
-        last.thinking += "\n\n";
-      } else {
+      // Subsequent thinking blocks in the same turn are concatenated
+      // directly (no injected separator) into one thinking section.
+      if (last.thinking === undefined) {
         last.thinking = "";
       }
       this.rerenderMessage(lastIdx);
@@ -412,10 +409,11 @@ export class ChatArea implements Component {
   // ─── User message (markdown + full-width background Box) ─
 
   private renderUserMessage(msg: ChatMessage): void {
-    // Render through markdown for proper text wrapping 
+    // Render through markdown for proper text wrapping.
+    // Blank lines are kept (with the bubble background) so multi-paragraph
+    // user messages don't lose their paragraph separation.
     const rendered = this.md.render(msg.content, this.width - 2);
     for (const line of rendered) {
-      if (line === "") continue;
       const text = ` ${line}`;
       // Use applyBackgroundToLine to properly handle inner RESET codes
       // from markdown (links, code, etc.) — they would otherwise clear the bg.
@@ -448,9 +446,13 @@ export class ChatArea implements Component {
           if (line === "") {
             this.renderedLines.push({ text: "", dim: true });
           } else {
-            // Re-apply thinking style after every ANSI reset within the line,
-            // so that markdown bold/code/link codes don't clear the thinking color.
-            const styled = ` ${line}`.replace(/\x1b\[0m/g, `\x1b[0m${thinkPrefix}`);
+            // Re-apply thinking style after EVERY ANSI reset within the line,
+            // so markdown bold/code/link styles don't leak default-colored
+            // text into the gray thinking block. Must match both "\x1b[0m"
+            // and "\x1b[m" — the theme helpers reset with the latter, and
+            // matching only the former left trailing segments unstyled
+            // (rendered in body color instead of gray).
+            const styled = ` ${line}`.replace(/\x1b\[0?m/g, `\x1b[0m${thinkPrefix}`);
             this.renderedLines.push({
               text: thinkPrefix + styled + RESET,
               dim: true,
@@ -474,6 +476,15 @@ export class ChatArea implements Component {
       } else {
         this.renderedLines.push({ text: ` ${line}`, dim: false });
       }
+    }
+
+    // Interrupted generation: show a subtle marker so the user can tell the
+    // reply was aborted mid-stream rather than completed.
+    if (msg.stopped) {
+      this.renderedLines.push({
+        text: fg(this.theme.thinkingText, italic(" ■ interrupted")),
+        dim: true,
+      });
     }
   }
 

@@ -877,6 +877,13 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
         }
     }
 
+    // Sync the final session model into the fresh agent loop (may differ
+    // from the default model set above due to cmd.model_id or disk_model
+    // overrides).
+    if let Err(e) = new_sess.set_model(&new_sess.model.clone()) {
+        tracing::warn!("[new_session] could not sync agent loop model: {e}");
+    }
+
     // Add to sessions map
     let new_id = state.create_session(new_sess);
 
@@ -1081,6 +1088,11 @@ fn cmd_fork(
     *new_sess.messages.write() = msgs;
     if !forked.model.is_empty() {
         new_sess.model = forked.model.clone();
+        // Sync the shared agent loop so the fork's first prompt uses the
+        // forked model, not whatever the previous session left behind.
+        if let Err(e) = new_sess.set_model(&new_sess.model.clone()) {
+            tracing::warn!("[fork] could not sync agent loop model: {e}");
+        }
     }
     state.create_session(new_sess);
 
@@ -1167,6 +1179,9 @@ fn cmd_clone(
     *new_sess.messages.write() = msgs;
     if !forked.model.is_empty() {
         new_sess.model = forked.model.clone();
+        if let Err(e) = new_sess.set_model(&new_sess.model.clone()) {
+            tracing::warn!("[clone] could not sync agent loop model: {e}");
+        }
     }
     state.create_session(new_sess);
 

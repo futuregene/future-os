@@ -31,36 +31,30 @@ function isEmojiFlag(s: string): boolean {
   return false;
 }
 
-function isExtendedPictographic(code: number): boolean {
+/**
+ * Code points with Emoji_Presentation=Yes (emoji-data.txt) — these render as
+ * emoji (2 cells) by DEFAULT, without needing VS16.
+ *
+ * IMPORTANT: code points that are Emoji=Yes but Emoji_Presentation=No
+ * (e.g. ▶ U+25B6, ©, ™, ↔, ⭐, ☀) render as TEXT (1 cell) by default in
+ * terminals — they only become 2 cells when followed by VS16, which is
+ * handled separately via hasEmojiPresentation(). Including them here would
+ * measure them 1 column too wide and break padding/alignment.
+ */
+function hasDefaultEmojiPresentation(code: number): boolean {
   return (
     (code >= 0x1F300 && code <= 0x1F64F) || // misc symbols, emoticons
     (code >= 0x1F680 && code <= 0x1F6FF) || // transport
     (code >= 0x1F900 && code <= 0x1F9FF) || // supplemental
     (code >= 0x1FA00 && code <= 0x1FA6F) || // chess, etc
     (code >= 0x1FA70 && code <= 0x1FAFF) || // symbols ext-a
-    code === 0x00A9 || code === 0x00AE || // copyright, registered
-    code === 0x203C || code === 0x2049 || // double !!, !?
-    code === 0x2122 || code === 0x2139 || // tm, i
-    code === 0x2194 || code === 0x2199 || code === 0x21A9 || code === 0x21AA || // arrows
-    (code >= 0x231A && code <= 0x2328) || // watch, hourglass, keyboard
-    code === 0x23CF || // eject
-    (code >= 0x23E9 && code <= 0x23F3) || // media controls
-    (code >= 0x23F8 && code <= 0x23FA) || // media controls
-    code === 0x24C2 || // circled M
+    (code >= 0x231A && code <= 0x231B) || // watch, hourglass
+    (code >= 0x23E9 && code <= 0x23EC) || // media controls ⏩⏪⏫⏬
+    code === 0x23F0 || // alarm clock ⏰
+    code === 0x23F3 || // hourglass ⏳
     (code >= 0x25AA && code <= 0x25AB) || // squares
-    code === 0x25B6 || code === 0x25C0 || // triangles
     (code >= 0x25FB && code <= 0x25FE) || // squares
-    (code >= 0x2600 && code <= 0x2604) || // ☀☁☂☃☄ (emoji-presentation only)
-    (code >= 0x2934 && code <= 0x2935) || // arrows
-    (code >= 0x2B05 && code <= 0x2B07) || // arrows
     (code >= 0x2B1B && code <= 0x2B1C) || // squares
-    code === 0x2B50 || code === 0x2B55 || // star, circle
-    code === 0x3030 || code === 0x303D || // wavy dash, part alternation
-    code === 0x3297 || code === 0x3299 || // circled marks
-    // ─── BMP code points with Emoji_Presentation=Yes (emoji-data.txt) ──────
-    // These render as emoji (2 cells) by DEFAULT, without needing VS16.
-    // E.g. ✅ (U+2705), ❌, ⭐-adjacent symbols — previously measured 1 cell
-    // wide here, drifting column math whenever they appeared in content.
     (code >= 0x2614 && code <= 0x2615) || // umbrella, hot beverage
     (code >= 0x2648 && code <= 0x2653) || // zodiac
     code === 0x267F || // wheelchair
@@ -168,7 +162,7 @@ export function graphemeWidth(grapheme: string): number {
   if (isZeroWidth(code)) {
     width = 0;
   } else if (isEmojiFlag(grapheme) || hasEmojiPresentation(grapheme) ||
-             (isExtendedPictographic(code) && !grapheme.includes("︎")) ||
+             (hasDefaultEmojiPresentation(code) && !grapheme.includes("︎")) ||
              isKeycapSequence(grapheme)) {
     width = 2;
   } else if (isCJK(code)) {

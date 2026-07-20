@@ -131,17 +131,27 @@ export class Footer implements Component {
     const right = rightParts.join(baseFg + "  ");
 
     // Ensure the left part starts with baseFg even if leftParts is empty
-    const leftStr = leftParts.length > 0 ? left : baseFg;
+    let leftStr = leftParts.length > 0 ? left : baseFg;
 
-    const leftLen = visibleWidth(leftStr);
+    let leftLen = visibleWidth(leftStr);
     const rightLen = visibleWidth(right);
     const avail = width - 1; // reserve 1 for safety margin
 
-    // Truncate right side if combined width exceeds terminal
+    // Both sides must be truncated on overflow: an over-wide line wraps
+    // physically and desyncs the diff renderer's row tracking, which assumes
+    // one logical line == one terminal row. Share the space — the right side
+    // (tokens/cost/context) gets at most half so it stays visible even with
+    // a deep cwd or long model name.
     let rightStr = right;
     if (leftLen + rightLen > avail) {
-      const maxRight = Math.max(0, avail - leftLen);
+      const maxRight = Math.min(rightLen, Math.max(0, Math.floor(avail / 2)));
       rightStr = truncateToWidth(right, maxRight, { ellipsis: false });
+      const maxLeft = Math.max(0, avail - visibleWidth(rightStr) - 1);
+      // No ellipsis: the styled left string may end with an ANSI sequence,
+      // and truncateToWidth's ellipsis replaces the last byte — which could
+      // be the tail of an escape sequence and corrupt it.
+      leftStr = truncateToWidth(leftStr, maxLeft, { ellipsis: false });
+      leftLen = visibleWidth(leftStr);
     }
 
     const padding = Math.max(1, width - leftLen - visibleWidth(rightStr) - 1);

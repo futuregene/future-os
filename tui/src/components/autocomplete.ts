@@ -5,7 +5,7 @@
 
 import { fg, bold } from "../theme.js";
 import type { Component } from "../tui.js";
-import { visibleWidth } from "../utils.js";
+import { visibleWidth, truncateToWidth } from "../utils.js";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -454,32 +454,44 @@ export class AutocompletePopup implements Component {
   render(width: number): string[] {
     if (!this.visible || this.items.length === 0) return [];
 
-    const popupWidth = Math.min(width - 4, 48);
+    // Total width including the │ │ borders — every row (borders, selected
+    // and unselected items) must come out exactly this wide or the right
+    // border goes jagged.
+    const totalW = Math.max(12, Math.min(width - 2, 50));
+    const inner = totalW - 2;
     const lines: string[] = [];
 
-    lines.push(fg(244, "┌") + fg(239, "─".repeat(popupWidth)) + fg(244, "┐"));
+    lines.push(fg(244, "┌") + fg(239, "─".repeat(inner)) + fg(244, "┐"));
 
     const start = Math.max(0, this.selectedIndex - this.maxVisible + 1);
     const end = Math.min(this.items.length, start + this.maxVisible);
 
     for (let i = start; i < end; i++) {
       const item = this.items[i];
+      if (!item) continue;
       const isSelected = i === this.selectedIndex;
-      const desc = item.description ? fg(245, ` ${item.description}`) : "";
-      const label = (item.label + desc).slice(0, popupWidth - 4);
+      // Truncate by DISPLAY width on plain text (slicing the styled string
+      // by code units could sever ANSI sequences and miscounts wide chars).
+      const prefix = isSelected ? "▶ " : "  ";
+      const label = truncateToWidth(prefix + item.label, inner);
+      const labelVis = visibleWidth(label);
+      const desc = item.description
+        ? truncateToWidth(` ${item.description}`, Math.max(0, inner - labelVis))
+        : "";
+      const pad = Math.max(0, inner - labelVis - visibleWidth(desc));
 
       if (isSelected) {
-        const content = fg(151, bold("▶")) + " " + fg(252, label);
-        const pad = popupWidth - 2 - visibleWidth(content);
-        lines.push(fg(244, "│") + " " + content + " ".repeat(Math.max(0, pad)) + fg(244, "│"));
+        lines.push(
+          fg(244, "│") + fg(252, bold(label)) + fg(245, desc) + " ".repeat(pad) + fg(244, "│"),
+        );
       } else {
-        const content = "  " + label;
-        const pad = popupWidth - 2 - visibleWidth(content);
-        lines.push(fg(244, "│") + fg(245, content) + " ".repeat(Math.max(0, pad)) + fg(244, "│"));
+        lines.push(
+          fg(244, "│") + fg(245, label) + fg(245, desc) + " ".repeat(pad) + fg(244, "│"),
+        );
       }
     }
 
-    lines.push(fg(244, "└") + fg(239, "─".repeat(popupWidth)) + fg(244, "┘"));
+    lines.push(fg(244, "└") + fg(239, "─".repeat(inner)) + fg(244, "┘"));
 
     return lines;
   }

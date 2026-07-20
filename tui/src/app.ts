@@ -116,7 +116,6 @@ export class App extends Container {
     autoCompactionEnabled: true,
     toolStartTime: 0,
     activeToolCount: 0,
-    thinkingHidden: false,  // true = show "Thinking..." instead of actual thinking
     explicitSession: false, // true when --session/--continue/--resume/--fork was used
   };
 
@@ -202,6 +201,9 @@ export class App extends Container {
 
     // Register global keybindings
     this.keybindings.add(Key.ctrl_c, () => { this.handleInterrupt(); return true; }, "Interrupt / exit");
+    this.keybindings.add(Key.ctrl_l, () => {
+      this.forceClearNextRender = true; this.requestRender(); return true;
+    }, "Clear screen / redraw");
     this.keybindings.add(Key.ctrl_p, () => { this.cycleModel(); return true; }, "Cycle model");
     this.keybindings.add(Key.ctrl_r, () => { this.showSessions(); return true; }, "Browse sessions");
     this.keybindings.add(Key.ctrl_t, () => { this.cycleThinking(); return true; }, "Cycle thinking");
@@ -490,6 +492,13 @@ export class App extends Container {
         if (e.usage?.cache_read_tokens !== undefined) this.state.tokensCacheR += e.usage.cache_read_tokens;
         if (e.usage?.cache_write_tokens !== undefined) this.state.tokensCacheW += e.usage.cache_write_tokens;
         this.state.contextTokens = (e.usage?.prompt_tokens ?? 0) + (e.usage?.completion_tokens ?? 0);
+        // Pull latest cumulative cost/token totals from the agent so the
+        // footer updates after every model call — a single user turn often
+        // spans multiple thinking blocks and tool calls, and previously the
+        // cost only refreshed once at agent_end. The agent updates its
+        // cumulative cost right before emitting this event, so the state
+        // read reflects the call that just finished.
+        this.refresh().then(() => this.requestRender());
         break;
       }
 
@@ -536,7 +545,16 @@ export class App extends Container {
       const endIdx = data.indexOf("\x1b[201~");
       if (endIdx !== -1) {
         const content = data.slice(6, endIdx);
-        this.input.insertText(content);
+        // Route to the focused overlay if one is open — matches the
+        // printable-character branch below. Pasting into the background
+        // input while an overlay has focus would surface unexpected text
+        // when the overlay closes.
+        if (this.overlayStack.length > 0) {
+          const top = this.getTopOverlay();
+          if (top?.handleInput) top.handleInput(content);
+        } else {
+          this.input.insertText(content);
+        }
         this.requestRender();
       }
       return;
@@ -631,15 +649,21 @@ export class App extends Container {
           const ctx = this.acManager.activeContext;
           if (ctx?.token) {
             // Replace only the token portion, preserving the prefix.
-            // If the item value already starts with the prefix (e.g.
-            // slash command "/model" with before="/"), avoid doubling.
+            // Strip the longest suffix of `before` that is also a prefix of
+            // the item value, so trigger characters aren't duplicated —
+            // e.g. slash command "/model" with before="/", or attachment
+            // "@file" with before="check @" (previously produced "@@file").
             const before = ctx.text.slice(0, ctx.tokenStart);
             const after = ctx.text.slice(ctx.tokenStart + ctx.token.length);
             let value = item.value;
-            if (before && value.startsWith(before)) {
-              value = value.slice(before.length);
+            const maxOverlap = Math.min(before.length, value.length);
+            for (let len = maxOverlap; len > 0; len--) {
+              if (before.endsWith(value.slice(0, len))) {
+                value = value.slice(len);
+                break;
+              }
             }
-            this.input.setValue(before + value + after);
+            this.input.setValue(before + value + after, (before + value).length);
           } else {
             this.input.setValue(item.value);
           }
@@ -868,7 +892,7 @@ export class App extends Container {
         this.chat.addMessage({
           id: crypto.randomUUID(),
           role: "system",
-          content: "Export: use Ctrl+E to export session",
+          content: "Session export is not available in the TUI.",
         });
         return;
       }
@@ -877,7 +901,7 @@ export class App extends Container {
         this.chat.addMessage({
           id: crypto.randomUUID(),
           role: "system",
-          content: "Import: use Ctrl+I to import session",
+          content: "Session import is not available in the TUI.",
         });
         return;
       }
@@ -1566,12 +1590,6 @@ export class App extends Container {
     this.requestRender();
   }
 
-  private toggleThinking(): void {
-    this.state.thinkingHidden = !this.state.thinkingHidden;
-    this.chat.setThinkingHidden(this.state.thinkingHidden);
-    this.requestRender();
-  }
-
   private async cycleThinking(): Promise<void> {
     try {
       const r = await this.client.cycleThinkingLevel();
@@ -1868,13 +1886,9 @@ export class App extends Container {
   // ─── Rendering (differential with synchronized output) ──────────
 
   /**
-   * Request a render. If called rapidly, calls are coalesced so doRender()
-   * fires at most every MIN_RENDER_INTERVAL_MS (16ms ≈ 60fps).
-   */
-  /**
-   * Request a render. Uses dual-phase scheduling :
-   * - force: process.nextTick for immediate full redraw
-   * - ambient: setTimeout-based coalescing at ~30fps
+   * Request a render. Uses dual-phase scheduling:
+   * - force: process.nextTick for an immediate full redraw
+   * - ambient: setTimeout-based coalescing at ~30fps (MIN_RENDER_INTERVAL_MS)
    */
   private requestResizeRender(): void {
     if (this.resizeDebounceTimer) clearTimeout(this.resizeDebounceTimer);
@@ -2082,10 +2096,17 @@ export class App extends Container {
     if (this.autocomplete.isVisible()) {
       const acLines = this.autocomplete.render(W);
       if (acLines.length > 0) {
-        const editorIdx = H - 1 - editorHeight;
+        // Position relative to the actual content length, NOT the terminal
+        // height: when the chat doesn't fill the screen the editor sits above
+        // row H, and H-based indexing would detach the popup from the input
+        // and punch holes (undefined entries) into newLines.
+        const editorIdx = newLines.length - footerLines - editorHeight;
+        // Keep bottom-aligned with the editor (clip at the top when the popup
+        // is taller than the space above); guard both bounds so writes never
+        // create sparse holes or extend the array.
         let acTop = editorIdx - acLines.length;
         for (const line of acLines) {
-          if (acTop >= 0) newLines[acTop] = line;
+          if (acTop >= 0 && acTop < editorIdx) newLines[acTop] = line;
           acTop++;
         }
       }
@@ -2176,13 +2197,13 @@ export class App extends Container {
 
     // Height changes normally need full re-render to keep visible viewport aligned,
     // but Termux changes height when the software keyboard shows or hides.
-    // In that environment, a full redraw would be wasteful.
-    if (heightChanged) {
-      if (!isTermuxSession()) {
-        logRedraw(`terminal height changed (${this.previousHeight} -> ${H})`);
-        this.fullRedrawCount++;
-        fullRender(true);
-      }
+    // In that environment a full redraw would be wasteful — fall through to the
+    // differential path instead. (Returning here without updating previousHeight
+    // would freeze the TUI permanently: every later render also sees heightChanged.)
+    if (heightChanged && !isTermuxSession()) {
+      logRedraw(`terminal height changed (${this.previousHeight} -> ${H})`);
+      this.fullRedrawCount++;
+      fullRender(true);
       return;
     }
 
