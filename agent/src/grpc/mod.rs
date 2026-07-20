@@ -213,12 +213,12 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             self.state.broadcaster.subscribe()
         } else {
             let session = self.state.get_session(&session_id);
-            let sess = session.read().unwrap();
+            let sess = session.read();
             if self.state.verbose {
                 tracing::debug!(
                     "[stream] subscribe session={} has_msgs={}",
                     session_id,
-                    sess.messages.read().unwrap().len()
+                    sess.messages.read().len()
                 );
             }
             sess.broadcaster.subscribe()

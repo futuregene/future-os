@@ -1,9 +1,10 @@
 //! Event bus — 1:1 compatible with Go internal/events/
 
 use chrono::{DateTime, Local};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentEvent {
@@ -75,16 +76,16 @@ impl EventBus {
     /// Subscribe adds a subscriber and returns a receive channel.
     /// Buffer size: 64 events. Returns None if bus is closed.
     pub fn subscribe(&self, id: &str) -> Option<tokio::sync::mpsc::Receiver<AgentEvent>> {
-        if *self.closed.read().unwrap() {
+        if *self.closed.read() {
             return None;
         }
         let (tx, rx) = tokio::sync::mpsc::channel(64);
-        self.subscribers.write().unwrap().insert(id.to_string(), tx);
+        self.subscribers.write().insert(id.to_string(), tx);
         Some(rx)
     }
 
     pub fn unsubscribe(&self, id: &str) {
-        self.subscribers.write().unwrap().remove(id);
+        self.subscribers.write().remove(id);
     }
 
     /// OnEvent registers a callback-based listener for a specific event type.
@@ -94,36 +95,35 @@ impl EventBus {
         event_type: &str,
         callback: Arc<dyn Fn(AgentEvent) + Send + Sync>,
     ) -> String {
-        let mut next = self.next_id.write().unwrap();
+        let mut next = self.next_id.write();
         *next += 1;
         let id = format!("listener_{}", *next);
 
         if event_type == "*" {
-            self.star_callbacks.write().unwrap().push(callback);
+            self.star_callbacks.write().push(callback);
         } else {
             self.callbacks
                 .write()
-                .unwrap()
                 .insert(id.clone(), (event_type.to_string(), callback));
         }
         id
     }
 
     pub fn off_event(&self, id: &str) {
-        self.callbacks.write().unwrap().remove(id);
+        self.callbacks.write().remove(id);
     }
 
     /// Emit sends an event to all subscribers (non-blocking, may drop for slow consumers).
     /// Callback listeners are invoked synchronously (never dropped).
     pub fn emit(&self, event: AgentEvent) {
-        if *self.closed.read().unwrap() {
+        if *self.closed.read() {
             return;
         }
 
         // Collect channel senders
-        let senders: Vec<_> = self.subscribers.read().unwrap().values().cloned().collect();
-        let callbacks: Vec<_> = self.callbacks.read().unwrap().values().cloned().collect();
-        let star_callbacks: Vec<_> = self.star_callbacks.read().unwrap().clone();
+        let senders: Vec<_> = self.subscribers.read().values().cloned().collect();
+        let callbacks: Vec<_> = self.callbacks.read().values().cloned().collect();
+        let star_callbacks: Vec<_> = self.star_callbacks.read().clone();
 
         // Channel subscribers (non-blocking, may drop)
         let event_clone = event.clone();
@@ -143,11 +143,11 @@ impl EventBus {
     }
 
     pub fn close(&self) {
-        *self.closed.write().unwrap() = true;
+        *self.closed.write() = true;
         // Drop senders to close channels
-        self.subscribers.write().unwrap().clear();
-        self.callbacks.write().unwrap().clear();
-        self.star_callbacks.write().unwrap().clear();
+        self.subscribers.write().clear();
+        self.callbacks.write().clear();
+        self.star_callbacks.write().clear();
     }
 }
 

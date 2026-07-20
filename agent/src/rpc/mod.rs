@@ -7,9 +7,10 @@ mod session;
 mod session_prompt;
 
 use crate::events::EventBus;
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 pub use approval::{ApprovalDecision, ApprovalDecisionStatus, ApprovalGate};
 pub use commands::handle_command_internal;
@@ -49,14 +50,14 @@ impl AppState {
             return self.session.clone();
         }
         {
-            let sessions = self.sessions.read().unwrap();
+            let sessions = self.sessions.read();
             if let Some(sess) = sessions.get(session_id) {
                 return sess.clone();
             }
         }
         // Session not found in map — if it matches the default session's own
         // ID, return it silently.
-        let default_id = self.session.read().unwrap().session_id.clone();
+        let default_id = self.session.read().session_id.clone();
         if session_id == default_id {
             return self.session.clone();
         }
@@ -66,14 +67,14 @@ impl AppState {
         // both miss the map lookup and create duplicate Session objects
         // with different broadcasters, breaking event delivery.
         {
-            let mut sessions = self.sessions.write().unwrap();
+            let mut sessions = self.sessions.write();
             // Double-check: another caller may have loaded it while we waited
             if let Some(sess) = sessions.get(session_id) {
                 return sess.clone();
             }
 
             let (agent_loop, session_manager, event_bus, cwd, approval_gate) = {
-                let sess = self.session.read().unwrap();
+                let sess = self.session.read();
                 if sess.session_manager.find(session_id).is_none() {
                     return self.session.clone(); // not on disk either
                 }
@@ -99,10 +100,10 @@ impl AppState {
             if new_sess.switch_session(session_id).is_ok() {
                 // If the session file had no model saved, copy from default
                 if new_sess.model.is_empty() {
-                    let default_model = self.session.read().unwrap().model.clone();
+                    let default_model = self.session.read().model.clone();
                     if !default_model.is_empty() {
                         new_sess.model = default_model.clone();
-                        *new_sess.compaction_model.write().unwrap() = default_model;
+                        *new_sess.compaction_model.write() = default_model;
                     }
                 }
                 let sess_arc = Arc::new(RwLock::new(new_sess));
@@ -123,8 +124,8 @@ impl AppState {
         if session_id.is_empty() {
             return Some(sess);
         }
-        let found_id = sess.read().unwrap().session_id.clone();
-        if found_id == session_id || session_id == self.session.read().unwrap().session_id.clone() {
+        let found_id = sess.read().session_id.clone();
+        if found_id == session_id || session_id == self.session.read().session_id.clone() {
             Some(sess)
         } else {
             // get_session fell back to default but the requested session
@@ -141,9 +142,8 @@ impl AppState {
         session.broadcaster = Arc::new(SseBroadcaster::new());
         self.sessions
             .write()
-            .unwrap()
             .insert(id.clone(), Arc::new(RwLock::new(session)));
-        if let Ok(mut active_id) = self.active_session_id.try_write() {
+        if let Some(mut active_id) = self.active_session_id.try_write() {
             *active_id = id.clone();
         }
         id
@@ -151,7 +151,7 @@ impl AppState {
 
     /// Get active session ID
     pub fn get_active_session_id(&self) -> String {
-        self.active_session_id.read().unwrap().clone()
+        self.active_session_id.read().clone()
     }
 
     /// Refresh the in-memory API key of every live session from auth.json.
@@ -161,17 +161,17 @@ impl AppState {
     /// skipped by `reload_credentials` and pick up the new key on their next
     /// `set_model`.
     pub fn reload_all_credentials(&self) {
-        self.session.read().unwrap().reload_credentials();
-        let sessions = self.sessions.read().unwrap();
+        self.session.read().reload_credentials();
+        let sessions = self.sessions.read();
         for sess in sessions.values() {
-            sess.read().unwrap().reload_credentials();
+            sess.read().reload_credentials();
         }
     }
 }
 
 fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
     let session = state.get_session(session_id);
-    let sess = session.read().unwrap();
+    let sess = session.read();
 
     // Resolve context window: registry first (user models), then builtin, then default
     let registry = crate::models::Registry::new();
@@ -204,7 +204,7 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
     // Prefer API-reported cost (Future platform returns `credit_cost` in
     // the usage chunk).  When absent (most non-Future providers don't
     // report it), fall back to token-count × model-price estimation.
-    let api_cost = *sess.cumulative_cost.lock().unwrap();
+    let api_cost = *sess.cumulative_cost.lock();
     let total_cost = if api_cost > 0.0 {
         api_cost
     } else if let Some(model_config) = registry.resolve(&sess.model) {
@@ -224,7 +224,6 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
     let query_count = sess
         .messages
         .read()
-        .unwrap()
         .iter()
         .filter(|m| m.role == "user")
         .count();
@@ -257,8 +256,8 @@ fn get_state_internal(state: &AppState, session_id: &str) -> serde_json::Value {
         "pendingMessageCount": sess.agent_loop.try_read().map(|l|l.pending_message_count()).unwrap_or(0),
         "version": crate::utils::VERSION,
         "cwd": cwd,
-        "skills": state.welcome_skills.read().unwrap().clone(),
-        "contextFiles": state.welcome_context.read().unwrap().clone(),
+        "skills": state.welcome_skills.read().clone(),
+        "contextFiles": state.welcome_context.read().clone(),
         "extensions": serde_json::Value::Null,
         "contextWindow": context_window,
         "contextTokens": context_tokens,

@@ -1,7 +1,8 @@
+use parking_lot::Mutex;
 use std::{
     collections::HashMap,
     path::Path,
-    sync::{mpsc, Arc, Mutex},
+    sync::{mpsc, Arc},
 };
 
 use super::{SseBroadcaster, SseEvent};
@@ -245,7 +246,7 @@ impl ApprovalGate {
     ) -> AskOutcome {
         let request_id = format!("approval_{}", crate::utils::generate_entry_id());
         let (tx, rx) = mpsc::channel::<ApprovalDecision>();
-        self.pending.lock().unwrap().insert(
+        self.pending.lock().insert(
             request_id.clone(),
             PendingApproval {
                 session_id: session_id.to_string(),
@@ -287,7 +288,7 @@ impl ApprovalGate {
                 ("rejected", note.clone(), AskOutcome::Rejected(note))
             }
             Err(_) => {
-                self.pending.lock().unwrap().remove(&request_id);
+                self.pending.lock().remove(&request_id);
                 let note = "Approval request was cancelled because the session ended.".to_string();
                 ("cancelled", note.clone(), AskOutcome::Cancelled(note))
             }
@@ -309,7 +310,6 @@ impl ApprovalGate {
         let pending = self
             .pending
             .lock()
-            .unwrap()
             .remove(request_id)
             .ok_or_else(|| format!("approval request `{request_id}` is not pending"))?;
         pending.tx.send(decision).map_err(|error| error.to_string())
@@ -317,7 +317,7 @@ impl ApprovalGate {
 
     pub fn cancel_session(&self, session_id: &str, note: &str) -> usize {
         let pending = {
-            let mut guard = self.pending.lock().unwrap();
+            let mut guard = self.pending.lock();
             let request_ids = guard
                 .iter()
                 .filter(|&(_request_id, pending)| pending.session_id == session_id)

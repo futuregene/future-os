@@ -28,7 +28,7 @@ impl ServerSession {
             model_supports_images,
             &crate::utils::image_data_url_for_model,
         );
-        self.messages.write().unwrap().push(user_message);
+        self.messages.write().push(user_message);
 
         // Persist immediately so the GUI can see the user message (and any
         // tool entries from prior turns) during streaming. Without this, a
@@ -54,7 +54,7 @@ impl ServerSession {
 
         // Clone shared state for the background task
         let messages_arc = self.messages.clone();
-        let initial_messages = messages_arc.read().unwrap().clone();
+        let initial_messages = messages_arc.read().clone();
         let agent_loop = self.agent_loop.clone();
         let broadcaster = self.broadcaster.clone();
         let is_streaming = self.is_streaming.clone();
@@ -83,9 +83,7 @@ impl ServerSession {
         // → dormant sandbox = legacy behavior. Session rules are cleared at run
         // start and shared into the sandbox so same-run "allow in this
         // workspace" injections take effect immediately (APPROVAL_PLAN §6.2).
-        if let Ok(mut session_rules) = self.session_rules.lock() {
-            session_rules.clear();
-        }
+        self.session_rules.lock().clear();
         let sandbox = Arc::new(match &self.sandbox_policy {
             Some(policy) => crate::sandbox::ResolvedSandbox::resolve_with_session(
                 policy,
@@ -120,7 +118,7 @@ impl ServerSession {
                     // Append-only: only write the last entry instead of
                     // rebuilding and rewriting the entire file.  The final
                     // post-run save does the full snapshot.
-                    let msgs = save_messages.read().unwrap();
+                    let msgs = save_messages.read();
                     if let Some(last_msg) = msgs.last() {
                         let entry = crate::session::agent_message_to_entry(last_msg);
                         if let Err(e) = save_manager.append_entries(&save_session_id, &[entry]) {
@@ -305,18 +303,10 @@ impl ServerSession {
             match result {
                 Ok(final_messages) => {
                     // Update shared messages so next prompt includes the full context
-                    match messages_arc.write() {
-                        Ok(mut msgs) => {
-                            *msgs = final_messages;
-                        }
-                        Err(e) => {
-                            let mut msgs = e.into_inner();
-                            *msgs = final_messages;
-                        }
-                    }
+                    *messages_arc.write() = final_messages;
                     // Save session to disk
                     {
-                        let msgs = messages_arc.read().unwrap();
+                        let msgs = messages_arc.read();
                         let mut entries: Vec<crate::session::SessionEntry> = msgs
                             .iter()
                             .map(crate::session::agent_message_to_entry)
@@ -417,7 +407,7 @@ impl ServerSession {
                             session_name
                         };
 
-                        let total_cost = cumulative_cost.lock().unwrap();
+                        let total_cost = cumulative_cost.lock();
                         let mut info = serde_json::json!({
                             "cwd": session_cwd,
                             "tokens_in": tokens_in.load(Ordering::Relaxed),
@@ -574,7 +564,7 @@ impl ServerSession {
                 let comp_result = r#loop.last_compaction_result.clone();
                 // Resolve context_window once — avoid creating a new Registry
                 // on every LLM call inside the closure.
-                let context_window = if let Ok(model) = self.compaction_model.try_read() {
+                let context_window = if let Some(model) = self.compaction_model.try_read() {
                     crate::models::Registry::new()
                         .resolve(&model)
                         .map(|m| m.context_window)
@@ -609,7 +599,7 @@ impl ServerSession {
                         },
                     );
                     if let Some(r) = result {
-                        *comp_result.lock().unwrap() = Some(r);
+                        *comp_result.lock() = Some(r);
                         compacted
                     } else {
                         compacted
@@ -675,7 +665,7 @@ impl ServerSession {
     /// so the GUI sees the just-pushed user message mid-stream. Best-effort:
     /// a save failure is logged, not propagated.
     fn persist_user_message(&self) {
-        let msgs = self.messages.read().unwrap();
+        let msgs = self.messages.read();
         let mut entries: Vec<crate::session::SessionEntry> = msgs
             .iter()
             .map(crate::session::agent_message_to_entry)
@@ -722,7 +712,7 @@ impl ServerSession {
                 "tokens_cache_r": self.tokens_cache_r.load(Ordering::Relaxed),
                 "tokens_cache_w": self.tokens_cache_w.load(Ordering::Relaxed),
                 "last_prompt_tokens": self.last_prompt_tokens.load(Ordering::Relaxed),
-                "total_cost": *self.cumulative_cost.lock().unwrap(),
+                "total_cost": *self.cumulative_cost.lock(),
                 "session_name": session_name,
                 "auto_compaction": self.auto_compaction,
                 "parent_session_id": parent_session_id,

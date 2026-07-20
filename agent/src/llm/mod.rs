@@ -6,11 +6,11 @@ mod helpers;
 use crate::types::{Message, StreamEvent, ToolDef};
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
+use parking_lot::RwLock;
 use reqwest::Client as HttpClient;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{info, warn};
@@ -73,12 +73,12 @@ impl Client {
     }
 
     pub fn with_thinking_level(self, level: &str) -> Self {
-        *self.thinking_level.write().unwrap() = level.to_string();
+        *self.thinking_level.write() = level.to_string();
         self
     }
 
     pub fn with_thinking_budget(self, budget: i32) -> Self {
-        *self.thinking_budget.write().unwrap() = budget;
+        *self.thinking_budget.write() = budget;
         self
     }
 
@@ -88,22 +88,21 @@ impl Client {
         supports_reasoning_effort: bool,
         requires_reasoning_on_assistant: bool,
     ) -> Self {
-        *self.compat_thinking_format.write().unwrap() = format.to_string();
-        *self.compat_supports_reasoning_effort.write().unwrap() = supports_reasoning_effort;
-        *self.compat_requires_reasoning_on_assistant.write().unwrap() =
-            requires_reasoning_on_assistant;
+        *self.compat_thinking_format.write() = format.to_string();
+        *self.compat_supports_reasoning_effort.write() = supports_reasoning_effort;
+        *self.compat_requires_reasoning_on_assistant.write() = requires_reasoning_on_assistant;
         self
     }
 
     pub fn with_max_tokens_field(self, field: &str) -> Self {
         if !field.is_empty() {
-            *self.max_tokens_field.write().unwrap() = field.to_string();
+            *self.max_tokens_field.write() = field.to_string();
         }
         self
     }
 
     pub fn with_thinking_level_map(self, map: HashMap<String, String>) -> Self {
-        *self.thinking_level_map.write().unwrap() = map;
+        *self.thinking_level_map.write() = map;
         self
     }
 
@@ -129,12 +128,12 @@ impl crate::types::LLMProvider for Client {
     ) -> Result<ReceiverStream<StreamEvent>> {
         let (tx, rx) = mpsc::channel(16);
 
-        let base_url = self.base_url.read().unwrap().clone();
+        let base_url = self.base_url.read().clone();
         let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
         let mut body = serde_json::json!({
             "model": model,
-            "messages": Self::convert_messages_to_openai(messages, system_prompt, *self.compat_requires_reasoning_on_assistant.read().unwrap()),
+            "messages": Self::convert_messages_to_openai(messages, system_prompt, *self.compat_requires_reasoning_on_assistant.read()),
             "stream": true,
         });
 
@@ -180,7 +179,7 @@ impl crate::types::LLMProvider for Client {
         // Use model-specific max_tokens field name (from compat.maxTokensField)
         // Open AI SDK sets maxTokensField to "max_completion_tokens" for reasoning models
         if let Some(mt) = self.max_tokens {
-            let field = self.max_tokens_field.read().unwrap();
+            let field = self.max_tokens_field.read();
             body[field.as_str()] = serde_json::json!(mt);
         }
 
@@ -193,10 +192,7 @@ impl crate::types::LLMProvider for Client {
         let req = self
             .http
             .post(&url)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.api_key.read().unwrap()),
-            )
+            .header("Authorization", format!("Bearer {}", self.api_key.read()))
             .header("Content-Type", "application/json")
             .header(
                 "User-Agent",
@@ -672,11 +668,11 @@ impl crate::types::LLMProvider for Client {
     }
 
     fn set_api_key(&self, api_key: &str) {
-        *self.api_key.write().unwrap() = api_key.to_string();
+        *self.api_key.write() = api_key.to_string();
     }
 
     fn update_thinking(&self, level: &str, budget: i32) {
-        *self.thinking_level.write().unwrap() = level.to_string();
-        *self.thinking_budget.write().unwrap() = budget;
+        *self.thinking_level.write() = level.to_string();
+        *self.thinking_budget.write() = budget;
     }
 }

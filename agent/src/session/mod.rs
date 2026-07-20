@@ -469,63 +469,63 @@ impl Manager {
         self.load_path(&path, id)
     }
 
-/// If the last assistant entry has dangling tool_calls (no matching tool
-/// entries after it), the session was saved mid-turn — typically a crash
-/// between persisting the assistant response and executing its tools.
-/// Append placeholder tool-result entries so the conversation stays API-valid.
-fn repair_dangling_tool_calls(entries: &mut Vec<SessionEntry>) {
-    if entries.is_empty() {
-        return;
-    }
-    let last_idx = entries.len() - 1;
-    if entries[last_idx].entry_type != ENTRY_TYPE_ASSISTANT
-        || entries[last_idx].tool_calls.is_empty()
-    {
-        return;
-    }
-    // Clone what we need before mutating the vec.
-    let tool_calls: Vec<_> = entries[last_idx]
-        .tool_calls
-        .iter()
-        .map(|tc| (tc.id.clone(), tc.function.name.clone()))
-        .collect();
-    let parent_id = entries[last_idx].id.clone();
-    let now = chrono::Local::now();
-    for (tc_id, tc_name) in &tool_calls {
-        let placeholder = format!(
+    /// If the last assistant entry has dangling tool_calls (no matching tool
+    /// entries after it), the session was saved mid-turn — typically a crash
+    /// between persisting the assistant response and executing its tools.
+    /// Append placeholder tool-result entries so the conversation stays API-valid.
+    fn repair_dangling_tool_calls(entries: &mut Vec<SessionEntry>) {
+        if entries.is_empty() {
+            return;
+        }
+        let last_idx = entries.len() - 1;
+        if entries[last_idx].entry_type != ENTRY_TYPE_ASSISTANT
+            || entries[last_idx].tool_calls.is_empty()
+        {
+            return;
+        }
+        // Clone what we need before mutating the vec.
+        let tool_calls: Vec<_> = entries[last_idx]
+            .tool_calls
+            .iter()
+            .map(|tc| (tc.id.clone(), tc.function.name.clone()))
+            .collect();
+        let parent_id = entries[last_idx].id.clone();
+        let now = chrono::Local::now();
+        for (tc_id, tc_name) in &tool_calls {
+            let placeholder = format!(
             "[Tool execution lost — {tc_name} was not executed before the session was interrupted]",
         );
-        entries.push(SessionEntry {
-            id: crate::utils::generate_id(),
-            parent_id: parent_id.clone(),
-            entry_type: ENTRY_TYPE_TOOL.to_string(),
-            role: "tool".to_string(),
-            content: Some(serde_json::Value::String(placeholder)),
-            tool_calls: vec![],
-            timestamp: now,
-            summary: String::new(),
-            model: String::new(),
-            label: String::new(),
-            thinking_level: String::new(),
-            branch_summary: None,
-            custom_type: String::new(),
-            custom_data: None,
-            display: String::new(),
-            provider: String::new(),
-            tool_call_id: tc_id.clone(),
-            name: tc_name.clone(),
-            tool_args: String::new(),
-            thinking: String::new(),
-            output_tokens: 0,
-            duration_ms: 0,
-            meta: None,
-        });
+            entries.push(SessionEntry {
+                id: crate::utils::generate_id(),
+                parent_id: parent_id.clone(),
+                entry_type: ENTRY_TYPE_TOOL.to_string(),
+                role: "tool".to_string(),
+                content: Some(serde_json::Value::String(placeholder)),
+                tool_calls: vec![],
+                timestamp: now,
+                summary: String::new(),
+                model: String::new(),
+                label: String::new(),
+                thinking_level: String::new(),
+                branch_summary: None,
+                custom_type: String::new(),
+                custom_data: None,
+                display: String::new(),
+                provider: String::new(),
+                tool_call_id: tc_id.clone(),
+                name: tc_name.clone(),
+                tool_args: String::new(),
+                thinking: String::new(),
+                output_tokens: 0,
+                duration_ms: 0,
+                meta: None,
+            });
+        }
+        eprintln!(
+            "[session] Repaired {} dangling tool_calls at end of session",
+            tool_calls.len()
+        );
     }
-    eprintln!(
-        "[session] Repaired {} dangling tool_calls at end of session",
-        tool_calls.len()
-    );
-}
 
     pub(crate) fn load_path(&self, path: &Path, id: &str) -> Result<Session> {
         let file = File::open(path).context("open session file")?;

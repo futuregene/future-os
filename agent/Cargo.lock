@@ -616,6 +616,7 @@ dependencies = [
  "image",
  "libc",
  "notify",
+ "parking_lot",
  "prost",
  "prost-build",
  "prost-types",

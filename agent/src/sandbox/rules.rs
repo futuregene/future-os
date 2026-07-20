@@ -17,8 +17,9 @@
 //! 4. user rule file — `~/.future/approval_rule.json`
 //! - fallback: read → allow; write → in workspace/temp ? allow : ask
 
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
@@ -448,9 +449,9 @@ impl RuleSet {
 
     /// Add a runtime allow rule (same-run "allow in this workspace/chat").
     pub fn add_session_rule(&self, abs_pattern: &str, access: Access, decision: Decision) {
-        if let Ok(mut session) = self.session.lock() {
-            session.push(PathRule::new(abs_pattern, access, decision));
-        }
+        self.session
+            .lock()
+            .push(PathRule::new(abs_pattern, access, decision));
     }
 
     /// Whether `path` matches a built-in secret guard (either op). Used to
@@ -464,8 +465,8 @@ impl RuleSet {
     /// Evaluate a file access. `path` should already be canonicalized by the
     /// caller (tools canonicalize before calling).
     pub fn evaluate(&self, path: &Path, op: Op) -> Decision {
-        let session = self.session.lock().ok();
-        let session_slice: &[PathRule] = session.as_deref().map_or(&[], |v| v.as_slice());
+        let session = self.session.lock();
+        let session_slice: &[PathRule] = session.as_slice();
         for layer in [
             self.overrides.as_slice(),
             self.guards.as_slice(),
@@ -497,7 +498,7 @@ impl RuleSet {
     /// All rule layers in priority order (highest first), snapshotted for the
     /// Seatbelt profile builder (session is cloned under its lock).
     pub fn profile_layers(&self) -> Vec<Vec<PathRule>> {
-        let session = self.session.lock().map(|s| s.clone()).unwrap_or_default();
+        let session = self.session.lock().clone();
         vec![
             self.overrides.clone(),
             self.guards.clone(),
@@ -541,13 +542,11 @@ pub fn push_session_allow(
     raw_pattern: &str,
     access: Access,
 ) {
-    if let Ok(mut rules) = session.lock() {
-        rules.push(PathRule::new(
-            &absolutize(workspace, raw_pattern),
-            access,
-            Decision::Allow,
-        ));
-    }
+    session.lock().push(PathRule::new(
+        &absolutize(workspace, raw_pattern),
+        access,
+        Decision::Allow,
+    ));
 }
 
 impl Access {

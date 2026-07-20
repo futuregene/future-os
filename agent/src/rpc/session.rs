@@ -15,11 +15,11 @@ const DEFAULT_PERMISSION_LEVEL: &str = "workspace";
 pub struct ServerSession {
     pub session_id: String,
     pub agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>,
-    pub messages: Arc<std::sync::RwLock<Vec<crate::types::AgentMessage>>>,
+    pub messages: Arc<parking_lot::RwLock<Vec<crate::types::AgentMessage>>>,
     pub model: String,
     /// Shared model name for the auto-compaction closure — updated by
     /// set_model so compaction always uses the current context_window.
-    pub compaction_model: Arc<std::sync::RwLock<String>>,
+    pub compaction_model: Arc<parking_lot::RwLock<String>>,
     pub thinking_level: String,
     pub steering_mode: String,
     pub follow_up_mode: String,
@@ -43,7 +43,7 @@ pub struct ServerSession {
     pub tokens_cache_r: Arc<std::sync::atomic::AtomicI64>,
     pub tokens_cache_w: Arc<std::sync::atomic::AtomicI64>,
     /// Cumulative cost as reported by upstream (Future API `credit_cost`).
-    pub cumulative_cost: Arc<std::sync::Mutex<f64>>,
+    pub cumulative_cost: Arc<parking_lot::Mutex<f64>>,
     /// Last API call's prompt_tokens (actual context size, reset each call)
     pub last_prompt_tokens: Arc<std::sync::atomic::AtomicI64>,
     /// Sender for steering queue (cloned from loop, usable without loop lock)
@@ -136,7 +136,7 @@ impl ServerSession {
         Self {
             session_id: session_id.clone(),
             agent_loop,
-            messages: Arc::new(std::sync::RwLock::new(vec![])),
+            messages: Arc::new(parking_lot::RwLock::new(vec![])),
             model: String::new(),
             thinking_level: "xhigh".to_string(), // Match default
             steering_mode: "one-at-a-time".to_string(),
@@ -157,7 +157,7 @@ impl ServerSession {
             tokens_out: to,
             tokens_cache_r: tcr,
             tokens_cache_w: tcw,
-            cumulative_cost: Arc::new(std::sync::Mutex::new(0.0)),
+            cumulative_cost: Arc::new(parking_lot::Mutex::new(0.0)),
             last_prompt_tokens: lpt,
             steering_tx: stx,
             follow_up_tx: ftx,
@@ -166,8 +166,8 @@ impl ServerSession {
             approval_gate,
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
             sandbox_policy: None,
-            session_rules: std::sync::Arc::new(std::sync::Mutex::new(vec![])),
-            compaction_model: Arc::new(std::sync::RwLock::new(String::new())),
+            session_rules: std::sync::Arc::new(parking_lot::Mutex::new(vec![])),
+            compaction_model: Arc::new(parking_lot::RwLock::new(String::new())),
         }
     }
 
@@ -194,7 +194,7 @@ impl ServerSession {
         Self {
             session_id: session_id.clone(),
             agent_loop,
-            messages: Arc::new(std::sync::RwLock::new(vec![])),
+            messages: Arc::new(parking_lot::RwLock::new(vec![])),
             model: String::new(),
             thinking_level: "xhigh".to_string(),
             steering_mode: "one-at-a-time".to_string(),
@@ -215,7 +215,7 @@ impl ServerSession {
             tokens_out: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             tokens_cache_r: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             tokens_cache_w: Arc::new(std::sync::atomic::AtomicI64::new(0)),
-            cumulative_cost: Arc::new(std::sync::Mutex::new(0.0)),
+            cumulative_cost: Arc::new(parking_lot::Mutex::new(0.0)),
             last_prompt_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             steering_tx: stx,
             follow_up_tx: ftx,
@@ -224,8 +224,8 @@ impl ServerSession {
             approval_gate,
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
             sandbox_policy: None,
-            session_rules: std::sync::Arc::new(std::sync::Mutex::new(vec![])),
-            compaction_model: Arc::new(std::sync::RwLock::new(String::new())),
+            session_rules: std::sync::Arc::new(parking_lot::Mutex::new(vec![])),
+            compaction_model: Arc::new(parking_lot::RwLock::new(String::new())),
         }
     }
 
@@ -279,12 +279,12 @@ impl ServerSession {
     }
 
     pub fn new_session(&mut self) -> Result<()> {
-        self.messages.write().unwrap().clear();
+        self.messages.write().clear();
         Ok(())
     }
 
     pub fn get_messages(&self) -> Vec<crate::types::Message> {
-        let msgs = self.messages.read().unwrap();
+        let msgs = self.messages.read();
         ConvertToLLM(&msgs)
     }
 
@@ -299,7 +299,7 @@ impl ServerSession {
             .map(|m| format!("{}/{}", m.provider, m.id))
             .unwrap_or_else(|| model.to_string());
         // Keep compaction closure in sync so /model changes are reflected.
-        *self.compaction_model.write().unwrap() = self.model.clone();
+        *self.compaction_model.write() = self.model.clone();
 
         // Update the agent loop in one shot — both model name and provider endpoint.
         // Fail explicitly when the loop is busy so the caller knows to retry
@@ -434,12 +434,10 @@ impl ServerSession {
     }
 
     fn strip_image_content_from_messages(&self) {
-        if let Ok(mut messages) = self.messages.write() {
-            for message in messages.iter_mut() {
-                message
-                    .content
-                    .retain(|block| !matches!(block, crate::types::ContentBlock::Image { .. }));
-            }
+        for message in self.messages.write().iter_mut() {
+            message
+                .content
+                .retain(|block| !matches!(block, crate::types::ContentBlock::Image { .. }));
         }
     }
 
@@ -474,7 +472,7 @@ impl ServerSession {
         use std::sync::atomic::Ordering;
 
         let messages: Vec<crate::types::Message> = {
-            let msgs = self.messages.read().unwrap();
+            let msgs = self.messages.read();
             ConvertToLLM(&msgs)
         };
 
@@ -590,7 +588,7 @@ impl ServerSession {
     }
 
     pub fn get_session_stats(&self) -> serde_json::Value {
-        let msgs = self.messages.read().unwrap();
+        let msgs = self.messages.read();
         serde_json::json!({
             "sessionFile": "",
             "sessionId": self.session_id(),
@@ -670,12 +668,10 @@ impl ServerSession {
                 restore_i64("tokens_cache_w", &self.tokens_cache_w);
                 restore_i64("last_prompt_tokens", &self.last_prompt_tokens);
                 if let Some(cost) = info.get("total_cost").and_then(|v| v.as_f64()) {
-                    if let Ok(mut c) = self.cumulative_cost.lock() {
-                        *c = cost;
-                    }
+                    *self.cumulative_cost.lock() = cost;
                 }
             }
-            *self.messages.write().unwrap() = msgs;
+            *self.messages.write() = msgs;
             self.session_id = id.to_string();
         }
         Ok(())
@@ -718,7 +714,7 @@ impl ServerSession {
     }
 
     pub fn get_last_assistant_text(&self) -> String {
-        let msgs = self.messages.read().unwrap();
+        let msgs = self.messages.read();
         msgs.iter()
             .rfind(|m| m.role == "assistant")
             .map(|m| m.text())

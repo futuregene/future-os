@@ -99,7 +99,9 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
     let resolved_model = {
         // Prefer future/deepseek-v4-pro when the future provider is configured.
         let preferred = if auth_store.get("future").is_some()
-            || all_models.iter().any(|m| m.provider == "future" && !m.api_key.is_empty())
+            || all_models
+                .iter()
+                .any(|m| m.provider == "future" && !m.api_key.is_empty())
         {
             all_models
                 .iter()
@@ -316,7 +318,7 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
         approval_gate.clone(),
     );
     server_session.model = resolved_model.clone();
-    *server_session.compaction_model.write().unwrap() = resolved_model.clone();
+    *server_session.compaction_model.write() = resolved_model.clone();
 
     server_session.set_steering_mode(&settings.steering_mode);
     server_session.set_follow_up_mode(&settings.follow_up_mode);
@@ -326,16 +328,16 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
     server_session.set_auto_compaction(settings.compaction_enabled());
     server_session.set_auto_retry(settings.retry_enabled());
 
-    let session = Arc::new(std::sync::RwLock::new(server_session));
+    let session = Arc::new(parking_lot::RwLock::new(server_session));
 
     let app_state = future_agent::rpc::AppState {
         session: session.clone(),
-        sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-        active_session_id: Arc::new(std::sync::RwLock::new(String::new())),
+        sessions: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
+        active_session_id: Arc::new(parking_lot::RwLock::new(String::new())),
         welcome_version: future_agent::utils::VERSION.to_string(),
         welcome_cwd: cwd.clone(),
-        welcome_skills: Arc::new(std::sync::RwLock::new(skill_names.clone())),
-        welcome_context: Arc::new(std::sync::RwLock::new(context_lines)),
+        welcome_skills: Arc::new(parking_lot::RwLock::new(skill_names.clone())),
+        welcome_context: Arc::new(parking_lot::RwLock::new(context_lines)),
         welcome_exts: vec![],
         explicit_session: false,
         broadcaster: broadcaster.clone(),
@@ -365,13 +367,13 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
             loop {
                 let any_streaming = {
                     let active = default_session
-                        .read().unwrap()
+                        .read()
                         .is_streaming
                         .load(std::sync::atomic::Ordering::Relaxed);
                     if active { true } else {
-                        sessions.read().unwrap()
+                        sessions.read()
                             .values()
-                            .any(|s| s.read().unwrap()
+                            .any(|s| s.read()
                                 .is_streaming
                                 .load(std::sync::atomic::Ordering::Relaxed))
                     }
@@ -382,9 +384,9 @@ async fn async_main(model_registry: ModelRegistry) -> Result<()> {
                 }
                 if tokio::time::Instant::now() >= deadline {
                     tracing::warn!("Shutdown timeout (30s) — forcing exit with {} active stream(s)",
-                        if default_session.read().unwrap().is_streaming.load(std::sync::atomic::Ordering::Relaxed) { 1 } else { 0 }
-                        + sessions.read().unwrap().values()
-                            .filter(|s| s.read().unwrap().is_streaming.load(std::sync::atomic::Ordering::Relaxed))
+                        if default_session.read().is_streaming.load(std::sync::atomic::Ordering::Relaxed) { 1 } else { 0 }
+                        + sessions.read().values()
+                            .filter(|s| s.read().is_streaming.load(std::sync::atomic::Ordering::Relaxed))
                             .count());
                     break;
                 }

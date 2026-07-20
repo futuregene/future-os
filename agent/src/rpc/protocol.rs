@@ -149,7 +149,7 @@ struct RunState {
 #[derive(Clone)]
 pub struct SseBroadcaster {
     tx: broadcast::Sender<SseEvent>,
-    run: std::sync::Arc<std::sync::Mutex<RunState>>,
+    run: std::sync::Arc<parking_lot::Mutex<RunState>>,
 }
 
 impl SseBroadcaster {
@@ -157,7 +157,7 @@ impl SseBroadcaster {
         let (tx, _) = broadcast::channel(4096);
         Self {
             tx,
-            run: std::sync::Arc::new(std::sync::Mutex::new(RunState {
+            run: std::sync::Arc::new(parking_lot::Mutex::new(RunState {
                 run_id: String::new(),
                 idx: 0,
                 events: Vec::new(),
@@ -173,7 +173,7 @@ impl SseBroadcaster {
     /// Stamp `run_id` + monotonic `idx`, buffer the event, and broadcast — all
     /// under one lock so stream order matches idx order (no reordering race).
     pub fn broadcast(&self, mut event: SseEvent) {
-        let mut run = self.run.lock().unwrap();
+        let mut run = self.run.lock();
         event.run_id = run.run_id.clone();
         event.idx = run.idx;
         run.idx += 1;
@@ -187,7 +187,7 @@ impl SseBroadcaster {
 
     /// Begin a new user run: set `run_id`, reset `idx`, clear the buffer.
     pub fn start_run(&self, run_id: String) {
-        let mut run = self.run.lock().unwrap();
+        let mut run = self.run.lock();
         run.run_id = run_id;
         run.idx = 0;
         run.events.clear();
@@ -201,7 +201,7 @@ impl SseBroadcaster {
     /// the caller can surface the gap instead of silently reconstructing a
     /// truncated message.
     pub fn events_since(&self, run_id: &str, since_idx: i64) -> (String, Vec<SseEvent>, i64) {
-        let run = self.run.lock().unwrap();
+        let run = self.run.lock();
         let min_idx = run.events.first().map(|e| e.idx).unwrap_or(0);
         if run.run_id == run_id {
             let events = run

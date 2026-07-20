@@ -11,6 +11,7 @@ path = "src/main.rs"
 tonic = "0.12"
 prost = "0.13"
 tokio = { version = "1", features = ["full"] }
+parking_lot = "0.12"
 tokio-tungstenite = { version = "0.24", features = ["__rustls-tls"] }
 rustls = "0.23"
 rustls-platform-verifier = { version = "0.5", default-features = false }

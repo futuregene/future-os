@@ -3,11 +3,12 @@
 mod cmd_exe_rewrite;
 
 use anyhow::{anyhow, Result};
+use parking_lot::Mutex;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::sandbox::{EscalationDecision, EscalationRequest, EscalationRequester, ResolvedSandbox};
 
@@ -115,9 +116,7 @@ pub fn approve_outside_path(path: &str) {
     // matches regardless of symlinks/case (§3.5).
     let path = crate::sandbox::paths::canonicalize_lenient(&PathBuf::from(path));
     let _ = TOOL_SCOPE.try_with(|scope| {
-        if let Ok(mut approved) = scope.approved_outside_paths.lock() {
-            approved.push(path);
-        }
+        scope.approved_outside_paths.lock().push(path);
     });
 }
 
@@ -970,12 +969,8 @@ fn is_approved_outside_path(path: &Path) -> bool {
             scope
                 .approved_outside_paths
                 .lock()
-                .map(|approved| {
-                    approved.iter().any(|approved_path| {
-                        crate::sandbox::paths::path_within(path, approved_path)
-                    })
-                })
-                .unwrap_or(false)
+                .iter()
+                .any(|approved_path| crate::sandbox::paths::path_within(path, approved_path))
         })
         .unwrap_or(false)
 }
@@ -1182,7 +1177,7 @@ mod tests {
         );
         sandbox.available = available;
         let requester: EscalationRequester = Arc::new(move |request: &EscalationRequest| {
-            calls.lock().unwrap().push(request.clone());
+            calls.lock().push(request.clone());
             decision.clone()
         });
         ScopeOptions {
@@ -1223,7 +1218,7 @@ mod tests {
 
         assert!(result.is_err(), "denied escalation should error");
         assert!(!marker.exists(), "command must not run when denied");
-        let recorded = calls.lock().unwrap();
+        let recorded = calls.lock();
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].justification, "test needs it");
     }
@@ -1246,7 +1241,7 @@ mod tests {
         .await;
 
         assert!(result.unwrap().contains("escalated-ok"));
-        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(calls.lock().len(), 1);
     }
 
     #[tokio::test]
@@ -1270,7 +1265,7 @@ mod tests {
 
         assert!(result.unwrap().contains("degraded-ok"));
         assert!(
-            calls.lock().unwrap().is_empty(),
+            calls.lock().is_empty(),
             "escalation must not be raised in degraded mode"
         );
     }

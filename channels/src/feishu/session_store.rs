@@ -2,10 +2,10 @@
 //! Persisted as JSON file.
 
 use anyhow::Result;
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::RwLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEntry {
@@ -49,7 +49,7 @@ impl SessionStore {
     pub fn get_or_create(&self, chat_id: &str, thread_id: Option<&str>) -> (String, bool) {
         let key = Self::session_key(chat_id, thread_id);
         {
-            let data = self.data.read().unwrap();
+            let data = self.data.read();
             if let Some(entry) = data.get(&key) {
                 return (entry.session_id.clone(), false);
             }
@@ -65,7 +65,7 @@ impl SessionStore {
             last_active: now,
         };
         {
-            let mut data = self.data.write().unwrap();
+            let mut data = self.data.write();
             data.insert(key, entry);
         }
         (session_id, true)
@@ -83,7 +83,7 @@ impl SessionStore {
             last_active: now,
         };
         {
-            let mut data = self.data.write().unwrap();
+            let mut data = self.data.write();
             data.insert(key, entry);
         }
         let _ = self.save_to_disk();
@@ -92,7 +92,7 @@ impl SessionStore {
     /// Get session_id for a chat.
     pub fn get(&self, chat_id: &str, thread_id: Option<&str>) -> Option<String> {
         let key = Self::session_key(chat_id, thread_id);
-        let data = self.data.read().unwrap();
+        let data = self.data.read();
         data.get(&key).map(|e| e.session_id.clone())
     }
 
@@ -100,7 +100,7 @@ impl SessionStore {
     pub fn reset(&self, chat_id: &str, thread_id: Option<&str>) {
         let key = Self::session_key(chat_id, thread_id);
         {
-            let mut data = self.data.write().unwrap();
+            let mut data = self.data.write();
             data.remove(&key);
         } // write lock dropped before save_to_disk acquires read lock
         let _ = self.save_to_disk();
@@ -110,7 +110,7 @@ impl SessionStore {
     pub fn touch(&self, chat_id: &str, thread_id: Option<&str>) {
         let key = Self::session_key(chat_id, thread_id);
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let mut data = self.data.write().unwrap();
+        let mut data = self.data.write();
         if let Some(entry) = data.get_mut(&key) {
             entry.last_active = now;
         }
@@ -119,7 +119,7 @@ impl SessionStore {
     fn load_from_disk(&mut self) {
         if let Ok(content) = std::fs::read_to_string(&self.path) {
             if let Ok(store) = serde_json::from_str::<StoreData>(&content) {
-                let mut data = self.data.write().unwrap();
+                let mut data = self.data.write();
                 for entry in store.sessions {
                     let key = Self::session_key(&entry.chat_id, entry.thread_id.as_deref());
                     data.insert(key, entry);
@@ -132,7 +132,7 @@ impl SessionStore {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let data = self.data.read().unwrap();
+        let data = self.data.read();
         let store = StoreData {
             sessions: data.values().cloned().collect(),
         };

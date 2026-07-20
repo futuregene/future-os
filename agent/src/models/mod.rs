@@ -16,8 +16,8 @@ const DEFAULT_FUTURE_BASE_URL: &str = "https://future-os.cn/api";
 /// rebuild would re-probe a slow/unreachable Future API.
 const FUTURE_MODELS_REFRESH_BACKOFF: u64 = 30;
 
+use parking_lot::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::RwLock;
 
 static FUTURE_MODELS_LAST_ATTEMPT: AtomicU64 = AtomicU64::new(0);
 static FUTURE_MODELS_REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
@@ -68,9 +68,7 @@ fn spawn_future_models_refresh(api_key: &str, base_url: &str) {
                     models,
                 };
                 save_future_models_cache_inner(&cache);
-                if let Ok(mut mem) = FUTURE_MODELS_MEMORY_CACHE.write() {
-                    *mem = Some(cache);
-                }
+                *FUTURE_MODELS_MEMORY_CACHE.write() = Some(cache);
             }
         }));
         if let Err(e) = result {
@@ -523,25 +521,22 @@ fn get_future_models_with_cache(api_key: &str, base_url: &str) -> Vec<Model> {
 
     // Prefer the in-process memory cache — it is updated by completed
     // background refreshes and avoids reading the file from disk.
-    if let Ok(mem) = FUTURE_MODELS_MEMORY_CACHE.read() {
-        if let Some(ref cache) = *mem {
-            return cache.models.clone();
-        }
+    if let Some(ref cache) = *FUTURE_MODELS_MEMORY_CACHE.read() {
+        return cache.models.clone();
     }
 
     // Fall back to on-disk cache.
     if let Some(cache) = load_future_models_cache() {
         // Seed the in-process cache so we don't keep hitting disk.
-        if let Ok(mut mem) = FUTURE_MODELS_MEMORY_CACHE.write() {
+        {
+            let mut mem = FUTURE_MODELS_MEMORY_CACHE.write();
             if mem.is_none() {
                 *mem = Some(cache);
             }
         }
         // Re-read to return (avoids clone before moving into mem).
-        if let Ok(mem) = FUTURE_MODELS_MEMORY_CACHE.read() {
-            if let Some(ref cache) = *mem {
-                return cache.models.clone();
-            }
+        if let Some(ref cache) = *FUTURE_MODELS_MEMORY_CACHE.read() {
+            return cache.models.clone();
         }
     }
 

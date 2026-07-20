@@ -6,17 +6,17 @@ use super::Client;
 
 impl Client {
     pub(super) fn apply_thinking_params(&self, body: &mut Value) {
-        let thinking_level = self.thinking_level.read().unwrap();
-        let thinking_budget = *self.thinking_budget.read().unwrap();
+        let thinking_level = self.thinking_level.read();
+        let thinking_budget = *self.thinking_budget.read();
 
         // Resolve the effective compat thinking format BEFORE deciding whether
         // to skip.  When a format is configured (explicitly or auto-detected)
         // we must still emit disable parameters for the "off" case — otherwise
         // the provider defaults to its own behaviour (often enabling thinking).
-        let compat_thinking_format = self.compat_thinking_format.read().unwrap();
+        let compat_thinking_format = self.compat_thinking_format.read();
         // Auto-detect qwen format for dashscope/aliyuncs endpoints when no explicit format set
         let effective_format: String = if compat_thinking_format.is_empty() {
-            let base_url = self.base_url.read().unwrap();
+            let base_url = self.base_url.read();
             if base_url.contains("dashscope") || base_url.contains("aliyuncs") {
                 "qwen".to_string()
             } else {
@@ -46,7 +46,7 @@ impl Client {
             let reasoning_enabled = *thinking_level != "off";
             let mut level_value = thinking_level.clone();
 
-            let thinking_level_map = self.thinking_level_map.read().unwrap();
+            let thinking_level_map = self.thinking_level_map.read();
             if let Some(mapped) = thinking_level_map.get(&*thinking_level) {
                 level_value = mapped.clone();
             }
@@ -66,7 +66,7 @@ impl Client {
                     } else {
                         body["enable_thinking"] = serde_json::json!(reasoning_enabled);
                     }
-                    if reasoning_enabled && *self.compat_supports_reasoning_effort.read().unwrap() {
+                    if reasoning_enabled && *self.compat_supports_reasoning_effort.read() {
                         body["reasoning_effort"] = serde_json::json!(level_value);
                     }
                 }
@@ -87,7 +87,7 @@ impl Client {
                     }
                 }
                 "openrouter" | "openai" => {
-                    if reasoning_enabled && *self.compat_supports_reasoning_effort.read().unwrap() {
+                    if reasoning_enabled && *self.compat_supports_reasoning_effort.read() {
                         body["reasoning_effort"] = serde_json::json!(level_value);
                     }
                     // When reasoning is off, intentionally emit nothing:

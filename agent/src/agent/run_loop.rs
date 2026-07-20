@@ -121,7 +121,7 @@ impl Loop {
                     if let Some(ref bus) = self.event_bus {
                         bus.emit(events::compaction_start("auto"));
                     }
-                    let mut comp_result = self.last_compaction_result.lock().unwrap();
+                    let mut comp_result = self.last_compaction_result.lock();
                     let compaction_info = comp_result.clone();
                     *comp_result = None;
                     if let Some(ref bus) = self.event_bus {
@@ -226,7 +226,7 @@ impl Loop {
                             );
                             messages = ConvertFromLLM(compacted);
                             if let Some(r) = compact_result {
-                                *self.last_compaction_result.lock().unwrap() = Some(r);
+                                *self.last_compaction_result.lock() = Some(r);
                             }
                             if let Some(ref bus) = self.event_bus {
                                 bus.emit(events::compaction_end(0, "", false, "auto"));
@@ -938,9 +938,7 @@ impl Loop {
                 .fetch_add(cache_w, Ordering::Relaxed);
         }
         if let Some(cost) = u.credit_cost {
-            if let Ok(mut c) = self.cumulative_cost.lock() {
-                *c += cost;
-            }
+            *self.cumulative_cost.lock() += cost;
         }
         *total_usage = Some(u.clone());
         if let Some(ref bus) = self.event_bus {

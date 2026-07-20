@@ -408,6 +408,7 @@ dependencies = [
  "chrono",
  "futures",
  "futures-util",
+ "parking_lot",
  "prost",
  "prost-build",
  "reqwest",

@@ -6,8 +6,9 @@ use crate::types::{
     AgentMessage, AgentTool, ContentBlock, LLMProvider, Message, StreamEvent, ToolCall,
 };
 use anyhow::{anyhow, Result};
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
@@ -45,7 +46,7 @@ pub struct Loop {
     pub cumulative_cache_read_tokens: Arc<std::sync::atomic::AtomicI64>,
     pub cumulative_cache_write_tokens: Arc<std::sync::atomic::AtomicI64>,
     /// Cumulative cost as reported by upstream (Future API `credit_cost`).
-    pub cumulative_cost: Arc<std::sync::Mutex<f64>>,
+    pub cumulative_cost: Arc<parking_lot::Mutex<f64>>,
     /// Last API call's prompt_tokens (actual context size, not cumulative across turns)
     pub last_prompt_tokens: Arc<std::sync::atomic::AtomicI64>,
 }
@@ -73,7 +74,7 @@ impl Loop {
             cumulative_output_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_cache_read_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_cache_write_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
-            cumulative_cost: Arc::new(std::sync::Mutex::new(0.0)),
+            cumulative_cost: Arc::new(parking_lot::Mutex::new(0.0)),
             last_prompt_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
         }
     }
@@ -524,7 +525,7 @@ impl PendingMessageQueue {
     }
 
     pub fn drain(&self) -> Vec<String> {
-        let mut rx = self.rx.lock().unwrap();
+        let mut rx = self.rx.lock();
         let mut msgs = vec![];
         while let Ok(msg) = rx.try_recv() {
             msgs.push(msg);
@@ -536,7 +537,7 @@ impl PendingMessageQueue {
     }
 
     pub fn len(&self) -> usize {
-        self.rx.lock().unwrap().len()
+        self.rx.lock().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -548,7 +549,7 @@ impl PendingMessageQueue {
     }
 
     pub fn clear(&self) {
-        let mut rx = self.rx.lock().unwrap();
+        let mut rx = self.rx.lock();
         while rx.try_recv().is_ok() {}
     }
 }

@@ -5,22 +5,18 @@ use super::{
     RpcCommand, RpcResponse, ServerSession, SseBroadcaster,
 };
 
-/// Poison-safe session write lock — returns an RPC error instead of panicking.
+/// Session write lock. parking_lot locks have no poisoning, so this is a
+/// plain `.write()` — the macro remains so ~100 call sites stay uniform (and
+/// the `$id` is kept for symmetry with the pre-parking_lot error path).
 macro_rules! wlock {
     ($session:expr, $id:expr) => {
-        match $session.write() {
-            Ok(s) => s,
-            Err(_) => return RpcResponse::build_fail($id, "internal", "session lock poisoned"),
-        }
+        $session.write()
     };
 }
-/// Poison-safe session read lock.
+/// Session read lock — see `wlock!`.
 macro_rules! rlock {
     ($session:expr, $id:expr) => {
-        match $session.read() {
-            Ok(s) => s,
-            Err(_) => return RpcResponse::build_fail($id, "internal", "session lock poisoned"),
-        }
+        $session.read()
     };
 }
 
@@ -228,10 +224,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "set_auto_retry", serde_json::json!({}))
         }
         "set_system_prompt" => {
-            session
-                .write()
-                .unwrap()
-                .set_system_prompt(&cmd.system_prompt);
+            session.write().set_system_prompt(&cmd.system_prompt);
             RpcResponse::ok(id, "set_system_prompt", serde_json::json!({}))
         }
         "set_tools" => {
@@ -247,10 +240,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "disable_builtin_tools", serde_json::json!({}))
         }
         "append_system_prompt" => {
-            session
-                .write()
-                .unwrap()
-                .append_system_prompt(&cmd.system_prompt);
+            session.write().append_system_prompt(&cmd.system_prompt);
             RpcResponse::ok(id, "append_system_prompt", serde_json::json!({}))
         }
         "set_ephemeral" => {
@@ -313,7 +303,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             let mut sess = wlock!(session, id);
             let result = match sess.switch_session(&cmd.session_id) {
                 Ok(()) => {
-                    if let Ok(mut active_id) = state.active_session_id.try_write() {
+                    if let Some(mut active_id) = state.active_session_id.try_write() {
                         *active_id = cmd.session_id.clone();
                     }
                     // Give this session its own private broadcaster so events
@@ -321,7 +311,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     sess.broadcaster = Arc::new(SseBroadcaster::new());
                     // Insert into sessions map so subsequent lookups by this
                     // session_id succeed (avoids fallback-to-default warning).
-                    if let Ok(mut sessions) = state.sessions.try_write() {
+                    if let Some(mut sessions) = state.sessions.try_write() {
                         sessions.insert(cmd.session_id.clone(), session.clone());
                     }
                     RpcResponse::ok(
@@ -343,16 +333,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 );
             }
             // Delete from disk
-            if let Err(e) = session
-                .read()
-                .unwrap()
-                .session_manager
-                .delete(&cmd.session_id)
-            {
+            if let Err(e) = session.read().session_manager.delete(&cmd.session_id) {
                 return RpcResponse::build_fail(id, "delete_session", &e.to_string());
             }
             // Remove from memory if present
-            if let Ok(mut sessions) = state.sessions.try_write() {
+            if let Some(mut sessions) = state.sessions.try_write() {
                 sessions.remove(&cmd.session_id);
             }
             RpcResponse::ok(id, "delete_session", serde_json::json!({"deleted": true}))
@@ -611,10 +596,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             // Same-run "allow in this workspace/chat": message = path glob,
             // mode = access ("read"|"write"). The GUI calls this alongside
             // writing the rule file so the rule takes effect this run too.
-            session
-                .read()
-                .unwrap()
-                .add_session_rule(&cmd.message, &cmd.mode);
+            session.read().add_session_rule(&cmd.message, &cmd.mode);
             RpcResponse::ok(id, "add_session_rule", serde_json::json!({}))
         }
         "set_sandbox_policy" => {
@@ -657,7 +639,9 @@ fn get_agent_info_response(id: &str) -> String {
         crate::skills::APP_SKILLS_DIR.to_string(),
         crate::skills::AGENTS_SKILLS_DIR.to_string(),
     ];
-    let skills_count = crate::skills::discover_skills(&dirs).map(|s| s.len()).unwrap_or(0);
+    let skills_count = crate::skills::discover_skills(&dirs)
+        .map(|s| s.len())
+        .unwrap_or(0);
     RpcResponse::ok(
         id,
         "get_agent_info",
@@ -741,14 +725,7 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     // Snapshot everything we need from the active session up front, then
     // drop its lock — nothing below should keep the active ServerSession
     // borrowed while we fall back to other loops for the config template.
-    let (
-        active_loop,
-        inherit_model,
-        event_bus,
-        broadcaster,
-        approval_gate,
-        session_manager,
-    ) = {
+    let (active_loop, inherit_model, event_bus, broadcaster, approval_gate, session_manager) = {
         let sess = rlock!(session, id);
         (
             sess.agent_loop.clone(),
@@ -789,7 +766,7 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     };
 
     let template = snapshot(&active_loop).or_else(|| {
-        let default_loop = state.session.read().unwrap().agent_loop.clone();
+        let default_loop = state.session.read().agent_loop.clone();
         snapshot(&default_loop)
     });
     let Some((provider, model, tools, config, verbose)) = template else {
@@ -831,10 +808,9 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     // the active session) so that CLI one-shot runs always start from the
     // preferred default.  GUI/TUI explicitly set model_id on the command,
     // which overrides this below.
-    let default_model = crate::models::get_default_model()
-        .unwrap_or_else(|| inherit_model.clone());
+    let default_model = crate::models::get_default_model().unwrap_or_else(|| inherit_model.clone());
     new_sess.model = default_model.clone();
-    *new_sess.compaction_model.write().unwrap() = default_model.clone();
+    *new_sess.compaction_model.write() = default_model.clone();
     // Also update the fresh loop's model so the LLM call uses the correct
     // bare model ID (the loop takes just the ID, not provider/id).
     // The template's model was inherited from the active session, which may
@@ -880,7 +856,7 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     // set_model/set_thinking_level RPC).
     if !cmd.model_id.is_empty() {
         new_sess.model = cmd.model_id.clone();
-        *new_sess.compaction_model.write().unwrap() = cmd.model_id.clone();
+        *new_sess.compaction_model.write() = cmd.model_id.clone();
     }
     if !cmd.level.is_empty() {
         new_sess.thinking_level = cmd.level.clone();
@@ -896,11 +872,11 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
             disk_model.clone()
         };
         let supports_images = crate::models::model_accepts_images(&effective_model);
-        let mut msgs = new_sess.messages.write().unwrap();
+        let mut msgs = new_sess.messages.write();
         *msgs = crate::session::entries_to_agent_messages(&entries, supports_images);
         if !disk_model.is_empty() {
             new_sess.model = disk_model.clone();
-            *new_sess.compaction_model.write().unwrap() = disk_model;
+            *new_sess.compaction_model.write() = disk_model;
         }
     }
 
@@ -910,7 +886,7 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     RpcResponse::ok(id, "new_session", serde_json::json!({"sessionId": new_id}))
 }
 
-fn cmd_get_session_entries(session: &Arc<std::sync::RwLock<ServerSession>>, id: &str) -> String {
+fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id: &str) -> String {
     // Return displayable entries from a session plus the session_info
     // metadata entry (model, thinking_level, session_name, cwd).
     let (session_manager, session_id) = {
@@ -1030,7 +1006,7 @@ fn cmd_get_session_entries(session: &Arc<std::sync::RwLock<ServerSession>>, id: 
 
 fn cmd_fork(
     state: &AppState,
-    session: &Arc<std::sync::RwLock<ServerSession>>,
+    session: &Arc<parking_lot::RwLock<ServerSession>>,
     cmd: &RpcCommand,
     id: &str,
 ) -> String {
@@ -1105,10 +1081,10 @@ fn cmd_fork(
     );
     let supports_images = crate::models::model_accepts_images(&forked.model);
     let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
-    *new_sess.messages.write().unwrap() = msgs;
+    *new_sess.messages.write() = msgs;
     if !forked.model.is_empty() {
         new_sess.model = forked.model.clone();
-        *new_sess.compaction_model.write().unwrap() = forked.model.clone();
+        *new_sess.compaction_model.write() = forked.model.clone();
     }
     state.create_session(new_sess);
 
@@ -1117,13 +1093,13 @@ fn cmd_fork(
 
 fn cmd_clone(
     state: &AppState,
-    session: &Arc<std::sync::RwLock<ServerSession>>,
+    session: &Arc<parking_lot::RwLock<ServerSession>>,
     id: &str,
 ) -> String {
     // Extract needed data from session
     let (agent_loop, session_manager, event_bus, broadcaster, _cwd, session_id) = {
         let sess = rlock!(session, id);
-        if sess.messages.read().unwrap().is_empty() {
+        if sess.messages.read().is_empty() {
             return RpcResponse::build_fail(
                 id,
                 "clone",
@@ -1192,10 +1168,10 @@ fn cmd_clone(
     );
     let supports_images = crate::models::model_accepts_images(&forked.model);
     let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
-    *new_sess.messages.write().unwrap() = msgs;
+    *new_sess.messages.write() = msgs;
     if !forked.model.is_empty() {
         new_sess.model = forked.model.clone();
-        *new_sess.compaction_model.write().unwrap() = forked.model.clone();
+        *new_sess.compaction_model.write() = forked.model.clone();
     }
     state.create_session(new_sess);
 
@@ -1204,7 +1180,7 @@ fn cmd_clone(
 
 fn cmd_reload_config(
     state: &AppState,
-    session: &Arc<std::sync::RwLock<ServerSession>>,
+    session: &Arc<parking_lot::RwLock<ServerSession>>,
     id: &str,
 ) -> String {
     // Re-discover skills and re-read context files, then rebuild system prompt.
@@ -1261,8 +1237,8 @@ fn cmd_reload_config(
     });
 
     // Update welcome_* state for get_state
-    *state.welcome_skills.write().unwrap() = skill_names.clone();
-    *state.welcome_context.write().unwrap() = context_lines;
+    *state.welcome_skills.write() = skill_names.clone();
+    *state.welcome_context.write() = context_lines;
 
     // Update running session's system prompt
     let sess = rlock!(session, id);
