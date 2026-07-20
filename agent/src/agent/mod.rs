@@ -44,6 +44,9 @@ pub struct Loop {
     /// General save callback — also called after assistant messages are
     /// pushed, not just tool results.  Receives the message being saved.
     pub save_callback: Option<PersistCallback>,
+    /// Called when a steering/follow-up user message is injected into the
+    /// conversation so connected clients see it alongside the reply.
+    pub on_user_message: Option<PersistCallback>,
     pub cumulative_input_tokens: Arc<std::sync::atomic::AtomicI64>,
     pub cumulative_output_tokens: Arc<std::sync::atomic::AtomicI64>,
     pub cumulative_cache_read_tokens: Arc<std::sync::atomic::AtomicI64>,
@@ -73,6 +76,7 @@ impl Loop {
             tool_event_callback: None,
             on_tool_result: None,
             save_callback: None,
+            on_user_message: None,
             cumulative_input_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_output_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_cache_read_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
@@ -448,7 +452,11 @@ impl Loop {
     fn drain_steering(&self, mut messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
         let msgs = self.steering_queue.drain();
         for msg in msgs {
-            messages.insert(0, self.new_user_message(msg));
+            let m = self.new_user_message(msg);
+            if let Some(ref cb) = self.on_user_message {
+                cb(&m);
+            }
+            messages.insert(0, m);
         }
         messages
     }
@@ -456,7 +464,11 @@ impl Loop {
     fn drain_follow_up(&self, mut messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
         let msgs = self.follow_up_queue.drain();
         for msg in msgs {
-            messages.push(self.new_user_message(msg));
+            let m = self.new_user_message(msg);
+            if let Some(ref cb) = self.on_user_message {
+                cb(&m);
+            }
+            messages.push(m);
         }
         messages
     }

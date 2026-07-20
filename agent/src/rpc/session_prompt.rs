@@ -147,6 +147,15 @@ impl ServerSession {
                     });
                 r#loop.on_tool_result = Some(save_closure.clone());
                 r#loop.save_callback = Some(save_closure);
+                // Broadcast steering / in-loop follow-up user messages so
+                // observing TUIs see them alongside the assistant response.
+                let user_msg_broadcaster = broadcaster.clone();
+                r#loop.on_user_message = Some(Arc::new(move |msg: &crate::types::AgentMessage| {
+                    user_msg_broadcaster.broadcast(crate::rpc::SseEvent::new(
+                        "user_message",
+                        serde_json::json!({"text": msg.text()}),
+                    ));
+                }));
                 let approval_gate_hook = approval_gate.clone();
                 let approval_broadcaster = broadcaster.clone();
                 let approval_session_id = session_id.clone();
@@ -304,9 +313,16 @@ impl ServerSession {
                                     return Ok(current_messages);
                                 }
                                 for msg in follow_ups {
+                                    let text = msg.clone();
                                     current_messages.push(crate::types::AgentMessage::new_user(
                                         "user",
-                                        serde_json::json!([{"type": "text", "text": msg}]),
+                                        serde_json::json!([{"type": "text", "text": text}]),
+                                    ));
+                                    // Broadcast the follow-up so observing TUIs see it
+                                    // alongside the assistant's response (same as prompt()).
+                                    broadcaster.broadcast(crate::rpc::SseEvent::new(
+                                        "user_message",
+                                        serde_json::json!({"text": msg}),
                                     ));
                                 }
                                 // No interrupt channel for follow-up re-runs
