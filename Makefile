@@ -7,7 +7,7 @@
 # Resolve FUTURE_VERSION from git; fall back to 0.0.0-dev if git or the
 # version script is unavailable (e.g. Windows without bash).
 FUTURE_VERSION_SCRIPT := $(CURDIR)/scripts/version.mjs
-export FUTURE_VERSION ?= $(shell node "$(FUTURE_VERSION_SCRIPT)" 2>NUL || node -e "console.log('0.0.0-dev')" 2>NUL || echo 0.0.0-dev)
+export FUTURE_VERSION ?= $(shell node "$(FUTURE_VERSION_SCRIPT)" 2>$(NULL_REDIR) || node -e "console.log('0.0.0-dev')" 2>$(NULL_REDIR) || echo 0.0.0-dev)
 
 version:
 	@node scripts/version.mjs --json
@@ -16,6 +16,7 @@ version:
 
 TARGET := $(shell rustc -vV | node -e "process.stdin.on('data',d=>{const m=d.toString().match(/host:\s*(.+)/);if(m)console.log(m[1])})")
 OS := $(word 3,$(subst -, ,$(TARGET)))
+NULL_REDIR := $(if $(filter windows,$(OS)),NUL,/dev/null)
 
 ifeq ($(OS),darwin)
   PREFIX := /opt/homebrew/bin
