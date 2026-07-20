@@ -419,12 +419,59 @@ async fn wait_for_interrupt(flag: Arc<AtomicBool>) {
     }
 }
 
+/// Reject shell commands that match known-dangerous patterns.  This is a
+/// defense-in-depth layer — the primary enforcement lives in the OS sandbox
+/// and approval rules.  We catch the most obvious destructive patterns here
+/// so they fail fast with a clear error instead of relying solely on the
+/// sandbox to block them.
+fn reject_dangerous_command(command: &str) -> Result<()> {
+    let lower = command.trim().to_lowercase();
+
+    // Recursive force-remove of home / root / system directories.
+    for prefix in &["rm -rf", "rm -r", "rmdir"] {
+        if let Some(rest) = lower.strip_prefix(prefix) {
+            let rest = rest.trim();
+            // Shell expansions that target home or root.
+            if rest.contains('~')
+                || rest.contains("$home")
+                || rest.contains("${home}")
+                || rest.starts_with('/')
+                || rest.contains(" /")
+            {
+                return Err(anyhow!(
+                    "Shell command rejected: destructive file removal targeting \
+                     a system or home directory ('{command}'). Use targeted \
+                     rm on specific project files instead."
+                ));
+            }
+        }
+    }
+
+    // Fork-bomb / resource exhaustion patterns.
+    if lower.contains(":(){ :|:& };:")
+        || lower.contains("fork bomb")
+        || (lower.contains("while true") && lower.contains("dd if="))
+    {
+        return Err(anyhow!(
+            "Shell command rejected: pattern matches a known fork-bomb or \
+             resource-exhaustion attack."
+        ));
+    }
+
+    Ok(())
+}
+
 async fn run_shell(
     command: &str,
     timeout_secs: u64,
     escalated: bool,
     justification: &str,
 ) -> Result<String> {
+    // Defense-in-depth: reject obviously destructive commands before they
+    // reach the OS.  The sandbox provides the primary enforcement boundary;
+    // this is a loud, fast-fail layer that catches the most egregious patterns.
+    reject_dangerous_command(command)?;
+
     // On Windows, cmd.exe strips double quotes when processing arguments to
     // npm-generated .cmd wrappers (like the `future` CLI). This corrupts
     // --args JSON that contains commas in string values. Rewrite such
