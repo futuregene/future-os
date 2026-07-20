@@ -417,6 +417,14 @@ export class AnsiCodeTracker {
         case 27: this.state.inverse = false; break;
         case 28: this.state.hidden = false; break;
         case 29: this.state.strikethrough = false; break;
+        case 30: case 31: case 32: case 33: case 34: case 35: case 36: case 37:
+          this.state.fg = String(p); break;
+        case 90: case 91: case 92: case 93: case 94: case 95: case 96: case 97:
+          this.state.fg = String(p); break;
+        case 40: case 41: case 42: case 43: case 44: case 45: case 46: case 47:
+          this.state.bg = String(p); break;
+        case 100: case 101: case 102: case 103: case 104: case 105: case 106: case 107:
+          this.state.bg = String(p); break;
         case 38:
           if (params[i + 1] === 5 && params[i + 2] !== undefined) {
             this.state.fg = `38;5;${params[i + 2]}`;

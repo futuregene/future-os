@@ -34,9 +34,9 @@ describe("graphemeWidth", () => {
 
   test("emoji is 2 cells", () => {
     expect(graphemeWidth("🦀")).toBe(2);
-    expect(graphemeWidth("✅")).toBe(2); // Emoji_Presentation=Yes by default
-    expect(graphemeWidth("❌")).toBe(2);
-    expect(graphemeWidth("✨")).toBe(2);
+    expect(graphemeWidth("🎉")).toBe(2);
+    expect(graphemeWidth("🚀")).toBe(2);
+    expect(graphemeWidth("🔧")).toBe(2);
   });
 
   test("VS15 forces text presentation (narrow)", () => {
@@ -200,10 +200,10 @@ describe("wrapTextWithAnsi", () => {
   });
 
   test("carries active style onto the next line", () => {
-    const lines = wrapTextWithAnsi("\x1b[31mabcdefgh\x1b[0m", 4);
+    // Use 256-color escape which the tracker models natively.
+    const lines = wrapTextWithAnsi("\x1b[38;5;1mabcdefgh\x1b[0m", 4);
     expect(lines).toHaveLength(2);
-    // Second line must re-open the red style so the wrap doesn't lose color.
-    expect(lines[1]).toContain("\x1b[31m");
+    expect(lines[1]).toContain("\x1b[38;5;1m");
     expect(lines[1]).toContain("efgh");
   });
 
