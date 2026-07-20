@@ -337,3 +337,53 @@ export function imageFallback(mimeType: string, dimensions?: ImageDimensions, fi
   if (dimensions) parts.push(`${dimensions.widthPx}x${dimensions.heightPx}`);
   return `[Image: ${parts.join(" ")}]`;
 }
+
+// ─── Kitty image ID extraction & batch deletion ────────────────────────────
+
+const KITTY_PREFIX_BYTE = "\x1b_G";
+
+/**
+ * Extract Kitty image IDs from a terminal line.
+ * Kitty encodes image IDs as `i=<id>` in the escape sequence parameters.
+ */
+export function extractKittyImageIds(line: string): number[] {
+  if (!line) return [];
+  const sequenceStart = line.indexOf(KITTY_PREFIX_BYTE);
+  if (sequenceStart === -1) return [];
+
+  const paramsStart = sequenceStart + KITTY_PREFIX_BYTE.length;
+  const paramsEnd = line.indexOf(";", paramsStart);
+  if (paramsEnd === -1) return [];
+
+  const params = line.slice(paramsStart, paramsEnd);
+  for (const param of params.split(",")) {
+    const [key, value] = param.split("=", 2);
+    if (key !== "i" || value === undefined) continue;
+    const id = Number(value);
+    if (Number.isInteger(id) && id > 0 && id <= 0xffffffff) {
+      return [id];
+    }
+  }
+  return [];
+}
+
+/** Collect all Kitty image IDs across an array of rendered lines. */
+export function collectKittyImageIds(lines: string[]): Set<number> {
+  const ids = new Set<number>();
+  for (const line of lines) {
+    if (!line) continue;
+    for (const id of extractKittyImageIds(line)) {
+      ids.add(id);
+    }
+  }
+  return ids;
+}
+
+/** Build the escape sequences to delete a set of Kitty images. */
+export function deleteKittyImages(ids: Iterable<number>): string {
+  let buffer = "";
+  for (const id of ids) {
+    buffer += deleteKittyImage(id);
+  }
+  return buffer;
+}

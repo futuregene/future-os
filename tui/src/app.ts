@@ -26,10 +26,11 @@ import {
   isFocusable,
 } from "./tui.js";
 import { DARK_THEME, type Theme, fg, bold } from "./theme.js";
-import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.js";
+import { getCapabilities, isImageLine, setCellDimensions, collectKittyImageIds, deleteKittyImages, extractKittyImageIds } from "./terminal-image.js";
 import { parseKey, isKeyRelease, Key } from "./keys.js";
 import { KeybindingManager } from "./keybindings.js";
 import { extractSegments, visibleWidth, stripAnsiCodes, normalizeTerminalOutput, sliceByColumn, truncateToWidth, wrapTextWithAnsi } from "./utils.js";
+import { renderHelp } from "./help-screen.js";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
@@ -37,29 +38,6 @@ import * as fs from "node:fs";
 // Termux detection: skip full redraw on height changes (keyboard show/hide)
 function isTermuxSession(): boolean {
   return Boolean(process.env.TERMUX_VERSION);
-}
-
-const KITTY_SEQUENCE_PREFIX = "\x1b_G";
-
-function extractKittyImageIds(line: string): number[] {
-  if (!line) return [];
-  const sequenceStart = line.indexOf(KITTY_SEQUENCE_PREFIX);
-  if (sequenceStart === -1) return [];
-
-  const paramsStart = sequenceStart + KITTY_SEQUENCE_PREFIX.length;
-  const paramsEnd = line.indexOf(";", paramsStart);
-  if (paramsEnd === -1) return [];
-
-  const params = line.slice(paramsStart, paramsEnd);
-  for (const param of params.split(",")) {
-    const [key, value] = param.split("=", 2);
-    if (key !== "i" || value === undefined) continue;
-    const id = Number(value);
-    if (Number.isInteger(id) && id > 0 && id <= 0xffffffff) {
-      return [id];
-    }
-  }
-  return [];
 }
 
 export class App extends Container {
@@ -1593,7 +1571,7 @@ export class App extends Container {
 
   private showHelpOverlay(): void {
     const helpComponent: Component = {
-      render: (width: number) => this.renderHelp(width),
+      render: (width: number) => renderHelp(width),
       invalidate: () => {},
     };
     this.showOverlay(helpComponent);
@@ -1999,25 +1977,6 @@ export class App extends Container {
     return true;
   }
 
-  private collectKittyImageIds(lines: string[]): Set<number> {
-    const ids = new Set<number>();
-    for (const line of lines) {
-      if (!line) continue;
-      for (const id of extractKittyImageIds(line)) {
-        ids.add(id);
-      }
-    }
-    return ids;
-  }
-
-  private deleteKittyImages(ids: Iterable<number>): string {
-    let buffer = "";
-    for (const id of ids) {
-      buffer += deleteKittyImage(id);
-    }
-    return buffer;
-  }
-
   private expandLastChangedForKittyImages(firstChanged: number, lastChanged: number): number {
     let expandedLastChanged = lastChanged;
     for (let i = firstChanged; i < this.previousLines.length; i++) {
@@ -2039,7 +1998,7 @@ export class App extends Container {
       }
     }
 
-    return this.deleteKittyImages(ids);
+    return deleteKittyImages(ids);
   }
 
   // ─── Main Render Pipeline ──────────────────────────────────────────
@@ -2149,7 +2108,7 @@ export class App extends Container {
 
       let buf = SYNC_BEGIN;
       if (clear) {
-        buf += this.deleteKittyImages(this.previousKittyImageIds);
+        buf += deleteKittyImages(this.previousKittyImageIds);
         buf += "\x1b[H\x1b[2J"; // Home, clear screen (never clear scrollback — terminal scrollback holds TUI + bash history)
       }
       for (let i = 0; i < newLines.length; i++) {
@@ -2169,7 +2128,7 @@ export class App extends Container {
       this.previousViewportTop = Math.max(0, bufferLength - H);
       this.positionHardwareCursor(cursorPos, newLines.length);
       this.previousLines = newLines;
-      this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+      this.previousKittyImageIds = collectKittyImageIds(newLines);
       this.previousWidth = W;
       this.previousHeight = H;
     };
@@ -2296,7 +2255,7 @@ export class App extends Container {
       }
       this.positionHardwareCursor(cursorPos, newLines.length);
       this.previousLines = newLines;
-      this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+      this.previousKittyImageIds = collectKittyImageIds(newLines);
       this.previousWidth = W;
       this.previousHeight = H;
       this.previousViewportTop = prevViewportTop;
@@ -2380,62 +2339,9 @@ export class App extends Container {
     this.positionHardwareCursor(cursorPos, newLines.length);
 
     this.previousLines = newLines;
-    this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+    this.previousKittyImageIds = collectKittyImageIds(newLines);
     this.previousWidth = W;
     this.previousHeight = H;
-  }
-
-  private renderHelp(W: number): string[] {
-    const lines: string[] = [];
-    const dim_ = (t: string) => fg(245, t);
-    const acc = (t: string) => fg(151, t);
-    const bold_ = (t: string) => fg(252, bold(t));
-
-    // Two-column layout fitting terminal width W
-    const innerW = W - 4;
-    const leftCol = [
-      acc("Shortcuts:"),
-
-      dim_("  ctrl+c  interrupt"),
-      dim_("  ctrl+p  cycle model"),
-      dim_("  ctrl+r  browse sessions"),
-      dim_("  ctrl+t  cycle thinking"),
-      dim_("  tab     autocomplete"),
-      dim_("  \u2191\u2193    scroll / navigate"),
-      dim_("  enter   submit / accept"),
-      dim_("  escape  close popup"),
-    ];
-    const rightCol = [
-      acc("/commands:"),
-      dim_("  /model [name]  select model"),
-      dim_("  /sessions   browse sessions"),
-      dim_("  /new       new session"),
-      dim_("  /scoped-models  configure model scope"),
-      dim_("  /compact   compact context"),
-      dim_("  /clone     clone session"),
-      dim_("  /fork      fork session"),
-      dim_("  /tree      session tree"),
-      dim_("  /name [n]  set session name"),
-      dim_("  /help"),
-    ];
-
-    const colW = Math.floor(innerW / 2);
-    const maxRows = Math.max(leftCol.length, rightCol.length);
-
-    lines.push(dim_("\u250c" + "\u2500".repeat(W - 2) + "\u2510"));
-    lines.push(dim_("\u2502") + "  " + bold_("future-tui") + "  " + dim_("Terminal UI Help") + " ".repeat(Math.max(0, W - 24)) + dim_("\u2502"));
-    lines.push(dim_("\u251c" + "\u2500".repeat(W - 2) + "\u2524"));
-
-    for (let i = 0; i < maxRows; i++) {
-      const l = leftCol[i] || "";
-      const r = rightCol[i] || "";
-      const lPad = colW - visibleWidth(l);
-      const rPad = colW - visibleWidth(r);
-      lines.push(dim_("\u2502") + "  " + l + " ".repeat(Math.max(1, lPad)) + r + " ".repeat(Math.max(1, rPad)) + dim_("\u2502"));
-    }
-
-    lines.push(dim_("\u2514" + "\u2500".repeat(W - 2) + "\u2518"));
-    return lines;
   }
 
 }
