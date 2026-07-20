@@ -661,6 +661,11 @@ impl ServerSession {
             let msgs = crate::session::entries_to_agent_messages(&session.entries, supports_images);
             if !session.model.is_empty() {
                 self.model = session.model.clone();
+                tracing::info!(
+                    "[session] switch_session loaded model={} for session={}",
+                    self.model,
+                    id,
+                );
 
                 // Sync the agent loop's model + provider endpoint so the next
                 // prompt uses the saved model, not a stale leftover from the
