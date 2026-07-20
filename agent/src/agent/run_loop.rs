@@ -628,6 +628,10 @@ impl Loop {
             // Build a partial assistant message from whatever was accumulated
             // before the interrupt — reasoning, text, and tool calls should
             // survive an abort so the user doesn't lose generated content.
+            // Tool calls that were never executed MUST be followed by
+            // placeholder tool-result messages, otherwise the LLM API rejects
+            // the conversation on resume (HTTP 400: "assistant message with
+            // tool_calls must be followed by tool messages").
             let build_partial_assistant =
                 |messages: &mut Vec<AgentMessage>,
                  assistant_text: &str,
@@ -652,6 +656,21 @@ impl Loop {
                         });
                     }
                     messages.push(msg);
+                    // Append placeholder tool-result for every unexecuted
+                    // tool call so the conversation remains API-valid.
+                    for tc in tool_calls {
+                        let cancelled = format!(
+                            "[Tool execution cancelled — {} was not executed due to interrupt]",
+                            tc.function.name
+                        );
+                        messages.push(AgentMessage {
+                            role: "tool".to_string(),
+                            content: vec![ContentBlock::text(&cancelled)],
+                            tool_call_id: tc.id.clone(),
+                            name: tc.function.name.clone(),
+                            ..Default::default()
+                        });
+                    }
                 };
 
             // Check for stream errors before processing results
