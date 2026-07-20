@@ -49,7 +49,12 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Get session by ID, or return default session if id is empty/None
+    /// Get session by ID, or return default session if id is empty/None.
+    ///
+    /// Disk loading (switch_session → JSONL parse) happens **outside** the
+    /// write lock.  Only the final map insertion acquires the write lock
+    /// (with a double-check), so a slow session load never stalls concurrent
+    /// session lookups.
     pub fn get_session(&self, session_id: &str) -> Arc<RwLock<ServerSession>> {
         if session_id.is_empty() {
             return self.session.clone();
@@ -67,57 +72,56 @@ impl AppState {
             return self.session.clone();
         }
 
-        // Try loading from disk under a write lock to prevent races:
-        // two concurrent callers (e.g. StreamEvents + prompt) could
-        // both miss the map lookup and create duplicate Session objects
-        // with different broadcasters, breaking event delivery.
-        {
-            let mut sessions = self.sessions.write();
-            // Double-check: another caller may have loaded it while we waited
-            if let Some(sess) = sessions.get(session_id) {
-                return sess.clone();
+        // Check whether the session exists on disk before doing expensive I/O.
+        let (agent_loop, session_manager, event_bus, cwd, approval_gate) = {
+            let sess = self.session.read();
+            if sess.session_manager.find(session_id).is_none() {
+                return self.session.clone(); // not on disk either
             }
+            (
+                sess.agent_loop.clone(),
+                sess.session_manager.clone(),
+                sess.event_bus.clone(),
+                sess.cwd.clone(),
+                sess.approval_gate.clone(),
+            )
+        };
 
-            let (agent_loop, session_manager, event_bus, cwd, approval_gate) = {
-                let sess = self.session.read();
-                if sess.session_manager.find(session_id).is_none() {
-                    return self.session.clone(); // not on disk either
-                }
-                (
-                    sess.agent_loop.clone(),
-                    sess.session_manager.clone(),
-                    sess.event_bus.clone(),
-                    sess.cwd.clone(),
-                    sess.approval_gate.clone(),
-                )
-            };
-
-            let broadcaster = Arc::new(SseBroadcaster::new());
-            let mut new_sess = ServerSession::new_with_shared_loop(
-                session_id.to_string(),
-                agent_loop,
-                session_manager.clone(),
-                &cwd,
-                event_bus,
-                broadcaster,
-                approval_gate,
-            );
-            if new_sess.switch_session(session_id).is_ok() {
-                // If the session file had no model saved, copy from default
-                if new_sess.model.is_empty() {
-                    let default_model = self.session.read().model.clone();
-                    if !default_model.is_empty() {
-                        new_sess.model = default_model.clone();
-                        *new_sess.compaction_model.write() = default_model;
-                    }
-                }
-                let sess_arc = Arc::new(RwLock::new(new_sess));
-                sessions.insert(session_id.to_string(), sess_arc.clone());
-                return sess_arc;
+        // Load session from disk OUTSIDE any lock — switch_session parses
+        // the JSONL file and can be slow for large histories.
+        let broadcaster = Arc::new(SseBroadcaster::new());
+        let mut new_sess = ServerSession::new_with_shared_loop(
+            session_id.to_string(),
+            agent_loop,
+            session_manager.clone(),
+            &cwd,
+            event_bus,
+            broadcaster,
+            approval_gate,
+        );
+        if new_sess.switch_session(session_id).is_err() {
+            return self.session.clone();
+        }
+        // If the session file had no model saved, copy from default
+        if new_sess.model.is_empty() {
+            let default_model = self.session.read().model.clone();
+            if !default_model.is_empty() {
+                new_sess.model = default_model.clone();
+                *new_sess.compaction_model.write() = default_model;
             }
         }
 
-        self.session.clone()
+        // Only acquire the write lock for the final insertion — double-check
+        // that another caller didn't beat us to it while we were loading.
+        {
+            let mut sessions = self.sessions.write();
+            if let Some(sess) = sessions.get(session_id) {
+                return sess.clone();
+            }
+            let sess_arc = Arc::new(RwLock::new(new_sess));
+            sessions.insert(session_id.to_string(), sess_arc.clone());
+            sess_arc
+        }
     }
 
     pub fn find_session(&self, session_id: &str) -> Option<Arc<RwLock<ServerSession>>> {
