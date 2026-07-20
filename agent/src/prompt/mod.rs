@@ -294,9 +294,18 @@ fn os_hint() -> String {
             // macOS). bash and zsh share command-line syntax, so no separate
             // syntax rules are needed — only the accurate name.
             let shell = crate::sandbox::shell_display_name();
+            let legacy_note = if crate::sandbox::shell_is_legacy_bash() {
+                " IMPORTANT: This is bash 3.2 — do NOT use bash 4+ features: \
+                 no associative arrays (declare -A), no globstar \
+                 (**), no ${var,,}/${var^^}, no mapfile/readarray. Use \
+                 POSIX-compatible syntax only."
+            } else {
+                ""
+            };
             format!(
                 "Host platform: macOS. Shell commands are interpreted by {shell} \
-                 (POSIX shell syntax); macOS command-line tools (BSD variants) apply. \
+                 (POSIX shell syntax); macOS command-line tools (BSD variants) apply.\
+                 {legacy_note} \
                  {skills_hint} (Example: ~/.agents/skills/my-skill/SKILL.md)"
             )
         }
@@ -325,9 +334,17 @@ fn os_hint() -> String {
         }
         "linux" => {
             let shell = crate::sandbox::shell_display_name();
+            let legacy_note = if crate::sandbox::shell_is_legacy_bash() {
+                " IMPORTANT: This is bash 3.x — do NOT use bash 4+ features: \
+                 no associative arrays (declare -A), no globstar \
+                 (**), no ${var,,}/${var^^}, no mapfile/readarray. Use \
+                 POSIX-compatible syntax only."
+            } else {
+                ""
+            };
             format!(
                 "Host platform: Linux. Shell commands are interpreted by {shell} \
-                 (POSIX shell syntax). \
+                 (POSIX shell syntax).{legacy_note} \
                  {skills_hint} (Example: ~/.agents/skills/my-skill/SKILL.md)"
             )
         }

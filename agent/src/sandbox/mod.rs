@@ -468,6 +468,73 @@ fn unix_shell_display_name() -> &'static str {
     shell.rsplit('/').next().unwrap_or(shell)
 }
 
+#[cfg(not(target_os = "windows"))]
+fn probe_legacy_bash(shell: &str, timeout: std::time::Duration) -> Option<bool> {
+    let mut child = std::process::Command::new(shell)
+        .args([
+            "--noprofile",
+            "--norc",
+            "-c",
+            "if (( BASH_VERSINFO[0] < 4 )); then exit 0; else exit 1; fi",
+        ])
+        // Non-interactive bash still evaluates BASH_ENV when it is set. A
+        // version probe must not run user startup code or inherit its latency.
+        .env_remove("BASH_ENV")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + timeout;
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return legacy_bash_from_exit_code(status.code()),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(None) | Err(_) => {
+                // Do not leave a failed version probe running in the background.
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn legacy_bash_from_exit_code(code: Option<i32>) -> Option<bool> {
+    match code {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
+}
+
+/// Whether the resolved Unix shell is a legacy bash (< 4.0) that lacks
+/// associative arrays, globstar, and other bash 4+ features.
+/// Used by the prompt layer to constrain LLM-generated commands to
+/// POSIX-compatible syntax. The probe runs once with a 2-second timeout and
+/// conservatively treats a probe failure as legacy. Always false on Windows.
+pub fn shell_is_legacy_bash() -> bool {
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::sync::OnceLock;
+        static LEGACY: OnceLock<bool> = OnceLock::new();
+        *LEGACY.get_or_init(|| {
+            let shell = unix_shell();
+            let name = shell.rsplit('/').next().unwrap_or(shell);
+            name == "bash"
+                && probe_legacy_bash(shell, std::time::Duration::from_secs(2)).unwrap_or(true)
+        })
+    }
+    #[cfg(target_os = "windows")]
+    {
+        false
+    }
+}
+
 /// Whether an executable named `name` resolves on PATH. Pure env scan.
 #[cfg(not(target_os = "windows"))]
 fn on_path(name: &str) -> bool {
@@ -661,6 +728,36 @@ pub fn looks_like_sandbox_denial(_sandbox: &ResolvedSandbox, exit_code: i32, std
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn classifies_legacy_bash_probe_exit_codes() {
+        assert_eq!(legacy_bash_from_exit_code(Some(0)), Some(true));
+        assert_eq!(legacy_bash_from_exit_code(Some(1)), Some(false));
+        assert_eq!(legacy_bash_from_exit_code(Some(2)), None);
+        assert_eq!(legacy_bash_from_exit_code(None), None);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn legacy_bash_probe_times_out_and_kills_child() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let shell = dir.path().join("bash");
+        std::fs::write(&shell, "#!/bin/sh\nexec sleep 5\n").unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let started = std::time::Instant::now();
+        assert_eq!(
+            probe_legacy_bash(
+                &shell.to_string_lossy(),
+                std::time::Duration::from_millis(25)
+            ),
+            None
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
 
     fn temp_workspace(name: &str) -> String {
         let stamp = std::time::SystemTime::now()
