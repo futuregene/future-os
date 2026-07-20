@@ -469,9 +469,17 @@ export class GrpcClient {
       this.reconnectTimer = null;
     }
 
+    // Create a fresh connection promise — resolved once the first event
+    // arrives (connected=true) or the stream fails.  Eliminates the busy-wait
+    // poll loop in call().
+    this.connectPromise = new Promise((resolve) => {
+      this.connectResolve = resolve;
+    });
+
     const scheduleReconnect = () => {
       if (!this.reconnectTimer) {
         this.connected = false;
+        this.connectResolve?.(false); // let call() proceed with timeout
         this.reconnectTimer = setTimeout(() => {
           this.reconnectTimer = null;
           this.connectEvents();
@@ -494,6 +502,8 @@ export class GrpcClient {
     call.on("data", (response: any) => {
       if (!this.connected) {
         this.connected = true;
+        this.connectResolve?.(true);
+        this.connectResolve = null;
       }
       try {
         const rawData = typeof response.data === "string" ? JSON.parse(response.data) : response.data;
@@ -559,14 +569,16 @@ export class GrpcClient {
   // ─── RPC Call Helper ─────────────────────────────────────────────────
 
   private async call(type: string, cmd: Partial<RpcCommand>, retry = true): Promise<unknown> {
-    // Wait for connection if not yet connected (first call or reconnecting)
-    if (!this.connected && !this.reconnectTimer) {
-      this.connectEvents();
-    }
-    // Brief wait for connection to establish
-    const start = Date.now();
-    while (!this.connected && Date.now() - start < 5000) {
-      await new Promise(r => setTimeout(r, 100));
+    // Wait for connection if not yet connected (first call or reconnecting).
+    // Await the connection promise (resolved on first stream event) instead of
+    // a busy-wait poll loop — avoids burning 100ms-interval CPU ticks.
+    if (!this.connected) {
+      if (!this.reconnectTimer) {
+        this.connectEvents();
+      }
+      // Wait up to 5 s for the event stream to deliver its first frame.
+      const timeout = new Promise<boolean>((r) => setTimeout(() => r(false), 5000));
+      await Promise.race([this.connectPromise, timeout]);
     }
 
     const doCall = (): Promise<unknown> => new Promise((resolve, reject) => {
