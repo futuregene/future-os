@@ -584,14 +584,10 @@ impl ServerSession {
                 let comp_result = r#loop.last_compaction_result.clone();
                 // Resolve context_window once — avoid creating a new Registry
                 // on every LLM call inside the closure.
-                let context_window = if let Some(model) = self.compaction_model.try_read() {
-                    crate::models::Registry::new()
-                        .resolve(&model)
-                        .map(|m| m.context_window)
-                        .unwrap_or(1_000_000) // Modern default: 1M (was 200K — too low for 1M models)
-                } else {
-                    1_000_000
-                };
+                let context_window = crate::models::Registry::new()
+                    .resolve(&self.model)
+                    .map(|m| m.context_window)
+                    .unwrap_or(1_000_000); // Modern default: 1M (was 200K — too low for 1M models)
                 r#loop.config.transform_context = Some(Arc::new(move |msgs, _| {
                     use std::sync::atomic::Ordering;
                     let api_tokens = comp_tokens.load(Ordering::Relaxed) as i32;

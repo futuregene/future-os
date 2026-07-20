@@ -17,9 +17,6 @@ pub struct ServerSession {
     pub agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>,
     pub messages: Arc<parking_lot::RwLock<Vec<crate::types::AgentMessage>>>,
     pub model: String,
-    /// Shared model name for the auto-compaction closure — updated by
-    /// set_model so compaction always uses the current context_window.
-    pub compaction_model: Arc<parking_lot::RwLock<String>>,
     pub thinking_level: String,
     pub steering_mode: String,
     pub follow_up_mode: String,
@@ -167,7 +164,6 @@ impl ServerSession {
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
             sandbox_policy: None,
             session_rules: std::sync::Arc::new(parking_lot::Mutex::new(vec![])),
-            compaction_model: Arc::new(parking_lot::RwLock::new(String::new())),
         }
     }
 
@@ -225,7 +221,6 @@ impl ServerSession {
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
             sandbox_policy: None,
             session_rules: std::sync::Arc::new(parking_lot::Mutex::new(vec![])),
-            compaction_model: Arc::new(parking_lot::RwLock::new(String::new())),
         }
     }
 
@@ -298,8 +293,6 @@ impl ServerSession {
             .as_ref()
             .map(|m| format!("{}/{}", m.provider, m.id))
             .unwrap_or_else(|| model.to_string());
-        // Keep compaction closure in sync so /model changes are reflected.
-        *self.compaction_model.write() = self.model.clone();
 
         // Update the agent loop in one shot — both model name and provider endpoint.
         // Fail explicitly when the loop is busy so the caller knows to retry

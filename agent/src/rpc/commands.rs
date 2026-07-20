@@ -810,7 +810,6 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     // which overrides this below.
     let default_model = crate::models::get_default_model().unwrap_or_else(|| inherit_model.clone());
     new_sess.model = default_model.clone();
-    *new_sess.compaction_model.write() = default_model.clone();
     // Also update the fresh loop's model so the LLM call uses the correct
     // bare model ID (the loop takes just the ID, not provider/id).
     // The template's model was inherited from the active session, which may
@@ -856,7 +855,6 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     // set_model/set_thinking_level RPC).
     if !cmd.model_id.is_empty() {
         new_sess.model = cmd.model_id.clone();
-        *new_sess.compaction_model.write() = cmd.model_id.clone();
     }
     if !cmd.level.is_empty() {
         new_sess.thinking_level = cmd.level.clone();
@@ -876,7 +874,6 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
         *msgs = crate::session::entries_to_agent_messages(&entries, supports_images);
         if !disk_model.is_empty() {
             new_sess.model = disk_model.clone();
-            *new_sess.compaction_model.write() = disk_model;
         }
     }
 
@@ -1084,7 +1081,6 @@ fn cmd_fork(
     *new_sess.messages.write() = msgs;
     if !forked.model.is_empty() {
         new_sess.model = forked.model.clone();
-        *new_sess.compaction_model.write() = forked.model.clone();
     }
     state.create_session(new_sess);
 
@@ -1171,7 +1167,6 @@ fn cmd_clone(
     *new_sess.messages.write() = msgs;
     if !forked.model.is_empty() {
         new_sess.model = forked.model.clone();
-        *new_sess.compaction_model.write() = forked.model.clone();
     }
     state.create_session(new_sess);
 

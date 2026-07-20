@@ -320,7 +320,6 @@ async fn async_main(model_registry: Arc<parking_lot::RwLock<ModelRegistry>>) -> 
         approval_gate.clone(),
     );
     server_session.model = resolved_model.clone();
-    *server_session.compaction_model.write() = resolved_model.clone();
 
     server_session.set_steering_mode(&settings.steering_mode);
     server_session.set_follow_up_mode(&settings.follow_up_mode);

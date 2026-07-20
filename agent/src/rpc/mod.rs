@@ -107,7 +107,6 @@ impl AppState {
             let default_model = self.session.read().model.clone();
             if !default_model.is_empty() {
                 new_sess.model = default_model.clone();
-                *new_sess.compaction_model.write() = default_model;
             }
         }
 
