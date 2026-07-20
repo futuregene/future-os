@@ -12,27 +12,58 @@ const DEFAULT_PERMISSION_LEVEL: &str = "all";
 
 // ─── ServerSession ────────────────────────────────────────────────────────
 
+/// In-memory representation of one agent session.
+///
+/// Holds the agent loop (LLM client + tool set), the message history, session
+/// metadata, and all control-plane state (queues, approval gate, sandbox policy).
+/// Wrapped in `Arc<RwLock<ServerSession>>` for concurrent access from gRPC
+/// handlers by `AppState`.
 pub struct ServerSession {
+    /// Stable unique session identifier (UUID v4).  Used as the JSONL filename
+    /// on disk and as the key in `AppState::sessions`.
     pub session_id: String,
+    /// The agent run-loop: LLM provider + tool registry + turn counter.  Shared
+    /// across forked sessions via `new_with_shared_loop` (the loop carries its
+    /// own token counters and message queue per-session).
     pub agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>,
+    /// Full message history as persisted to/loaded from the session JSONL.
     pub messages: Arc<parking_lot::RwLock<Vec<crate::types::AgentMessage>>>,
+    /// Canonical model identifier for this session (e.g. "deepseek-v4-pro").
+    /// Updated by `set_model`; read by prompt construction and compaction.
     pub model: String,
+    /// Thinking/effort level: "off", "minimal", "low", "medium", "high", "xhigh".
     pub thinking_level: String,
+    /// How new prompts are queued while streaming: "one-at-a-time" (replace
+    /// pending) or "all" (enqueue all).
     pub steering_mode: String,
+    /// How follow-up prompts are queued: same semantics as `steering_mode`.
     pub follow_up_mode: String,
+    /// Whether auto-compaction is enabled for this session.
     pub auto_compaction: bool,
+    /// Whether automatic retry on transient LLM errors is enabled.
     pub auto_retry: bool,
+    /// On-disk session store (JSONL files).  Shared across everything that
+    /// reads/writes session history.
     pub session_manager: Arc<Manager>,
+    /// Absolute working directory for shell/tool execution.
     pub cwd: String,
+    /// True while the agent loop is actively processing a prompt run.
     pub is_streaming: Arc<std::sync::atomic::AtomicBool>,
+    /// ID of the session this one was forked from, if any.
     pub parent_session_id: String,
+    /// Human-readable label (set via `/name`).  Empty until named.
     pub session_name: String,
     /// Source that created this session: "gui", "tui", "fork", "feishu", "dingtalk", etc.
     pub created_by: String,
     /// Arbitrary metadata from the source side (JSON). Free-form.
     pub source_meta: serde_json::Value,
+    /// Shared event bus for agent lifecycle events (start, end, stop reason).
     pub event_bus: Arc<EventBus>,
+    /// Per-session SSE broadcaster.  Each subscriber (`StreamEvents` call)
+    /// receives a clone of the receiver.  Private per-session so events for
+    /// one session never leak to another.
     pub broadcaster: Arc<SseBroadcaster>,
+    /// When true, the session is never persisted to disk.
     pub ephemeral: bool,
     /// Cumulative token counters (Arc<AtomicI64> — read lock-free without agent_loop lock)
     pub tokens_in: Arc<std::sync::atomic::AtomicI64>,
@@ -55,6 +86,7 @@ pub struct ServerSession {
     /// in-flight tools (shell) and break between tool calls, not just the stream.
     /// Set alongside `interrupt_tx` in `prompt()`.
     pub interrupt_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Approval gate: holds pending approval requests and their decisions.
     pub approval_gate: ApprovalGate,
     /// Permission level for tool execution: "all" | "workspace" | "none"
     pub permission_level: String,
