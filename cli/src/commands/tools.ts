@@ -104,6 +104,129 @@ export const TOOL_CATALOG: Record<string, ToolEntry> = {
   },
 };
 
+// ── Error translation ──────────────────────────────────────────────────────
+
+interface ErrorTranslation {
+  /** User-facing description of what went wrong. */
+  description: string;
+  /** Actionable advice for the user. */
+  action: string;
+  /** Whether the error is likely transient (retry may succeed). */
+  retryable: boolean;
+}
+
+/**
+ * Maps raw API error substrings to human-readable explanations.
+ * key = `${toolName}|${messageSubstring}` — matched case-insensitively
+ * against the raw error text. Falls back to `_default` entries (no tool prefix).
+ */
+const ERROR_TRANSLATIONS: Record<string, ErrorTranslation> = {
+  // ── image_gen ─────────────────────────────────────────────────────────
+  "image_gen|azure_image_transport_failed": {
+    description: "Image generation transport error (remote renderer failure)",
+    action: "Retry with --quality 'medium' or 'low'. 'high' quality is unstable — avoid it.",
+    retryable: true,
+  },
+  "image_gen|insufficient_credit": {
+    description: "Account balance too low",
+    action: "Top up your account and retry. Run 'future account balance' to check.",
+    retryable: false,
+  },
+  "image_gen|This operation was aborted": {
+    description: "Image generation request timed out",
+    action: "Add --timeout 600 and retry. Medium quality typically takes 120-300s.",
+    retryable: true,
+  },
+  // ── image_edit ────────────────────────────────────────────────────────
+  "image_edit|azure_image_transport_failed": {
+    description: "Image edit transport error",
+    action: "Retry with --quality 'medium' or 'low'.",
+    retryable: true,
+  },
+  "image_edit|insufficient_credit": {
+    description: "Account balance too low",
+    action: "Top up your account and retry.",
+    retryable: false,
+  },
+  // ── read_image ────────────────────────────────────────────────────────
+  "read_image|input file too large": {
+    description: "Image file too large",
+    action: "Resize or compress the image and retry.",
+    retryable: false,
+  },
+  // ── parse_doc ─────────────────────────────────────────────────────────
+  "parse_doc|mineru_request_failed": {
+    description: "PDF parsing service is temporarily unavailable",
+    action: "Wait a moment and retry. Alternatively, use read_image to screenshot and OCR the content.",
+    retryable: true,
+  },
+  "parse_doc|unsupported file type": {
+    description: "Unsupported file format",
+    action: "Only PDF (.pdf) and Word (.docx) documents are supported.",
+    retryable: false,
+  },
+  // ── search_paper ──────────────────────────────────────────────────────
+  "search_paper|This operation was aborted": {
+    description: "Paper search request timed out",
+    action: "Reduce --max_results_per_query or narrow the search scope.",
+    retryable: true,
+  },
+  // ── fetch_url ─────────────────────────────────────────────────────────
+  "fetch_url|This operation was aborted": {
+    description: "Web page fetch timed out",
+    action: "Add --timeout 120 and retry. Alternatively, try the browser tool to open the page.",
+    retryable: true,
+  },
+  // ── fallback (all tools) ──────────────────────────────────────────────
+  "_default|unauthorized": {
+    description: "Not logged in or token expired",
+    action: "Run 'future auth login' to sign in.",
+    retryable: false,
+  },
+  "_default|401": {
+    description: "Not logged in or API key is invalid",
+    action: "Run 'future auth login' or check the FUTURE_API_KEY environment variable.",
+    retryable: false,
+  },
+  "_default|403": {
+    description: "Model access denied",
+    action: "This model may not be available on your plan. Contact platform support.",
+    retryable: false,
+  },
+  "_default|429": {
+    description: "Rate limited — too many requests",
+    action: "Wait ~60 seconds and retry.",
+    retryable: true,
+  },
+  "_default|insufficient_credit": {
+    description: "Account balance too low",
+    action: "Top up your account and retry.",
+    retryable: false,
+  },
+  "_default|This operation was aborted": {
+    description: "Request timed out",
+    action: "Add --timeout 120 and retry.",
+    retryable: true,
+  },
+};
+
+/** Look up a user-friendly error translation. */
+function translateError(toolName: string, rawMessage: string): ErrorTranslation | null {
+  const lower = rawMessage.toLowerCase();
+  // Check tool-specific entries first
+  for (const [key, entry] of Object.entries(ERROR_TRANSLATIONS)) {
+    if (!key.startsWith(toolName + "|")) continue;
+    const pattern = key.slice(toolName.length + 1);
+    if (lower.includes(pattern)) return entry;
+  }
+  // Fall back to _default entries
+  for (const [key, entry] of Object.entries(ERROR_TRANSLATIONS)) {
+    if (!key.startsWith("_default|")) continue;
+    const pattern = key.slice("_default|".length);
+    if (lower.includes(pattern)) return entry;
+  }
+  return null;
+}
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
 export async function loadApiKey(): Promise<string> {
@@ -873,10 +996,22 @@ required arguments, flags, and examples for each tool.`);
     try {
       result = await callRemoteTool(apiKey, toolName, toolArgs, timeoutMs);
     } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      // Give context: which tool, and how to see its arguments
-      console.error(`Error calling ${toolName}: ${msg}`);
-      console.error(`Use "future tools describe ${toolName}" to see required arguments.`);
+      const rawMsg = error instanceof Error ? error.message : String(error);
+
+      // Try to translate raw error into a human-readable explanation
+      const translation = translateError(toolName, rawMsg);
+
+      if (translation) {
+        console.error(`Error: ${translation.description}`);
+        console.error(`Fix: ${translation.action}`);
+        if (translation.retryable) {
+          console.error("(This is usually temporary — retry should work.)");
+        }
+      } else {
+        // No translation — surface the original with context
+        console.error(`Error calling ${toolName}: ${rawMsg}`);
+      }
+      console.error(`Use "future tools describe ${toolName}" for help.`);
       process.exit(1);
     }
 
