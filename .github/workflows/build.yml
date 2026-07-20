@@ -94,7 +94,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            agent
+            .
             gui/src-tauri
           # Persist the target dir even when a later step fails, so a broken
           # release run doesn't throw away a full cold compile.
@@ -186,7 +186,7 @@ jobs:
           cargo build --release --manifest-path agent/Cargo.toml
           triple=$(rustc -Vv | sed -n 's/^host: //p')
           mkdir -p gui/src-tauri/binaries
-          cp "agent/target/release/future-agent" "gui/src-tauri/binaries/future-agent-$triple"
+          cp "target/release/future-agent" "gui/src-tauri/binaries/future-agent-$triple"
 
       - name: Build bundled agent (Windows)
         if: runner.os == 'Windows'
@@ -195,7 +195,7 @@ jobs:
           cargo build --release --manifest-path agent/Cargo.toml
           $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
           New-Item -ItemType Directory -Force -Path gui/src-tauri/binaries | Out-Null
-          Copy-Item "agent/target/release/future-agent.exe" "gui/src-tauri/binaries/future-agent-$triple.exe"
+          Copy-Item "target/release/future-agent.exe" "gui/src-tauri/binaries/future-agent-$triple.exe"
 
       # Compile the CLI into a standalone binary.
       - name: Build CLI binary (Unix)
@@ -301,7 +301,7 @@ jobs:
           dir="futureos-portable-linux"
           mkdir -p "$dir"
           cp "gui/src-tauri/target/release/futureos" "$dir/futureos"
-          cp "agent/target/release/future-agent" "$dir/future-agent"
+          cp "target/release/future-agent" "$dir/future-agent"
           cp "cli/dist/future" "$dir/future"
           chmod +x "$dir"/*
           cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"

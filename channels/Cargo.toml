@@ -8,29 +8,29 @@ name = "future-channel"
 path = "src/main.rs"
 
 [dependencies]
-tonic = "0.12"
-prost = "0.13"
-tokio = { version = "1", features = ["full"] }
-parking_lot = "0.12"
+tonic.workspace = true
+prost.workspace = true
+tokio.workspace = true
+parking_lot.workspace = true
 tokio-tungstenite = { version = "0.24", features = ["__rustls-tls"] }
 rustls = "0.23"
 rustls-platform-verifier = { version = "0.5", default-features = false }
-tokio-stream = "0.1"
-futures = "0.3"
-futures-util = "0.3"
-reqwest = { version = "0.12", features = ["stream", "json", "rustls-tls", "multipart"], default-features = false }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-uuid = { version = "1", features = ["v4"] }
-chrono = { version = "0.4", features = ["serde"] }
-anyhow = "1"
-thiserror = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-base64 = "0.22"
+tokio-stream.workspace = true
+futures.workspace = true
+futures-util.workspace = true
+reqwest = { workspace = true, features = ["stream", "json", "rustls-tls", "multipart"] }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+base64.workspace = true
 url = "2"
-async-trait = "0.1"
+async-trait.workspace = true
 
 [build-dependencies]
-tonic-build = "0.12"
-prost-build = "0.13"
+tonic-build.workspace = true
+prost-build.workspace = true

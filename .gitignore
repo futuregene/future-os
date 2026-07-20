@@ -12,10 +12,8 @@
 vendor/
 
 # Rust
-agent/target/
-channels/target/
+/target/
 gui/src-tauri/target/
-remote/target/
 gui/src-tauri/gen/
 # Bundled agent sidecars — built in CI / locally, never committed
 gui/src-tauri/binaries/

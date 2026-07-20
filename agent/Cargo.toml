@@ -12,31 +12,31 @@ name = "future_agent"
 path = "src/lib.rs"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
-parking_lot = "0.12"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+tokio.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 serde_with = "3"
-reqwest = { version = "0.12", features = ["stream", "json", "rustls-tls", "blocking"], default-features = false }
-futures = "0.3"
-futures-util = "0.3"
-tokio-stream = { version = "0.1", features = ["sync"] }
-anyhow = "1"
-thiserror = "1"
+reqwest = { workspace = true, features = ["stream", "json", "rustls-tls", "blocking"] }
+futures.workspace = true
+futures-util.workspace = true
+tokio-stream = { workspace = true, features = ["sync"] }
+anyhow.workspace = true
+thiserror.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 dirs = "5"
 notify = "6"
 walkdir = "2"
-uuid = { version = "1", features = ["v4"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-chrono = { version = "0.4", features = ["serde"] }
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true
 regex = "1"
 schemars = "0.8"
 rand = "0.8"
 sha2 = "0.10"
 base32 = "0.5"
-base64 = "0.22"
+base64.workspace = true
 # Decode/resize/re-encode user-attached images before sending them to a vision
 # model (downscale oversized images so they don't blow up the LLM request).
 image = { version = "0.25", default-features = false, features = [
@@ -50,10 +50,10 @@ fd-lock = "4"
 signal-hook = "0.3"
 
 shellexpand = "3"
-async-trait = "0.1"
+async-trait.workspace = true
 # gRPC
-tonic = "0.12"
-prost = "0.13"
+tonic.workspace = true
+prost.workspace = true
 prost-types = "0.13"
 tower-http = { version = "0.6", features = ["cors"] }
 
@@ -73,17 +73,9 @@ windows-sys = { version = "0.59", features = [
 
 # Proto codegen (for building .proto files)
 [build-dependencies]
-prost-build = "0.13"
-tonic-build = "0.12"
+prost-build.workspace = true
+tonic-build.workspace = true
 
 [dev-dependencies]
 tokio-test = "0.4"
-tempfile = "3"
-
-# Drop debug info and strip symbols so release links faster and ships smaller.
-# The 72K-line model catalog has been moved to the future-agent-models crate
-# which compiles with opt-level=1 — so the agent itself can keep normal
-# optimisation without slowing the build.
-[profile.release]
-debug = false
-strip = true
+tempfile.workspace = true

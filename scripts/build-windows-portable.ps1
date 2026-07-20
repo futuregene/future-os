@@ -134,7 +134,7 @@ if (-not $SkipDeps) {
 Write-Host "==> Building agent (release)" -ForegroundColor Cyan
 Invoke-Native { cargo build --release --manifest-path agent/Cargo.toml }
 New-Item -ItemType Directory -Force -Path gui/src-tauri/binaries | Out-Null
-Copy-Item "agent/target/release/future-agent.exe" `
+Copy-Item "target/release/future-agent.exe" `
           "gui/src-tauri/binaries/future-agent-$triple.exe" -Force
 
 Write-Host "==> Building CLI (standalone binary)" -ForegroundColor Cyan

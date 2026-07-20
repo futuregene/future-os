@@ -37,10 +37,8 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            agent
-            channels
-            remote
+          # Single workspace root → one shared target dir for all three crates.
+          workspaces: "."
           cache-on-failure: true
           cache-all-crates: true
 

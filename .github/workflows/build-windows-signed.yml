@@ -160,7 +160,7 @@ jobs:
           cargo build --release --manifest-path agent/Cargo.toml
           $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
           New-Item -ItemType Directory -Force -Path gui/src-tauri/binaries | Out-Null
-          Copy-Item "agent/target/release/future-agent.exe" "gui/src-tauri/binaries/future-agent-$triple.exe"
+          Copy-Item "target/release/future-agent.exe" "gui/src-tauri/binaries/future-agent-$triple.exe"
 
       - name: Build CLI binary
         working-directory: cli

@@ -1,0 +1,44 @@
+# Workspace root for the three Rust binaries (agent / channels / remote).
+#
+# gui/src-tauri is deliberately NOT a member: the Tauri app builds on its own
+# schedule via npm/tauri tooling, and membership would force it into every
+# root-level cargo invocation. It is excluded so no path-dependency accident
+# can pull it in either.
+#
+# Versions for dependencies shared by ≥2 members live here, once — bump in
+# one place instead of chasing drift across three Cargo.tomls. Members opt in
+# with `{ workspace = true }` and may add features (cargo unifies them).
+[workspace]
+members = ["agent", "channels", "remote"]
+default-members = ["agent", "channels", "remote"]
+exclude = ["gui"]
+resolver = "2"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false }
+futures = "0.3"
+futures-util = "0.3"
+tokio-stream = "0.1"
+anyhow = "1"
+thiserror = "1"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+async-trait = "0.1"
+tonic = "0.12"
+prost = "0.13"
+prost-build = "0.13"
+tonic-build = "0.12"
+tempfile = "3"
+
+# Release profile lives at the workspace root — cargo silently IGNORES
+# [profile.*] sections in member manifests (previously in agent/Cargo.toml).
+[profile.release]
+debug = false
+strip = true

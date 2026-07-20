@@ -40,7 +40,7 @@ uninstall:
 	@echo "Removed: future-agent, future, future-tui, future-gui, future-channel"
 
 install-agent: build-agent
-	$(SUDO) cp agent/target/release/future-agent $(PREFIX)/future-agent
+	$(SUDO) cp target/release/future-agent $(PREFIX)/future-agent
 
 install-tui: build-tui
 	$(SUDO) cp tui/dist/future-tui $(PREFIX)/future-tui
@@ -50,14 +50,14 @@ install-cli: build-cli
 
 install-gui: install-cli install-agent
 	@mkdir -p gui/src-tauri/binaries
-	cp agent/target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
+	cp target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
 	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET)
 	$(call npm-install-if-needed,gui)
 	cd gui && npx tauri build --no-bundle
 	$(SUDO) cp gui/src-tauri/target/release/futureos $(PREFIX)/future-gui
 
 install-channels: build-channels
-	$(SUDO) cp channels/target/release/future-channel $(PREFIX)/
+	$(SUDO) cp target/release/future-channel $(PREFIX)/
 
 # Symlink the built-in skill bundles into the agent's app-skills directory
 # so the agent discovers them on startup.  Pulls the latest from the skills
@@ -188,7 +188,7 @@ run-gui: build-gui
 	@mkdir -p gui/src-tauri/binaries
 	@if [ ! -f "gui/src-tauri/binaries/future-agent-$(TARGET)" ]; then \
 		$(MAKE) build-agent && \
-		cp agent/target/release/future-agent "gui/src-tauri/binaries/future-agent-$(TARGET)"; \
+		cp target/release/future-agent "gui/src-tauri/binaries/future-agent-$(TARGET)"; \
 	fi
 	@if [ ! -f "gui/src-tauri/binaries/future-$(TARGET)" ]; then \
 		cd cli && npm install && npm run build && \
@@ -218,9 +218,7 @@ generate-proto:
 # ─── Clean ──────────────────────────────────────────────────────────────────
 
 clean:
-	rm -rf agent/target
-	rm -rf channels/target
-	rm -rf remote/target
+	rm -rf target
 	rm -rf tui/dist tui/node_modules
 	rm -f tui/future-tui tui/src/version.generated.ts
 	rm -rf cli/dist cli/node_modules
