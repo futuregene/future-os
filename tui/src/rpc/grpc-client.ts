@@ -26,6 +26,11 @@ export type EventListener = (event: AgentEvent) => void;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+/// Default gRPC deadline (seconds).  Used by every unary RPC call; any
+/// single call that takes longer is treated as a timeout.  30 s covers the
+/// slowest legitimate agent operation (large compaction + model response).
+const GRPC_DEADLINE_SEC = 30;
+
 // Embedded proto content for standalone binaries (no external file dependency).
 // Generated from ../../proto/future.proto at build time.
 export const EMBEDDED_PROTO = `// future.proto — Protocol Buffers schema for FutureAgent
@@ -590,7 +595,7 @@ export class GrpcClient {
       };
 
       const deadline = new Date();
-      deadline.setSeconds(deadline.getSeconds() + 30);
+      deadline.setSeconds(deadline.getSeconds() + GRPC_DEADLINE_SEC);
       this.client.ExecuteCommand(request, { deadline }, (err: Error | null, response: any) => {
         if (err) {
           reject(err);
