@@ -194,7 +194,13 @@ export class ChatArea implements Component {
     const lastIdx = this.messages.length - 1;
     const last = this.messages[lastIdx];
     if (last.role === "assistant") {
-      last.thinking = "";
+      // Second thinking block in the same turn: keep previous content
+      // and start a new paragraph so both blocks are visible.
+      if (last.thinking && last.thinking.trim()) {
+        last.thinking += "\n\n";
+      } else {
+        last.thinking = "";
+      }
       this.rerenderMessage(lastIdx);
     } else {
       this.messages.push({ id: this.newId(), role: "assistant", content: "", thinking: "" });
