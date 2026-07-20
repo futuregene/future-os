@@ -363,6 +363,23 @@ export class App extends Container {
 
   private handleAgentEvent(event: { type: string; [key: string]: unknown }): void {
     switch (event.type) {
+      case "user_message": {
+        const e = event as { text?: string };
+        const text = e.text ?? "";
+        // Dedup: the sender TUI already added this message locally before
+        // sending the RPC, so its own broadcast would create a duplicate.
+        // Observing TUIs (different client, same session) see it for the
+        // first time — without it they would only get the assistant reply.
+        const last = this.chat.lastMessage;
+        if (last?.role === "user" && last.content === text) return;
+        this.chat.addMessage({
+          id: crypto.randomUUID(),
+          role: "user",
+          content: text,
+        });
+        break;
+      }
+
       case "text_chunk":
         this.state.streaming = true;
         this.chat.appendToLastMessage(

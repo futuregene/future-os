@@ -40,7 +40,15 @@ impl ServerSession {
         // i.e. exactly the cases that must run: retrying after a failed run,
         // or deliberately repeating a message ("continue", "yes", same text
         // with different attachments).
+        let user_text = user_message.text();
         self.messages.write().push(user_message);
+
+        // Broadcast the user message to all connected clients so a second TUI
+        // observing the same session sees the question alongside the answer.
+        self.broadcaster.broadcast(crate::rpc::SseEvent::new(
+            "user_message",
+            serde_json::json!({"text": user_text}),
+        ));
 
         // Persist immediately so the GUI can see the user message (and any
         // tool entries from prior turns) during streaming. Without this, a

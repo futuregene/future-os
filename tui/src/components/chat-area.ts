@@ -28,6 +28,10 @@ export interface ChatMessage {
 export class ChatArea implements Component {
   private messages: ChatMessage[] = [];
   private viewportTop = 0;
+
+  get lastMessage(): ChatMessage | undefined {
+    return this.messages[this.messages.length - 1];
+  }
   private viewportHeight = 20;
   private renderedLines: RenderedLine[] = [];
   private autoScroll = true;
