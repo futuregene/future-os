@@ -101,7 +101,7 @@ impl AuthStore {
             if name_lower.starts_with(&provider_lower) || provider_lower.starts_with(&name_lower) {
                 match best {
                     None => best = Some((name, entry)),
-                    Some((ref best_name, _)) => {
+                    Some((best_name, _)) => {
                         if name.len() > best_name.len()
                             || (name.len() == best_name.len() && name.as_str() < best_name.as_str())
                         {

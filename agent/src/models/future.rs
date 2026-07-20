@@ -184,7 +184,7 @@ fn fetch_future_models(api_key: &str, base_url: &str) -> Option<Vec<Model>> {
         let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
         let response = reqwest::blocking::Client::new()
             .get(&url)
-            .header("Authorization", format!("Bearer {}", &api_key))
+            .header("Authorization", format!("Bearer {}", api_key))
             .timeout(std::time::Duration::from_secs(10))
             .send()
             .ok()?;

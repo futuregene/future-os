@@ -67,7 +67,7 @@ pub fn should_compact(
 /// underestimation of the old char-count approach for Chinese text.
 pub fn estimate_tokens(msg: &Message) -> i32 {
     let chars = count_content_chars(&msg.content);
-    let estimated = estimate_cjk_aware_tokens(chars as usize);
+    let estimated = estimate_cjk_aware_tokens(chars);
     match msg.role.as_str() {
         "assistant" => {
             let mut c = estimated;

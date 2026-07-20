@@ -20,6 +20,8 @@ const C_MAGENTA: &str = "\x1b[35m";
 
 pub const DEFAULT_MAX_TURNS: i32 = 0; // 0 = unlimited
 
+pub type PersistCallback = Arc<dyn Fn(&crate::types::AgentMessage) + Send + Sync>;
+
 pub struct Loop {
     pub provider: Arc<dyn LLMProvider>,
     pub model: String,
@@ -38,10 +40,10 @@ pub struct Loop {
     /// Called after each tool result is pushed to messages, so the session
     /// can be persisted incrementally during long streaming runs.
     /// Receives the tool-result message being saved.
-    pub on_tool_result: Option<Arc<dyn Fn(&crate::types::AgentMessage) + Send + Sync>>,
+    pub on_tool_result: Option<PersistCallback>,
     /// General save callback — also called after assistant messages are
     /// pushed, not just tool results.  Receives the message being saved.
-    pub save_callback: Option<Arc<dyn Fn(&crate::types::AgentMessage) + Send + Sync>>,
+    pub save_callback: Option<PersistCallback>,
     pub cumulative_input_tokens: Arc<std::sync::atomic::AtomicI64>,
     pub cumulative_output_tokens: Arc<std::sync::atomic::AtomicI64>,
     pub cumulative_cache_read_tokens: Arc<std::sync::atomic::AtomicI64>,
