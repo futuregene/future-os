@@ -18,7 +18,7 @@ make build-tui          # Build TypeScript TUI only
 make build-cli          # Build TypeScript CLI only
 make build-gui          # Build React GUI frontend
 make build-channels      # Build channel bridge
-make test               # Run all Rust tests
+make test               # Run all tests (Rust crates + cli/tui/gui via bun/vitest)
 make lint               # Lint Rust + TypeScript + GUI
 make lint-agent         # cargo fmt --check && cargo clippy
 make lint-tui           # TUI: npx tsc --noEmit

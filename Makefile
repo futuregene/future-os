@@ -116,18 +116,41 @@ build-channels:
 
 # ─── Test ───────────────────────────────────────────────────────────────────
 
-test:
+test: test-agent test-channels test-remote test-cli test-tui test-gui
+
+test-agent:
 	cd agent && cargo test
+
+test-channels:
+	cd channels && cargo test
+
+test-remote:
+	cd remote && cargo test
+
+test-cli:
+	$(call npm-install-if-needed,cli)
+	cd cli && npm test
+
+test-tui:
+	$(call npm-install-if-needed,tui)
+	cd tui && npm test
+
+test-gui:
+	$(call npm-install-if-needed,gui)
+	cd gui && npm test
 
 # ─── Lint ───────────────────────────────────────────────────────────────────
 
-lint: lint-agent lint-channels lint-tui lint-cli lint-gui stylelint-gui
+lint: lint-agent lint-channels lint-remote lint-tui lint-cli lint-gui stylelint-gui
 
 lint-agent:
 	cd agent && cargo fmt --check && cargo clippy
 
 lint-channels:
 	cd channels && cargo fmt --check && cargo clippy
+
+lint-remote:
+	cd remote && cargo fmt --check && cargo clippy
 
 lint-tui:
 	cd tui && npm run gen-version && npx tsc --noEmit
@@ -214,7 +237,7 @@ help:
 	@echo "  build-cli          Build TypeScript CLI"
 	@echo "  build-gui          Build React/Tauri GUI frontend"
 	@echo "  build-channels      Build channel bridge"
-	@echo "  test               Run Rust tests (agent)"
+	@echo "  test               Run all tests (Rust crates + cli/tui/gui)"
 	@echo "  lint               Lint all (agent + channels + TUI + CLI + GUI)"
 	@echo "  fmt                Format Rust code (agent + channels)"
 	@echo "  run-agent          Run agent directly (debug build)"
