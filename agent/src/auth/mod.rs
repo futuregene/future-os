@@ -62,7 +62,17 @@ impl AuthStore {
         Ok(Self { entries })
     }
 
-    /// Get API key for a provider (case-insensitive, prefix match)
+    /// Get API key for a provider (case-insensitive, prefix match).
+    ///
+    /// Resolution order:
+    /// 1. Exact key match in the HashMap ("deepseek-v4-pro").
+    /// 2. Case-insensitive exact match.
+    /// 3. Prefix match — prefers the **longest** matching entry name
+    ///    (most specific).  If two entries match and have the same
+    ///    length, alphabetical order breaks the tie.  This avoids
+    ///    non-deterministic resolution when multiple entries share a
+    ///    prefix (e.g. "deepseek-v4-flash" and "deepseek-v4-pro" both
+    ///    match query "deepseek").
     pub fn get(&self, provider: &str) -> Option<String> {
         let provider_lower = provider.to_lowercase();
 
@@ -80,18 +90,31 @@ impl AuthStore {
             }
         }
 
-        // Prefix match (e.g., "deepseek" matches "deepseek-v4-flash")
+        // Prefix match: pick the **longest** matching entry name
+        // (most specific), with alphabetical tie-break.
+        let mut best: Option<(&String, &AuthEntry)> = None;
         for (name, entry) in &self.entries {
-            if name.to_lowercase().starts_with(&provider_lower) && !entry.key.is_empty() {
-                return Some(entry.key.clone());
+            if entry.key.is_empty() {
+                continue;
+            }
+            let name_lower = name.to_lowercase();
+            if name_lower.starts_with(&provider_lower)
+                || provider_lower.starts_with(&name_lower)
+            {
+                match best {
+                    None => best = Some((name, entry)),
+                    Some((ref best_name, _)) => {
+                        if name.len() > best_name.len()
+                            || (name.len() == best_name.len() && name.as_str() < best_name.as_str())
+                        {
+                            best = Some((name, entry));
+                        }
+                    }
+                }
             }
         }
-
-        // Also check if provider starts with entry name
-        for (name, entry) in &self.entries {
-            if provider_lower.starts_with(&name.to_lowercase()) && !entry.key.is_empty() {
-                return Some(entry.key.clone());
-            }
+        if let Some((_, entry)) = best {
+            return Some(entry.key.clone());
         }
 
         None
@@ -132,5 +155,73 @@ mod dirs {
         std::env::var_os("HOME")
             .or_else(|| std::env::var_os("USERPROFILE"))
             .map(PathBuf::from)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_store(json: &str) -> AuthStore {
+        AuthStore::from_json(json).unwrap()
+    }
+
+    #[test]
+    fn prefix_match_is_deterministic_preferring_longer_name() {
+        let store2 = make_store(
+            r#"{
+                "deepseek":       {"type": "api_key", "key": "short-key"},
+                "deepseek-v4-pro": {"type": "api_key", "key": "long-key"}
+            }"#,
+        );
+
+        // Query "deepseek" → exact match for "deepseek" wins, get "short-key"
+        assert_eq!(store2.get("deepseek"), Some("short-key".to_string()));
+
+        // Query "deepseek-" → no exact match, both prefix-match.
+        // "deepseek-v4-pro" (16 chars) is longer than "deepseek" (8 chars).
+        assert_eq!(store2.get("deepseek-"), Some("long-key".to_string()));
+    }
+
+    #[test]
+    fn prefix_match_prefers_longer_name_over_shorter() {
+        // Simulate the ambiguous case: multiple entries sharing a prefix.
+        // Run many iterations to catch any HashMap-ordering non-determinism.
+        for _ in 0..100 {
+            let store = make_store(
+                r#"{
+                    "openai":      {"type": "api_key", "key": "generic"},
+                    "openai-gpt-5": {"type": "api_key", "key": "specific"}
+                }"#,
+            );
+            // "openai" → exact match for "openai" wins
+            assert_eq!(store.get("openai"), Some("generic".to_string()));
+            // "openai-" → prefix: "openai-gpt-5" (12) > "openai" (6), so "specific"
+            assert_eq!(store.get("openai-"), Some("specific".to_string()));
+        }
+    }
+
+    #[test]
+    fn exact_match_takes_priority_over_prefix() {
+        let store = make_store(
+            r#"{
+                "deepseek":       {"type": "api_key", "key": "generic"},
+                "deepseek-v4":    {"type": "api_key", "key": "specific"}
+            }"#,
+        );
+        // Exact key match
+        assert_eq!(store.get("deepseek"), Some("generic".to_string()));
+        // Exact case-insensitive: "DeepSeek" vs "deepseek"
+        assert_eq!(store.get("DeepSeek"), Some("generic".to_string()));
+    }
+
+    #[test]
+    fn case_insensitive_exact_ignores_prefix() {
+        let store = make_store(
+            r#"{
+                "DeepSeek-V4-Pro": {"type": "api_key", "key": "pro"}
+            }"#,
+        );
+        assert_eq!(store.get("deepseek-v4-pro"), Some("pro".to_string()));
     }
 }
