@@ -15,6 +15,24 @@ export interface McpResponse {
   sessionId: string | null;
 }
 
+/** Map common HTTP status codes to human-readable errors. */
+function translateHttpError(status: number, body: string): string {
+  switch (status) {
+    case 401:
+      return "Not logged in or token expired. Run 'future auth login' to sign in.";
+    case 403:
+      return "Access denied. Your account may not have access to this resource.";
+    case 429:
+      return "Too many requests — rate limited. Wait ~60 seconds and retry.";
+    case 502:
+      return "Platform gateway error (502). This is temporary — retry in a minute.";
+    case 503:
+      return "Platform service temporarily unavailable (503). Retry in a minute.";
+    default:
+      return `Request failed (HTTP ${status})${body ? " — " + body.slice(0, 200) : ""}`;
+  }
+}
+
 export async function mcpPost(
   url: string,
   method: string,
@@ -52,9 +70,7 @@ export async function mcpPost(
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new Error(
-        `MCP request failed: HTTP ${response.status}${text ? " — " + text.slice(0, 200) : ""}`
-      );
+      throw new Error(translateHttpError(response.status, text));
     }
 
     const sid = response.headers.get("mcp-session-id") ?? undefined;
