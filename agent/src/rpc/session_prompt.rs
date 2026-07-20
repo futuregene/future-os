@@ -32,6 +32,23 @@ impl ServerSession {
             model_supports_images,
             &crate::utils::image_data_url_for_model,
         );
+
+        // Dedup: if the last message is already the same user content (caller
+        // retried on error without changing the prompt), don't write a
+        // duplicate entry.
+        {
+            let msgs = self.messages.read();
+            if let Some(last) = msgs.last() {
+                if last.role == "user" && last.text() == user_message.text() {
+                    tracing::warn!(
+                        "[session] suppressing duplicate user message: {}",
+                        user_message.text()
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
         self.messages.write().push(user_message);
 
         // Persist immediately so the GUI can see the user message (and any
