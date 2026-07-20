@@ -661,7 +661,19 @@ impl ServerSession {
             let msgs = crate::session::entries_to_agent_messages(&session.entries, supports_images);
             if !session.model.is_empty() {
                 self.model = session.model.clone();
+
+                // Sync the agent loop's model + provider endpoint so the next
+                // prompt uses the saved model, not a stale leftover from the
+                // previous session.  set_model is best-effort here (loop may be
+                // busy); a failure just logs and defers — the user can call
+                // /model explicitly if needed.
+                if let Err(e) = self.set_model(&self.model.clone()) {
+                    tracing::warn!(
+                        "[session] could not sync agent loop model during switch_session: {e}"
+                    );
+                }
             }
+
             // Restore session name from label entries (via load_path) or session_info
             if !session.name.is_empty() {
                 self.session_name = session.name.clone();
