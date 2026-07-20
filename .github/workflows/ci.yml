@@ -1,0 +1,159 @@
+name: CI
+
+permissions: read-all
+
+# Fast feedback on every push to main and every PR: lint + typecheck + tests
+# only. Full cross-platform packaging stays in build.yml (tags / dispatch) —
+# this workflow exists so breakage is caught BEFORE a release build is cut.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Re-pushing a branch cancels its stale run; release tags are unaffected
+# (this workflow never triggers on tags anyway).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─── Rust: fmt + clippy + tests for all three crates ─────────────────────
+  # Mirrors `make lint-agent lint-channels test` locally. Clippy runs with
+  # -D warnings: the tree is currently warning-free and this keeps it that way
+  # (plain `make lint` prints the same warnings locally, so there is no
+  # local/CI behaviour gap — only CI refuses to ignore them).
+  rust:
+    name: Rust (agent / channels / remote)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # Pinned to match rust-toolchain.toml so CI and local dev use the same
+      # compiler. Bump both together (see build.yml for the same pin).
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            agent
+            channels
+            remote
+          cache-on-failure: true
+          cache-all-crates: true
+
+      # protoc for the agent/channels build.rs proto codegen.
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: rustfmt
+        run: |
+          cargo fmt --check --manifest-path agent/Cargo.toml
+          cargo fmt --check --manifest-path channels/Cargo.toml
+          cargo fmt --check --manifest-path remote/Cargo.toml
+
+      - name: clippy
+        run: |
+          cargo clippy --all-targets --manifest-path agent/Cargo.toml -- -D warnings
+          cargo clippy --all-targets --manifest-path channels/Cargo.toml -- -D warnings
+          cargo clippy --all-targets --manifest-path remote/Cargo.toml -- -D warnings
+
+      - name: cargo test
+        run: |
+          cargo test --manifest-path agent/Cargo.toml
+          cargo test --manifest-path channels/Cargo.toml
+          cargo test --manifest-path remote/Cargo.toml
+
+  # ─── CLI: typecheck + bun test ───────────────────────────────────────────
+  # Browser tests (contract/characterization/safari-manual) self-skip when no
+  # browser is reachable, so the full suite is safe on a headless runner.
+  cli:
+    name: CLI (typecheck + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: cli/package-lock.json
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # npm ci also runs postinstall → gen-version (version.generated.ts is
+      # gitignored and required by tsc).
+      - name: Install dependencies
+        working-directory: cli
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: cli
+        run: npx tsc --noEmit
+
+      - name: bun test
+        working-directory: cli
+        run: bun test
+
+  # ─── TUI: typecheck only (no test suite yet) ─────────────────────────────
+  tui:
+    name: TUI (typecheck)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: tui/package-lock.json
+
+      - name: Install dependencies
+        working-directory: tui
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: tui
+        run: npx tsc --noEmit
+
+  # ─── GUI: eslint + stylelint + vitest ────────────────────────────────────
+  gui:
+    name: GUI (lint + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: Install dependencies
+        working-directory: gui
+        run: npm ci
+
+      - name: ESLint
+        working-directory: gui
+        run: npm run lint
+
+      - name: Stylelint
+        working-directory: gui
+        run: npm run stylelint
+
+      - name: vitest
+        working-directory: gui
+        run: npm run test
