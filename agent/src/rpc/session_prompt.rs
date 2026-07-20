@@ -126,27 +126,26 @@ impl ServerSession {
                             ..Default::default()
                         });
                     }));
-                // Persist tool results incrementally so they survive crashes
-                // during long streaming runs.
+                // Persist tool results and assistant messages incrementally so
+                // they survive crashes during long streaming runs.
                 let save_messages = messages_arc.clone();
                 let save_manager = session_manager.clone();
                 let save_session_id = session_id.clone();
-                let save_closure: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-                    // Ephemeral sessions skip all disk I/O — nothing to persist.
-                    if is_ephemeral {
-                        return;
-                    }
-                    // Append-only: only write the last entry instead of
-                    // rebuilding and rewriting the entire file.  The final
-                    // post-run save does the full snapshot.
-                    let msgs = save_messages.read();
-                    if let Some(last_msg) = msgs.last() {
-                        let entry = crate::session::agent_message_to_entry(last_msg);
+                let save_closure: Arc<dyn Fn(&crate::types::AgentMessage) + Send + Sync> =
+                    Arc::new(move |msg: &crate::types::AgentMessage| {
+                        // Ephemeral sessions skip all disk I/O.
+                        if is_ephemeral {
+                            return;
+                        }
+                        // Push to shared memory so the next full save includes it.
+                        save_messages.write().push(msg.clone());
+                        // Append-only: write just this new entry without rewriting
+                        // the entire file.
+                        let entry = crate::session::agent_message_to_entry(msg);
                         if let Err(e) = save_manager.append_entries(&save_session_id, &[entry]) {
                             tracing::error!("Failed to append entry: {}", e);
                         }
-                    }
-                });
+                    });
                 r#loop.on_tool_result = Some(save_closure.clone());
                 r#loop.save_callback = Some(save_closure);
                 let approval_gate_hook = approval_gate.clone();

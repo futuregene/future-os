@@ -749,7 +749,7 @@ impl Loop {
             // Persist the assistant response immediately so it survives a
             // crash mid-run, even if no tools were called in this turn.
             if let Some(ref save) = self.save_callback {
-                save();
+                save(messages.last().unwrap());
             }
 
             // Stream was truncated mid-reply: the assistant text is a prefix,

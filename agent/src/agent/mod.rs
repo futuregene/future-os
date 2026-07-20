@@ -37,10 +37,11 @@ pub struct Loop {
     pub tool_event_callback: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
     /// Called after each tool result is pushed to messages, so the session
     /// can be persisted incrementally during long streaming runs.
-    pub on_tool_result: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Receives the tool-result message being saved.
+    pub on_tool_result: Option<Arc<dyn Fn(&crate::types::AgentMessage) + Send + Sync>>,
     /// General save callback — also called after assistant messages are
-    /// pushed, not just tool results.
-    pub save_callback: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// pushed, not just tool results.  Receives the message being saved.
+    pub save_callback: Option<Arc<dyn Fn(&crate::types::AgentMessage) + Send + Sync>>,
     pub cumulative_input_tokens: Arc<std::sync::atomic::AtomicI64>,
     pub cumulative_output_tokens: Arc<std::sync::atomic::AtomicI64>,
     pub cumulative_cache_read_tokens: Arc<std::sync::atomic::AtomicI64>,
@@ -244,7 +245,7 @@ impl Loop {
             );
             messages.push(tool_msg);
             if let Some(ref cb) = self.on_tool_result {
-                cb();
+                cb(messages.last().unwrap());
             }
             executed += 1;
         }
