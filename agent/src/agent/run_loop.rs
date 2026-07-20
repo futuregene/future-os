@@ -797,6 +797,13 @@ impl Loop {
                     if let Some(ref bus) = self.event_bus {
                         bus.emit(events::turn_end(turn));
                     }
+                    if let Some(ref u) = total_usage {
+                        let cost = u.credit_cost.unwrap_or(0.0);
+                        tracing::info!(
+                            "[agent] turn={} (follow-up) tokens_in={} tokens_out={} cost={:.6}",
+                            turn, u.prompt_tokens, u.completion_tokens, cost,
+                        );
+                    }
                     // Emit agent_start so the TUI creates a new assistant block
                     // for the follow-up response (under the follow-up user message).
                     on_event(StreamEvent {
@@ -819,6 +826,19 @@ impl Loop {
                         assistant_text.len()
                     );
                 }
+                if let Some(ref u) = total_usage {
+                    let cost = u.credit_cost.unwrap_or(0.0);
+                    let cum_cost = *self.cumulative_cost.lock();
+                    tracing::info!(
+                        "[agent] usage tokens_in={} tokens_out={} cache_read={} cache_write={} cost={:.6} cumulative_cost={:.6}",
+                        u.prompt_tokens,
+                        u.completion_tokens,
+                        u.cache_read_tokens.unwrap_or(0),
+                        u.cache_write_tokens.unwrap_or(0),
+                        cost,
+                        cum_cost,
+                    );
+                }
                 return Ok((assistant_text, messages));
             }
 
@@ -839,6 +859,22 @@ impl Loop {
 
             if let Some(ref bus) = self.event_bus {
                 bus.emit(events::turn_end(turn));
+            }
+
+            // Log per-turn usage: tokens and cost.
+            if let Some(ref u) = total_usage {
+                let cost = u.credit_cost.unwrap_or(0.0);
+                let cum_cost = *self.cumulative_cost.lock();
+                tracing::info!(
+                    "[agent] turn={} tokens_in={} tokens_out={} cache_read={} cache_write={} cost={:.6} cumulative_cost={:.6}",
+                    turn,
+                    u.prompt_tokens,
+                    u.completion_tokens,
+                    u.cache_read_tokens.unwrap_or(0),
+                    u.cache_write_tokens.unwrap_or(0),
+                    cost,
+                    cum_cost,
+                );
             }
 
             last_error = None;
