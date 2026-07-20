@@ -2,6 +2,7 @@
 
 mod approval;
 mod commands;
+mod prompt_helpers;
 mod protocol;
 mod session;
 mod session_prompt;

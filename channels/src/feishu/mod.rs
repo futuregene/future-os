@@ -9,6 +9,7 @@ pub mod config;
 pub mod feishu_rest;
 pub mod feishu_ws;
 pub mod policy;
+pub mod prompt_loop;
 pub mod session_store;
 
 use crate::config::AgentConfig;
