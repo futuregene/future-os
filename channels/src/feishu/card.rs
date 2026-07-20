@@ -292,8 +292,13 @@ fn truncate_markdown(content: &str, max_len: usize) -> String {
     if content.len() <= max_len {
         return content.to_string();
     }
-    let truncated = &content[..max_len];
-    format!("{}\n\n..._(truncated)_", truncated)
+    // Slice at a char boundary ≤ max_len — a raw `&content[..max_len]` panics
+    // when max_len splits a multi-byte UTF-8 char (CJK/emoji content).
+    let mut end = max_len;
+    while !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n\n..._(truncated)_", &content[..end])
 }
 
 /// Truncate at character boundary (safe for multi-byte UTF-8).
@@ -358,4 +363,131 @@ fn strip_markdown(text: &str) -> String {
     // Collapse whitespace
     let words: Vec<&str> = result.split_whitespace().collect();
     words.join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── strip_markdown ────────────────────────────────────────────────────
+
+    #[test]
+    fn strips_inline_formatting_and_headers() {
+        let input = "## Title\nSome **bold** and *italic* and `code`";
+        assert_eq!(strip_markdown(input), "Title Some bold and italic and code");
+    }
+
+    #[test]
+    fn strips_fenced_code_blocks_entirely() {
+        let input = "before\n```rust\nlet x = 1;\n```\nafter";
+        assert_eq!(strip_markdown(input), "before after");
+    }
+
+    #[test]
+    fn strips_links_keeping_text() {
+        assert_eq!(
+            strip_markdown("see [docs](https://x.dev) now"),
+            "see docs now"
+        );
+    }
+
+    #[test]
+    fn strips_status_lines_and_separators() {
+        let input = "💭 thinking\n🔧 tool\n✅ done\n---\nreal answer";
+        assert_eq!(strip_markdown(input), "real answer");
+    }
+
+    #[test]
+    fn collapses_whitespace() {
+        assert_eq!(strip_markdown("a   b\n\nc"), "a b c");
+    }
+
+    // ─── complete_card ─────────────────────────────────────────────────────
+
+    #[test]
+    fn complete_card_has_plain_text_summary() {
+        let card = complete_card("Done", "**bold** answer with `code`");
+        let summary = card["config"]["summary"]["content"].as_str().unwrap();
+        assert_eq!(summary, "bold answer with code");
+    }
+
+    #[test]
+    fn complete_card_summary_truncates_at_120_chars() {
+        let long = "x".repeat(500);
+        let card = complete_card("Done", &long);
+        let summary = card["config"]["summary"]["content"].as_str().unwrap();
+        assert_eq!(summary.chars().count(), 120);
+    }
+
+    #[test]
+    fn complete_card_omits_summary_for_empty_content() {
+        let card = complete_card("Done", "```\nonly code\n```");
+        assert!(card["config"].get("summary").is_none());
+    }
+
+    #[test]
+    fn complete_card_keeps_update_multi_true() {
+        // CardKit rejects flipping update_multi to false (error 300302) —
+        // this invariant must never regress.
+        let card = complete_card("Done", "answer");
+        assert_eq!(card["config"]["update_multi"], json!(true));
+        assert_eq!(card["config"]["streaming_mode"], json!(false));
+    }
+
+    // ─── to_cardkit_format ─────────────────────────────────────────────────
+
+    #[test]
+    fn cardkit_format_moves_elements_into_body() {
+        let card = complete_card("Done", "answer");
+        let ck = to_cardkit_format(&card);
+        assert_eq!(ck["schema"], json!("2.0"));
+        assert!(ck.get("elements").is_none(), "top-level elements must move");
+        assert!(ck["body"]["elements"].is_array());
+        assert_eq!(ck["header"]["template"], json!("blue"));
+        assert_eq!(ck["config"]["update_multi"], json!(true));
+    }
+
+    #[test]
+    fn cardkit_format_carries_actions_and_card_link() {
+        let mut card = error_card("boom");
+        card["actions"] = json!([{"tag": "button"}]);
+        card["card_link"] = json!({"url": "https://x.dev"});
+        let ck = to_cardkit_format(&card);
+        assert!(ck["body"]["actions"].is_array());
+        assert_eq!(ck["card_link"]["url"], json!("https://x.dev"));
+    }
+
+    #[test]
+    fn cardkit_format_handles_missing_elements() {
+        let ck = to_cardkit_format(&json!({"config": {}}));
+        assert_eq!(ck["body"]["elements"], json!([]));
+    }
+
+    // ─── truncation helpers ────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_at_char_is_utf8_safe() {
+        // 4-byte emoji must never be split (would panic on byte slicing).
+        let s = "🦀".repeat(200);
+        assert_eq!(truncate_at_char(&s, 10).chars().count(), 10);
+        assert_eq!(truncate_at_char("short", 10), "short");
+    }
+
+    #[test]
+    fn truncate_markdown_marks_truncation() {
+        let long = "y".repeat(100);
+        let out = truncate_markdown(&long, 50);
+        assert!(out.starts_with(&"y".repeat(50)));
+        assert!(out.contains("truncated"));
+        assert_eq!(truncate_markdown("short", 50), "short");
+    }
+
+    #[test]
+    fn truncate_markdown_never_splits_multibyte_chars() {
+        // "好" is 3 bytes — a limit landing mid-char must back off, not panic.
+        let s = "好".repeat(100); // 300 bytes
+        let out = truncate_markdown(&s, 50);
+        assert!(out.starts_with(&"好".repeat(16))); // 48 bytes: last boundary ≤ 50
+        assert!(out.contains("truncated"));
+    }
 }

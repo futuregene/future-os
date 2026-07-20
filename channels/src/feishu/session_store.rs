@@ -140,3 +140,94 @@ impl SessionStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Unique temp path per test so parallel `cargo test` runs don't collide.
+    fn temp_store_path(test_name: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join("future-channel-tests")
+            .join(format!("{}-{}", test_name, uuid::Uuid::new_v4()));
+        dir.join("sessions.json")
+    }
+
+    #[test]
+    fn get_or_create_marks_new_and_reuses_existing() {
+        let store = SessionStore::new(temp_store_path("create"));
+        let (_, is_new) = store.get_or_create("oc_1", None);
+        assert!(is_new);
+        let (_, is_new) = store.get_or_create("oc_1", None);
+        assert!(!is_new, "second call must reuse the existing entry");
+    }
+
+    #[test]
+    fn threads_get_independent_sessions() {
+        let store = SessionStore::new(temp_store_path("threads"));
+        let (_, a_new) = store.get_or_create("oc_1", None);
+        let (_, b_new) = store.get_or_create("oc_1", Some("omt_thread"));
+        assert!(a_new && b_new);
+
+        store.set_session_id("oc_1", None, "sid-root");
+        store.set_session_id("oc_1", Some("omt_thread"), "sid-thread");
+        assert_eq!(store.get("oc_1", None).as_deref(), Some("sid-root"));
+        assert_eq!(
+            store.get("oc_1", Some("omt_thread")).as_deref(),
+            Some("sid-thread")
+        );
+    }
+
+    #[test]
+    fn empty_thread_id_is_treated_as_no_thread() {
+        let store = SessionStore::new(temp_store_path("empty-thread"));
+        store.set_session_id("oc_1", None, "sid");
+        // "" must key identically to None — otherwise every empty thread_id
+        // from the WS event would silently fork the session mapping.
+        assert_eq!(store.get("oc_1", Some("")).as_deref(), Some("sid"));
+    }
+
+    #[test]
+    fn reset_removes_mapping() {
+        let store = SessionStore::new(temp_store_path("reset"));
+        store.set_session_id("oc_1", None, "sid");
+        store.reset("oc_1", None);
+        assert_eq!(store.get("oc_1", None), None);
+    }
+
+    #[test]
+    fn touch_updates_last_active() {
+        let store = SessionStore::new(temp_store_path("touch"));
+        store.set_session_id("oc_1", None, "sid");
+        let before = store.data.read().get("oc_1").map(|e| e.last_active.clone());
+        store.touch("oc_1", None);
+        let after = store.data.read().get("oc_1").map(|e| e.last_active.clone());
+        assert!(before.is_some() && after.is_some());
+        // Touching a missing chat must not create an entry.
+        store.touch("oc_missing", None);
+        assert_eq!(store.get("oc_missing", None), None);
+    }
+
+    #[test]
+    fn persists_and_reloads_from_disk() {
+        let path = temp_store_path("persist");
+        {
+            let store = SessionStore::new(path.clone());
+            store.set_session_id("oc_1", None, "sid-1");
+            store.set_session_id("oc_2", Some("t"), "sid-2");
+        } // store dropped; data only on disk now
+
+        let reloaded = SessionStore::new(path);
+        assert_eq!(reloaded.get("oc_1", None).as_deref(), Some("sid-1"));
+        assert_eq!(reloaded.get("oc_2", Some("t")).as_deref(), Some("sid-2"));
+    }
+
+    #[test]
+    fn corrupt_disk_file_starts_empty() {
+        let path = temp_store_path("corrupt");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "not json {{{").unwrap();
+        let store = SessionStore::new(path);
+        assert_eq!(store.get("oc_1", None), None);
+    }
+}

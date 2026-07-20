@@ -549,3 +549,103 @@ pub fn is_bot_mentioned_in_mentions(mentions: &[serde_json::Value], bot_open_id:
         None => false,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── extract_text_content ──────────────────────────────────────────────
+
+    #[test]
+    fn text_message_extracts_text() {
+        let content = r#"{"text":"hello world"}"#;
+        assert_eq!(
+            extract_text_content(content, "text").as_deref(),
+            Some("hello world")
+        );
+    }
+
+    #[test]
+    fn text_message_with_invalid_json_returns_none() {
+        assert_eq!(extract_text_content("not json", "text"), None);
+    }
+
+    #[test]
+    fn post_message_joins_text_and_mentions() {
+        let content = r#"{"content":[[
+            {"tag":"text","text":"hi "},
+            {"tag":"at","user_id":"ou_bot"},
+            {"tag":"text","text":" please"}
+        ]]}"#;
+        assert_eq!(
+            extract_text_content(content, "post").as_deref(),
+            Some("hi @ou_bot please")
+        );
+    }
+
+    #[test]
+    fn post_message_without_text_elements_returns_none() {
+        let content = r#"{"content":[[{"tag":"img","image_key":"k"}]]}"#;
+        assert_eq!(extract_text_content(content, "post"), None);
+    }
+
+    #[test]
+    fn unsupported_msg_type_returns_none() {
+        assert_eq!(extract_text_content(r#"{"text":"x"}"#, "image"), None);
+    }
+
+    // ─── extract_image_key / extract_file_key ──────────────────────────────
+
+    #[test]
+    fn image_key_extracted() {
+        assert_eq!(
+            extract_image_key(r#"{"image_key":"img_v2_abc"}"#).as_deref(),
+            Some("img_v2_abc")
+        );
+        assert_eq!(extract_image_key("{}"), None);
+    }
+
+    #[test]
+    fn file_key_and_name_extracted() {
+        let (key, name) = extract_file_key(r#"{"file_key":"f_abc","file_name":"doc.pdf"}"#);
+        assert_eq!(key.as_deref(), Some("f_abc"));
+        assert_eq!(name.as_deref(), Some("doc.pdf"));
+
+        let (key, name) = extract_file_key("garbage");
+        assert_eq!(key, None);
+        assert_eq!(name, None);
+    }
+
+    // ─── is_bot_mentioned ──────────────────────────────────────────────────
+
+    #[test]
+    fn text_mention_matches_string_and_object_id_forms() {
+        // Old API: mention id can be a plain string or an object carrying
+        // open_id/user_id — both must be recognized.
+        let str_form = r#"{"text":"hi","mentions":[{"id":"ou_bot"}]}"#;
+        assert!(is_bot_mentioned(str_form, "text", "ou_bot"));
+
+        let obj_form = r#"{"text":"hi","mentions":[{"id":{"open_id":"ou_bot"}}]}"#;
+        assert!(is_bot_mentioned(obj_form, "text", "ou_bot"));
+
+        let other = r#"{"text":"hi","mentions":[{"id":"ou_other"}]}"#;
+        assert!(!is_bot_mentioned(other, "text", "ou_bot"));
+    }
+
+    #[test]
+    fn post_mention_matches_at_element() {
+        let content = r#"{"content":[[{"tag":"at","user_id":"ou_bot"}]]}"#;
+        assert!(is_bot_mentioned(content, "post", "ou_bot"));
+
+        let obj_uid = r#"{"content":[[{"tag":"at","user_id":{"open_id":"ou_bot"}}]]}"#;
+        assert!(is_bot_mentioned(obj_uid, "post", "ou_bot"));
+
+        let no_at = r#"{"content":[[{"tag":"text","text":"ou_bot"}]]}"#;
+        assert!(!is_bot_mentioned(no_at, "post", "ou_bot"));
+    }
+
+    #[test]
+    fn non_text_types_never_mention() {
+        assert!(!is_bot_mentioned(r#"{"image_key":"k"}"#, "image", "ou_bot"));
+    }
+}

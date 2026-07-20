@@ -189,3 +189,36 @@ async fn ensure_pump(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn incoming_cmd_uses_camel_case_and_defaults() {
+        // The desktop client sends camelCase JSON; omitted fields must fall
+        // back to defaults so older clients keep working.
+        let c: IncomingCmd =
+            serde_json::from_str(r#"{"id":"1","type":"prompt","sessionId":"s-1","message":"hi"}"#)
+                .unwrap();
+        assert_eq!(c.cmd_type, "prompt");
+        assert_eq!(c.session_id, "s-1");
+        assert_eq!(c.message, "hi");
+        assert!(c.model_id.is_empty() && c.entry_id.is_empty() && c.cwd.is_empty());
+    }
+
+    #[test]
+    fn incoming_cmd_empty_object_is_all_defaults() {
+        let c: IncomingCmd = serde_json::from_str("{}").unwrap();
+        assert!(c.id.is_empty() && c.cmd_type.is_empty() && c.session_id.is_empty());
+    }
+
+    #[test]
+    fn incoming_cmd_rejects_snake_case_for_renamed_fields() {
+        // `type` and camelCase renames are the protocol contract — snake_case
+        // spellings must NOT silently map onto them.
+        let c: IncomingCmd =
+            serde_json::from_str(r#"{"type":"prompt","session_id":"wrong"}"#).unwrap();
+        assert_eq!(c.session_id, "", "snake_case must not populate sessionId");
+    }
+}

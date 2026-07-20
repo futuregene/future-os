@@ -112,3 +112,154 @@ impl PolicyEngine {
         self.overrides.remove(chat_id);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(
+        dm_policy: &str,
+        dm_allowlist: &[&str],
+        group_policy: &str,
+        group_allowlist: &[&str],
+        require_mention: bool,
+    ) -> PolicyConfig {
+        PolicyConfig {
+            dm_policy: dm_policy.to_string(),
+            dm_allowlist: dm_allowlist.iter().map(|s| s.to_string()).collect(),
+            group_policy: group_policy.to_string(),
+            group_allowlist: group_allowlist.iter().map(|s| s.to_string()).collect(),
+            require_mention,
+        }
+    }
+
+    fn override_with(enabled: Option<bool>, require_mention: Option<bool>) -> ChatOverride {
+        ChatOverride {
+            enabled,
+            require_mention,
+        }
+    }
+
+    // ─── DM policy ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn dm_open_allows_anyone() {
+        let engine = PolicyEngine::new(config("open", &[], "open", &[], false));
+        assert_eq!(engine.check_dm("ou_anyone"), Access::Allowed);
+    }
+
+    #[test]
+    fn dm_disabled_denies_even_allowlisted() {
+        let engine = PolicyEngine::new(config("disabled", &["ou_alice"], "open", &[], false));
+        assert!(matches!(engine.check_dm("ou_alice"), Access::Denied(_)));
+    }
+
+    #[test]
+    fn dm_allowlist_allows_member_and_denies_stranger() {
+        let engine = PolicyEngine::new(config("allowlist", &["ou_alice"], "open", &[], false));
+        assert_eq!(engine.check_dm("ou_alice"), Access::Allowed);
+        match engine.check_dm("ou_mallory") {
+            Access::Denied(reason) => {
+                // The denial message tells the user their open_id so an admin
+                // can add it — keep that contract stable.
+                assert!(reason.contains("ou_mallory"));
+            }
+            Access::Allowed => panic!("stranger should be denied"),
+        }
+    }
+
+    #[test]
+    fn dm_allowlist_wildcard_allows_everyone() {
+        let engine = PolicyEngine::new(config("allowlist", &["*"], "open", &[], false));
+        assert_eq!(engine.check_dm("ou_anyone"), Access::Allowed);
+    }
+
+    #[test]
+    fn dm_unknown_policy_falls_back_to_allowlist() {
+        // Any unrecognized policy string is treated as "allowlist" (default-deny).
+        let engine = PolicyEngine::new(config("bogus", &["ou_alice"], "open", &[], false));
+        assert_eq!(engine.check_dm("ou_alice"), Access::Allowed);
+        assert!(matches!(engine.check_dm("ou_bob"), Access::Denied(_)));
+    }
+
+    // ─── Group policy ──────────────────────────────────────────────────────
+
+    #[test]
+    fn group_open_without_mention_requirement_allows() {
+        let engine = PolicyEngine::new(config("open", &[], "open", &[], false));
+        assert_eq!(engine.check_group("oc_chat", false), Access::Allowed);
+    }
+
+    #[test]
+    fn group_open_with_mention_requirement() {
+        let engine = PolicyEngine::new(config("open", &[], "open", &[], true));
+        assert!(matches!(
+            engine.check_group("oc_chat", false),
+            Access::Denied(_)
+        ));
+        assert_eq!(engine.check_group("oc_chat", true), Access::Allowed);
+    }
+
+    #[test]
+    fn group_disabled_denies_by_default() {
+        let engine = PolicyEngine::new(config("open", &[], "disabled", &[], false));
+        assert!(matches!(
+            engine.check_group("oc_chat", true),
+            Access::Denied(_)
+        ));
+    }
+
+    #[test]
+    fn group_disabled_but_override_enabled_allows() {
+        let mut engine = PolicyEngine::new(config("open", &[], "disabled", &[], true));
+        engine.set_override("oc_chat".into(), override_with(Some(true), None));
+        // require_mention still applies (falls back to global true)
+        assert!(matches!(
+            engine.check_group("oc_chat", false),
+            Access::Denied(_)
+        ));
+        assert_eq!(engine.check_group("oc_chat", true), Access::Allowed);
+    }
+
+    #[test]
+    fn override_disabled_wins_over_open_policy() {
+        let mut engine = PolicyEngine::new(config("open", &[], "open", &[], false));
+        engine.set_override("oc_chat".into(), override_with(Some(false), None));
+        assert!(matches!(
+            engine.check_group("oc_chat", true),
+            Access::Denied(_)
+        ));
+    }
+
+    #[test]
+    fn group_allowlist_member_and_wildcard() {
+        let engine = PolicyEngine::new(config("open", &[], "allowlist", &["oc_a"], false));
+        assert_eq!(engine.check_group("oc_a", false), Access::Allowed);
+        assert!(matches!(
+            engine.check_group("oc_b", false),
+            Access::Denied(_)
+        ));
+
+        let wild = PolicyEngine::new(config("open", &[], "allowlist", &["*"], false));
+        assert_eq!(wild.check_group("oc_b", false), Access::Allowed);
+    }
+
+    #[test]
+    fn override_require_mention_beats_global() {
+        let mut engine = PolicyEngine::new(config("open", &[], "open", &[], true));
+        engine.set_override("oc_chat".into(), override_with(None, Some(false)));
+        assert_eq!(engine.check_group("oc_chat", false), Access::Allowed);
+    }
+
+    #[test]
+    fn remove_override_restores_global_behavior() {
+        let mut engine = PolicyEngine::new(config("open", &[], "open", &[], false));
+        engine.set_override("oc_chat".into(), override_with(Some(false), None));
+        assert!(matches!(
+            engine.check_group("oc_chat", false),
+            Access::Denied(_)
+        ));
+        engine.remove_override("oc_chat");
+        assert_eq!(engine.check_group("oc_chat", false), Access::Allowed);
+    }
+}

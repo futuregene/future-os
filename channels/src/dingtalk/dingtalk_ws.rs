@@ -408,3 +408,101 @@ pub fn extract_text_content(content: &str, msg_type: &str) -> Option<String> {
         _ => Some(content.to_string()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A realistic CALLBACK frame as delivered by DingTalk Stream Mode:
+    /// `data` is a JSON *string* (not an object) holding the ChatbotMessage.
+    fn bot_message_frame() -> Value {
+        let data = serde_json::json!({
+            "senderId": "user-1",
+            "senderNick": "Alice",
+            "conversationId": "cid-1",
+            "conversationType": "1",
+            "msgtype": "text",
+            "text": {"content": "hello bot"},
+            "sessionWebhook": "https://oapi.dingtalk.com/robot/sendBySession?session=abc",
+            "chatbotUserId": "bot-1",
+            "createAt": 1700000000000i64
+        });
+        serde_json::json!({
+            "type": "CALLBACK",
+            "headers": {
+                "messageId": "mid-123",
+                "topic": "/v1.0/im/bot/messages/get"
+            },
+            "data": data.to_string()
+        })
+    }
+
+    #[test]
+    fn parses_callback_chatbot_message() {
+        let ev = parse_dingtalk_event(&bot_message_frame()).expect("must parse");
+        assert_eq!(ev.event_type, "CALLBACK");
+        assert_eq!(ev.message_id.as_deref(), Some("mid-123"));
+        assert_eq!(ev.sender_id.as_deref(), Some("user-1"));
+        assert_eq!(ev.sender_name.as_deref(), Some("Alice"));
+        assert_eq!(ev.chat_id.as_deref(), Some("cid-1"));
+        assert_eq!(ev.msg_type.as_deref(), Some("text"));
+        // text as {content: "..."} object form must be unwrapped.
+        assert_eq!(ev.content.as_deref(), Some("hello bot"));
+        assert_eq!(
+            ev.session_webhook.as_deref(),
+            Some("https://oapi.dingtalk.com/robot/sendBySession?session=abc")
+        );
+        assert_eq!(ev.chatbot_user_id.as_deref(), Some("bot-1"));
+        assert_eq!(ev.create_time_ms, Some(1700000000000));
+    }
+
+    #[test]
+    fn parses_snake_case_and_plain_text_variants() {
+        // Some payloads use snake_case keys and a plain-string text field.
+        let data = serde_json::json!({
+            "sender_id": "user-2",
+            "conversation_id": "cid-2",
+            "msg_type": "text",
+            "text": "plain string text"
+        });
+        let frame = serde_json::json!({
+            "type": "CALLBACK",
+            "headers": {"messageId": "mid-9"},
+            "data": data.to_string()
+        });
+        let ev = parse_dingtalk_event(&frame).expect("must parse");
+        assert_eq!(ev.sender_id.as_deref(), Some("user-2"));
+        assert_eq!(ev.content.as_deref(), Some("plain string text"));
+    }
+
+    #[test]
+    fn missing_headers_returns_none() {
+        assert!(parse_dingtalk_event(&serde_json::json!({"data": "{}"})).is_none());
+    }
+
+    #[test]
+    fn malformed_data_string_yields_event_with_empty_fields() {
+        // A non-JSON data string must not panic — fields degrade to None.
+        let frame = serde_json::json!({
+            "type": "EVENT",
+            "headers": {"messageId": "mid-x", "eventType": "topic"},
+            "data": "not json"
+        });
+        let ev = parse_dingtalk_event(&frame).expect("headers exist → Some");
+        assert_eq!(ev.event_type, "topic");
+        assert_eq!(ev.sender_id, None);
+    }
+
+    #[test]
+    fn extract_text_prefers_structured_content() {
+        assert_eq!(
+            extract_text_content(r#"{"content":"hi"}"#, "text").as_deref(),
+            Some("hi")
+        );
+        // Non-text types pass the raw payload through unchanged.
+        assert_eq!(
+            extract_text_content("raw payload", "picture").as_deref(),
+            Some("raw payload")
+        );
+    }
+}
