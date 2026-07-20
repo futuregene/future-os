@@ -801,7 +801,10 @@ impl Loop {
                         let cost = u.credit_cost.unwrap_or(0.0);
                         tracing::info!(
                             "[agent] turn={} (follow-up) tokens_in={} tokens_out={} cost={:.6}",
-                            turn, u.prompt_tokens, u.completion_tokens, cost,
+                            turn,
+                            u.prompt_tokens,
+                            u.completion_tokens,
+                            cost,
                         );
                     }
                     // Emit agent_start so the TUI creates a new assistant block
