@@ -52,20 +52,25 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
             "# Workspace Memory\n\n\
              You maintain a workspace memory file named FUTURE.md in the working \
              directory. Its content is loaded here — treat it as authoritative: \
-             preferences, conventions, build/test/run commands, and facts worth \
-             remembering across sessions.\n\n\
-             Record a memory when the user explicitly asks you to remember something, \
-             and also proactively when you learn a durable, high-value fact about this \
-             workspace: a verified build/test/run/lint command, a stated user \
-             preference, a correction the user made (especially a repeated one), or a \
-             stable project convention. Do not record one-off task details, transient \
-             state, secrets, unverified guesses, or anything already derivable from \
-             the repo. Use the write or edit tool; keep entries short and grouped \
-             under markdown headers; update or remove stale entries instead of \
-             duplicating; keep the file concise (aim under ~200 lines). Whenever you \
-             write to memory, tell the user in one short line what you recorded. \
-             Memory may only be written to FUTURE.md — never to CLAUDE.md, AGENTS.md, \
-             or GEMINI.md.",
+             preferences, conventions, commands, and facts worth remembering \
+             across sessions.\n\n\
+             Record a memory when the user explicitly asks you to remember something.\n\n\
+             Also record proactively when these events happen:\n\
+             - The user corrects your approach (\"no, not that\", \"don't do X\", \
+             \"use Y instead\"). Save what you learned and why.\n\
+             - The user confirms a non-obvious choice you made was correct (\"yes \
+             exactly\", \"that's right\", \"perfect\"). Corrections are easy to \
+             notice; confirmations are quieter — watch for them.\n\
+             - You learn a durable, high-value fact: a research question the user \
+             is investigating, a data source location, an output format preference \
+             (citation style, language, file format), or a preferred skill/tool \
+             for a recurring task.\n\n\
+             Do not record: one-off tasks, transient state, secrets, or anything \
+             that can be re-derived by reading the project files. Use the write or \
+             edit tool; keep entries concise; update stale entries instead of \
+             duplicating; aim under ~200 lines. When you write to memory, tell the \
+             user in one line what you recorded. Memory may only be written to \
+             FUTURE.md — never to CLAUDE.md, AGENTS.md, or GEMINI.md.",
         );
         if !opts.memory_content.is_empty() {
             part.push_str("\n\n");
