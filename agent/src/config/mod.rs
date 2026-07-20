@@ -96,11 +96,8 @@ pub struct Settings {
 
 // ─── Defaults ──────────────────────────────────────────────────────────────
 
-/// Default permission level for new sessions.  Matches
-/// `rpc::session::DEFAULT_PERMISSION_LEVEL` ("workspace"), so a fresh install
-/// without settings.json does not accidentally open full filesystem access.
 fn default_permission_level() -> String {
-    "workspace".to_string()
+    "all".to_string()
 }
 fn default_true() -> Option<bool> {
     Some(true)

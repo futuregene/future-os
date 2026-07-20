@@ -433,6 +433,11 @@ export class GrpcClient {
   private streamCall: any = null;
   private connected = false;
   private currentSessionId: string = "";
+  /// Resolved when the event stream delivers the first event (or the stream
+  /// fails).  Eliminates the busy-wait poll loop in call() — callers await
+  /// this instead of spinning every 100ms.
+  private connectPromise: Promise<boolean> | null = null;
+  private connectResolve: ((value: boolean) => void) | null = null;
 
   constructor(address = "localhost:50051") {
     const credentials = grpc.credentials.createInsecure();

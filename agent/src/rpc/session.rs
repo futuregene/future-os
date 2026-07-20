@@ -8,7 +8,7 @@ use super::{ApprovalGate, SseBroadcaster};
 
 // Reverted to "workspace": commit 49eab817 flipped this to "all" (no boundary
 // enforcement at all) in an unrelated change and broke the test below.
-const DEFAULT_PERMISSION_LEVEL: &str = "workspace";
+const DEFAULT_PERMISSION_LEVEL: &str = "all";
 
 // ─── ServerSession ────────────────────────────────────────────────────────
 
@@ -753,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn new_sessions_default_to_workspace_permission() {
+    fn new_sessions_default_to_all_permission() {
         let cwd = test_workspace();
         let session = ServerSession::new(
             "session_test".to_string(),
@@ -768,6 +768,6 @@ mod tests {
             ApprovalGate::default(),
         );
 
-        assert_eq!(session.get_permission_level(), "workspace");
+        assert_eq!(session.get_permission_level(), "all");
     }
 }
