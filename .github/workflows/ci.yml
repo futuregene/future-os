@@ -104,9 +104,9 @@ jobs:
         working-directory: cli
         run: bun run test
 
-  # ─── TUI: typecheck only (no test suite yet) ─────────────────────────────
+  # ─── TUI: typecheck + bun test ───────────────────────────────────────────
   tui:
-    name: TUI (typecheck)
+    name: TUI (typecheck + tests)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -119,6 +119,11 @@ jobs:
           cache: npm
           cache-dependency-path: tui/package-lock.json
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
       - name: Install dependencies
         working-directory: tui
         run: npm ci
@@ -126,6 +131,10 @@ jobs:
       - name: Typecheck
         working-directory: tui
         run: npx tsc --noEmit
+
+      - name: bun test
+        working-directory: tui
+        run: bun test
 
   # ─── GUI: eslint + stylelint + vitest ────────────────────────────────────
   gui:

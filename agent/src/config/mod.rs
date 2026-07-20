@@ -96,6 +96,9 @@ pub struct Settings {
 
 // ─── Defaults ──────────────────────────────────────────────────────────────
 
+/// Default permission level for new installs: "all" (unrestricted) is the
+/// deliberate product default — matches rpc::session::DEFAULT_PERMISSION_LEVEL.
+/// Stricter levels ("workspace") are opt-in by editing settings.json.
 fn default_permission_level() -> String {
     "all".to_string()
 }

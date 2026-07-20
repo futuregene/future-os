@@ -16,10 +16,12 @@ import { SafariSession } from "../../safari/safari-session.js";
 import { DEFAULT_TIMEOUTS } from "../../types.js";
 import { getFixture } from "../fixtures/pages.js";
 import { createTestIsolation } from "../isolation.js";
+import { RUN_BROWSER_TESTS } from "../browser-opt-in.js";
 
 // ── Availability ─────────────────────────────────────────────────────
 
 async function safariReady(): Promise<boolean> {
+  if (!RUN_BROWSER_TESTS) return false; // opt-in gate: keep raw `bun test` fast
   if (platform() !== "darwin") return false;
   if (!existsSync("/usr/bin/safaridriver")) return false;
 

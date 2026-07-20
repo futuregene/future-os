@@ -6,8 +6,10 @@ use std::{collections::HashMap, sync::Arc};
 
 use super::{ApprovalGate, SseBroadcaster};
 
-// Reverted to "workspace": commit 49eab817 flipped this to "all" (no boundary
-// enforcement at all) in an unrelated change and broke the test below.
+// Default permission level for fresh sessions: "all" (unrestricted) is the
+// deliberate product default — this is a local agent where the user expects
+// full filesystem access out of the box; stricter levels ("workspace") are
+// opt-in via settings. Matches config::default_permission_level().
 const DEFAULT_PERMISSION_LEVEL: &str = "all";
 
 // ─── ServerSession ────────────────────────────────────────────────────────

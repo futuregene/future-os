@@ -8,6 +8,7 @@ import { platform } from "node:os";
 import { launchTestBrowser, killTestBrowser, type BrowserTestContext } from "../test-browser.js";
 import { createTestIsolation } from "../isolation.js";
 import { getFixture } from "../fixtures/pages.js";
+import { RUN_BROWSER_TESTS, logBrowserSuiteSkipped } from "../browser-opt-in.js";
 
 let ctx: BrowserTestContext | null = null;
 let iso: Awaited<ReturnType<typeof createTestIsolation>> | null = null;
@@ -15,6 +16,7 @@ let browser: import("playwright-core").Browser | null = null;
 let page: import("playwright-core").Page | null = null;
 
 beforeAll(async () => {
+  if (!RUN_BROWSER_TESTS) { logBrowserSuiteSkipped("char"); return; }
   try {
     const { spawn } = await import("node:child_process");
     const chromePath = platform() === "darwin"

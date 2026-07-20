@@ -16,7 +16,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts",
     "test": "bun test src/commands src/browser/__tests__/unit src/browser/__tests__/infrastructure.test.ts",
-    "test:browser": "bun test src/browser/__tests__/validation src/browser/__tests__/characterization",
+    "test:browser": "FUTURE_BROWSER_TESTS=1 bun test src/browser/__tests__/validation src/browser/__tests__/characterization",
     "test:coverage": "bun test --coverage src/commands src/browser/__tests__/unit src/browser/__tests__/infrastructure.test.ts"
   },
   "devDependencies": {

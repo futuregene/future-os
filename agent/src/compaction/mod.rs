@@ -53,79 +53,79 @@ pub fn should_compact(
 
 /// EstimateTokens estimates tokens for a single message.
 ///
-/// Uses a Unicode-aware heuristic rather than the previous raw character count
-/// (which underestimated CJK text by ~2× and overestimated ASCII by ~4×).
-///
-/// Approximation:
-///   - CJK characters (U+4E00–U+9FFF, U+3040–U+30FF, U+AC00–U+D7AF):
-///     ~2 tokens per character.
-///   - ASCII / Latin: ~0.25 tokens per character (≈ 4 chars per token).
+/// Uses a Unicode-aware per-character heuristic rather than the previous raw
+/// character count (which underestimated CJK text by ~2× and overestimated
+/// ASCII by ~4×):
+///   - CJK characters (U+4E00–U+9FFF, U+3400–U+4DBF, U+3040–U+30FF,
+///     U+AC00–U+D7AF, U+F900–U+FAFF, U+20000–U+2A6DF): ~1.5 tokens/char.
+///     Modern BPE tokenizers average ~1 token per common CJK char; 1.5 keeps
+///     a conservative margin so compaction triggers early rather than late.
+///   - ASCII: ~0.25 tokens per character (≈ 4 chars per token).
 ///   - Everything else: ~0.5 tokens per character.
 ///
-/// These are conservative estimates — the real token count depends on the
-/// model's BPE tokenizer, but this heuristic avoids the worst-case 8×
-/// underestimation of the old char-count approach for Chinese text.
+/// The real token count depends on the model's BPE tokenizer, but classifying
+/// each character avoids the worst-case 8× underestimation of the old
+/// char-count approach for Chinese text.
 pub fn estimate_tokens(msg: &Message) -> i32 {
-    let chars = count_content_chars(&msg.content);
-    let estimated = estimate_cjk_aware_tokens(chars);
-    match msg.role.as_str() {
-        "assistant" => {
-            let mut c = estimated;
-            if let Some(ref tcs) = msg.tool_calls {
-                for tc in tcs {
-                    // Tool-call metadata is mostly ASCII; ~0.25 tokens/char.
-                    c += (tc.function.name.len() as f64 * 0.25).ceil() as i32;
-                    if let serde_json::Value::String(ref s) = tc.function.arguments {
-                        c += estimate_cjk_aware_tokens(s.len());
-                    }
+    let mut estimated: i32 = content_text_pieces(&msg.content)
+        .iter()
+        .map(|s| estimate_text_tokens(s))
+        .sum();
+    if msg.role.as_str() == "assistant" {
+        if let Some(ref tcs) = msg.tool_calls {
+            for tc in tcs {
+                estimated += estimate_text_tokens(&tc.function.name);
+                if let serde_json::Value::String(ref s) = tc.function.arguments {
+                    estimated += estimate_text_tokens(s);
                 }
             }
-            c
         }
-        _ => estimated,
     }
+    estimated
 }
 
-/// Count total characters in the message content, whether serialized as a
+/// Collect the text pieces of a message's content, whether serialized as a
 /// single string or as a content-parts array.
-fn count_content_chars(content: &Option<serde_json::Value>) -> usize {
+fn content_text_pieces(content: &Option<serde_json::Value>) -> Vec<&str> {
     match content {
         Some(serde_json::Value::Array(arr)) => arr
             .iter()
-            .map(|v| {
-                if let Some(obj) = v.as_object() {
-                    if let Some(text) = obj.get("text").and_then(|t| t.as_str()) {
-                        return text.len();
-                    }
-                }
-                0
-            })
-            .sum(),
-        Some(serde_json::Value::String(s)) => s.len(),
-        _ => 0,
+            .filter_map(|v| v.as_object()?.get("text")?.as_str())
+            .collect(),
+        Some(serde_json::Value::String(s)) => vec![s.as_str()],
+        _ => Vec::new(),
     }
 }
 
-/// Convert a raw character count into an approximate token count.
-///
-/// Heuristic breakdown (conservative, errors toward overestimate so compaction
-/// triggers early rather than late):
-///   - Small messages (≤ 256 chars): flat 0.35 tokens/char (covers Latin + mix).
-///   - Large messages: assumes 75% ASCII/Latin (0.25 tokens/char) and
-///     25% CJK-like (1.5 tokens/char), yielding ~0.56 tokens/char blended.
-///
-/// The old approach of `chars as i32` (1 token per character) underestimated
-/// Chinese text by ~8× and overestimated English by ~4×.
-fn estimate_cjk_aware_tokens(chars: usize) -> i32 {
-    if chars <= 256 {
-        return ((chars as f64) * 0.35).ceil() as i32;
+/// Whether `c` falls in a CJK Unicode range whose characters typically
+/// tokenize to ~1 token each (rather than ~4 chars/token for ASCII).
+fn is_cjk(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x4E00..=0x9FFF     // CJK Unified Ideographs
+        | 0x3400..=0x4DBF   // CJK Extension A
+        | 0x3040..=0x30FF   // Hiragana + Katakana
+        | 0xAC00..=0xD7AF   // Hangul Syllables
+        | 0xF900..=0xFAFF   // CJK Compatibility Ideographs
+        | 0x20000..=0x2A6DF // CJK Extension B
+    )
+}
+
+/// Estimate tokens for a text by classifying each character: CJK ~1.5
+/// tokens/char, ASCII ~0.25, everything else ~0.5. Errors toward
+/// overestimate so compaction triggers early rather than late.
+fn estimate_text_tokens(text: &str) -> i32 {
+    let mut tokens = 0.0f64;
+    for c in text.chars() {
+        tokens += if is_cjk(c) {
+            1.5
+        } else if c.is_ascii() {
+            0.25
+        } else {
+            0.5
+        };
     }
-    // Conservative blend for larger messages: most chat/text is ASCII-heavy,
-    // but a full-CJK message should still get a safe estimate.
-    let ascii_ratio = 0.75;
-    let ascii_chars = (chars as f64 * ascii_ratio) as usize;
-    let non_ascii = chars - ascii_chars;
-    (ascii_chars as f64 * 0.25 + non_ascii as f64 * 1.5).ceil() as i32
+    tokens.ceil() as i32
 }
 
 /// EstimateContextTokens estimates total tokens from messages.
@@ -318,4 +318,53 @@ fn compact_from(
     };
 
     (result, Some(comp_result))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text_msg(role: &str, text: &str) -> Message {
+        Message {
+            role: role.to_string(),
+            content: Some(serde_json::Value::String(text.to_string())),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn cjk_text_estimates_higher_than_ascii_of_same_length() {
+        // 100 CJK chars ≈ 150 tokens; 100 ASCII chars ≈ 25 tokens.
+        let cjk = estimate_tokens(&text_msg("user", &"汉".repeat(100)));
+        let ascii = estimate_tokens(&text_msg("user", &"a".repeat(100)));
+        assert_eq!(cjk, 150);
+        assert_eq!(ascii, 25);
+        assert!(cjk > ascii * 3, "CJK must weigh far more than ASCII");
+    }
+
+    #[test]
+    fn mixed_content_and_tool_args_are_classified_per_char() {
+        // Content-parts array form.
+        let msg = Message {
+            role: "user".to_string(),
+            content: Some(serde_json::json!([
+                {"type": "text", "text": "你好"},        // 2 CJK ≈ 3
+                {"type": "text", "text": "abcd"},        // 4 ASCII ≈ 1
+            ])),
+            ..Default::default()
+        };
+        assert_eq!(estimate_tokens(&msg), 4);
+
+        // Assistant tool-call arguments are estimated with the same
+        // per-char classifier (a CJK-heavy args payload is not undercounted).
+        let args = serde_json::Value::String("命令".to_string());
+        let tool = estimate_text_tokens(args.as_str().unwrap());
+        assert_eq!(tool, 3); // 2 CJK chars × 1.5
+    }
+
+    #[test]
+    fn non_cjk_non_ascii_falls_back_to_half_token() {
+        // Cyrillic: not CJK, not ASCII → 0.5 tokens/char.
+        assert_eq!(estimate_tokens(&text_msg("user", &"Привет".repeat(2))), 6);
+    }
 }

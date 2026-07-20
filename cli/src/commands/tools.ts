@@ -213,16 +213,18 @@ const ERROR_TRANSLATIONS: Record<string, ErrorTranslation> = {
 /** Look up a user-friendly error translation. */
 function translateError(toolName: string, rawMessage: string): ErrorTranslation | null {
   const lower = rawMessage.toLowerCase();
-  // Check tool-specific entries first
+  // Check tool-specific entries first. Patterns are lowercased before matching
+  // — keys may contain uppercase (e.g. "This operation was aborted") and must
+  // still match case-insensitively.
   for (const [key, entry] of Object.entries(ERROR_TRANSLATIONS)) {
     if (!key.startsWith(toolName + "|")) continue;
-    const pattern = key.slice(toolName.length + 1);
+    const pattern = key.slice(toolName.length + 1).toLowerCase();
     if (lower.includes(pattern)) return entry;
   }
   // Fall back to _default entries
   for (const [key, entry] of Object.entries(ERROR_TRANSLATIONS)) {
     if (!key.startsWith("_default|")) continue;
-    const pattern = key.slice("_default|".length);
+    const pattern = key.slice("_default|".length).toLowerCase();
     if (lower.includes(pattern)) return entry;
   }
   return null;

@@ -33,22 +33,13 @@ impl ServerSession {
             &crate::utils::image_data_url_for_model,
         );
 
-        // Dedup: if the last message is already the same user content (caller
-        // retried on error without changing the prompt), don't write a
-        // duplicate entry.
-        {
-            let msgs = self.messages.read();
-            if let Some(last) = msgs.last() {
-                if last.role == "user" && last.text() == user_message.text() {
-                    tracing::warn!(
-                        "[session] suppressing duplicate user message: {}",
-                        user_message.text()
-                    );
-                    return Ok(());
-                }
-            }
-        }
-
+        // NOTE: No content-based dedup here. Idempotency for transport-level
+        // retries is enforced atomically by the RPC layer (commands.rs rejects
+        // a second "prompt" while is_streaming, under the session write lock).
+        // A text-based dedup at this point only ever fires when NOT streaming —
+        // i.e. exactly the cases that must run: retrying after a failed run,
+        // or deliberately repeating a message ("continue", "yes", same text
+        // with different attachments).
         self.messages.write().push(user_message);
 
         // Persist immediately so the GUI can see the user message (and any

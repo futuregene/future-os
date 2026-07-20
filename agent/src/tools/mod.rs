@@ -425,32 +425,53 @@ async fn wait_for_interrupt(flag: Arc<AtomicBool>) {
 /// so they fail fast with a clear error instead of relying solely on the
 /// sandbox to block them.
 fn reject_dangerous_command(command: &str) -> Result<()> {
-    let lower = command.trim().to_lowercase();
+    let lower = command.to_lowercase();
 
-    // Recursive force-remove of home / root / system directories.
-    for prefix in &["rm -rf", "rm -r", "rmdir"] {
-        if let Some(rest) = lower.strip_prefix(prefix) {
-            let rest = rest.trim();
-            // Shell expansions that target home or root.
-            if rest.contains('~')
-                || rest.contains("$home")
-                || rest.contains("${home}")
-                || rest.starts_with('/')
-                || rest.contains(" /")
-            {
-                return Err(anyhow!(
-                    "Shell command rejected: destructive file removal targeting \
-                     a system or home directory ('{command}'). Use targeted \
-                     rm on specific project files instead."
-                ));
+    // Recursive removal (rm -r in any flag order, rmdir) targeting home or a
+    // protected system root. Checked per command in a chain, so neither
+    // "x && rm -rf ~" nor "sudo rm  -rf ~" can dodge the match, while quoted
+    // text like `echo "rm -rf ~"` does not false-positive.
+    for segment in shell_segments(&lower) {
+        let tokens: Vec<&str> = segment.iter().map(String::as_str).collect();
+        // Privilege wrappers don't change the target check.
+        let tokens = match tokens.first() {
+            Some(&"sudo") | Some(&"doas") => &tokens[1..],
+            _ => &tokens[..],
+        };
+        if tokens.is_empty() {
+            continue;
+        }
+        let cmd_name = tokens[0].rsplit('/').next().unwrap_or(tokens[0]);
+        let recursive_rm = cmd_name == "rm"
+            && tokens[1..]
+                .iter()
+                .take_while(|t| t.starts_with('-'))
+                .any(|f| {
+                    if let Some(long) = f.strip_prefix("--") {
+                        long == "recursive"
+                    } else {
+                        // Flag cluster like -r, -rf, -fr, -rfv (already lowercased).
+                        f[1..].contains('r')
+                    }
+                });
+        if recursive_rm || cmd_name == "rmdir" {
+            for target in tokens[1..].iter().skip_while(|t| t.starts_with('-')) {
+                if is_protected_rm_target(target) {
+                    return Err(anyhow!(
+                        "Shell command rejected: destructive file removal targeting \
+                         a system or home directory ('{command}'). Use targeted \
+                         rm on specific project files instead."
+                    ));
+                }
             }
         }
     }
 
     // Fork-bomb / resource exhaustion patterns.
-    if lower.contains(":(){ :|:& };:")
-        || lower.contains("fork bomb")
-        || (lower.contains("while true") && lower.contains("dd if="))
+    let normalized: String = lower.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.contains(":(){ :|:& };:")
+        || normalized.contains("fork bomb")
+        || (normalized.contains("while true") && normalized.contains("dd if="))
     {
         return Err(anyhow!(
             "Shell command rejected: pattern matches a known fork-bomb or \
@@ -459,6 +480,121 @@ fn reject_dangerous_command(command: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// System roots that must never be recursively removed. Deeper absolute paths
+/// (e.g. /tmp/build, /Users/alice/project/target) are allowed — the sandbox is
+/// the primary boundary; this layer only fails fast on catastrophic targets.
+const PROTECTED_RM_ROOTS: &[&str] = &[
+    "/",
+    "/bin",
+    "/sbin",
+    "/usr",
+    "/etc",
+    "/var",
+    "/boot",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/system",
+    "/library",
+    "/applications",
+    "/users",
+    "/home",
+    "/root",
+    "/private",
+    "/private/etc",
+    "/private/var",
+];
+
+/// True if a recursive-removal target points at the user's home or a
+/// protected system root. `.`/`..` are resolved lexically so "/tmp/.." can't
+/// dodge the root check.
+fn is_protected_rm_target(target: &str) -> bool {
+    let t = target.trim().trim_end_matches('/');
+    let t = if t.is_empty() { "/" } else { t };
+
+    // Home references in any shell spelling.
+    if t == "~"
+        || t.starts_with("~/")
+        || t == "$home"
+        || t.starts_with("$home/")
+        || t.starts_with("${home}")
+    {
+        return true;
+    }
+
+    // Lexically resolve . and .. segments.
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in t.split(['/', '\\']) {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    if parts.is_empty() {
+        // Resolves to a filesystem root or to all-dots relative path.
+        return t.starts_with('/') || t.contains("..");
+    }
+    if t.starts_with('/') {
+        let normalized = format!("/{}", parts.join("/"));
+        if PROTECTED_RM_ROOTS.contains(&normalized.as_str()) {
+            return true;
+        }
+        // Glob straight off the root: rm -rf /*
+        if parts == ["*"] {
+            return true;
+        }
+    }
+    false
+}
+
+/// Minimal shell tokenizer: splits a command line into pipeline/chain
+/// segments of tokens, honoring single/double quotes (quotes are stripped
+/// from tokens; separators inside quotes are ignored). Not a full shell
+/// parser — just enough that `echo "rm -rf ~"` doesn't false-positive while
+/// `x && rm -rf ~` is still caught.
+fn shell_segments(command: &str) -> Vec<Vec<String>> {
+    let mut segments = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    let mut tok = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            c if c.is_whitespace() && !in_single && !in_double => {
+                if !tok.is_empty() {
+                    current.push(std::mem::take(&mut tok));
+                }
+            }
+            '&' | ';' | '|' if !in_single && !in_double => {
+                if !tok.is_empty() {
+                    current.push(std::mem::take(&mut tok));
+                }
+                if !current.is_empty() {
+                    segments.push(std::mem::take(&mut current));
+                }
+                // Swallow the second char of && / ||.
+                if chars.peek() == Some(&c) {
+                    chars.next();
+                }
+            }
+            _ => tok.push(c),
+        }
+    }
+    if !tok.is_empty() {
+        current.push(tok);
+    }
+    if !current.is_empty() {
+        segments.push(current);
+    }
+    segments
 }
 
 async fn run_shell(
@@ -1070,6 +1206,73 @@ mod tests {
         assert!(result.is_ok(), "camelCase batch edit failed: {result:?}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "one beta three");
         std::fs::remove_file(path).ok();
+    }
+
+    // ─── reject_dangerous_command ──────────────────────────────────────────
+
+    #[test]
+    fn rejects_recursive_rm_of_home_and_roots() {
+        for cmd in [
+            "rm -rf ~",
+            "rm -rf ~/",
+            "rm -r $HOME",
+            "rm -rf ${HOME}/src",
+            "rm -rf /",
+            "rm -rf /etc",
+            "rm -rf /Users",
+            "rm -rf /*",
+            "rmdir ~",
+            "rm -rf /tmp/..", // dot-segment traversal to root
+            "rm -rf /private/var",
+        ] {
+            assert!(
+                reject_dangerous_command(cmd).is_err(),
+                "should reject: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_bypass_spellings_of_recursive_rm() {
+        for cmd in [
+            "rm -fr ~",            // reordered flag cluster
+            "rm -f -r ~",          // split flags
+            "rm --recursive ~",    // long flag
+            "rm  -rf  ~",          // extra whitespace
+            "sudo rm -rf /",       // privilege wrapper
+            "echo ok && rm -rf ~", // chained command
+            "true; rm -r $HOME/x", // semicolon chain
+            "RM -RF ~",            // case
+        ] {
+            assert!(
+                reject_dangerous_command(cmd).is_err(),
+                "should reject: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn allows_legitimate_rm_targets() {
+        for cmd in [
+            "rm -rf target",
+            "rm -rf ./node_modules",
+            "rm -rf /tmp/future-build-cache",
+            "rm -rf /Users/alice/project/target",
+            "rm -f /tmp/stale.lock",
+            "rm file.txt",
+            "rmdir /tmp/empty-dir",
+            "echo \"rm -rf ~\"", // quoted text is not a command
+            "echo 'rm -rf /'",
+        ] {
+            assert!(reject_dangerous_command(cmd).is_ok(), "should allow: {cmd}");
+        }
+    }
+
+    #[test]
+    fn rejects_fork_bomb_patterns() {
+        assert!(reject_dangerous_command(":(){ :|:& };:").is_err());
+        assert!(reject_dangerous_command("while true; do dd if=/dev/zero; done").is_err());
+        assert!(reject_dangerous_command("echo hello world").is_ok());
     }
 
     #[tokio::test]

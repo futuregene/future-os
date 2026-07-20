@@ -16,8 +16,10 @@ import { PlaywrightAdapterSession } from "./playwright-adapter.js";
 import { DEFAULT_TIMEOUTS } from "../../types.js";
 import { ChromiumSession } from "../../chromium/chromium-session.js";
 import { getContractTests } from "./contract-runner.js";
+import { RUN_BROWSER_TESTS } from "../browser-opt-in.js";
 
 function chromeExists(): boolean {
+  if (!RUN_BROWSER_TESTS) return false; // opt-in gate: keep raw `bun test` fast
   const chromePath = platform() === "darwin"
     ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     : "google-chrome";
