@@ -49,29 +49,29 @@ impl Engine {
         temperature: Option<f32>,
         max_tokens: Option<i32>,
     ) -> Result<Self> {
-        let mut llm_client = LLMClient::new(base_url, api_key, temperature, max_tokens);
+        let llm_client = LLMClient::new(base_url, api_key, temperature, max_tokens)
+            .with_compat(
+                &config.compat_thinking_format,
+                config.compat_supports_reasoning_effort,
+                config.compat_requires_reasoning_on_assistant,
+            );
 
-        // Apply model compat settings (always apply, even when format auto-detected)
-        llm_client = llm_client.with_compat(
-            &config.compat_thinking_format,
-            config.compat_supports_reasoning_effort,
-            config.compat_requires_reasoning_on_assistant,
-        );
-
-        // Apply max_tokens field name from compat (the SDK uses maxTokensField for this)
-        if !config.max_tokens_field.is_empty() {
-            llm_client = llm_client.with_max_tokens_field(&config.max_tokens_field);
-        }
-
-        // Apply thinking level (from settings or CLI)
-        if !config.thinking_level.is_empty() {
-            llm_client = llm_client.with_thinking_level(&config.thinking_level);
-        }
-
-        // Apply thinking level map from model config (e.g. deepseek: {high: "high"})
-        if !config.thinking_level_map.is_empty() {
-            llm_client = llm_client.with_thinking_level_map(config.thinking_level_map.clone());
-        }
+        // Apply optional overrides in a chain via a scoped block — each
+        // with_* consumes and returns Self (true builder pattern), so the
+        // intermediate reassignments in the old code were always redundant.
+        let llm_client = {
+            let mut c = llm_client;
+            if !config.max_tokens_field.is_empty() {
+                c = c.with_max_tokens_field(&config.max_tokens_field);
+            }
+            if !config.thinking_level.is_empty() {
+                c = c.with_thinking_level(&config.thinking_level);
+            }
+            if !config.thinking_level_map.is_empty() {
+                c = c.with_thinking_level_map(config.thinking_level_map.clone());
+            }
+            c
+        };
 
         let client: Arc<dyn LLMProvider> = Arc::new(llm_client);
         let cwd = config.cwd.clone();
