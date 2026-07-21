@@ -316,7 +316,12 @@ async function selectSession(sid) {
   // 高亮列表
   document.querySelectorAll(".srow").forEach((r) => r.classList.toggle("active", r.dataset.sid === sid));
   await loadHistory(sid);
-  await backfillActiveRun(sid);
+  // Only backfill the in-progress run — completed runs are already fully rendered
+  // by loadHistory (the agent persists the final assistant message). Replaying
+  // them would duplicate every text_chunk.
+  if (pInfo?.streaming) {
+    await backfillActiveRun(sid);
+  }
 }
 
 // P1c：若该会话正有一轮在进行，回放其缓冲事件（从 idx 0），补齐中途加入丢掉的前缀。
@@ -335,6 +340,7 @@ async function backfillActiveRun(sid) {
 // 从 Bridge 拉该会话的持久化消息（get_messages，LLM Message 形状）并按气泡渲染。
 // content 可能是字符串，也可能是 content blocks 数组（[{type:"text",text:…},…]）；
 // tool 角色消息和纯工具调用的 assistant 消息（无文本）在聊天视图里跳过。
+// 返回已加载消息中最大的 runId（供 backfillActiveRun 判断是否已包含当前轮）。
 function messageText(content) {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -347,16 +353,19 @@ async function loadHistory(sid) {
   try {
     const r = await request({ type: "get_messages", sessionId: sid }, sid);
     const msgs = r?.data?.messages || [];
-    if (!msgs.length) { line("（无历史消息）"); return; }
+    if (!msgs.length) { line("（无历史消息）"); return null; }
     let shown = 0;
+    let maxRunId = null;
     for (const m of msgs) {
       const text = messageText(m.content);
       if (!text.trim()) continue;
+      if (m.run_id) maxRunId = m.run_id;
       if (m.role === "user") { renderUser(text); shown++; }
       else if (m.role === "assistant") { renderAssistantStatic(text); shown++; }
     }
     if (!shown) line("（无可显示的历史消息）");
-  } catch (e) { line("加载历史失败: " + (e?.message || e), "err"); }
+    return maxRunId;
+  } catch (e) { line("加载历史失败: " + (e?.message || e), "err"); return null; }
 }
 
 function ensureSession() { return session; }
