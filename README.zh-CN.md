@@ -33,32 +33,121 @@ FutureOS 提供统一的 AI Agent 体验，覆盖 TUI、GUI、CLI、飞书和钉
 
 ### 环境要求
 
-完整 `make build`（agent + TUI + CLI + GUI）所需：
+每个平台的完整构建（agent + TUI + CLI + GUI）都需要：
 
 - **Rust** 1.96+（由 `rust-toolchain.toml` 固定）
 - **Node.js** 24+（见 `.nvmrc`）
 - **Bun** —— 必需项，非可选：TUI 构建和 CLI/GUI 打包均使用 `bun build`
-- **Linux 必需**（所有构建都需要）：
-  - `sudo apt install build-essential mold`
-- **Tauri 系统依赖**（构建 GUI 需要）：
-  - macOS：`xcode-select --install`
-  - Linux（Debian/Ubuntu）：`sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf`
-  - Windows：WebView2 Runtime（Win 10/11 自带）+ MSVC 构建工具
 - 可选：**Python 3** —— 仅 `make generate-models` 需要
 - 可选：**protoc**（Protocol Buffers 编译器）—— 仅 `make generate-proto` 需要；生成的代码已提交，正常构建无需安装
-- 平台：macOS / Linux / Windows
 
-### 构建与安装
+### 各平台环境搭建与构建
 
 ```bash
 git clone https://github.com/futuregene/future-os.git
 cd future-os
-make install   # 构建全部组件并安装到系统路径
 ```
 
-二进制安装路径：macOS `/opt/homebrew/bin`、Linux `/usr/local/bin`、Windows `%USERPROFILE%\.future\bin`。
+#### macOS
 
-> **只构建终端版？** 跳过 GUI 工具链：`make install-nogui`
+安装依赖：
+
+```bash
+xcode-select --install                                            # 系统工具链（Tauri 依赖）
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust
+brew install node oven-sh/bun/bun                                 # Node.js 24+ / Bun（也可用 nvm，见 .nvmrc）
+brew install protobuf                                             # 可选 —— 仅 make generate-proto 需要
+```
+
+构建：
+
+```bash
+make install        # 构建全部组件，安装到 /opt/homebrew/bin
+make install-nogui  # 仅终端组件（跳过 Tauri GUI）
+make package-gui    # 桌面安装包 → .app + .dmg，位于 gui/src-tauri/target/release/bundle/
+```
+
+#### Linux（Debian/Ubuntu）
+
+安装依赖：
+
+```bash
+sudo apt update
+sudo apt install -y build-essential mold libssl-dev \
+  libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust
+curl -fsSL https://bun.sh/install | bash                          # Bun
+# Node.js 24+ —— 用 nvm install 自动读取仓库的 .nvmrc
+sudo apt install -y protobuf-compiler                             # 可选 —— 仅 make generate-proto 需要
+```
+
+> x86_64 上必须安装 `mold` —— `.cargo/config.toml` 会给链接器传 `-fuse-ld=mold`。ARM Linux 不需要。
+
+构建：
+
+```bash
+make install        # 构建全部组件，安装到 /usr/local/bin（sudo）
+make install-nogui  # 仅终端组件（跳过 Tauri GUI）
+make package-gui    # 桌面安装包 → .deb，位于 gui/src-tauri/target/release/bundle/
+```
+
+#### Windows
+
+安装工具链：
+
+1. **Visual Studio Build Tools**，勾选「使用 C++ 的桌面开发」工作负载（MSVC + Windows SDK）—— Rust MSVC 工具链和 Tauri 都需要。执行 `winget install Microsoft.VisualStudio.2022.BuildTools` 后在安装器中勾选该工作负载，或从 [visualstudio.com](https://visualstudio.microsoft.com/downloads/) 安装。
+2. **Rust**：`winget install Rustlang.Rustup`（host triple 为 `x86_64-pc-windows-msvc`）
+3. **Node.js 24+**：`winget install OpenJS.NodeJS`，或从 [nodejs.org](https://nodejs.org) 下载
+4. **Bun**：`winget install Oven-sh.Bun`（或 `powershell -c "irm bun.sh/install.ps1 | iex"`）
+5. **WebView2 Runtime**：Windows 10/11 自带 —— 是 GUI 的*运行时*依赖，新系统无需安装
+
+Windows 上无需 `make` —— 以下 PowerShell 命令与各平台的 make 目标逐步对应，在仓库根目录执行。
+
+**终端组件** —— 对应 `make install-nogui`：
+
+```powershell
+# Rust 组件：agent + channel bridge               （对应 make build-agent / build-channels）
+cargo build --release --manifest-path agent/Cargo.toml
+cargo build --release --manifest-path channels/Cargo.toml
+
+# TypeScript 组件：TUI + CLI                      （对应 make build-tui / build-cli）
+Push-Location tui; npm install; npm run gen-version; npm run build; bun build --compile dist/index.js --outfile dist/future-tui.exe; Pop-Location
+Push-Location cli; npm install; npm run gen-version; npm run build; bun build --compile dist/index.js --outfile dist/future.exe --external chromium-bidi; Pop-Location
+
+# 安装到 %USERPROFILE%\.future\bin                （对应 install-* 中的复制步骤）
+$bin = "$env:USERPROFILE\.future\bin"
+New-Item -ItemType Directory -Force -Path $bin | Out-Null
+Copy-Item target\release\future-agent.exe, target\release\future-channel.exe, tui\dist\future-tui.exe, cli\dist\future.exe $bin
+
+# 内置技能 —— make install-skills 使用符号链接；Windows 上改用 CLI 安装
+& "$bin\future.exe" skills install
+```
+
+**桌面应用** —— `make install` 中的 GUI 部分（需先执行上面的终端组件步骤，sidecar 来自其产物）：
+
+```powershell
+# 将 agent + CLI 以 host triple 命名暂存为 Tauri sidecar
+$triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
+New-Item -ItemType Directory -Force -Path gui\src-tauri\binaries | Out-Null
+Copy-Item target\release\future-agent.exe "gui\src-tauri\binaries\future-agent-$triple.exe"
+Copy-Item cli\dist\future.exe "gui\src-tauri\binaries\future-$triple.exe"
+
+# 构建应用并安装为 future-gui.exe                 （对应 make install-gui）
+Push-Location gui; npm install; npx tauri build --no-bundle; Pop-Location
+Copy-Item gui\src-tauri\target\release\futureos.exe "$env:USERPROFILE\.future\bin\future-gui.exe"
+```
+
+**安装包** —— 对应 `make package-gui`（sidecar 暂存后执行）：
+
+```powershell
+node scripts\version.mjs --set-bundle
+Push-Location gui; npm run tauri:build; Pop-Location   # → NSIS 安装包 .exe，位于 gui\src-tauri\target\release\bundle\nsis\
+```
+
+补充说明：
+
+- `scripts\start-gui-test.bat` 可用本地构建的 agent 以开发模式启动 GUI。
+- `scripts/` 下的 PowerShell 脚本（`build-windows-portable.ps1`、`build-windows-installer.ps1`）把上述步骤封装为单条命令，复刻 CI 打包流水线（免安装 zip / NSIS 安装包），适用于需要与 CI 完全一致产物的特殊场景。脚本会前置检查工具链，且额外要求 `protoc`（`choco install protoc`）。其产物包含 GUI、agent 和 CLI，不含 TUI。
 
 ### 配置模型
 
@@ -233,7 +322,7 @@ make generate-proto          # agent + channels + TUI
 | Agent 回复鉴权 / "no model" 错误 | 还没配置模型。运行 `future auth login`,或在 `models.json` 里加一个 provider——见 [配置模型](#配置模型)。 |
 | GUI 找不到 Agent 二进制 | `make install-gui` 用你的宿主 target triple 复制 sidecar。如果 triple 与自动检测的不一致，手动复制：`cp target/debug/future-agent gui/src-tauri/binaries/future-agent-$(rustc -vV | sed -n 's/^host: //p')`。 |
 | 构建时报 "unable to find linker 'mold'" | 安装 mold：`sudo apt install mold`（仅限 Linux x86_64，ARM Linux 不需要）。 |
-| Linux 上 GUI 构建失败(webkit / gtk 报错) | 安装 Tauri 系统依赖——见 [环境要求](#环境要求)。 |
+| Linux 上 GUI 构建失败(webkit / gtk 报错) | 安装 Tauri 系统依赖——见 [Linux 环境搭建](#linux-debianubuntu)。 |
 
 ## License
 
