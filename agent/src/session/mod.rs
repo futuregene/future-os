@@ -473,15 +473,15 @@ impl Manager {
     /// entries after it), the session was saved mid-turn — typically a crash
     /// between persisting the assistant response and executing its tools.
     /// Append placeholder tool-result entries so the conversation stays API-valid.
-    fn repair_dangling_tool_calls(entries: &mut Vec<SessionEntry>) {
+    fn repair_dangling_tool_calls(entries: &mut Vec<SessionEntry>) -> bool {
         if entries.is_empty() {
-            return;
+            return false;
         }
         let last_idx = entries.len() - 1;
         if entries[last_idx].entry_type != ENTRY_TYPE_ASSISTANT
             || entries[last_idx].tool_calls.is_empty()
         {
-            return;
+            return false;
         }
         // Clone what we need before mutating the vec.
         let tool_calls: Vec<_> = entries[last_idx]
@@ -521,6 +521,7 @@ impl Manager {
                 meta: None,
             });
         }
+        true
     }
 
     pub(crate) fn load_path(&self, path: &Path, id: &str) -> Result<Session> {
@@ -561,8 +562,25 @@ impl Manager {
         // Heal dangling tool_calls: if the last assistant entry has tool_calls
         // and no matching tool-result entries follow (crash between assistant-save
         // and tool-execution), append placeholder results so the conversation remains
-        // API-valid on resume.
-        Self::repair_dangling_tool_calls(&mut entries);
+        // API-valid on resume.  Persist immediately so the repair doesn't re-fire
+        // on the next load.
+        if Self::repair_dangling_tool_calls(&mut entries) {
+            // Save the repaired entries back so the next load is clean.
+            let path_owned = path.to_path_buf();
+            if let Err(e) = (|| -> Result<()> {
+                let file = File::create(&path_owned).context("create session file for repair")?;
+                let mut w = std::io::BufWriter::new(file);
+                for entry in entries.iter() {
+                    let json = serde_json::to_string(entry).context("serialize entry")?;
+                    writeln!(w, "{}", json).context("write entry")?;
+                }
+                w.flush().context("flush")?;
+                w.into_inner().map_err(|_| anyhow::anyhow!("flush failed"))?.sync_all().context("fsync")?;
+                Ok(())
+            })() {
+                tracing::warn!("Failed to persist repaired session: {e}");
+            }
+        }
         let created_at = entries[0].timestamp;
         let updated_at = entries.last().map(|e| e.timestamp).unwrap_or(created_at);
         let cwd = entries
