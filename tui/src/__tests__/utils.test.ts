@@ -246,3 +246,64 @@ describe("applyBackgroundToLine", () => {
     expect(out).toContain("\x1b[0m\x1b[48;5;42m");
   });
 });
+
+// ─── wrapTextWithAnsi ASCII fast path ──────────────────────────────────────
+
+describe("wrapTextWithAnsi ASCII fast path", () => {
+  // Reference implementation of the original grapheme-based algorithm,
+  // specialized for plain ASCII (graphemes == chars, all width 1, no ANSI).
+  // The fast path in wrapTextWithAnsi must be byte-identical to this.
+  function refWrapAscii(text: string, width: number): string[] {
+    const RESET = "\x1b[0m";
+    const lines: string[] = [];
+    let cur = "";
+    for (const ch of text) {
+      if (ch === "\n") {
+        lines.push(cur + RESET);
+        cur = "";
+        continue;
+      }
+      if (cur.length + 1 > width) {
+        const spaceIdx = cur.lastIndexOf(" ");
+        if (spaceIdx > 0) {
+          lines.push(cur.slice(0, spaceIdx) + RESET);
+          cur = cur.slice(spaceIdx + 1) + ch;
+        } else {
+          lines.push(cur + RESET);
+          cur = ch;
+        }
+      } else {
+        cur += ch;
+      }
+    }
+    if (cur.length > 0) lines.push(cur + RESET);
+    return lines.length > 0 ? lines : [""];
+  }
+
+  test("fuzz: fast path matches grapheme algorithm byte-for-byte", () => {
+    let seed = 0x2f6e2b1;
+    const rand = () => {
+      // xorshift32 — deterministic, no Math.random flakiness
+      seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
+      return (seed >>> 0) / 0xffffffff;
+    };
+    const alphabet = "abcde fgh   \n\n"; // extra spaces/newlines bias edge cases
+    for (let iter = 0; iter < 3000; iter++) {
+      const len = Math.floor(rand() * 120);
+      let s = "";
+      for (let i = 0; i < len; i++) {
+        s += alphabet[Math.floor(rand() * alphabet.length)];
+      }
+      const width = 1 + Math.floor(rand() * 24);
+      expect(wrapTextWithAnsi(s, width)).toEqual(refWrapAscii(s, width));
+    }
+  });
+
+  test("long single word hard-breaks at width", () => {
+    const lines = wrapTextWithAnsi("x".repeat(1000), 80);
+    expect(lines).toHaveLength(13); // 12*80 + 40
+    for (const l of lines.slice(0, -1)) {
+      expect(visibleWidth(l)).toBe(80);
+    }
+  });
+});

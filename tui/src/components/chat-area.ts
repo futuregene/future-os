@@ -48,6 +48,13 @@ export class ChatArea implements Component {
   // frame, so markdown re-parsing happens at most once per frame.
   private pendingRerender = new Set<number>();
   private flushing = false;  // suppress onChange re-entrancy during flush
+  // Streaming prefix cache: while a message is pending, markdown that ends
+  // at a blank line outside any code fence is block-stable — later chunks
+  // cannot change how earlier closed blocks parse. Cache the rendered lines
+  // of that stable prefix and only re-render the (small) tail each frame,
+  // turning O(whole-message) markdown work per frame into O(delta).
+  // Keyed by `${msg.id}:t` (thinking) / `${msg.id}:c` (content).
+  private streamCaches = new Map<string, StreamRenderCache>();
 
   private md = new MarkdownRenderer();
   private mdThinking: MarkdownRenderer;
@@ -368,6 +375,7 @@ export class ChatArea implements Component {
 
   private rerender(): void {
     this.pendingRerender.clear();
+    this.streamCaches.clear();  // rendered lines are width-dependent
     // Defer until first render() has set the correct terminal width.
     if (this.lastRenderWidth === -1) {
       this.dirty = true;
@@ -498,7 +506,9 @@ export class ChatArea implements Component {
           dim: true,
         });
       } else {
-        const thinkingLines = this.mdThinking.render(msg.thinking!, this.width - 2);
+        const thinkingLines = msg.pending
+          ? this.renderStreamingMarkdown(msg.id + ":t", msg.thinking!, this.width - 2, this.mdThinking)
+          : this.mdThinking.render(msg.thinking!, this.width - 2);
         const thinkPrefix = `\x1b[3m\x1b[38;5;${this.theme.thinkingText}m`;
         for (const line of thinkingLines) {
           if (line === "") {
@@ -527,7 +537,14 @@ export class ChatArea implements Component {
 
     // Render markdown content with marked parser
     const contentWidth = this.width - 2;
-    const rendered = this.md.render(msg.content, contentWidth);
+    const rendered = msg.pending
+      ? this.renderStreamingMarkdown(msg.id + ":c", msg.content, contentWidth, this.md)
+      : this.md.render(msg.content, contentWidth);
+    if (!msg.pending) {
+      // Final full render — drop the streaming caches for this message.
+      this.streamCaches.delete(msg.id + ":t");
+      this.streamCaches.delete(msg.id + ":c");
+    }
     for (const line of rendered) {
       if (line === "") {
         this.renderedLines.push({ text: "", dim: true });
@@ -544,6 +561,48 @@ export class ChatArea implements Component {
         dim: true,
       });
     }
+  }
+
+  /**
+   * Incremental markdown render for a streaming (pending) message.
+   * Re-renders only the unstable tail; the closed-block prefix is cached.
+   */
+  private renderStreamingMarkdown(
+    key: string,
+    text: string,
+    width: number,
+    renderer: MarkdownRenderer,
+  ): string[] {
+    // Reference-style link/footnote definitions ("[id]: url") retroactively
+    // change how EARLIER text renders, which breaks prefix caching — render
+    // such messages in full. (Rare in practice; inline links don't match.)
+    if (STREAM_LINK_DEF_RE.test(text)) {
+      return renderer.render(text, width);
+    }
+    const cut = findStreamCut(text);
+    let prefixLines: string[] | undefined;
+    let tailStart = 0;
+    const cache = this.streamCaches.get(key);
+    // Cache is only valid while the previously rendered prefix is unchanged.
+    if (cache && !text.startsWith(cache.text)) {
+      this.streamCaches.delete(key);
+    } else if (cache && cache.cut <= cut) {
+      prefixLines = cache.lines;
+      tailStart = cache.cut;
+    }
+    if (cut > tailStart) {
+      // Extend the cache: render the newly stabilized segment on its own.
+      // The cut sits at a blank-line block boundary outside code fences, so
+      // rendering the segment standalone yields the same lines as rendering
+      // the whole prefix (modulo link-reference definitions that appear
+      // later in the stream — those resolve on the final full render).
+      const segLines = renderer.render(text.slice(tailStart, cut), width);
+      prefixLines = prefixLines ? [...prefixLines, ...segLines] : segLines;
+      this.streamCaches.set(key, { cut, text: text.slice(0, cut), lines: prefixLines });
+      tailStart = cut;
+    }
+    const tailLines = renderer.render(text.slice(tailStart), width);
+    return prefixLines ? [...prefixLines, ...tailLines] : tailLines;
   }
 
   // ─── Tool message (single-line header only, matches streaming style) ─
@@ -657,4 +716,46 @@ export class ChatArea implements Component {
 interface RenderedLine {
   text: string;
   dim: boolean;
+}
+
+interface StreamRenderCache {
+  cut: number;     // char offset up to which `lines` was rendered
+  text: string;    // the rendered prefix, for startsWith validation
+  lines: string[]; // md-rendered lines of the stable prefix
+}
+
+/**
+ * Largest safe cut point for incremental markdown rendering: the offset just
+ * past the last blank line that sits outside any fenced code block. Blocks
+ * before the cut are closed — later appended text cannot change how they
+ * parse (a blank line terminates paragraphs, lists, tables, quotes...), so
+ * their rendered lines can be cached for the remainder of the stream.
+ */
+const STREAM_FENCE_RE = /^ {0,3}(`{3,}|~{3,})/;
+const STREAM_LINK_DEF_RE = /^ {0,3}\[[^\]\n]+\]:\s*\S/m;
+
+function findStreamCut(text: string): number {
+  let cut = 0;
+  let inFence = false;
+  let fenceChar = "";
+  let lineStart = 0;
+  while (lineStart < text.length) {
+    let nl = text.indexOf("\n", lineStart);
+    if (nl === -1) nl = text.length;
+    const line = text.slice(lineStart, nl);
+    const fence = STREAM_FENCE_RE.exec(line);
+    if (fence) {
+      const ch = fence[1]!.charAt(0);
+      if (!inFence) {
+        inFence = true;
+        fenceChar = ch;
+      } else if (ch === fenceChar) {
+        inFence = false;
+      }
+    } else if (!inFence && line.trim() === "") {
+      cut = nl + 1; // position right after this blank line's newline
+    }
+    lineStart = nl + 1;
+  }
+  return cut;
 }

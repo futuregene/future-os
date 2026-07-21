@@ -505,8 +505,61 @@ export function stripAnsiCodes(s: string): string {
 
 // ─── Word Wrap with ANSI ───────────────────────────────────────────────────
 
+/**
+ * Fast path for pure-ASCII text without escape codes: every character is
+ * width 1, so wrapping reduces to index arithmetic. The grapheme path below
+ * re-slices the string and builds a segmenter iterator per grapheme, which
+ * dominates markdown re-render cost during streaming — assistant output is
+ * overwhelmingly ASCII, so this pays off disproportionately.
+ * Output is byte-identical to the grapheme path (including the trailing
+ * SGR reset each line gets from finalizeLine).
+ */
+function isPureAsciiWrappable(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    // Allow printable ASCII + newline; control chars may be zero-width in
+    // the grapheme path, so they take the slow path for identical output.
+    if (c !== 10 && (c < 32 || c > 126)) return false;
+  }
+  return true;
+}
+
+function wrapAsciiFast(text: string, width: number): string[] {
+  const RESET = "\x1b[0m";
+  const lines: string[] = [];
+  const rawLines = text.split("\n");
+  for (let li = 0; li < rawLines.length; li++) {
+    const isLast = li === rawLines.length - 1;
+    let rest = rawLines[li];
+    if (rest.length === 0) {
+      // Mirrors the grapheme path: a "\n" always flushes the (possibly
+      // empty) current line; a trailing "\n" leaves nothing to flush.
+      if (!isLast) lines.push(RESET);
+      continue;
+    }
+    while (rest.length > width) {
+      // Prefer breaking at the last space within the window (word boundary);
+      // fall back to a hard break exactly at width. `spaceIdx > 0` matches
+      // the grapheme path, which hard-breaks when the only space leads.
+      const spaceIdx = rest.lastIndexOf(" ", width - 1);
+      if (spaceIdx > 0) {
+        lines.push(rest.slice(0, spaceIdx) + RESET);
+        rest = rest.slice(spaceIdx + 1);
+      } else {
+        lines.push(rest.slice(0, width) + RESET);
+        rest = rest.slice(width);
+      }
+    }
+    if (rest.length > 0) lines.push(rest + RESET);
+  }
+  return lines.length > 0 ? lines : [""];
+}
+
 export function wrapTextWithAnsi(text: string, width: number): string[] {
   if (width <= 0) return [];
+  if (!text.includes("\x1b") && isPureAsciiWrappable(text)) {
+    return wrapAsciiFast(text, width);
+  }
   const lines: string[] = [];
   const tracker = new AnsiCodeTracker();
   let currentLine = "";
