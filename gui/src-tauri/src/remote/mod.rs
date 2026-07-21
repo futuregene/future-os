@@ -126,6 +126,20 @@ pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppEr
 
 pub fn stop() -> RemoteStatus {
     if let Some(state) = STATE.lock().unwrap().take() {
+        // Clear presence so web clients see "offline" immediately (not after TTL).
+        // `stop()` is reached from the synchronous `remote_stop` command, which
+        // Tauri dispatches on the main thread — outside any tokio runtime
+        // context — so `tokio::spawn` here panics ("no reactor running") and
+        // aborts the app. `tauri::async_runtime::spawn` uses Tauri's global
+        // runtime handle instead, which needs no current-thread context. The
+        // cloned `js` keeps the NATS connection alive until the delete lands.
+        let pair_id = state.pair_id.clone();
+        let js = state.js.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Ok(kv) = js.get_key_value("pairs").await {
+                let _ = kv.delete(&pair_id).await;
+            }
+        });
         state.cmd_task.abort();
         state.heartbeat_task.abort();
         state.web_task.abort();

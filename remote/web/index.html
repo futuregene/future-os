@@ -144,6 +144,7 @@ const toolChips = new Map();
 let sessions = []; // 最近一次 list_sessions 结果，用于标题查找 + 高亮
 let presence = null; // KV presence：桌面在线状态 + 每 session streaming
 let isStreaming = false; // 当前选中会话是否在流式中（从事件或 presence 推断）
+let presenceTimer = null; // 本地定时器：周期重算 presence 是否过期（watch 无事件时的兜底）
 
 function setStatus(t, cls) { const s = $("status"); s.textContent = t; s.className = cls || ""; }
 function log(el) { $("log").appendChild(el); el.scrollIntoView({ block: "end" }); }
@@ -170,6 +171,10 @@ async function doConnect() {
     (async () => { for await (const m of sub) onEvent(dec(m), m.subject); })();
     watchConnStatus();   // P1：断线/重连感知 → 重连后重放当前轮
     watchPresence();     // P1：KV presence → 桌面在线状态 + 每 session streaming
+    // 本地兜底：watch 是事件驱动的，桌面停止后 KV 不再写入就收不到事件，
+    // 指示器会卡在"在线"。每 10s 按 lastHeartbeatTs 重算一次过期。
+    if (presenceTimer) clearInterval(presenceTimer);
+    presenceTimer = setInterval(refreshPresenceIndicator, 10000);
     await listSessions(); // 自动加载会话列表
   } catch (e) { setStatus("连接失败: " + e.message, "err"); }
 }
@@ -200,11 +205,26 @@ async function watchPresence() {
 
 function onPresenceUpdate(data) {
   presence = data;
+  refreshPresenceIndicator();
+  // 更新当前会话 streaming 态
+  if (data?.sessions && session) {
+    const s = data.sessions.find(x => x.id === session);
+    if (s) updateStreamingState(s.streaming);
+  }
+  renderSessionList(); // 刷新列表上的 streaming 指示
+}
+
+// 重算并渲染桌面在线/离线指示器。watch 是事件驱动的——桌面停止后 KV 不再
+// 写入，watch 收不到任何事件，所以仅靠 onPresenceUpdate 无法让指示器随时间
+// 翻转为离线。本地定时器周期调用本函数，按 lastHeartbeatTs 检测过期。
+function refreshPresenceIndicator() {
+  const el = $("presenceStatus");
+  if (!el) return;
+  const data = presence;
   const online = data?.online ?? false;
   const ts = data?.lastHeartbeatTs;
-  // 超过 60s 未心跳视为离线
-  const stale = ts && (Date.now() / 1000 - ts) > 60;
-  const el = $("presenceStatus");
+  // 超过 60s 未心跳视为离线（心跳间隔 20s，容忍丢 2 次）
+  const stale = !ts || (Date.now() / 1000 - ts) > 60;
   if (!online || stale) {
     el.textContent = "桌面离线";
     el.className = "offline";
@@ -212,12 +232,6 @@ function onPresenceUpdate(data) {
     el.textContent = "桌面在线";
     el.className = "online";
   }
-  // 更新当前会话 streaming 态
-  if (data?.sessions && session) {
-    const s = data.sessions.find(x => x.id === session);
-    if (s) updateStreamingState(s.streaming);
-  }
-  renderSessionList(); // 刷新列表上的 streaming 指示
 }
 
 function updateStreamingState(streaming) {
