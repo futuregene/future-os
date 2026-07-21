@@ -469,6 +469,18 @@ impl Manager {
         self.load_path(&path, id)
     }
 
+    /// Strip assistant entries that have neither content nor tool_calls —
+    /// the LLM API rejects these with HTTP 400.  Returns true if any were removed.
+    fn strip_empty_assistants(entries: &mut Vec<SessionEntry>) -> bool {
+        let before = entries.len();
+        entries.retain(|e| {
+            e.entry_type != ENTRY_TYPE_ASSISTANT
+                || e.content.is_some()
+                || !e.tool_calls.is_empty()
+        });
+        entries.len() != before
+    }
+
     /// If the last assistant entry has dangling tool_calls (no matching tool
     /// entries after it), the session was saved mid-turn — typically a crash
     /// between persisting the assistant response and executing its tools.
@@ -559,12 +571,12 @@ impl Manager {
         if entries.is_empty() {
             return Err(anyhow!("session {} has no entries", id));
         }
-        // Heal dangling tool_calls: if the last assistant entry has tool_calls
-        // and no matching tool-result entries follow (crash between assistant-save
-        // and tool-execution), append placeholder results so the conversation remains
-        // API-valid on resume.  Persist immediately so the repair doesn't re-fire
-        // on the next load.
-        if Self::repair_dangling_tool_calls(&mut entries) {
+        // Heal dangling tool_calls + strip empty assistants: fix up common
+        // session corruptions so the conversation remains API-valid on resume.
+        // Persist immediately so the fix doesn't re-fire on the next load.
+        let stripped = Self::strip_empty_assistants(&mut entries);
+        let repaired = Self::repair_dangling_tool_calls(&mut entries);
+        if stripped || repaired {
             // Save the repaired entries back so the next load is clean.
             let path_owned = path.to_path_buf();
             if let Err(e) = (|| -> Result<()> {
