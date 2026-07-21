@@ -68,7 +68,12 @@ function MessageBlockImpl({
   const streaming = !isUser && message.status === "streaming";
   // Retry/Continue only make sense on the latest turn — once a newer round has
   // started, recovering an earlier failed turn would fork the conversation.
-  const canRecover = !isUser && message.status === "failed" && isLast === true;
+  // Also suppress for interrupted runs (the agent may still be processing the
+  // original after a GUI restart — retrying would race the in-flight run).
+  const canRecover = !isUser
+    && message.status === "failed"
+    && isLast === true
+    && !message.stopped;
   // A local narrowed to the non-empty segment array (or null) so the render can
   // map over it without a non-null assertion.
   const segments = !isUser && message.segments && message.segments.length > 0 ? message.segments : null;
