@@ -419,3 +419,103 @@ impl Drop for PromptSessionGuard {
         }
     }
 }
+
+// ── Crash-recovery run reanimation ───────────────────────────────────────
+
+/// Called after the agent sidecar is reachable: for every run that was
+/// cancelled by startup convergence, check the agent's actual session state.
+/// If the agent is still streaming, reanimate the run (back to "running") and
+/// spawn a background event collector so the frontend's reattach poll picks up
+/// the live preview. If the agent already finished, mark the run completed.
+pub async fn reconcile_interrupted_runs() {
+    let Ok(runs) = crate::store::list_interrupted_runs() else {
+        return;
+    };
+    if runs.is_empty() {
+        return;
+    }
+    for run in runs {
+        let session_id = run.session_id;
+        let run_id = run.run_id;
+        match check_and_reanimate_run(&session_id, &run_id).await {
+            Ok(()) => {}
+            Err(error) => {
+                eprintln!("FutureOS run reanimation failed for {run_id}: {error}");
+            }
+        }
+    }
+}
+
+async fn check_and_reanimate_run(session_id: &str, run_id: &str) -> Result<(), String> {
+    let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
+    let state = client
+        .execute_command(get_state_command(session_id.to_string()))
+        .await
+        .map_err(|e| format!("get_state: {e}"))?
+        .into_inner();
+    let is_streaming = serde_json::from_str::<serde_json::Value>(&state.data)
+        .ok()
+        .and_then(|v| v.get("isStreaming").and_then(|s| s.as_bool()))
+        .unwrap_or(false);
+
+    if is_streaming {
+        crate::store::reanimate_run(run_id).map_err(|e| format!("reanimate: {e}"))?;
+        let run_id = run_id.to_string();
+        let session_id = session_id.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = collect_reanimated_run(&session_id, &run_id).await {
+                eprintln!("FutureOS reanimated collector for {run_id} failed: {e}");
+            }
+        });
+    } else {
+        crate::store::settle_interrupted_run(run_id, "completed")
+            .map_err(|e| format!("settle: {e}"))?;
+    }
+    Ok(())
+}
+
+async fn collect_reanimated_run(session_id: &str, run_id: &str) -> Result<(), String> {
+    let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
+    let mut stream = client
+        .stream_events(StreamRequest {
+            event_types: vec![],
+            session_id: session_id.to_string(),
+        })
+        .await
+        .map_err(|e| format!("stream_events: {e}"))?
+        .into_inner();
+
+    let mut sequence = 0i64;
+
+    loop {
+        let event = tokio::time::timeout(
+            std::time::Duration::from_secs(600),
+            stream.message(),
+        )
+        .await
+        .map_err(|_| "Future Agent response timed out.".to_string())?
+        .map_err(|e| format!("stream failed: {e}"))?;
+
+        let Some(event) = event else {
+            break;
+        };
+
+        crate::store::append_run_event(crate::store::AppendRunEventInput {
+            run_id: run_id.to_string(),
+            event_type: event.r#type.clone(),
+            payload: Some(event.data.clone()),
+            sequence,
+        })
+        .map_err(|e| format!("append_event: {e}"))?;
+
+        sequence += 1;
+
+        if event.r#type == "agent_end" {
+            crate::store::settle_interrupted_run(run_id, "completed")
+                .map_err(|e| format!("settle: {e}"))?;
+            crate::store::clear_run_event_buffer(run_id);
+            break;
+        }
+    }
+    Ok(())
+}

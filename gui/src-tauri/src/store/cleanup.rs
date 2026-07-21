@@ -8,6 +8,70 @@ use super::records::ThreadCleanupSummary;
 use super::review_snapshots::delete_run_review_in;
 use super::runs::{cancel_children_of_runs, CancelScope};
 use super::status::TERMINAL_RUN_STATUSES_SQL;
+
+/// A run that was cancelled by startup convergence after a GUI crash.
+#[allow(dead_code)]
+pub struct InterruptedRun {
+    pub run_id: String,
+    pub thread_id: String,
+    pub session_id: String,
+}
+
+/// Returns runs that were interrupted by a previous process crash and
+/// need re-examination against the agent's actual state.
+pub fn list_interrupted_runs() -> Result<Vec<InterruptedRun>, crate::AppError> {
+    let conn = connect()?;
+    let mut stmt = conn.prepare(
+        "SELECT r.id, r.thread_id,
+                COALESCE(NULLIF(TRIM(t.agent_session_id), ''), t.id) AS session_id
+         FROM runs r
+         JOIN threads t ON t.id = r.thread_id
+         WHERE r.error_type = 'interrupted'
+           AND r.status = 'cancelled'"
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(InterruptedRun {
+            run_id: row.get(0)?,
+            thread_id: row.get(1)?,
+            session_id: row.get(2)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(crate::AppError::from)
+}
+
+/// Reset a run back to "running", clearing interrupted/error markers.
+pub fn reanimate_run(run_id: &str) -> Result<(), crate::AppError> {
+    let now = now_millis();
+    let conn = connect()?;
+    conn.execute(
+        "UPDATE runs
+         SET status = 'running',
+             error_message = NULL,
+             error_type = NULL,
+             ended_at = NULL,
+             updated_at = ?1
+         WHERE id = ?2",
+        params![now, run_id],
+    )?;
+    Ok(())
+}
+
+/// The agent confirmed this run completed normally — mark it as such.
+pub fn settle_interrupted_run(run_id: &str, status: &str) -> Result<(), crate::AppError> {
+    let now = now_millis();
+    let conn = connect()?;
+    conn.execute(
+        "UPDATE runs
+         SET status = ?1,
+             error_message = NULL,
+             error_type = NULL,
+             updated_at = ?2
+         WHERE id = ?3",
+        params![status, now, run_id],
+    )?;
+    Ok(())
+}
 use super::util::{count_workspace_files, loaded, now_millis};
 use super::{delete_thread, get_thread, get_workspace};
 

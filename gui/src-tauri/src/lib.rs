@@ -189,6 +189,18 @@ pub fn run() {
             // sidecar binary) this no-ops and the user runs the agent manually.
             let agent_handle = app.handle().clone();
             std::thread::spawn(move || agent_supervisor::ensure_agent_running(&agent_handle));
+            // After the agent has had time to start, reanimate any runs that
+            // were cancelled by convergence but whose agent sessions are still
+            // streaming (the agent survived a GUI crash). Spawned off the launch
+            // path so it never delays the window.
+            std::thread::spawn(|| {
+                let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+                rt.block_on(async {
+                    // Give the agent a few seconds to come up; then test.
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    agent_bridge::reconcile_interrupted_runs().await;
+                });
+            });
             // Shadow-review maintenance (consistency check + crash recovery) runs
             // off the launch path so it never delays the window.
             std::thread::spawn(shadow_review::run_startup_maintenance);
