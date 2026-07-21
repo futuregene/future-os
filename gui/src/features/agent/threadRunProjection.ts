@@ -41,6 +41,53 @@ async function projectRunForLivePreview(
 }
 
 /**
+ * Reconcile the live streaming bubble against the current message list before
+ * upserting. Returns the base array to upsert into, or null to add nothing.
+ *
+ * The agent's save_callback persists each completed LLM call mid-run, so a
+ * reload during streaming surfaces a persisted assistant entry for THIS
+ * in-flight turn (no runId — applyRunMetadata only stamps settled runs). Left
+ * in place, it renders alongside the live bubble as a duplicate of the same
+ * reply. Detect it — the entry sits after the last user message and its text
+ * overlaps the live projection — and drop it, so the turn renders once.
+ */
+export function streamingBubbleBase(
+  current: AgentMessage[],
+  runId: string,
+  bubbleId: string,
+  content: string,
+): AgentMessage[] | null {
+  // A persisted assistant message already carries this run — the run settled
+  // and the thread was reloaded; don't resurrect a synthetic bubble.
+  if (current.some(message => message.runId === runId && message.id !== bubbleId))
+    return null;
+
+  const lastAssistantIdx = current.map(message => message.role).lastIndexOf("assistant");
+  const lastAssistant = lastAssistantIdx >= 0 ? current[lastAssistantIdx] : undefined;
+  if (lastAssistant && !lastAssistant.runId && content) {
+    const persisted = lastAssistant.content.trim();
+    // The mid-run persisted entry belongs to the in-flight turn only when the
+    // last user message precedes it; otherwise it's an earlier turn's reply.
+    const lastUserIdx = current.map(message => message.role).lastIndexOf("user");
+    const sameTurn = lastUserIdx >= 0 && lastUserIdx < lastAssistantIdx;
+    // Overlap in either direction: the persisted snapshot is a prefix of (or
+    // contained within) the live projection, or the persisted message raced
+    // ahead of the event stream.
+    const overlaps = Boolean(persisted)
+      && (content.includes(persisted) || persisted.includes(content.slice(0, 80)));
+    if (sameTurn && overlaps) {
+      return current.filter(message => message.id !== lastAssistant.id);
+    }
+    if (persisted && persisted.includes(content.slice(0, 80))) {
+      // Persisted message from another turn already covers the live text
+      // (settled-run reload raced this tick) — keep it, add nothing.
+      return null;
+    }
+  }
+  return current;
+}
+
+/**
  * Render an in-flight run's live events as a streaming assistant bubble, keyed by
  * a stable `stream_<runId>` id. Unlike {@link updatePendingMessageFromRunEvents}
  * (which patches an existing optimistic bubble), this UPSERTS: it inserts the
@@ -60,23 +107,14 @@ export async function upsertStreamingPreview(
     if (!projection)
       return;
     const bubbleId = `stream_${runId}`;
+    const content = projection.content.trim();
 
     setMessages((current) => {
-      // A persisted assistant message already carries this run — the run
-      // settled and the thread was reloaded; don't resurrect a synthetic bubble.
-      if (current.some(message => message.runId === runId && message.id !== bubbleId))
+      const base = streamingBubbleBase(current, runId, bubbleId, content);
+      if (!base)
         return current;
 
-      const content = projection.content.trim();
-      // Also skip if the last assistant message already carries this
-      // streaming content (save_callback may have persisted a mid-stream
-      // assistant entry while the run is still active — the persisted
-      // message has no runId, so the guard above doesn't catch it).
-      const lastAssistant = [...current].reverse().find(m => m.role === "assistant");
-      if (lastAssistant && !lastAssistant.runId && content && lastAssistant.content.includes(content.slice(0, 80)))
-        return current;
-
-      const existingIndex = current.findIndex(message => message.id === bubbleId);
+      const existingIndex = base.findIndex(message => message.id === bubbleId);
 
       if (existingIndex === -1) {
         const bubble: AgentMessage = {
@@ -95,10 +133,10 @@ export async function upsertStreamingPreview(
           runStartedAt: runStartedAt ?? undefined,
           runId,
         };
-        return [...current, bubble];
+        return [...base, bubble];
       }
 
-      return current.map((message, index) =>
+      return base.map((message, index) =>
         index === existingIndex
           ? {
               ...message,

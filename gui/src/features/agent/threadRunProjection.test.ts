@@ -1,7 +1,7 @@
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
 import type { AgentMessage } from "./agentThreadTypes";
 import { describe, expect, it } from "vitest";
-import { applyRecoveredEvents, applyRunMetadata, deriveRenderFields, patchMessage, runDurationMs } from "./threadRunProjection";
+import { applyRecoveredEvents, applyRunMetadata, deriveRenderFields, patchMessage, runDurationMs, streamingBubbleBase } from "./threadRunProjection";
 
 function message(id: string, patch: Partial<AgentMessage> = {}): AgentMessage {
   return {
@@ -263,5 +263,68 @@ describe("deriveRenderFields", () => {
     const result = deriveRenderFields(events([]), "stored reply");
     expect(result.content).toBe("stored reply");
     expect(result.segments).toBeUndefined();
+  });
+});
+
+describe("streamingBubbleBase", () => {
+  const RUN = "r1";
+  const BUBBLE = `stream_${RUN}`;
+
+  it("returns null when a settled run's persisted message already carries the runId", () => {
+    const current = [user("u1"), assistant("a1", { runId: RUN, content: "done" })];
+    expect(streamingBubbleBase(current, RUN, BUBBLE, "done")).toBeNull();
+  });
+
+  it("ignores the bubble itself when checking the runId guard", () => {
+    const current = [user("u1"), assistant(BUBBLE, { runId: RUN, content: "live" })];
+    const base = streamingBubbleBase(current, RUN, BUBBLE, "live");
+    expect(base).toBe(current);
+  });
+
+  it("drops the mid-run persisted entry that duplicates the live projection (short snapshot)", () => {
+    // The reported bug: persisted "Hello wor" (< 80 chars) failed the old
+    // includes(content[:80]) guard, so the bubble was inserted alongside it.
+    const persisted = assistant("a-partial", { content: "Hello wor" });
+    const current = [user("u1"), assistant("a1", { content: "earlier reply" }), user("u2"), persisted];
+    const base = streamingBubbleBase(current, RUN, BUBBLE, "Hello world, how are you?");
+    expect(base?.some(m => m.id === "a-partial")).toBe(false);
+    expect(base?.some(m => m.id === "a1")).toBe(true);
+    expect(base?.some(m => m.id === "u2")).toBe(true);
+  });
+
+  it("drops the persisted entry of a multi-call turn (finalText is the last call's text)", () => {
+    // Two LLM calls persisted separately; entriesToMessages keeps only the last
+    // call's text as content, which is a substring (not prefix) of the live projection.
+    const persisted = assistant("a-partial", { content: "second call text" });
+    const current = [user("u1"), persisted];
+    const base = streamingBubbleBase(current, RUN, BUBBLE, "first call text second call text and more");
+    expect(base?.some(m => m.id === "a-partial")).toBe(false);
+  });
+
+  it("keeps an earlier turn's reply even when the new stream starts alike", () => {
+    const earlier = assistant("a1", { content: "OK" });
+    const current = [user("u1"), earlier, user("u2")];
+    const base = streamingBubbleBase(current, RUN, BUBBLE, "OK, let me help with that");
+    expect(base?.some(m => m.id === "a1")).toBe(true);
+  });
+
+  it("returns null when another turn's persisted reply already covers the live text", () => {
+    const earlier = assistant("a1", { content: "Hello world, how are you today?" });
+    const current = [user("u1"), earlier, user("u2")];
+    // u2's turn has no persisted entry; u1's reply happens to contain the head.
+    expect(streamingBubbleBase(current, RUN, BUBBLE, "Hello world, how")).toBeNull();
+  });
+
+  it("returns the list unchanged when the in-flight turn has no persisted entry", () => {
+    const current = [user("u1"), assistant("a1", { content: "previous reply" }), user("u2")];
+    const base = streamingBubbleBase(current, RUN, BUBBLE, "brand new stream");
+    expect(base).toBe(current);
+  });
+
+  it("returns the list unchanged when live content is empty (thinking-only so far)", () => {
+    const persisted = assistant("a-partial", { content: "partial text" });
+    const current = [user("u1"), persisted];
+    const base = streamingBubbleBase(current, RUN, BUBBLE, "");
+    expect(base).toBe(current);
   });
 });
