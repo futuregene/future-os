@@ -2,7 +2,7 @@ import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
 import { MoreHorizontal } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { getCachedAgentState } from "../../integrations/agent/agentStateCache";
+import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { ThreadItemMenu } from "./ActivityRailMenus";
@@ -44,7 +44,10 @@ export function ThreadListItem({
   });
 
   // Agent session_name is authoritative; DB title is fallback.
-  const displayTitle = getCachedAgentState(thread.id)?.sessionName || thread.title;
+  // Use the reactive hook so the title updates automatically when the agent
+  // state cache is populated by the background prefetch — no click required.
+  const agentState = useCachedAgentState(thread.id);
+  const displayTitle = agentState?.sessionName || thread.title;
 
   return (
     <div

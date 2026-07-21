@@ -1,5 +1,19 @@
 # FUTURE.md — Workspace Memory
 
+## 2026-07-21: GUI thread title fix for workspace-imported sessions
+
+**Problem**: Workspace sessions imported from agent sessions showed workspace name
+instead of the real title (first user message). Title toggled between workspace
+name and real title on click / reopen due to non-reactive cache read in
+ThreadListItem.
+
+**Fix** (3 changes):
+1. `ThreadListItem.tsx`: `getCachedAgentState` → `useCachedAgentState` (reactive)
+2. `import.rs` `session_title()`: prefer `first_message` over `session_name` when
+   `session_name` equals the cwd basename (workspace directory name)
+3. `import.rs` `import_one()`: fire-and-forget `set_session_name` on agent after
+   import to sync agent state with thread title
+
 ## Worktree 支持设计方案（2026-07 定稿方向）
 
 **完整设计文档已落盘：[WORKTREE_DESIGN.md](WORKTREE_DESIGN.md)**，以下内容以其为准。

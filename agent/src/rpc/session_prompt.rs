@@ -289,7 +289,7 @@ impl ServerSession {
                     loop {
                         let bt = broadcaster.clone();
                         let be = broadcaster.clone();
-                        let r#loop = agent_loop.write().await;
+                        let r#loop = agent_loop.read().await;
 
                         match r#loop
                             .run_streaming_with_messages(

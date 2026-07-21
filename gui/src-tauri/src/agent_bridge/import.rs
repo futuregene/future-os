@@ -7,7 +7,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
-use super::client::{connect_agent, get_session_entries_command, list_sessions_command};
+use super::client::{connect_agent, get_session_entries_command, list_sessions_command, set_session_name_command};
 use crate::store;
 
 // ─── agent RPC types ────────────────────────────────────────────────────────
@@ -114,14 +114,16 @@ async fn fetch_session_entries(session_id: &str) -> Vec<serde_json::Value> {
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-/// Derive a display title for a session. Prefer the agent-stored name, then the
-/// first user message (truncated), then the cwd basename.
+/// Derive a display title for a session. Prefer the first user message, then
+/// the agent-stored name (unless it's just the workspace directory name),
+/// then the cwd basename.
 fn session_title(summary: &AgentSessionSummary) -> String {
-    if let Some(ref name) = summary.name {
-        if !name.trim().is_empty() {
-            return name.trim().to_string();
-        }
-    }
+    let cwd_basename = std::path::Path::new(&summary.cwd)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+
+    // First user message is the most descriptive title.
     if let Some(ref first) = summary.first_message {
         let trimmed = first.trim();
         if !trimmed.is_empty() {
@@ -133,11 +135,20 @@ fn session_title(summary: &AgentSessionSummary) -> String {
             };
         }
     }
-    std::path::Path::new(&summary.cwd)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("Imported Chat")
-        .to_string()
+
+    // Use the agent-stored name only when it's a meaningful user-assigned
+    // name, not just the workspace directory name leaked into session_name.
+    if let Some(ref name) = summary.name {
+        let name = name.trim();
+        if !name.is_empty() && name != cwd_basename {
+            return name.to_string();
+        }
+    }
+
+    if !cwd_basename.is_empty() {
+        return cwd_basename.to_string();
+    }
+    "Imported Chat".to_string()
 }
 
 /// Create a completed run record for one assistant turn in an imported session.
@@ -269,12 +280,26 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
 
     let thread = store::create_thread(store::CreateThreadInput {
         mode,
-        title: Some(title),
+        title: Some(title.clone()),
         workspace_id,
         workspace_path: workspace_path.clone(),
         workspace_name,
         agent_session_id: Some(summary.id.clone()),
     })?;
+
+    // Sync the agent's session_name to the newly-derived title so the sidebar
+    // and agent state stay consistent — the agent may have a stale session_name
+    // (e.g. workspace directory name) that no longer matches the thread title.
+    {
+        let session_id = summary.id.clone();
+        let sync_title = title.clone();
+        tokio::spawn(async move {
+            if let Ok(mut client) = connect_agent().await {
+                let cmd = set_session_name_command(sync_title, session_id);
+                let _ = client.execute_command(cmd).await;
+            }
+        });
+    }
 
     // If the session had no cwd, write the assigned chat workspace path back to
     // the agent so its session_info cwd matches what a later resume compares
