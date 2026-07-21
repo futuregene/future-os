@@ -17,7 +17,7 @@ use crate::store;
 #[serde(rename_all = "camelCase")]
 struct AgentSessionSummary {
     id: String,
-    #[serde(default)]
+    #[serde(default, rename = "session_name")]
     name: Option<String>,
     // Tolerate a missing/null cwd (e.g. channel sessions) — an empty cwd is
     // routed to a chat workspace by `thread_mode`, not dropped.
@@ -25,7 +25,7 @@ struct AgentSessionSummary {
     cwd: String,
     #[serde(default)]
     model: String,
-    #[serde(default)]
+    #[serde(default, rename = "first_message")]
     first_message: Option<String>,
     #[serde(default)]
     #[allow(dead_code)]
@@ -271,11 +271,45 @@ async fn write_back_cwd(session_id: &str, cwd: &str) -> Result<(), String> {
 /// Import a single agent session. Creates workspace, thread, and per-turn run
 /// records. Idempotent via `find_thread_by_agent_session`.
 async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppError> {
-    if store::find_thread_by_agent_session(&summary.id)?.is_some() {
+    let best_title = session_title(summary);
+    let cwd_basename = std::path::Path::new(&summary.cwd)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+
+    // If a thread already exists, check whether its title needs healing:
+    // old imports that couldn't parse first_message/name fell back to the
+    // workspace directory name. Re-sync when the stored title is clearly
+    // stale and a better one is available.
+    if let Some(existing) = store::find_thread_by_agent_session(&summary.id)? {
+        let is_default = existing.title.is_empty()
+            || existing.title == cwd_basename
+            || existing.title == "New Chat"
+            || existing.title == "新对话";
+        if is_default
+            && !best_title.is_empty()
+            && best_title != existing.title
+            && best_title != cwd_basename
+        {
+            let input = crate::store::RenameThreadInput {
+                thread_id: existing.id.clone(),
+                title: best_title.clone(),
+            };
+            let _ = crate::store::rename_thread(input);
+            // Sync the corrected title back to the agent.
+            let session_id = summary.id.clone();
+            let sync_title = best_title.clone();
+            tokio::spawn(async move {
+                if let Ok(mut client) = connect_agent().await {
+                    let cmd = set_session_name_command(sync_title, session_id);
+                    let _ = client.execute_command(cmd).await;
+                }
+            });
+        }
         return Ok(0);
     }
 
-    let title = session_title(summary);
+    let title = best_title;
     let (mode, workspace_id, workspace_path, workspace_name) = thread_mode(summary, &title);
 
     let thread = store::create_thread(store::CreateThreadInput {
@@ -388,4 +422,95 @@ pub async fn import_missing_sessions() -> Result<(), crate::AppError> {
     }
 
     Ok(())
+}
+
+// ─── tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that rename_all = "camelCase" + individual rename attributes
+    /// correctly parse the agent's snake_case JSON keys.
+    #[test]
+    fn agent_session_summary_parses_list_sessions_json() {
+        let raw = serde_json::json!({
+            "id": "abc123",
+            "session_name": "fix the login bug",
+            "model": "deepseek-v4-pro",
+            "cwd": "/Users/test/my-project",
+            "updated_at": "2026-07-21 10:00:00",
+            "parent_session_id": "parent-1",
+            "first_message": "please fix the login bug on the homepage",
+            "query_count": 5
+        });
+
+        let summary: AgentSessionSummary =
+            serde_json::from_value(raw).expect("should parse list_sessions JSON");
+
+        assert_eq!(summary.id, "abc123");
+        assert_eq!(summary.name.as_deref(), Some("fix the login bug"));
+        assert_eq!(
+            summary.first_message.as_deref(),
+            Some("please fix the login bug on the homepage")
+        );
+        assert_eq!(summary.cwd, "/Users/test/my-project");
+        assert_eq!(summary.model, "deepseek-v4-pro");
+    }
+
+    /// session_title prefers first_message over name and cwd_basename.
+    #[test]
+    fn session_title_prefers_first_message() {
+        let summary = AgentSessionSummary {
+            id: "abc".into(),
+            name: Some("my-project".into()),
+            cwd: "/Users/test/my-project".into(),
+            model: "deepseek".into(),
+            first_message: Some("help me debug this".into()),
+            parent_session_id: String::new(),
+        };
+        assert_eq!(session_title(&summary), "help me debug this");
+    }
+
+    /// session_title uses name when it differs from cwd_basename.
+    #[test]
+    fn session_title_uses_name_when_not_cwd() {
+        let summary = AgentSessionSummary {
+            id: "abc".into(),
+            name: Some("custom name".into()),
+            cwd: "/Users/test/my-project".into(),
+            model: "deepseek".into(),
+            first_message: None,
+            parent_session_id: String::new(),
+        };
+        assert_eq!(session_title(&summary), "custom name");
+    }
+
+    /// session_title skips name when it equals cwd_basename and falls back to cwd.
+    #[test]
+    fn session_title_skips_name_equal_to_cwd() {
+        let summary = AgentSessionSummary {
+            id: "abc".into(),
+            name: Some("my-project".into()),
+            cwd: "/Users/test/my-project".into(),
+            model: "deepseek".into(),
+            first_message: None,
+            parent_session_id: String::new(),
+        };
+        assert_eq!(session_title(&summary), "my-project"); // falls back to cwd_basename
+    }
+
+    /// session_title falls back to "Imported Chat" when nothing else is available.
+    #[test]
+    fn session_title_fallback() {
+        let summary = AgentSessionSummary {
+            id: "abc".into(),
+            name: None,
+            cwd: String::new(),
+            model: "deepseek".into(),
+            first_message: None,
+            parent_session_id: String::new(),
+        };
+        assert_eq!(session_title(&summary), "Imported Chat");
+    }
 }
