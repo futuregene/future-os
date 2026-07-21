@@ -303,7 +303,8 @@ export function parseKey(data: string): string | undefined {
   if (data === "\x1b\x1d") return "ctrl+alt+]";
   if (data === "\x1b\x1f") return "ctrl+alt+-";
   if (data === "\t") return "tab";
-  if (data === "\r" || (!_kittyProtocolActive && data === "\n") || data === "\x1bOM") return "enter";
+  if (data === "\r" || data === "\x1bOM") return "enter";
+  if (!_kittyProtocolActive && data === "\n") return "ctrl+j";
   if (data === "\x00") return "ctrl+space";
   if (data === " ") return "space";
   if (data === "\x7f") return "backspace";
