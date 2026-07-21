@@ -15,11 +15,14 @@ impl ServerSession {
         attachments: &[crate::types::Attachment],
     ) -> Result<()> {
         std::fs::create_dir_all(&self.cwd)?;
-        if let Ok(mut r#loop) = self.agent_loop.try_write() {
+        let verbose = if let Ok(mut r#loop) = self.agent_loop.try_write() {
             let system_prompt = self.build_system_prompt(r#loop.tools.clone());
             r#loop.system_prompt = system_prompt.clone();
             r#loop.config.system_prompt = system_prompt;
-        }
+            r#loop.verbose
+        } else {
+            false
+        };
 
         // Whether the active model accepts image input (catalog modalities).
         let model_supports_images = crate::models::model_accepts_images(&self.model);
@@ -42,6 +45,12 @@ impl ServerSession {
         // with different attachments).
         let user_text = user_message.text();
         self.messages.write().push(user_message);
+
+        // Log the user message so the run log shows the question alongside
+        // the answer (thinking/output blocks already land via eprint_log!).
+        if verbose {
+            tracing::info!("[user] {user_text}");
+        }
 
         // Broadcast the user message to all connected clients so a second TUI
         // observing the same session sees the question alongside the answer.

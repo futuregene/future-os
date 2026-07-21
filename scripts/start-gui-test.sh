@@ -15,7 +15,11 @@ AGENT_ADDR="${FUTURE_AGENT_GRPC_ADDR:-127.0.0.1:50051}"
 AGENT_HOST="${AGENT_ADDR%%:*}"
 AGENT_PORT="${AGENT_ADDR##*:}"
 GUI_DEV_PORT="${GUI_DEV_PORT:-5173}"
-AGENT_LOG="$LOG_DIR/future-agent-test.log"
+# The agent writes to its default log location (~/.future/agent/logs/agent.log,
+# created by the agent itself) via bare `--log-file`; the repo .logs dir only
+# holds script state (pid file) and the agent's stdout/stderr capture.
+AGENT_LOG="$HOME/.future/agent/logs/agent.log"
+AGENT_CONSOLE_LOG="$LOG_DIR/future-agent-test.log.console"
 AGENT_PID_FILE="$LOG_DIR/future-agent-test.pid"
 STARTED_AGENT_PID=""
 
@@ -49,6 +53,8 @@ wait_for_agent() {
   echo "future-agent did not become ready at $AGENT_ADDR"
   echo "Agent log: $AGENT_LOG"
   tail -n 80 "$AGENT_LOG" 2>/dev/null || true
+  echo "Agent console log (stdout/stderr, panics): $AGENT_CONSOLE_LOG"
+  tail -n 80 "$AGENT_CONSOLE_LOG" 2>/dev/null || true
   return 1
 }
 
@@ -207,15 +213,20 @@ else
   # exec the built binary directly instead of `cargo run`, so $! is the agent's
   # own pid rather than the cargo wrapper's. Otherwise killing the recorded pid
   # leaves the orphaned future-agent child holding the gRPC port.
+  # The agent writes structured logs to its default location ($AGENT_LOG) via
+  # bare --log-file; stdout/stderr (panics, pre-tracing output) go to
+  # $AGENT_CONSOLE_LOG so the same lines are not duplicated into $AGENT_LOG by
+  # shell redirection.
   (
     cd "$AGENT_DIR"
-    exec "$AGENT_BIN"
-  ) >"$AGENT_LOG" 2>&1 &
+    exec "$AGENT_BIN" --log-file
+  ) >"$AGENT_CONSOLE_LOG" 2>&1 &
   STARTED_AGENT_PID="$!"
   echo "$STARTED_AGENT_PID" >"$AGENT_PID_FILE"
   wait_for_agent
   echo "future-agent started pid=$STARTED_AGENT_PID"
   echo "Agent log: $AGENT_LOG"
+  echo "Agent console log: $AGENT_CONSOLE_LOG"
 fi
 
 # Tauri validates bundle.externalBin sidecars (future-agent, future) at

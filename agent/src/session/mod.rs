@@ -521,7 +521,7 @@ impl Manager {
                 meta: None,
             });
         }
-        eprintln!(
+        crate::eprintln_log!(
             "[session] Repaired {} dangling tool_calls at end of session",
             tool_calls.len()
         );

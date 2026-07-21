@@ -20,24 +20,90 @@ struct Cli {
     /// Enable verbose logging (show gRPC requests, LLM calls, tool execution)
     #[arg(long, default_value_t = false)]
     verbose: bool,
+
+    /// Append logs (without ANSI colors) to a file. Accepts an optional path;
+    /// when omitted, defaults to ~/.future/agent/logs/agent.log. Parent
+    /// directories are created if missing. Can also be enabled via
+    /// FUTURE_AGENT_LOG_FILE (a path, or empty for the default location).
+    #[arg(
+        long,
+        env = "FUTURE_AGENT_LOG_FILE",
+        value_name = "PATH",
+        num_args = 0..=1,
+        default_missing_value = ""
+    )]
+    log_file: Option<String>,
+
+    /// When file logging is enabled, keep only the newest N lines (trimmed at
+    /// startup and as the file grows). 0 disables trimming.
+    #[arg(
+        long,
+        env = "FUTURE_AGENT_LOG_MAX_LINES",
+        value_name = "N",
+        default_value_t = future_agent::logfile::DEFAULT_MAX_LINES
+    )]
+    log_max_lines: usize,
 }
 
 fn main() -> Result<()> {
-    // Initialise tracing with timestamps before anything else.
-    tracing_subscriber::fmt()
-        .with_target(false)
-        .with_timer(tracing_subscriber::fmt::time::SystemTime)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    let cli = Cli::parse();
 
     // Load the user's login-shell PATH/env BEFORE spawning any threads or the
     // tokio runtime — set_var is only sound while single-threaded. Fixes
     // "command not found" for user-installed tools (nvm/Homebrew/npm-global)
     // when the agent is launched from a GUI with a minimal inherited PATH.
     future_agent::sandbox::hydrate_from_login_shell();
+
+    // Initialise tracing with timestamps. The console layer keeps ANSI colors;
+    // the optional file layer writes through LogMirror, which shares one
+    // mutexed File with the raw streaming prints (eprint_log!) — so the log
+    // file ends up identical to the console output, minus ANSI colors.
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    let console_layer = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_timer(tracing_subscriber::fmt::time::SystemTime);
+
+    // Resolve the log file target: an explicit path if given, otherwise the
+    // default ~/.future/agent/logs/agent.log when the flag/env is present
+    // without a value.
+    let log_file = cli.log_file.as_deref().map(|p| {
+        if p.is_empty() {
+            future_agent::utils::default_config_dir().join("logs/agent.log")
+        } else {
+            std::path::PathBuf::from(p)
+        }
+    });
+
+    let file_layer = match &log_file {
+        Some(path) => {
+            let mirror = future_agent::logfile::init(path, cli.log_max_lines)?;
+            Some(
+                tracing_subscriber::fmt::layer()
+                    .with_target(false)
+                    .with_timer(tracing_subscriber::fmt::time::SystemTime)
+                    .with_ansi(false)
+                    .with_writer(mirror),
+            )
+        }
+        None => None,
+    };
+
+    use tracing_subscriber::prelude::*;
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(console_layer)
+        .with(file_layer)
+        .init();
+
+    if let Some(path) = &log_file {
+        tracing::info!(
+            "file logging enabled: {} (keeping last {} lines)",
+            path.display(),
+            cli.log_max_lines
+        );
+    }
 
     // Build model registry BEFORE tokio runtime starts.
     // Registry::new() uses reqwest::blocking::Client internally,
@@ -51,12 +117,13 @@ fn main() -> Result<()> {
         .enable_all()
         .thread_stack_size(4 * 1024 * 1024)
         .build()?
-        .block_on(async_main(model_registry))
+        .block_on(async_main(model_registry, cli))
 }
 
-async fn async_main(model_registry: Arc<parking_lot::RwLock<ModelRegistry>>) -> Result<()> {
-    let cli = Cli::parse();
-
+async fn async_main(
+    model_registry: Arc<parking_lot::RwLock<ModelRegistry>>,
+    cli: Cli,
+) -> Result<()> {
     let cwd = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
         .to_string_lossy()
@@ -361,8 +428,16 @@ async fn async_main(model_registry: Arc<parking_lot::RwLock<ModelRegistry>>) -> 
     tokio::select! {
         result = server => result?,
         _ = tokio::signal::ctrl_c() => {
-            tracing::info!("SIGINT received — graceful shutdown (max 30s)");
+            tracing::info!("SIGINT received — aborting active streams, shutting down (max 30s)");
             shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
+
+            // Actively interrupt in-flight runs. Without this, a long LLM
+            // stream keeps running and the wait loop below only exits via the
+            // 30 s timeout — making Ctrl-C look like a hang.
+            default_session.read().abort();
+            for s in sessions.read().values() {
+                s.read().abort();
+            }
 
             // Wait for active streams to settle
             let deadline = tokio::time::Instant::now() + shutdown_timeout;

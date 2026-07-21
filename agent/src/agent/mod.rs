@@ -12,9 +12,10 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
-// ANSI terminal colors (matching Go)
+// ANSI terminal colors (matching Go). Only for raw stderr prints via
+// eprint_log! — never inside tracing messages (tracing escapes ESC bytes in
+// format args to literal text; the log file must stay plain).
 const C_RESET: &str = "\x1b[0m";
-const C_RED: &str = "\x1b[31m";
 const C_GREEN: &str = "\x1b[32m";
 const C_MAGENTA: &str = "\x1b[35m";
 
@@ -211,18 +212,14 @@ impl Loop {
                 } else {
                     "[tool]"
                 };
-                let color = if err_str.is_some() { C_RED } else { C_GREEN };
+                // No manual ANSI colors here: tracing escapes ESC bytes in
+                // message args to literal "\x1b" text, and the file layer must
+                // stay plain. The level label (INFO/ERROR) already colors the
+                // console output.
                 if let Some(ref err) = err_str {
-                    tracing::error!(
-                        "{} {}✗ {:-12} {:6}ms  {}",
-                        tag,
-                        color,
-                        tool_name,
-                        duration,
-                        err
-                    );
+                    tracing::error!("{} ✗ {:-12} {:6}ms  {}", tag, tool_name, duration, err);
                 } else {
-                    tracing::info!("{} {}✓ {:-12} {:6}ms", tag, color, tool_name, duration);
+                    tracing::info!("{} ✓ {:-12} {:6}ms", tag, tool_name, duration);
                 }
             }
 

@@ -8,6 +8,7 @@ pub mod engine;
 pub mod events;
 pub mod grpc;
 pub mod llm;
+pub mod logfile;
 pub mod models;
 pub mod prompt;
 pub mod rpc;

@@ -173,8 +173,10 @@ fmt:
 
 # ─── Run ────────────────────────────────────────────────────────────────────
 
+# Bare --log-file (no value) enables file logging at the default location,
+# ~/.future/agent/logs/agent.log; console output stays on the terminal.
 run-agent:
-	cd agent && cargo run -- --verbose
+	cd agent && cargo run -- --verbose --log-file
 
 run-tui:
 	$(call npm-install-if-needed,tui)

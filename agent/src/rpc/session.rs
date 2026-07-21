@@ -271,6 +271,11 @@ impl ServerSession {
     }
 
     pub fn steer(&mut self, msg: &str) -> Result<()> {
+        if let Ok(r#loop) = self.agent_loop.try_read() {
+            if r#loop.verbose {
+                tracing::info!("[user·steer] {msg}");
+            }
+        }
         let _ = self.steering_tx.try_send(msg.to_string());
         if let Some(ref tx) = self.interrupt_tx {
             let _ = tx.try_send(());
@@ -279,6 +284,11 @@ impl ServerSession {
     }
 
     pub fn follow_up(&mut self, msg: &str) -> Result<()> {
+        if let Ok(r#loop) = self.agent_loop.try_read() {
+            if r#loop.verbose {
+                tracing::info!("[user·follow-up] {msg}");
+            }
+        }
         if !self.is_streaming.load(std::sync::atomic::Ordering::Relaxed) {
             return self.prompt(msg, &[], &[]);
         }

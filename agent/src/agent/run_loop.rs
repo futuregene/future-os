@@ -357,7 +357,7 @@ impl Loop {
                 // event type — text_end may never arrive from the LLM.
                 let is_text = matches!(event.event_type.as_str(), "text" | "text_delta");
                 if self.verbose && was_outputting && !is_text {
-                    eprintln!();
+                    crate::eprintln_log!();
                     was_outputting = false;
                 }
                 if is_text && self.verbose {
@@ -367,7 +367,7 @@ impl Loop {
                 match event.event_type.as_str() {
                     "thinking_start" => {
                         if self.verbose {
-                            eprint!("\n{}[thinking]{} ", C_MAGENTA, C_RESET);
+                            crate::eprint_log!("\n{}[thinking]{} ", C_MAGENTA, C_RESET);
                         }
                         if let Some(ref bus) = self.event_bus {
                             bus.emit(thinking_start());
@@ -376,7 +376,7 @@ impl Loop {
                     "thinking_delta" => {
                         reasoning_text.push_str(&event.text);
                         if self.verbose {
-                            eprint!("{}", event.text);
+                            crate::eprint_log!("{}", event.text);
                         }
                         if let Some(ref bus) = self.event_bus {
                             bus.emit(thinking_delta(&event.text));
@@ -384,7 +384,7 @@ impl Loop {
                     }
                     "thinking_end" => {
                         if self.verbose {
-                            eprintln!(); // blank line after thinking
+                            crate::eprintln_log!(); // blank line after thinking
                         }
                         if let Some(ref bus) = self.event_bus {
                             bus.emit(thinking_end());
@@ -394,10 +394,10 @@ impl Loop {
                         assistant_text.push_str(&event.text);
                         if self.verbose && !output_started {
                             output_started = true;
-                            eprint!("\n{}[output]{} ", C_GREEN, C_RESET);
+                            crate::eprint_log!("\n{}[output]{} ", C_GREEN, C_RESET);
                         }
                         if self.verbose {
-                            eprint!("{}", event.text);
+                            crate::eprint_log!("{}", event.text);
                         }
                         on_text(event.text.clone());
                         if let Some(ref bus) = self.event_bus {
@@ -411,7 +411,7 @@ impl Loop {
                     }
                     "text_end" => {
                         if self.verbose {
-                            eprintln!(); // blank line after output
+                            crate::eprintln_log!(); // blank line after output
                         }
                         if let Some(ref bus) = self.event_bus {
                             bus.emit(text_end());
@@ -716,7 +716,7 @@ impl Loop {
 
             // Close any open output block (text_end may not have been emitted).
             if self.verbose && output_started {
-                eprintln!();
+                crate::eprintln_log!();
             }
 
             // Emit message_end
