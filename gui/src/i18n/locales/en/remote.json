@@ -6,6 +6,7 @@
   "natsUrlLabel": "NATS address (client port)",
   "natsUrlHint": "For local testing use <0>nats://localhost:4222</0>; later use the address of the online relay server.",
   "pairIdLabel": "Pair ID",
+  "webClient": "Web client",
   "stop": "Stop remote",
   "start": "Start remote",
   "note": "Note: remote control requires the desktop (GUI + agent) to be online and awake — this is an inherent prerequisite, not a cloud failure."

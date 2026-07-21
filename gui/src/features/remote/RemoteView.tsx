@@ -8,7 +8,7 @@ import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { usePolling } from "../../lib/usePolling";
-import { getRemoteStatus, startRemote, stopRemote } from "./remoteClient";
+import { getRemoteStatus, openUrl, startRemote, stopRemote } from "./remoteClient";
 
 interface RemoteViewProps {
   appSettings: AppSettings;
@@ -115,6 +115,21 @@ export function RemoteView({ appSettings, onChangeSettings }: RemoteViewProps) {
                 )
               : null}
           </div>
+          {running && status?.webUrl
+            ? (
+                <div className="mt-2 text-xs text-ink-muted">
+                  {t("webClient")}
+                  {": "}
+                  <button
+                    className="text-accent underline"
+                    onClick={() => void openUrl(status.webUrl!)}
+                    type="button"
+                  >
+                    {status.webUrl}
+                  </button>
+                </div>
+              )
+            : null}
         </div>
 
         <div className="space-y-4">

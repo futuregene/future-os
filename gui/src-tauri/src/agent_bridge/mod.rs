@@ -21,7 +21,7 @@ pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, Prepared
 pub(crate) use self::import::import_missing_sessions;
 pub use self::models::{list_agent_models, AgentModelOption};
 pub use self::run_control::abort_run;
-pub(crate) use self::run_control::abort_session;
+pub(crate) use self::run_control::{abort_session, follow_up_session, steer_session};
 pub use self::session::fork_agent_session;
 pub use self::skills::{list_installed_skills, InstalledSkill};
 pub use review::retry as retry_run_review;
@@ -82,6 +82,29 @@ pub async fn get_events_since(
         .ok_or_rpc_error("get_events_since returned an error")?;
     if response.data.is_empty() {
         Ok(serde_json::json!({ "events": [] }))
+    } else {
+        Ok(serde_json::from_str(&response.data)?)
+    }
+}
+
+/// Fetch a session's full message history from the agent (LLM Message shape:
+/// `{role, content, tool_calls?}` where `content` is a string or an array of
+/// content blocks). The agent's JSONL is the source of truth for ALL sessions —
+/// including TUI/CLI sessions the GUI store only holds as imported thread stubs
+/// with no message rows — so the remote bridge serves history from here rather
+/// than from the store.
+pub async fn get_session_messages(
+    session_id: String,
+) -> Result<serde_json::Value, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(base_command("get_messages", session_id))
+        .await
+        .map_err(|status| format!("get_messages failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("get_messages returned an error")?;
+    if response.data.is_empty() {
+        Ok(serde_json::json!({ "messages": [] }))
     } else {
         Ok(serde_json::from_str(&response.data)?)
     }

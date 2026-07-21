@@ -3,6 +3,7 @@
 //! and the parent module's prompt finalization.
 
 use super::client::{base_command, connect_agent, get_state_command, RpcResponseExt};
+use crate::agent_proto::RpcCommand;
 use crate::store;
 
 pub(super) async fn abort_agent_thread(thread_id: &str) -> Result<(), crate::AppError> {
@@ -110,4 +111,40 @@ pub(super) async fn wait_for_agent_idle(session_id: &str) {
 
 fn is_agent_unavailable_error(error: &crate::AppError) -> bool {
     matches!(error, crate::AppError::AgentUnavailable(_))
+}
+
+/// Forward a `steer` command to the agent (inject a message into the running loop).
+pub(crate) async fn steer_session(
+    session_id: &str,
+    message: String,
+) -> Result<(), crate::AppError> {
+    let mut client = connect_agent().await?;
+    client
+        .execute_command(RpcCommand {
+            message,
+            ..base_command("steer", session_id.to_string())
+        })
+        .await
+        .map_err(|error| format!("Unable to send steer to Future Agent: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the steer command.")?;
+    Ok(())
+}
+
+/// Forward a `follow_up` command to the agent (queue a message for after the current run).
+pub(crate) async fn follow_up_session(
+    session_id: &str,
+    message: String,
+) -> Result<(), crate::AppError> {
+    let mut client = connect_agent().await?;
+    client
+        .execute_command(RpcCommand {
+            message,
+            ..base_command("follow_up", session_id.to_string())
+        })
+        .await
+        .map_err(|error| format!("Unable to send follow_up to Future Agent: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the follow_up command.")?;
+    Ok(())
 }

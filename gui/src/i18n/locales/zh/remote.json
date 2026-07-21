@@ -6,6 +6,7 @@
   "natsUrlLabel": "NATS 地址（客户端端口）",
   "natsUrlHint": "本地测试填 <0>nats://localhost:4222</0>；以后填线上 relay 服务器地址。",
   "pairIdLabel": "Pair ID",
+  "webClient": "Web 客户端",
   "stop": "停止远程",
   "start": "启动远程",
   "note": "注：远程依赖桌面（GUI + Agent）在线且未睡眠——这是固有前提，非云故障。"

@@ -18,3 +18,9 @@ pub fn remote_stop() -> Result<remote::RemoteStatus, crate::AppError> {
 pub fn remote_status() -> Result<remote::RemoteStatus, crate::AppError> {
     Ok(remote::status())
 }
+
+/// Open a URL in the system browser (webview `<a>` clicks don't navigate externally).
+#[tauri::command]
+pub fn open_url(url: String) -> Result<(), crate::AppError> {
+    open::that_detached(&url).map_err(|e| format!("Failed to open URL: {e}").into())
+}
