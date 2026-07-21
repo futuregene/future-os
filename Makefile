@@ -7,7 +7,7 @@
 # Resolve FUTURE_VERSION from git; fall back to 0.0.0-dev if git or the
 # version script is unavailable (e.g. Windows without bash).
 FUTURE_VERSION_SCRIPT := $(CURDIR)/scripts/version.mjs
-export FUTURE_VERSION ?= $(shell node "$(FUTURE_VERSION_SCRIPT)" 2>$(NULL_REDIR) || node -e "console.log('0.0.0-dev')" 2>$(NULL_REDIR) || echo 0.0.0-dev)
+export FUTURE_VERSION ?= $(shell node "$(FUTURE_VERSION_SCRIPT)" || node -e "console.log('0.0.0-dev')" || echo 0.0.0-dev)
 
 version:
 	@node scripts/version.mjs --json
@@ -16,17 +16,21 @@ version:
 
 TARGET := $(shell rustc -vV | node -e "process.stdin.on('data',d=>{const m=d.toString().match(/host:\s*(.+)/);if(m)console.log(m[1])})")
 OS := $(word 3,$(subst -, ,$(TARGET)))
-NULL_REDIR := $(if $(filter windows,$(OS)),NUL,/dev/null)
-
 ifeq ($(OS),darwin)
   PREFIX := /opt/homebrew/bin
   SUDO :=
+  COPY_CMD := cp
+  EXE_SUFFIX :=
 else ifeq ($(OS),linux)
   PREFIX := /usr/local/bin
   SUDO := sudo
+  COPY_CMD := cp
+  EXE_SUFFIX :=
 else
   PREFIX := $(USERPROFILE)/.future/bin
   SUDO :=
+  COPY_CMD := cmd /c copy /y
+  EXE_SUFFIX := .exe
 endif
 
 # ─── Install ──────────────────────────────────────────────────────────────────
@@ -36,28 +40,42 @@ install: install-agent install-tui install-cli install-gui install-channels inst
 install-nogui: install-agent install-tui install-cli install-channels install-skills
 
 uninstall:
+ifeq ($(OS),windows)
+	cmd /c del /q "$(PREFIX)\future-agent" 2>NUL
+	cmd /c del /q "$(PREFIX)\future" 2>NUL
+	cmd /c del /q "$(PREFIX)\future-tui" 2>NUL
+	cmd /c del /q "$(PREFIX)\future-gui" 2>NUL
+	cmd /c del /q "$(PREFIX)\future-channel" 2>NUL
+else
 	$(SUDO) rm -f $(PREFIX)/future-agent $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
+endif
 	@echo "Removed: future-agent, future, future-tui, future-gui, future-channel"
 
 install-agent: build-agent
-	$(SUDO) cp target/release/future-agent $(PREFIX)/future-agent
+	$(SUDO) $(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "$(PREFIX)\future-agent"
 
 install-tui: build-tui
-	$(SUDO) cp tui/dist/future-tui $(PREFIX)/future-tui
+	$(SUDO) $(COPY_CMD) tui\dist\future-tui$(EXE_SUFFIX) "$(PREFIX)\future-tui"
 
 install-cli: build-cli
-	$(SUDO) cp cli/dist/future $(PREFIX)/future
+	$(SUDO) $(COPY_CMD) cli\dist\future$(EXE_SUFFIX) "$(PREFIX)\future"
 
 install-gui: install-cli install-agent
+ifeq ($(OS),windows)
+	cmd /c "if not exist gui\src-tauri\binaries mkdir gui\src-tauri\binaries"
+	$(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) gui\src-tauri\binaries\future-agent-$(TARGET)
+	$(COPY_CMD) cli\dist\future$(EXE_SUFFIX) gui\src-tauri\binaries\future-$(TARGET)
+else
 	@mkdir -p gui/src-tauri/binaries
 	cp target/release/future-agent gui/src-tauri/binaries/future-agent-$(TARGET)
 	cp cli/dist/future gui/src-tauri/binaries/future-$(TARGET)
+endif
 	$(call npm-install-if-needed,gui)
 	cd gui && npx tauri build --no-bundle
-	$(SUDO) cp gui/src-tauri/target/release/futureos $(PREFIX)/future-gui
+	$(SUDO) $(COPY_CMD) gui\src-tauri\target\release\futureos$(EXE_SUFFIX) "$(PREFIX)\future-gui"
 
 install-channels: build-channels
-	$(SUDO) cp target/release/future-channel $(PREFIX)/
+	$(SUDO) $(COPY_CMD) target\release\future-channel$(EXE_SUFFIX) "$(PREFIX)\"
 
 # Symlink the built-in skill bundles into the agent's app-skills directory
 # so the agent discovers them on startup.  Pulls the latest from the skills
@@ -65,6 +83,15 @@ install-channels: build-channels
 # from the repo) are cleaned up.
 install-skills:
 	git submodule update --init --remote skills
+ifeq ($(OS),windows)
+	@if not exist "$(USERPROFILE)\.future\agent\skills" mkdir "$(USERPROFILE)\.future\agent\skills"
+	@for /d %d in (skills\builtin\*) do @( \
+		rmdir /s /q "$(USERPROFILE)\.future\agent\skills\%~nxd" 2>NUL & \
+		xcopy /e /i /y "%d" "$(USERPROFILE)\.future\agent\skills\%~nxd" >NUL & \
+		echo   ✓ %~nxd \
+	)
+	@echo Copied built-in skills to ~/.future/agent/skills/
+else
 	@mkdir -p "$${HOME}/.future/agent/skills"
 	@for skill_dir in skills/builtin/*/; do \
 		name=$$(basename "$$skill_dir"); \
@@ -83,18 +110,28 @@ install-skills:
 		fi; \
 	done
 	@echo "Linked built-in skills to ~/.future/agent/skills/"
+endif
 
 # ─── Build ──────────────────────────────────────────────────────────────────
 
 build: build-agent build-tui build-cli build-gui build-channels
 
 # Only run npm install when package.json is newer than node_modules.
+# npm-install-if-needed ─────────────────────────────────────────────────────
+# On Unix: only install when package.json is newer than the install stamp.
+# On Windows (cmd.exe): skip the bash-conditional (npm install is idempotent).
+ifeq ($(OS),windows)
+define npm-install-if-needed
+	@cd $(1) && npm install --silent
+endef
+else
 define npm-install-if-needed
 	@if [ ! -f "$(1)/node_modules/.package-lock.json" ] || [ "$(1)/package.json" -nt "$(1)/node_modules/.package-lock.json" ]; then \
 		echo "  npm install $(1)/"; \
 		cd $(1) && npm install; \
 	fi
 endef
+endif
 
 build-agent:
 	cd agent && cargo build --release
@@ -187,6 +224,14 @@ run-cli:
 	cd cli && npm run gen-version && npm run dev
 
 run-gui: build-gui
+ifeq ($(OS),windows)
+	@if not exist gui\src-tauri\binaries mkdir gui\src-tauri\binaries
+	@if not exist "gui\src-tauri\binaries\future-agent-$(TARGET)" $(MAKE) build-agent
+	@if not exist "gui\src-tauri\binaries\future-agent-$(TARGET)" $(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "gui\src-tauri\binaries\future-agent-$(TARGET)"
+	@if not exist "gui\src-tauri\binaries\future-$(TARGET)" $(MAKE) build-cli
+	@if not exist "gui\src-tauri\binaries\future-$(TARGET)" $(COPY_CMD) cli\dist\future$(EXE_SUFFIX) "gui\src-tauri\binaries\future-$(TARGET)"
+	cd gui && npm run tauri:dev
+else
 	@mkdir -p gui/src-tauri/binaries
 	@if [ ! -f "gui/src-tauri/binaries/future-agent-$(TARGET)" ]; then \
 		$(MAKE) build-agent && \
@@ -198,6 +243,7 @@ run-gui: build-gui
 		cd .. && cp cli/dist/future "gui/src-tauri/binaries/future-$(TARGET)"; \
 	fi
 	cd gui && npm run tauri:dev
+endif
 
 package-gui: install-gui
 	node scripts/version.mjs --set-bundle
@@ -220,6 +266,25 @@ generate-proto:
 # ─── Clean ──────────────────────────────────────────────────────────────────
 
 clean:
+ifeq ($(OS),windows)
+	@if exist target rmdir /s /q target
+	@if exist tui\dist rmdir /s /q tui\dist
+	@if exist tui\node_modules rmdir /s /q tui\node_modules
+	@if exist tui\future-tui del /q tui\future-tui
+	@if exist tui\src\version.generated.ts del /q tui\src\version.generated.ts
+	@if exist cli\dist rmdir /s /q cli\dist
+	@if exist cli\node_modules rmdir /s /q cli\node_modules
+	@if exist cli\src\version.generated.ts del /q cli\src\version.generated.ts
+	@if exist gui\dist rmdir /s /q gui\dist
+	@if exist gui\node_modules rmdir /s /q gui\node_modules
+	@if exist gui\src-tauri\target rmdir /s /q gui\src-tauri\target
+	@if exist gui\src-tauri\binaries rmdir /s /q gui\src-tauri\binaries
+	@if exist "$(PREFIX)\future-agent" del /q "$(PREFIX)\future-agent"
+	@if exist "$(PREFIX)\future" del /q "$(PREFIX)\future"
+	@if exist "$(PREFIX)\future-tui" del /q "$(PREFIX)\future-tui"
+	@if exist "$(PREFIX)\future-gui" del /q "$(PREFIX)\future-gui"
+	@if exist "$(PREFIX)\future-channel" del /q "$(PREFIX)\future-channel"
+else
 	rm -rf target
 	rm -rf tui/dist tui/node_modules
 	rm -f tui/future-tui tui/src/version.generated.ts
@@ -227,6 +292,7 @@ clean:
 	rm -f cli/src/version.generated.ts
 	rm -rf gui/dist gui/node_modules gui/src-tauri/target gui/src-tauri/binaries
 	$(SUDO) rm -f $(PREFIX)/future-agent $(PREFIX)/future $(PREFIX)/future-tui $(PREFIX)/future-gui $(PREFIX)/future-channel
+endif
 
 # ─── Help ───────────────────────────────────────────────────────────────────
 

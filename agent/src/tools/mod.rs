@@ -922,7 +922,7 @@ async fn spawn_shell(
 /// is a redirected pipe (each block starts with a `#< CLIXML` marker line
 /// followed by a `<Objs …>…</Objs>` XML payload). Line-based so it never eats
 /// genuine error text. No-op when there is no CLIXML marker.
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn strip_powershell_clixml(text: &str) -> String {
     if !text.contains("#< CLIXML") {
         return text.to_string();

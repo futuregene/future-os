@@ -52,3 +52,7 @@ bin/
 channel/
 *.orig
 .claude/
+
+# Windows / MSYS2 artifacts
+/NUL
+*.bun-build
