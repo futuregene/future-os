@@ -85,10 +85,10 @@ install-skills:
 	git submodule update --init --remote skills
 ifeq ($(OS),windows)
 	@if not exist "$(USERPROFILE)\.future\agent\skills" mkdir "$(USERPROFILE)\.future\agent\skills"
-	@for /d %d in (skills\builtin\*) do @( \
-		rmdir /s /q "$(USERPROFILE)\.future\agent\skills\%~nxd" 2>NUL & \
-		xcopy /e /i /y "%d" "$(USERPROFILE)\.future\agent\skills\%~nxd" >NUL & \
-		echo   ✓ %~nxd \
+	@for /d %%d in (skills\builtin\*) do @( \
+		rmdir /s /q "$(USERPROFILE)\.future\agent\skills\%%~nxd" 2>NUL & \
+		xcopy /e /i /y "%%d" "$(USERPROFILE)\.future\agent\skills\%%~nxd" >NUL & \
+		echo   ✓ %%~nxd \
 	)
 	@echo Copied built-in skills to ~/.future/agent/skills/
 else
