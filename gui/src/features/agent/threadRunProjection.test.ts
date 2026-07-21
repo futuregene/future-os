@@ -324,7 +324,9 @@ describe("streamingBubbleBase", () => {
   it("returns the list unchanged when live content is empty (thinking-only so far)", () => {
     const persisted = assistant("a-partial", { content: "partial text" });
     const current = [user("u1"), persisted];
+    // Same-turn persisted entry is always dropped — the bubble will fill in
+    // as events arrive.
     const base = streamingBubbleBase(current, RUN, BUBBLE, "");
-    expect(base).toBe(current);
+    expect(base?.some(m => m.id === "a-partial")).toBe(false);
   });
 });

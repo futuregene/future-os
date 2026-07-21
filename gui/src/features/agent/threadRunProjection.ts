@@ -64,23 +64,27 @@ export function streamingBubbleBase(
 
   const lastAssistantIdx = current.map(message => message.role).lastIndexOf("assistant");
   const lastAssistant = lastAssistantIdx >= 0 ? current[lastAssistantIdx] : undefined;
-  if (lastAssistant && !lastAssistant.runId && content) {
+  if (lastAssistant && !lastAssistant.runId) {
     const persisted = lastAssistant.content.trim();
     // The mid-run persisted entry belongs to the in-flight turn only when the
-    // last user message precedes it; otherwise it's an earlier turn's reply.
+    // last user message precedes it; an assistant that appears before the last
+    // user is an earlier completed turn.
     const lastUserIdx = current.map(message => message.role).lastIndexOf("user");
     const sameTurn = lastUserIdx >= 0 && lastUserIdx < lastAssistantIdx;
-    // Overlap in either direction: the persisted snapshot is a prefix of (or
-    // contained within) the live projection, or the persisted message raced
-    // ahead of the event stream.
-    const overlaps = Boolean(persisted)
-      && (content.includes(persisted) || persisted.includes(content.slice(0, 80)));
-    if (sameTurn && overlaps) {
+
+    // A mid-run snapshot for THIS in-flight turn — the streaming bubble is
+    // authoritative, even if no text has landed in the event log yet (the
+    // very first reattach tick may fire before the collector has persisted
+    // the first text chunks). Drop the persisted snapshot so the turn
+    // renders once and keeps updating instead of duplicating.
+    if (sameTurn && persisted) {
       return current.filter(message => message.id !== lastAssistant.id);
     }
-    if (persisted && persisted.includes(content.slice(0, 80))) {
-      // Persisted message from another turn already covers the live text
-      // (settled-run reload raced this tick) — keep it, add nothing.
+
+    // Another turn's persisted reply already covers the head of the live
+    // text (a settled-run reload raced this poll tick) — keep the persisted
+    // message and suppress the bubble.
+    if (persisted && content && persisted.includes(content.slice(0, 80))) {
       return null;
     }
   }
