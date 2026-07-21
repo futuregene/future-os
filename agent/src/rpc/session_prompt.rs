@@ -161,7 +161,14 @@ impl ServerSession {
             })
         };
         let stream_ctx = crate::agent::StreamContext {
-            model: session_model.clone(),
+            // Use the bare model ID from the Loop — the LLM API expects just
+            // the model name, not the "provider/model" display format stored
+            // on ServerSession.
+            model: agent_loop
+                .try_read()
+                .ok()
+                .map(|l| l.model.clone())
+                .unwrap_or_else(|| session_model.clone()),
             system_prompt,
             on_tool_result: Some(save_closure.clone()),
             save_callback: Some(save_closure),
