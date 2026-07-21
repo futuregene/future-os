@@ -655,7 +655,11 @@ impl Loop {
                             args: tc.function.arguments.clone(),
                         });
                     }
-                    messages.push(msg);
+                    // Don't push an empty assistant — the LLM API rejects
+                    // messages with neither content nor tool_calls.
+                    if !msg.content.is_empty() || !msg.tool_calls.is_empty() {
+                        messages.push(msg);
+                    }
                     // Append placeholder tool-result for every unexecuted
                     // tool call so the conversation remains API-valid.
                     for tc in tool_calls {
@@ -745,11 +749,16 @@ impl Loop {
                     args: tc.function.arguments.clone(),
                 });
             }
-            messages.push(assistant_msg);
-            // Persist the assistant response immediately so it survives a
-            // crash mid-run, even if no tools were called in this turn.
-            if let Some(ref save) = self.save_callback {
-                save(messages.last().unwrap());
+            // Skip empty assistant messages — the LLM API rejects them
+            // ("content or tool_calls must be set").  This happens when the
+            // model returns only thinking with no text and no tool calls.
+            if !assistant_msg.content.is_empty() || !assistant_msg.tool_calls.is_empty() {
+                messages.push(assistant_msg);
+                // Persist the assistant response immediately so it survives a
+                // crash mid-run, even if no tools were called in this turn.
+                if let Some(ref save) = self.save_callback {
+                    save(messages.last().unwrap());
+                }
             }
 
             // Stream was truncated mid-reply: the assistant text is a prefix,
