@@ -88,8 +88,8 @@ export class Input implements Component, Focusable {
       return true;
     }
 
-    // Insert newline
-    if (key === "alt+enter" || key === "shift+enter") {
+    // Insert newline (Alt+Enter is most portable; Shift+Enter needs Kitty/modifyOtherKeys)
+    if (key === "alt+enter" || key === "shift+enter" || key === "ctrl+enter") {
       this.insertAtCursor("\n");
       return true;
     }
