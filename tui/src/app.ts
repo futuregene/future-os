@@ -644,32 +644,7 @@ export class App extends Container {
         return;
       }
       if (key === "enter") {
-        const item = this.autocomplete.getSelectedItem();
-        if (item) {
-          const ctx = this.acManager.activeContext;
-          if (ctx?.token) {
-            // Replace only the token portion, preserving the prefix.
-            // Strip the longest suffix of `before` that is also a prefix of
-            // the item value, so trigger characters aren't duplicated —
-            // e.g. slash command "/model" with before="/", or attachment
-            // "@file" with before="check @" (previously produced "@@file").
-            const before = ctx.text.slice(0, ctx.tokenStart);
-            const after = ctx.text.slice(ctx.tokenStart + ctx.token.length);
-            let value = item.value;
-            const maxOverlap = Math.min(before.length, value.length);
-            for (let len = maxOverlap; len > 0; len--) {
-              if (before.endsWith(value.slice(0, len))) {
-                value = value.slice(len);
-                break;
-              }
-            }
-            this.input.setValue(before + value + after, (before + value).length);
-          } else {
-            this.input.setValue(item.value);
-          }
-          this.autocomplete.hide();
-          this.requestRender();
-        }
+        this.applyAutocompleteSelection();
         return;
       }
     }
@@ -691,14 +666,9 @@ export class App extends Container {
     // Tab - autocomplete
     if (key === "tab") {
       if (this.autocomplete.isVisible()) {
-        const item = this.autocomplete.getSelectedItem();
-        if (item) {
-          this.input.setValue(item.value);
-          this.autocomplete.hide();
-          this.requestRender();
-          this.handleSubmit(item.value);
-        }
-        return;
+        // Accept the highlighted completion into the input only —
+        // do NOT submit (Tab is completion, not confirmation).
+        this.applyAutocompleteSelection();
       } else {
         this.triggerAutocomplete();
       }
@@ -773,6 +743,35 @@ export class App extends Container {
   private triggerAutocomplete(): void {
     const text = this.input.getValue();
     this.acManager.queryImmediate(text, text.length);
+  }
+
+  /** Insert the currently highlighted autocomplete item into the input. */
+  private applyAutocompleteSelection(): void {
+    const item = this.autocomplete.getSelectedItem();
+    if (!item) return;
+    const ctx = this.acManager.activeContext;
+    if (ctx?.token) {
+      // Replace only the token portion, preserving the prefix.
+      // Strip the longest suffix of `before` that is also a prefix of
+      // the item value, so trigger characters aren't duplicated —
+      // e.g. slash command "/model" with before="/", or attachment
+      // "@file" with before="check @" (previously produced "@@file").
+      const before = ctx.text.slice(0, ctx.tokenStart);
+      const after = ctx.text.slice(ctx.tokenStart + ctx.token.length);
+      let value = item.value;
+      const maxOverlap = Math.min(before.length, value.length);
+      for (let len = maxOverlap; len > 0; len--) {
+        if (before.endsWith(value.slice(0, len))) {
+          value = value.slice(len);
+          break;
+        }
+      }
+      this.input.setValue(before + value + after, (before + value).length);
+    } else {
+      this.input.setValue(item.value);
+    }
+    this.autocomplete.hide();
+    this.requestRender();
   }
 
   private handleInterrupt(): void {
@@ -2073,7 +2072,8 @@ export class App extends Container {
     };
     this.footer.setData(footerData);
 
-    const footerLines = this.footer.render(W).length;
+    const footerRendered = this.footer.render(W);
+    const footerLines = footerRendered.length;
     const editorLines = this.input.render(W);
     const editorHeight = editorLines.length;
 
@@ -2083,7 +2083,7 @@ export class App extends Container {
 
     // Build render output: chat + editor + footer
     const chatLines = this.chat.render(W);
-    let newLines = [...chatLines, ...editorLines, ...this.footer.render(W)];
+    let newLines = [...chatLines, ...editorLines, ...footerRendered];
     // Filter out undefined entries (can happen with certain input sequences)
     newLines = newLines.map((l) => l ?? "");
 
