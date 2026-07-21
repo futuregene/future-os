@@ -575,7 +575,10 @@ impl Manager {
                     writeln!(w, "{}", json).context("write entry")?;
                 }
                 w.flush().context("flush")?;
-                w.into_inner().map_err(|_| anyhow::anyhow!("flush failed"))?.sync_all().context("fsync")?;
+                w.into_inner()
+                    .map_err(|_| anyhow::anyhow!("flush failed"))?
+                    .sync_all()
+                    .context("fsync")?;
                 Ok(())
             })() {
                 tracing::warn!("Failed to persist repaired session: {e}");

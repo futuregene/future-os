@@ -68,6 +68,14 @@ export async function upsertStreamingPreview(
         return current;
 
       const content = projection.content.trim();
+      // Also skip if the last assistant message already carries this
+      // streaming content (save_callback may have persisted a mid-stream
+      // assistant entry while the run is still active — the persisted
+      // message has no runId, so the guard above doesn't catch it).
+      const lastAssistant = [...current].reverse().find(m => m.role === "assistant");
+      if (lastAssistant && !lastAssistant.runId && content && lastAssistant.content.includes(content.slice(0, 80)))
+        return current;
+
       const existingIndex = current.findIndex(message => message.id === bubbleId);
 
       if (existingIndex === -1) {
