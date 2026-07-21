@@ -1,0 +1,296 @@
+name: Build FutureOS macOS (signed)
+
+permissions: read-all
+
+# Signed and notarized macOS build. Keep this workflow restricted to trusted
+# triggers: it imports the Developer ID certificate and can submit software to
+# Apple's notarization service. Do not add pull_request or other events that can
+# execute untrusted code with the signing credentials.
+#
+# Artifacts go directly to Aliyun OSS and carry a `-sign` suffix so they can sit
+# beside build.yml's unsigned DMG without overwriting it:
+#   dev (workflow_dispatch) -> test/<version>/
+#   release (`v*` tag)      -> releases/<version>/
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build signed and notarized macOS DMG
+    runs-on: macos-latest
+    timeout-minutes: 180
+    env:
+      OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+      OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+      OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+      OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            gui/package-lock.json
+            cli/package-lock.json
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            gui/src-tauri
+          cache-on-failure: true
+          cache-all-crates: true
+
+      - name: Install macOS system dependencies
+        env:
+          HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
+        run: brew install protobuf
+
+      # Import the base64-encoded Developer ID Application certificate into an
+      # ephemeral keychain. Resolve its full identity rather than hard-coding the
+      # team or company name, then pass it to Tauri and codesign.
+      - name: Install Apple signing certificate
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        run: |
+          set -euo pipefail
+          : "${MACOS_CERTIFICATE:?MACOS_CERTIFICATE secret is required}"
+          : "${MACOS_CERTIFICATE_PWD:?MACOS_CERTIFICATE_PWD secret is required}"
+
+          keychain="$RUNNER_TEMP/futureos-signing.keychain-db"
+          keychain_password="$(openssl rand -base64 32)"
+          certificate="$RUNNER_TEMP/futureos-signing.p12"
+
+          printf '%s' "$MACOS_CERTIFICATE" | base64 -D > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" \
+            -k "$keychain" \
+            -P "$MACOS_CERTIFICATE_PWD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          rm -f "$certificate"
+
+          identity_line="$(security find-identity -v -p codesigning "$keychain" \
+            | grep '"Developer ID Application:' | head -n 1 || true)"
+          if [[ -z "$identity_line" ]]; then
+            echo "No Developer ID Application identity found in the imported certificate." >&2
+            security find-identity -v -p codesigning "$keychain" >&2 || true
+            exit 1
+          fi
+          identity="${identity_line#*\"}"
+          identity="${identity%%\"*}"
+          echo "SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+          echo "Using signing identity: $identity_line"
+
+      - name: Resolve version
+        id: v
+        run: node scripts/version.mjs --github-output
+
+      - name: Install npm dependencies (GUI)
+        working-directory: gui
+        run: npm ci
+
+      - name: Install npm dependencies (CLI)
+        working-directory: cli
+        run: npm ci
+
+      - name: Build bundled agent
+        env:
+          FUTURE_VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          cargo build --release --manifest-path agent/Cargo.toml
+          triple="$(rustc -Vv | sed -n 's/^host: //p')"
+          mkdir -p gui/src-tauri/binaries
+          cp target/release/future-agent "gui/src-tauri/binaries/future-agent-$triple"
+
+      - name: Build CLI binary
+        working-directory: cli
+        env:
+          FUTURE_VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          npm run build
+          bun build --compile dist/index.js --outfile dist/future
+          triple="$(rustc -Vv | sed -n 's/^host: //p')"
+          mkdir -p ../gui/src-tauri/binaries
+          cp dist/future "../gui/src-tauri/binaries/future-$triple"
+
+      - name: Set Tauri bundle version
+        env:
+          FUTURE_VERSION: ${{ steps.v.outputs.version }}
+        run: node scripts/version.mjs --set-bundle
+
+      # tauri.conf.json intentionally uses the ad-hoc identity (`-`) for normal
+      # builds. A per-run overlay keeps unsigned/local builds unchanged while
+      # making Tauri sign the app and every nested sidecar with hardened runtime.
+      - name: Build desktop bundle (signed)
+        env:
+          FUTURE_VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          overlay="$RUNNER_TEMP/tauri.macos-sign.json"
+          node -e '
+            const fs = require("node:fs");
+            fs.writeFileSync(process.argv[1], JSON.stringify({
+              bundle: { macOS: { signingIdentity: process.env.SIGNING_IDENTITY } }
+            }));
+          ' "$overlay"
+          npm --prefix gui run tauri:build -- --config "$overlay"
+
+      # Tauri signs the .app contents and the final disk image. Verify both
+      # independently before submitting that exact DMG to Apple; force-signing
+      # an already compressed image a second time can invalidate its embedded
+      # signature after the current process's signature cache is discarded.
+      - name: Verify app and DMG signatures
+        run: |
+          set -euo pipefail
+          app="$(find gui/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          dmg="$(find gui/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+          [[ -n "$app" ]] || { echo "Tauri produced no .app bundle." >&2; exit 1; }
+          [[ -n "$dmg" ]] || { echo "Tauri produced no DMG." >&2; exit 1; }
+
+          codesign --verify --deep --strict --verbose=2 "$app"
+          signature_info="$(codesign --display --verbose=4 "$app" 2>&1)"
+          printf '%s\n' "$signature_info"
+          grep -q 'flags=.*runtime' <<<"$signature_info" || {
+            echo "The app signature does not enable hardened runtime." >&2
+            exit 1
+          }
+          codesign --verify --strict --verbose=2 "$dmg"
+          codesign --display --verbose=4 "$dmg"
+          echo "SIGNED_DMG=$dmg" >> "$GITHUB_ENV"
+
+      - name: Notarize and staple DMG
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          : "${APPLE_API_KEY:?APPLE_API_KEY secret is required}"
+          : "${APPLE_API_KEY_ID:?APPLE_API_KEY_ID secret is required}"
+          : "${APPLE_API_ISSUER:?APPLE_API_ISSUER secret is required}"
+
+          api_key="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          result="$RUNNER_TEMP/notary-result.json"
+          printf '%s' "$APPLE_API_KEY" | base64 -D > "$api_key"
+          chmod 600 "$api_key"
+
+          set +e
+          xcrun notarytool submit "$SIGNED_DMG" \
+            --key "$api_key" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait \
+            --output-format json > "$result"
+          submit_exit=$?
+          set -e
+          cat "$result"
+
+          submission_id="$(node -e '
+            const fs = require("node:fs");
+            try { process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1])).id || ""); }
+            catch {}
+          ' "$result")"
+          notary_status="$(node -e '
+            const fs = require("node:fs");
+            try { process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1])).status || ""); }
+            catch {}
+          ' "$result")"
+          if [[ "$submit_exit" -ne 0 || "$notary_status" != "Accepted" ]]; then
+            if [[ -n "$submission_id" ]]; then
+              xcrun notarytool log "$submission_id" \
+                --key "$api_key" \
+                --key-id "$APPLE_API_KEY_ID" \
+                --issuer "$APPLE_API_ISSUER" || true
+            fi
+            rm -f "$api_key"
+            echo "Apple notarization failed (status: ${notary_status:-unknown})." >&2
+            exit 1
+          fi
+
+          rm -f "$api_key"
+          xcrun stapler staple "$SIGNED_DMG"
+          xcrun stapler validate "$SIGNED_DMG"
+          spctl --assess --type open \
+            --context context:primary-signature --verbose=2 "$SIGNED_DMG"
+
+      - name: Setup ossutil
+        run: |
+          set -euo pipefail
+          version="2.3.0"
+          case "$(uname -m)" in
+            arm64) arch="arm64" ;;
+            x86_64) arch="amd64" ;;
+            *) echo "Unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          package="ossutil-${version}-mac-${arch}"
+          curl -fsSL \
+            "https://gosspublic.alicdn.com/ossutil/v2/${version}/${package}.zip" \
+            -o "$RUNNER_TEMP/ossutil.zip"
+          unzip -q "$RUNNER_TEMP/ossutil.zip" -d "$RUNNER_TEMP/ossutil"
+          chmod +x "$RUNNER_TEMP/ossutil/$package/ossutil"
+          echo "$RUNNER_TEMP/ossutil/$package" >> "$GITHUB_PATH"
+
+          region="$(printf '%s' "$OSS_ENDPOINT" \
+            | sed -E 's#^https?://##; s/^oss-//; s/-internal//; s/\.aliyuncs\.com$//')"
+          echo "OSS_REGION=$region" >> "$GITHUB_ENV"
+
+      - name: Upload signed DMG to OSS
+        run: |
+          set -euo pipefail
+          version="${{ steps.v.outputs.version }}"
+          if [[ "${{ steps.v.outputs.is_release }}" == "true" ]]; then
+            prefix="releases"
+          else
+            prefix="test"
+          fi
+          stage="$RUNNER_TEMP/oss-stage"
+          mkdir -p "$stage"
+
+          base="$(basename "$SIGNED_DMG" .dmg)"
+          output="$stage/${base}-sign.dmg"
+          cp "$SIGNED_DMG" "$output"
+
+          echo "==> Uploading $(basename "$output") to oss://$OSS_BUCKET/$prefix/$version/"
+          ossutil cp -f "$output" "oss://$OSS_BUCKET/$prefix/$version/$(basename "$output")"
+
+          oss_host="$(printf '%s' "$OSS_ENDPOINT" \
+            | sed -E 's#^https?://##; s/-internal//')"
+          echo "==> Download URL:"
+          echo "https://$OSS_BUCKET.$oss_host/$prefix/$version/$(basename "$output")"
+
+      - name: Clean up signing material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP"/AuthKey_*.p8 "$RUNNER_TEMP/futureos-signing.p12"
+          keychain="$RUNNER_TEMP/futureos-signing.keychain-db"
+          if [[ -f "$keychain" ]]; then
+            security delete-keychain "$keychain" || true
+          fi

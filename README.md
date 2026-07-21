@@ -65,7 +65,14 @@ Build:
 make install        # build everything, install to /opt/homebrew/bin
 make install-nogui  # terminal stack only (skip the Tauri GUI)
 make package-gui    # desktop bundle → .app + .dmg in gui/src-tauri/target/release/bundle/
+scripts/build-macos-dmg.sh  # local DMG; auto-signs when a Developer ID certificate is available
 ```
+
+`scripts/build-macos-dmg.sh` builds the agent and CLI sidecars together with the
+GUI. It automatically uses a single `Developer ID Application` identity from
+the macOS Keychain and writes a `*-sign.dmg`; if no unambiguous identity is
+available, it falls back to the normal DMG. Run it with `--help` for certificate
+selection, output-directory and Apple notarization options.
 
 #### Linux (Debian/Ubuntu)
 
@@ -147,7 +154,7 @@ Push-Location gui; npm run tauri:build; Pop-Location   # → NSIS setup .exe und
 Notes:
 
 - `scripts\start-gui-test.bat` runs the GUI in dev mode against a locally built agent.
-- The scripts under `scripts/` (`build-windows-portable.ps1`, `build-windows-installer.ps1`) wrap these same steps into a single command and replicate the CI packaging pipeline (portable zip / NSIS installer). They check the toolchain up front and additionally require `protoc` (`choco install protoc`). Their artifacts contain the GUI, agent, and CLI — not the TUI.
+- The scripts under `scripts/` (`build-macos-dmg.sh`, `build-windows-portable.ps1`, `build-windows-installer.ps1`) wrap these same steps into a single command and replicate the CI packaging pipeline (DMG / portable zip / NSIS installer). They check the toolchain up front and require `protoc` (`brew install protobuf` / `choco install protoc`). Their artifacts contain the GUI, agent, and CLI — not the TUI.
 
 ### Configure a model
 
