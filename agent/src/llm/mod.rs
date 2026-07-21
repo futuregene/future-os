@@ -18,6 +18,7 @@ use tracing::{info, warn};
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
 const STREAM_IDLE_TIMEOUT_SECS: u64 = 45;
 const STREAM_TOOL_CALL_IDLE_TIMEOUT_SECS: u64 = 15;
+const STREAM_THINKING_IDLE_TIMEOUT_SECS: u64 = 300;
 
 // ─── LLM Client ────────────────────────────────────────────────────────────
 
@@ -505,6 +506,12 @@ impl crate::types::LLMProvider for Client {
             loop {
                 let idle_timeout_secs = if in_tool_call {
                     STREAM_TOOL_CALL_IDLE_TIMEOUT_SECS
+                } else if in_thinking {
+                    // During reasoning/thinking the model produces no visible
+                    // SSE events — applying the idle timeout would kill the
+                    // stream while the model is legitimately thinking (kimi-k3
+                    // can spend 60–120s reasoning on large contexts).
+                    STREAM_THINKING_IDLE_TIMEOUT_SECS
                 } else {
                     STREAM_IDLE_TIMEOUT_SECS
                 };
