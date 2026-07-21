@@ -52,13 +52,25 @@ endif
 	@echo "Removed: future-agent, future, future-tui, future-gui, future-channel"
 
 install-agent: build-agent
+ifeq ($(OS),windows)
 	$(SUDO) $(COPY_CMD) target\release\future-agent$(EXE_SUFFIX) "$(PREFIX)\future-agent"
+else
+	$(SUDO) cp target/release/future-agent "$(PREFIX)/future-agent"
+endif
 
 install-tui: build-tui
+ifeq ($(OS),windows)
 	$(SUDO) $(COPY_CMD) tui\dist\future-tui$(EXE_SUFFIX) "$(PREFIX)\future-tui"
+else
+	$(SUDO) cp tui/dist/future-tui "$(PREFIX)/future-tui"
+endif
 
 install-cli: build-cli
+ifeq ($(OS),windows)
 	$(SUDO) $(COPY_CMD) cli\dist\future$(EXE_SUFFIX) "$(PREFIX)\future"
+else
+	$(SUDO) cp cli/dist/future "$(PREFIX)/future"
+endif
 
 install-gui: install-cli install-agent
 ifeq ($(OS),windows)
@@ -72,10 +84,18 @@ else
 endif
 	$(call npm-install-if-needed,gui)
 	cd gui && npx tauri build --no-bundle
+ifeq ($(OS),windows)
 	$(SUDO) $(COPY_CMD) gui\src-tauri\target\release\futureos$(EXE_SUFFIX) "$(PREFIX)\future-gui"
+else
+	$(SUDO) cp gui/src-tauri/target/release/futureos "$(PREFIX)/future-gui"
+endif
 
 install-channels: build-channels
+ifeq ($(OS),windows)
 	$(SUDO) $(COPY_CMD) target\release\future-channel$(EXE_SUFFIX) "$(PREFIX)\"
+else
+	$(SUDO) cp target/release/future-channel "$(PREFIX)/"
+endif
 
 # Symlink the built-in skill bundles into the agent's app-skills directory
 # so the agent discovers them on startup.  Pulls the latest from the skills

@@ -1,6 +1,6 @@
 # Built-in Model Catalog
 
-3811 models across 142 providers.
+3826 models across 143 providers.
 
 ## Provider Summary
 
@@ -14,14 +14,14 @@
 | alibaba-cn | 79 |
 | alibaba-coding-plan | 12 |
 | alibaba-coding-plan-cn | 12 |
-| alibaba-token-plan | 14 |
-| alibaba-token-plan-cn | 14 |
-| ambient | 7 |
+| alibaba-token-plan | 15 |
+| alibaba-token-plan-cn | 15 |
+| ambient | 9 |
 | anyapi | 28 |
 | atomic-chat | 3 |
 | auriko | 15 |
 | bailing | 1 |
-| baseten | 13 |
+| baseten | 14 |
 | berget | 8 |
 | blueclaw | 2 |
 | chutes | 12 |
@@ -31,7 +31,7 @@
 | cloudflare-workers-ai | 13 |
 | cortecs | 55 |
 | crof | 19 |
-| crossmodel | 43 |
+| crossmodel | 44 |
 | daoxe | 9 |
 | databricks | 30 |
 | DeepSeek | 4 |
@@ -39,8 +39,8 @@
 | dinference | 5 |
 | drun | 3 |
 | ebcloud | 4 |
-| empiriolabs | 36 |
-| evroc | 8 |
+| empiriolabs | 37 |
+| evroc | 9 |
 | fastrouter | 34 |
 | fireworks-ai | 16 |
 | freemodel | 10 |
@@ -61,11 +61,11 @@
 | jiekou | 58 |
 | kenari | 22 |
 | kilo | 260 |
-| kimi-for-coding | 5 |
+| kimi-for-coding | 3 |
 | kuae-cloud-coding-plan | 1 |
 | lilac | 4 |
 | llama | 7 |
-| llmgateway | 150 |
+| llmgateway | 151 |
 | llmtr | 1 |
 | lmstudio | 3 |
 | longcat | 1 |
@@ -81,19 +81,19 @@
 | moark | 2 |
 | model-oracle-ai | 15 |
 | modelscope | 7 |
-| moonshotai | 9 |
-| moonshotai-cn | 9 |
+| moonshotai | 10 |
+| moonshotai-cn | 10 |
 | nano-gpt | 193 |
 | nearai | 33 |
-| nebius | 29 |
+| nebius | 31 |
 | neon | 36 |
 | neuralwatt | 18 |
 | nova | 2 |
-| novita-ai | 70 |
+| novita-ai | 72 |
 | nvidia | 45 |
 | ollama-cloud | 18 |
 | opencode | 79 |
-| opencode-go | 19 |
+| opencode-go | 21 |
 | OpenRouter | 267 |
 | orcarouter | 79 |
 | ovhcloud | 11 |
@@ -125,13 +125,14 @@
 | tencent-token-plan | 1 |
 | tencent-tokenhub | 2 |
 | the-grid-ai | 9 |
+| thinkingmachines | 1 |
 | tinfoil | 6 |
 | trustedrouter | 7 |
 | umans-ai | 5 |
 | umans-ai-coding-plan | 6 |
 | unorouter | 23 |
 | upstage | 3 |
-| Vercel AI Gateway | 305 |
+| Vercel AI Gateway | 302 |
 | vivgrid | 17 |
 | vultr | 10 |
 | wafer.ai | 5 |
@@ -145,7 +146,7 @@
 | zai-coding-plan | 6 |
 | zeldoc | 1 |
 | zenifra | 1 |
-| zenmux | 118 |
+| zenmux | 120 |
 | zhipuai | 13 |
 | zhipuai-coding-plan | 7 |
 
@@ -561,6 +562,7 @@
 | `qwen3.6-plus` | Qwen3.6 Plus | 1M | 66K | ✅ | ✅ |
 | `qwen3.7-max` | Qwen3.7 Max | 1M | 66K | — | ✅ |
 | `qwen3.7-plus` | Qwen3.7 Plus | 1M | 64K | ✅ | ✅ |
+| `qwen3.8-max-preview` | Qwen3.8 Max Preview | 1M | 131K | ✅ | ✅ |
 | `kimi-k2.5` | Kimi K2.5 | 262K | 33K | ✅ | ✅ |
 | `kimi-k2.6` | Kimi K2.6 | 262K | 16K | ✅ | ✅ |
 | `kimi-k2.7-code` | Kimi K2.7 Code | 262K | 262K | ✅ | ✅ |
@@ -582,6 +584,7 @@
 | `qwen3.6-plus` | Qwen3.6 Plus | 1M | 66K | ✅ | ✅ |
 | `qwen3.7-max` | Qwen3.7 Max | 1M | 66K | — | ✅ |
 | `qwen3.7-plus` | Qwen3.7 Plus | 1M | 64K | ✅ | ✅ |
+| `qwen3.8-max-preview` | Qwen3.8 Max Preview | 1M | 131K | ✅ | ✅ |
 | `kimi-k2.5` | Kimi K2.5 | 262K | 33K | ✅ | ✅ |
 | `kimi-k2.6` | Kimi K2.6 | 262K | 16K | ✅ | ✅ |
 | `kimi-k2.7-code` | Kimi K2.7 Code | 262K | 262K | ✅ | ✅ |
@@ -596,6 +599,8 @@
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
+| `deepseek-v4-flash` | DeepSeek V4 Flash | 1M | 1M | — | ✅ |
+| `mimo-v2.5` | MiMo-V2.5 | 1M | 131K | ✅ | ✅ |
 | `kimi-k2.6` | Kimi K2.6 | 262K | 262K | ✅ | ✅ |
 | `kimi-k2.7-code` | Kimi K2.7 Code | 262K | 262K | ✅ | ✅ |
 | `step-3.7-flash` | Step 3.7 Flash | 262K | 262K | ✅ | ✅ |
@@ -685,11 +690,12 @@
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
-| `GLM-5.2` | GLM 5.2 | 1M | 1M | — | ✅ |
+| `inkling` | Inkling | 1M | 33K | ✅ | ✅ |
 | `DeepSeek-V4-Pro` | Deepseek V4 Pro | 262K | 262K | — | ✅ |
 | `Kimi-K2.5` | Kimi K2.5 | 262K | 262K | ✅ | ✅ |
 | `Kimi-K2.6` | Kimi K2.6 | 262K | 262K | ✅ | ✅ |
 | `Kimi-K2.7-Code` | Kimi K2.7 Code | 262K | 262K | ✅ | ✅ |
+| `GLM-5.2` | GLM 5.2 | 256K | 256K | — | ✅ |
 | `MiniMax-M2.5` | MiniMax-M2.5 | 204K | 204K | — | ✅ |
 | `NVIDIA-Nemotron-3-Ultra-550B-A55B` | Nemotron Ultra | 203K | 203K | — | ✅ |
 | `Nemotron-120B-A12B` | Nemotron Super | 203K | 203K | — | ✅ |
@@ -906,6 +912,7 @@
 | `gemini-3-flash-preview` | Gemini 3 Flash Preview | 1M | 66K | ✅ | ✅ |
 | `gemini-3.1-pro-preview` | Gemini 3.1 Pro Preview | 1M | 66K | ✅ | ✅ |
 | `gemini-3.5-flash` | Gemini 3.5 Flash | 1M | 66K | ✅ | ✅ |
+| `kimi-k3` | Kimi K3 | 1M | 1M | ✅ | ✅ |
 | `minimax-m3` | MiniMax-M3 | 1M | 512K | ✅ | ✅ |
 | `claude-fable-5` | Claude Fable 5 | 1M | 128K | ✅ | ✅ |
 | `claude-opus-4-7` | Claude Opus 4.7 | 1M | 128K | ✅ | ✅ |
@@ -1117,6 +1124,7 @@
 | `deepseek-v4-pro` | DeepSeek V4 Pro | 1M | 393K | — | ✅ |
 | `fugu-ultra` | Fugu Ultra | 1M | 131K | ✅ | ✅ |
 | `glm-5-2` | GLM 5.2 | 1M | 131K | — | ✅ |
+| `kimi-k3` | Kimi K3 | 1M | 131K | ✅ | ✅ |
 | `mimo-v2-5` | MiMo V2.5 | 1M | 128K | ✅ | ✅ |
 | `mimo-v2-5-pro` | MiMo V2.5 Pro | 1M | 128K | — | ✅ |
 | `minimax-m3` | MiniMax M3 | 1M | 524K | ✅ | ✅ |
@@ -1156,6 +1164,7 @@
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
+| `GLM-5.2` | GLM-5.2 | 1M | 131K | — | ✅ |
 | `Qwen3.6-35B-A3B-FP8` | Qwen3.6 35B-A3B | 262K | 66K | ✅ | ✅ |
 | `roc` | roc | 262K | 262K | ✅ | ✅ |
 | `gemma-4-26B-A4B-it` | Gemma 4 26B A4B IT | 262K | 33K | ✅ | ✅ |
@@ -2015,11 +2024,9 @@
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
-| `k2p5` | Kimi K2.5 | 262K | 33K | ✅ | ✅ |
-| `k2p6` | Kimi K2.6 | 262K | 33K | ✅ | ✅ |
-| `k2p7` | Kimi K2.7 Code | 262K | 33K | ✅ | ✅ |
+| `k3` | Kimi K3 | 1M | 131K | ✅ | ✅ |
+| `kimi-for-coding` | Kimi K2.7 Code | 262K | 33K | ✅ | ✅ |
 | `kimi-for-coding-highspeed` | Kimi For Coding HighSpeed | 262K | 33K | ✅ | ✅ |
-| `kimi-k2-thinking` | Kimi K2 Thinking | 262K | 33K | — | ✅ |
 
 ### kuae-cloud-coding-plan
 
@@ -2083,6 +2090,7 @@
 | `gemini-3.1-pro-preview` | Gemini 3.1 Pro Preview | 1M | 66K | ✅ | ✅ |
 | `gemini-3.5-flash` | Gemini 3.5 Flash | 1M | 66K | ✅ | ✅ |
 | `gemini-pro-latest` | Gemini Pro Latest | 1M | 66K | ✅ | ✅ |
+| `kimi-k3` | Kimi K3 | 1M | 131K | ✅ | ✅ |
 | `muse-spark-1.1` | Muse Spark 1.1 | 1M | 32K | ✅ | ✅ |
 | `glm-5.2` | GLM-5.2 | 1M | 131K | — | ✅ |
 | `claude-fable-5` | Claude Fable 5 | 1M | 128K | ✅ | ✅ |
@@ -2408,6 +2416,7 @@
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
+| `kimi-k3` | Kimi K3 | 1M | 131K | ✅ | ✅ |
 | `kimi-k2-0905-preview` | Kimi K2 0905 | 262K | 262K | — | — |
 | `kimi-k2-thinking` | Kimi K2 Thinking | 262K | 262K | — | ✅ |
 | `kimi-k2-thinking-turbo` | Kimi K2 Thinking Turbo | 262K | 262K | — | ✅ |
@@ -2424,6 +2433,7 @@
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
+| `kimi-k3` | Kimi K3 | 1M | 131K | ✅ | ✅ |
 | `kimi-k2-0905-preview` | Kimi K2 0905 | 262K | 262K | — | — |
 | `kimi-k2-thinking` | Kimi K2 Thinking | 262K | 262K | — | ✅ |
 | `kimi-k2-thinking-turbo` | Kimi K2 Thinking Turbo | 262K | 262K | — | ✅ |
@@ -2680,10 +2690,12 @@
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
+| `MiniMax-M3` | MiniMax-M3 | 1M | 1M | — | ✅ |
 | `DeepSeek-V4-Pro` | DeepSeek V4 Pro | 1M | 384K | — | ✅ |
 | `GLM-5.2` | GLM-5.2 | 432K | 432K | — | ✅ |
 | `Qwen3-235B-A22B-Instruct-2507` | Qwen3 235B A22B Instruct 2507 | 262K | 8K | — | — |
 | `Qwen3.5-397B-A17B` | Qwen3.5-397B-A17B | 262K | 8K | — | ✅ |
+| `Kimi-K2.7-Code` | Kimi K2.7 Code | 262K | 8K | — | ✅ |
 | `Kimi-K2.5` | Kimi-K2.5 | 256K | 8K | ✅ | ✅ |
 | `Kimi-K2.5-fast` | Kimi-K2.5-fast | 256K | 8K | ✅ | ✅ |
 | `nemotron-3-super-120b-a12b` | Nemotron-3-Super-120B-A12B | 256K | 33K | — | ✅ |
@@ -2795,6 +2807,7 @@
 |---|---|---|---|---|---|
 | `deepseek-v4-flash` | DeepSeek V4 Flash | 1M | 393K | — | ✅ |
 | `deepseek-v4-pro` | DeepSeek V4 Pro | 1M | 393K | — | ✅ |
+| `kimi-k3` | Kimi K3 | 1M | 1M | ✅ | ✅ |
 | `mimo-v2-pro` | MiMo-V2-Pro | 1M | 131K | — | ✅ |
 | `mimo-v2.5-pro` | MiMo-V2.5-Pro | 1M | 131K | — | ✅ |
 | `glm-5.2` | GLM-5.2 | 1M | 131K | — | ✅ |
@@ -2809,6 +2822,7 @@
 | `kimi-k2-thinking` | Kimi K2 Thinking | 262K | 262K | — | ✅ |
 | `kimi-k2.5` | Kimi K2.5 | 262K | 262K | ✅ | ✅ |
 | `kimi-k2.6` | Kimi K2.6 | 262K | 262K | ✅ | ✅ |
+| `kimi-k2.7-code` | Kimi K2.7 Code | 262K | 262K | ✅ | ✅ |
 | `qwen3-coder-480b-a35b-instruct` | Qwen3 Coder 480B A35B Instruct | 262K | 66K | — | — |
 | `qwen3-coder-next` | Qwen3 Coder Next | 262K | 66K | — | — |
 | `qwen3-max` | Qwen3 Max | 262K | 66K | — | — |
@@ -3033,6 +3047,7 @@
 
 | Model ID | Name | Context | Max Output | Image | Reasoning |
 |---|---|---|---|---|---|
+| `kimi-k3` | Kimi K3 (2x usage) | 1M | 131K | ✅ | ✅ |
 | `mimo-v2-pro` | MiMo V2 Pro | 1M | 128K | — | ✅ |
 | `mimo-v2.5-pro` | MiMo V2.5 Pro | 1M | 128K | — | ✅ |
 | `deepseek-v4-flash` | DeepSeek V4 Flash | 1M | 384K | — | ✅ |
@@ -3043,6 +3058,7 @@
 | `qwen3.6-plus` | Qwen3.6 Plus | 1M | 66K | ✅ | ✅ |
 | `qwen3.7-max` | Qwen3.7 Max | 1M | 66K | — | ✅ |
 | `qwen3.7-plus` | Qwen3.7 Plus | 1M | 66K | ✅ | ✅ |
+| `grok-4.5` | Grok 4.5 | 500K | 500K | ✅ | ✅ |
 | `kimi-k2.5` | Kimi K2.5 | 262K | 66K | ✅ | ✅ |
 | `kimi-k2.6` | Kimi K2.6 | 262K | 66K | ✅ | ✅ |
 | `kimi-k2.7-code` | Kimi K2.7 Code | 262K | 262K | ✅ | ✅ |
@@ -3061,6 +3077,7 @@
 |---|---|---|---|---|---|
 | `llama-4-scout` | Meta: Llama 4 Scout | 10M | 33K | — | — |
 | `auto` | Auto Router | 2M | 33K | — | — |
+| `auto-beta` | Auto Router (Beta) | 2M | 33K | — | — |
 | `grok-4.20` | xAI: Grok 4.20 | 2M | 33K | — | — |
 | `gpt-5.4` | OpenAI: GPT-5.4 | 1M | 33K | — | — |
 | `gpt-5.4-pro` | OpenAI: GPT-5.4 Pro | 1M | 33K | — | — |
@@ -3074,6 +3091,7 @@
 | `gpt-5.6-terra-pro` | OpenAI: GPT-5.6 Terra Pro | 1M | 33K | — | — |
 | `gpt-latest` | OpenAI GPT Latest | 1M | 33K | — | — |
 | `gemini-3.1-pro-preview-customtools` | Google: Gemini 3.1 Pro Preview Custom Tools | 1M | 33K | — | — |
+| `longcat-2.0` | Meituan: LongCat 2.0 | 1M | 33K | — | — |
 | `deepseek-v4-flash` | DeepSeek: DeepSeek V4 Flash | 1M | 33K | — | — |
 | `deepseek-v4-pro` | DeepSeek: DeepSeek V4 Pro | 1M | 33K | — | — |
 | `gemini-2.5-flash` | Google: Gemini 2.5 Flash | 1M | 33K | — | — |
@@ -3087,14 +3105,17 @@
 | `gemini-3.1-pro-preview` | Google: Gemini 3.1 Pro Preview | 1M | 33K | — | — |
 | `gemini-3.5-flash` | Google: Gemini 3.5 Flash | 1M | 33K | — | — |
 | `llama-4-maverick` | Meta: Llama 4 Maverick | 1M | 33K | — | — |
+| `muse-spark-1.1` | Meta: Muse Spark 1.1 | 1M | 33K | — | — |
 | `minimax-m3` | MiniMax: MiniMax M3 | 1M | 33K | — | — |
+| `kimi-k3` | MoonshotAI: Kimi K3 | 1M | 33K | — | — |
 | `qwen3-coder` | Qwen: Qwen3 Coder 480B A35B | 1M | 33K | — | — |
-| `qwen3-coder:free` | Qwen: Qwen3 Coder 480B A35B (free) | 1M | 33K | — | — |
+| `inkling` | Thinking Machines: Inkling | 1M | 33K | — | — |
 | `mimo-v2.5` | Xiaomi: MiMo-V2.5 | 1M | 33K | — | — |
 | `mimo-v2.5-pro` | Xiaomi: MiMo-V2.5-Pro | 1M | 33K | — | — |
 | `glm-5.2` | Z.ai: GLM 5.2 | 1M | 33K | — | — |
 | `gemini-flash-latest` | Google Gemini Flash Latest | 1M | 33K | — | — |
 | `gemini-pro-latest` | Google Gemini Pro Latest | 1M | 33K | — | — |
+| `kimi-latest` | MoonshotAI Kimi Latest | 1M | 33K | — | — |
 | `gpt-4.1` | OpenAI: GPT-4.1 | 1M | 33K | — | — |
 | `gpt-4.1-mini` | OpenAI: GPT-4.1 Mini | 1M | 33K | — | — |
 | `gpt-4.1-nano` | OpenAI: GPT-4.1 Nano | 1M | 33K | — | — |
@@ -3190,7 +3211,6 @@
 | `qwen3-max` | Qwen: Qwen3 Max | 262K | 33K | — | — |
 | `qwen3-max-thinking` | Qwen: Qwen3 Max Thinking | 262K | 33K | — | — |
 | `qwen3-next-80b-a3b-instruct` | Qwen: Qwen3 Next 80B A3B Instruct | 262K | 33K | — | — |
-| `qwen3-next-80b-a3b-instruct:free` | Qwen: Qwen3 Next 80B A3B Instruct (free) | 262K | 33K | — | — |
 | `qwen3-next-80b-a3b-thinking` | Qwen: Qwen3 Next 80B A3B Thinking | 262K | 33K | — | — |
 | `qwen3-vl-30b-a3b-instruct` | Qwen: Qwen3 VL 30B A3B Instruct | 262K | 33K | — | — |
 | `qwen3-vl-32b-instruct` | Qwen: Qwen3 VL 32B Instruct | 262K | 33K | — | — |
@@ -3205,8 +3225,6 @@
 | `step-3.5-flash` | StepFun: Step 3.5 Flash | 262K | 33K | — | — |
 | `hy3` | Tencent: Hy3 | 262K | 33K | — | — |
 | `hy3-preview` | Tencent: Hy3 preview | 262K | 33K | — | — |
-| `hy3:free` | Tencent: Hy3 (free) | 262K | 33K | — | — |
-| `kimi-latest` | MoonshotAI Kimi Latest | 262K | 33K | — | — |
 | `jamba-large-1.7` | AI21: Jamba Large 1.7 | 256K | 33K | — | — |
 | `north-mini-code:free` | Cohere: North Mini Code (free) | 256K | 33K | — | — |
 | `kat-coder-air-v2.5` | Kwaipilot: KAT-Coder-Air V2.5 | 256K | 33K | — | — |
@@ -3224,10 +3242,9 @@
 | `minimax-m2.1` | MiniMax: MiniMax M2.1 | 205K | 33K | — | — |
 | `minimax-m2.5` | MiniMax: MiniMax M2.5 | 205K | 33K | — | — |
 | `minimax-m2.7` | MiniMax: MiniMax M2.7 | 205K | 33K | — | — |
+| `glm-5` | Z.ai: GLM 5 | 205K | 33K | — | — |
 | `glm-4.6` | Z.ai: GLM 4.6 | 203K | 33K | — | — |
 | `glm-4.7` | Z.ai: GLM 4.7 | 203K | 33K | — | — |
-| `glm-4.7-flash` | Z.ai: GLM 4.7 Flash | 203K | 33K | — | — |
-| `glm-5` | Z.ai: GLM 5 | 203K | 33K | — | — |
 | `glm-5-turbo` | Z.ai: GLM 5 Turbo | 203K | 33K | — | — |
 | `glm-5.1` | Z.ai: GLM 5.1 | 203K | 33K | — | — |
 | `glm-5v-turbo` | Z.ai: GLM 5V Turbo | 203K | 33K | — | — |
@@ -3246,6 +3263,7 @@
 | `o4-mini-deep-research` | OpenAI: o4 Mini Deep Research | 200K | 33K | — | — |
 | `o4-mini-high` | OpenAI: o4 Mini High | 200K | 33K | — | — |
 | `free` | Free Models Router | 200K | 33K | — | — |
+| `glm-4.7-flash` | Z.ai: GLM 4.7 Flash | 200K | 33K | — | — |
 | `claude-haiku-latest` | Anthropic Claude Haiku Latest | 200K | 33K | — | — |
 | `deepseek-chat-v3-0324` | DeepSeek: DeepSeek V3 0324 | 164K | 33K | — | — |
 | `deepseek-chat-v3.1` | DeepSeek: DeepSeek V3.1 | 164K | 33K | — | — |
@@ -3267,7 +3285,6 @@
 | `llama-3.1-70b-instruct` | Meta: Llama 3.1 70B Instruct | 131K | 33K | — | — |
 | `llama-3.1-8b-instruct` | Meta: Llama 3.1 8B Instruct | 131K | 33K | — | — |
 | `llama-3.3-70b-instruct` | Meta: Llama 3.3 70B Instruct | 131K | 33K | — | — |
-| `llama-3.3-70b-instruct:free` | Meta: Llama 3.3 70B Instruct (free) | 131K | 33K | — | — |
 | `ministral-3b-2512` | Mistral: Ministral 3 3B 2512 | 131K | 33K | — | — |
 | `mistral-large-2407` | Mistral Large 2407 | 131K | 33K | — | — |
 | `mistral-medium-3` | Mistral: Mistral Medium 3 | 131K | 33K | — | — |
@@ -3275,7 +3292,6 @@
 | `mistral-nemo` | Mistral: Mistral Nemo | 131K | 33K | — | — |
 | `mistral-small-3.2-24b-instruct` | Mistral: Mistral Small 3.2 24B | 131K | 33K | — | — |
 | `kimi-k2` | MoonshotAI: Kimi K2 0711 | 131K | 33K | — | — |
-| `llama-3.3-nemotron-super-49b-v1.5` | NVIDIA: Llama 3.3 Nemotron Super 49B V1.5 | 131K | 33K | — | — |
 | `gpt-oss-120b` | OpenAI: gpt-oss-120b | 131K | 33K | — | — |
 | `gpt-oss-20b` | OpenAI: gpt-oss-20b | 131K | 33K | — | — |
 | `gpt-oss-20b:free` | OpenAI: gpt-oss-20b (free) | 131K | 33K | — | — |
@@ -4203,6 +4219,14 @@
 | `code-standard` | Code Standard | 128K | 16K | — | ✅ |
 | `text-standard` | Text Standard | 128K | 16K | — | ✅ |
 
+### thinkingmachines
+
+**Base URL:** `https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1`
+
+| Model ID | Name | Context | Max Output | Image | Reasoning |
+|---|---|---|---|---|---|
+| `inkling` | Inkling | 256K | 256K | ✅ | ✅ |
+
 ### tinfoil
 
 **Base URL:** `https://inference.tinfoil.sh/v1`
@@ -4349,6 +4373,7 @@
 | `gemini-omni-flash-preview` | Gemini Omni Flash Preview | 1M | 58K | — | — |
 | `interfaze-beta` | Interfaze Beta | 1M | 32K | — | — |
 | `minimax-m3` | MiniMax M3 | 1M | 1M | — | — |
+| `kimi-k3` | Kimi K3 | 1M | 131K | — | — |
 | `nemotron-3-ultra-550b-a55b` | Nemotron 3 Ultra | 1M | 65K | — | — |
 | `gpt-5.5` | GPT 5.5 | 1M | 128K | — | — |
 | `gpt-5.5-pro` | GPT 5.5 Pro | 1M | 128K | — | — |
@@ -4466,10 +4491,6 @@
 | `mercury-2` | Mercury 2 | 128K | 128K | — | — |
 | `llama-3.1-70b` | Llama 3.1 70B Instruct | 128K | 8K | — | — |
 | `llama-3.1-8b` | Llama 3.1 8B Instruct | 128K | 8K | — | — |
-| `llama-3.2-11b` | Llama 3.2 11B Vision Instruct | 128K | 8K | — | — |
-| `llama-3.2-1b` | Llama 3.2 1B Instruct | 128K | 8K | — | — |
-| `llama-3.2-3b` | Llama 3.2 3B Instruct | 128K | 8K | — | — |
-| `llama-3.2-90b` | Llama 3.2 90B Vision Instruct | 128K | 8K | — | — |
 | `llama-3.3-70b` | Llama 3.3 70B Instruct | 128K | 8K | — | — |
 | `llama-4-maverick` | Llama 4 Maverick 17B Instruct | 128K | 8K | — | — |
 | `llama-4-scout` | Llama 4 Scout 17B Instruct | 128K | 8K | — | — |
@@ -4820,6 +4841,8 @@
 | `gpt-5.6-terra` | GPT-5.6 Terra | 1M | 128K | ✅ | ✅ |
 | `gemini-3.1-flash-lite` | Gemini 3.1 Flash Lite | 1M | 66K | ✅ | ✅ |
 | `gemini-3.5-flash` | Gemini 3.5 Flash | 1M | 66K | ✅ | ✅ |
+| `kimi-k3` | Kimi K3 | 1M | 131K | ✅ | ✅ |
+| `kimi-k3-free` | Kimi K3 (Free) | 1M | 131K | ✅ | ✅ |
 | `mimo-v2.5` | MiMo-V2.5 | 1M | 131K | ✅ | ✅ |
 | `mimo-v2.5-pro` | MiMo-V2.5-Pro | 1M | 131K | — | ✅ |
 | `gemini-2.5-flash` | Gemini 2.5 Flash | 1M | 64K | ✅ | ✅ |
