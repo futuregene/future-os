@@ -5,7 +5,7 @@
 
 import { RESET } from "../tui.js";
 import type { Component } from "../tui.js";
-import { fg, bold, italic } from "../theme.js";
+import { fg, bold, dim, italic } from "../theme.js";
 import type { Theme } from "../theme.js";
 import { MarkdownRenderer } from "./markdown.js";
 import { applyBackgroundToLine, truncateToWidth, wrapTextWithAnsi } from "../utils.js";
@@ -40,8 +40,17 @@ export class ChatArea implements Component {
   private thinkingHidden = false;
   private lastRenderWidth = -1;
   private dirty = false;  // true when messages changed but render() not yet called
+  // Deferred re-render queue for high-frequency streaming updates.
+  // Text/thinking/tool deltas arrive per token; re-running the full markdown
+  // pipeline per chunk is O(n²) overall and blocks the event loop (keystrokes
+  // queue up behind it → input lag). Instead, streaming updates only append
+  // text and mark the message dirty; render() flushes the queue once per
+  // frame, so markdown re-parsing happens at most once per frame.
+  private pendingRerender = new Set<number>();
+  private flushing = false;  // suppress onChange re-entrancy during flush
 
   private md = new MarkdownRenderer();
+  private mdThinking: MarkdownRenderer;
   private theme: Theme;
   private onChange?: () => void;
   private messageLineRanges: { start: number; end: number }[] = [];
@@ -60,6 +69,28 @@ export class ChatArea implements Component {
       thinkingText: 244,
       userBg: 59, assistantBg: -1,
     };
+
+    // Thinking renders entirely in the thinking gray: every markdown
+    // element that would normally get an accent color (inline code, links,
+    // headings, list bullets, code fences, quotes, hr, strikethrough) is
+    // mapped to thinkingText so no colored span can leak into the gray
+    // block. bold/italic/underline stay attribute-only; the reset-reapply
+    // pass in renderAssistantMessage restores the gray after them.
+    const tc = this.theme.thinkingText;
+    const thinkFg = (s: string) => fg(tc, s);
+    this.mdThinking = new MarkdownRenderer({
+      heading: thinkFg,
+      link: thinkFg,
+      linkUrl: thinkFg,
+      code: thinkFg,
+      codeBlock: (s) => fg(tc, dim(s)),
+      codeBlockBorder: (s) => fg(tc, dim(s)),
+      quote: (s) => fg(tc, italic(s)),
+      quoteBorder: thinkFg,
+      hr: thinkFg,
+      listBullet: thinkFg,
+      strikethrough: thinkFg,
+    });
   }
 
   // ─── Public API ─────────────────────────────────────────────────
@@ -113,8 +144,7 @@ export class ChatArea implements Component {
     if (idx >= 0) {
       this.messages[idx].content += delta;
       this.messages[idx].pending = true;
-      this.rerenderMessage(idx);
-      if (this.autoScroll) this.scrollToBottom();
+      this.markMessageDirty(idx);
     }
   }
 
@@ -165,8 +195,7 @@ export class ChatArea implements Component {
     const idx = this.findToolIndex(toolId);
     if (idx >= 0) {
       this.messages[idx].content += text;
-      this.rerenderMessage(idx);
-      if (this.autoScroll) this.scrollToBottom();
+      this.markMessageDirty(idx);
     }
   }
 
@@ -219,7 +248,7 @@ export class ChatArea implements Component {
     const last = this.messages[lastIdx];
     if (last.role === "assistant" && last.thinking !== undefined) {
       last.thinking += text;
-      this.rerenderMessage(lastIdx);
+      this.markMessageDirty(lastIdx);
     }
   }
 
@@ -294,6 +323,7 @@ export class ChatArea implements Component {
       this.dirty = false;
       this.rerender();
     }
+    this.flushPendingRerenders();
     return this.renderedLines.map((rl) => rl.text);
   }
 
@@ -304,6 +334,7 @@ export class ChatArea implements Component {
       this.dirty = false;
       this.rerender();
     }
+    this.flushPendingRerenders();
     const visible = this.renderedLines.slice(
       this.viewportTop,
       this.viewportTop + this.viewportHeight
@@ -311,7 +342,32 @@ export class ChatArea implements Component {
     return visible.map((rl) => rl.text);
   }
 
+  /** Mark a message for deferred re-render (batched at next render()). */
+  private markMessageDirty(msgIdx: number): void {
+    if (this.lastRenderWidth === -1) {
+      this.dirty = true;
+    } else {
+      this.pendingRerender.add(msgIdx);
+    }
+    if (this.autoScroll) this.scrollToBottom();
+    this.onChange?.();
+  }
+
+  /** Apply deferred message re-renders — at most once per rendered frame. */
+  private flushPendingRerenders(): void {
+    if (this.pendingRerender.size === 0) return;
+    const idxs = [...this.pendingRerender].sort((a, b) => a - b);
+    this.pendingRerender.clear();
+    this.flushing = true;
+    try {
+      for (const idx of idxs) this.rerenderMessage(idx);
+    } finally {
+      this.flushing = false;
+    }
+  }
+
   private rerender(): void {
+    this.pendingRerender.clear();
     // Defer until first render() has set the correct terminal width.
     if (this.lastRenderWidth === -1) {
       this.dirty = true;
@@ -356,7 +412,9 @@ export class ChatArea implements Component {
       this.messageLineRanges[i].end += delta;
     }
     if (this.autoScroll) this.scrollToBottom();
-    this.onChange?.();
+    // During a flush the render is already in flight — re-firing onChange
+    // would just schedule a redundant extra frame.
+    if (!this.flushing) this.onChange?.();
   }
 
   /** Append the last message in this.messages to renderedLines (assumes msg already pushed). */
@@ -440,7 +498,7 @@ export class ChatArea implements Component {
           dim: true,
         });
       } else {
-        const thinkingLines = this.md.render(msg.thinking!, this.width - 2);
+        const thinkingLines = this.mdThinking.render(msg.thinking!, this.width - 2);
         const thinkPrefix = `\x1b[3m\x1b[38;5;${this.theme.thinkingText}m`;
         for (const line of thinkingLines) {
           if (line === "") {

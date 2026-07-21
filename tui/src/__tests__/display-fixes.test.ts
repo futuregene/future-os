@@ -132,6 +132,39 @@ describe("ChatArea thinking", () => {
     }
   });
 
+  it("never leaks markdown accent colors into thinking (code, link, heading, list, fence)", () => {
+    const chat = new ChatArea(60);
+    chat.addMessage({
+      id: "1",
+      role: "assistant",
+      content: "answer",
+      thinking: [
+        "# Plan",
+        "check `some code` and **bold** plus [a link](https://example.com) here",
+        "- first item",
+        "```js",
+        "const x = 1;",
+        "```",
+      ].join("\n"),
+    });
+    const lines = renderFirstAssistantThinking(chat);
+    const needles = ["Plan", "some code", "a link", "first item", "const x = 1;"];
+    const thinkingLines = lines.filter((l) => needles.some((n) => stripAnsiCodes(l).includes(n)));
+    for (const n of needles) {
+      expect(thinkingLines.some((l) => stripAnsiCodes(l).includes(n))).toBe(true);
+    }
+    for (const line of thinkingLines) {
+      // Every SGR foreground color in a thinking line must be the thinking
+      // gray (244) — no markdown accent colors (151 code, 117 link, 221
+      // heading, 143 code block) may survive.
+      const colors = [...line.matchAll(/38;5;(\d+)/g)].map((m) => Number(m[1]));
+      expect(colors.length).toBeGreaterThan(0);
+      for (const c of colors) {
+        expect(c).toBe(244);
+      }
+    }
+  });
+
   it("concatenates consecutive thinking blocks directly (no injected separator)", () => {
     const chat = new ChatArea(60);
     chat.addMessage({ id: "1", role: "assistant", content: "" });
