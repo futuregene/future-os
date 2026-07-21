@@ -15,12 +15,15 @@ impl ServerSession {
         attachments: &[crate::types::Attachment],
     ) -> Result<()> {
         std::fs::create_dir_all(&self.cwd)?;
+        let system_prompt;
         let verbose = if let Ok(mut r#loop) = self.agent_loop.try_write() {
-            let system_prompt = self.build_system_prompt(r#loop.tools.clone());
-            r#loop.system_prompt = system_prompt.clone();
-            r#loop.config.system_prompt = system_prompt;
+            let sp = self.build_system_prompt(r#loop.tools.clone());
+            r#loop.system_prompt = sp.clone();
+            r#loop.config.system_prompt = sp.clone();
+            system_prompt = sp;
             r#loop.verbose
         } else {
+            system_prompt = String::new();
             false
         };
 
@@ -122,87 +125,86 @@ impl ServerSession {
             None => crate::sandbox::ResolvedSandbox::disabled(&self.cwd),
         });
 
-        // Set tool event callback so tool_start/tool_end reach the TUI
-        {
-            let broadcaster_tool = broadcaster.clone();
-            if let Ok(mut r#loop) = agent_loop.try_write() {
-                r#loop.tool_event_callback =
-                    Some(Arc::new(move |event: crate::types::StreamEvent| {
-                        broadcaster_tool.broadcast(crate::rpc::SseEvent {
-                            event_type: event.event_type.clone(),
-                            data: stream_event_to_sse_data(&event),
-                            ..Default::default()
-                        });
-                    }));
-                // Persist tool results and assistant messages incrementally so
-                // they survive crashes during long streaming runs.
-                let save_messages = messages_arc.clone();
-                let save_manager = session_manager.clone();
-                let save_session_id = session_id.clone();
-                let save_closure: Arc<dyn Fn(&crate::types::AgentMessage) + Send + Sync> =
-                    Arc::new(move |msg: &crate::types::AgentMessage| {
-                        // Ephemeral sessions skip all disk I/O.
-                        if is_ephemeral {
-                            return;
-                        }
-                        // Push to shared memory so the next full save includes it.
-                        save_messages.write().push(msg.clone());
-                        // Append-only: write just this new entry without rewriting
-                        // the entire file.
-                        let entry = crate::session::agent_message_to_entry(msg);
-                        if let Err(e) = save_manager.append_entries(&save_session_id, &[entry]) {
-                            tracing::error!("Failed to append entry: {}", e);
-                        }
-                    });
-                r#loop.on_tool_result = Some(save_closure.clone());
-                r#loop.save_callback = Some(save_closure);
-                // Broadcast steering / in-loop follow-up user messages so
-                // observing TUIs see them alongside the assistant response.
-                let user_msg_broadcaster = broadcaster.clone();
-                r#loop.on_user_message = Some(Arc::new(move |msg: &crate::types::AgentMessage| {
-                    user_msg_broadcaster.broadcast(crate::rpc::SseEvent::new(
-                        "user_message",
-                        serde_json::json!({"text": msg.text()}),
-                    ));
-                }));
-                let approval_gate_hook = approval_gate.clone();
-                let approval_broadcaster = broadcaster.clone();
-                let approval_session_id = session_id.clone();
-                let approval_cwd = session_cwd.clone();
-                let approval_sandbox = sandbox.clone();
-                let permission_level = self.permission_level.clone();
-                r#loop.config.before_tool_call = Some(Arc::new(
-                    move |tool_name, tool_id, arguments| {
-                        match permission_level.as_str() {
-                            "all" => {
-                                approve_tool_path_if_present(
-                                    &approval_cwd,
-                                    tool_name,
-                                    arguments,
-                                );
-                                None
-                            }
-                            "none" => Some(crate::types::ToolCallResult {
-                                result: format!("Tool call `{tool_name}` denied: permission level is set to 'none'."),
-                                is_error: true,
-                            }),
-                            _ => approval_gate_hook.request(
-                                &approval_broadcaster,
-                                &approval_session_id,
-                                &approval_cwd,
-                                tool_name,
-                                tool_id,
-                                arguments,
-                                &approval_sandbox,
-                            ),
-                        }
-                    },
+        // Build per-session StreamContext (callbacks) — these are session-
+        // specific closures and must NOT be stored on the shared Loop.
+        let tool_event_cb: Option<Arc<dyn Fn(crate::types::StreamEvent) + Send + Sync>> = {
+            let bt = broadcaster.clone();
+            Some(Arc::new(move |event: crate::types::StreamEvent| {
+                bt.broadcast(crate::rpc::SseEvent {
+                    event_type: event.event_type.clone(),
+                    data: stream_event_to_sse_data(&event),
+                    ..Default::default()
+                });
+            }))
+        };
+        let save_messages = messages_arc.clone();
+        let save_mgr = session_manager.clone();
+        let save_sid = session_id.clone();
+        let save_closure: crate::agent::PersistCallback =
+            Arc::new(move |msg: &crate::types::AgentMessage| {
+                if is_ephemeral {
+                    return;
+                }
+                save_messages.write().push(msg.clone());
+                let entry = crate::session::agent_message_to_entry(msg);
+                if let Err(e) = save_mgr.append_entries(&save_sid, &[entry]) {
+                    tracing::error!("Failed to append entry: {}", e);
+                }
+            });
+        let user_msg_cb: crate::agent::PersistCallback = {
+            let b = broadcaster.clone();
+            Arc::new(move |msg: &crate::types::AgentMessage| {
+                b.broadcast(crate::rpc::SseEvent::new(
+                    "user_message",
+                    serde_json::json!({"text": msg.text()}),
                 ));
-                let prepare_cwd = session_cwd.clone();
-                r#loop.config.prepare_tool_call = Some(Arc::new(move |tool_name, arguments| {
-                    prepare_session_tool_call(&prepare_cwd, tool_name, arguments)
-                }));
-            }
+            })
+        };
+        let stream_ctx = crate::agent::StreamContext {
+            model: session_model.clone(),
+            system_prompt,
+            on_tool_result: Some(save_closure.clone()),
+            save_callback: Some(save_closure),
+            tool_event_callback: tool_event_cb,
+            on_user_message: Some(user_msg_cb),
+        };
+
+        // Set approval/sandbox hooks on the shared Loop config (these are not
+        // callbacks — they're tool-execution hooks on AgentConfig).
+        if let Ok(mut r#loop) = agent_loop.try_write() {
+            let approval_gate_hook = approval_gate.clone();
+            let approval_broadcaster = broadcaster.clone();
+            let approval_session_id = session_id.clone();
+            let approval_cwd = session_cwd.clone();
+            let approval_sandbox = sandbox.clone();
+            let permission_level = self.permission_level.clone();
+            r#loop.config.before_tool_call = Some(Arc::new(
+                move |tool_name, tool_id, arguments| match permission_level.as_str() {
+                    "all" => {
+                        approve_tool_path_if_present(&approval_cwd, tool_name, arguments);
+                        None
+                    }
+                    "none" => Some(crate::types::ToolCallResult {
+                        result: format!(
+                            "Tool call `{tool_name}` denied: permission level is set to 'none'."
+                        ),
+                        is_error: true,
+                    }),
+                    _ => approval_gate_hook.request(
+                        &approval_broadcaster,
+                        &approval_session_id,
+                        &approval_cwd,
+                        tool_name,
+                        tool_id,
+                        arguments,
+                        &approval_sandbox,
+                    ),
+                },
+            ));
+            let prepare_cwd = session_cwd.clone();
+            r#loop.config.prepare_tool_call = Some(Arc::new(move |tool_name, arguments| {
+                prepare_session_tool_call(&prepare_cwd, tool_name, arguments)
+            }));
         }
 
         // agent_start is now emitted inside run_streaming_with_messages via on_event,
@@ -294,6 +296,7 @@ impl ServerSession {
                         match r#loop
                             .run_streaming_with_messages(
                                 current_messages,
+                                &stream_ctx,
                                 move |text| {
                                     bt.broadcast(crate::rpc::SseEvent {
                                         event_type: "text_chunk".to_string(),

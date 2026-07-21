@@ -474,9 +474,7 @@ impl Manager {
     fn strip_empty_assistants(entries: &mut Vec<SessionEntry>) -> bool {
         let before = entries.len();
         entries.retain(|e| {
-            e.entry_type != ENTRY_TYPE_ASSISTANT
-                || e.content.is_some()
-                || !e.tool_calls.is_empty()
+            e.entry_type != ENTRY_TYPE_ASSISTANT || e.content.is_some() || !e.tool_calls.is_empty()
         });
         entries.len() != before
     }

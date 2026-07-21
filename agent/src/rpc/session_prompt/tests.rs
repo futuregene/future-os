@@ -140,6 +140,7 @@ async fn loop_workspace_scope_blocks_unapproved_absolute_write_from_model_tool_c
                         "user",
                         serde_json::json!([{"type": "text", "text": "write outside"}]),
                     )],
+                    &crate::agent::StreamContext::default(),
                     |_| {},
                     |_| {},
                     None,

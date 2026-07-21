@@ -23,6 +23,22 @@ pub const DEFAULT_MAX_TURNS: i32 = 0; // 0 = unlimited
 
 pub type PersistCallback = Arc<dyn Fn(&crate::types::AgentMessage) + Send + Sync>;
 
+/// Per-session state passed into `run_streaming_with_messages`.  Callbacks
+/// are session-specific (they capture session_id, messages_arc, broadcaster)
+/// and must NOT be stored on the shared Loop — otherwise concurrent sessions
+/// overwrite each other's persistence and event streams.
+#[derive(Default)]
+pub struct StreamContext {
+    pub model: String,
+    pub system_prompt: String,
+    #[allow(clippy::type_complexity)]
+    pub on_tool_result: Option<PersistCallback>,
+    pub save_callback: Option<PersistCallback>,
+    #[allow(clippy::type_complexity)]
+    pub tool_event_callback: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
+    pub on_user_message: Option<PersistCallback>,
+}
+
 pub struct Loop {
     pub provider: Arc<dyn LLMProvider>,
     pub model: String,
@@ -37,17 +53,6 @@ pub struct Loop {
     pub parallel_tools: bool,
     pub(crate) interrupt_flag: Arc<AtomicBool>,
     pub(crate) last_compaction_result: Arc<Mutex<Option<crate::compaction::CompactionResult>>>,
-    pub tool_event_callback: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
-    /// Called after each tool result is pushed to messages, so the session
-    /// can be persisted incrementally during long streaming runs.
-    /// Receives the tool-result message being saved.
-    pub on_tool_result: Option<PersistCallback>,
-    /// General save callback — also called after assistant messages are
-    /// pushed, not just tool results.  Receives the message being saved.
-    pub save_callback: Option<PersistCallback>,
-    /// Called when a steering/follow-up user message is injected into the
-    /// conversation so connected clients see it alongside the reply.
-    pub on_user_message: Option<PersistCallback>,
     pub cumulative_input_tokens: Arc<std::sync::atomic::AtomicI64>,
     pub cumulative_output_tokens: Arc<std::sync::atomic::AtomicI64>,
     pub cumulative_cache_read_tokens: Arc<std::sync::atomic::AtomicI64>,
@@ -74,10 +79,6 @@ impl Loop {
             parallel_tools: false,
             interrupt_flag: Arc::new(AtomicBool::new(false)),
             last_compaction_result: Arc::new(Mutex::new(None)),
-            tool_event_callback: None,
-            on_tool_result: None,
-            save_callback: None,
-            on_user_message: None,
             cumulative_input_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_output_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_cache_read_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
@@ -127,7 +128,7 @@ impl Loop {
     ) -> Result<String> {
         let messages = vec![self.new_user_message(user_prompt)];
         let (result, _) = self
-            .run_streaming_with_messages(messages, on_text, |_| {}, None)
+            .run_streaming_with_messages(messages, &StreamContext::default(), on_text, |_| {}, None)
             .await?;
         Ok(result)
     }
@@ -145,6 +146,8 @@ impl Loop {
         turn: usize,
         tool_calls: &[ToolCall],
         messages: &mut Vec<AgentMessage>,
+        tool_event_cb: &Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
+        on_tool_result: &Option<PersistCallback>,
     ) {
         let use_parallel = if !self.config.tools_execution_mode.is_empty() {
             self.config.tools_execution_mode == "parallel"
@@ -153,11 +156,17 @@ impl Loop {
         };
 
         if use_parallel && tool_calls.len() > 1 {
-            self.execute_tools_parallel(turn, tool_calls, messages)
+            self.execute_tools_parallel(turn, tool_calls, messages, tool_event_cb, on_tool_result)
                 .await;
         } else {
-            self.execute_tools_sequential(turn, tool_calls, messages)
-                .await;
+            self.execute_tools_sequential(
+                turn,
+                tool_calls,
+                messages,
+                tool_event_cb,
+                on_tool_result,
+            )
+            .await;
         }
     }
 
@@ -166,10 +175,12 @@ impl Loop {
         turn: usize,
         tool_calls: &[ToolCall],
         messages: &mut Vec<AgentMessage>,
+        tool_event_cb: &Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
+        on_tool_result: &Option<PersistCallback>,
     ) {
         // AgentConfig contains non-Clone hooks, so parallel mode currently
         // preserves deterministic sequential execution.
-        self.execute_tools_sequential(turn, tool_calls, messages)
+        self.execute_tools_sequential(turn, tool_calls, messages, tool_event_cb, on_tool_result)
             .await;
     }
 
@@ -178,6 +189,8 @@ impl Loop {
         _turn: usize,
         tool_calls: &[ToolCall],
         messages: &mut Vec<AgentMessage>,
+        tool_event_cb: &Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
+        on_tool_result: &Option<PersistCallback>,
     ) {
         let tools = &self.tools;
         let config = &self.config;
@@ -192,7 +205,7 @@ impl Loop {
             let start = Instant::now();
 
             // Broadcast tool_start (include tool_call for args)
-            if let Some(ref cb) = self.tool_event_callback {
+            if let Some(ref cb) = tool_event_cb {
                 cb(StreamEvent {
                     event_type: "tool_start".to_string(),
                     tool_call: Some(tc.clone()),
@@ -224,7 +237,7 @@ impl Loop {
             }
 
             // Broadcast tool_end
-            if let Some(ref cb) = self.tool_event_callback {
+            if let Some(ref cb) = tool_event_cb {
                 cb(StreamEvent {
                     event_type: "tool_end".to_string(),
                     text: result.clone(),
@@ -247,7 +260,7 @@ impl Loop {
                 err_str.as_deref(),
             );
             messages.push(tool_msg);
-            if let Some(ref cb) = self.on_tool_result {
+            if let Some(ref cb) = on_tool_result {
                 cb(messages.last().unwrap());
             }
             executed += 1;
@@ -446,11 +459,15 @@ impl Loop {
     // PRIVATE HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    fn drain_steering(&self, mut messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
+    fn drain_steering(
+        &self,
+        mut messages: Vec<AgentMessage>,
+        on_user_msg: &Option<PersistCallback>,
+    ) -> Vec<AgentMessage> {
         let msgs = self.steering_queue.drain();
         for msg in msgs {
             let m = self.new_user_message(msg);
-            if let Some(ref cb) = self.on_user_message {
+            if let Some(ref cb) = on_user_msg {
                 cb(&m);
             }
             messages.insert(0, m);
@@ -458,11 +475,15 @@ impl Loop {
         messages
     }
 
-    fn drain_follow_up(&self, mut messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
+    fn drain_follow_up(
+        &self,
+        mut messages: Vec<AgentMessage>,
+        on_user_msg: &Option<PersistCallback>,
+    ) -> Vec<AgentMessage> {
         let msgs = self.follow_up_queue.drain();
         for msg in msgs {
             let m = self.new_user_message(msg);
-            if let Some(ref cb) = self.on_user_message {
+            if let Some(ref cb) = on_user_msg {
                 cb(&m);
             }
             messages.push(m);

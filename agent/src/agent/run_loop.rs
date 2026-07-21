@@ -21,6 +21,7 @@ impl Loop {
     pub async fn run_streaming_with_messages(
         &self,
         mut messages: Vec<AgentMessage>,
+        ctx: &super::StreamContext,
         on_text: impl Fn(String) + Send + 'static,
         on_event: impl Fn(StreamEvent) + Send + 'static,
         mut interrupt_rx: Option<tokio::sync::mpsc::Receiver<()>>,
@@ -43,7 +44,7 @@ impl Loop {
 
         // Emit agent_start
         if let Some(ref bus) = self.event_bus {
-            bus.emit(agent_start(&self.session_id, &self.model, ""));
+            bus.emit(agent_start(&self.session_id, &ctx.model, ""));
         }
         on_event(StreamEvent {
             event_type: "agent_start".to_string(),
@@ -58,7 +59,7 @@ impl Loop {
         if self.verbose {
             tracing::info!(
                 "[agent] starting run model={} msgs={} tools={}",
-                self.model,
+                ctx.model,
                 messages.len(),
                 tool_defs.len()
             );
@@ -87,7 +88,7 @@ impl Loop {
             }
             // Drain steering queue FIRST
             let steering_before = self.steering_queue.len();
-            messages = self.drain_steering(messages);
+            messages = self.drain_steering(messages, &ctx.on_user_message);
 
             // Check cancellation — only exit if no steering was just drained
             if self.is_interrupted() {
@@ -153,10 +154,10 @@ impl Loop {
             if self.verbose {
                 tracing::info!("[agent] turn={} calling LLM model={} msgs={} tools={} sys_prompt_len={} msg_chars={}",
                     turn,
-                    self.model,
+                    ctx.model,
                     llm_messages.len(),
                     tool_defs.len(),
-                    self.system_prompt.len(),
+                    ctx.system_prompt.len(),
                     llm_messages.iter().map(|m| {
                         m.content.as_ref().map(|c| c.to_string().len()).unwrap_or(0)
                     }).sum::<usize>()
@@ -170,10 +171,10 @@ impl Loop {
             let stream_result = match self
                 .await_or_interrupt(
                     self.provider.stream_chat(
-                        self.model.clone(),
+                        ctx.model.clone(),
                         llm_messages,
                         tool_defs.clone(),
-                        self.system_prompt.clone(),
+                        ctx.system_prompt.clone(),
                     ),
                     interrupt_rx.as_mut(),
                 )
@@ -210,7 +211,7 @@ impl Loop {
                             // Resolve the model's actual context window so we don't
                             // over-compact large-context models (1M+).
                             let context_window = crate::models::Registry::new()
-                                .resolve(&self.model)
+                                .resolve(&ctx.model)
                                 .map(|m| m.context_window)
                                 .unwrap_or(1_000_000);
                             let reserve = ((context_window as f64 * 0.1) as i32).max(16384);
@@ -681,7 +682,7 @@ impl Loop {
             if let Some(_err) = stream_error {
                 // If steering messages are pending, drain and restart
                 if !self.steering_queue.is_empty() {
-                    messages = self.drain_steering(messages);
+                    messages = self.drain_steering(messages, &ctx.on_user_message);
                     continue;
                 }
                 if let Some(ref bus) = self.event_bus {
@@ -714,7 +715,7 @@ impl Loop {
                         );
                         return Ok((String::new(), messages));
                     }
-                    messages = self.drain_steering(messages);
+                    messages = self.drain_steering(messages, &ctx.on_user_message);
                 }
             }
 
@@ -756,7 +757,7 @@ impl Loop {
                 messages.push(assistant_msg);
                 // Persist the assistant response immediately so it survives a
                 // crash mid-run, even if no tools were called in this turn.
-                if let Some(ref save) = self.save_callback {
+                if let Some(ref save) = ctx.save_callback {
                     save(messages.last().unwrap());
                 }
             }
@@ -802,7 +803,7 @@ impl Loop {
             // If no tool calls, check follow-up queue
             if tool_calls.is_empty() {
                 if !self.follow_up_queue.is_empty() {
-                    messages = self.drain_follow_up(messages);
+                    messages = self.drain_follow_up(messages, &ctx.on_user_message);
                     if let Some(ref bus) = self.event_bus {
                         bus.emit(events::turn_end(turn));
                     }
@@ -867,7 +868,14 @@ impl Loop {
                         .join(", ")
                 );
             }
-            self.execute_tools(turn, &tool_calls, &mut messages).await;
+            self.execute_tools(
+                turn,
+                &tool_calls,
+                &mut messages,
+                &ctx.tool_event_callback,
+                &ctx.on_tool_result,
+            )
+            .await;
 
             if let Some(ref bus) = self.event_bus {
                 bus.emit(events::turn_end(turn));
