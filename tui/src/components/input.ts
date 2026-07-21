@@ -1,6 +1,9 @@
 /**
- * Input component — single-line text input with horizontal scrolling.
- *ts. Implements Component + Focusable.
+ * Input component — multi-line text input with history.
+ * Enter submits, Alt+Enter / Shift+Enter inserts a newline.
+ * Up/Down navigates lines when multi-line; navigates history when single-line.
+ * Paste preserves newlines (multi-line paste).
+ * Implements Component + Focusable.
  */
 
 import { type Component, CURSOR_MARKER, type Focusable } from "../tui.js";
@@ -32,9 +35,6 @@ export class Input implements Component, Focusable {
 
   setValue(value: string, cursorPos?: number): void {
     this.value = value;
-    // Default to the end of the new value. Keeping the old (stale) cursor
-    // position left the cursor mid-word after autocomplete selection or
-    // command auto-fill, so further typing inserted at the wrong offset.
     this.cursor = cursorPos !== undefined
       ? Math.max(0, Math.min(cursorPos, value.length))
       : value.length;
@@ -42,8 +42,9 @@ export class Input implements Component, Focusable {
 
   insertText(text: string): void {
     if (!text) return;
-    const clean = text.replace(/\r\n/g, "").replace(/\r/g, "").replace(/\n/g, "");
-    this.insertCharacter(clean);
+    // Normalize line endings but preserve newlines for multi-line support
+    const clean = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    this.insertAtCursor(clean);
   }
 
   handleInput(data: string): void {
@@ -87,32 +88,42 @@ export class Input implements Component, Focusable {
       return true;
     }
 
-    // History navigation
-    if (key === "up") {
-      if (this.history.length === 0) return true;
-      if (this.historyIndex === -1) {
-        this.historyDraft = this.value;
-        this.historyIndex = 0;
-      } else if (this.historyIndex < this.history.length - 1) {
-        this.historyIndex++;
-      }
-      this.value = this.history[this.historyIndex] ?? this.historyDraft;
-      this.cursor = this.value.length;
-      this.onChange?.(this.value);
+    // Insert newline
+    if (key === "alt+enter" || key === "shift+enter") {
+      this.insertAtCursor("\n");
       return true;
     }
-    if (key === "down") {
-      if (this.historyIndex === -1) return true;
-      if (this.historyIndex > 0) {
-        this.historyIndex--;
-        this.value = this.history[this.historyIndex] ?? this.historyDraft;
-      } else {
-        this.historyIndex = -1;
-        this.value = this.historyDraft;
+
+    // ── History vs line navigation ──────────────────────────────────
+
+    const multiline = this.isMultiline();
+
+    if (key === "up") {
+      // Multi-line: navigate lines first, history only at first line
+      if (multiline) {
+        const { start } = this.getLineBounds(this.cursor);
+        if (start === 0) {
+          // At first line — navigate history
+          return this.historyUp();
+        }
+        this.moveUpLine();
+        return true;
       }
-      this.cursor = this.value.length;
-      this.onChange?.(this.value);
-      return true;
+      // Single-line: history only
+      return this.historyUp();
+    }
+
+    if (key === "down") {
+      if (multiline) {
+        const { end } = this.getLineBounds(this.cursor);
+        if (end >= this.value.length) {
+          // At last line — navigate history
+          return this.historyDown();
+        }
+        this.moveDownLine();
+        return true;
+      }
+      return this.historyDown();
     }
 
     // Deletion
@@ -146,15 +157,9 @@ export class Input implements Component, Focusable {
       return true;
     }
 
-    // Yank
-    if (key === "ctrl+y") {
-      return true;
-    }
-
-    // Undo
-    if (key === "ctrl+-" || key === "ctrl+/" || key === "ctrl+_" || key === "ctrl+z") {
-      return true;
-    }
+    // Yank / Undo (no-op stubs)
+    if (key === "ctrl+y") return true;
+    if (key === "ctrl+-" || key === "ctrl+/" || key === "ctrl+_" || key === "ctrl+z") return true;
 
     // Cursor movement
     if (key === "left" || key === "ctrl+b") {
@@ -174,15 +179,42 @@ export class Input implements Component, Focusable {
         const firstGrapheme = graphemes[0];
         this.cursor += firstGrapheme ? firstGrapheme.segment.length : 1;
       }
+      // Skip \n if it's the only next char (don't get stuck on newlines)
+      if (this.cursor < this.value.length && this.value[this.cursor] === "\n") {
+        this.cursor += 1;
+      }
       return true;
     }
 
-    if (key === "home" || key === "ctrl+a") {
+    // Home/End — line-aware when multi-line, whole-value when single-line
+    if (key === "home") {
+      if (multiline) {
+        const { start } = this.getLineBounds(this.cursor);
+        // If already at line start, go to value start
+        this.cursor = this.cursor === start ? 0 : start;
+      } else {
+        this.cursor = 0;
+      }
+      return true;
+    }
+
+    if (key === "end") {
+      if (multiline) {
+        const { end } = this.getLineBounds(this.cursor);
+        // If already at line end, go to value end
+        this.cursor = this.cursor === end ? this.value.length : end;
+      } else {
+        this.cursor = this.value.length;
+      }
+      return true;
+    }
+
+    if (key === "ctrl+a") {
       this.cursor = 0;
       return true;
     }
 
-    if (key === "end" || key === "ctrl+e") {
+    if (key === "ctrl+e") {
       this.cursor = this.value.length;
       return true;
     }
@@ -199,7 +231,7 @@ export class Input implements Component, Focusable {
 
     // Space
     if (key === "space") {
-      this.insertCharacter(" ");
+      this.insertAtCursor(" ");
       return true;
     }
 
@@ -207,17 +239,16 @@ export class Input implements Component, Focusable {
     if (key.startsWith("shift+") && key.length === 7) {
       const ch = key[6]!;
       if (ch >= "a" && ch <= "z") {
-        this.insertCharacter(ch.toUpperCase());
+        this.insertAtCursor(ch.toUpperCase());
         return true;
       }
-      // shift+digit and shift+symbol handled via default printable below
     }
 
     // Printable single character
     if (key.length === 1) {
       const code = key.charCodeAt(0);
       if (code >= 32) {
-        this.insertCharacter(key);
+        this.insertAtCursor(key);
         return true;
       }
     }
@@ -225,9 +256,96 @@ export class Input implements Component, Focusable {
     return false;
   }
 
-  private insertCharacter(char: string): void {
-    this.value = this.value.slice(0, this.cursor) + char + this.value.slice(this.cursor);
-    this.cursor += char.length;
+  // ── Multi-line navigation helpers ──────────────────────────────────
+
+  private isMultiline(): boolean {
+    return this.value.includes("\n");
+  }
+
+  /** Get start/end offsets of the line containing cursorPos. */
+  private getLineBounds(cursorPos: number): { start: number; end: number } {
+    const start = this.value.lastIndexOf("\n", cursorPos - 1) + 1;
+    const endIdx = this.value.indexOf("\n", cursorPos);
+    const end = endIdx === -1 ? this.value.length : endIdx;
+    return { start, end };
+  }
+
+  /** Visual column of cursor within its current line. */
+  private cursorColInLine(cursorPos: number): number {
+    const { start } = this.getLineBounds(cursorPos);
+    return visibleWidth(this.value.slice(start, cursorPos));
+  }
+
+  /** Move cursor to target visual column on a given line (by line start offset). */
+  private setCursorToLineCol(lineStart: number, visualCol: number): void {
+    const lineEnd = this.value.indexOf("\n", lineStart);
+    const end = lineEnd === -1 ? this.value.length : lineEnd;
+    const line = this.value.slice(lineStart, end);
+
+    let col = 0;
+    let offset = 0;
+    const segs = segmenter.segment(line);
+    for (const seg of segs) {
+      const segWidth = visibleWidth(seg.segment);
+      if (col + segWidth > visualCol) break;
+      col += segWidth;
+      offset += seg.segment.length;
+    }
+    this.cursor = lineStart + offset;
+  }
+
+  private moveUpLine(): void {
+    const { start } = this.getLineBounds(this.cursor);
+    if (start === 0) return;
+    const col = this.cursorColInLine(this.cursor);
+    const prevLineEnd = start - 1;
+    const prevLineStart = this.value.lastIndexOf("\n", prevLineEnd - 1) + 1;
+    this.setCursorToLineCol(prevLineStart, col);
+  }
+
+  private moveDownLine(): void {
+    const { end } = this.getLineBounds(this.cursor);
+    if (end >= this.value.length) return;
+    const col = this.cursorColInLine(this.cursor);
+    const nextLineStart = end + 1;
+    this.setCursorToLineCol(nextLineStart, col);
+  }
+
+  // ── History navigation ────────────────────────────────────────────
+
+  private historyUp(): boolean {
+    if (this.history.length === 0) return true;
+    if (this.historyIndex === -1) {
+      this.historyDraft = this.value;
+      this.historyIndex = 0;
+    } else if (this.historyIndex < this.history.length - 1) {
+      this.historyIndex++;
+    }
+    this.value = this.history[this.historyIndex] ?? this.historyDraft;
+    this.cursor = this.value.length;
+    this.onChange?.(this.value);
+    return true;
+  }
+
+  private historyDown(): boolean {
+    if (this.historyIndex === -1) return true;
+    if (this.historyIndex > 0) {
+      this.historyIndex--;
+      this.value = this.history[this.historyIndex] ?? this.historyDraft;
+    } else {
+      this.historyIndex = -1;
+      this.value = this.historyDraft;
+    }
+    this.cursor = this.value.length;
+    this.onChange?.(this.value);
+    return true;
+  }
+
+  // ── Text manipulation ─────────────────────────────────────────────
+
+  private insertAtCursor(text: string): void {
+    this.value = this.value.slice(0, this.cursor) + text + this.value.slice(this.cursor);
+    this.cursor += text.length;
     this.onChange?.(this.value);
   }
 
@@ -255,15 +373,17 @@ export class Input implements Component, Focusable {
   }
 
   private deleteToLineStart(): void {
-    if (this.cursor === 0) return;
-    this.value = this.value.slice(this.cursor);
-    this.cursor = 0;
+    const { start } = this.getLineBounds(this.cursor);
+    if (this.cursor === start) return;
+    this.value = this.value.slice(0, start) + this.value.slice(this.cursor);
+    this.cursor = start;
     this.onChange?.(this.value);
   }
 
   private deleteToLineEnd(): void {
-    if (this.cursor >= this.value.length) return;
-    this.value = this.value.slice(0, this.cursor);
+    const { end } = this.getLineBounds(this.cursor);
+    if (this.cursor >= end) return;
+    this.value = this.value.slice(0, this.cursor) + this.value.slice(end);
     this.onChange?.(this.value);
   }
 
@@ -343,63 +463,131 @@ export class Input implements Component, Focusable {
     }
   }
 
+  // ── Paste handling ────────────────────────────────────────────────
+
   private handlePaste(pastedText: string): void {
-    const cleanText = pastedText.replace(/\r\n/g, "").replace(/\r/g, "").replace(/\n/g, "").replace(/\t/g, "    ");
-    this.value = this.value.slice(0, this.cursor) + cleanText + this.value.slice(this.cursor);
-    this.cursor += cleanText.length;
-    this.onChange?.(this.value);
+    // Normalize line endings (preserve newlines), replace tabs
+    const cleanText = pastedText
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n")
+      .replace(/\t/g, "    ");
+    this.insertAtCursor(cleanText);
   }
 
   invalidate(): void {
     // No cached state to invalidate
   }
 
-  render(screenWidth: number): string[] {
-    const prompt = "> ";
-    const availableWidth = screenWidth - prompt.length;
+  // ── Render ────────────────────────────────────────────────────────
 
-    if (availableWidth <= 0) {
-      return [prompt];
+  render(screenWidth: number): string[] {
+    const lines: string[] = [];
+    const valueLines = this.value.split("\n");
+    const cursorLineIndex = this.getCursorLineIndex();
+
+    for (let i = 0; i < valueLines.length; i++) {
+      const isFirstLine = i === 0;
+      const prompt = isFirstLine ? "> " : "  ";
+      const availableWidth = screenWidth - prompt.length;
+
+      if (availableWidth <= 0) {
+        lines.push(prompt);
+        continue;
+      }
+
+      const lineText = valueLines[i]!;
+      const isCursorLine = i === cursorLineIndex;
+      const cursorInThisLine = isCursorLine ? this.cursor - this.getLineStartOffset(i) : -1;
+
+      const rendered = this.renderLine(lineText, cursorInThisLine, availableWidth, isCursorLine);
+      lines.push(prompt + rendered);
     }
 
-    let visibleText = "";
-    let cursorDisplay = this.cursor;
-    const totalWidth = visibleWidth(this.value);
+    return lines;
+  }
+
+  /** Which line (by index) the cursor is on. */
+  private getCursorLineIndex(): number {
+    let pos = 0;
+    const valueLines = this.value.split("\n");
+    for (let i = 0; i < valueLines.length; i++) {
+      pos += valueLines[i]!.length;
+      if (this.cursor <= pos) return i;
+      pos += 1; // for the \n
+    }
+    return valueLines.length - 1;
+  }
+
+  /** Get the starting byte offset of line i in the value. */
+  private getLineStartOffset(lineIndex: number): number {
+    let offset = 0;
+    const valueLines = this.value.split("\n");
+    for (let i = 0; i < lineIndex; i++) {
+      offset += valueLines[i]!.length + 1; // +1 for \n
+    }
+    return offset;
+  }
+
+  /** Render a single line with optional cursor highlighting and horizontal scroll. */
+  private renderLine(
+    lineText: string,
+    cursorInLine: number,
+    availableWidth: number,
+    isCursorLine: boolean,
+  ): string {
+    if (!isCursorLine) {
+      // Non-cursor line: just slice to fit
+      if (visibleWidth(lineText) <= availableWidth) {
+        return lineText + " ".repeat(availableWidth - visibleWidth(lineText));
+      }
+      return sliceByColumn(lineText, 0, availableWidth);
+    }
+
+    // Cursor line — full rendering with scroll and cursor highlight
+    const totalWidth = visibleWidth(lineText);
 
     if (totalWidth < availableWidth) {
-      visibleText = this.value;
-    } else {
-      const scrollWidth = this.cursor === this.value.length ? availableWidth - 1 : availableWidth;
-      const cursorCol = visibleWidth(this.value.slice(0, this.cursor));
+      // Fits entirely — render with cursor and padding
+      return this.renderWithCursor(lineText, cursorInLine, availableWidth, 0);
+    }
 
-      if (scrollWidth > 0) {
-        const halfWidth = Math.floor(scrollWidth / 2);
-        let startCol = 0;
+    // Needs horizontal scrolling
+    const cursorCol = visibleWidth(lineText.slice(0, cursorInLine));
+    const scrollWidth = cursorInLine === lineText.length ? availableWidth - 1 : availableWidth;
 
-        if (cursorCol < halfWidth) {
-          startCol = 0;
-        } else if (cursorCol > totalWidth - halfWidth) {
-          startCol = Math.max(0, totalWidth - scrollWidth);
-        } else {
-          startCol = Math.max(0, cursorCol - halfWidth);
-        }
-
-        visibleText = sliceByColumn(this.value, startCol, startCol + scrollWidth);
-        const beforeCursor = sliceByColumn(this.value, startCol, cursorCol);
-        cursorDisplay = beforeCursor.length;
+    let startCol = 0;
+    if (scrollWidth > 0) {
+      const halfWidth = Math.floor(scrollWidth / 2);
+      if (cursorCol < halfWidth) {
+        startCol = 0;
+      } else if (cursorCol > totalWidth - halfWidth) {
+        startCol = Math.max(0, totalWidth - scrollWidth);
       } else {
-        visibleText = "";
-        cursorDisplay = 0;
+        startCol = Math.max(0, cursorCol - halfWidth);
       }
     }
 
-    // Build line with fake cursor
-    const graphemes = [...segmenter.segment(visibleText.slice(cursorDisplay))];
+    const visibleText = sliceByColumn(lineText, startCol, startCol + scrollWidth);
+    const cursorDisplay = visibleText.length > 0
+      ? sliceByColumn(lineText, startCol, cursorCol).length
+      : 0;
+
+    return this.renderWithCursor(visibleText, cursorDisplay, availableWidth, startCol);
+  }
+
+  /** Render text with cursor highlight and padding to fill availableWidth. */
+  private renderWithCursor(
+    text: string,
+    cursorOffset: number,
+    availableWidth: number,
+    _scrollStart: number,
+  ): string {
+    const graphemes = [...segmenter.segment(text.slice(cursorOffset))];
     const cursorGrapheme = graphemes[0];
 
-    const beforeCursor = visibleText.slice(0, cursorDisplay);
+    const beforeCursor = text.slice(0, cursorOffset);
     const atCursor = cursorGrapheme?.segment ?? " ";
-    const afterCursor = visibleText.slice(cursorDisplay + atCursor.length);
+    const afterCursor = text.slice(cursorOffset + atCursor.length);
 
     const marker = this.focused ? CURSOR_MARKER : "";
     const cursorChar = this.focused ? `\x1b[7m${atCursor}\x1b[27m` : atCursor;
@@ -408,8 +596,7 @@ export class Input implements Component, Focusable {
     const renderedContent = beforeCursor + atCursor + afterCursor;
     const visualLength = visibleWidth(renderedContent);
     const padding = " ".repeat(Math.max(0, availableWidth - visualLength));
-    const line = prompt + textWithCursor + padding;
 
-    return [line];
+    return textWithCursor + padding;
   }
 }
