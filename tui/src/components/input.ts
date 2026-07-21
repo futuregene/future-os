@@ -374,7 +374,18 @@ export class Input implements Component, Focusable {
 
   private deleteToLineStart(): void {
     const { start } = this.getLineBounds(this.cursor);
-    if (this.cursor === start) return;
+    if (this.cursor === start) {
+      // At line start — delete the preceding newline to join with the previous line.
+      // This makes holding Ctrl+U delete line after line.
+      if (start > 0) {
+        // The character before start is always \n (since start is after a newline or 0)
+        const beforeNewline = start - 1; // position of \n
+        this.value = this.value.slice(0, beforeNewline) + this.value.slice(this.cursor);
+        this.cursor = beforeNewline;
+        this.onChange?.(this.value);
+      }
+      return;
+    }
     this.value = this.value.slice(0, start) + this.value.slice(this.cursor);
     this.cursor = start;
     this.onChange?.(this.value);
