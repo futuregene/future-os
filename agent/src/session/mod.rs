@@ -521,10 +521,6 @@ impl Manager {
                 meta: None,
             });
         }
-        crate::eprintln_log!(
-            "[session] Repaired {} dangling tool_calls at end of session",
-            tool_calls.len()
-        );
     }
 
     pub(crate) fn load_path(&self, path: &Path, id: &str) -> Result<Session> {
