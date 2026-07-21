@@ -702,7 +702,7 @@ export function matchesKey(data: string, keyId: KeyId): boolean {
         return false;
       }
       if (modifier === 0) return data === "\r"
-        || (!_kittyProtocolActive && data === "\n") || data === "\x1bOM"
+        || data === "\x1bOM"
         || matchesKittySequence(data, CODEPOINTS.enter, 0)
         || matchesKittySequence(data, CODEPOINTS.kpEnter, 0);
       return matchesKittySequence(data, CODEPOINTS.enter, modifier)

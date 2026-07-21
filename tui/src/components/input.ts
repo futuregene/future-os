@@ -42,8 +42,8 @@ export class Input implements Component, Focusable {
 
   insertText(text: string): void {
     if (!text) return;
-    // Normalize line endings but preserve newlines for multi-line support
-    const clean = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    // Normalize line endings (preserve newlines), replace tabs
+    const clean = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\t/g, "    ");
     this.insertAtCursor(clean);
   }
 
@@ -178,10 +178,6 @@ export class Input implements Component, Focusable {
         const graphemes = [...segmenter.segment(afterCursor)];
         const firstGrapheme = graphemes[0];
         this.cursor += firstGrapheme ? firstGrapheme.segment.length : 1;
-      }
-      // Skip \n if it's the only next char (don't get stuck on newlines)
-      if (this.cursor < this.value.length && this.value[this.cursor] === "\n") {
-        this.cursor += 1;
       }
       return true;
     }

@@ -1499,10 +1499,13 @@ export class App extends Container {
       this.state.explicitSession = s.explicitSession ?? false;
       this.state.autoCompactionEnabled = s.autoCompactionEnabled ?? true;
       
-      // Update client's session ID if server returned one
-      if (s.sessionId && s.sessionId !== this.state.sessionId) {
-        (this.client as any).currentSessionId = s.sessionId;
-        (this.client as any).connectEvents();
+      // Update client's session ID if server returned a different one.
+      // Compare against the client's subscribed session (not state.sessionId,
+      // which was already updated above — that comparison was always false,
+      // leaving the event stream stuck on the old session).
+      if (s.sessionId && s.sessionId !== this.client.getCurrentSessionId()) {
+        this.client.setCurrentSessionId(s.sessionId);
+        this.client.connectEvents();
       }
     } catch {
       // Keep last known model; footer briefly showing "(not connected)" is
