@@ -204,7 +204,16 @@ else
     exit 1
   fi
   echo "Starting future-agent..."
-  AGENT_BIN="$AGENT_DIR/target/debug/future-agent"
+  # `agent` is a member of the root Cargo workspace, so `cargo build` (even when
+  # invoked from within agent/) writes the binary to the workspace-level target
+  # dir ($ROOT_DIR/target/debug) — NOT $AGENT_DIR/target/debug. Launching a
+  # stale crate-local binary here is exactly what breaks `--log-file` support.
+  # Point at the workspace output, falling back to a crate-local target for
+  # non-workspace checkouts.
+  AGENT_BIN="$ROOT_DIR/target/debug/future-agent"
+  if [[ ! -x "$AGENT_BIN" ]]; then
+    AGENT_BIN="$AGENT_DIR/target/debug/future-agent"
+  fi
   if [[ ! -x "$AGENT_BIN" ]]; then
     echo "Agent binary not found at $AGENT_BIN."
     echo "Build it first (BUILD_AGENT defaults to 1) or run with BUILD_AGENT=1."
