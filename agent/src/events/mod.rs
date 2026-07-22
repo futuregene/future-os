@@ -522,7 +522,7 @@ mod tests {
         let e = agent_end("completed", None);
         assert_eq!(e.event_type, "agent_end");
         assert_eq!(e.data["reason"], serde_json::json!("completed"));
-        assert!(e.data.get("usage").is_none());
+        assert!(!e.data.contains_key("usage"));
     }
 
     #[test]
@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn agent_end_with_empty_stop_reason_event() {
         let e = super::agent_end_with_stop_reason("completed", None, "");
-        assert!(e.data.get("stop_reason").is_none());
+        assert!(!e.data.contains_key("stop_reason"));
     }
 
     #[test]
@@ -669,7 +669,7 @@ mod tests {
             credit_cost: None,
         };
         let e = usage_event(&u);
-        assert!(e.data.get("cache_read_tokens").is_none());
-        assert!(e.data.get("cache_write_tokens").is_none());
+        assert!(!e.data.contains_key("cache_read_tokens"));
+        assert!(!e.data.contains_key("cache_write_tokens"));
     }
 }

@@ -567,7 +567,7 @@ mod tests {
     fn no_thinking_params_empty_compat() {
         let params: Vec<String> = vec!["temperature".to_string()];
         let (compat, tlm) = derive_thinking_compat(&params, None);
-        assert!(compat.get("thinkingFormat").is_none());
+        assert!(!compat.contains_key("thinkingFormat"));
         assert!(tlm.is_empty());
     }
 
@@ -585,7 +585,7 @@ mod tests {
     fn empty_params_no_max_tokens_field() {
         let params: Vec<String> = vec![];
         let (compat, _) = derive_thinking_compat(&params, None);
-        assert!(compat.get("maxTokensField").is_none());
+        assert!(!compat.contains_key("maxTokensField"));
     }
 
     // ─── resolve_future_base_url ───────────────────────────────────────────
