@@ -13,9 +13,9 @@ mod stream;
 pub use self::approval::{decide_approval, inject_session_rule};
 pub(crate) use self::client::raw_agent_addr;
 pub use self::client::{
-    connect_agent, delete_session_command, get_session_entries_command, get_state_command,
-    set_cwd_command, set_model_command, set_session_name_command, set_thinking_level_command,
-    RpcResponseExt,
+    connect_agent, delete_session_command, get_available_models_command,
+    get_session_entries_command, get_state_command, set_cwd_command, set_model_command,
+    set_session_name_command, set_thinking_level_command, RpcResponseExt,
 };
 pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, PreparedPrompt};
 pub(crate) use self::import::import_missing_sessions;
@@ -108,6 +108,89 @@ pub async fn get_session_messages(
     } else {
         Ok(serde_json::from_str(&response.data)?)
     }
+}
+
+/// Fetch the session's current state (model, thinkingLevel, isStreaming, etc.)
+/// from the agent. Used by the remote bridge to populate the web client's
+/// model/thinking selectors.
+pub async fn get_session_state(session_id: String) -> Result<serde_json::Value, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(get_state_command(session_id))
+        .await
+        .map_err(|status| format!("get_state failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("get_state returned an error")?;
+    if response.data.is_empty() {
+        Ok(serde_json::json!({}))
+    } else {
+        Ok(serde_json::from_str(&response.data)?)
+    }
+}
+
+/// Fetch the available model list from the agent (for the web client's model selector).
+pub async fn get_available_models() -> Result<serde_json::Value, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(get_available_models_command())
+        .await
+        .map_err(|status| format!("get_available_models failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("get_available_models returned an error")?;
+    if response.data.is_empty() {
+        Ok(serde_json::json!({ "models": [] }))
+    } else {
+        Ok(serde_json::from_str(&response.data)?)
+    }
+}
+
+/// Set the model on a live agent session (remote bridge).
+pub async fn set_session_model(
+    session_id: String,
+    model_id: String,
+) -> Result<(), crate::AppError> {
+    let mut client = connect_agent().await?;
+    client
+        .execute_command(set_model_command(model_id, session_id))
+        .await
+        .map_err(|status| format!("set_model failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("set_model returned an error")?;
+    Ok(())
+}
+
+/// Set the thinking level on a live agent session (remote bridge).
+pub async fn set_session_thinking_level(
+    session_id: String,
+    level: String,
+) -> Result<(), crate::AppError> {
+    let mut client = connect_agent().await?;
+    client
+        .execute_command(set_thinking_level_command(level, session_id))
+        .await
+        .map_err(|status| format!("set_thinking_level failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("set_thinking_level returned an error")?;
+    Ok(())
+}
+
+/// Rename a session: update the agent's session name, then mirror to the GUI store.
+pub async fn rename_session(session_id: String, name: String) -> Result<(), crate::AppError> {
+    let mut client = connect_agent().await?;
+    client
+        .execute_command(set_session_name_command(name.clone(), session_id.clone()))
+        .await
+        .map_err(|status| format!("set_session_name failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("set_session_name returned an error")?;
+    // Mirror to GUI store so the sidebar title stays in sync.
+    if let Ok(Some(thread)) = crate::store::find_thread_by_agent_session(&session_id) {
+        let _ = crate::store::rename_thread(crate::store::RenameThreadInput {
+            thread_id: thread.id,
+            title: name,
+        });
+    }
+    Ok(())
 }
 
 /// Tell the running agent to re-read `auth.json` and refresh every live

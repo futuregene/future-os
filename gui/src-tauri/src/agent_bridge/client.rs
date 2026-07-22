@@ -82,6 +82,10 @@ pub fn get_state_command(session_id: String) -> RpcCommand {
     base_command("get_state", session_id)
 }
 
+pub fn get_available_models_command() -> RpcCommand {
+    base_command("list_models", String::new())
+}
+
 pub(super) fn fork_command(
     session_id: String,
     entry_id: String,

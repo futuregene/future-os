@@ -22,6 +22,11 @@ struct IncomingCmd {
     // get_events_since (P1c backfill)
     run_id: String,
     since_idx: i64,
+    // set_model / set_thinking_level
+    model_id: String,
+    level: String,
+    // set_session_name
+    name: String,
 }
 
 impl Default for IncomingCmd {
@@ -35,6 +40,9 @@ impl Default for IncomingCmd {
             mode: String::new(),
             run_id: String::new(),
             since_idx: -1,
+            model_id: String::new(),
+            level: String::new(),
+            name: String::new(),
         }
     }
 }
@@ -203,6 +211,46 @@ async fn handle_command(client: &async_nats::Client, _pair_id: &str, msg: async_
         }
         "follow_up" => {
             match crate::agent_bridge::follow_up_session(&cmd.session_id, cmd.message.clone()).await
+            {
+                Ok(()) => reply(client, &msg, true, json!({}), None).await,
+                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+            }
+        }
+        "get_state" => match crate::agent_bridge::get_session_state(cmd.session_id.clone()).await {
+            Ok(data) => reply(client, &msg, true, data, None).await,
+            Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+        },
+        "list_models" | "get_available_models" => {
+            match crate::agent_bridge::get_available_models().await {
+                Ok(data) => reply(client, &msg, true, data, None).await,
+                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+            }
+        }
+        "set_model" => {
+            match crate::agent_bridge::set_session_model(
+                cmd.session_id.clone(),
+                cmd.model_id.clone(),
+            )
+            .await
+            {
+                Ok(()) => reply(client, &msg, true, json!({}), None).await,
+                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+            }
+        }
+        "set_thinking_level" => {
+            match crate::agent_bridge::set_session_thinking_level(
+                cmd.session_id.clone(),
+                cmd.level.clone(),
+            )
+            .await
+            {
+                Ok(()) => reply(client, &msg, true, json!({}), None).await,
+                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+            }
+        }
+        "set_session_name" => {
+            match crate::agent_bridge::rename_session(cmd.session_id.clone(), cmd.name.clone())
+                .await
             {
                 Ok(()) => reply(client, &msg, true, json!({}), None).await,
                 Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
