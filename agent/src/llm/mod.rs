@@ -676,3 +676,154 @@ impl crate::types::LLMProvider for Client {
         *self.thinking_budget.write() = budget;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── Client construction ────────────────────────────────────────────────
+
+    #[test]
+    fn client_new() {
+        let c = Client::new("https://api.openai.com", "sk-test", None, None);
+        assert_eq!(*c.base_url.read(), "https://api.openai.com");
+        assert_eq!(*c.api_key.read(), "sk-test");
+        assert!(c.temperature.is_none());
+        assert!(c.max_tokens.is_none());
+    }
+
+    #[test]
+    fn client_new_with_params() {
+        let c = Client::new("https://api.openai.com", "sk-test", Some(0.7), Some(4096));
+        assert_eq!(c.temperature, Some(0.7));
+        assert_eq!(c.max_tokens, Some(4096));
+    }
+
+    // ─── Builder pattern ────────────────────────────────────────────────────
+
+    #[test]
+    fn with_thinking_level() {
+        let c = Client::new("https://api.test", "key", None, None)
+            .with_thinking_level("high");
+        assert_eq!(*c.thinking_level.read(), "high");
+    }
+
+    #[test]
+    fn with_thinking_budget() {
+        let c = Client::new("https://api.test", "key", None, None)
+            .with_thinking_budget(16000);
+        assert_eq!(*c.thinking_budget.read(), 16000);
+    }
+
+    #[test]
+    fn with_compat() {
+        let c = Client::new("https://api.test", "key", None, None)
+            .with_compat("deepseek", true, false);
+        assert_eq!(*c.compat_thinking_format.read(), "deepseek");
+        assert!(*c.compat_supports_reasoning_effort.read());
+        assert!(!*c.compat_requires_reasoning_on_assistant.read());
+    }
+
+    #[test]
+    fn with_max_tokens_field() {
+        let c = Client::new("https://api.test", "key", None, None)
+            .with_max_tokens_field("max_completion_tokens");
+        assert_eq!(*c.max_tokens_field.read(), "max_completion_tokens");
+    }
+
+    #[test]
+    fn with_max_tokens_field_empty_keeps_default() {
+        let c = Client::new("https://api.test", "key", None, None)
+            .with_max_tokens_field("");
+        assert_eq!(*c.max_tokens_field.read(), "max_tokens");
+    }
+
+    #[test]
+    fn with_thinking_level_map() {
+        let mut map = HashMap::new();
+        map.insert("high".to_string(), "high".to_string());
+        map.insert("xhigh".to_string(), "max".to_string());
+        let c = Client::new("https://api.test", "key", None, None)
+            .with_thinking_level_map(map);
+        assert_eq!(c.thinking_level_map.read().len(), 2);
+        assert_eq!(
+            c.thinking_level_map.read().get("xhigh").unwrap(),
+            "max"
+        );
+    }
+
+    #[test]
+    fn with_temperature() {
+        let c = Client::new("https://api.test", "key", None, None)
+            .with_temperature(0.5);
+        assert_eq!(c.temperature, Some(0.5));
+    }
+
+    #[test]
+    fn with_max_tokens() {
+        let c = Client::new("https://api.test", "key", None, None)
+            .with_max_tokens(8192);
+        assert_eq!(c.max_tokens, Some(8192));
+    }
+
+    #[test]
+    fn builder_chaining() {
+        let c = Client::new("https://api.test", "key", None, None)
+            .with_thinking_level("medium")
+            .with_thinking_budget(8000)
+            .with_compat("qwen", true, false)
+            .with_max_tokens_field("max_tokens")
+            .with_temperature(0.3)
+            .with_max_tokens(2048);
+        assert_eq!(*c.thinking_level.read(), "medium");
+        assert_eq!(*c.thinking_budget.read(), 8000);
+        assert_eq!(c.temperature, Some(0.3));
+        assert_eq!(c.max_tokens, Some(2048));
+    }
+
+    // ─── set_api_key / update_thinking ──────────────────────────────────────
+
+    #[test]
+    fn set_api_key_updates() {
+        let c = Client::new("https://api.test", "old_key", None, None);
+        assert_eq!(*c.api_key.read(), "old_key");
+        crate::types::LLMProvider::set_api_key(&c, "new_key");
+        assert_eq!(*c.api_key.read(), "new_key");
+    }
+
+    #[test]
+    fn update_thinking_changes_level_and_budget() {
+        let c = Client::new("https://api.test", "key", None, None)
+            .with_thinking_level("off");
+        assert_eq!(*c.thinking_level.read(), "off");
+        crate::types::LLMProvider::update_thinking(&c, "high", 16000);
+        assert_eq!(*c.thinking_level.read(), "high");
+        assert_eq!(*c.thinking_budget.read(), 16000);
+    }
+
+    #[test]
+    fn default_max_tokens_field() {
+        let c = Client::new("https://api.test", "key", None, None);
+        assert_eq!(*c.max_tokens_field.read(), "max_tokens");
+    }
+
+    #[test]
+    fn default_thinking_level_empty() {
+        let c = Client::new("https://api.test", "key", None, None);
+        assert!(c.thinking_level.read().is_empty());
+    }
+
+    #[test]
+    fn default_thinking_budget_zero() {
+        let c = Client::new("https://api.test", "key", None, None);
+        assert_eq!(*c.thinking_budget.read(), 0);
+    }
+
+    #[test]
+    fn default_compat_fields() {
+        let c = Client::new("https://api.test", "key", None, None);
+        assert!(c.compat_thinking_format.read().is_empty());
+        assert!(!*c.compat_supports_reasoning_effort.read());
+        assert!(!*c.compat_requires_reasoning_on_assistant.read());
+    }
+}

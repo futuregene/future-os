@@ -441,3 +441,114 @@ pub(super) async fn run_prompt_loop(
 pub(super) fn truncate_at_char(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── truncate_at_char ────────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_short_string_unchanged() {
+        assert_eq!(truncate_at_char("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_exact_length_unchanged() {
+        assert_eq!(truncate_at_char("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_long_string() {
+        assert_eq!(truncate_at_char("hello world", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_empty_string() {
+        assert_eq!(truncate_at_char("", 10), "");
+    }
+
+    #[test]
+    fn truncate_zero_limit() {
+        assert_eq!(truncate_at_char("hello", 0), "");
+    }
+
+    #[test]
+    fn truncate_utf8_emoji_safe() {
+        let s = "🦀🦀🦀🦀🦀";
+        assert_eq!(truncate_at_char(s, 3), "🦀🦀🦀");
+    }
+
+    #[test]
+    fn truncate_utf8_cjk_safe() {
+        let s = "你好世界你好世界";
+        assert_eq!(truncate_at_char(s, 4), "你好世界");
+    }
+
+    #[test]
+    fn truncate_mixed_ascii_unicode() {
+        let s = "ab你好cd";
+        assert_eq!(truncate_at_char(s, 4), "ab你好");
+    }
+
+    // ─── Stream text accumulation patterns ───────────────────────────────────
+
+    #[test]
+    fn stream_text_separator_between_thinking_and_content() {
+        // Simulates the pattern used in run_prompt_loop:
+        // thinking → "---" separator → content
+        let mut stream_text = String::new();
+        stream_text.push_str("💭 **Thinking...**\n\nSome thinking here");
+        let last_was_content = false;
+
+        // Simulate TextChunk after thinking
+        if !last_was_content && !stream_text.is_empty() {
+            stream_text.push_str("\n\n---\n\n");
+        }
+        stream_text.push_str("Actual answer");
+
+        assert!(stream_text.contains("💭 **Thinking...**"));
+        assert!(stream_text.contains("\n\n---\n\n"));
+        assert!(stream_text.ends_with("Actual answer"));
+    }
+
+    #[test]
+    fn stream_text_tool_marker_format() {
+        // Simulates the tool_running marker format
+        let tool_id = "call_abc123";
+        let tool_name = "shell";
+        let args_preview = "ls -la";
+
+        let marker = format!("<!--tid:{}-->", tool_id);
+        let running_text = format!(
+            "\n\n{}🔧 **Running tool:** `{}`\n```\n{}\n```",
+            marker, tool_name, args_preview
+        );
+
+        assert!(running_text.contains("<!--tid:call_abc123-->"));
+        assert!(running_text.contains("🔧 **Running tool:** `shell`"));
+        assert!(running_text.contains("```\nls -la\n```"));
+    }
+
+    #[test]
+    fn stream_text_tool_completion_replaces_running() {
+        // Simulates the ToolEnd replacement logic
+        let tool_id = "call_abc123";
+        let tool_name = "shell";
+        let marker = format!("<!--tid:{}-->", tool_id);
+        let old_entry = format!("\n\n{}🔧 **Running tool:** `{}`", marker, tool_name);
+
+        let mut stream_text = String::from("Some text");
+        stream_text.push_str(&old_entry);
+
+        let result_preview = "file1.txt\nfile2.txt";
+        let result_display = format!("\n```\n{}\n```", result_preview);
+        let new_entry = format!("\n\n✅ **Tool** `{}` **completed**{}", tool_name, result_display);
+
+        stream_text = stream_text.replace(&old_entry, &new_entry);
+
+        assert!(!stream_text.contains("<!--tid:"));
+        assert!(stream_text.contains("✅ **Tool** `shell` **completed**"));
+        assert!(stream_text.contains("file1.txt"));
+    }
+}

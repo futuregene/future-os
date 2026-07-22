@@ -590,3 +590,125 @@ pub fn mime_from_ext(filename: &str) -> &str {
         _ => "application/octet-stream",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── bytes_to_base64_data ────────────────────────────────────────────────
+
+    #[test]
+    fn base64_data_url_format() {
+        let data = b"hello";
+        let result = bytes_to_base64_data(data, "image/png");
+        assert!(result.starts_with("data:image/png;base64,"));
+        // Verify the base64 payload decodes back to the original
+        let b64_part = result.strip_prefix("data:image/png;base64,").unwrap();
+        use base64::Engine;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(b64_part)
+            .unwrap();
+        assert_eq!(decoded, b"hello");
+    }
+
+    #[test]
+    fn base64_data_empty_input() {
+        let result = bytes_to_base64_data(b"", "text/plain");
+        assert_eq!(result, "data:text/plain;base64,");
+    }
+
+    #[test]
+    fn base64_data_binary_content() {
+        let data = vec![0u8, 255, 128, 1, 0];
+        let result = bytes_to_base64_data(&data, "application/octet-stream");
+        assert!(result.starts_with("data:application/octet-stream;base64,"));
+    }
+
+    // ─── mime_from_ext ───────────────────────────────────────────────────────
+
+    #[test]
+    fn mime_image_extensions() {
+        assert_eq!(mime_from_ext("photo.png"), "image/png");
+        assert_eq!(mime_from_ext("photo.jpg"), "image/jpeg");
+        assert_eq!(mime_from_ext("photo.jpeg"), "image/jpeg");
+        assert_eq!(mime_from_ext("photo.gif"), "image/gif");
+        assert_eq!(mime_from_ext("photo.webp"), "image/webp");
+        assert_eq!(mime_from_ext("photo.bmp"), "image/bmp");
+        assert_eq!(mime_from_ext("icon.svg"), "image/svg+xml");
+    }
+
+    #[test]
+    fn mime_media_extensions() {
+        assert_eq!(mime_from_ext("video.mp4"), "video/mp4");
+        assert_eq!(mime_from_ext("audio.mp3"), "audio/mpeg");
+        assert_eq!(mime_from_ext("audio.ogg"), "audio/ogg");
+        assert_eq!(mime_from_ext("audio.opus"), "audio/ogg");
+    }
+
+    #[test]
+    fn mime_document_extensions() {
+        assert_eq!(mime_from_ext("report.pdf"), "application/pdf");
+        assert_eq!(mime_from_ext("report.doc"), "application/msword");
+        assert_eq!(
+            mime_from_ext("report.docx"),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+        assert_eq!(mime_from_ext("data.xls"), "application/vnd.ms-excel");
+        assert_eq!(
+            mime_from_ext("data.xlsx"),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+    }
+
+    #[test]
+    fn mime_unknown_extension_falls_back() {
+        assert_eq!(mime_from_ext("archive.zip"), "application/octet-stream");
+        assert_eq!(mime_from_ext("noext"), "application/octet-stream");
+        assert_eq!(mime_from_ext(""), "application/octet-stream");
+    }
+
+    #[test]
+    fn mime_extension_case_insensitive() {
+        assert_eq!(mime_from_ext("PHOTO.PNG"), "image/png");
+        assert_eq!(mime_from_ext("Photo.Jpeg"), "image/jpeg");
+        assert_eq!(mime_from_ext("FILE.PDF"), "application/pdf");
+    }
+
+    #[test]
+    fn mime_multiple_dots_uses_last() {
+        assert_eq!(mime_from_ext("archive.tar.gz"), "application/octet-stream");
+        assert_eq!(mime_from_ext("image.backup.png"), "image/png");
+    }
+
+    // ─── Struct field types ─────────────────────────────────────────────────
+
+    #[test]
+    fn send_message_response_fields() {
+        let resp = SendMessageResponse {
+            message_id: "om_abc".to_string(),
+        };
+        assert_eq!(resp.message_id, "om_abc");
+    }
+
+    #[test]
+    fn user_info_fields() {
+        let info = UserInfo {
+            open_id: "ou_123".to_string(),
+            name: "Alice".to_string(),
+            avatar_url: "https://example.com/avatar.png".to_string(),
+        };
+        assert_eq!(info.name, "Alice");
+        assert_eq!(info.open_id, "ou_123");
+    }
+
+    #[test]
+    fn bot_info_fields() {
+        let info = BotInfo {
+            open_id: "ou_bot".to_string(),
+            app_name: "FutureBot".to_string(),
+            app_id: "cli_abc".to_string(),
+            avatar_url: "".to_string(),
+        };
+        assert_eq!(info.app_name, "FutureBot");
+    }
+}

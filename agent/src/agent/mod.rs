@@ -587,6 +587,98 @@ impl PendingMessageQueue {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── PendingMessageQueue ────────────────────────────────────────────────
+
+    #[test]
+    fn queue_new_is_empty() {
+        let q = PendingMessageQueue::new(10, "all");
+        assert!(q.is_empty());
+        assert_eq!(q.len(), 0);
+        assert_eq!(q.mode, "all");
+    }
+
+    #[test]
+    fn queue_enqueue_and_len() {
+        let q = PendingMessageQueue::new(10, "all");
+        q.enqueue("msg1".to_string());
+        q.enqueue("msg2".to_string());
+        assert_eq!(q.len(), 2);
+        assert!(!q.is_empty());
+    }
+
+    #[test]
+    fn queue_drain_all_mode() {
+        let q = PendingMessageQueue::new(10, "all");
+        q.enqueue("a".to_string());
+        q.enqueue("b".to_string());
+        q.enqueue("c".to_string());
+        let msgs = q.drain();
+        assert_eq!(msgs, vec!["a", "b", "c"]);
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn queue_drain_one_at_a_time_mode() {
+        let q = PendingMessageQueue::new(10, "one-at-a-time");
+        q.enqueue("first".to_string());
+        q.enqueue("second".to_string());
+        let msgs = q.drain();
+        assert_eq!(msgs, vec!["first"]);
+        assert_eq!(q.len(), 1); // second still queued
+    }
+
+    #[test]
+    fn queue_drain_empty() {
+        let q = PendingMessageQueue::new(10, "all");
+        let msgs = q.drain();
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn queue_clear() {
+        let q = PendingMessageQueue::new(10, "all");
+        q.enqueue("a".to_string());
+        q.enqueue("b".to_string());
+        q.clear();
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn queue_set_mode() {
+        let mut q = PendingMessageQueue::new(10, "all");
+        assert_eq!(q.mode, "all");
+        q.set_mode("one-at-a-time");
+        assert_eq!(q.mode, "one-at-a-time");
+    }
+
+    #[test]
+    fn queue_capacity_overflow_drops() {
+        let q = PendingMessageQueue::new(2, "all");
+        q.enqueue("a".to_string());
+        q.enqueue("b".to_string());
+        q.enqueue("c".to_string()); // channel full — dropped
+        assert_eq!(q.len(), 2);
+        let msgs = q.drain();
+        assert_eq!(msgs, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn queue_drain_one_at_a_time_then_all() {
+        let q = PendingMessageQueue::new(10, "one-at-a-time");
+        q.enqueue("a".to_string());
+        q.enqueue("b".to_string());
+        q.enqueue("c".to_string());
+        assert_eq!(q.drain(), vec!["a"]);
+        assert_eq!(q.drain(), vec!["b"]);
+        assert_eq!(q.drain(), vec!["c"]);
+        assert!(q.drain().is_empty());
+    }
+}
+
 impl Default for crate::types::AgentConfig {
     fn default() -> Self {
         Self {

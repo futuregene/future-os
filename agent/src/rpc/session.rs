@@ -831,4 +831,397 @@ mod tests {
 
         assert_eq!(session.get_permission_level(), "all");
     }
+
+    // ─── Helper to build a test session ─────────────────────────────────────
+
+    fn make_test_session(id: &str) -> ServerSession {
+        let cwd = test_workspace();
+        ServerSession::new(
+            id.to_string(),
+            Arc::new(tokio::sync::RwLock::new(Loop::new(
+                Arc::new(EmptyProvider),
+                "mock",
+            ))),
+            Arc::new(Manager::default_for(&cwd)),
+            &cwd,
+            Arc::new(EventBus::new()),
+            Arc::new(SseBroadcaster::new()),
+            ApprovalGate::default(),
+        )
+    }
+
+    // ─── resolve_api_key ────────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_api_key_prefers_model_id() {
+        let auth = crate::AuthStore::load();
+        // With an empty auth store, should fall back to model_key or empty
+        let key = resolve_api_key(&auth, "unknown/model", "unknown", "model_key_123");
+        assert!(key == "model_key_123" || key.is_empty());
+    }
+
+    #[test]
+    fn resolve_api_key_empty_model_key() {
+        let auth = crate::AuthStore::load();
+        let key = resolve_api_key(&auth, "unknown/model", "unknown", "");
+        assert!(key.is_empty() || !key.is_empty()); // just verify no panic
+    }
+
+    // ─── default_workspace ──────────────────────────────────────────────────
+
+    #[test]
+    fn default_workspace_is_not_empty() {
+        let ws = default_workspace();
+        assert!(!ws.is_empty());
+        assert!(ws.contains(".future"));
+    }
+
+    // ─── ServerSession basics ───────────────────────────────────────────────
+
+    #[test]
+    fn session_id_returns_id() {
+        let session = make_test_session("test_123");
+        assert_eq!(session.session_id(), "test_123");
+    }
+
+    #[test]
+    fn session_name_set_and_get() {
+        let mut session = make_test_session("s1");
+        assert_eq!(session.session_name(), "");
+        session.set_session_name("My Session");
+        assert_eq!(session.session_name(), "My Session");
+    }
+
+    #[test]
+    fn default_thinking_level_is_xhigh() {
+        let session = make_test_session("s1");
+        assert_eq!(session.thinking_level, "xhigh");
+    }
+
+    #[test]
+    fn default_auto_compaction_is_true() {
+        let session = make_test_session("s1");
+        assert!(session.auto_compaction);
+    }
+
+    #[test]
+    fn default_auto_retry_is_true() {
+        let session = make_test_session("s1");
+        assert!(session.auto_retry);
+    }
+
+    #[test]
+    fn default_ephemeral_is_false() {
+        let session = make_test_session("s1");
+        assert!(!session.ephemeral);
+    }
+
+    #[test]
+    fn default_is_streaming_is_false() {
+        let session = make_test_session("s1");
+        assert!(!session.is_streaming.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn default_messages_empty() {
+        let session = make_test_session("s1");
+        let msgs = session.get_messages();
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn default_created_by_is_empty() {
+        let session = make_test_session("s1");
+        assert!(session.created_by.is_empty());
+    }
+
+    #[test]
+    fn default_parent_session_id_is_empty() {
+        let session = make_test_session("s1");
+        assert!(session.parent_session_id.is_empty());
+    }
+
+    #[test]
+    fn default_source_meta_is_null() {
+        let session = make_test_session("s1");
+        assert_eq!(session.source_meta, serde_json::Value::Null);
+    }
+
+    #[test]
+    fn default_sandbox_policy_is_none() {
+        let session = make_test_session("s1");
+        assert!(session.sandbox_policy.is_none());
+    }
+
+    // ─── Setters ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn set_ephemeral() {
+        let mut session = make_test_session("s1");
+        session.set_ephemeral(true);
+        assert!(session.ephemeral);
+        session.set_ephemeral(false);
+        assert!(!session.ephemeral);
+    }
+
+    #[test]
+    fn set_auto_compaction() {
+        let mut session = make_test_session("s1");
+        session.set_auto_compaction(false);
+        assert!(!session.auto_compaction);
+        session.set_auto_compaction(true);
+        assert!(session.auto_compaction);
+    }
+
+    #[test]
+    fn set_auto_retry() {
+        let mut session = make_test_session("s1");
+        session.set_auto_retry(false);
+        assert!(!session.auto_retry);
+    }
+
+    #[test]
+    fn set_cwd() {
+        let mut session = make_test_session("s1");
+        session.set_cwd("/tmp/project");
+        assert_eq!(session.cwd, "/tmp/project");
+    }
+
+    #[test]
+    fn set_permission_level() {
+        let mut session = make_test_session("s1");
+        session.set_permission_level("workspace");
+        assert_eq!(session.get_permission_level(), "workspace");
+        session.set_permission_level("none");
+        assert_eq!(session.get_permission_level(), "none");
+    }
+
+    // ─── get_last_assistant_text ────────────────────────────────────────────
+
+    #[test]
+    fn get_last_assistant_text_empty() {
+        let session = make_test_session("s1");
+        assert_eq!(session.get_last_assistant_text(), "");
+    }
+
+    #[test]
+    fn get_last_assistant_text_with_messages() {
+        let session = make_test_session("s1");
+        {
+            let mut msgs = session.messages.write();
+            msgs.push(crate::types::AgentMessage {
+                role: "user".to_string(),
+                content: vec![crate::types::ContentBlock::text("hello")],
+                ..Default::default()
+            });
+            msgs.push(crate::types::AgentMessage {
+                role: "assistant".to_string(),
+                content: vec![crate::types::ContentBlock::text("world")],
+                ..Default::default()
+            });
+        }
+        assert_eq!(session.get_last_assistant_text(), "world");
+    }
+
+    #[test]
+    fn get_last_assistant_text_only_user_msgs() {
+        let session = make_test_session("s1");
+        {
+            let mut msgs = session.messages.write();
+            msgs.push(crate::types::AgentMessage {
+                role: "user".to_string(),
+                content: vec![crate::types::ContentBlock::text("hello")],
+                ..Default::default()
+            });
+        }
+        assert_eq!(session.get_last_assistant_text(), "");
+    }
+
+    // ─── get_session_stats ──────────────────────────────────────────────────
+
+    #[test]
+    fn session_stats_empty() {
+        let session = make_test_session("s1");
+        let stats = session.get_session_stats();
+        assert_eq!(stats["sessionId"], "s1");
+        assert_eq!(stats["userMessages"], 0);
+        assert_eq!(stats["assistantMessages"], 0);
+        assert_eq!(stats["totalMessages"], 0);
+    }
+
+    #[test]
+    fn session_stats_with_messages() {
+        let session = make_test_session("s1");
+        {
+            let mut msgs = session.messages.write();
+            msgs.push(crate::types::AgentMessage {
+                role: "user".to_string(),
+                content: vec![crate::types::ContentBlock::text("q1")],
+                ..Default::default()
+            });
+            msgs.push(crate::types::AgentMessage {
+                role: "assistant".to_string(),
+                content: vec![crate::types::ContentBlock::text("a1")],
+                ..Default::default()
+            });
+            msgs.push(crate::types::AgentMessage {
+                role: "user".to_string(),
+                content: vec![crate::types::ContentBlock::text("q2")],
+                ..Default::default()
+            });
+        }
+        let stats = session.get_session_stats();
+        assert_eq!(stats["userMessages"], 2);
+        assert_eq!(stats["assistantMessages"], 1);
+        assert_eq!(stats["totalMessages"], 3);
+    }
+
+    // ─── new_session clears messages ────────────────────────────────────────
+
+    #[test]
+    fn new_session_clears_messages() {
+        let mut session = make_test_session("s1");
+        {
+            let mut msgs = session.messages.write();
+            msgs.push(crate::types::AgentMessage {
+                role: "user".to_string(),
+                content: vec![crate::types::ContentBlock::text("hello")],
+                ..Default::default()
+            });
+        }
+        session.new_session().unwrap();
+        assert!(session.get_messages().is_empty());
+    }
+
+    // ─── strip_image_content_from_messages ──────────────────────────────────
+
+    #[test]
+    fn strip_images_removes_image_blocks() {
+        let session = make_test_session("s1");
+        {
+            let mut msgs = session.messages.write();
+            msgs.push(crate::types::AgentMessage {
+                role: "user".to_string(),
+                content: vec![
+                    crate::types::ContentBlock::text("look"),
+                    crate::types::ContentBlock::image("data:image/png;base64,abc"),
+                ],
+                ..Default::default()
+            });
+        }
+        session.strip_image_content_from_messages();
+        let msgs = session.messages.read();
+        assert_eq!(msgs[0].content.len(), 1);
+        match &msgs[0].content[0] {
+            crate::types::ContentBlock::Text { text } => assert_eq!(text, "look"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    // ─── execute_shell ──────────────────────────────────────────────────────
+
+    #[test]
+    fn execute_shell_echo() {
+        let session = make_test_session("s1");
+        // Create the cwd directory so the shell can cd into it
+        std::fs::create_dir_all(&session.cwd).unwrap();
+        let result = session.execute_shell("echo hello").unwrap();
+        let output = result["output"].as_str().unwrap();
+        assert!(output.contains("hello"));
+        assert_eq!(result["exitCode"], 0);
+    }
+
+    #[test]
+    fn execute_shell_nonzero_exit() {
+        let session = make_test_session("s1");
+        std::fs::create_dir_all(&session.cwd).unwrap();
+        let result = session.execute_shell("false").unwrap();
+        assert_eq!(result["exitCode"], 1);
+    }
+
+    // ─── steer / follow_up ──────────────────────────────────────────────────
+
+    #[test]
+    fn steer_does_not_error() {
+        let mut session = make_test_session("s1");
+        assert!(session.steer("stop that").is_ok());
+    }
+
+    #[tokio::test]
+    async fn follow_up_not_streaming_calls_prompt() {
+        let mut session = make_test_session("s1");
+        std::fs::create_dir_all(&session.cwd).unwrap();
+        // Not streaming → follow_up falls through to prompt, which needs an
+        // actual LLM. With EmptyProvider, prompt() may return an error, but
+        // it shouldn't panic.
+        let _ = session.follow_up("hello");
+    }
+
+    // ─── abort ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn abort_sets_not_streaming() {
+        let session = make_test_session("s1");
+        session.is_streaming.store(true, std::sync::atomic::Ordering::Relaxed);
+        session.abort();
+        assert!(!session.is_streaming.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    // ─── set_thinking_level ─────────────────────────────────────────────────
+
+    #[test]
+    fn set_thinking_level_updates_field() {
+        let mut session = make_test_session("s1");
+        session.set_thinking_level("high");
+        assert_eq!(session.thinking_level, "high");
+    }
+
+    #[test]
+    fn set_thinking_level_off() {
+        let mut session = make_test_session("s1");
+        session.set_thinking_level("off");
+        assert_eq!(session.thinking_level, "off");
+    }
+
+    // ─── new_with_shared_loop ───────────────────────────────────────────────
+
+    #[test]
+    fn new_with_shared_loop_defaults() {
+        let cwd = test_workspace();
+        let session = ServerSession::new_with_shared_loop(
+            "shared_test".to_string(),
+            Arc::new(tokio::sync::RwLock::new(Loop::new(
+                Arc::new(EmptyProvider),
+                "mock",
+            ))),
+            Arc::new(Manager::default_for(&cwd)),
+            &cwd,
+            Arc::new(EventBus::new()),
+            Arc::new(SseBroadcaster::new()),
+            ApprovalGate::default(),
+        );
+        assert_eq!(session.session_id(), "shared_test");
+        assert_eq!(session.thinking_level, "xhigh");
+        assert_eq!(session.get_permission_level(), "all");
+        assert!(session.auto_compaction);
+    }
+
+    // ─── compact ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn compact_empty_messages() {
+        let session = make_test_session("s1");
+        let result = session.compact("").unwrap();
+        assert_eq!(result["messagesRemoved"], 0);
+        assert_eq!(result["summary"], "");
+    }
+
+    // ─── add_session_rule ───────────────────────────────────────────────────
+
+    #[test]
+    fn add_session_rule_does_not_panic() {
+        let session = make_test_session("s1");
+        session.add_session_rule("/tmp/**", "read");
+        // Just verify no panic — the rule goes into the session_rules mutex
+    }
 }

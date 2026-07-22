@@ -186,3 +186,221 @@ impl Default for Settings {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    // ─── Defaults ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn default_settings_values() {
+        let s = Settings::default();
+        assert_eq!(s.steering_mode, "one-at-a-time");
+        assert_eq!(s.follow_up_mode, "one-at-a-time");
+        assert_eq!(s.max_turns, 0);
+        assert_eq!(s.default_permission_level, "all");
+    }
+
+    #[test]
+    fn default_compaction_values() {
+        let s = Settings::default();
+        assert!(s.compaction_enabled());
+        assert_eq!(s.compaction_reserve_tokens(), 16384);
+        assert_eq!(s.compaction_keep_recent_tokens(), 20000);
+    }
+
+    #[test]
+    fn default_retry_values() {
+        let s = Settings::default();
+        assert!(s.retry_enabled());
+        let retry = s.retry.unwrap();
+        assert_eq!(retry.max_retries, 3);
+        assert_eq!(retry.base_delay_ms, 2000);
+        assert!(retry.provider.is_none());
+    }
+
+    // ─── CompactionSettings ─────────────────────────────────────────────────
+
+    #[test]
+    fn compaction_settings_defaults() {
+        let c = CompactionSettings {
+            enabled: Some(true),
+            reserve_tokens: default_compaction_reserve_tokens(),
+            keep_recent_tokens: default_compaction_keep_recent_tokens(),
+        };
+        assert_eq!(c.reserve_tokens, 16384);
+        assert_eq!(c.keep_recent_tokens, 20000);
+        assert_eq!(c.enabled, Some(true));
+    }
+
+    #[test]
+    fn compaction_disabled_explicitly() {
+        let s = Settings {
+            compaction: Some(Box::new(CompactionSettings {
+                enabled: Some(false),
+                reserve_tokens: 16384,
+                keep_recent_tokens: 20000,
+            })),
+            ..Default::default()
+        };
+        assert!(!s.compaction_enabled());
+    }
+
+    #[test]
+    fn compaction_none_falls_back_to_defaults() {
+        let s = Settings {
+            compaction: None,
+            ..Default::default()
+        };
+        assert!(s.compaction_enabled());
+        assert_eq!(s.compaction_reserve_tokens(), 16384);
+    }
+
+    // ─── RetrySettings ──────────────────────────────────────────────────────
+
+    #[test]
+    fn retry_settings_defaults() {
+        let r = RetrySettings {
+            enabled: Some(true),
+            max_retries: default_max_retries(),
+            base_delay_ms: default_base_delay_ms(),
+            provider: None,
+        };
+        assert_eq!(r.max_retries, 3);
+        assert_eq!(r.base_delay_ms, 2000);
+    }
+
+    #[test]
+    fn retry_disabled() {
+        let s = Settings {
+            retry: Some(Box::new(RetrySettings {
+                enabled: Some(false),
+                max_retries: 3,
+                base_delay_ms: 2000,
+                provider: None,
+            })),
+            ..Default::default()
+        };
+        assert!(!s.retry_enabled());
+    }
+
+    #[test]
+    fn retry_none_falls_back_to_enabled() {
+        let s = Settings {
+            retry: None,
+            ..Default::default()
+        };
+        assert!(s.retry_enabled());
+    }
+
+    #[test]
+    fn provider_retry_settings() {
+        let p = ProviderRetrySettings {
+            timeout_ms: Some(5000),
+            max_retries: Some(5),
+            max_retry_delay_ms: Some(30000),
+        };
+        assert_eq!(p.timeout_ms, Some(5000));
+        assert_eq!(p.max_retries, Some(5));
+    }
+
+    // ─── JSON serialization ────────────────────────────────────────────────
+
+    #[test]
+    fn serialize_default_skips_defaults() {
+        let s = Settings::default();
+        let json = serde_json::to_string(&s).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        // skip_serializing_if fields should be absent when matching defaults
+        assert!(parsed.get("steeringMode").is_none() || parsed["steeringMode"] == "one-at-a-time");
+    }
+
+    #[test]
+    fn deserialize_minimal_json() {
+        let json = r#"{}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.steering_mode, "one-at-a-time");
+        assert_eq!(s.max_turns, 0);
+        assert!(s.compaction.is_some());
+        assert!(s.retry.is_some());
+    }
+
+    #[test]
+    fn deserialize_full_json() {
+        let json = r#"{
+            "steeringMode": "parallel",
+            "followUpMode": "queue",
+            "maxTurns": 10,
+            "defaultPermissionLevel": "workspace",
+            "compaction": {"enabled": false, "reserveTokens": 8192, "keepRecentTokens": 10000},
+            "retry": {"enabled": false, "maxRetries": 5, "baseDelayMs": 1000}
+        }"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.steering_mode, "parallel");
+        assert_eq!(s.follow_up_mode, "queue");
+        assert_eq!(s.max_turns, 10);
+        assert_eq!(s.default_permission_level, "workspace");
+        assert!(!s.compaction_enabled());
+        assert!(!s.retry_enabled());
+    }
+
+    #[test]
+    fn roundtrip_preserves_custom_values() {
+        let original = Settings {
+            steering_mode: "custom".to_string(),
+            max_turns: 42,
+            default_permission_level: "workspace".to_string(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let restored: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.steering_mode, "custom");
+        assert_eq!(restored.max_turns, 42);
+        assert_eq!(restored.default_permission_level, "workspace");
+    }
+
+    // ─── File I/O ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn load_settings_missing_file_returns_defaults() {
+        let path = std::path::Path::new("/tmp/nonexistent_settings_test.json");
+        let s = load_settings(path).unwrap();
+        assert_eq!(s.steering_mode, "one-at-a-time");
+        assert!(s.compaction_enabled());
+    }
+
+    #[test]
+    fn save_and_load_roundtrip() {
+        let dir = std::env::temp_dir().join("future_config_test");
+        let path = dir.join("settings.json");
+
+        let original = Settings {
+            steering_mode: "test_mode".to_string(),
+            max_turns: 99,
+            ..Default::default()
+        };
+        original.save(&path).unwrap();
+
+        let loaded = load_settings(&path).unwrap();
+        assert_eq!(loaded.steering_mode, "test_mode");
+        assert_eq!(loaded.max_turns, 99);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_settings_invalid_json_errors() {
+        let dir = std::env::temp_dir().join("future_config_bad_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(f, "not valid json").unwrap();
+        drop(f);
+
+        assert!(load_settings(&path).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
