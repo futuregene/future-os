@@ -1,15 +1,25 @@
 /**
  * Input component — multi-line text input with history.
  * Enter submits, Alt+Enter / Shift+Enter inserts a newline.
- * Up/Down navigates lines when multi-line; navigates history when single-line.
+ * Up/Down navigates visual lines (soft-wrapped + hard newlines); history at bounds.
  * Paste preserves newlines (multi-line paste).
  * Implements Component + Focusable.
  */
 
 import { type Component, CURSOR_MARKER, type Focusable } from "../tui.js";
-import { getSegmenter, isPunctuationChar, isWhitespaceChar, sliceByColumn, visibleWidth } from "../utils.js";
+import { extractAnsiCode, getSegmenter, isPunctuationChar, isWhitespaceChar, stripAnsiCodes, visibleWidth, wrapTextWithAnsi } from "../utils.js";
 
 const segmenter = getSegmenter();
+
+/** Info about where the cursor sits in the visual (wrapped) layout. */
+interface CursorVisualInfo {
+  /** Zero-based index of the visual render line that contains the cursor. */
+  visualLine: number;
+  /** Byte offset of the cursor within the wrapped sub-line text. */
+  colInWrapped: number;
+  /** The wrapped sub-line text (without prompt prefix). */
+  subLineText: string;
+}
 
 export class Input implements Component, Focusable {
   private value: string = "";
@@ -29,6 +39,12 @@ export class Input implements Component, Focusable {
   private pasteBuffer: string = "";
   private isInPaste: boolean = false;
 
+  // ─── Cached visual layout (invalidated on edit / size change) ─────
+  private cachedVisualWidth = -1;
+  private cachedVisualLines: string[] = [];
+  private cachedLineMap: number[] = []; // visualLine → logical line index
+  private cachedValueForLayout = "";
+
   getValue(): string {
     return this.value;
   }
@@ -38,6 +54,7 @@ export class Input implements Component, Focusable {
     this.cursor = cursorPos !== undefined
       ? Math.max(0, Math.min(cursorPos, value.length))
       : value.length;
+    this.cachedVisualWidth = -1;
   }
 
   insertText(text: string): void {
@@ -96,31 +113,27 @@ export class Input implements Component, Focusable {
 
     // ── History vs line navigation ──────────────────────────────────
 
-    const multiline = this.isMultiline();
+    const totalVisualLines = this.countVisualLines();
 
     if (key === "up") {
-      // Multi-line: navigate lines first, history only at first line
-      if (multiline) {
-        const { start } = this.getLineBounds(this.cursor);
-        if (start === 0) {
-          // At first line — navigate history
+      if (totalVisualLines > 1) {
+        const info = this.getCursorVisualInfo();
+        if (info.visualLine === 0) {
           return this.historyUp();
         }
-        this.moveUpLine();
+        this.moveUpVisualLine();
         return true;
       }
-      // Single-line: history only
       return this.historyUp();
     }
 
     if (key === "down") {
-      if (multiline) {
-        const { end } = this.getLineBounds(this.cursor);
-        if (end >= this.value.length) {
-          // At last line — navigate history
+      if (totalVisualLines > 1) {
+        const info = this.getCursorVisualInfo();
+        if (info.visualLine >= totalVisualLines - 1) {
           return this.historyDown();
         }
-        this.moveDownLine();
+        this.moveDownVisualLine();
         return true;
       }
       return this.historyDown();
@@ -168,6 +181,9 @@ export class Input implements Component, Focusable {
         const graphemes = [...segmenter.segment(beforeCursor)];
         const lastGrapheme = graphemes[graphemes.length - 1];
         this.cursor -= lastGrapheme ? lastGrapheme.segment.length : 1;
+        while (this.cursor > 0 && this.value[this.cursor] === "\n") {
+          this.cursor--;
+        }
       }
       return true;
     }
@@ -178,15 +194,18 @@ export class Input implements Component, Focusable {
         const graphemes = [...segmenter.segment(afterCursor)];
         const firstGrapheme = graphemes[0];
         this.cursor += firstGrapheme ? firstGrapheme.segment.length : 1;
+        while (this.cursor < this.value.length && this.value[this.cursor] === "\n") {
+          this.cursor++;
+        }
       }
       return true;
     }
 
     // Home/End — line-aware when multi-line, whole-value when single-line
     if (key === "home") {
+      const multiline = this.value.includes("\n");
       if (multiline) {
         const { start } = this.getLineBounds(this.cursor);
-        // If already at line start, go to value start
         this.cursor = this.cursor === start ? 0 : start;
       } else {
         this.cursor = 0;
@@ -195,9 +214,9 @@ export class Input implements Component, Focusable {
     }
 
     if (key === "end") {
+      const multiline = this.value.includes("\n");
       if (multiline) {
         const { end } = this.getLineBounds(this.cursor);
-        // If already at line end, go to value end
         this.cursor = this.cursor === end ? this.value.length : end;
       } else {
         this.cursor = this.value.length;
@@ -252,13 +271,126 @@ export class Input implements Component, Focusable {
     return false;
   }
 
-  // ── Multi-line navigation helpers ──────────────────────────────────
+  // ── Visual layout helpers ─────────────────────────────────────────
 
-  private isMultiline(): boolean {
-    return this.value.includes("\n");
+  /**
+   * Build (and cache) the visual line layout for the current value + width.
+   * Returns visual lines without prompt prefix.
+   */
+  private buildVisualLayout(availableWidth: number): string[] {
+    if (availableWidth <= 0) return [""];
+    if (this.cachedVisualWidth === availableWidth && this.cachedVisualLines.length > 0 && this.cachedValueForLayout === this.value) {
+      return this.cachedVisualLines;
+    }
+
+    const lines: string[] = [];
+    const lineMap: number[] = [];
+    const valueLines = this.value.split("\n");
+
+    for (let li = 0; li < valueLines.length; li++) {
+      const logicalLine = valueLines[li]!;
+      const wrapped = wrapTextWithAnsi(logicalLine || " ", availableWidth);
+      // Skip empty result (shouldn't happen, but guard)
+      const subLines = wrapped.length > 0 ? wrapped : [" "];
+      for (const sub of subLines) {
+        lines.push(sub);
+        lineMap.push(li);
+      }
+    }
+
+    this.cachedVisualWidth = availableWidth;
+    this.cachedVisualLines = lines;
+    this.cachedLineMap = lineMap;
+    this.cachedValueForLayout = this.value;
+    return lines;
   }
 
-  /** Get start/end offsets of the line containing cursorPos. */
+  /** Count total visual lines for the current width. */
+  private countVisualLines(): number {
+    // Use a cached width from last render or a reasonable default
+    const w = this.cachedVisualWidth > 0 ? this.cachedVisualWidth : 80;
+    return this.buildVisualLayout(w).length;
+  }
+
+  /**
+   * Find which visual line and column the cursor sits on.
+   * Uses the last cached layout width.
+   */
+  private getCursorVisualInfo(): CursorVisualInfo {
+    const w = this.cachedVisualWidth > 0 ? this.cachedVisualWidth : 80;
+    const lines = this.buildVisualLayout(w);
+
+    let visualLine = 0;
+    let consumed = 0;
+
+    for (let vi = 0; vi < lines.length; vi++) {
+      const sub = lines[vi]!;
+      const plain = stripAnsiCodes(sub);
+      const subLen = plain.length;
+
+      if (this.cursor <= consumed + subLen || vi === lines.length - 1) {
+        // Cursor is in (or at the end of) this visual sub-line
+        const offsetInSub = Math.max(0, this.cursor - consumed);
+        const colInWrapped = visibleWidth(plain.slice(0, offsetInSub));
+        return { visualLine: vi, colInWrapped, subLineText: sub };
+      }
+
+      consumed += subLen;
+      visualLine = vi + 1;
+    }
+
+    // Fallback: cursor at end of last line
+    return { visualLine: lines.length - 1, colInWrapped: 0, subLineText: "" };
+  }
+
+  /**
+   * Map a (visualLine, column) pair back to a cursor position in the raw value.
+   */
+  private cursorFromVisual(targetVL: number, targetCol: number, availableWidth: number): number {
+    const lines = this.buildVisualLayout(availableWidth);
+    const vl = Math.max(0, Math.min(targetVL, lines.length - 1));
+
+    let consumed = 0;
+    for (let vi = 0; vi < vl; vi++) {
+      consumed += stripAnsiCodes(lines[vi]!).length;
+    }
+
+    // Find the byte offset within the target visual line corresponding to targetCol
+    const sub = lines[vl]!;
+    const plain = stripAnsiCodes(sub);
+    let col = 0;
+    let byteOff = 0;
+    const segs = segmenter.segment(plain);
+    for (const seg of segs) {
+      const segWidth = visibleWidth(seg.segment);
+      if (col + segWidth > targetCol) break;
+      col += segWidth;
+      byteOff += seg.segment.length;
+    }
+
+    return consumed + byteOff;
+  }
+
+  // ── Visual line navigation (soft-wrap aware) ─────────────────────
+
+  private moveUpVisualLine(): void {
+    const info = this.getCursorVisualInfo();
+    if (info.visualLine <= 0) return;
+    const w = this.cachedVisualWidth > 0 ? this.cachedVisualWidth : 80;
+    this.cursor = this.cursorFromVisual(info.visualLine - 1, info.colInWrapped, w);
+  }
+
+  private moveDownVisualLine(): void {
+    const info = this.getCursorVisualInfo();
+    const w = this.cachedVisualWidth > 0 ? this.cachedVisualWidth : 80;
+    const total = this.buildVisualLayout(w).length;
+    if (info.visualLine >= total - 1) return;
+    this.cursor = this.cursorFromVisual(info.visualLine + 1, info.colInWrapped, w);
+  }
+
+  // ── Logical line helpers (hard \n boundaries) ────────────────────
+
+  /** Get start/end offsets of the logical line containing cursorPos. */
   private getLineBounds(cursorPos: number): { start: number; end: number } {
     const start = this.value.lastIndexOf("\n", cursorPos - 1) + 1;
     const endIdx = this.value.indexOf("\n", cursorPos);
@@ -266,13 +398,13 @@ export class Input implements Component, Focusable {
     return { start, end };
   }
 
-  /** Visual column of cursor within its current line. */
+  /** Visual column of cursor within its current logical line. */
   private cursorColInLine(cursorPos: number): number {
     const { start } = this.getLineBounds(cursorPos);
     return visibleWidth(this.value.slice(start, cursorPos));
   }
 
-  /** Move cursor to target visual column on a given line (by line start offset). */
+  /** Move cursor to target visual column within a logical line. */
   private setCursorToLineCol(lineStart: number, visualCol: number): void {
     const lineEnd = this.value.indexOf("\n", lineStart);
     const end = lineEnd === -1 ? this.value.length : lineEnd;
@@ -288,23 +420,6 @@ export class Input implements Component, Focusable {
       offset += seg.segment.length;
     }
     this.cursor = lineStart + offset;
-  }
-
-  private moveUpLine(): void {
-    const { start } = this.getLineBounds(this.cursor);
-    if (start === 0) return;
-    const col = this.cursorColInLine(this.cursor);
-    const prevLineEnd = start - 1;
-    const prevLineStart = this.value.lastIndexOf("\n", prevLineEnd - 1) + 1;
-    this.setCursorToLineCol(prevLineStart, col);
-  }
-
-  private moveDownLine(): void {
-    const { end } = this.getLineBounds(this.cursor);
-    if (end >= this.value.length) return;
-    const col = this.cursorColInLine(this.cursor);
-    const nextLineStart = end + 1;
-    this.setCursorToLineCol(nextLineStart, col);
   }
 
   // ── History navigation ────────────────────────────────────────────
@@ -342,6 +457,7 @@ export class Input implements Component, Focusable {
   private insertAtCursor(text: string): void {
     this.value = this.value.slice(0, this.cursor) + text + this.value.slice(this.cursor);
     this.cursor += text.length;
+    this.cachedVisualWidth = -1;
     this.onChange?.(this.value);
   }
 
@@ -353,6 +469,7 @@ export class Input implements Component, Focusable {
       const graphemeLength = lastGrapheme ? lastGrapheme.segment.length : 1;
       this.value = this.value.slice(0, this.cursor - graphemeLength) + this.value.slice(this.cursor);
       this.cursor -= graphemeLength;
+      this.cachedVisualWidth = -1;
       this.onChange?.(this.value);
     }
   }
@@ -364,6 +481,7 @@ export class Input implements Component, Focusable {
       const firstGrapheme = graphemes[0];
       const graphemeLength = firstGrapheme ? firstGrapheme.segment.length : 1;
       this.value = this.value.slice(0, this.cursor) + this.value.slice(this.cursor + graphemeLength);
+      this.cachedVisualWidth = -1;
       this.onChange?.(this.value);
     }
   }
@@ -371,19 +489,18 @@ export class Input implements Component, Focusable {
   private deleteToLineStart(): void {
     const { start } = this.getLineBounds(this.cursor);
     if (this.cursor === start) {
-      // At line start — delete the preceding newline to join with the previous line.
-      // This makes holding Ctrl+U delete line after line.
       if (start > 0) {
-        // The character before start is always \n (since start is after a newline or 0)
-        const beforeNewline = start - 1; // position of \n
+        const beforeNewline = start - 1;
         this.value = this.value.slice(0, beforeNewline) + this.value.slice(this.cursor);
         this.cursor = beforeNewline;
+        this.cachedVisualWidth = -1;
         this.onChange?.(this.value);
       }
       return;
     }
     this.value = this.value.slice(0, start) + this.value.slice(this.cursor);
     this.cursor = start;
+    this.cachedVisualWidth = -1;
     this.onChange?.(this.value);
   }
 
@@ -391,6 +508,7 @@ export class Input implements Component, Focusable {
     const { end } = this.getLineBounds(this.cursor);
     if (this.cursor >= end) return;
     this.value = this.value.slice(0, this.cursor) + this.value.slice(end);
+    this.cachedVisualWidth = -1;
     this.onChange?.(this.value);
   }
 
@@ -402,6 +520,7 @@ export class Input implements Component, Focusable {
     this.cursor = oldCursor;
     this.value = this.value.slice(0, deleteFrom) + this.value.slice(this.cursor);
     this.cursor = deleteFrom;
+    this.cachedVisualWidth = -1;
     this.onChange?.(this.value);
   }
 
@@ -412,6 +531,7 @@ export class Input implements Component, Focusable {
     const deleteTo = this.cursor;
     this.cursor = oldCursor;
     this.value = this.value.slice(0, this.cursor) + this.value.slice(deleteTo);
+    this.cachedVisualWidth = -1;
     this.onChange?.(this.value);
   }
 
@@ -473,7 +593,6 @@ export class Input implements Component, Focusable {
   // ── Paste handling ────────────────────────────────────────────────
 
   private handlePaste(pastedText: string): void {
-    // Normalize line endings (preserve newlines), replace tabs
     const cleanText = pastedText
       .replace(/\r\n/g, "\n")
       .replace(/\r/g, "\n")
@@ -482,126 +601,88 @@ export class Input implements Component, Focusable {
   }
 
   invalidate(): void {
-    // No cached state to invalidate
+    this.cachedVisualWidth = -1;
   }
 
   // ── Render ────────────────────────────────────────────────────────
 
   render(screenWidth: number): string[] {
-    const lines: string[] = [];
-    const valueLines = this.value.split("\n");
-    const cursorLineIndex = this.getCursorLineIndex();
+    const promptWidth = 2; // "> " or "  "
+    const availableWidth = Math.max(0, screenWidth - promptWidth);
 
-    for (let i = 0; i < valueLines.length; i++) {
-      const isFirstLine = i === 0;
+    const visualLines = this.buildVisualLayout(availableWidth);
+    const cursorInfo = (availableWidth > 0) ? this.getCursorVisualInfo() : null;
+
+    const output: string[] = [];
+
+    for (let vi = 0; vi < visualLines.length; vi++) {
+      const isFirstLine = vi === 0;
       const prompt = isFirstLine ? "> " : "  ";
-      const availableWidth = screenWidth - prompt.length;
+      const subText = visualLines[vi]!;
+      const isCursorLine = cursorInfo !== null && vi === cursorInfo.visualLine;
 
-      if (availableWidth <= 0) {
-        lines.push(prompt);
+      if (isCursorLine && availableWidth > 0) {
+        output.push(prompt + this.renderCursorInLine(subText, cursorInfo!.colInWrapped, availableWidth));
+      } else {
+        const plain = stripAnsiCodes(subText);
+        const visW = visibleWidth(plain);
+        if (availableWidth > 0) {
+          output.push(prompt + subText + " ".repeat(Math.max(0, availableWidth - visW)));
+        } else {
+          output.push(prompt);
+        }
+      }
+    }
+
+    return output;
+  }
+
+  /** Render a wrapped sub-line with cursor highlighting at the given visual column. */
+  private renderCursorInLine(text: string, cursorVisCol: number, availableWidth: number): string {
+    // Find byte offset in the original text (may contain ANSI codes from wrapping)
+    let byteOff = 0;
+    let col = 0;
+    let i = 0;
+
+    while (i < text.length && col < cursorVisCol) {
+      // Skip ANSI escape sequences (CSI, OSC, etc.) — they have no visual width
+      const ansi = extractAnsiCode(text, i);
+      if (ansi) {
+        i += ansi.length;
         continue;
       }
-
-      const lineText = valueLines[i]!;
-      const isCursorLine = i === cursorLineIndex;
-      const cursorInThisLine = isCursorLine ? this.cursor - this.getLineStartOffset(i) : -1;
-
-      const rendered = this.renderLine(lineText, cursorInThisLine, availableWidth, isCursorLine);
-      lines.push(prompt + rendered);
+      // Regular character — advance by one grapheme
+      const segIter = segmenter.segment(text.slice(i))[Symbol.iterator]();
+      const segResult = segIter.next();
+      if (segResult.done) break;
+      const grapheme = segResult.value.segment;
+      col += visibleWidth(grapheme);
+      i += grapheme.length;
     }
+    byteOff = i;
 
-    return lines;
-  }
-
-  /** Which line (by index) the cursor is on. */
-  private getCursorLineIndex(): number {
-    let pos = 0;
-    const valueLines = this.value.split("\n");
-    for (let i = 0; i < valueLines.length; i++) {
-      pos += valueLines[i]!.length;
-      if (this.cursor <= pos) return i;
-      pos += 1; // for the \n
+    // Find the character at the cursor position (skip any ANSI codes just after byteOff)
+    let j = byteOff;
+    while (j < text.length) {
+      const ansi = extractAnsiCode(text, j);
+      if (ansi) { j += ansi.length; continue; }
+      break;
     }
-    return valueLines.length - 1;
-  }
+    const segIter2 = segmenter.segment(text.slice(j))[Symbol.iterator]();
+    const segResult2 = segIter2.next();
+    const atCursor = segResult2.done ? " " : segResult2.value.segment;
+    const afterCursorStart = j + atCursor.length;
 
-  /** Get the starting byte offset of line i in the value. */
-  private getLineStartOffset(lineIndex: number): number {
-    let offset = 0;
-    const valueLines = this.value.split("\n");
-    for (let i = 0; i < lineIndex; i++) {
-      offset += valueLines[i]!.length + 1; // +1 for \n
-    }
-    return offset;
-  }
-
-  /** Render a single line with optional cursor highlighting and horizontal scroll. */
-  private renderLine(
-    lineText: string,
-    cursorInLine: number,
-    availableWidth: number,
-    isCursorLine: boolean,
-  ): string {
-    if (!isCursorLine) {
-      // Non-cursor line: just slice to fit
-      if (visibleWidth(lineText) <= availableWidth) {
-        return lineText + " ".repeat(availableWidth - visibleWidth(lineText));
-      }
-      return sliceByColumn(lineText, 0, availableWidth);
-    }
-
-    // Cursor line — full rendering with scroll and cursor highlight
-    const totalWidth = visibleWidth(lineText);
-
-    if (totalWidth < availableWidth) {
-      // Fits entirely — render with cursor and padding
-      return this.renderWithCursor(lineText, cursorInLine, availableWidth, 0);
-    }
-
-    // Needs horizontal scrolling
-    const cursorCol = visibleWidth(lineText.slice(0, cursorInLine));
-    const scrollWidth = cursorInLine === lineText.length ? availableWidth - 1 : availableWidth;
-
-    let startCol = 0;
-    if (scrollWidth > 0) {
-      const halfWidth = Math.floor(scrollWidth / 2);
-      if (cursorCol < halfWidth) {
-        startCol = 0;
-      } else if (cursorCol > totalWidth - halfWidth) {
-        startCol = Math.max(0, totalWidth - scrollWidth);
-      } else {
-        startCol = Math.max(0, cursorCol - halfWidth);
-      }
-    }
-
-    const visibleText = sliceByColumn(lineText, startCol, startCol + scrollWidth);
-    const cursorDisplay = visibleText.length > 0
-      ? sliceByColumn(lineText, startCol, cursorCol).length
-      : 0;
-
-    return this.renderWithCursor(visibleText, cursorDisplay, availableWidth, startCol);
-  }
-
-  /** Render text with cursor highlight and padding to fill availableWidth. */
-  private renderWithCursor(
-    text: string,
-    cursorOffset: number,
-    availableWidth: number,
-    _scrollStart: number,
-  ): string {
-    const graphemes = [...segmenter.segment(text.slice(cursorOffset))];
-    const cursorGrapheme = graphemes[0];
-
-    const beforeCursor = text.slice(0, cursorOffset);
-    const atCursor = cursorGrapheme?.segment ?? " ";
-    const afterCursor = text.slice(cursorOffset + atCursor.length);
+    const beforeCursor = text.slice(0, byteOff);
+    const afterCursor = text.slice(afterCursorStart);
 
     const marker = this.focused ? CURSOR_MARKER : "";
     const cursorChar = this.focused ? `\x1b[7m${atCursor}\x1b[27m` : atCursor;
     const textWithCursor = beforeCursor + marker + cursorChar + afterCursor;
 
+    // Compute visual length of the rendered content (without cursor marker)
     const renderedContent = beforeCursor + atCursor + afterCursor;
-    const visualLength = visibleWidth(renderedContent);
+    const visualLength = visibleWidth(stripAnsiCodes(renderedContent));
     const padding = " ".repeat(Math.max(0, availableWidth - visualLength));
 
     return textWithCursor + padding;

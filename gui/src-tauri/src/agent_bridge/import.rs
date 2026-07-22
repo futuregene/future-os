@@ -17,21 +17,25 @@ use crate::store;
 /// Lightweight session summary from the agent's `list_sessions` RPC.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AgentSessionSummary {
-    id: String,
+pub struct AgentSessionSummary {
+    pub id: String,
     #[serde(default, rename = "session_name")]
-    name: Option<String>,
+    pub name: Option<String>,
     // Tolerate a missing/null cwd (e.g. channel sessions) — an empty cwd is
     // routed to a chat workspace by `thread_mode`, not dropped.
     #[serde(default)]
-    cwd: String,
+    pub cwd: String,
     #[serde(default)]
-    model: String,
+    pub model: String,
     #[serde(default, rename = "first_message")]
-    first_message: Option<String>,
+    pub first_message: Option<String>,
     #[serde(default)]
     #[allow(dead_code)]
-    parent_session_id: String,
+    pub parent_session_id: String,
+    /// Whether the agent is currently streaming a response for this session.
+    #[serde(default, rename = "is_streaming")]
+    #[allow(dead_code)]
+    pub is_streaming: bool,
 }
 
 // ─── fetch helpers ──────────────────────────────────────────────────────────
@@ -466,7 +470,8 @@ mod tests {
             "updated_at": "2026-07-21 10:00:00",
             "parent_session_id": "parent-1",
             "first_message": "please fix the login bug on the homepage",
-            "query_count": 5
+            "query_count": 5,
+            "is_streaming": true,
         });
 
         let summary: AgentSessionSummary =
@@ -480,6 +485,7 @@ mod tests {
         );
         assert_eq!(summary.cwd, "/Users/test/my-project");
         assert_eq!(summary.model, "deepseek-v4-pro");
+        assert!(summary.is_streaming);
     }
 
     /// session_title prefers first_message over name and cwd_basename.
@@ -492,6 +498,7 @@ mod tests {
             model: "deepseek".into(),
             first_message: Some("help me debug this".into()),
             parent_session_id: String::new(),
+            is_streaming: false,
         };
         assert_eq!(session_title(&summary), "help me debug this");
     }
@@ -506,6 +513,7 @@ mod tests {
             model: "deepseek".into(),
             first_message: None,
             parent_session_id: String::new(),
+            is_streaming: false,
         };
         assert_eq!(session_title(&summary), "custom name");
     }
@@ -520,6 +528,7 @@ mod tests {
             model: "deepseek".into(),
             first_message: None,
             parent_session_id: String::new(),
+            is_streaming: false,
         };
         assert_eq!(session_title(&summary), "my-project"); // falls back to cwd_basename
     }
@@ -534,6 +543,7 @@ mod tests {
             model: "deepseek".into(),
             first_message: None,
             parent_session_id: String::new(),
+            is_streaming: false,
         };
         assert_eq!(session_title(&summary), "Imported Chat");
     }
