@@ -474,6 +474,14 @@ export class GrpcClient {
       this.reconnectTimer = null;
     }
 
+    // Never subscribe without a session ID — an empty session_id may cause
+    // the server to broadcast events from ALL sessions, leaking GUI streams
+    // into the TUI.
+    if (!this.currentSessionId) {
+      this.connected = false;
+      return;
+    }
+
     // Create a fresh connection promise — resolved once the first event
     // arrives (connected=true) or the stream fails.  Eliminates the busy-wait
     // poll loop in call().

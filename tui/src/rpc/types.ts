@@ -131,6 +131,7 @@ export interface SessionSummary {
   model: string;
   session_name?: string;
   parent_session_id?: string;
+  is_streaming?: boolean;
 }
 
 // ============================================================================

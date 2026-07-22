@@ -221,14 +221,9 @@ export class App extends Container {
       this.chat.scrollDown(3); this.requestRender(); return true;
     }, "Scroll chat down (line)");
 
-    // Subscribe to SSE events
-    this.client.subscribe((event) => {
-      // If we were showing "not connected", refresh state on first event
-      if (this.state.model === "(not connected)") {
-        this.refresh().catch(() => {});
-      }
-      this.handleAgentEvent(event);
-    });
+    // Event subscription is deferred to start() — subscribing here with an
+    // empty currentSessionId would risk receiving events from other sessions
+    // (e.g. a GUI session streaming concurrently).
   }
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────
@@ -321,6 +316,16 @@ export class App extends Container {
         this.client.prompt(this.cliOptions.initialPrompt!);
       }, 100);
     }
+
+    // Subscribe to events only after session is established — prevents
+    // cross-session event leakage (e.g. GUI streaming bleeding into TUI).
+    this.client.subscribe((event) => {
+      // If we were showing "not connected", refresh state on first event
+      if (this.state.model === "(not connected)") {
+        this.refresh().catch(() => {});
+      }
+      this.handleAgentEvent(event);
+    });
 
     await this.applyTuiDefaults();
     this.showWelcome();
@@ -1035,7 +1040,8 @@ export class App extends Container {
                   prefix += isLast ? "└─ " : "├─ ";
                 }
                 const currentMarker = s.id === this.state.sessionId ? "▶ " : "  ";
-                const label = `${currentMarker}${prefix}${s.session_name || (s as any).first_message || s.id}`;
+                const streamingMark = (s as any).is_streaming ? "● " : "";
+                const label = `${currentMarker}${streamingMark}${prefix}${s.session_name || (s as any).first_message || s.id}`;
                 items.push({
                   value: s.id,
                   label,
@@ -1801,7 +1807,7 @@ export class App extends Container {
   }
 
   async showSessions(): Promise<void> {
-    let sessions: { id: string; session_name?: string; first_message?: string; query_count?: number; model: string; updated_at: string }[] = [];
+    let sessions: { id: string; session_name?: string; first_message?: string; query_count?: number; model: string; updated_at: string; is_streaming?: boolean }[] = [];
     try {
       const r = await this.client.listSessions();
       sessions = r.sessions;
@@ -1817,7 +1823,7 @@ export class App extends Container {
     const items: SelectItem[] = sessions.map((s) => ({
       value: s.id,
       label: s.session_name || (s as any).first_message || s.id,
-      description: `${s.model} · ${s.query_count ?? "?"}Q · ${new Date(s.updated_at).toLocaleString()}`,
+      description: `${s.is_streaming ? "● " : ""}${s.model} · ${s.query_count ?? "?"}Q · ${new Date(s.updated_at).toLocaleString()}`,
     }));
 
     const sl = new SelectList({

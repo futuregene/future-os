@@ -12,6 +12,7 @@ export function ThreadListItem({
   active,
   archived,
   compact,
+  isStreaming,
   menuOpen,
   runStatus,
   thread,
@@ -26,6 +27,8 @@ export function ThreadListItem({
   active: boolean;
   archived?: boolean;
   compact?: boolean;
+  /** Whether the agent reports this session is streaming (e.g. TUI-initiated). */
+  isStreaming?: boolean;
   menuOpen: boolean;
   runStatus?: ThreadRunInfo;
   thread: StoredThread;
@@ -48,6 +51,16 @@ export function ThreadListItem({
   // state cache is populated by the background prefetch — no click required.
   const agentState = useCachedAgentState(thread.id);
   const displayTitle = agentState?.sessionName || thread.title;
+
+  // Effective running status: use the local run-status first (most accurate
+  // for GUI-initiated runs), but fall back to the agent-reported is_streaming
+  // when another client (e.g. TUI) started a prompt on this session.
+  const effectiveRunStatus: ThreadRunInfo["status"] | undefined =
+    runStatus?.status === "running" || runStatus?.status === "queued"
+      ? runStatus.status
+      : isStreaming
+        ? "running"
+        : runStatus?.status;
 
   return (
     <div
@@ -90,7 +103,7 @@ export function ThreadListItem({
       </span>
       {archived ? <span className="pointer-events-none shrink-0 text-[11px] text-ink-muted group-hover/thread:hidden">{t("activityRail.archived")}</span> : null}
       <span className="pointer-events-none flex shrink-0">
-        <ThreadRunIndicator status={runStatus?.status} unread={unread} />
+        <ThreadRunIndicator status={effectiveRunStatus} unread={unread} />
       </span>
       <button
         aria-label={t("activityRail.threadActions", { title: displayTitle })}

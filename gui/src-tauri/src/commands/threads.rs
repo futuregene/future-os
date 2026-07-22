@@ -167,6 +167,7 @@ pub async fn get_thread_agent_state(
             "session_name": thread.title,
             "cwd": null,
             "parentSessionId": null,
+            "isStreaming": false,
         }));
     };
 

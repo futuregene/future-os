@@ -270,10 +270,28 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 sess.session_manager.clone()
             };
             let summaries = session_manager.list_all().unwrap_or_default();
-            // Convert to the format expected by TUI
+
+            // Snapshot active session streaming flags.  Collect IDs first
+            // (drop the map lock), then read each inner lock separately so we
+            // never hold the outer read guard across an inner lock acquisition.
+            let active_flags: std::collections::HashMap<String, bool> = {
+                let active = state.sessions.read();
+                active
+                    .iter()
+                    .map(|(sid, sess)| {
+                        let streaming = sess
+                            .read()
+                            .is_streaming
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        (sid.clone(), streaming)
+                    })
+                    .collect()
+            };
+
             let sessions: Vec<serde_json::Value> = summaries
                 .into_iter()
                 .map(|s| {
+                    let is_streaming = active_flags.get(&s.id).copied().unwrap_or(false);
                     serde_json::json!({
                         "id": s.id,
                         "session_name": s.name,
@@ -283,6 +301,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                         "parent_session_id": s.parent_session_id,
                         "first_message": s.first_message,
                         "query_count": s.query_count,
+                        "is_streaming": is_streaming,
                     })
                 })
                 .collect();

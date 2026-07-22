@@ -8,6 +8,8 @@ export interface AgentSessionState {
   sessionName?: string | null;
   cwd?: string | null;
   parentSessionId?: string | null;
+  /** Whether the agent is currently streaming a response for this session. */
+  isStreaming?: boolean;
 }
 
 interface CacheEntry {
@@ -67,6 +69,7 @@ export async function getAgentState(threadId: string): Promise<AgentSessionState
         sessionName: typeof raw.session_name === "string" ? raw.session_name : null,
         cwd: typeof raw.cwd === "string" ? raw.cwd : null,
         parentSessionId: typeof raw.parentSessionId === "string" ? raw.parentSessionId : null,
+        isStreaming: typeof raw.isStreaming === "boolean" ? raw.isStreaming : undefined,
       };
       if ((versions.get(threadId) ?? 0) === requestVersion) {
         cache.set(threadId, { state, fetchedAt: Date.now() });
@@ -157,4 +160,57 @@ export function prefetchAgentState(threadId: string | undefined | null) {
  */
 export function useCachedAgentState(threadId: string | undefined | null): AgentSessionState | undefined {
   return useSyncExternalStore(subscribe, () => getCachedAgentState(threadId));
+}
+
+// ── Streaming-status cache (short TTL, separate from full agent state) ────
+
+const STREAMING_TTL_MS = 2_000;
+const streamingCache = new Map<string, { streaming: boolean; fetchedAt: number }>();
+
+/**
+ * Lightweight check: is this session currently streaming?
+ * Uses a short-lived cache (2s) so the thread list picks up TUI-initiated
+ * streaming quickly without hammering the agent with get_state RPCs.
+ */
+export async function fetchSessionStreaming(threadId: string): Promise<boolean> {
+  const cached = streamingCache.get(threadId);
+  if (cached && Date.now() - cached.fetchedAt < STREAMING_TTL_MS) {
+    return cached.streaming;
+  }
+  try {
+    const raw = await invokeCommand<Record<string, unknown>>("get_thread_agent_state", { threadId });
+    const streaming = raw.isStreaming === true;
+    streamingCache.set(threadId, { streaming, fetchedAt: Date.now() });
+    // Also update the full cache so useCachedAgentState stays in sync
+    if (streaming) {
+      invalidateAgentState(threadId);
+    }
+    return streaming;
+  } catch {
+    return cached?.streaming ?? false;
+  }
+}
+
+/**
+ * Poll streaming status for a batch of threads and return a map of
+ * threadId → isStreaming. Fires all requests in parallel.
+ */
+export async function pollStreamingStatuses(
+  threadIds: string[],
+): Promise<Record<string, boolean>> {
+  const entries = await Promise.all(
+    threadIds.map(async (id) => {
+      try {
+        const streaming = await fetchSessionStreaming(id);
+        return { id, streaming };
+      } catch {
+        return { id, streaming: false };
+      }
+    }),
+  );
+  const result: Record<string, boolean> = {};
+  for (const entry of entries) {
+    result[entry.id] = entry.streaming;
+  }
+  return result;
 }
