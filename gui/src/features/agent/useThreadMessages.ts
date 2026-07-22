@@ -10,7 +10,7 @@ import { usePolling } from "../../lib/usePolling";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
 import { matchesSettledRun } from "./agentMessageFormatters";
 import { entriesToMessages } from "./entryProjection";
-import { applyRunMetadata, recoverAbortedTurns } from "./threadRunProjection";
+import { applyRunMetadata, recoverAbortedTurns, upsertStreamingPreview } from "./threadRunProjection";
 
 interface UseThreadMessagesInput {
   threadId: string | null;
@@ -279,6 +279,15 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
           // retry until the agent confirms streaming has stopped.
           attachedRef.current = true;
           if (result?.runId) {
+            // Directly start the streaming preview so it renders immediately,
+            // then let the existing refreshRecentRun → useRunReattach pipeline
+            // take over on the next tick.
+            upsertStreamingPreview(
+              result.runId,
+              Date.now(),
+              setMessages,
+              () => true,
+            ).catch(() => {});
             await refreshRecentRun(threadId, workspaceId);
             await reloadMessagesQuiet(threadId);
           }
