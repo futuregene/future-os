@@ -396,7 +396,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             if let Some(sess) = state.find_session(&cmd.session_id) {
                 cmd_get_session_entries(&sess, id)
             } else {
-                RpcResponse::ok(id, "get_session_entries", serde_json::json!({"entries": []}))
+                RpcResponse::ok(
+                    id,
+                    "get_session_entries",
+                    serde_json::json!({"entries": []}),
+                )
             }
         }
         "get_last_assistant_text" => {
@@ -584,11 +588,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             // Trim trailing whitespace / separators so the saved cwd is
             // always a clean directory path — "project/ " produces a
             // phantom workspace name (" ") on import.
-            let cwd: String = cmd
-                .cwd
-                .trim()
-                .trim_end_matches(['/', '\\'])
-                .to_string();
+            let cwd: String = cmd.cwd.trim().trim_end_matches(['/', '\\']).to_string();
             let (session_manager, session_id) = {
                 let mut sess = wlock!(session, id);
                 sess.set_cwd(&cwd);
