@@ -317,9 +317,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             };
             let summaries = session_manager.list_all().unwrap_or_default();
 
-            // Snapshot active session streaming flags.  Collect IDs first
-            // (drop the map lock), then read each inner lock separately so we
-            // never hold the outer read guard across an inner lock acquisition.
+            // Snapshot active session streaming flags.  Collect within a
+            // single outer read guard — this is safe because we only acquire
+            // inner read locks (never writes), and ParkingLot RwLock allows
+            // concurrent reads.
             let active_flags: std::collections::HashMap<String, bool> = {
                 let active = state.sessions.read();
                 active

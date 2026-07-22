@@ -259,7 +259,7 @@ function applySettingsEvent(
           next.cwd = p.cwd;
           changed = true;
           invokeCommand("reconcile_thread_workspace", {
-            sessionId: p.sessionId,
+            sessionId,
             cwd: p.cwd,
           }).then(() => {
             window.dispatchEvent(new CustomEvent("future:cwd-changed"));
@@ -288,7 +288,7 @@ const streamingCache = new Map<string, { streaming: boolean; fetchedAt: number }
 
 /**
  * Lightweight check: is this session currently streaming?
- * Uses a short-lived cache (2s) so the thread list picks up TUI-initiated
+ * Uses a short-lived cache (1s) so the thread list picks up TUI-initiated
  * streaming quickly without hammering the agent with get_state RPCs.
  */
 export async function fetchSessionStreaming(threadId: string): Promise<boolean> {

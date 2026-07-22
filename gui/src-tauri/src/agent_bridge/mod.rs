@@ -683,7 +683,7 @@ static OBSERVER_CANCEL: Mutex<Option<oneshot::Sender<()>>> = Mutex::new(None);
 
 /// Start observing a session's settings changes in the background.  Subscribes
 /// to the agent's StreamEvents and forwards settings-change events to the
-/// frontend via Tauri `agent-state-updated` events so the UI reflects model /
+/// frontend via Tauri `agent-event` events so the UI reflects model /
 /// thinking / name / cwd changes in near real-time (< 1s).
 ///
 /// Cancels any previous observation for this window.  Safe to call on every

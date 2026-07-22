@@ -327,7 +327,6 @@ export class Input implements Component, Focusable {
       const sub = lines[vi]!;
       const plain = stripAnsiCodes(sub);
       const subLen = plain.length;
-      const subEnd = consumed + subLen;
 
       if (this.cursor <= consumed + subLen || vi === lines.length - 1) {
         // Cursor is in (or at the end of) this visual sub-line

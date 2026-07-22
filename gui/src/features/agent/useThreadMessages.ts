@@ -326,7 +326,12 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
       if (!text)
         return;
       setMessages((prev) => {
-        if (prev.some(m => m.role === "user" && m.content === text))
+        // Dedup: skip if the last user message has identical text.
+        // Checking only the last message avoids suppressing legitimate
+        // repeated prompts (e.g. sending "continue" twice).
+        const userMsgs = prev.filter(m => m.role === "user");
+        const lastUser = userMsgs[userMsgs.length - 1];
+        if (lastUser && lastUser.content === text)
           return prev;
         return [...prev, {
           id: `user_${Date.now()}`,
