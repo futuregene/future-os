@@ -2,11 +2,9 @@ export async function copyText(value: string) {
   if (!value)
     return;
 
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
-    return;
-  }
-
+  // Try execCommand first — more reliable in Tauri WKWebView than the
+  // async clipboard API, which requires a secure context and explicit
+  // clipboard-write permissions.
   const textarea = document.createElement("textarea");
   textarea.value = value;
   textarea.setAttribute("readonly", "true");
@@ -16,8 +14,14 @@ export async function copyText(value: string) {
   textarea.select();
   const copied = document.execCommand("copy");
   document.body.removeChild(textarea);
-  // Surface the failure so callers can toast instead of silently believing the
-  // copy succeeded.
-  if (!copied)
-    throw new Error("Copy command was rejected");
+  if (copied)
+    return;
+
+  // Fallback: async clipboard API (works in modern browsers + secure contexts).
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  throw new Error("Copy failed");
 }
