@@ -6,6 +6,7 @@ export interface AgentSessionState {
   model?: string | null;
   thinkingLevel?: string | null;
   sessionName?: string | null;
+  sessionId?: string | null;
   cwd?: string | null;
   parentSessionId?: string | null;
   /** Whether the agent is currently streaming a response for this session. */
@@ -67,6 +68,7 @@ export async function getAgentState(threadId: string): Promise<AgentSessionState
         model: typeof raw.model === "string" ? raw.model : null,
         thinkingLevel: typeof raw.thinkingLevel === "string" ? raw.thinkingLevel : null,
         sessionName: typeof raw.session_name === "string" ? raw.session_name : null,
+        sessionId: typeof raw.sessionId === "string" ? raw.sessionId : null,
         cwd: typeof raw.cwd === "string" ? raw.cwd : null,
         parentSessionId: typeof raw.parentSessionId === "string" ? raw.parentSessionId : null,
         isStreaming: typeof raw.isStreaming === "boolean" ? raw.isStreaming : undefined,
@@ -183,22 +185,12 @@ export function installAgentStateListener() {
 
     const sessionId = typeof p.sessionId === "string" ? p.sessionId : null;
     const eventType = typeof p._eventType === "string" ? p._eventType : null;
-    if (!sessionId) return;
+    if (!sessionId || !eventType) return;
 
-    // Find the cached thread whose agent_session_id matches.
-    // We iterate the cache because the threadId → sessionId mapping is
-    // maintained by the thread store, not this module.
+    // Find the cache entry whose sessionId matches the event.
     for (const [threadId, entry] of cache) {
-      // We don't have the session_id in the cache entry itself, but the
-      // active thread's session is always the one being observed.  In
-      // practice the cache rarely has more than a few entries, so this
-      // brute-force update is cheap.  The real match is done by the
-      // caller (useModelSelection / ThreadListItem) via useCachedAgentState
-      // which already binds to the active threadId.
-      //
-      // Instead of trying to map session_id → thread_id, we update ALL
-      // cache entries that have matching fields.  This is safe because
-      // the fields are session-specific and won't conflict across threads.
+      if (entry.state.sessionId !== sessionId) continue;
+
       const state = entry.state;
       let changed = false;
       const next = { ...state };
@@ -208,8 +200,11 @@ export function installAgentStateListener() {
           if (typeof p.model === "string") { next.model = p.model; changed = true; }
           break;
         case "thinking_level_changed":
-        case "permission_level_changed":
           if (typeof p.level === "string") { next.thinkingLevel = p.level; changed = true; }
+          break;
+        case "permission_level_changed":
+          // No direct UI for permission yet; still refresh so /status stays accurate.
+          changed = true;
           break;
         case "session_name_changed":
           if (typeof p.name === "string") { next.sessionName = p.name; changed = true; }
@@ -228,11 +223,10 @@ export function installAgentStateListener() {
       if (changed) {
         cache.set(threadId, { state: next, fetchedAt: Date.now() });
       }
+      // Only one entry should match — break after updating.
+      break;
     }
-    if (eventType) {
-      // Always notify so useCachedAgentState re-renders.
-      notify();
-    }
+    notify();
   });
 }
 
@@ -262,6 +256,7 @@ export async function fetchSessionStreaming(threadId: string): Promise<boolean> 
       model: typeof raw.model === "string" ? raw.model : null,
       thinkingLevel: typeof raw.thinkingLevel === "string" ? raw.thinkingLevel : null,
       sessionName: typeof raw.session_name === "string" ? raw.session_name : null,
+      sessionId: typeof raw.sessionId === "string" ? raw.sessionId : null,
       cwd: typeof raw.cwd === "string" ? raw.cwd : null,
       parentSessionId: typeof raw.parentSessionId === "string" ? raw.parentSessionId : null,
       isStreaming: streaming,
