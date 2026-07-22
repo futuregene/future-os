@@ -262,22 +262,26 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
   // the agent's live event stream.  Events are persisted locally, so the
   // existing reattach machinery (refreshRecentRun → useRunReattach) picks up
   // the streaming bubble automatically.  No local StoredRun existed before.
+  //
+  // Guards:
+  //   attachedRef — don't re-attach while the same streaming session is active
+  //   isRunActive — don't attach while a local run (incl. our own synthetic
+  //     one) is still in flight; the existing reattach poll handles it
   const attachedRef = useRef(false);
   usePolling(
     async () => {
-      if (!threadId) return;
-      // Only attach once per streaming session; detach when streaming stops
-      // so a new remote prompt triggers a fresh attach.
+      if (!threadId || isRunActive) return;
       const streaming = await fetchSessionStreaming(threadId);
       if (streaming && !attachedRef.current) {
         try {
-          await invokeCommand("attach_remote_stream", { threadId });
+          const result = await invokeCommand<{ runId?: string }>("attach_remote_stream", { threadId });
+          // An empty runId means a run was already recently settled — don't
+          // retry until the agent confirms streaming has stopped.
           attachedRef.current = true;
-          // Kick a refresh so listRuns picks up the new synthetic run immediately.
-          await refreshRecentRun(threadId, workspaceId);
-          // Reload messages so the user prompt (sent by the other client)
-          // appears alongside the streaming assistant bubble.
-          await reloadMessagesQuiet(threadId);
+          if (result?.runId) {
+            await refreshRecentRun(threadId, workspaceId);
+            await reloadMessagesQuiet(threadId);
+          }
         } catch {
           // Agent unreachable — will retry next tick.
         }
@@ -287,7 +291,7 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     },
     3000,
     {
-      enabled: Boolean(threadId) && !isRunActive,
+      enabled: Boolean(threadId),
       deps: [threadId, refreshRecentRun, reloadMessagesQuiet, workspaceId, isRunActive],
     },
   );

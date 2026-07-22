@@ -494,6 +494,9 @@ async fn collect_reanimated_run(session_id: &str, run_id: &str) -> Result<(), St
             .map_err(|e| format!("stream failed: {e}"))?;
 
         let Some(event) = event else {
+            // Stream ended without agent_end — settle the run.
+            let _ = crate::store::settle_interrupted_run(run_id, "failed");
+            let _ = crate::store::clear_run_event_buffer(run_id);
             break;
         };
 
@@ -534,9 +537,10 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "Thread has no agent session".to_string())?;
 
-    // Don't create a duplicate run if one is already collecting for this
-    // thread (e.g. the user clicked twice or the frontend poll ticked before
-    // the first run appeared in listRuns).
+    // Don't create a duplicate run if one is already collecting or was
+    // recently settled.  The frontend polls get_state for is_streaming and
+    // the run settlement races with that poll — a just-settled run can look
+    // like "no active run" for a tick, causing a duplicate creation.
     let existing_runs = crate::store::list_runs(thread_id).unwrap_or_default();
     if existing_runs.iter().any(|r| r.status == "running") {
         return Ok(existing_runs
@@ -544,6 +548,19 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
             .find(|r| r.status == "running")
             .map(|r| r.id.clone())
             .unwrap_or_default());
+    }
+    // Also skip if a run completed in the last 10s — the agent's is_streaming
+    // flag may not have cleared yet and the frontend poll would trigger a
+    // redundant attach.
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    if existing_runs.iter().any(|r| {
+        r.status == "completed"
+            && r.ended_at.map_or(false, |ended| now_ms - ended < 10_000)
+    }) {
+        return Ok(String::new()); // empty = already handled
     }
 
     let run = crate::store::create_run(crate::store::CreateRunInput {
@@ -596,6 +613,17 @@ async fn collect_remote_stream(session_id: &str, run_id: &str) -> Result<(), Str
         .map_err(|e| format!("stream failed: {e}"))?;
 
         let Some(event) = event else {
+            // Stream ended without agent_end — settle the run so it doesn't
+            // stay "running" forever.
+            let _ = crate::store::update_run_status_if_active(
+                crate::store::UpdateRunStatusInput {
+                    run_id: run_id.to_string(),
+                    status: "failed".to_string(),
+                    error_message: Some("stream ended without agent_end".to_string()),
+                    error_type: None,
+                },
+            );
+            let _ = crate::store::clear_run_event_buffer(run_id);
             break;
         };
 
