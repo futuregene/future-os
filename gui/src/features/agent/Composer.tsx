@@ -506,6 +506,7 @@ export function Composer({
           {onChangeApprovalTier
             ? (
                 <SelectMenu
+                  align="left"
                   open={approvalMenuOpen}
                   onDismiss={() => setApprovalMenuOpen(false)}
                   panelClassName="w-64 overflow-hidden"

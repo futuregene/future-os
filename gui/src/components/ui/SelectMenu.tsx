@@ -17,6 +17,15 @@ interface SelectMenuProps {
   className?: string;
   /** Extra classes on the floating panel (width / max-height / overflow). */
   panelClassName?: string;
+  /**
+   * Horizontal anchor of the panel relative to the trigger wrapper.
+   * "right" (default) pins the panel's right edge to the trigger and grows
+   * leftward — right for triggers near the right edge (model / thinking menus).
+   * "left" pins the left edge and grows rightward — required for triggers near
+   * the left edge (the approval-tier menu), otherwise the panel spills past the
+   * left boundary and its leading content is clipped by an ancestor overflow.
+   */
+  align?: "left" | "right";
 }
 
 /**
@@ -25,7 +34,7 @@ interface SelectMenuProps {
  * trigger and the panel so clicking the trigger never self-dismisses. Open state
  * is controlled by the caller so sibling menus can coordinate (close on open).
  */
-export function SelectMenu({ open, onDismiss, trigger, children, className, panelClassName }: SelectMenuProps) {
+export function SelectMenu({ open, onDismiss, trigger, children, className, panelClassName, align = "right" }: SelectMenuProps) {
   const layerRef = useDismissableLayer<HTMLDivElement>({ enabled: open, onDismiss });
   return (
     <div className={cn("relative", className)} ref={layerRef}>
@@ -34,7 +43,8 @@ export function SelectMenu({ open, onDismiss, trigger, children, className, pane
         ? (
             <MenuPanel
               className={cn(
-                "absolute bottom-9 right-0 z-30 divide-y divide-line-soft",
+                "absolute bottom-9 z-30 divide-y divide-line-soft",
+                align === "left" ? "left-0" : "right-0",
                 panelClassName,
               )}
             >
