@@ -165,6 +165,7 @@ pub async fn get_thread_agent_state(
             "model": null,
             "thinkingLevel": null,
             "session_name": thread.title,
+            "sessionId": null,
             "cwd": null,
             "parentSessionId": null,
             "isStreaming": false,
