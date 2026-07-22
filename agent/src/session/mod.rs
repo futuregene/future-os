@@ -479,6 +479,83 @@ impl Manager {
         entries.len() != before
     }
 
+    /// Content prefix of the placeholder tool-result entries written by
+    /// `repair_dangling_tool_calls`. Used to recognise placeholders so a
+    /// later-arriving REAL tool result with the same tool_call_id can
+    /// replace them (see `dedupe_tool_entries`).
+    const TOOL_LOST_PLACEHOLDER_PREFIX: &'static str = "[Tool execution lost —";
+
+    fn entry_text_starts_with(entry: &SessionEntry, prefix: &str) -> bool {
+        match &entry.content {
+            Some(serde_json::Value::String(s)) => s.starts_with(prefix),
+            Some(serde_json::Value::Array(arr)) => arr
+                .first()
+                .and_then(|b| b.get("text"))
+                .and_then(|t| t.as_str())
+                .is_some_and(|s| s.starts_with(prefix)),
+            _ => false,
+        }
+    }
+
+    /// Remove duplicate tool-result entries that share the same tool_call_id.
+    ///
+    /// Duplicates arise when a load-time repair wrote a "tool execution lost"
+    /// placeholder for a dangling tool_call while the original agent process
+    /// was still mid-tool, and the real tool result was appended afterwards.
+    /// Two tool messages with the same tool_call_id make the LLM API reject
+    /// the request with HTTP 400 ("Messages with role 'tool' must be a
+    /// response to a preceding message with 'tool_calls'").
+    ///
+    /// When one of the duplicates is a placeholder and the other is a real
+    /// result, the placeholder is dropped; otherwise the first entry wins.
+    fn dedupe_tool_entries(entries: &mut Vec<SessionEntry>) -> bool {
+        use std::collections::{HashMap, HashSet};
+        // tool_call_id -> index of the entry currently kept for that id
+        let mut kept: HashMap<String, usize> = HashMap::new();
+        let mut drop_idx: Vec<usize> = vec![];
+        for (i, e) in entries.iter().enumerate() {
+            if e.entry_type != ENTRY_TYPE_TOOL || e.tool_call_id.is_empty() {
+                continue;
+            }
+            match kept.get(&e.tool_call_id) {
+                None => {
+                    kept.insert(e.tool_call_id.clone(), i);
+                }
+                Some(&prev) => {
+                    let prev_is_placeholder = Self::entry_text_starts_with(
+                        &entries[prev],
+                        Self::TOOL_LOST_PLACEHOLDER_PREFIX,
+                    );
+                    let cur_is_placeholder =
+                        Self::entry_text_starts_with(e, Self::TOOL_LOST_PLACEHOLDER_PREFIX);
+                    if prev_is_placeholder && !cur_is_placeholder {
+                        // The real result arrived after the placeholder was
+                        // written — drop the placeholder, keep the real one.
+                        drop_idx.push(prev);
+                        kept.insert(e.tool_call_id.clone(), i);
+                    } else {
+                        drop_idx.push(i);
+                    }
+                }
+            }
+        }
+        if drop_idx.is_empty() {
+            return false;
+        }
+        tracing::warn!(
+            "Removing {} duplicate tool-result entries from session (shared tool_call_id)",
+            drop_idx.len()
+        );
+        let drop: HashSet<usize> = drop_idx.into_iter().collect();
+        let mut i = 0;
+        entries.retain(|_| {
+            let keep = !drop.contains(&i);
+            i += 1;
+            keep
+        });
+        true
+    }
+
     /// If the last assistant entry has dangling tool_calls (no matching tool
     /// entries after it), the session was saved mid-turn — typically a crash
     /// between persisting the assistant response and executing its tools.
@@ -503,8 +580,9 @@ impl Manager {
         let now = chrono::Local::now();
         for (tc_id, tc_name) in &tool_calls {
             let placeholder = format!(
-            "[Tool execution lost — {tc_name} was not executed before the session was interrupted]",
-        );
+                "{} {tc_name} was not executed before the session was interrupted]",
+                Self::TOOL_LOST_PLACEHOLDER_PREFIX,
+            );
             entries.push(SessionEntry {
                 id: crate::utils::generate_id(),
                 parent_id: parent_id.clone(),
@@ -569,30 +647,27 @@ impl Manager {
         if entries.is_empty() {
             return Err(anyhow!("session {} has no entries", id));
         }
-        // Heal dangling tool_calls + strip empty assistants: fix up common
-        // session corruptions so the conversation remains API-valid on resume.
-        // Persist immediately so the fix doesn't re-fire on the next load.
+        // Heal common session corruptions IN MEMORY ONLY so the conversation
+        // is API-valid on resume: strip empty assistants, drop duplicate tool
+        // results, and patch dangling tool_calls with placeholders.
+        //
+        // The healed entries are deliberately NOT written back to the file
+        // here.  load_path is called from many read-only paths (session list,
+        // summaries, get_session_entries, fork/clone) that can run while the
+        // owning agent process is still mid-turn.  Persisting a placeholder
+        // for a dangling tool_call at that moment corrupts the file: when the
+        // running tool finishes, its real result is appended with the same
+        // tool_call_id, producing duplicate tool messages that the LLM API
+        // rejects with HTTP 400.  The in-memory heal is idempotent and cheap,
+        // and the owning session's next save() persists the healed state.
         let stripped = Self::strip_empty_assistants(&mut entries);
+        let deduped = Self::dedupe_tool_entries(&mut entries);
         let repaired = Self::repair_dangling_tool_calls(&mut entries);
-        if stripped || repaired {
-            // Save the repaired entries back so the next load is clean.
-            let path_owned = path.to_path_buf();
-            if let Err(e) = (|| -> Result<()> {
-                let file = File::create(&path_owned).context("create session file for repair")?;
-                let mut w = std::io::BufWriter::new(file);
-                for entry in entries.iter() {
-                    let json = serde_json::to_string(entry).context("serialize entry")?;
-                    writeln!(w, "{}", json).context("write entry")?;
-                }
-                w.flush().context("flush")?;
-                w.into_inner()
-                    .map_err(|_| anyhow::anyhow!("flush failed"))?
-                    .sync_all()
-                    .context("fsync")?;
-                Ok(())
-            })() {
-                tracing::warn!("Failed to persist repaired session: {e}");
-            }
+        if stripped || deduped || repaired {
+            tracing::info!(
+                "Healed session {id} in memory (stripped_empty={stripped}, \
+                 deduped_tools={deduped}, repaired_dangling={repaired})"
+            );
         }
         let created_at = entries[0].timestamp;
         let updated_at = entries.last().map(|e| e.timestamp).unwrap_or(created_at);
@@ -1547,6 +1622,179 @@ mod tests {
         assert_eq!(loaded.entries.len(), 2);
 
         // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression test for the HTTP 400 "Messages with role 'tool' must be a
+    /// response to a preceding message with 'tool_calls'" failure seen when
+    /// resuming a session: a load-time repair previously PERSISTED a "tool
+    /// execution lost" placeholder while the owning agent was still mid-tool;
+    /// the real tool result was appended afterwards, leaving two tool entries
+    /// with the same tool_call_id.  Load must now heal this in memory (keep
+    /// the real result, drop the placeholder) without touching the file.
+    #[test]
+    fn load_dedupes_tool_results_preferring_real_over_placeholder() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_dedupe_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = Manager::new(dir.clone());
+        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        session
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        session.entries.push(SessionEntry::new_assistant(
+            serde_json::json!("running tool"),
+            vec![crate::types::ToolCall {
+                id: "tc1".to_string(),
+                call_type: "function".to_string(),
+                function: crate::types::ToolCallFn {
+                    name: "shell".to_string(),
+                    arguments: serde_json::json!({"cmd": "ls"}),
+                },
+            }],
+        ));
+        // Placeholder written by a stale repair, then the real result.
+        session.entries.push(SessionEntry::new_tool(
+            "tc1",
+            "[Tool execution lost — shell was not executed before the session was interrupted]",
+        ));
+        session
+            .entries
+            .push(SessionEntry::new_tool("tc1", "real output"));
+        manager.save(&session).unwrap();
+
+        let loaded = manager.load(&session.id).unwrap();
+        let tool_entries: Vec<_> = loaded
+            .entries
+            .iter()
+            .filter(|e| e.entry_type == ENTRY_TYPE_TOOL)
+            .collect();
+        assert_eq!(
+            tool_entries.len(),
+            1,
+            "duplicate tool entries must be deduped"
+        );
+        assert_eq!(
+            tool_entries[0].content.as_ref().unwrap(),
+            &serde_json::json!("real output"),
+            "the real result must win over the placeholder"
+        );
+
+        // The file on disk must NOT be rewritten by load: read-only callers
+        // (session list, get_session_entries) can run while the owning agent
+        // is mid-turn, and persisting repairs is what created the duplicates.
+        let on_disk = std::fs::read_to_string(manager.session_path(&session.id)).unwrap();
+        assert_eq!(
+            on_disk.lines().count(),
+            4,
+            "load must not persist healed entries back to the session file"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two REAL tool results with the same tool_call_id: keep the first.
+    #[test]
+    fn load_dedupes_tool_results_keeping_first_real() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_dedupe2_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = Manager::new(dir.clone());
+        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        session
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        session.entries.push(SessionEntry::new_assistant(
+            serde_json::json!("running tool"),
+            vec![crate::types::ToolCall {
+                id: "tc1".to_string(),
+                call_type: "function".to_string(),
+                function: crate::types::ToolCallFn {
+                    name: "shell".to_string(),
+                    arguments: serde_json::json!({"cmd": "ls"}),
+                },
+            }],
+        ));
+        session
+            .entries
+            .push(SessionEntry::new_tool("tc1", "first result"));
+        session
+            .entries
+            .push(SessionEntry::new_tool("tc1", "second result"));
+        manager.save(&session).unwrap();
+
+        let loaded = manager.load(&session.id).unwrap();
+        let tool_entries: Vec<_> = loaded
+            .entries
+            .iter()
+            .filter(|e| e.entry_type == ENTRY_TYPE_TOOL)
+            .collect();
+        assert_eq!(tool_entries.len(), 1);
+        assert_eq!(
+            tool_entries[0].content.as_ref().unwrap(),
+            &serde_json::json!("first result")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A dangling tool_call (assistant saved, tool never executed) is still
+    /// patched with a placeholder in memory — but the file stays untouched.
+    #[test]
+    fn load_repairs_dangling_tool_calls_in_memory_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_dangling_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = Manager::new(dir.clone());
+        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        session
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
+        session.entries.push(SessionEntry::new_assistant(
+            serde_json::json!("running tool"),
+            vec![crate::types::ToolCall {
+                id: "tc1".to_string(),
+                call_type: "function".to_string(),
+                function: crate::types::ToolCallFn {
+                    name: "shell".to_string(),
+                    arguments: serde_json::json!({"cmd": "ls"}),
+                },
+            }],
+        ));
+        manager.save(&session).unwrap();
+
+        let loaded = manager.load(&session.id).unwrap();
+        let tool_entries: Vec<_> = loaded
+            .entries
+            .iter()
+            .filter(|e| e.entry_type == ENTRY_TYPE_TOOL)
+            .collect();
+        assert_eq!(
+            tool_entries.len(),
+            1,
+            "dangling tool_call must get a placeholder"
+        );
+        assert_eq!(tool_entries[0].tool_call_id, "tc1");
+
+        let on_disk = std::fs::read_to_string(manager.session_path(&session.id)).unwrap();
+        assert_eq!(
+            on_disk.lines().count(),
+            2,
+            "dangling repair must not be persisted to the session file"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
