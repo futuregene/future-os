@@ -5,11 +5,28 @@ export interface RemoteStatus {
   connected: boolean;
   natsUrl: string;
   pairId: string;
+  mode: string | null;
+  /** One-shot pairing code (base64url) returned only by a successful paired start. */
+  pairingCode: string | null;
   webUrl: string | null;
   error: string | null;
 }
 
-export async function startRemote(input: { natsUrl: string; pairId: string }) {
+export interface RemotePairingStatus {
+  paired: boolean;
+  pairId: string | null;
+  natsUrl: string | null;
+}
+
+export interface RemoteStartInput {
+  natsUrl: string;
+  pairId: string;
+  mode?: "dev" | "paired";
+  accessToken?: string;
+  deviceId?: string;
+}
+
+export async function startRemote(input: RemoteStartInput) {
   return invokeCommand<RemoteStatus>("remote_start", { input });
 }
 
@@ -19,6 +36,14 @@ export async function stopRemote() {
 
 export async function getRemoteStatus() {
   return invokeCommand<RemoteStatus>("remote_status");
+}
+
+export async function getRemotePairingStatus() {
+  return invokeCommand<RemotePairingStatus>("remote_pairing_status");
+}
+
+export async function unpairRemote() {
+  return invokeCommand<RemoteStatus>("remote_unpair");
 }
 
 export async function openUrl(url: string) {

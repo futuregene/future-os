@@ -5,9 +5,20 @@
   "notRunning": "未运行",
   "natsUrlLabel": "NATS 地址（客户端端口）",
   "natsUrlHint": "本地测试填 <0>nats://localhost:4222</0>；以后填线上 relay 服务器地址。",
+  "tokenLabel": "接入 token",
+  "tokenHint": "简单配对（Phase 1）的共享 NATS 接入 token，需与 deploy/nats/nats.conf 一致。留空则为无鉴权 dev 模式（仅非 release 构建）。",
   "pairIdLabel": "Pair ID",
+  "pairIdHint": "subject 命名分区。配对模式留空则随机生成；dev 模式填任意值（如 DEVPAIR）。",
   "webClient": "Web 客户端",
   "stop": "停止远程",
-  "start": "启动远程",
-  "note": "注：远程依赖桌面（GUI + Agent）在线且未睡眠——这是固有前提，非云故障。"
+  "startDev": "启动（dev，无鉴权）",
+  "pairAndStart": "配对并启动",
+  "pairedAs": "已配对 {{pairId}}",
+  "unpair": "解除配对",
+  "pairingCodeLabel": "配对码（粘贴到 web 客户端）",
+  "pairingCodeHint": "把此码交给 web/手机客户端并在那里粘贴，10 分钟内有效。它含 NATS 地址、pairId 与接入 token——请当作密码对待。",
+  "copy": "复制",
+  "copied": "已复制",
+  "copyFailed": "复制失败，请手动复制配对码。",
+  "note": "注：远程依赖桌面（GUI + Agent）在线且未睡眠——这是固有前提，非云故障。简单配对（Phase 1）仅提供接入控制 + 随机 pairId 分区，不提供服务端逐 subject 隔离（那需要 Phase 2 的 JWT）。"
 }

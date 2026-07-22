@@ -5,9 +5,20 @@
   "notRunning": "Not running",
   "natsUrlLabel": "NATS address (client port)",
   "natsUrlHint": "For local testing use <0>nats://localhost:4222</0>; later use the address of the online relay server.",
+  "tokenLabel": "Access token",
+  "tokenHint": "The shared NATS access token (simple pairing, Phase 1). Must match deploy/nats/nats.conf. Leave empty for no-auth dev mode (non-release builds only).",
   "pairIdLabel": "Pair ID",
+  "pairIdHint": "Subject namespace. Paired mode: leave empty to generate a random one. Dev mode: type any value (e.g. DEVPAIR).",
   "webClient": "Web client",
   "stop": "Stop remote",
-  "start": "Start remote",
-  "note": "Note: remote control requires the desktop (GUI + agent) to be online and awake — this is an inherent prerequisite, not a cloud failure."
+  "startDev": "Start (dev, no auth)",
+  "pairAndStart": "Pair & start",
+  "pairedAs": "Paired as {{pairId}}",
+  "unpair": "Unpair",
+  "pairingCodeLabel": "Pairing code (paste into the web client)",
+  "pairingCodeHint": "Hand this code to the web/phone client and paste it there. Valid for 10 minutes. It carries the NATS address, pairId and access token — treat it like a password.",
+  "copy": "Copy",
+  "copied": "Copied",
+  "copyFailed": "Copy failed — copy the code manually.",
+  "note": "Note: remote control requires the desktop (GUI + agent) to be online and awake — this is an inherent prerequisite, not a cloud failure. Simple pairing (Phase 1) gives admission control + a random-pairId partition, NOT server-enforced per-subject isolation (that needs Phase 2 JWTs)."
 }

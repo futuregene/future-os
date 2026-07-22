@@ -31,6 +31,11 @@
   #presenceStatus { font-size:12px; padding:3px 8px; border-radius:999px; white-space:nowrap; }
   #presenceStatus.online { background:#1f6f3f; color:#fff; }
   #presenceStatus.offline { background:#4a4a4a; color:#9aa4b2; }
+  #pairbar {
+    display:flex; gap:8px; align-items:center;
+    padding:0 12px 8px; background:#171a21; border-bottom:1px solid #262a33; flex:none;
+  }
+  #pairbar input { flex:1; background:#0f1115; color:#e6e6e6; border:1px solid #333; border-radius:6px; padding:6px 8px; font-size:12px; }
   .srow .streaming-dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:#2b6cff; margin-right:4px; vertical-align:middle; }
 
   /* ── 主体：会话列表 + 对话区 ─────────────────────────────── */
@@ -98,12 +103,17 @@
 </head>
 <body>
 <header>
-  <input id="url" class="url" value="ws://localhost:8080" />
-  <input id="pair" class="pair" value="DEVPAIR" />
+  <input id="url" class="url" value="ws://localhost:8080" placeholder="ws://host:8080" />
+  <input id="pair" class="pair" value="DEVPAIR" placeholder="pairId" />
+  <input id="token" class="pair" placeholder="接入 token" />
   <button id="connect">连接</button>
   <span id="presenceStatus" class="offline">桌面离线</span>
   <span id="status">未连接</span>
 </header>
+<div id="pairbar">
+  <input id="paircode" placeholder="粘贴配对码（可选；解析后覆盖上方 url / pair / token）" />
+  <button id="applyCode" class="ghost sm">解析配对码</button>
+</div>
 
 <div id="app">
   <aside id="sidebar">
@@ -164,12 +174,55 @@ async function request(obj, sid) {
   return dec(m);
 }
 
+// 解码桌面生成的配对码（base64url JSON）。web 是纯浏览器，没有 Tauri 桥，
+// 故自行解码（配对码全 ASCII，atob 足够）。无效/过期返回 null。
+function decodePairingCode(s) {
+  try {
+    let b64 = s.trim().replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    const pc = JSON.parse(atob(b64));
+    if (pc?.v !== 1) return null;
+    if (pc.exp && Math.floor(Date.now() / 1000) > pc.exp) return null;
+    return pc;
+  } catch { return null; }
+}
+
+// 本浏览器设备的稳定 id，用于 inboxPrefix（p.{pairId}.rep.{deviceId}）。无点。
+function getDeviceId() {
+  let id = localStorage.getItem("remote.deviceId");
+  if (!id) {
+    const r = () => Math.random().toString(16).slice(2);
+    id = "dev_" + (crypto?.randomUUID?.().replace(/-/g, "") || (r() + r()));
+    localStorage.setItem("remote.deviceId", id);
+  }
+  return id;
+}
+
+function applyPairingCode() {
+  const pc = decodePairingCode($("paircode").value);
+  if (!pc) { setStatus("配对码无效或已过期", "err"); return; }
+  $("url").value = pc.natsUrl; $("pair").value = pc.pairId; $("token").value = pc.token;
+  setStatus("已解析配对码，点连接", "");
+}
+
 async function doConnect() {
-  const url = $("url").value.trim();
+  let url = $("url").value.trim();
+  let token = $("token").value.trim();
   pair = $("pair").value.trim() || "DEVPAIR";
+  // 配对码（若有）覆盖手动输入
+  const code = $("paircode").value.trim();
+  if (code) {
+    const pc = decodePairingCode(code);
+    if (!pc) { setStatus("配对码无效或已过期", "err"); return; }
+    url = pc.natsUrl; pair = pc.pairId; token = pc.token;
+    $("url").value = url; $("pair").value = pair; $("token").value = token;
+  }
+  if (!url) { setStatus("请填写 NATS 地址", "err"); return; }
   try {
     setStatus("连接中…");
-    nc = await connect({ servers: url });
+    const opts = { servers: url, inboxPrefix: `p.${pair}.rep.${getDeviceId()}` };
+    if (token) opts.token = token;   // 简单配对接入 token；无 token = L0 无鉴权
+    nc = await connect(opts);
     setStatus("已连接", "ok");
     $("newsess").disabled = false; $("refresh").disabled = false; $("connect").disabled = true;
     // 订阅本 pair 所有会话事件（按 subject 过滤到当前选中会话）
@@ -641,6 +694,7 @@ function renderApproval(data) {
 function autoGrow() { const t = $("msg"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 140) + "px"; }
 
 $("connect").onclick = doConnect;
+$("applyCode").onclick = applyPairingCode;
 $("newsess").onclick = newSession;
 $("refresh").onclick = listSessions;
 $("send").onclick = send;
