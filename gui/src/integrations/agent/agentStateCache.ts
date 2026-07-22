@@ -276,7 +276,7 @@ function applySettingsEvent(
     if (changed) {
       cache.set(threadId, { state: next, fetchedAt: Date.now() });
     }
-    break;
+    // Don't break — multiple threads can share the same agent session.
   }
   notify();
 }
