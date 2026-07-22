@@ -131,9 +131,6 @@
       <textarea id="msg" placeholder="输入 prompt，Cmd/Ctrl+Enter 发送" disabled></textarea>
       <div class="composer-btns">
         <button id="send" disabled>发送</button>
-        <button id="steer" disabled style="display:none">引导</button>
-        <button id="followUp" disabled style="display:none">排队</button>
-        <button id="abort" class="ghost" disabled>中断</button>
       </div>
     </div>
   </section>
@@ -244,17 +241,23 @@ function refreshPresenceIndicator() {
   }
 }
 
+// 对齐 GUI：streaming 时发送键变"停止"(点击=abort)，composer 仍可编辑；
+// 非 streaming 时为"发送"。没有独立的引导/排队/中断按钮——GUI 桌面端也没有，
+// steer/follow_up 只服务 remote bridge，桌面 UI 从不使用。
 function updateStreamingState(streaming) {
   isStreaming = streaming;
-  const sendBtn = $("send"), steerBtn = $("steer"), followBtn = $("followUp");
+  const btn = $("send");
+  if (!btn) return;
   if (streaming) {
-    sendBtn.style.display = "none";
-    steerBtn.style.display = "";
-    followBtn.style.display = "";
+    btn.textContent = "停止";
+    btn.className = "ghost";
+    btn.disabled = false;
+    btn.onclick = abort;
   } else {
-    sendBtn.style.display = "";
-    steerBtn.style.display = "none";
-    followBtn.style.display = "none";
+    btn.textContent = "发送";
+    btn.className = "";
+    btn.disabled = false;
+    btn.onclick = send;
   }
 }
 
@@ -285,13 +288,20 @@ function newSession() {
   $("app").classList.add("show-chat");
   // 模型/思考选择器作为草稿显示；无 session 时 onchange 不会发命令，
   // 选中的值在 send 时随首条 prompt 一起发给 bridge seed 新 session。
-  const def = availableModels.find(m => m.isDefault) || availableModels[0];
-  populateModelSelect(def?.id || "");
-  populateThinkingSelect("off");
+  // 默认值对齐 GUI：localStorage 最近选择 → deepseek-v4-pro → isDefault → 首个。
+  const lastModel = localStorage.getItem("remote.lastModelId") || "";
+  const lastModelValid = availableModels.some(m => m.id === lastModel) ? lastModel : "";
+  const defModel = lastModelValid
+    || availableModels.find(m => m.id === "deepseek-v4-pro")?.id
+    || availableModels.find(m => m.isDefault)?.id
+    || availableModels[0]?.id
+    || "";
+  populateModelSelect(defModel);
+  populateThinkingSelect(localStorage.getItem("remote.lastThinkingLevel") || "off");
   $("modelSelect").style.display = "";
   $("thinkingSelect").style.display = "";
   $("renameBtn").style.display = "none";   // 无 session 不能重命名
-  $("msg").disabled = false; $("send").disabled = false; $("abort").disabled = true;
+  $("msg").disabled = false;               // 发送键由 updateStreamingState(false) 设为"发送"
   document.querySelectorAll(".srow").forEach(r => r.classList.remove("active"));
   $("msg").focus?.();
 }
@@ -355,9 +365,8 @@ async function selectSession(sid) {
   curRun = null; seenEvents.clear();
   clearLog();
   $("chatTitle").textContent = sessionTitle(sid);
-  $("msg").disabled = false; $("send").disabled = false; $("abort").disabled = false;
-  $("steer").disabled = false; $("followUp").disabled = false;
-  // 从 presence 恢复 streaming 态（切换按钮显示）
+  $("msg").disabled = false;
+  // 从 presence 恢复 streaming 态（决定发送键是"发送"还是"停止"）
   const pInfo = presence?.sessions?.find(x => x.id === sid);
   updateStreamingState(pInfo?.streaming ?? false);
   $("app").classList.add("show-chat"); // 移动端进入对话；宽屏无副作用
@@ -472,6 +481,7 @@ function populateThinkingSelect(currentLevel) {
 
 async function onModelChange() {
   const modelId = $("modelSelect").value;
+  if (modelId) localStorage.setItem("remote.lastModelId", modelId);
   if (!modelId || !session) return;
   try { await request({ type: "set_model", sessionId: session, modelId }, session); }
   catch (e) { line("切换模型失败: " + (e?.message || e), "err"); }
@@ -479,6 +489,7 @@ async function onModelChange() {
 
 async function onThinkingChange() {
   const level = $("thinkingSelect").value;
+  if (level) localStorage.setItem("remote.lastThinkingLevel", level);
   if (!session) return;
   try { await request({ type: "set_thinking_level", sessionId: session, level }, session); }
   catch (e) { line("切换思考等级失败: " + (e?.message || e), "err"); }
@@ -501,6 +512,9 @@ async function onRename() {
 function ensureSession() { return session; }
 
 async function send() {
+  // 对齐 GUI：streaming 时禁止新的 plain prompt（GUI 弹 alreadyRunning toast）。
+  // 要插话用"停止"键先中断；steer/follow_up 桌面端不用，web 也不暴露。
+  if (isStreaming) { line("正在回复中，请先停止或等待结束", "badge"); return; }
   const text = $("msg").value.trim(); if (!text) return;
   const wasNew = !session;        // 懒创建首条：当前还没有 DB 条目
   $("msg").value = "";
@@ -526,25 +540,6 @@ async function send() {
   }
   // ack 回来前 session 还是占位，onEvent 按 subject 过滤丢掉了早期事件，补齐当前 run。
   if (wasNew && sid) await backfillActiveRun(sid);
-}
-
-async function sendSteer() {
-  if (!ensureSession()) return;
-  const text = $("msg").value.trim(); if (!text) return;
-  $("msg").value = "";
-  renderUser(text);
-  bubble = null; thinkEl = null; toolChips.clear();
-  try { await request({ type: "steer", sessionId: session, message: text }); }
-  catch (e) { line("引导失败: " + e.message, "err"); }
-}
-
-async function sendFollowUp() {
-  if (!ensureSession()) return;
-  const text = $("msg").value.trim(); if (!text) return;
-  $("msg").value = "";
-  renderUser(text);
-  try { await request({ type: "follow_up", sessionId: session, message: text }); line("已排队"); }
-  catch (e) { line("排队失败: " + e.message, "err"); }
 }
 
 async function abort() {
@@ -632,7 +627,14 @@ function renderApproval(data) {
   };
   approve.onclick = () => decide("approved"); reject.onclick = () => decide("rejected");
   const row = document.createElement("div"); row.style.marginTop = "8px"; row.append(approve, reject); box.appendChild(row);
+  // 对齐 GUI 审批快捷键：Cmd/Ctrl+Enter=批准，Esc=拒绝。
+  box.tabIndex = 0;
+  box.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); approve.click(); }
+    else if (e.key === "Escape") { e.preventDefault(); reject.click(); }
+  });
   log(box);
+  box.focus();
 }
 
 // 自适应高度的输入框
@@ -642,15 +644,13 @@ $("connect").onclick = doConnect;
 $("newsess").onclick = newSession;
 $("refresh").onclick = listSessions;
 $("send").onclick = send;
-$("steer").onclick = sendSteer;
-$("followUp").onclick = sendFollowUp;
-$("abort").onclick = abort;
 $("back").onclick = () => $("app").classList.remove("show-chat");
 $("modelSelect").onchange = onModelChange;
 $("thinkingSelect").onchange = onThinkingChange;
 $("renameBtn").onclick = onRename;
 $("msg").addEventListener("input", autoGrow);
-$("msg").addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { isStreaming ? sendSteer() : send(); } });
+// 对齐 GUI：streaming 时 Cmd/Ctrl+Enter 不发送（GUI 此时 early-return）；停止靠点"停止"键。
+$("msg").addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !isStreaming) send(); });
 </script>
 </body>
 </html>
