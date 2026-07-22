@@ -55,8 +55,8 @@ export function ThreadListItem({
   // Effective running status: use the local run-status first (most accurate
   // for GUI-initiated runs), but fall back to the agent-reported is_streaming
   // when another client (e.g. TUI) started a prompt on this session.
-  const effectiveRunStatus: ThreadRunInfo["status"] | undefined =
-    runStatus?.status === "running" || runStatus?.status === "queued"
+  const effectiveRunStatus: ThreadRunInfo["status"] | undefined
+    = runStatus?.status === "running" || runStatus?.status === "queued"
       ? runStatus.status
       : isStreaming
         ? "running"

@@ -2,7 +2,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredThread, StoredWorkspace } from "../../../integrations/storage/threadStore";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import i18n from "../../../i18n";
-import { prefetchAgentState, pollStreamingStatuses } from "../../../integrations/agent/agentStateCache";
+import { pollStreamingStatuses, prefetchAgentState } from "../../../integrations/agent/agentStateCache";
 import {
   getRecentOrCreateDefaultThread,
   initializeAppStore,
@@ -193,8 +193,9 @@ export function useThreadStore(): ThreadStore {
   // clients (TUI, CLI) show a running indicator without waiting for a local
   // StoredRun entry.
   usePolling(async () => {
-    if (activeThreads.length === 0) return;
-    const streaming = await pollStreamingStatuses(activeThreads.map((t) => t.id));
+    if (activeThreads.length === 0)
+      return;
+    const streaming = await pollStreamingStatuses(activeThreads.map(t => t.id));
     setThreadStreamingStatuses(streaming);
   }, 1000, {
     enabled: activeThreads.length > 0,

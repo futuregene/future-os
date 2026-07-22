@@ -1,4 +1,8 @@
+import { listen } from "@tauri-apps/api/event";
 import { useSyncExternalStore } from "react";
+
+// ── Real-time agent state updates via Tauri events ──────────────────────
+
 import { invokeCommand } from "../tauri/invoke";
 
 /** Agent-side session state, fetched via get_state RPC. */
@@ -164,10 +168,6 @@ export function useCachedAgentState(threadId: string | undefined | null): AgentS
   return useSyncExternalStore(subscribe, () => getCachedAgentState(threadId));
 }
 
-// ── Real-time agent state updates via Tauri events ──────────────────────
-
-import { listen } from "@tauri-apps/api/event";
-
 let eventListenerInstalled = false;
 
 /**
@@ -177,16 +177,19 @@ let eventListenerInstalled = false;
  * as the TUI — no polling, no synthetic run delay.
  */
 export function installAgentEventListener() {
-  if (eventListenerInstalled) return;
+  if (eventListenerInstalled)
+    return;
   eventListenerInstalled = true;
 
   void listen<Record<string, unknown>>("agent-event", (event) => {
     const p = event.payload;
-    if (!p) return;
+    if (!p)
+      return;
 
     const sessionId = typeof p.sessionId === "string" ? p.sessionId : null;
     const eventType = typeof p._eventType === "string" ? p._eventType : null;
-    if (!sessionId || !eventType) return;
+    if (!sessionId || !eventType)
+      return;
 
     switch (eventType) {
       // ── Settings-change events: update cache ──
@@ -226,20 +229,30 @@ function applySettingsEvent(
   p: Record<string, unknown>,
 ) {
   for (const [threadId, entry] of cache) {
-    if (entry.state.sessionId !== sessionId) continue;
+    if (entry.state.sessionId !== sessionId)
+      continue;
 
     const next = { ...entry.state };
     let changed = false;
 
     switch (eventType) {
       case "model_changed":
-        if (typeof p.model === "string") { next.model = p.model; changed = true; }
+        if (typeof p.model === "string") {
+          next.model = p.model;
+          changed = true;
+        }
         break;
       case "thinking_level_changed":
-        if (typeof p.level === "string") { next.thinkingLevel = p.level; changed = true; }
+        if (typeof p.level === "string") {
+          next.thinkingLevel = p.level;
+          changed = true;
+        }
         break;
       case "session_name_changed":
-        if (typeof p.name === "string") { next.sessionName = p.name; changed = true; }
+        if (typeof p.name === "string") {
+          next.sessionName = p.name;
+          changed = true;
+        }
         break;
       case "cwd_changed":
         if (typeof p.cwd === "string") {
@@ -303,7 +316,8 @@ export async function fetchSessionStreaming(threadId: string): Promise<boolean> 
     pruneCache();
     notify();
     return streaming;
-  } catch {
+  }
+  catch {
     return cached?.streaming ?? false;
   }
 }
@@ -320,7 +334,8 @@ export async function pollStreamingStatuses(
       try {
         const streaming = await fetchSessionStreaming(id);
         return { id, streaming };
-      } catch {
+      }
+      catch {
         return { id, streaming: false };
       }
     }),

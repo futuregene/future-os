@@ -2,10 +2,10 @@ import type { StoredRun } from "../../integrations/storage/threadStore";
 import type { AgentMessage } from "./agentThreadTypes";
 import { useCallback, useEffect, useRef, useState } from "react";
 import i18n from "../../i18n";
-import { getSessionEntries, listRuns } from "../../integrations/storage/threadStore";
-import { errorMessage } from "../../lib/errors";
 import { fetchSessionStreaming } from "../../integrations/agent/agentStateCache";
+import { getSessionEntries, listRuns } from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
+import { errorMessage } from "../../lib/errors";
 import { usePolling } from "../../lib/usePolling";
 import { upsertFutureReferenceData } from "../markdown/futureReferenceStore";
 import { matchesSettledRun } from "./agentMessageFormatters";
@@ -271,7 +271,8 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
   const attachedRef = useRef(false);
   usePolling(
     async () => {
-      if (!threadId || isRunActive) return;
+      if (!threadId || isRunActive)
+        return;
       const streaming = await fetchSessionStreaming(threadId);
       if (streaming && !attachedRef.current) {
         try {
@@ -286,10 +287,12 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
             await reloadMessagesQuiet(threadId);
             await refreshRecentRun(threadId, workspaceId);
           }
-        } catch {
+        }
+        catch {
           // Agent unreachable — will retry next tick.
         }
-      } else if (!streaming) {
+      }
+      else if (!streaming) {
         attachedRef.current = false;
       }
     },
@@ -306,20 +309,25 @@ export function useThreadMessages({ threadId, workspaceId, agentSessionId }: Use
   // tools, agent_end) continue through the synthetic run → useRunReattach
   // path to avoid conflicting with the existing streaming bubble logic.
   useEffect(() => {
-    if (!threadId || !agentSessionId) return;
+    if (!threadId || !agentSessionId)
+      return;
     const handler = (ev: Event) => {
       const detail = (ev as CustomEvent).detail as {
         sessionId: string;
         eventType: string;
         payload: Record<string, unknown>;
       } | undefined;
-      if (!detail || detail.sessionId !== agentSessionId) return;
-      if (detail.eventType !== "user_message") return;
+      if (!detail || detail.sessionId !== agentSessionId)
+        return;
+      if (detail.eventType !== "user_message")
+        return;
 
       const text = typeof detail.payload.text === "string" ? detail.payload.text : "";
-      if (!text) return;
+      if (!text)
+        return;
       setMessages((prev) => {
-        if (prev.some((m) => m.role === "user" && m.content === text)) return prev;
+        if (prev.some(m => m.role === "user" && m.content === text))
+          return prev;
         return [...prev, {
           id: `user_${Date.now()}`,
           role: "user",

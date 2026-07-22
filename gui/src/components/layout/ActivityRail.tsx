@@ -369,7 +369,7 @@ export function ActivityRail({
                           key={thread.id}
                           menuOpen={openThreadMenuId === thread.id}
                           runStatus={threadRunStatuses[thread.id]}
-                                isStreaming={threadStreamingStatuses[thread.id]}
+                          isStreaming={threadStreamingStatuses[thread.id]}
                           thread={thread}
                           unread={unreadThreadIds.has(thread.id)}
                           onDeleteThread={onDeleteThread}

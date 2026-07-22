@@ -9,11 +9,13 @@ import { NewConversation } from "../../features/agent/NewConversation";
 import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
+import { installAgentEventListener } from "../../integrations/agent/agentStateCache";
 import {
   createWorkspace,
   pinThread,
   restoreThread,
 } from "../../integrations/storage/threadStore";
+import { invokeCommand } from "../../integrations/tauri/invoke";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { useTauriEvent } from "../../lib/useTauriEvent";
 import { ToastHost } from "../ui/ToastHost";
@@ -30,8 +32,6 @@ import { useRightPanelWidth } from "./hooks/useRightPanelWidth";
 import { useThreadDialogs } from "./hooks/useThreadDialogs";
 import { useThreadStore } from "./hooks/useThreadStore";
 import { useUnreadThreads } from "./hooks/useUnreadThreads";
-import { installAgentEventListener } from "../../integrations/agent/agentStateCache";
-import { invokeCommand } from "../../integrations/tauri/invoke";
 import { useWorkspaceDialogs } from "./hooks/useWorkspaceDialogs";
 import { WorkspaceDialogs } from "./WorkspaceDialogs";
 
