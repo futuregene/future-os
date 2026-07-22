@@ -103,6 +103,11 @@ pub struct ServerSession {
     /// Runtime "allow in this workspace/chat" rules for the current run. Shared
     /// into the live sandbox at prompt start; cleared each new run.
     pub session_rules: crate::sandbox::rules::SessionRules,
+    /// Process-wide cached model registry (shared from `AppState`).  Used by
+    /// `set_model`/`reload_credentials` so hydrating N sessions costs zero
+    /// registry rebuilds; refreshed in place by the `reload_auth` command
+    /// after provider/auth changes on disk.
+    pub model_registry: Arc<parking_lot::RwLock<crate::models::Registry>>,
 }
 
 /// Default workspace directory for new sessions.
@@ -141,6 +146,7 @@ impl ServerSession {
         event_bus: Arc<EventBus>,
         broadcaster: Arc<SseBroadcaster>,
         approval_gate: ApprovalGate,
+        model_registry: Arc<parking_lot::RwLock<crate::models::Registry>>,
     ) -> Self {
         // Clone token counter Arcs and queue senders from the agent loop for lock-free access
         let (ti, to, tcr, tcw, lpt, stx, ftx) = if let Ok(loop_) = agent_loop.try_read() {
@@ -200,6 +206,7 @@ impl ServerSession {
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
             sandbox_policy: None,
             session_rules: std::sync::Arc::new(parking_lot::Mutex::new(vec![])),
+            model_registry,
         }
     }
 
@@ -273,9 +280,9 @@ impl ServerSession {
     }
 
     pub fn set_model(&mut self, model: &str) -> Result<()> {
-        // Resolve model config from registry to get base_url, compat settings, etc.
-        let registry = crate::models::Registry::new();
-        let resolved = registry.resolve(model);
+        // Resolve against the shared cached registry — never rebuilds it.
+        // The cache is refreshed by `reload_auth` when models.json changes.
+        let resolved = self.model_registry.read().resolve(model);
         // Store full provider/id as the canonical model identifier for display
         // and session persistence. Resolve bare ID to provider/id when possible.
         self.model = resolved
@@ -393,15 +400,14 @@ impl ServerSession {
         if self.model.is_empty() {
             return;
         }
-        let registry = crate::models::Registry::new();
-        let resolved = registry.resolve(&self.model);
-        let provider = resolved
+        let registry_resolved = self.model_registry.read().resolve(&self.model);
+        let provider = registry_resolved
             .as_ref()
             .map(|m| m.provider.clone())
             .unwrap_or_else(|| self.model.split('/').next().unwrap_or("").to_string());
 
         let auth = crate::AuthStore::load();
-        let model_key = resolved
+        let model_key = registry_resolved
             .as_ref()
             .map(|m| m.api_key.clone())
             .unwrap_or_default();
@@ -772,6 +778,7 @@ mod tests {
             Arc::new(EventBus::new()),
             Arc::new(SseBroadcaster::new()),
             ApprovalGate::default(),
+            Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
         );
 
         assert_eq!(session.get_permission_level(), "all");
@@ -792,6 +799,7 @@ mod tests {
             Arc::new(EventBus::new()),
             Arc::new(SseBroadcaster::new()),
             ApprovalGate::default(),
+            Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
         )
     }
 
@@ -1150,6 +1158,7 @@ mod tests {
             Arc::new(EventBus::new()),
             Arc::new(SseBroadcaster::new()),
             ApprovalGate::default(),
+            Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
         );
         assert_eq!(session.session_id(), "own_loop_test");
         assert_eq!(session.thinking_level, "xhigh");

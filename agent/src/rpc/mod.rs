@@ -113,6 +113,7 @@ impl AppState {
             event_bus,
             broadcaster,
             approval_gate,
+            self.model_registry.clone(),
         );
         if new_sess.switch_session(session_id).is_err() {
             return self.session.clone();

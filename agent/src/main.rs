@@ -390,6 +390,7 @@ async fn async_main(
         event_bus.clone(),
         broadcaster.clone(),
         approval_gate.clone(),
+        model_registry.clone(),
     );
     server_session.model = resolved_model.clone();
 

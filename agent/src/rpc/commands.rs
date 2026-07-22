@@ -34,6 +34,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     // Credential refresh operates on every session, not one — handle it before
     // resolving a target session (which would needlessly create/load one).
     if cmd_type == "reload_auth" {
+        // Rebuild the shared model registry FIRST so runtime-added/
+        // removed providers and models.json edits become visible to every
+        // session — set_model now resolves against this cache instead of
+        // constructing a fresh Registry per call.
+        *state.model_registry.write() = crate::models::Registry::new();
         state.reload_all_credentials();
         return RpcResponse::ok(id, "reload_auth", serde_json::json!({}));
     }
@@ -920,6 +925,7 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
         event_bus,
         broadcaster,
         approval_gate,
+        state.model_registry.clone(),
     );
     // Resolve the default model fresh from the registry (not inherited from
     // the active session) so that CLI one-shot runs always start from the
@@ -1197,6 +1203,7 @@ fn cmd_fork(
         event_bus,
         broadcaster,
         state.approval_gate.clone(),
+        state.model_registry.clone(),
     );
     let supports_images = crate::models::model_accepts_images(&forked.model);
     let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
@@ -1291,6 +1298,7 @@ fn cmd_clone(
         event_bus,
         broadcaster,
         state.approval_gate.clone(),
+        state.model_registry.clone(),
     );
     let supports_images = crate::models::model_accepts_images(&forked.model);
     let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
@@ -1436,6 +1444,7 @@ mod tests {
 
     fn make_app_state() -> AppState {
         let cwd = test_workspace();
+        let model_registry = Arc::new(parking_lot::RwLock::new(crate::models::Registry::new()));
         let session = ServerSession::new(
             "default".to_string(),
             Arc::new(tokio::sync::RwLock::new(Loop::new(
@@ -1447,6 +1456,7 @@ mod tests {
             Arc::new(crate::events::EventBus::new()),
             Arc::new(SseBroadcaster::new()),
             ApprovalGate::default(),
+            model_registry.clone(),
         );
         AppState {
             session: Arc::new(parking_lot::RwLock::new(session)),
@@ -1463,7 +1473,7 @@ mod tests {
             approval_gate: ApprovalGate::default(),
             verbose: false,
             shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            model_registry: Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
+            model_registry: model_registry.clone(),
             loop_template: Arc::new(Loop::new(Arc::new(EmptyProvider), "mock")),
         }
     }
