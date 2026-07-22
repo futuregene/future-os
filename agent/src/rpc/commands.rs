@@ -926,18 +926,12 @@ fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     // preferred default.  GUI/TUI explicitly set model_id on the command,
     // which overrides this below.
     let default_model = crate::models::get_default_model().unwrap_or_else(|| inherit_model.clone());
-    new_sess.model = default_model.clone();
-    // Also update the fresh loop's model so the LLM call uses the correct
-    // bare model ID (the loop takes just the ID, not provider/id).
-    // The template's model was inherited from the active session, which may
-    // have been changed by a previous --model override.
-    if let Ok(mut loop_) = new_sess.agent_loop.try_write() {
-        // Strip provider/ prefix to get the bare model ID for LLM API calls.
-        let bare_id = default_model
-            .rsplit_once('/')
-            .map(|(_, id)| id.to_string())
-            .unwrap_or_else(|| default_model.clone());
-        loop_.model = bare_id;
+    // Apply via set_model: it sets the canonical model AND rebuilds the
+    // loop's provider client for that model's endpoint/key/compat.  A bare
+    // `loop_.model = bare_id` leaves the provider on the template's startup
+    // model, which breaks whenever the current default differs.
+    if let Err(e) = new_sess.set_model(&default_model.clone()) {
+        tracing::warn!("[new_session] could not sync model to fresh loop: {e}");
     }
     // Always start new sessions at the preferred thinking level.
     new_sess.thinking_level = "xhigh".to_string();

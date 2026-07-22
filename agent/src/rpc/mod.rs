@@ -117,11 +117,16 @@ impl AppState {
         if new_sess.switch_session(session_id).is_err() {
             return self.session.clone();
         }
-        // If the session file had no model saved, copy from default
+        // If the session file had no model saved, fall back to the default
+        // — via set_model, which also rebuilds the loop's provider client.
+        // A bare `new_sess.model = ...` would leave the loop pointing at the
+        // template's startup model/endpoint.
         if new_sess.model.is_empty() {
             let default_model = self.session.read().model.clone();
             if !default_model.is_empty() {
-                new_sess.model = default_model.clone();
+                if let Err(e) = new_sess.set_model(&default_model) {
+                    tracing::warn!("[session] could not apply default model on hydrate: {e}");
+                }
             }
         }
 

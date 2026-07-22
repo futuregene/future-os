@@ -176,8 +176,8 @@ impl ServerSession {
             on_user_message: Some(user_msg_cb),
         };
 
-        // Set approval/sandbox hooks on the shared Loop config (these are not
-        // callbacks — they're tool-execution hooks on AgentConfig).
+        // Set approval/sandbox hooks on this session's Loop config (these
+        // are not callbacks — they're tool-execution hooks on AgentConfig).
         if let Ok(mut r#loop) = agent_loop.try_write() {
             let approval_gate_hook = approval_gate.clone();
             let approval_broadcaster = broadcaster.clone();
@@ -218,7 +218,7 @@ impl ServerSession {
         // for both initial prompts and follow-up turns.
 
         // Clear any stale interrupt flag left by a previous abort().
-        // Ctrl+C / abort sets interrupt_flag=true on the shared agent_loop.
+        // abort() sets interrupt_flag=true on this session's own agent_loop.
         // Without clearing it, the spawned task's first loop iteration would
         // exit immediately without calling the LLM.
         let shared_interrupt_flag = if let Ok(r#loop) = self.agent_loop.try_read() {

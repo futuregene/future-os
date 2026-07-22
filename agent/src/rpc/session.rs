@@ -329,14 +329,11 @@ impl ServerSession {
                 resolve_api_key(&auth, model, &model_config.provider, &model_config.api_key);
 
             // Build a FRESH provider (its own reqwest client) and swap it in,
-            // rather than mutating the existing provider's endpoint. Sessions
-            // are seeded from a shared provider `Arc` in `new_session`, so
-            // mutating it in place would (a) serialize concurrent sessions onto
-            // one HTTP connection and (b) let one session's endpoint change
-            // clobber another's mid-run. A per-session client makes concurrent
-            // conversations use independent connections. The GUI calls
-            // `set_model` on every session before prompting, so this is where
-            // each session gets its own client.
+            // rather than mutating the existing provider's endpoint.  Each
+            // session owns its loop (minted from AppState::loop_template), so
+            // the fresh client is this session's alone: concurrent sessions
+            // use independent connections and never clobber each other's
+            // endpoint mid-run.
             let max_tokens = if model_config.max_tokens > 0 {
                 Some(std::cmp::min(model_config.max_tokens, 32000))
             } else if model_config.reasoning {
