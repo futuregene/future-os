@@ -295,6 +295,8 @@ pub fn run() {
             remote_start,
             remote_stop,
             remote_status,
+            remote_unpair,
+            remote_pairing_status,
             open_url
         ])
         .build(tauri::generate_context!())

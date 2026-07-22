@@ -9,6 +9,7 @@
 //!  - Step C (`commands.rs`): subscribe to `p.{pairId}.cmd.>`, route mobile commands into the GUI's persistence path.
 
 mod commands;
+pub(crate) mod pairing;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -28,6 +29,7 @@ struct RemoteState {
     js: async_nats::jetstream::Context,
     nats_url: String,
     pair_id: String,
+    mode: String,
     cmd_task: tokio::task::JoinHandle<()>,
     heartbeat_task: tokio::task::JoinHandle<()>,
     web_task: tokio::task::JoinHandle<()>,
@@ -46,7 +48,17 @@ static START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 pub struct RemoteStartInput {
     /// The GUI backend connects to the NATS **client port** (`nats://host:4222`), NOT the browser WebSocket port.
     pub nats_url: String,
+    /// pairId for `dev` mode. Ignored in `paired` mode (taken from creds / generated).
     pub pair_id: String,
+    /// `"dev"` (default: no auth, non-release only) or `"paired"` (shared-token auth, Phase 1 simple pairing).
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// NATS shared access token. Required for `mode = "paired"`.
+    #[serde(default)]
+    pub access_token: Option<String>,
+    /// Persistent device id (inbox prefix suffix). Generated + persisted when absent in paired mode.
+    #[serde(default)]
+    pub device_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -56,6 +68,9 @@ pub struct RemoteStatus {
     pub connected: bool,
     pub nats_url: String,
     pub pair_id: String,
+    pub mode: Option<String>,
+    /// One-shot pairing code (base64url) returned only by a successful `paired` start, for the UI to display/copy.
+    pub pairing_code: Option<String>,
     pub web_url: Option<String>,
     pub error: Option<String>,
 }
@@ -66,40 +81,76 @@ fn empty() -> RemoteStatus {
         connected: false,
         nats_url: String::new(),
         pair_id: String::new(),
+        mode: None,
+        pairing_code: None,
         web_url: None,
         error: None,
     }
 }
 
 pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppError> {
-    // SECURITY: the command surface has no authentication (see the note above
-    // `commands::handle_command`), which is only acceptable while the feature
-    // is dev-gated. Enforce that premise here in the backend — hiding the nav
-    // entry in the frontend is cosmetics, not a gate.
-    if crate::build_info::is_release() {
+    let mode = input.mode.clone().unwrap_or_else(|| "dev".to_string());
+    let is_paired = mode == "paired";
+
+    // SECURITY gate (see the note above `commands::handle_command`):
+    //  - dev   = no auth           → non-release builds only.
+    //  - paired = shared-token auth (Phase 1 simple pairing) → release allowed.
+    // Server-enforced per-subject isolation (JWT) is Phase 2; see auth §8.9.
+    if !is_paired && crate::build_info::is_release() {
         return Err(crate::AppError::Message(
-            "Remote control is not available in release builds.".to_string(),
+            "Remote control in dev mode is not available in release builds; pair with an access token."
+                .to_string(),
         ));
     }
+
+    let token = if is_paired {
+        Some(input.access_token.clone().ok_or_else(|| {
+            crate::AppError::Message("paired mode requires an access token.".to_string())
+        })?)
+    } else {
+        None
+    };
 
     let _start_guard = START_LOCK.lock().await;
 
     // Stop any previous connection first (idempotent: aborts the old subscription task).
     let _ = stop();
 
-    let client = async_nats::connect(&input.nats_url)
-        .await
-        .map_err(|e| crate::AppError::Message(format!("Failed to connect to NATS: {e}")))?;
+    let client = connect_nats(&input.nats_url, token.as_deref()).await?;
     let js = async_nats::jetstream::new(client.clone());
 
+    // Paired: resolve + persist pairId/deviceId and mint the pairing code the UI
+    // hands to a client. Dev: pairId is whatever the caller passed (may be empty).
+    let (pair_id, pairing_code) = if is_paired {
+        let device_id = input
+            .device_id
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| pairing::load_creds().map(|c| c.device_id))
+            .unwrap_or_else(pairing::new_device_id);
+        let pair_id = input.pair_id.trim().to_string();
+        let pair_id = if pair_id.is_empty() {
+            pairing::new_pair_id()
+        } else {
+            pair_id
+        };
+        let t = token.as_deref().unwrap_or("");
+        let _ = pairing::save_creds(&pairing::PairingCreds {
+            pair_id: pair_id.clone(),
+            token: t.to_string(),
+            device_id,
+            nats_url: input.nats_url.clone(),
+        });
+        let code = pairing::encode_pairing_code(&input.nats_url, &pair_id, t);
+        (pair_id, Some(code))
+    } else {
+        (input.pair_id.clone(), None)
+    };
+
     // Start the command subscription task (Step C).
-    let cmd_task = tokio::spawn(commands::command_loop(
-        client.clone(),
-        input.pair_id.clone(),
-    ));
+    let cmd_task = tokio::spawn(commands::command_loop(client.clone(), pair_id.clone()));
 
     // Presence heartbeat: write KV `pairs` so clients can see desktop online state.
-    let heartbeat_task = spawn_presence_heartbeat(js.clone(), input.pair_id.clone());
+    let heartbeat_task = spawn_presence_heartbeat(js.clone(), pair_id.clone());
 
     // Web client HTTP server: serve remote/web/ on localhost:8022.
     let web_task = spawn_web_server();
@@ -108,7 +159,9 @@ pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppEr
         running: true,
         connected: true,
         nats_url: input.nats_url.clone(),
-        pair_id: input.pair_id.clone(),
+        pair_id: pair_id.clone(),
+        mode: Some(mode.clone()),
+        pairing_code,
         web_url: Some(format!("http://localhost:{WEB_PORT}")),
         error: None,
     };
@@ -116,12 +169,37 @@ pub async fn start(input: RemoteStartInput) -> Result<RemoteStatus, crate::AppEr
         client,
         js,
         nats_url: input.nats_url,
-        pair_id: input.pair_id,
+        pair_id,
+        mode,
         cmd_task,
         heartbeat_task,
         web_task,
     });
     Ok(status)
+}
+
+/// Connect to NATS, with the shared access token when in paired mode.
+async fn connect_nats(
+    url: &str,
+    token: Option<&str>,
+) -> Result<async_nats::Client, crate::AppError> {
+    let result = match token {
+        Some(t) => {
+            async_nats::connect_with_options(
+                url,
+                async_nats::ConnectOptions::with_token(t.to_string()),
+            )
+            .await
+        }
+        None => async_nats::connect(url).await,
+    };
+    result.map_err(|e| crate::AppError::Message(format!("Failed to connect to NATS: {e}")))
+}
+
+/// Drop the persisted pairing and stop the bridge (the desktop "unpair").
+pub fn unpair() -> RemoteStatus {
+    let _ = pairing::clear_creds();
+    stop()
 }
 
 pub fn stop() -> RemoteStatus {
@@ -163,6 +241,8 @@ pub fn status() -> RemoteStatus {
                 connected,
                 nats_url: s.nats_url.clone(),
                 pair_id: s.pair_id.clone(),
+                mode: Some(s.mode.clone()),
+                pairing_code: None,
                 web_url: Some(format!("http://localhost:{WEB_PORT}")),
                 error: loop_dead.then(|| {
                     "Command subscription stopped; restart the remote bridge.".to_string()
@@ -178,9 +258,14 @@ pub fn status() -> RemoteStatus {
 ///
 /// Uses JetStream publish with `Nats-Msg-Id = {session}:{runId}:{idx}`:
 ///  - Idempotent: re-sent/replayed events deduplicated by broker via dupe-window;
-///  - Durable: written to EVT_* stream, clients can replay on reconnect (see web `backfillActiveRun`);
-///  - Graceful degradation: even without a stream, messages still reach the subject; real-time core subscribers still receive them (only persistence is lost).
-///    We don't await the ack (to avoid per-token blocking) — the message is already sent on publish.
+///  - Durable: when an `EVT_{pairId}` stream exists, written to it for replay;
+///  - Graceful degradation: even without a stream, the message still reaches the
+///    subject (real-time core subscribers receive it; only persistence is lost).
+///
+/// The publish is **fire-and-forget**: we spawn the ack-waiting future instead of
+/// awaiting it, so a missing stream (no matching JetStream stream → the server
+/// returns an error ack immediately) cannot block the agent event loop. This is
+/// what lets Phase 1 run without provisioning a stream per pair.
 pub async fn publish_event(session_id: &str, event_type: &str, data: &str, run_id: &str, idx: i64) {
     let target = {
         let guard = STATE.lock().unwrap();
@@ -196,16 +281,20 @@ pub async fn publish_event(session_id: &str, event_type: &str, data: &str, run_i
     };
     if run_id.is_empty() {
         // Events without a run_id (theoretically only early/edge cases) skip dedup, publish directly.
-        let _ = js.publish(subject, payload.into()).await;
+        tokio::spawn(async move {
+            let _ = js.publish(subject, payload.into()).await;
+        });
     } else {
         let mut headers = async_nats::HeaderMap::new();
         headers.insert(
             "Nats-Msg-Id",
             format!("{session_id}:{run_id}:{idx}").as_str(),
         );
-        let _ = js
-            .publish_with_headers(subject, headers, payload.into())
-            .await;
+        tokio::spawn(async move {
+            let _ = js
+                .publish_with_headers(subject, headers, payload.into())
+                .await;
+        });
     }
 }
 
