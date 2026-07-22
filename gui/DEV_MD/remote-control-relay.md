@@ -143,6 +143,7 @@ for await (const e of kv_pairs.watch(pairId)) updateSessionList(e);  // 每 sess
 - **签发服务**：校验 Future 账号（`cli/src/commands/auth.ts` 已有）后签 scoped creds（限 `p.{pairId}.>`）+ **配对时创建 `EVT_{pairId}` 流**；吊销即撤 creds。
 - **Bridge 最小授权**：pub `p.{pairId}.evt.>`/`p.{pairId}.rep.>`、sub `p.{pairId}.cmd.>` + 自己的 `$JS.ACK.>`；**不给 STREAM.CREATE/PURGE/DELETE**。
 - **L0 测试**：NATS 无鉴权直连（仅本地/可信网络）。
+- **落地实现 / 分阶段计划**：见 [auth §8](remote-control-auth.md)（对照代码的 gap 表、mode 共存、connect+inboxPrefix、consumer 升级、流/桶分工、审批 session 校验）与 [auth §9](remote-control-auth.md)（Phase 1 简单配对=随机 pairId+接入 token+命名分区，**无**服务端 subject 强制；Phase 2 才上 JWT 签发+服务端强制隔离）。Bridge/客户端的 `connect` 在 L1 带 creds+`inboxPrefix`（§5/§6 骨架已留位）；事件订阅 L1 升级 JetStream consumer 以获回放（§6）。
 
 ---
 

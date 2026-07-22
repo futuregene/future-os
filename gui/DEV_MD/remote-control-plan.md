@@ -201,6 +201,7 @@ CLI（仿 `future channel`/`future agent`）：`future remote start | stop | sta
 
 \* 单人粗估。**建议顺序**：P1→(P2+P3 并行)→P4→P5→P6。
 > ⚠️ **发布纪律**：P2–P4 的 L0 部署必须**受控**（内网/单 token/白名单），**绝不公开无鉴权**；公开发布必须先到 P5（L1）。
+> 🔗 **P5 鉴权的落地实现与分阶段开发计划**见 [auth §8](remote-control-auth.md)/[§9](remote-control-auth.md)：已确认 **mode 共存**（L0/L1 一套主流程）、**简单配对先行**（Phase 1=随机 pairId+接入 token+命名分区，无签发服务；Phase 2=JWT 签发+服务端强制隔离，最后做）。本表 P5 行对应 auth §9 Phase 2。
 
 ---
 
@@ -244,6 +245,7 @@ CLI（仿 `future channel`/`future agent`）：`future remote start | stop | sta
 - [ ] 审批：agent `decide` 加 session 归属校验；审批门**无 timeout**→ 客户端离线时 Bridge 自动 cancel（复用 `cancel_session`）。
 - [ ] 权限矩阵：签发服务建/删流，**Bridge 只 publish**（不给 STREAM.CREATE/PURGE/DELETE）。
 - [ ] 撤销措辞：≤TTL 生效 + server kick 才断活跃连；nonce 原子消费。
+- [ ] **鉴权落地（见 [auth §8/§9](remote-control-auth.md)）**：mode 共存（dev/paired 一套主流程，release 强制 paired）；Phase 1 简单配对=随机 pairId+接入 token+命名分区（无服务端 subject 强制，写实）；Phase 2 JWT 签发+服务端强制隔离+流/桶迁签发服务。审批 `decide` 加 session 归属校验（Phase 1，跨 agent crate）。
 
 ---
 

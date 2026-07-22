@@ -149,6 +149,107 @@ App 登出       → 删本地 .creds + 通知签发服务撤销
 
 ---
 
+## 8. L1 落地设计（对照当前代码）
+
+> 本节**不改动** §1–§7 的高层模型（不变量、分级、权限矩阵、配对时序、签发服务落点均为 `[已定]`），只补"对照当前代码、把 L0→L1 接到现有结构上"的实现层设计。标注：`[已定]`=§1–§7 已锁；`[设计]`=落地建议（已 review 确认）；`[待定→默认]`=开放项的默认取值。
+
+### 8.1 已确认的落地决策
+- **D1 mode 共存（非两条代码路径）** `[设计-确认]`：L0/L1 用**一套**主流程（订 cmd、发 evt、命令路由、presence、去重、审批转发、web 渲染），凭证/鉴权作可选输入 `RemoteStartInput { mode: "dev"|"paired", creds: Option<Creds>, nats_url, pair_id }`。理由：鉴权只改变"连接怎么建立 + subject 权限由谁强制"，**不**改变连上后的业务逻辑；写两套要么复制业务逻辑（必然漂移）要么抽公共层（退化成 mode 方案）。差异**只收敛到 4 点**：① connect options；② pairId 来源（输入 vs creds 内）；③ 桶/流谁建；④ release 门禁条件。**守则**：dev 路径不得在 release 泄露，靠 §8.10 门禁 + 测试守住，否则"共存"=release 后门。
+- **D2 分阶段：简单配对先行，JWT 签发最后** `[设计-确认]`：Phase 1 做"简单配对"（无签发服务、无 JWT，见 §8.11 + §9），Phase 2 才上签发服务 + 服务端强制隔离。
+- **D3 Web 验证端 L1 仅联调** `[设计-确认]`：浏览器无 keychain，creds 存 localStorage（明文，文档写实风险），正式凭证走 App。
+- **D4 审批 session 归属校验放 agent 侧** `[已定+确认]`：`ApprovalGate::decide` 加 `session_id`（见 §8.8）。
+
+### 8.2 现状（L0）gap 表（对照代码）
+| Gap | 代码位置 | 现状 | 未满足 |
+|---|---|---|---|
+| G1 无凭证连接 | `remote/mod.rs:90` `async_nats::connect(&nats_url)` | 无 creds、无 TLS 强制 | I2/I4 |
+| G2 pairId 为输入常量 | `RemoteStartInput.pair_id`（默认 `DEVPAIR`） | 猜中即接入 | I1/I2 |
+| G3 reply 用默认 inbox | `remote/commands.rs:354` `msg.reply` | 客户端未设 `inboxPrefix` → `_INBOX.>` | I4 |
+| G4 流/桶由 Bridge 自建 | `remote/mod.rs:227` `create_or_update_key_value("pairs")` | §3 要求**签发服务**建桶/建流 | I4 |
+| G5 无配对/签发对接 | 无 nonce/QR/claim | I2/I3 |
+| G6 审批无 session 校验 | agent `approval.rs:309` `decide(request_id, decision)` | `entry_id` 泄漏可越权批准 | I1 例外 |
+| G7 release 门禁过粗 | `remote/mod.rs:79` `is_release()` 直接拒 | L1 后应**强制 creds** 而非全拒 | — |
+| G8 web 用 core sub | web `nc.subscribe(p.{pair}.evt.>)` | 无 JetStream consumer → 无回放 | [relay §4/§6](remote-control-relay.md) |
+
+### 8.3 组件新增面
+| 组件 | 新增 | 标注 |
+|---|---|---|
+| Bridge `remote/` | connect 封装 dev/paired；`inboxPrefix`；publish/subscribe subject 落授权集；permission-denied 可观测；presence 桶 paired 时不建 | [设计] |
+| GUI 配对控制面 `features/remote/` + 命令 | 配对按钮→生成 pairId+凭证→QR→已配对/解绑；creds 落安全存储 | [设计] |
+| 客户端 Web `remote/web/` | 输入从 url+pairId 扩为贴码/扫码；connect 带 authenticator+inboxPrefix；事件订阅升级 consumer | [设计] |
+| 签发服务 `future-server` | `/pair/nonce`、`/pair/claim`（原子消费 nonce+建流+签 JWT）、`/pair/revoke` | [已定]落点，**Phase 2** |
+| agent | `decide` 加 session_id 校验 | [已定]，**Phase 1** |
+
+### 8.4 连接与 inbox 收敛 `[设计]`
+- Bridge：`connect_with_options(url, ConnectOptions::with_credentials(creds).tls…)`；`inboxPrefix=p.{pairId}.rep.{bridgeDevice}`。
+- Web：`connect({ servers, authenticator, inboxPrefix: \`p.${pairId}.rep.${device}\` })`；reply 自动落该前缀，**无需改** `commands.rs:354`（`msg.reply` 本就是客户端 inbox）。
+- **subject↔权限可观测**：L1 连上后任一 publish/subscribe 被 NATS 拒 → `status.error="permission denied: <subject>"` 并在 GUI 显示，避免"连上但静默不工作"。代码不硬编 ACL（权限在 creds），只加可观测性。
+- **事件订阅升级**：web `nc.subscribe` → JetStream `consumers.get/create(EVT_{pairId}, { filter_subject, deliver_policy:"all" })` 获回放（[relay §6](remote-control-relay.md)）；`currentRunId` 初值取 presence。L0 未建流回退 core sub。
+
+### 8.5 流/桶生命周期分工 `[设计]`
+- Phase 2：`EVT_{pairId}` 与桶 `pairs` 由**签发服务** `/pair/claim` 建、`/pair/revoke` 删；Bridge 移除建桶，桶不存在则 presence 标 degraded（[relay §5](remote-control-relay.md) 要求不崩）。
+- Phase 1：Bridge 保留自建桶（`mode=dev`/简单配对均自建），`mode=paired`(Phase 2) 不建。
+
+### 8.6 agent 审批 session 归属校验 `[设计]`（跨 crate，Phase 1）
+- `ApprovalGate::decide(&self, request_id, decision, session_id)`：lookup `PendingApproval`（已含 `session_id`，`approval.rs:32`）后比对，不符返回 `Err`。
+- 调用链：remote `approval_decision` 已带 `cmd.session_id` → `agent_bridge::decide_approval` → gRPC `approval_decision` → agent `commands.rs` 把 `cmd.session_id` 透传 `decide`。1:1 天然 pair-scoped；此为防 `entry_id` 泄漏 + 为 1:N 铺路。
+
+### 8.7 撤销/登出 `[设计]`
+- Phase 1：解绑 = 删本地 creds + `remote_stop` + 换 pairId（无服务端撤销，靠 token 作废 + pairId 失效）。
+- Phase 2 `[已定]`：短期 user JWT + 刷新（停刷新即下次重连失效，≤TTL）；不做 server kick（二期再议）；"已链接设备列表 + 远程登出"二期。
+
+### 8.8 L0 门禁演进 `[设计]`
+- `start()`：`if is_release() { reject }` → `if is_release() && mode != "paired" { reject }`。release 必须 paired+creds；dev 仍可 dev 直连。
+
+### 8.9 简单配对的安全边界（写实，重要）`[设计]`
+简单配对（Phase 1）**不**提供 §1 I1 的"服务端 subject 强制隔离"——那需要 JWT（Phase 2）。它提供的是：
+- **接入控制**：NATS 启用基于 token/password 的接入，配对 token 作连接凭证，外人无 token 连不上。
+- **命名分区**：pairId 随机不可猜，subject 按 `p.{pairId}.>` 分区，应用层约定不互串。
+- **不提供的（写实）**：同一 NATS 实例下，简单配对用**全局接入 token**（静态配置无法承载运行时随机 per-pair 用户），故**恶意**多租户隔离不成立——知道全局 token 者理论上可猜 subject（但 pairId 随机，实际猜不中）。**强隔离留 Phase 2 JWT**。
+- 结论：简单配对 = L0 的"粗鉴权"实质升级（随机 pairId + 接入 token + 命名分区），适合本地/受控联调；**公开发布仍须 Phase 2（≥L1）**，发布纪律不变（[总纲 §6](remote-control-plan.md)）。
+
+### 8.10 待定项默认 `[待定→默认]`
+| 项 | 默认 | 理由 |
+|---|---|---|
+| 凭证有效期（Phase 2） | 短期 JWT(如 1h)+刷新 | 撤销 ≤TTL，免 resolver/kick |
+| 重复配对 | 新配对自动作废旧绑定 | 最简；桌面重出 QR 即可 |
+| account 硬隔离 | 不做（单 account+pairId subject） | 合规未触发；升级路径已留 |
+| Web 定位 | 联调 + 演进正式 Web 端 | 同 §6 |
+| `dupe-window` | 10min，以客户端 (run_id,idx) 去重为准 | [relay §12](remote-control-relay.md) |
+
+---
+
+## 9. 分阶段开发计划
+
+> 原则：JWT 签发相关**最后**做；Phase 1 先做"简单配对"，让配对/隔离雏形在**无签发服务**下先跑通并可验证。每子步可独立验证、可回退。
+
+### Phase 1 — 简单配对（L0 加固，无 JWT）
+| 步 | 内容 | 验证 |
+|---|---|---|
+| 1.1 | **mode 共存框架 + 门禁演进**：`RemoteStartInput.mode/creds`；`ConnectOptions` 封装 dev/paired；§8.8 门禁 | release+dev 拒绝单测；dev 直连回归 |
+| 1.2 | **配对凭证模型**：本地生成/存 pairId(随机)+pairing token+device id；`.creds` 结构；GUI 安全存储 / web localStorage | 单元 + 落盘读回 |
+| 1.3 | **GUI 配对 UI**：Remote 页"配对"→生成 pairId+token+QR→显示；已配对状态+解绑；`app_settings` 存配对元数据（token 走安全存储） | 手动：出 QR、解绑清凭证 |
+| 1.4 | **web 配对输入**：url+pairId → 贴码/扫码解析 → 用 token+pairId+url connect；`inboxPrefix` | 扫码后连上、reply 落 pair 命名空间 |
+| 1.5 | **Bridge connect 带 token + inboxPrefix + permission-denied 可观测** | 错 token 连不上；越权 subject 报 status.error |
+| 1.6 | **NATS dev 配置**：`deploy/nats` 加 token/password 鉴权 conf + 文档 | docker 起带鉴权 NATS，无 token 拒连 |
+| 1.7 | **agent 审批 session 校验**（§8.6，跨 crate）+ 单测 | 跨 session decide 被拒 |
+| 1.8 | **web 事件订阅升级 JetStream consumer**（回放，G8） | 重连补齐当前轮 |
+| 1.9 | 端到端 + 文档同步（本节） | 配对→发消息→审批→解绑全通 |
+
+> Phase 1 安全模型见 §8.9（接入控制+命名分区，**无**服务端 subject 强制）。
+
+### Phase 2 — JWT 签发（真 L1，最后）
+| 步 | 内容 | 验证 |
+|---|---|---|
+| 2.0 | **spike**：Rust 签 NATS 专有 user JWT（[§3](#3-身份与隔离模型账号--设备1-pc--1-app) 唯一技术不确定点） | 签出的 creds 能被 NATS 校验 |
+| 2.1 | 签发服务 `future-server`：`/pair/nonce`+`/pair/claim`（原子消费 nonce+建 `EVT_{pairId}`+签 scoped JWT） | nonce 单次消费 TOCTOU 测试 |
+| 2.2 | GUI 配对流程切 JWT：`/pair/nonce`→QR→`/pair/claim`→creds；替换 Phase 1 全局 token | 端到端 L1 |
+| 2.3 | **服务端强制隔离**：scoped JWT 限 `p.{pairId}.>`；跨 pair 订/发被 NATS 拒 | 越权拒连/拒订 |
+| 2.4 | 流/桶生命周期迁签发服务（§8.5）；Bridge 不再建桶 | 解绑后流被删 |
+| 2.5 | 短期 JWT+刷新+`/pair/revoke`；"已链接设备列表+远程登出"（二期） | 停刷新后重连失效 |
+
+---
+
 ## 附：出处
 - [WhatsApp 多设备加密（每设备密钥/QR/远程登出）](https://engineering.fb.com/2021/07/14/security/whatsapp-multi-device/)
 - [Signal 链接设备](https://signal.org/blog/a-synchronized-start-for-linked-devices/)

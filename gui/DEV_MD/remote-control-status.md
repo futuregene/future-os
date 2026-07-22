@@ -38,6 +38,17 @@
     - Bridge 新增路由：`list_models`（ agent 侧 `list_models` 命令）、`get_state`、`set_model`、`set_thinking_level`、`set_session_name`（重命名后同步 GUI store）。
     - Web 端：chat header 显示模型下拉 + 思考等级下拉（off/low/medium/high）+ 重命名按钮；切换会话时从 `get_state` 拉当前值填充；重命名同步更新列表标题。
 
+- **Phase 1 简单配对 + 审批归属（已完成，落地见 [auth §8/§9](remote-control-auth.md)）**：
+  - **mode 共存**：`RemoteStartInput.mode = "dev" | "paired"`。dev = 无鉴权直连（仅非 release）；paired = 带共享接入 token 连接 + 配对码 + 持久凭证。release 门禁改为「dev 拒、paired 放行」。
+  - **简单配对凭证** `remote/pairing.rs`：随机 pairId + 共享 NATS 接入 token + 每设备 deviceId，凭证落 `~/.future/remote_pairing.json`（0600）；配对码 = base64url JSON（10min 窗口）。base64url 编解码无依赖；Rust 解码仅 `cfg(test)`（客户端在 JS 解码，浏览器无 Tauri 桥）。
+  - **GUI 配对 UI**：Remote 页加接入 token 输入 +「配对并启动」+ 配对码显示/复制 + 已配对/解绑（`remote_pairing_status` / `remote_unpair` 命令）。
+  - **Web 配对**：粘贴配对码（JS 自解）或手填 url/pair/token；connect 带 token + `inboxPrefix = p.{pairId}.rep.{deviceId}` —— **回复 inbox 已收敛**到 pair 命名空间，不再用默认 `_INBOX.>`。
+  - **NATS dev token auth**：`deploy/nats/nats.conf` 启用共享接入 token（client 4222 + websocket 8080 同值），README 同步；保留 no-auth 注释替代方案。
+  - **审批 session 归属校验**（agent crate）：`ApprovalGate::decide` 加 `session_id` 参数，与 `PendingApproval.session_id` 比对，跨 session 拒绝（auth I1 例外，防 `entry_id` 泄漏越权批准）；2 个单测。
+  - **publish fire-and-forget**：`publish_event` 原先 `await` JetStream ack（与自身注释矛盾；无匹配流时会阻塞 agent 事件循环）改为 `tokio::spawn` 发包。故 Phase 1 **无需为每 pair 建流**——实时走 core pub/sub，重连/中途加入走 `get_events_since`（agent 侧 buffer，与 NATS 流无关）。
+  - **JetStream consumer 升级（原计划 1.8）延后**：流 provision + web `deliver=all` consumer 回放推到简单配对之后；当前 core sub + backfill 已覆盖重连/中途加入。
+  - **安全边界写实**：简单配对 = 接入控制（共享 token）+ 随机 pairId 命名分区，**不提供**服务端逐 subject 强制隔离（那需要 Phase 2 JWT；全局 token 下恶意多租户隔离不成立，见 auth §8.9）。
+
 ## 当前能力（L0）
 - GUI 里聊天 → 手机/网页**实时镜像看到**。
 - 手机/网页 → **列会话 / 新建会话 / 发 prompt / 中断 / 审批 / 引导 / 排队 / 切换模型 / 切换思考等级 / 重命名** → GUI 里**出现线程 + 落库 + 显示**，并镜像回手机。（双向闭环。）
@@ -48,26 +59,30 @@
 - **run 边界仅对 prompt 精确（P1 review C2，已知，暂缓）**：`start_run` 只在初始 `prompt` 调；流式中 `steer`/`follow_up` 复用同一 `run_id`（会多发一个 `agent_start`），手机端会把追加回答并进同一气泡。当前手机/网页只发 `prompt`，不受影响；真手机 App 阶段再改 run 模型。
 - **agent_start 非严格 idx 0（review M3）**：客户端以 `runId` 变化判新轮，不依赖 idx 0，故无实际影响。
 - **超长轮（>20000 事件）回放丢前缀**：`truncated` 已提示，不静默；必要时再调大或按时长裁剪。
-- **L1 鉴权未做**：签发服务在 `future-server`（见 `future-server/docs/remote-control.md`）。
+- **L1 鉴权部分完成**：简单配对（共享接入 token + 随机 pairId 分区，Phase 1）已做；**JWT 签发服务 + 服务端逐 subject 强制隔离未做**（在 `future-server`，见 `future-server/docs/remote-control.md` 与 [auth §9 Phase 2](remote-control-auth.md)）。简单配对**禁公网**（全局 token 无恶意多租户隔离）。
 - 并发：GUI 正在跑某会话时手机又发同一会话 → 被 `PromptSessionGuard` 拒（"already running"）。
-- 回复 inbox 仍用默认 `_INBOX.>`（L1 时需收敛到 `p.{pairId}.rep.{device}`）。
+- **回复 inbox 已收敛**：客户端 connect 设 `inboxPrefix = p.{pairId}.rep.{deviceId}`，Bridge reply 跟随该 inbox，不再用默认 `_INBOX.>`。
+- **JetStream 回放延后**：事件目前走 core pub/sub（无 NATS 流），重连/中途加入靠 `get_events_since`；`EVT_{pairId}` 流 provision + web consumer 回放延后（见 Phase 1 简单配对段）。
 - 附件/文件列表等右侧面板功能未做（后续开发）。
 
-## 怎么跑（L0）
+## 怎么跑（L0 / 简单配对）
 ```bash
-# 1) NATS（首次还需按 deploy/nats/README.md 建 EVT_DEVPAIR 流）
+# 1) NATS（nats.conf 默认启用共享接入 token = devpairingtoken；client+ws 同值）
 cd deploy/nats && docker compose up -d
-# 2) GUI：Remote → 启动远程（nats://localhost:4222 / DEVPAIR）
+#    要纯无鉴权 dev：注释掉 nats.conf 里两个 authorization 块。
+# 2) GUI：Remote → 填 NATS 地址 + 接入 token（devpairingtoken）→「配对并启动」
+#    配对成功后页面显示配对码，点复制。
 make run-gui
-# 3) Web 验证端（GUI 启动远程后自动在 localhost:8022 起服务，直接开浏览器即可）
-open http://localhost:8022  →  连接 ws://localhost:8080 / DEVPAIR
+# 3) Web 验证端（GUI 启动远程后自动在 localhost:8022 起服务）
+open http://localhost:8022
+#    粘贴配对码 →「解析配对码」→「连接」；或手填 ws://localhost:8080 / pairId / token。
 ```
 
-> **JetStream 回放的前提**：事件用 JetStream 发布，重连回放依赖 `EVT_DEVPAIR` 流已建（见上 `deploy/nats/README.md`）。未建流时实时仍工作（core 订阅者照收），仅无持久化/跨轮回放。
+> **无 NATS 流也能跑**：事件走 core pub/sub，重连/中途加入靠 `get_events_since`（agent 侧 buffer）。JetStream 流 + consumer 回放延后；要手动建流做持久化见 `deploy/nats/README.md`（仅固定 pairId 适用，随机 paired pairId 的流由后续 phase 的 Bridge 自建）。
 
 ## 下一步
-1. **L1 鉴权**：future-server 签发服务 + 扫码配对 + per-pairId subject 权限 + scoped creds（plan §6 P5、auth）。
-2. **真手机 App / PWA**：替代 `remote/web` 调试页（历史 / 流式 / 审批 / abort UI 复用）。
-3. **reply inbox 收敛**：从默认 `_INBOX.>` 到 `p.{pairId}.rep.{device}`（为 L1 subject 权限铺路）。
+1. **L1 鉴权 Phase 2（最后做）**：future-server 签发服务（`/pair/nonce` + `/pair/claim` + `/pair/revoke`）+ 扫码配对 + scoped user JWT + **服务端逐 subject 强制隔离** + 流/桶生命周期迁签发服务 + 短期 JWT 刷新/撤销（[auth §9](remote-control-auth.md)）。
+2. **JetStream 回放**：Bridge 自建 `EVT_{pairId}` 流 + web 升级 `deliver=all` consumer（替代当前 core sub + `get_events_since`）。
+3. **真手机 App / PWA**：替代 `remote/web` 调试页（历史 / 流式 / 审批 / abort UI 复用）。
 4. **右侧面板**：附件上传/预览、文件列表、工具调用详情。
 5. **run 边界对齐**：`steer`/`follow_up` 路径也分配独立 `run_id`（P1 review C2）。
