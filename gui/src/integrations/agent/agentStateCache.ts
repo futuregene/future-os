@@ -243,7 +243,7 @@ export function installAgentStateListener() {
 
 // ── Streaming-status cache (short TTL, separate from full agent state) ────
 
-const STREAMING_TTL_MS = 2_000;
+const STREAMING_TTL_MS = 1_000;
 const streamingCache = new Map<string, { streaming: boolean; fetchedAt: number }>();
 
 /**

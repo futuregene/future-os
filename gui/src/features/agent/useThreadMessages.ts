@@ -297,7 +297,7 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
         attachedRef.current = false;
       }
     },
-    3000,
+    2000,
     {
       enabled: Boolean(threadId),
       deps: [threadId, refreshRecentRun, reloadMessagesQuiet, workspaceId, isRunActive],

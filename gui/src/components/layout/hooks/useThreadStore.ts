@@ -196,7 +196,7 @@ export function useThreadStore(): ThreadStore {
     if (activeThreads.length === 0) return;
     const streaming = await pollStreamingStatuses(activeThreads.map((t) => t.id));
     setThreadStreamingStatuses(streaming);
-  }, 3000, {
+  }, 1000, {
     enabled: activeThreads.length > 0,
     deps: [activeThreads],
   });
