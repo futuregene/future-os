@@ -919,7 +919,9 @@ mod tests {
     #[test]
     fn default_is_streaming_is_false() {
         let session = make_test_session("s1");
-        assert!(!session.is_streaming.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(!session
+            .is_streaming
+            .load(std::sync::atomic::Ordering::Relaxed));
     }
 
     #[test]
@@ -1162,9 +1164,13 @@ mod tests {
     #[test]
     fn abort_sets_not_streaming() {
         let session = make_test_session("s1");
-        session.is_streaming.store(true, std::sync::atomic::Ordering::Relaxed);
+        session
+            .is_streaming
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         session.abort();
-        assert!(!session.is_streaming.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(!session
+            .is_streaming
+            .load(std::sync::atomic::Ordering::Relaxed));
     }
 
     // ─── set_thinking_level ─────────────────────────────────────────────────

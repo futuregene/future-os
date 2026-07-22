@@ -543,7 +543,10 @@ mod tests {
 
         let result_preview = "file1.txt\nfile2.txt";
         let result_display = format!("\n```\n{}\n```", result_preview);
-        let new_entry = format!("\n\n✅ **Tool** `{}` **completed**{}", tool_name, result_display);
+        let new_entry = format!(
+            "\n\n✅ **Tool** `{}` **completed**{}",
+            tool_name, result_display
+        );
 
         stream_text = stream_text.replace(&old_entry, &new_entry);
 

@@ -703,22 +703,20 @@ mod tests {
 
     #[test]
     fn with_thinking_level() {
-        let c = Client::new("https://api.test", "key", None, None)
-            .with_thinking_level("high");
+        let c = Client::new("https://api.test", "key", None, None).with_thinking_level("high");
         assert_eq!(*c.thinking_level.read(), "high");
     }
 
     #[test]
     fn with_thinking_budget() {
-        let c = Client::new("https://api.test", "key", None, None)
-            .with_thinking_budget(16000);
+        let c = Client::new("https://api.test", "key", None, None).with_thinking_budget(16000);
         assert_eq!(*c.thinking_budget.read(), 16000);
     }
 
     #[test]
     fn with_compat() {
-        let c = Client::new("https://api.test", "key", None, None)
-            .with_compat("deepseek", true, false);
+        let c =
+            Client::new("https://api.test", "key", None, None).with_compat("deepseek", true, false);
         assert_eq!(*c.compat_thinking_format.read(), "deepseek");
         assert!(*c.compat_supports_reasoning_effort.read());
         assert!(!*c.compat_requires_reasoning_on_assistant.read());
@@ -733,8 +731,7 @@ mod tests {
 
     #[test]
     fn with_max_tokens_field_empty_keeps_default() {
-        let c = Client::new("https://api.test", "key", None, None)
-            .with_max_tokens_field("");
+        let c = Client::new("https://api.test", "key", None, None).with_max_tokens_field("");
         assert_eq!(*c.max_tokens_field.read(), "max_tokens");
     }
 
@@ -743,26 +740,20 @@ mod tests {
         let mut map = HashMap::new();
         map.insert("high".to_string(), "high".to_string());
         map.insert("xhigh".to_string(), "max".to_string());
-        let c = Client::new("https://api.test", "key", None, None)
-            .with_thinking_level_map(map);
+        let c = Client::new("https://api.test", "key", None, None).with_thinking_level_map(map);
         assert_eq!(c.thinking_level_map.read().len(), 2);
-        assert_eq!(
-            c.thinking_level_map.read().get("xhigh").unwrap(),
-            "max"
-        );
+        assert_eq!(c.thinking_level_map.read().get("xhigh").unwrap(), "max");
     }
 
     #[test]
     fn with_temperature() {
-        let c = Client::new("https://api.test", "key", None, None)
-            .with_temperature(0.5);
+        let c = Client::new("https://api.test", "key", None, None).with_temperature(0.5);
         assert_eq!(c.temperature, Some(0.5));
     }
 
     #[test]
     fn with_max_tokens() {
-        let c = Client::new("https://api.test", "key", None, None)
-            .with_max_tokens(8192);
+        let c = Client::new("https://api.test", "key", None, None).with_max_tokens(8192);
         assert_eq!(c.max_tokens, Some(8192));
     }
 
@@ -793,8 +784,7 @@ mod tests {
 
     #[test]
     fn update_thinking_changes_level_and_budget() {
-        let c = Client::new("https://api.test", "key", None, None)
-            .with_thinking_level("off");
+        let c = Client::new("https://api.test", "key", None, None).with_thinking_level("off");
         assert_eq!(*c.thinking_level.read(), "off");
         crate::types::LLMProvider::update_thinking(&c, "high", 16000);
         assert_eq!(*c.thinking_level.read(), "high");

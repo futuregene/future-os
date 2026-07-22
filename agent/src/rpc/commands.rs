@@ -898,7 +898,9 @@ mod tests {
         let cmd = make_cmd("shutdown");
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
-        assert!(state.shutting_down.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(state
+            .shutting_down
+            .load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]
@@ -1093,7 +1095,10 @@ mod tests {
         let cmd = make_cmd("set_sandbox_policy");
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], false);
-        assert!(resp["error"].as_str().unwrap().contains("missing sandbox_policy"));
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("missing sandbox_policy"));
     }
 
     // ─── compact ────────────────────────────────────────────────────────────
@@ -1117,7 +1122,10 @@ mod tests {
         cmd.entry_id = "req_1".to_string();
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], false);
-        assert!(resp["error"].as_str().unwrap().contains("approved, rejected, or cancelled"));
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("approved, rejected, or cancelled"));
     }
 
     // ─── shell ──────────────────────────────────────────────────────────────
@@ -1130,7 +1138,10 @@ mod tests {
         cmd.command = "echo test_output".to_string();
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], true);
-        assert!(resp["data"]["output"].as_str().unwrap().contains("test_output"));
+        assert!(resp["data"]["output"]
+            .as_str()
+            .unwrap()
+            .contains("test_output"));
         assert_eq!(resp["data"]["exitCode"], 0);
     }
 

@@ -321,7 +321,8 @@ mod tests {
 
     #[test]
     fn rpc_command_disabled_flag() {
-        let json = r#"{"id":"cmd8b","type":"set_auto_compaction","sessionId":"s1","enabled":false}"#;
+        let json =
+            r#"{"id":"cmd8b","type":"set_auto_compaction","sessionId":"s1","enabled":false}"#;
         let cmd: RpcCommand = serde_json::from_str(json).unwrap();
         assert!(!cmd.enabled);
     }
@@ -359,7 +360,8 @@ mod tests {
 
     #[test]
     fn rpc_command_name() {
-        let json = r#"{"id":"cmd13","type":"set_session_name","sessionId":"s1","name":"My Session"}"#;
+        let json =
+            r#"{"id":"cmd13","type":"set_session_name","sessionId":"s1","name":"My Session"}"#;
         let cmd: RpcCommand = serde_json::from_str(json).unwrap();
         assert_eq!(cmd.name, "My Session");
     }
@@ -454,7 +456,10 @@ mod tests {
         let json_str = RpcResponse::ok("id4", "list_sessions", data.clone());
         let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert_eq!(parsed["data"]["count"], 1);
-        assert_eq!(parsed["data"]["nested"]["deep"], serde_json::json!([1, 2, 3]));
+        assert_eq!(
+            parsed["data"]["nested"]["deep"],
+            serde_json::json!([1, 2, 3])
+        );
     }
 
     // ─── SseEvent ────────────────────────────────────────────────────────────

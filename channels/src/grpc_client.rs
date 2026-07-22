@@ -479,13 +479,19 @@ mod tests {
     #[test]
     fn parse_ping() {
         let event = make_event("ping", "{}");
-        assert!(matches!(AgentClient::parse_event(event), Some(AgentEvent::Ping)));
+        assert!(matches!(
+            AgentClient::parse_event(event),
+            Some(AgentEvent::Ping)
+        ));
     }
 
     #[test]
     fn parse_agent_start() {
         let event = make_event("agent_start", "{}");
-        assert!(matches!(AgentClient::parse_event(event), Some(AgentEvent::AgentStart)));
+        assert!(matches!(
+            AgentClient::parse_event(event),
+            Some(AgentEvent::AgentStart)
+        ));
     }
 
     #[test]
@@ -595,7 +601,10 @@ mod tests {
 
     #[test]
     fn parse_tool_delta() {
-        let event = make_event("tool_delta", r#"{"tool_id":"call_1","text":"partial output"}"#);
+        let event = make_event(
+            "tool_delta",
+            r#"{"tool_id":"call_1","text":"partial output"}"#,
+        );
         match AgentClient::parse_event(event) {
             Some(AgentEvent::ToolDelta { tool_id, text }) => {
                 assert_eq!(tool_id, "call_1");

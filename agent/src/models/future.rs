@@ -612,7 +612,10 @@ mod tests {
                 tokenizer: None,
             }),
             pricing: None,
-            supported_parameters: Some(vec!["thinking".to_string(), "reasoning_effort".to_string()]),
+            supported_parameters: Some(vec![
+                "thinking".to_string(),
+                "reasoning_effort".to_string(),
+            ]),
             knowledge_cutoff: None,
             provider: None,
         };

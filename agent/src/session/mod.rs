@@ -1536,10 +1536,9 @@ mod tests {
             "gpt-4o".to_string(),
             "high".to_string(),
         ));
-        session.entries.push(SessionEntry::new_user(
-            "user",
-            serde_json::json!("hello"),
-        ));
+        session
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
         manager.save(&session).unwrap();
 
         let loaded = manager.load(&session.id).unwrap();
@@ -1583,10 +1582,9 @@ mod tests {
     #[test]
     fn fork_session_bad_entry_id_clones_all() {
         let mut parent = Session::new("/tmp", "model", "");
-        parent.entries.push(SessionEntry::new_user(
-            "user",
-            serde_json::json!("hello"),
-        ));
+        parent
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
         let forked = fork_session(&parent, "nonexistent_id");
         // Should still produce a session with entries (fallback behavior)
         assert!(!forked.entries.is_empty());
@@ -1595,10 +1593,9 @@ mod tests {
     #[test]
     fn fork_session_preserves_model() {
         let mut parent = Session::new("/tmp", "my-model", "");
-        parent.entries.push(SessionEntry::new_user(
-            "user",
-            serde_json::json!("hello"),
-        ));
+        parent
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
         let forked = fork_session(&parent, &parent.entries[0].id);
         assert_eq!(forked.model, "my-model");
     }
@@ -1606,10 +1603,9 @@ mod tests {
     #[test]
     fn fork_session_generates_new_ids() {
         let mut parent = Session::new("/tmp", "model", "");
-        parent.entries.push(SessionEntry::new_user(
-            "user",
-            serde_json::json!("hello"),
-        ));
+        parent
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
         let original_id = parent.entries[0].id.clone();
         let forked = fork_session(&parent, &original_id);
         // Forked entries should have different IDs
@@ -1625,10 +1621,9 @@ mod tests {
     fn fork_session_name_suffix() {
         let mut parent = Session::new("/tmp", "model", "");
         parent.set_session_name("Original Chat");
-        parent.entries.push(SessionEntry::new_user(
-            "user",
-            serde_json::json!("hello"),
-        ));
+        parent
+            .entries
+            .push(SessionEntry::new_user("user", serde_json::json!("hello")));
         let forked = fork_session(&parent, &parent.entries[0].id);
         assert!(forked.name.contains("fork"));
     }

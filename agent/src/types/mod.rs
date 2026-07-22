@@ -1154,14 +1154,16 @@ mod tests {
 
     #[test]
     fn usage_credit_cost_as_string() {
-        let json = r#"{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"credit_cost":"0.00019"}"#;
+        let json =
+            r#"{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"credit_cost":"0.00019"}"#;
         let u: Usage = serde_json::from_str(json).unwrap();
         assert_eq!(u.credit_cost, Some(0.00019));
     }
 
     #[test]
     fn usage_credit_cost_as_number() {
-        let json = r#"{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"credit_cost":0.00025}"#;
+        let json =
+            r#"{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"credit_cost":0.00025}"#;
         let u: Usage = serde_json::from_str(json).unwrap();
         assert_eq!(u.credit_cost, Some(0.00025));
     }

@@ -565,7 +565,10 @@ mod tests {
     #[test]
     fn message_events() {
         assert_eq!(message_start("user").event_type, "message_start");
-        assert_eq!(message_start("user").data["role"], serde_json::json!("user"));
+        assert_eq!(
+            message_start("user").data["role"],
+            serde_json::json!("user")
+        );
         assert_eq!(message_end("assistant").event_type, "message_end");
     }
 
@@ -618,7 +621,10 @@ mod tests {
 
     #[test]
     fn compaction_events() {
-        assert_eq!(compaction_start("context_full").event_type, "compaction_start");
+        assert_eq!(
+            compaction_start("context_full").event_type,
+            "compaction_start"
+        );
         let e = compaction_end(5000, "summary text", false, "context_full");
         assert_eq!(e.event_type, "compaction_end");
         assert_eq!(e.data["tokens_before"], serde_json::json!(5000));

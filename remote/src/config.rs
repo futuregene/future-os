@@ -49,8 +49,20 @@ mod tests {
         assert_eq!(c.pair_id, "TESTPAIR");
 
         // Restore
-        if let Some(v) = orig_nats { std::env::set_var("FUTURE_NATS_URL", v); } else { std::env::remove_var("FUTURE_NATS_URL"); }
-        if let Some(v) = orig_agent { std::env::set_var("FUTURE_AGENT_GRPC_ADDR", v); } else { std::env::remove_var("FUTURE_AGENT_GRPC_ADDR"); }
-        if let Some(v) = orig_pair { std::env::set_var("FUTURE_REMOTE_PAIR_ID", v); } else { std::env::remove_var("FUTURE_REMOTE_PAIR_ID"); }
+        if let Some(v) = orig_nats {
+            std::env::set_var("FUTURE_NATS_URL", v);
+        } else {
+            std::env::remove_var("FUTURE_NATS_URL");
+        }
+        if let Some(v) = orig_agent {
+            std::env::set_var("FUTURE_AGENT_GRPC_ADDR", v);
+        } else {
+            std::env::remove_var("FUTURE_AGENT_GRPC_ADDR");
+        }
+        if let Some(v) = orig_pair {
+            std::env::set_var("FUTURE_REMOTE_PAIR_ID", v);
+        } else {
+            std::env::remove_var("FUTURE_REMOTE_PAIR_ID");
+        }
     }
 }
