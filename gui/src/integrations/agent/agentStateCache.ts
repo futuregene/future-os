@@ -171,15 +171,16 @@ import { listen } from "@tauri-apps/api/event";
 let eventListenerInstalled = false;
 
 /**
- * Install a one-time Tauri event listener that updates the agent state cache
- * whenever the backend forwards a settings-change event from StreamEvents.
- * Idempotent — only installs once per app lifetime.
+ * Install a one-time Tauri event listener that processes ALL agent events
+ * (user_message, text_chunk, settings changes, etc.) forwarded from the
+ * StreamEvents observer.  This gives the GUI the same real-time latency
+ * as the TUI — no polling, no synthetic run delay.
  */
-export function installAgentStateListener() {
+export function installAgentEventListener() {
   if (eventListenerInstalled) return;
   eventListenerInstalled = true;
 
-  void listen<Record<string, unknown>>("agent-state-updated", (event) => {
+  void listen<Record<string, unknown>>("agent-event", (event) => {
     const p = event.payload;
     if (!p) return;
 
@@ -187,58 +188,84 @@ export function installAgentStateListener() {
     const eventType = typeof p._eventType === "string" ? p._eventType : null;
     if (!sessionId || !eventType) return;
 
-    // Find the cache entry whose sessionId matches the event.
-    for (const [threadId, entry] of cache) {
-      if (entry.state.sessionId !== sessionId) continue;
+    switch (eventType) {
+      // ── Settings-change events: update cache ──
+      case "model_changed":
+      case "thinking_level_changed":
+      case "permission_level_changed":
+      case "session_name_changed":
+      case "cwd_changed":
+      case "config_reloaded":
+        applySettingsEvent(sessionId, eventType, p);
+        break;
 
-      const state = entry.state;
-      let changed = false;
-      const next = { ...state };
-
-      switch (eventType) {
-        case "model_changed":
-          if (typeof p.model === "string") { next.model = p.model; changed = true; }
-          break;
-        case "thinking_level_changed":
-          if (typeof p.level === "string") { next.thinkingLevel = p.level; changed = true; }
-          break;
-        case "permission_level_changed":
-          // No direct UI for permission yet; still refresh so /status stays accurate.
-          changed = true;
-          break;
-        case "session_name_changed":
-          if (typeof p.name === "string") { next.sessionName = p.name; changed = true; }
-          break;
-        case "cwd_changed":
-          if (typeof p.cwd === "string") {
-            next.cwd = p.cwd;
-            changed = true;
-            // Move the thread to the workspace matching the new cwd.
-            invokeCommand("reconcile_thread_workspace", {
-              sessionId: p.sessionId,
-              cwd: p.cwd,
-            }).then(() => {
-              // Notify AppShell to refresh the thread/workspace lists.
-              window.dispatchEvent(new CustomEvent("future:cwd-changed"));
-            }).catch(() => {});
-          }
-          break;
-        case "config_reloaded":
-          // Full state refresh needed — invalidate so next read re-fetches.
-          versions.set(threadId, (versions.get(threadId) ?? 0) + 1);
-          cache.delete(threadId);
-          changed = true;
-          break;
-      }
-
-      if (changed) {
-        cache.set(threadId, { state: next, fetchedAt: Date.now() });
-      }
-      // Only one entry should match — break after updating.
-      break;
+      // ── Content events: forward to the active AgentThread via a
+      //     window custom event so the message list updates in real-time.
+      case "user_message":
+      case "text_chunk":
+      case "agent_start":
+      case "agent_end":
+      case "thinking_start":
+      case "thinking_delta":
+      case "thinking_end":
+      case "tool_start":
+      case "tool_delta":
+      case "tool_end":
+        window.dispatchEvent(new CustomEvent("future:agent-event", {
+          detail: { sessionId, eventType, payload: p },
+        }));
+        break;
     }
-    notify();
   });
+}
+
+/** Apply a settings-change event to the agent state cache. */
+function applySettingsEvent(
+  sessionId: string,
+  eventType: string,
+  p: Record<string, unknown>,
+) {
+  for (const [threadId, entry] of cache) {
+    if (entry.state.sessionId !== sessionId) continue;
+
+    const next = { ...entry.state };
+    let changed = false;
+
+    switch (eventType) {
+      case "model_changed":
+        if (typeof p.model === "string") { next.model = p.model; changed = true; }
+        break;
+      case "thinking_level_changed":
+        if (typeof p.level === "string") { next.thinkingLevel = p.level; changed = true; }
+        break;
+      case "session_name_changed":
+        if (typeof p.name === "string") { next.sessionName = p.name; changed = true; }
+        break;
+      case "cwd_changed":
+        if (typeof p.cwd === "string") {
+          next.cwd = p.cwd;
+          changed = true;
+          invokeCommand("reconcile_thread_workspace", {
+            sessionId: p.sessionId,
+            cwd: p.cwd,
+          }).then(() => {
+            window.dispatchEvent(new CustomEvent("future:cwd-changed"));
+          }).catch(() => {});
+        }
+        break;
+      case "config_reloaded":
+        versions.set(threadId, (versions.get(threadId) ?? 0) + 1);
+        cache.delete(threadId);
+        changed = true;
+        break;
+    }
+
+    if (changed) {
+      cache.set(threadId, { state: next, fetchedAt: Date.now() });
+    }
+    break;
+  }
+  notify();
 }
 
 // ── Streaming-status cache (short TTL, separate from full agent state) ────

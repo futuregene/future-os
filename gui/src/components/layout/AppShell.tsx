@@ -30,7 +30,7 @@ import { useRightPanelWidth } from "./hooks/useRightPanelWidth";
 import { useThreadDialogs } from "./hooks/useThreadDialogs";
 import { useThreadStore } from "./hooks/useThreadStore";
 import { useUnreadThreads } from "./hooks/useUnreadThreads";
-import { installAgentStateListener } from "../../integrations/agent/agentStateCache";
+import { installAgentEventListener } from "../../integrations/agent/agentStateCache";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { useWorkspaceDialogs } from "./hooks/useWorkspaceDialogs";
 import { WorkspaceDialogs } from "./WorkspaceDialogs";
@@ -85,7 +85,7 @@ export function AppShell() {
   // Install the Tauri event listener for real-time agent state updates
   // (settings changes from other clients).  Only runs once.
   useEffect(() => {
-    installAgentStateListener();
+    installAgentEventListener();
   }, []);
 
   const {

@@ -304,6 +304,39 @@ export function useThreadMessages({ threadId, workspaceId }: UseThreadMessagesIn
     },
   );
 
+  // ── Real-time content events from StreamEvents observer ──────────
+  // When another client (TUI) sends a message, the user_message event
+  // arrives via Tauri before reloadMessagesQuiet completes.  Insert it
+  // immediately so there's zero perceived delay.
+  useEffect(() => {
+    if (!threadId) return;
+    const handler = (ev: Event) => {
+      const detail = (ev as CustomEvent).detail as {
+        sessionId: string;
+        eventType: string;
+        payload: Record<string, unknown>;
+      } | undefined;
+      if (!detail || detail.eventType !== "user_message") return;
+      const text = typeof detail.payload.text === "string" ? detail.payload.text : "";
+      if (!text) return;
+      setMessages((prev) => {
+        // Dedup: don't add if already present (reloadMessagesQuiet may have
+        // already loaded it).
+        if (prev.some((m) => m.role === "user" && m.content === text)) return prev;
+        return [...prev, {
+          id: `user_${Date.now()}`,
+          role: "user",
+          authorKey: "author.user",
+          content: text,
+          status: "complete",
+          createdAt: new Date().toISOString(),
+        } satisfies AgentMessage];
+      });
+    };
+    window.addEventListener("future:agent-event", handler);
+    return () => window.removeEventListener("future:agent-event", handler);
+  }, [threadId]);
+
   return {
     loadingThread,
     loadingIndicator,

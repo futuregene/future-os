@@ -723,31 +723,18 @@ pub fn start_observing_session(session_id: String) {
                             _ => break, // stream ended or error — reconnect
                         };
 
-                        // Forward only settings-change events to the frontend.
-                        // Include session_id and type so the frontend can
-                        // find the right thread and disambiguate fields.
-                        let is_settings_event = matches!(
-                            event.r#type.as_str(),
-                            "model_changed"
-                                | "thinking_level_changed"
-                                | "permission_level_changed"
-                                | "session_name_changed"
-                                | "cwd_changed"
-                                | "auto_compaction_changed"
-                                | "tools_changed"
-                                | "sandbox_policy_changed"
-                                | "config_reloaded"
-                        );
-                        if is_settings_event {
-                            if let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(&event.data) {
-                                if let serde_json::Value::Object(ref mut map) = payload {
-                                    map.insert("sessionId".to_string(),
-                                        serde_json::Value::String(session_id.clone()));
-                                    map.insert("_eventType".to_string(),
-                                        serde_json::Value::String(event.r#type.clone()));
-                                }
-                                let _ = app_handle.emit("agent-state-updated", &payload);
+                        // Forward ALL events to the frontend so content
+                        // (user_message, text_chunk, agent_start, etc.) and
+                        // settings changes are received in real-time without
+                        // polling.  The frontend dispatches by event type.
+                        if let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(&event.data) {
+                            if let serde_json::Value::Object(ref mut map) = payload {
+                                map.insert("sessionId".to_string(),
+                                    serde_json::Value::String(session_id.clone()));
+                                map.insert("_eventType".to_string(),
+                                    serde_json::Value::String(event.r#type.clone()));
                             }
+                            let _ = app_handle.emit("agent-event", &payload);
                         }
                     }
                 }
