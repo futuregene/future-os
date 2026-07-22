@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use super::{
     generate_session_html, get_state_internal, AppState, ApprovalDecision, ApprovalDecisionStatus,
-    RpcCommand, RpcResponse, ServerSession, SseBroadcaster,
+    RpcCommand, RpcResponse, ServerSession, SseBroadcaster, SseEvent,
 };
 
 /// Session write lock. parking_lot locks have no poisoning, so this is a
@@ -188,24 +188,53 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             )
         }
         "set_model" => {
-            let result = wlock!(session, id).set_model(&cmd.model_id);
+            let (result, model_id) = {
+                let mut sess = wlock!(session, id);
+                let model_id = cmd.model_id.clone();
+                (sess.set_model(&model_id), model_id)
+            };
             match result {
                 Ok(()) => {
-                    RpcResponse::ok(id, "set_model", serde_json::json!({"model": cmd.model_id}))
+                    {
+                        let sess = rlock!(session, id);
+                        sess.broadcaster.broadcast(SseEvent::new(
+                            "model_changed",
+                            serde_json::json!({"model": model_id}),
+                        ));
+                    }
+                    RpcResponse::ok(id, "set_model", serde_json::json!({"model": model_id}))
                 }
                 Err(e) => RpcResponse::build_fail(id, "set_model", &e.to_string()),
             }
         }
         "set_thinking_level" => {
-            wlock!(session, id).set_thinking_level(&cmd.level);
+            let level = cmd.level.clone();
+            wlock!(session, id).set_thinking_level(&level);
+            let sess = rlock!(session, id);
+            sess.broadcaster.broadcast(SseEvent::new(
+                "thinking_level_changed",
+                serde_json::json!({"level": level}),
+            ));
             RpcResponse::ok(id, "set_thinking_level", serde_json::json!({}))
         }
         "set_steering_mode" => {
-            wlock!(session, id).set_steering_mode(&cmd.mode);
+            let mode = cmd.mode.clone();
+            wlock!(session, id).set_steering_mode(&mode);
+            let sess = rlock!(session, id);
+            sess.broadcaster.broadcast(SseEvent::new(
+                "steering_mode_changed",
+                serde_json::json!({"mode": mode}),
+            ));
             RpcResponse::ok(id, "set_steering_mode", serde_json::json!({}))
         }
         "set_follow_up_mode" => {
-            wlock!(session, id).set_follow_up_mode(&cmd.mode);
+            let mode = cmd.mode.clone();
+            wlock!(session, id).set_follow_up_mode(&mode);
+            let sess = rlock!(session, id);
+            sess.broadcaster.broadcast(SseEvent::new(
+                "follow_up_mode_changed",
+                serde_json::json!({"mode": mode}),
+            ));
             RpcResponse::ok(id, "set_follow_up_mode", serde_json::json!({}))
         }
         "compact" => {
@@ -216,7 +245,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             }
         }
         "set_auto_compaction" => {
-            wlock!(session, id).set_auto_compaction(cmd.enabled);
+            let enabled = cmd.enabled;
+            wlock!(session, id).set_auto_compaction(enabled);
+            let sess = rlock!(session, id);
+            sess.broadcaster.broadcast(SseEvent::new(
+                "auto_compaction_changed",
+                serde_json::json!({"enabled": enabled}),
+            ));
             RpcResponse::ok(id, "set_auto_compaction", serde_json::json!({}))
         }
         "set_auto_retry" => {
@@ -228,11 +263,22 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "set_system_prompt", serde_json::json!({}))
         }
         "set_tools" => {
-            wlock!(session, id).set_tools(&cmd.tools);
-            RpcResponse::ok(id, "set_tools", serde_json::json!({"tools": cmd.tools}))
+            let tools = cmd.tools.clone();
+            wlock!(session, id).set_tools(&tools);
+            let sess = rlock!(session, id);
+            sess.broadcaster.broadcast(SseEvent::new(
+                "tools_changed",
+                serde_json::json!({"tools": tools}),
+            ));
+            RpcResponse::ok(id, "set_tools", serde_json::json!({"tools": tools}))
         }
         "disable_tools" => {
             wlock!(session, id).disable_tools();
+            let sess = rlock!(session, id);
+            sess.broadcaster.broadcast(SseEvent::new(
+                "tools_changed",
+                serde_json::json!({"tools": serde_json::Value::Array(vec![])}),
+            ));
             RpcResponse::ok(id, "disable_tools", serde_json::json!({}))
         }
         "disable_builtin_tools" => {
@@ -466,6 +512,14 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 s.name = cmd.name.clone();
                 let _ = session_manager.save(&s);
             }
+            let broadcaster = {
+                let sess = rlock!(session, id);
+                sess.broadcaster.clone()
+            };
+            broadcaster.broadcast(SseEvent::new(
+                "session_name_changed",
+                serde_json::json!({"name": cmd.name}),
+            ));
             RpcResponse::ok(id, "set_session_name", serde_json::json!({}))
         }
         "get_commands" => {
@@ -539,6 +593,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             if let Err(e) = wlock!(session, id).set_model(next_model) {
                 return RpcResponse::build_fail(id, "cycle_model", &e.to_string());
             }
+            let sess = rlock!(session, id);
+            sess.broadcaster.broadcast(SseEvent::new(
+                "model_changed",
+                serde_json::json!({"model": next_model}),
+            ));
 
             RpcResponse::ok(
                 id,
@@ -560,6 +619,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
 
             // Update session thinking level and propagate to provider
             wlock!(session, id).set_thinking_level(next_level);
+            let sess = rlock!(session, id);
+            sess.broadcaster.broadcast(SseEvent::new(
+                "thinking_level_changed",
+                serde_json::json!({"level": next_level}),
+            ));
 
             RpcResponse::ok(
                 id,
@@ -627,6 +691,14 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 s.cwd = cwd.clone();
                 let _ = session_manager.save(&s);
             }
+            let broadcaster = {
+                let sess = rlock!(session, id);
+                sess.broadcaster.clone()
+            };
+            broadcaster.broadcast(SseEvent::new(
+                "cwd_changed",
+                serde_json::json!({"cwd": cwd}),
+            ));
             RpcResponse::ok(id, "set_cwd", serde_json::json!({"cwd": cwd}))
         }
         "add_session_rule" => {
@@ -648,7 +720,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 "tier": policy.tier.as_str(),
                 "sandboxAvailable": crate::sandbox::platform_sandbox_available(),
             });
+            let tier = policy.tier.as_str().to_string();
             wlock!(session, id).set_sandbox_policy(policy);
+            let sess = rlock!(session, id);
+            sess.broadcaster.broadcast(SseEvent::new(
+                "sandbox_policy_changed",
+                serde_json::json!({"tier": tier}),
+            ));
             RpcResponse::ok(id, "set_sandbox_policy", summary)
         }
         "set_permission_level" => {
@@ -661,6 +739,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 );
             }
             wlock!(session, id).set_permission_level(&cmd.level);
+            let sess = rlock!(session, id);
+            sess.broadcaster.broadcast(SseEvent::new(
+                "permission_level_changed",
+                serde_json::json!({"level": cmd.level}),
+            ));
             RpcResponse::ok(
                 id,
                 "set_permission_level",
@@ -1295,6 +1378,17 @@ fn cmd_reload_config(
         r#loop.system_prompt = new_prompt.clone();
         r#loop.config.system_prompt = new_prompt;
     }
+
+    // Broadcast to all subscribers so other clients (TUI/GUI) update their
+    // skill lists and context-file displays in near real-time.
+    let sess = rlock!(session, id);
+    sess.broadcaster.broadcast(SseEvent::new(
+        "config_reloaded",
+        serde_json::json!({
+            "skills": skill_names,
+            "contextFiles": if agent_content.is_empty() { vec![] } else { vec!["CLAUDE.md".to_string()] },
+        }),
+    ));
 
     RpcResponse::ok(
         id,

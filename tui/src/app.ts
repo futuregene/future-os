@@ -507,6 +507,58 @@ export class App extends Container {
         break;
       }
 
+      // ── Settings-change events (broadcast by agent so other clients stay in sync) ──
+
+      case "model_changed": {
+        const e = event as { model?: string };
+        if (e.model) this.state.model = e.model;
+        break;
+      }
+      case "thinking_level_changed": {
+        const e = event as { level?: string };
+        if (e.level) this.state.thinking = e.level;
+        break;
+      }
+      case "permission_level_changed": {
+        // Reflected in /status only — no footer field, but refresh to stay accurate.
+        this.refresh().catch(() => {});
+        break;
+      }
+      case "cwd_changed": {
+        const e = event as { cwd?: string };
+        if (e.cwd) this.state.cwd = e.cwd;
+        break;
+      }
+      case "session_name_changed": {
+        // No immediate TUI action needed — name is shown in session list.
+        break;
+      }
+      case "auto_compaction_changed": {
+        const e = event as { enabled?: boolean };
+        if (typeof e.enabled === "boolean") this.state.autoCompactionEnabled = e.enabled;
+        break;
+      }
+      case "tools_changed":
+      case "steering_mode_changed":
+      case "follow_up_mode_changed":
+      case "sandbox_policy_changed":
+      case "ephemeral_changed": {
+        // Reflected in /status; refresh to keep accurate.
+        this.refresh().catch(() => {});
+        break;
+      }
+      case "config_reloaded": {
+        const e = event as { skills?: string[]; contextFiles?: string[] };
+        if (e.skills) this.state.skills = e.skills.slice().sort((a, b) => a.localeCompare(b));
+        if (e.contextFiles) this.state.contextFiles = e.contextFiles;
+        this.chat.addMessage({
+          id: crypto.randomUUID(),
+          role: "system",
+          content: `Config reloaded: ${e.skills?.length ?? 0} skills, ${e.contextFiles?.join(", ") || "no context files"}`,
+        });
+        break;
+      }
+
       default:
         break;
     }
