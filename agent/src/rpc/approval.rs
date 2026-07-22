@@ -306,7 +306,30 @@ impl ApprovalGate {
         outcome
     }
 
-    pub fn decide(&self, request_id: &str, decision: ApprovalDecision) -> Result<(), String> {
+    pub fn decide(
+        &self,
+        request_id: &str,
+        session_id: &str,
+        decision: ApprovalDecision,
+    ) -> Result<(), String> {
+        // Session ownership check (auth I1 exception): an approval belongs to the
+        // session that raised it. A remote client must not be able to approve a
+        // pending request of another session by guessing/leaking its entry_id.
+        // In 1:1 this is naturally pair-scoped; the check also future-proofs 1:N.
+        let belongs = {
+            let guard = self.pending.lock();
+            match guard.get(request_id) {
+                None => {
+                    return Err(format!("approval request `{request_id}` is not pending"));
+                }
+                Some(pending) => pending.session_id == session_id,
+            }
+        };
+        if !belongs {
+            return Err(format!(
+                "approval request `{request_id}` does not belong to session `{session_id}`"
+            ));
+        }
         let pending = self
             .pending
             .lock()
@@ -1057,5 +1080,43 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
         let args = serde_json::json!({ "path": path.to_string_lossy() });
         let shape = approval_shape("read", &path, Op::Read, &args, &sandbox);
         assert_eq!(shape.save_suggestion.unwrap()["access"], "read");
+    }
+
+    #[test]
+    fn decide_rejects_wrong_session_but_accepts_owning_session() {
+        use std::sync::mpsc;
+        let gate = ApprovalGate::default();
+        let (tx, rx) = mpsc::channel();
+        gate.pending.lock().insert(
+            "req1".to_string(),
+            PendingApproval {
+                session_id: "sessA".to_string(),
+                tx,
+            },
+        );
+        let decision = ApprovalDecision {
+            approved: true,
+            note: String::new(),
+            status: ApprovalDecisionStatus::Approved,
+        };
+        // A different session cannot approve this request (auth I1 exception);
+        // the pending request must remain so the owning session still can.
+        assert!(gate.decide("req1", "sessB", decision.clone()).is_err());
+        assert!(gate.pending.lock().contains_key("req1"));
+        // The owning session's decision goes through and is delivered.
+        assert!(gate.decide("req1", "sessA", decision).is_ok());
+        assert!(!gate.pending.lock().contains_key("req1"));
+        assert_eq!(rx.try_recv().unwrap().status, ApprovalDecisionStatus::Approved);
+    }
+
+    #[test]
+    fn decide_unknown_request_errors() {
+        let gate = ApprovalGate::default();
+        let decision = ApprovalDecision {
+            approved: false,
+            note: String::new(),
+            status: ApprovalDecisionStatus::Rejected,
+        };
+        assert!(gate.decide("nope", "sessA", decision).is_err());
     }
 }

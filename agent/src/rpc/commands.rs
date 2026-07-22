@@ -136,6 +136,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             };
             match state.approval_gate.decide(
                 &cmd.entry_id,
+                &cmd.session_id,
                 ApprovalDecision {
                     approved,
                     note: cmd.message.clone(),
